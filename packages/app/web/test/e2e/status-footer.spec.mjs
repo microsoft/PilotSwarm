@@ -79,6 +79,10 @@ for (const themeId of ['terminal-green', 'win95', 'winamp', 'ms-dos']) {
             await expect(footer).toContainText('Working');
             await assertSame(queued);
             expect(errors).toEqual([]);
-        } finally { await new Promise(resolve => stub.server.close(resolve)); }
+        } finally {
+            // The page is still open and polls every 4 s on keep-alive connections; close() alone waits for them, which
+            // outlived the test once every assertion had passed (wfs-full-5d687726). Close them with the server.
+            await new Promise(resolve => { stub.server.close(resolve); stub.server.closeAllConnections?.(); });
+        }
     });
 }

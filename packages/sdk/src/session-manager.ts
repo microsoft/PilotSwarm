@@ -16,15 +16,22 @@ import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
 import { ManagedSession } from "./managed-session.js";
+import { isPinnedAgentPackageId } from "./agent-package-pins.js";
 import type { SessionStateStore } from "./session-store.js";
 import { callChangesWorkingFolder, sameFolder, sameWorkingFolder } from "./workspace-check.js";
-import { workspaceReleaseReason } from "./workspace.js";
+import { workspaceReleaseReason, prepareWorkspace, prepareWorkspaceExtras } from "./workspace.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig, type WorkspaceAdopt, type WorkspaceProvider } from "./types.js";
 import type { ModelProviderRegistry, ToolCatalogCapability } from "./model-providers.js";
 import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
 import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
 import { createToolFactsAccessor } from "./tool-facts-accessor.js";
+import { createScriptSessionTools } from "./workflow/session-tools.js";
+import { WORKFLOW_TOOL_POLICY, captureWorkflowTools, isWorkflowControlTool, workflowParentContextUnavailable, workflowToolPermission, type WorkflowToolBinding } from "./workflow/tool-policy.js";
+import { createWorkflowToolExecutor, type WorkflowToolExecutor } from "./workflow/tool-executor.js";
+import { workflowAuthoringPointer, workflowAuthoringSkillLoaded, workflowSessionGuidance } from "./workflow/guidance.js";
+import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
+import { workflowDefinitionMcpPermission, workflowDefinitionMcpToolFilters } from "./workflow/v2/input-policy.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
 import { createProviderTools, holdsProviderTools } from "./provider-tools.js";
@@ -49,7 +56,8 @@ import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore, buildEnhan
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
-import { createHash } from "node:crypto";
+import { workflowTestPermission } from "./workflow/v2/test-agent-tools.js";
+import { createHash, randomUUID } from "node:crypto";
 import { readSnapshotMarker, supportsVersionedSnapshots, writeSnapshotMarker } from "./snapshot-protocol.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -138,6 +146,13 @@ export interface AgentCopyEntry {
     packageId?: string;
     packageScope?: "shared" | "user";
     packageOwner?: { provider: string; subject: string } | null;
+    /**
+     * Set on the copy of an exact earlier package revision that a worker
+     * installed for sessions pinned to it (workflow package pins, R18;
+     * agent-package-pins.ts): its content hash. Such a copy is never a
+     * default: only a binding to its own `packageId` selects it.
+     */
+    pinnedRevision?: string;
 }
 
 /**
@@ -199,7 +214,8 @@ export function pickAgentCopyForOwner(
     ownerKey: string | null,
 ): AgentCopyEntry | undefined {
     if (!entry) return undefined;
-    const copies = entry.copies?.length ? entry.copies : [entry];
+    const all: AgentCopyEntry[] = entry.copies?.length ? entry.copies : [entry];
+    const copies = all.filter((copy) => !copy.pinnedRevision);
     if (ownerKey) {
         const own = copies.find(
             (copy) => copy.packageScope === "user" && agentOwnerKey(copy.packageOwner) === ownerKey,
@@ -235,6 +251,13 @@ export function pickAgentCopyByPackageIdForOwner(
 
 /** Worker-level defaults — applied to every session. */
 export interface WorkerDefaults {
+    /**
+     * Workflow package pins (R18, INACTIVE): install the exact earlier package
+     * revision a pinned bound package id names (agent-package-pins.ts) on this
+     * worker, before such a session's copy is resolved; false when it cannot
+     * be served.
+     */
+    ensurePinnedAgentPackageRevision?: (packageId: string) => Promise<boolean>;
     getCapabilitySources?: () => CapabilitySource[];
     /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
     reservedFactPrefixes?: string[];
@@ -723,6 +746,102 @@ export function buildByokModelCapabilities(
     };
 }
 
+/** A workflow session's shared native tool session, once set up (RT-2). */
+interface WorkflowToolSessionReady {
+    managed: ManagedSession;
+    workerNodeId: string;
+}
+
+/**
+ * Who may act for a workflow session's native tool session (E1b-R1): one lease per share, of the worker generation that
+ * made it. Removing the warm handle, releasing the folders and raising the failure barrier act for the session only
+ * while the lease holds it in the current generation; work of a superseded lease touches only its own handle.
+ * `pending` counts its late work and teardowns still running (E1b-R3).
+ */
+interface WorkflowToolLease { readonly generation: number; pending: number }
+
+/**
+ * One cause that blocks a workflow session's tools until recovery (VR-2), and the lease that raised it (E1b-R3). A
+ * session's barrier is the set of its causes (E1c-R1): up while any is there; each is lifted only by the work that
+ * raised it.
+ */
+interface WorkflowToolBarrier { readonly error: Error; readonly lease: WorkflowToolLease }
+
+/** The script states of one workflow session that share its native tool session (RT-2, E1b, E1c). */
+interface WorkflowToolShare {
+    /** The tools and authority the share was set up for; an executor for other ones is refused while it lives. */
+    bindingKey: string;
+    /** Open executors and openings in progress; the last one to close tears the share down. */
+    owners: number;
+    /** The end of the share's last tool call: calls run one at a time on the shared session. */
+    tail: Promise<void>;
+    ready: Promise<WorkflowToolSessionReady>;
+    lease: WorkflowToolLease;
+    /** Its setup outlived its deadline: what the setup made is torn down when it ends, not by the last owner. */
+    late: boolean;
+    /** Which owner's call started each background task, by task id (VR-3). */
+    taskOwners: Map<string, object>;
+}
+
+/** How long a share's setup, an owner's authorization or an executor's tool catalog check may take (E1-R2). */
+const WORKFLOW_TOOL_SETUP_DEADLINE_MS = 60_000;
+/** How long listing a native session's background tasks around a tool call may take (VR-3). */
+const WORKFLOW_TOOL_TASK_LIST_MS = 5_000;
+
+function workflowToolBindingKey(binding: WorkflowToolBinding): string {
+    return JSON.stringify([binding.parentSessionId, binding.policy, binding.boundAgentFingerprint, binding.tools.map(tool => tool.name).sort(),
+        [...(binding.excludedTools ?? [])].sort()]);
+}
+
+/** Run `call` after the share's previous tool call has ended, whatever its result. */
+function workflowToolShareSerially<T>(share: WorkflowToolShare, call: () => Promise<T>): Promise<T> {
+    const result = share.tail.then(call, call);
+    share.tail = result.then(() => undefined, () => undefined);
+    return result;
+}
+
+/** `work`, or `onLate` (and a rejection) when it is not done within `ms`; `onLate` then gets the late result, if any. */
+function withinDeadline<T>(work: Promise<T>, what: string, ms: number, onLate: (late: Promise<T>) => void): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => { onLate(work); reject(new Error(`${what} did not finish within ${ms} ms`)); }, ms);
+        (timer as { unref?: () => void }).unref?.();
+    });
+    return Promise.race([work, deadline]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
+/** `promise`, or a rejection as soon as `signal` aborts (the waiting script ended). */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined,
+    message = "The script ended before its workflow tools were available."): Promise<T> {
+    if (!signal) return promise;
+    const stopped = () => new Error(message);
+    if (signal.aborted) return Promise.reject(stopped());
+    return new Promise<T>((resolve, reject) => {
+        const onAbort = () => reject(stopped());
+        signal.addEventListener("abort", onAbort, { once: true });
+        promise.then(
+            value => { signal.removeEventListener("abort", onAbort); resolve(value); },
+            error => { signal.removeEventListener("abort", onAbort); reject(error); },
+        );
+    });
+}
+
+/** The words of ModelListUnavailableError (coordinator, 2026-11-06). */
+export const MODEL_LIST_UNAVAILABLE_TEXT = "The model list could not be loaded right now (the database is not reachable); try again shortly.";
+
+/**
+ * A model did not resolve because the worker's last provider-registry refresh failed and left no providers (the registry
+ * fails closed; FU-10), not because the model is unknown. Retryable: the next refresh that reads the catalog restores it.
+ */
+export class ModelListUnavailableError extends Error {
+    readonly code = "MODEL_LIST_UNAVAILABLE";
+    readonly retryable = true;
+    constructor() {
+        super(MODEL_LIST_UNAVAILABLE_TEXT);
+        this.name = "ModelListUnavailableError";
+    }
+}
+
 export class SessionManager {
     /**
      * Resolved inspect viewers, keyed by session id. Static so it is shared
@@ -819,6 +938,27 @@ export class SessionManager {
     private sessionStore: SessionStateStore | null = null;
     /** In-memory configs with non-serializable fields (tools, hooks). */
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
+    private workflowParentConfigs = new Map<string, SerializableSessionConfig & { excludedTools?: string[] }>();
+    /** Every open workflow tool executor (each script state's own; RT-2), for shutdown. */
+    private workflowExecutors = new Set<WorkflowToolExecutor>();
+    /**
+     * Per workflow session, the native tool session its open executors share (RT-2, E1b): reserved before its
+     * asynchronous setup, counted by owner, its tool calls run one at a time, and torn down only when the last owner
+     * closes. A new share waits for the previous one's teardown.
+     */
+    private workflowToolShares = new Map<string, WorkflowToolShare>();
+    private workflowToolTeardowns = new Map<string, Promise<void>>();
+    /**
+     * A generation fence (E1-R4): shutdown closes workflow tools and starts a new generation; a start opens them again,
+     * to openings of the new generation only.
+     */
+    private workflowToolsClosing = false;
+    private workflowToolGeneration = 0;
+    private workflowToolSetupDeadlineMs = WORKFLOW_TOOL_SETUP_DEADLINE_MS;
+    /** Per workflow session, the lease that holds its native tool session from its setup until its teardown succeeded (E1b-R1). */
+    private workflowToolHolders = new Map<string, WorkflowToolLease>();
+    /** Per workflow session, a failure that may have left native work or folders behind: its tools wait for recovery. */
+    private workflowExecutorFailures = new Map<string, Set<WorkflowToolBarrier>>();
     /** Only application-supplied tools; resolved registry/platform handlers are never cached as inputs. */
     private sessionApplicationTools = new Map<string, Tool<any>[]>();
     /** One authorized agent snapshot per turn, also used by dynamic prompt callbacks. */
@@ -860,6 +1000,8 @@ export class SessionManager {
     /** Duroxide client used by tuner-only inspect tools. */
     private _duroxideClient: any = null;
     private _refreshModelProviders: (() => Promise<void>) | null = null;
+    /** The last provider-registry refresh failed (setModelProviders `unavailable`). */
+    private _modelListUnavailable = false;
     /** Lineage lookup for ancestor/descendant facts access. */
     private _getLineageSessionIds: ((sessionId: string) => Promise<string[]>) | null = null;
     /** Per-session critical sections; protects the SDK session handle and local session.db. */
@@ -889,6 +1031,8 @@ export class SessionManager {
      * it is absent rather than failing a turn.
      */
     artifactStore: import("./session-store.js").ArtifactStore | null = null;
+    /** Whether this worker runs workflow scripts; set by the worker at start. */
+    workflowScriptsEnabled = false;
 
     /** Store full config (with tools/hooks) for a session. Called by PilotSwarmClient. */
     setConfig(sessionId: string, config: ManagedSessionConfig): void {
@@ -939,6 +1083,7 @@ export class SessionManager {
         }
         const normalized = this.normalizeModelRef(ref, options);
         if (!normalized) {
+            if (this._modelListUnavailable) throw new ModelListUnavailableError();
             throw new Error(`Unknown model "${ref}". Call list_available_models and choose an exact provider:model value.`);
         }
         return normalized;
@@ -955,6 +1100,8 @@ export class SessionManager {
 
         const ref = model || registry.defaultModel;
         if (!ref) {
+            // A failed refresh leaves no providers and no default: say that, not that the model is unknown (FU-10 keeps it closed).
+            if (this._modelListUnavailable) throw new ModelListUnavailableError();
             if (model) {
                 throw new Error(
                     `Unknown model "${model}". Call list_available_models and choose an exact configured provider:model value.`,
@@ -967,6 +1114,7 @@ export class SessionManager {
 
         const normalized = registry.normalize(ref);
         if (!normalized) {
+            if (this._modelListUnavailable) throw new ModelListUnavailableError();
             throw new Error(
                 `Unknown model "${ref}". Call list_available_models and choose an exact configured provider:model value.`,
             );
@@ -1218,8 +1366,18 @@ export class SessionManager {
      * live warm sessions keep their bound client until their next
      * getOrCreate re-resolves.
      */
-    setModelProviders(registry: import("./model-providers.js").ModelProviderRegistry | null): void {
+    setModelProviders(registry: import("./model-providers.js").ModelProviderRegistry | null, options?: { unavailable?: boolean }): void {
         this.workerDefaults.modelProviders = registry ?? undefined;
+        this._modelListUnavailable = options?.unavailable === true;
+    }
+
+    /**
+     * Whether the last provider-registry refresh failed (the worker then set a registry with no providers, so a turn fails
+     * closed; FU-10). While it is, a model that does not resolve is reported as the model list not loaded, retryably,
+     * instead of an unknown model.
+     */
+    get modelListUnavailable(): boolean {
+        return this._modelListUnavailable;
     }
 
     setModelProvidersRefresher(refresh: (() => Promise<void>) | null): void {
@@ -1853,7 +2011,7 @@ export class SessionManager {
     async getOrCreate(
         sessionId: string,
         serializableConfig: SerializableSessionConfig,
-        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean },
+        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean; workflowTools?: WorkflowToolBinding },
     ): Promise<ManagedSession> {
         if (!options?.lockHeld) {
             return this._withSessionLock(
@@ -1869,9 +2027,15 @@ export class SessionManager {
     private async _getOrCreateUnlocked(
         sessionId: string,
         serializableConfig: SerializableSessionConfig,
-        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean },
+        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean; workflowTools?: WorkflowToolBinding },
     ): Promise<ManagedSession> {
         this.sessionLastTouchedAt.set(sessionId, Date.now());
+        // Workflow package pins (R18, INACTIVE: only a workflow agent state's child is bound so): the exact earlier package
+        // revision this session runs is installed here before its copy is resolved. One that cannot be served leaves the
+        // binding unresolved, and the session fails as any unavailable bound package does.
+        if (isPinnedAgentPackageId(serializableConfig.boundAgentPackageId)) {
+            await this.workerDefaults.ensurePinnedAgentPackageRevision?.(serializableConfig.boundAgentPackageId!);
+        }
         const turnIndex = options?.turnIndex;
         const trace = options?.trace;
         const transcriptEpoch = options?.transcriptEpoch ?? 0;
@@ -1968,7 +2132,7 @@ export class SessionManager {
         // attach result the stored config still holds from an earlier turn
         // must not survive a clear.
         if (!effectiveSerializableConfig.workspace) delete config.workspace;
-        for (const key of ["workspaceAttach", "workspaceToolsBlocked", "workspaceCleared"] as const) {
+        for (const key of ["workspaceAttach", "workspaceToolsBlocked", "workspaceCleared", "workflowMilestoneTurn", "workflowAgentChild", "workflowInsideWorkflow"] as const) {
             if (!(effectiveSerializableConfig as ManagedSessionConfig)[key]) delete config[key];
         }
         // Section 4.11: with no record, a turn still attaches the deployment's
@@ -2210,95 +2374,32 @@ export class SessionManager {
             ...(workspaceTools ? { workspaceTools: true } : {}),
         }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
-        const subAgentTools = ManagedSession.subAgentToolDefs(workspaceTools ? { workspaceTools: true } : undefined)
-            .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name));
-        const factTools = createFactTools({
-            factStore: this.factStore,
-            reservedFactPrefixes: this.workerDefaults?.reservedFactPrefixes ?? null,
-            getLineageSessionIds: this._getLineageSessionIds ?? undefined,
+        // Workflow v2 (INACTIVE): a turn of a worker that runs controller 1.9.0 is declared the milestone's workflow tools and
+        // respond_session_request, and an agent state's own child complete_workflow_node, as the turn's handlers take them.
+        // A session inside a Workflow is declared no definition tools (Workflow Simplified A1).
+        const subAgentTools = ManagedSession.subAgentToolDefs({
+            ...(workspaceTools ? { workspaceTools: true } : {}),
+            ...(config.workflowMilestoneTurn === true ? { workflowMilestone: true } : {}),
+            ...(config.workflowAgentChild === true ? { workflowAgentChild: true } : {}),
+            ...(config.workflowInsideWorkflow === true ? { workflowInsideWorkflow: true } : {}),
+        })
+            .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name))
+            // Declared only where it can work: a worker with workflow scripts
+            // off would refuse every call, so the model is not shown it.
+            .filter((tool: any) => !["spawn_workflow", "update_workflow", "read_workflow", "send_workflow_input"].includes(tool.name) || this.workflowScriptsEnabled);
+        const factTools = this._createSessionFactTools({
             agentIdentity: effectiveSerializableConfig.agentIdentity,
-            // bulk_store_facts reads its records from (and writes its failure
-            // artifact to) the artifact store, so fact bytes never ride the
-            // model's context.
-            artifactStore: this.artifactStore ?? null,
             isCrawler: effectiveSerializableConfig.isCrawler === true || effectiveSerializableConfig.isHarvester === true,
-            // Enhanced tools light up only when the store is an EnhancedFactStore.
-            // Pass it when EITHER capability is present: search powers
-            // facts_search / facts_similar / search_skills; embedder powers the
-            // facts-manager-only `manage_embedder` control tool. The tools
-            // themselves gate on the specific capability they need.
-            enhancedFactStore: isEnhancedFactStore(this.factStore)
-                && (this.factStore.capabilities.search || this.factStore.capabilities.embedder)
-                ? this.factStore
-                : undefined,
-            recordEvent: this.sessionCatalog
-                ? async (sid, eventType, data) => {
-                    try {
-                        await this.sessionCatalog!.recordEvents(sid, [{ eventType, data }]);
-                    } catch {
-                        // Best-effort — never fail a tool call on telemetry errors.
-                    }
-                }
-                : undefined,
-            onSharedIntakeFactStored: this.sessionCatalog && this._duroxideClient
-                ? async ({ key, sourceSessionId, agentId }) => {
-                    try {
-                        const sessions = await this.sessionCatalog!.listSessions();
-                        const factsManager = sessions.find((session) => session.agentId === "facts-manager" && session.state !== "failed" && session.state !== "cancelled");
-                        if (!factsManager) return;
-                        const payload = {
-                            type: "facts.intake_written",
-                            key,
-                            sourceSessionId,
-                            agentId,
-                            createdAt: new Date().toISOString(),
-                        };
-                        await this._duroxideClient.enqueueEvent(
-                            `session-${factsManager.sessionId}`,
-                            "messages",
-                            JSON.stringify({ prompt: `[FACTS_INTAKE ${JSON.stringify(payload)}]` }),
-                        );
-                    } catch {
-                        // Best-effort wake-up; the 6h maintenance pass is the fallback.
-                    }
-                }
-                : undefined,
-            }).filter((tool: any) => !isTunerSession || tool.name === "read_facts" || tool.name === "facts_search" || tool.name === "facts_similar" || tool.name === "search_skills");
+        }).filter((tool: any) => !isTunerSession || tool.name === "read_facts" || tool.name === "facts_search" || tool.name === "facts_similar" || tool.name === "search_skills");
         // Graph tools (07 P4) — registered ONLY when a graph store is configured.
         // Reader tools AND graph write/delete go to every session (so any agent
         // can incorporate into the SHARED graph) EXCEPT the read-only agent-tuner;
         // the crawl queue stays app-crawler-role + facts-manager only; graph_stats
         // to facts-manager + agent-tuner. Tuner never gets a mutating tool.
-        const graphTools = this.graphStore
-            ? createGraphTools({
-                graphStore: this.graphStore,
-                factStore: this.factStore,
-                reservedFactPrefixes: this.workerDefaults?.reservedFactPrefixes ?? null,
-                agentIdentity: effectiveSerializableConfig.agentIdentity,
-                isCrawler: effectiveSerializableConfig.isCrawler === true || effectiveSerializableConfig.isHarvester === true,
-                agentId: effectiveSerializableConfig.agentIdentity,
-                // Graph reads use the SAME lineage visibility as read_facts. The
-                // tuner branch inside createGraphTools forces unrestricted; for
-                // everyone else this resolves their granted lineage sessions.
-                resolveAccess: this._getLineageSessionIds
-                    ? async (sessionId: string | undefined) => {
-                        if (!sessionId) return { readerSessionId: null, grantedSessionIds: [] };
-                        const raw = await this._getLineageSessionIds!(sessionId);
-                        const granted = [...new Set((raw || []).filter((sid) => Boolean(sid) && sid !== sessionId))];
-                        return { readerSessionId: sessionId, grantedSessionIds: granted };
-                    }
-                    : undefined,
-                recordEvent: this.sessionCatalog
-                    ? async (sid, eventType, data) => {
-                        try {
-                            await this.sessionCatalog!.recordEvents(sid, [{ eventType, data }]);
-                        } catch {
-                            // Best-effort telemetry.
-                        }
-                    }
-                    : undefined,
-            })
-            : [];
+        const graphTools = this._createSessionGraphTools({
+            agentIdentity: effectiveSerializableConfig.agentIdentity,
+            isCrawler: effectiveSerializableConfig.isCrawler === true || effectiveSerializableConfig.isHarvester === true,
+        });
         const inspectTools = this.sessionCatalog
             ? createInspectTools({
                 catalog: this.sessionCatalog,
@@ -2411,7 +2512,7 @@ export class SessionManager {
             packageScope: boundAgentCopy.packageScope,
         } : null;
         const readState = async (): Promise<CapabilityState> => this.sessionCatalog?.getSessionCapabilities
-            ? this.sessionCatalog.getSessionCapabilities(sessionId) : { revision: 0, selections: [] };
+            ? this.sessionCatalog.getSessionCapabilities(options?.workflowTools?.parentSessionId ?? sessionId) : { revision: 0, selections: [] };
         const getOwner = async () => this.sessionCatalog
             ? resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), sessionId)
             : null;
@@ -2420,9 +2521,9 @@ export class SessionManager {
         // Capability persistence exists only with a catalog, so do not add
         // otherwise-useless async boundaries to standalone managers.
         const capabilityOwner = this.sessionCatalog ? await getOwner() : null;
-        const desiredCapabilities = this.sessionCatalog?.getSessionCapabilities
+        const desiredCapabilities = options?.workflowTools?.capabilities ?? (this.sessionCatalog?.getSessionCapabilities
             ? await readState()
-            : { revision: 0, selections: [] };
+            : { revision: 0, selections: [] });
         const attached = isServiceSession || isTunerSession ? { tools: [], mcpServers: {}, unavailable: [], fingerprint: "" }
             : bindCapabilities(getSources(), capabilityOwner, desiredCapabilities.selections, originalTools, originalMcp, capabilityAgent);
         const attachedTools = attached.tools.map(tool => {
@@ -2532,7 +2633,7 @@ export class SessionManager {
             ...unlessService(providerTools),
             ...unlessService(featureTools),
             ...unlessService(motdTools),
-        ];
+        ].filter(tool => !options?.workflowTools || !isWorkflowControlTool(tool.name));
         config.tools = persistentSessionTools;
         const nativeTaskAccess = nativeEnabled && boundAgentCopy?.nativeTaskTools
             ? new NativeTaskAccess(boundAgentCopy.nativeTaskTools, allTools,
@@ -2566,6 +2667,8 @@ export class SessionManager {
         const excludedTools = [...new Set([
             ...(nativeEnabled ? NATIVE_EXCLUDED_TOOLS : ["task"]),
             ...(config.excludedTools ?? []),
+            // A1 for every registry (review SF-2): inside a Workflow, no MCP server's spawn_workflow or update_workflow.
+            ...(config.workflowInsideWorkflow === true ? workflowDefinitionMcpToolFilters(Object.keys(effectiveMcpServers)) : []),
         ])];
         // A child of a system session can be non-system yet retain the system
         // principal; use the same filtered owner as the V2 index and catalog.
@@ -2703,7 +2806,17 @@ export class SessionManager {
                     noteRequested: () => this.sessions.get(sessionId)?.noteWorkspaceChangeRequested(),
                 } : null,
             ),
-            onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
+            // Workflow v2 real-agent test runs (INACTIVE: only on a worker that runs controller 1.9.0): a session whose turn ran
+            // under such a test refuses MCP tools, which cannot be intercepted; its other requests go to its handler unchanged.
+            // Every other session gets its handler as it is.
+            // A session inside a Workflow is refused any MCP tool named as a definition tool, however it was offered (review SF-2).
+            onPermissionRequest: (() => {
+                const handler = (config as any).onPermissionRequest ?? approvePermissionForSession;
+                const base = config.workflowInsideWorkflow === true ? workflowDefinitionMcpPermission(handler) : handler;
+                return config.workflowMilestoneTurn === true
+                    ? workflowTestPermission(base, () => this.sessions.get(sessionId)?.workflowTestSessionActive() === true)
+                    : base;
+            })(),
             infiniteSessions: { enabled: true },
             // Enable token-level streaming so the catch-all event handler in
             // ManagedSession sees `assistant.message_delta` /
@@ -2732,7 +2845,36 @@ export class SessionManager {
             ...(sessionSkillDirectories.length && { skillDirectories: sessionSkillDirectories }),
             ...(!nativeEnabled && this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
             ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
+            ...(options?.workflowTools ? {
+                availableTools: options.workflowTools.tools.map(tool => tool.namespacedName ?? tool.name),
+                excludedTools: [...new Set([...excludedTools, ...options.workflowTools.excludedTools, "task", "wait"])],
+                skillDirectories: [],
+                customAgents: [],
+                enableFileHooks: false,
+                skipCustomInstructions: true,
+                infiniteSessions: { enabled: false },
+                onPermissionRequest: workflowToolPermission,
+            } : {}),
         };
+        // What a workflow this session starts inherits (captureWorkflowToolBinding). Recorded here for the warm path and
+        // again once a new ManagedSession is stored below: the turn-0 reset, the epoch start and a rebind (a model or
+        // effort switch, a capability selection such as use_package) forget the warm session and this record with it.
+        const workflowParentConfig = {
+            model: effectiveModel,
+            reasoningEffort: config.reasoningEffort,
+            contextTier: config.contextTier,
+            workspace: config.workspace ? structuredClone(config.workspace) : undefined,
+            workingDirectory: config.workspace ? undefined : sessionConfig.workingDirectory,
+            boundAgentName: config.boundAgentName,
+            boundAgentPackageId: config.boundAgentPackageId,
+            boundAgentSource: config.boundAgentSource,
+            namedAgentToolAdditions: config.namedAgentToolAdditions,
+            detachedPackageToolPolicy: config.detachedPackageToolPolicy,
+            toolNames: effectiveSerializableConfig.toolNames ? [...effectiveSerializableConfig.toolNames] : undefined,
+            agentIdentity: config.agentIdentity,
+            excludedTools: [...excludedTools],
+        };
+        this.workflowParentConfigs.set(sessionId, workflowParentConfig);
 
         let copilotSession: CopilotSession;
 
@@ -2897,6 +3039,7 @@ export class SessionManager {
             agentId: effectiveSerializableConfig.agentIdentity ?? null,
         }));
         this.sessions.set(sessionId, managed);
+        this.workflowParentConfigs.set(sessionId, workflowParentConfig);
         this.sessionAgentCopies.set(sessionId, boundAgentCopy);
         this.sessionBindingFingerprints.set(sessionId, bindingFingerprint);
         const promptLayers = buildEffectivePromptLayers(this.workerDefaults, config, sessionOwnerKey, boundAgentCopy ?? null);
@@ -2922,6 +3065,7 @@ export class SessionManager {
     /** Release snapshots with their SDK handle; application tools survive ordinary hydration. */
     private _forgetWarmSession(sessionId: string): void {
         this.sessions.delete(sessionId);
+        this.workflowParentConfigs.delete(sessionId);
         this.sessionAgentCopies.delete(sessionId);
         this.sessionBindingFingerprints.delete(sessionId);
     }
@@ -3452,11 +3596,15 @@ export class SessionManager {
         }
         const session = this.sessions.get(sessionId);
         if (!session) return;
-        await this._cancelWorkspaceShells(sessionId, session, "an invalidation");
+        // Review RT-F1-L1: an invalidated handle is forgotten whatever fails on the way, so it is never reused.
         try {
-            await session.destroy();
-        } catch {}
-        this._forgetWarmSession(sessionId);
+            await this._cancelWorkspaceShells(sessionId, session, "an invalidation");
+            try {
+                await session.destroy();
+            } catch {}
+        } finally {
+            this._forgetWarmSession(sessionId);
+        }
     }
 
     /**
@@ -3489,8 +3637,39 @@ export class SessionManager {
         return [...this.sessions.keys()];
     }
 
+    /** A worker start (E1-R4): workflow tools are available again, to openings made from now on. */
+    startWorkflowTools(): void {
+        this.workflowToolsClosing = false;
+        // E1b-R3: a barrier raised in an earlier generation, with none of its work still running, is lifted; that
+        // generation's clients were stopped with it.
+        for (const [sessionId, causes] of [...this.workflowExecutorFailures]) {
+            for (const cause of [...causes]) {
+                if (cause.lease.generation < this.workflowToolGeneration && cause.lease.pending === 0) {
+                    causes.delete(cause);
+                    emitSessionManagerTrace(sessionId, `workflow tools recovered at a worker start: ${cause.error.message}`);
+                }
+            }
+            if (causes.size === 0) this.workflowExecutorFailures.delete(sessionId);
+        }
+    }
+
     /** Final worker cleanup, after the durable runtime has drained. */
     async shutdown(): Promise<void> {
+        // An opening, waiting or setting up, takes nothing after this (M-08, E1-R4). The open executors are closed as this
+        // generation's, so their teardowns still release their folders; then a new generation begins (E1b-R1), and any
+        // work of this one that ends later touches only its own handles.
+        this.workflowToolsClosing = true;
+        const cleanup = await Promise.allSettled([...this.workflowExecutors]
+            .map(executor => withWorkspaceDeadline(executor.close(), "workflow cleanup")));
+        for (const result of cleanup) {
+            if (result.status === "rejected") {
+                console.warn(`[SessionManager] Workflow cleanup failed; stopping its Copilot client: ${normalizeError(result.reason).message}`);
+            }
+        }
+        this.workflowToolGeneration += 1;
+        this.workflowToolShares.clear();
+        // An earlier generation's teardowns never hold back a later generation's shares.
+        this.workflowToolTeardowns.clear();
         this.unsubscribeFeatureFlags?.();
         this.unsubscribeFeatureFlags = null;
         // CopilotClient.stop owns session detachment. Detaching each session
@@ -3527,6 +3706,585 @@ export class SessionManager {
                 if (timer) clearTimeout(timer);
             }
         }));
+    }
+
+    /**
+     * The tools a script in a workflow session may call, by name, bound to
+     * that session.
+     *
+     * The set is the data-plane tools a generic agent session has: the
+     * deployment's default worker tools (base and app default agents), the
+     * fact tools, the graph tools when a graph store is configured, the
+     * session tools (list_sessions, send_session_message,
+     * reply_session_message) and the generic inspect tools
+     * (read_agent_events and the usage reads). MCP servers are separate:
+     * see scriptMcpServers.
+     * Every handler sees the workflow session as its caller, exactly as it
+     * sees an agent session, so fact visibility, artifacts and provenance
+     * follow the workflow session and its spawn tree. Turn-control tools
+     * (wait, cron, spawn_agent, ask_user, canvas and the like) are not part
+     * of it: a script has no conversation turn for them to act on. Package
+     * tools are left out because they belong to a bound named agent.
+     */
+    async captureWorkflowToolBinding(parentSessionId: string): Promise<WorkflowToolBinding> {
+        const managed = this.sessions.get(parentSessionId);
+        const config = this.workflowParentConfigs.get(parentSessionId);
+        const fullConfig = this.sessionConfigs.get(parentSessionId);
+        if (!managed || !config || !this.sessionCatalog) throw workflowParentContextUnavailable();
+        if (fullConfig?.hooks || (fullConfig && "onPermissionRequest" in fullConfig)) {
+            throw new Error("This parent's in-memory tool policy cannot be delegated durably.");
+        }
+        if (this.sessionApplicationTools.get(parentSessionId)?.length) {
+            throw new Error("In-memory application tools must be registered before they can be delegated to a workflow.");
+        }
+        const parent = await this.sessionCatalog.getSession(parentSessionId);
+        const owner = await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), parentSessionId);
+        if (!parent || parent.deletedAt || parent.isSystem || !owner) throw new Error("Workflow tool delegation requires an owned, non-system parent.");
+        const cli = managed.getWorkflowToolSession();
+        await cli.rpc.tools.initializeAndValidate();
+        const metadata = await cli.rpc.tools.getCurrentMetadata();
+        if (!metadata.tools) throw new Error("The parent's Copilot tool catalog is not initialized.");
+        const excludedTools = [...(config.excludedTools ?? [])];
+        const tools = captureWorkflowTools(metadata.tools, excludedTools);
+        const capabilities = this.sessionCatalog.getSessionCapabilities
+            ? await this.sessionCatalog.getSessionCapabilities(parentSessionId)
+            : { revision: 0, selections: [] };
+        const sources = this.workerDefaults.getCapabilitySources?.() ?? [];
+        const sourceRevisions = Object.fromEntries(sources.filter(source =>
+            source.packageId === config.boundAgentPackageId
+            || capabilities.selections.some(selection => selection.sourceId === source.id)
+            || tools.some(tool => source.tools.has(tool.name)
+                || Boolean(tool.mcpServerName && source.mcpServers[tool.mcpServerName])))
+            .map(source => [source.id, source.revision]));
+        return {
+            policy: WORKFLOW_TOOL_POLICY, parentSessionId, owner,
+            config: structuredClone(config), capabilities: structuredClone(capabilities), tools, sourceRevisions,
+            excludedTools,
+            boundAgentFingerprint: this.workflowAgentFingerprint(config, owner),
+        };
+    }
+
+    private workflowAgentFingerprint(config: SerializableSessionConfig, owner: import("./types.js").SessionOwnerInfo): string {
+        const copy = resolveBoundAgentCopy(this.workerDefaults, config, agentOwnerKey(owner));
+        return capabilityHash(copy ? { packageId: copy.packageId, toolNames: copy.toolNames, descriptor: copy.descriptor, prompt: copy.prompt }
+            : { boundAgentName: config.boundAgentName ?? null });
+    }
+
+    private async authorizeWorkflowTools(sessionId: string, binding: WorkflowToolBinding): Promise<void> {
+        if (!this.sessionCatalog || binding.policy !== WORKFLOW_TOOL_POLICY) throw new Error("Workflow tool policy is unavailable.");
+        const [child, parent] = await Promise.all([
+            this.sessionCatalog.getSession(sessionId), this.sessionCatalog.getSession(binding.parentSessionId),
+        ]);
+        if (!child || child.deletedAt || child.parentSessionId !== binding.parentSessionId || child.sessionKind !== "workflow"
+            || !parent || parent.deletedAt || parent.isSystem
+            || ["completed", "failed", "cancelled"].includes(parent.state ?? "")) {
+            throw new Error("Workflow parent authority is no longer available.");
+        }
+        const owner = await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), sessionId);
+        if (owner?.provider !== binding.owner.provider || owner?.subject !== binding.owner.subject) throw new Error("Workflow owner changed.");
+        if (this.workflowAgentFingerprint(binding.config, owner) !== binding.boundAgentFingerprint) {
+            throw new Error("The parent's bound tool package changed after workflow admission.");
+        }
+        const current = this.sessionCatalog.getSessionCapabilities
+            ? await this.sessionCatalog.getSessionCapabilities(binding.parentSessionId) : { revision: 0, selections: [] };
+        for (const grant of binding.capabilities.selections) {
+            const live = current.selections.find(selection => selection.sourceId === grant.sourceId);
+            if (!live || grant.tools.some(name => !live.tools.includes(name))
+                || grant.mcpServers.some(name => !live.mcpServers.includes(name))) {
+                throw new Error("A captured parent tool capability was revoked.");
+            }
+        }
+        const sources = this.workerDefaults.getCapabilitySources?.() ?? [];
+        for (const [id, revision] of Object.entries(binding.sourceRevisions)) {
+            const source = sources.find(item => item.id === id);
+            if (!source || source.revision !== revision) throw new Error("A captured tool source changed or was removed.");
+        }
+    }
+
+    /**
+     * A workflow script state's tool executor (adversarial review RT-2 and its verifications, VR-1..3, E1b and E1c).
+     * Each state (each parallel branch included) gets its own executor; the executors of one workflow session share one
+     * native tool session, because the native session belongs to the workflow's session id (its lock, configuration,
+     * workspace hold and background tasks). Their tool calls run one at a time, so parallel branches stay live: a
+     * branch that waits for a sibling's tool call is not blocked for the sibling's whole script.
+     * - The share is reserved before anything is awaited; a new share waits for the previous one's teardown, and a
+     *   failure barrier blocks it (VR-2).
+     * - The owner's authorization, the setup and the executor's tool catalog check each have a deadline, and the
+     *   script's end stops the authorization at once (E1-R2). A late setup or catalog check raises the barrier; when it
+     *   ends and what it made is cleaned up, it lifts its own barrier (E1b-R3).
+     * - `signal`: the script ended; an opening stops waiting, takes nothing, and an executor made too late is never
+     *   handed out (E1-R3). The same holds when the worker is shutting down, or for an opening of an earlier worker
+     *   generation (E1-R4).
+     * - A call is checked when its turn comes, after its authorization and again just before it runs: its executor
+     *   open, its script running, no barrier, no shutdown (VR-1, E1b-R2).
+     * - An executor's close aborts the native session only while its own call runs, waits for that call, then stops the
+     *   background tasks its own calls started (by task id; by start time only for a task no call claimed) while others
+     *   still hold the share (VR-3); the last close tears the whole session down. A cancel that leaves work running
+     *   raises the barrier.
+     * - Only the share's lease, while it holds the session in the current generation, removes the warm handle,
+     *   releases the folders or raises the barrier (E1b-R1).
+     */
+    async openWorkflowToolExecutor(sessionId: string, binding: WorkflowToolBinding, step: number, options: { signal?: AbortSignal } = {})
+        : Promise<WorkflowToolExecutor> {
+        const generation = this.workflowToolGeneration;
+        const deadline = this.workflowToolSetupDeadlineMs;
+        /** What blocks every owner of the workflow's tools: a failure that needs recovery, or a worker shutting down. */
+        const refuseIfShut = (): void => {
+            const causes = this.workflowExecutorFailures.get(sessionId);
+            if (causes && causes.size > 0) throw new Error(`Workflow executor requires recovery: ${[...causes][0].error.message}`);
+            if (this.workflowToolsClosing || this.workflowToolGeneration !== generation) {
+                throw new Error("The worker is shutting down; workflow tools are unavailable.");
+            }
+        };
+        const refuseIfBlocked = (): void => {
+            refuseIfShut();
+            if (options.signal?.aborted) throw new Error("The script ended before its workflow tools were available.");
+        };
+        /** The owner's authority, within the phase deadline, and stopped at once by the script's end (E1-R2). */
+        const authorize = (stopped: string): Promise<void> => untilAborted(
+            withinDeadline(this.authorizeWorkflowTools(sessionId, binding), "workflow authorization", deadline, () => undefined), options.signal, stopped);
+        refuseIfBlocked();
+        const bindingKey = workflowToolBindingKey(binding);
+        let share = this.workflowToolShares.get(sessionId);
+        if (share && share.bindingKey !== bindingKey) throw new Error("A workflow tool executor with other tools is already active.");
+        if (!share) {
+            const previous = this.workflowToolTeardowns.get(sessionId) ?? Promise.resolve();
+            const created: WorkflowToolShare = {
+                bindingKey, owners: 0, tail: Promise.resolve(), ready: null as unknown as Promise<WorkflowToolSessionReady>,
+                lease: { generation, pending: 0 }, late: false, taskOwners: new Map<string, object>(),
+            };
+            created.ready = (async () => {
+                await previous.catch(() => undefined);
+                // VR-2: the previous share's teardown may have failed while this one waited for it.
+                refuseIfShut();
+                // E1b-R1: this share's lease holds the session from its setup on.
+                this.workflowToolHolders.set(sessionId, created.lease);
+                return await this.setUpWorkflowToolShare(sessionId, binding, step, created);
+            })();
+            created.ready.catch(() => undefined);
+            this.workflowToolShares.set(sessionId, created);
+            share = created;
+        }
+        // Reserved before anything is awaited, so no other owner's close can tear the share down under this one.
+        share.owners += 1;
+        const owned = share;
+        /** This owner, for the background tasks its calls start (VR-3). */
+        const me: object = {};
+        let ready: WorkflowToolSessionReady;
+        try {
+            await authorize("The script ended before its workflow tools were available.");
+            ready = await untilAborted(owned.ready, options.signal);
+            refuseIfBlocked();
+        } catch (error) {
+            // Its reservation is released now; a teardown this starts goes on without it (a later share waits for it).
+            void this.releaseWorkflowToolShare(sessionId, owned).catch(() => undefined);
+            throw error;
+        }
+        // This owner's tool calls, each in its turn on the share. The tasks running after a call that were not running
+        // before it are that call's (calls never overlap); each call's time window [since, until) is kept for a task no
+        // listing caught (VR-3).
+        const windows: Array<{ since: number; until: number }> = [];
+        let released = false;
+        const serially = <T>(run: () => Promise<T>): Promise<T> => workflowToolShareSerially(owned, async () => {
+            const before = await this.workflowTaskIds(ready.managed);
+            const since = Date.now();
+            try {
+                return await run();
+            } finally {
+                windows.push({ since, until: Date.now() });
+                const after = await this.workflowTaskIds(ready.managed);
+                const mine = new Set<string>();
+                if (before && after) {
+                    for (const id of after) {
+                        if (!before.has(id) && !owned.taskOwners.has(id)) {
+                            owned.taskOwners.set(id, me);
+                            mine.add(id);
+                        }
+                    }
+                }
+                // E1c-R2: a task assigned to an owner that was already disposed is cancelled at once.
+                if (released && mine.size > 0) {
+                    try {
+                        await withWorkspaceDeadline(ready.managed.cancelBackgroundTasks({ select: task => mine.has(task.id) }), "workflow task cancel");
+                    } catch (error) {
+                        this.raiseWorkflowBarrier(sessionId, owned.lease, normalizeError(error));
+                    }
+                }
+            }
+        });
+        /** A task this owner's calls started: claimed by id, or else started within one of its calls. */
+        const startedByMe = (task: { id: string; startedAt?: unknown }): boolean => {
+            const owner = owned.taskOwners.get(task.id);
+            if (owner !== undefined) return owner === me;
+            const at = typeof task.startedAt === "string" ? Date.parse(task.startedAt)
+                : typeof task.startedAt === "number" ? task.startedAt : Number.NaN;
+            return Number.isFinite(at) && windows.some(window => at >= window.since && at < window.until);
+        };
+        let executor: WorkflowToolExecutor | undefined;
+        const dispose = async ({ settled }: { settled: boolean } = { settled: true }): Promise<void> => {
+            if (released) return;
+            released = true;
+            if (executor) this.workflowExecutors.delete(executor);
+            try {
+                // Its own call did not end after its abort: the shared session may still be running it.
+                if (!settled) this.raiseWorkflowBarrier(sessionId, owned.lease, new Error("A workflow tool call did not end after it was aborted."));
+                // While others hold the share, stop only the background tasks this owner's calls started (VR-3).
+                if (owned.owners > 1 && windows.length > 0) {
+                    try {
+                        await withWorkspaceDeadline(ready.managed.cancelBackgroundTasks({ select: startedByMe }), "workflow task cancel");
+                    } catch (error) {
+                        const failure = normalizeError(error);
+                        this.raiseWorkflowBarrier(sessionId, owned.lease, failure);
+                        throw failure;
+                    }
+                }
+            } finally {
+                await this.releaseWorkflowToolShare(sessionId, owned);
+            }
+        };
+        try {
+            executor = await withinDeadline(createWorkflowToolExecutor({
+                session: ready.managed.getWorkflowToolSession(), grants: binding.tools,
+                excludedTools: binding.excludedTools,
+                // Each call in its turn: its authority, bounded and stopped by the script's end, then the shared checks
+                // after it and just before it runs (E1b-R2).
+                authorize: () => authorize("The script ended; its workflow tool call did not run."), check: refuseIfShut, dispose, serially,
+                ...(options.signal ? { signal: options.signal } : {}),
+                invocationPrefix: `${sessionId}/${step}/${randomUUID()}`,
+            }), "workflow tool catalog check", deadline, late => this.lateWorkflowWork(sessionId, owned.lease,
+                "A workflow tool catalog check did not finish in time.", late.then(() => undefined, () => undefined)));
+            // E1-R3: made after the script ended or the worker began to shut down: it is never handed out.
+            refuseIfBlocked();
+        } catch (error) {
+            await dispose().catch(() => undefined);
+            throw error;
+        }
+        this.workflowExecutors.add(executor);
+        return executor;
+    }
+
+    /** The ids of a native session's running background tasks, or null when they cannot be listed in time (VR-3). */
+    private async workflowTaskIds(managed: ManagedSession): Promise<Set<string> | null> {
+        try {
+            const tasks = await withWorkspaceDeadline(managed.activeBackgroundTasks(), "workflow task list", WORKFLOW_TOOL_TASK_LIST_MS);
+            return new Set(tasks.map(task => task.id));
+        } catch {
+            return null;
+        }
+    }
+
+    /** Whether `lease` holds the workflow session's native tool session in the current generation (E1b-R1). */
+    private holdsWorkflowTools(sessionId: string, lease: WorkflowToolLease): boolean {
+        return this.workflowToolHolders.get(sessionId) === lease && lease.generation === this.workflowToolGeneration;
+    }
+
+    /**
+     * Add a cause to a session's failure barrier, only for the lease that holds the session (E1b-R1); returns the cause.
+     * A cause never replaces or lifts another (E1c-R1).
+     */
+    private raiseWorkflowBarrier(sessionId: string, lease: WorkflowToolLease, error: Error): WorkflowToolBarrier | null {
+        if (!this.holdsWorkflowTools(sessionId, lease)) return null;
+        const cause: WorkflowToolBarrier = { error, lease };
+        let causes = this.workflowExecutorFailures.get(sessionId);
+        if (!causes) {
+            causes = new Set<WorkflowToolBarrier>();
+            this.workflowExecutorFailures.set(sessionId, causes);
+        }
+        causes.add(cause);
+        return cause;
+    }
+
+    /** Lift one cause of a session's barrier (E1b-R3, E1c-R1): the barrier stays up while any other cause is there. */
+    private liftWorkflowBarrier(sessionId: string, cause: WorkflowToolBarrier | null, why: string): void {
+        const causes = this.workflowExecutorFailures.get(sessionId);
+        if (cause === null || !causes || !causes.delete(cause)) return;
+        if (causes.size === 0) this.workflowExecutorFailures.delete(sessionId);
+        emitSessionManagerTrace(sessionId, `workflow tools: a cause lifted: ${why} (${cause.error.message})`);
+    }
+
+    /**
+     * Work of a lease that outlived its deadline (E1-R2, E1b-R3): the barrier is raised now; when `cleaned` resolves
+     * (the work ended and what it made is cleaned up), that barrier is lifted, if it is still the one raised.
+     */
+    private lateWorkflowWork(sessionId: string, lease: WorkflowToolLease, message: string, cleaned: Promise<void>): void {
+        const barrier = this.raiseWorkflowBarrier(sessionId, lease, new Error(message));
+        lease.pending += 1;
+        void cleaned
+            .then(() => this.liftWorkflowBarrier(sessionId, barrier, "its late work ended and was cleaned up"), () => undefined)
+            .finally(() => { lease.pending -= 1; });
+    }
+
+    /** The native tool session of a workflow's share, set up within its deadline (E1-R2). */
+    private setUpWorkflowToolShare(sessionId: string, binding: WorkflowToolBinding, step: number, share: WorkflowToolShare)
+        : Promise<WorkflowToolSessionReady> {
+        return withinDeadline(this.setUpWorkflowToolSession(sessionId, binding, step, share.lease), "workflow tool setup", this.workflowToolSetupDeadlineMs,
+            late => {
+                // A late setup may leave a native session or a folder hold behind: the workflow's tools wait for recovery,
+                // and what it made is torn down when it ends (a setup that fails cleans up after itself).
+                share.late = true;
+                this.lateWorkflowWork(sessionId, share.lease, "A workflow tool setup did not finish in time.",
+                    late.then(ready => this.tearDownWorkflowToolSession(sessionId, ready.managed, ready.workerNodeId, share.lease), () => undefined));
+            });
+    }
+
+    /** One owner of a share closes; the last one tears the native session down, and a later share waits for that. */
+    private async releaseWorkflowToolShare(sessionId: string, share: WorkflowToolShare): Promise<void> {
+        share.owners -= 1;
+        if (share.owners > 0) return;
+        if (this.workflowToolShares.get(sessionId) === share) this.workflowToolShares.delete(sessionId);
+        const teardown = (async () => {
+            const ready = await share.ready.catch(() => null);
+            // A late setup's session is torn down by its own end (setUpWorkflowToolShare).
+            if (ready) await this.tearDownWorkflowToolSession(sessionId, ready.managed, ready.workerNodeId, share.lease);
+        })();
+        // Only a share of the current generation holds back the next one.
+        if (share.lease.generation === this.workflowToolGeneration) this.workflowToolTeardowns.set(sessionId, teardown);
+        try {
+            await teardown;
+        } finally {
+            if (this.workflowToolTeardowns.get(sessionId) === teardown) this.workflowToolTeardowns.delete(sessionId);
+        }
+    }
+
+    /** The native tool session of a workflow: authority, attached workspace, managed session and its tools. */
+    private async setUpWorkflowToolSession(sessionId: string, binding: WorkflowToolBinding, step: number, lease: WorkflowToolLease)
+        : Promise<WorkflowToolSessionReady> {
+        await this.authorizeWorkflowTools(sessionId, binding);
+        const config: ManagedSessionConfig = structuredClone(binding.config);
+        const row = await this.sessionCatalog!.getSession(sessionId);
+        const workerNodeId = this.workspaceWorkerNodeId ?? os.hostname();
+        let managed: ManagedSession | undefined;
+        try {
+            if (config.workspace) {
+                const request = {
+                    sessionId, rootSessionId: row!.rootSessionId ?? binding.parentSessionId,
+                    workspace: config.workspace, revision: 1, workerNodeId, turnIndex: step, purpose: "turn" as const,
+                };
+                const onAttach = (attached: import("./types.js").WorkspaceAttachRequest) => this.holdWorkspaceFolders(sessionId, [{
+                    root: attached.workspace.root, folder: attached.workspace.folder, attachment: attached.attachment,
+                    rootSessionId: attached.rootSessionId, revision: attached.revision, turnIndex: attached.turnIndex,
+                }]);
+                const working = await prepareWorkspace(this.workspaceProvider, request, { onAttach });
+                if (!working.ok) throw new Error(`${working.code}: ${working.message}`);
+                const extras = await prepareWorkspaceExtras(this.workspaceProvider, request, { onAttach });
+                const missing = extras.filter(extra => !extra.ok);
+                if (missing.length) throw new Error("A captured workflow workspace folder is unavailable.");
+                config.workspaceAttach = {
+                    root: working.root.name, rootPath: working.root.path, path: working.path,
+                    realPath: working.realPath, revision: 1, turnIndex: step,
+                    ...(working.readOnly ? { readOnly: true } : {}),
+                    extras: extras.flatMap(extra => extra.ok ? [extra.attach] : []),
+                };
+            }
+            managed = await this.getOrCreate(sessionId, config, { turnIndex: 0, workflowTools: binding });
+            const overrides = createScriptSessionTools({ sessionId, catalog: this.sessionCatalog!, duroxideClient: this._duroxideClient });
+            await managed.prepareWorkflowTools(new Set(binding.tools.map(tool => tool.name)), overrides);
+            return { managed, workerNodeId };
+        } catch (error) {
+            await this.tearDownWorkflowToolSession(sessionId, managed, workerNodeId, lease).catch(() => undefined);
+            throw error;
+        }
+    }
+
+    /**
+     * Stop the native session's background work, disconnect it, then release its folders. Any failure, including a
+     * folder release that fails or is late (VR-2), blocks the workflow's tools until recovery: work or folders may
+     * remain. A lease that no longer holds the session (E1b-R1) stops and disconnects only its own handle, never the
+     * session's current one, and removes, releases and raises nothing for the session. A teardown that succeeds ends
+     * the lease's hold.
+     */
+    private async tearDownWorkflowToolSession(sessionId: string, managed: ManagedSession | undefined, workerNodeId: string,
+        lease: WorkflowToolLease): Promise<void> {
+        lease.pending += 1;
+        try {
+            const own = managed !== undefined && (this.holdsWorkflowTools(sessionId, lease) || this.sessions.get(sessionId) !== managed) ? managed : undefined;
+            const errors: unknown[] = [];
+            if (own) {
+                try { await withWorkspaceDeadline(own.cancelBackgroundTasks(), "workflow task cancel"); }
+                catch (error) { errors.push(error); }
+                try { await withWorkspaceDeadline(own.destroy(), "workflow disconnect"); }
+                catch (error) { errors.push(error); }
+            }
+            if (errors.length) {
+                const error = new AggregateError(errors, errors.map(item => normalizeError(item).message).join("; "));
+                // Retain the folder hold and block further states until recovery proves tasks stopped.
+                this.raiseWorkflowBarrier(sessionId, lease, error);
+                throw error;
+            }
+            if (!this.holdsWorkflowTools(sessionId, lease)) return;
+            this._forgetWarmSession(sessionId);
+            let released: { released: boolean; detail?: string };
+            try {
+                released = await withWorkspaceDeadline(this.releaseWorkspace(sessionId, { reason: "workflow_state_finished", workerNodeId }), "workflow folder release");
+            } catch (error) {
+                const failure = normalizeError(error);
+                this.raiseWorkflowBarrier(sessionId, lease, failure);
+                throw failure;
+            }
+            if (released.detail && released.released) {
+                const failure = new Error(released.detail);
+                this.raiseWorkflowBarrier(sessionId, lease, failure);
+                throw failure;
+            }
+            if (this.workflowToolHolders.get(sessionId) === lease) this.workflowToolHolders.delete(sessionId);
+        } finally {
+            lease.pending -= 1;
+        }
+    }
+
+    async resolveScriptTools(sessionId: string): Promise<Map<string, (args: Record<string, unknown>) => Promise<unknown>>> {
+        const toolNames = [...new Set([
+            ...(this.workerDefaults.frameworkBaseToolNames ?? []),
+            ...(this.workerDefaults.appDefaultToolNames ?? []),
+        ])];
+        const registryTools = this._resolveTools(undefined, { toolNames, detachedPackageToolPolicy: "drop" } as SerializableSessionConfig);
+        // The inspect tools a generic agent gets (read_agent_events and the
+        // lineage usage reads), acting as the workflow session's owner.
+        // context_health reports on an LLM context, which a workflow has none of.
+        const inspectTools = this.sessionCatalog
+            ? createInspectTools({
+                catalog: this.sessionCatalog,
+                duroxideClient: this._duroxideClient ?? undefined,
+                factStore: this.factStore ?? undefined,
+                resolveViewer: () => this._resolveInspectViewer(sessionId),
+                artifactStore: this.artifactStore ?? null,
+                sessionId,
+            }).filter((tool: any) => tool.name !== "context_health")
+            : [];
+        const tools = [
+            ...registryTools,
+            ...this._createSessionFactTools({ isCrawler: false }),
+            ...this._createSessionGraphTools({ isCrawler: false }),
+            ...inspectTools,
+        ];
+        const row = this.sessionCatalog ? await this.sessionCatalog.getSession(sessionId).catch(() => null) : null;
+        const facts = this.factStore
+            ? createToolFactsAccessor({
+                factStore: this.factStore,
+                durableSessionId: sessionId,
+                rootSessionId: row?.rootSessionId ?? null,
+                agentId: null,
+            })
+            : undefined;
+        const handlers = new Map<string, (args: Record<string, unknown>) => Promise<unknown>>();
+        if (this.sessionCatalog) {
+            for (const [name, handler] of createScriptSessionTools({
+                sessionId,
+                catalog: this.sessionCatalog,
+                duroxideClient: this._duroxideClient ?? null,
+            })) handlers.set(name, handler);
+        }
+        for (const tool of tools) {
+            const name = String((tool as any)?.name || "");
+            const handler = (tool as any)?.handler;
+            if (!name || typeof handler !== "function" || handlers.has(name)) continue;
+            handlers.set(name, async (args) => handler(args ?? {}, {
+                sessionId,
+                durableSessionId: sessionId,
+                toolCallId: `workflow-${randomUUID()}`,
+                toolName: name,
+                arguments: args ?? {},
+                ...(facts ? { facts } : {}),
+            }));
+        }
+        return handlers;
+    }
+
+    /** The MCP servers workflow scripts may call: the default set a generic agent session gets. */
+    scriptMcpServers(): Record<string, any> {
+        return { ...(this.workerDefaults.baseMcpServers ?? {}) };
+    }
+
+    /** The fact tools a session gets. Shared by agent sessions and workflow sessions. */
+    private _createSessionFactTools(opts: { agentIdentity?: string; isCrawler: boolean }): Tool<any>[] {
+        const factStore = this.factStore;
+        if (!factStore) return [];
+        return createFactTools({
+            factStore,
+            reservedFactPrefixes: this.workerDefaults?.reservedFactPrefixes ?? null,
+            getLineageSessionIds: this._getLineageSessionIds ?? undefined,
+            agentIdentity: opts.agentIdentity,
+            // bulk_store_facts reads its records from (and writes its failure
+            // artifact to) the artifact store, so fact bytes never ride the
+            // model's context.
+            artifactStore: this.artifactStore ?? null,
+            isCrawler: opts.isCrawler,
+            // Enhanced tools light up only when the store is an EnhancedFactStore.
+            // Pass it when EITHER capability is present: search powers
+            // facts_search / facts_similar / search_skills; embedder powers the
+            // facts-manager-only `manage_embedder` control tool. The tools
+            // themselves gate on the specific capability they need.
+            enhancedFactStore: isEnhancedFactStore(factStore)
+                && (factStore.capabilities.search || factStore.capabilities.embedder)
+                ? factStore
+                : undefined,
+            recordEvent: this.sessionCatalog
+                ? async (sid, eventType, data) => {
+                    try {
+                        await this.sessionCatalog!.recordEvents(sid, [{ eventType, data }]);
+                    } catch {
+                        // Best-effort — never fail a tool call on telemetry errors.
+                    }
+                }
+                : undefined,
+            onSharedIntakeFactStored: this.sessionCatalog && this._duroxideClient
+                ? async ({ key, sourceSessionId, agentId }) => {
+                    try {
+                        const sessions = await this.sessionCatalog!.listSessions();
+                        const factsManager = sessions.find((session) => session.agentId === "facts-manager" && session.state !== "failed" && session.state !== "cancelled");
+                        if (!factsManager) return;
+                        const payload = {
+                            type: "facts.intake_written",
+                            key,
+                            sourceSessionId,
+                            agentId,
+                            createdAt: new Date().toISOString(),
+                        };
+                        await this._duroxideClient.enqueueEvent(
+                            `session-${factsManager.sessionId}`,
+                            "messages",
+                            JSON.stringify({ prompt: `[FACTS_INTAKE ${JSON.stringify(payload)}]` }),
+                        );
+                    } catch {
+                        // Best-effort wake-up; the 6h maintenance pass is the fallback.
+                    }
+                }
+                : undefined,
+        });
+    }
+
+    /** The graph tools a session gets, or none without a graph store. Shared like the fact tools. */
+    private _createSessionGraphTools(opts: { agentIdentity?: string; isCrawler: boolean }): Tool<any>[] {
+        const factStore = this.factStore;
+        if (!this.graphStore || !factStore) return [];
+        return createGraphTools({
+            graphStore: this.graphStore,
+            factStore,
+            reservedFactPrefixes: this.workerDefaults?.reservedFactPrefixes ?? null,
+            agentIdentity: opts.agentIdentity,
+            isCrawler: opts.isCrawler,
+            agentId: opts.agentIdentity,
+            // Graph reads use the SAME lineage visibility as read_facts. The
+            // tuner branch inside createGraphTools forces unrestricted; for
+            // everyone else this resolves their granted lineage sessions.
+            resolveAccess: this._getLineageSessionIds
+                ? async (sessionId: string | undefined) => {
+                    if (!sessionId) return { readerSessionId: null, grantedSessionIds: [] };
+                    const raw = await this._getLineageSessionIds!(sessionId);
+                    const granted = [...new Set((raw || []).filter((sid) => Boolean(sid) && sid !== sessionId))];
+                    return { readerSessionId: sessionId, grantedSessionIds: granted };
+                }
+                : undefined,
+            recordEvent: this.sessionCatalog
+                ? async (sid, eventType, data) => {
+                    try {
+                        await this.sessionCatalog!.recordEvents(sid, [{ eventType, data }]);
+                    } catch {
+                        // Best-effort telemetry.
+                    }
+                }
+                : undefined,
+        });
     }
 
     /**
@@ -4038,7 +4796,14 @@ export class SessionManager {
         sessionOwnerKey: string | null = null,
         boundAgentCopy: AgentCopyEntry | null = resolveBoundAgentCopy(this.workerDefaults, config, sessionOwnerKey) ?? null,
     ): SystemMessageConfig | undefined {
-        const frameworkBase = baseAgentInstructions(config.baseAgentPolicy, this.workerDefaults.frameworkBasePrompt ?? this.workerDefaults.systemMessage);
+        const base = baseAgentInstructions(config.baseAgentPolicy, this.workerDefaults.frameworkBasePrompt ?? this.workerDefaults.systemMessage);
+        // The authoring skill's pointer (R24) only on a worker that loaded that skill (INACTIVE: none does yet). Neither mentions
+        // testing unless workflow test mode is on (spec 16).
+        const testMode = workflowTestModeFromEnv();
+        const frameworkBase = this.workflowScriptsEnabled
+            ? [base, workflowSessionGuidance(testMode), workflowAuthoringSkillLoaded(this.workerDefaults.skills) ? workflowAuthoringPointer(testMode) : null]
+                .filter(Boolean).join("\n\n")
+            : base;
         const boundAgentName = config.boundAgentName;
         const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);
         const knowledgeToolInstructions = this._buildKnowledgeToolInstructionsSection(sessionId, config.agentIdentity);

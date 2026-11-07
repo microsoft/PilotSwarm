@@ -163,7 +163,7 @@ Frontmatter fields:
 |---|---|---|
 | `name` | yes (else derived from filename) | How sessions bind to the agent (`create_session {agent: "greeter"}`). Matched case/punctuation-insensitively. |
 | `description` | recommended | Shown in the agent picker/catalog. |
-| `schemaVersion` | recommended: `1` | `1`, `2`, `3`, and `4` are accepted. Use at least `2` for `mcpServers`, `3` for `initialRequiredTool`, and `4` for `nativeTaskTools`. |
+| `schemaVersion` | recommended: `1` | `1`, `2`, `3`, `4`, and `5` are accepted. Use at least `2` for `mcpServers`, `3` for `initialRequiredTool`, `4` for `nativeTaskTools`, and `5` for `workflowInterface`. A worker that does not know a version skips the agent. |
 | `version` | recommended | Informational agent version. |
 | `title` | optional | Display title. |
 | `tools` | optional | Names of worker tools this agent may call — from this package's worker module or the deployment's built-ins. Omit for prompt-only agents. |
@@ -172,12 +172,36 @@ Frontmatter fields:
 | `inheritDefaultMcpServers` | optional | Also attach the deployment's default MCP servers. |
 | `initialPrompt` | optional | Auto-sent first message when a session starts blank. |
 | `initialRequiredTool` | optional, schema `3` | Tool with a registered session handler that must produce a real execution event during the initial prompt turn. It must also appear in `tools`. PilotSwarm corrects one prose-only response, then fails closed if the handler is unavailable or still not invoked. |
+| `workflowInterface` | optional, schema `5` | The typed contract that a version 2 workflow's agent state can name (`interface: <name>@<version>`). Only workflow publication reads it, and that is not enabled in deployments yet. See below. |
+
+A `workflowInterface` is an indented mapping:
+
+```yaml
+schemaVersion: 5
+workflowInterface:
+  name: review_change
+  version: "1"
+  inputSchema: ./contracts/review-input.schema.json
+  outputSchema: ./contracts/review-result.schema.json
+  outcomes: [accepted, changes_required]
+```
+
+`inputSchema` is optional. The schema paths are relative to the package root
+and must name ordinary files inside the package: no `..`, absolute path, URL,
+backslash or link. Each file is JSON of at most 64 KB and a workflow JSON
+Schema without `$ref`. In a manifest layout (§2), list the files under
+`include`. Validation reads the files and adds the interface to the package
+manifest: its schemas, its outcomes and a digest of all of them. A workflow
+that names the interface is published only when its state uses exactly these
+outcomes and schemas, and its pin keeps the digest.
 
 **Rejected at validation**: `system: true` (background agents belong to the
 deployment), an agent named `default`, names colliding with a built-in agent
 (the check is case/punctuation-insensitive and also strips a trailing
-"agent"), two agents in one package whose names normalize identically, and an
-`initialRequiredTool` that uses an older schema or is absent from `tools`.
+"agent"), two agents in one package whose names normalize identically, an
+`initialRequiredTool` that uses an older schema or is absent from `tools`, and
+a `workflowInterface` that uses an older schema, is malformed, or names a
+schema file that is missing, outside the package or not a valid schema.
 
 ## 4. Skills — `skills/<name>/SKILL.md`
 

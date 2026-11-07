@@ -517,12 +517,18 @@ function resolveUserPrincipalFor(transport, principal) {
 }
 
 export class NodeSdkTransport {
-    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
+    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands, workerTestOptions, sessionStartVersion } = {}) {
         this.store = store;
         this.mode = mode;
         this.useManagedIdentity = useManagedIdentity;
         this.cmsFactsDatabaseUrl = cmsFactsDatabaseUrl;
         this.aadDbUser = aadDbUser;
+        // The embedded workers' testOptions (test-only; the Workflow V2 test environment switch, portalRuntimeOptions): unset,
+        // they are created exactly as before.
+        this.workerTestOptions = workerTestOptions || null;
+        // Where new sessions start (test-only; the same switch: 1.0.83, which the environment's workers serve). Unset, the
+        // latest version, as before.
+        this.sessionStartVersion = sessionStartVersion || null;
         this.pluginDirs = getPluginDirsFromEnv();
         // Optional EnhancedFactStore (HorizonDB) target. The client and
         // management client each build their own fact store, so they MUST
@@ -553,6 +559,8 @@ export class NodeSdkTransport {
             workspaceFiles: workspaceFilesConfigFromEnv(),
             // canvas-ws commands: off unless PORTAL_CANVAS_COMMANDS_RUNNER is set.
             canvasCommands: canvasCommandsConfigFromEnv(),
+            // Workflow v2 (INACTIVE; test-only): a person's workflow commands. Unset, they answer 501.
+            ...(workflowCommands ? { workflowCommands } : {}),
         });
         this.sessionHandles = new Map();
         this.workers = [];
@@ -595,6 +603,7 @@ export class NodeSdkTransport {
             this.workers = await startEmbeddedWorkers({
                 count: workerCount,
                 store: this.store,
+                ...(this.workerTestOptions ? { testOptions: this.workerTestOptions } : {}),
             });
         }
         const sessionCreationMetadata = this.resolveSessionCreationMetadata();
@@ -610,6 +619,7 @@ export class NodeSdkTransport {
             ...(this.sessionPolicy ? { sessionPolicy: this.sessionPolicy } : {}),
             ...(this.allowedAgentNames.length > 0 ? { allowedAgentNames: this.allowedAgentNames } : {}),
         });
+        if (this.sessionStartVersion) this.client._startSessionsAt(this.sessionStartVersion);
         await this.client.start();
         await this.mgmt.start();
     }
@@ -1072,6 +1082,11 @@ export class NodeSdkTransport {
         return this.mgmt.getSessionAccess(sessionId, viewer);
     }
 
+    /** What a person may send to a session by its workflow lineage (workflow agent states refuse human input). */
+    async getWorkflowInputPolicy(sessionId) {
+        return typeof this.mgmt.getWorkflowInputPolicy === "function" ? this.mgmt.getWorkflowInputPolicy(sessionId) : null;
+    }
+
     async setSessionVisibility(sessionId, visibility) {
         return this.mgmt.setSessionVisibility(sessionId, visibility);
     }
@@ -1114,6 +1129,36 @@ export class NodeSdkTransport {
 
     async getSessionWorkspace(sessionId) {
         return this.mgmt.getSessionWorkspace(sessionId);
+    }
+
+    /** Workflow v2: the read-only view of a workflow session (readWorkflow). Authorization is the caller's (the portal gates session:read). */
+    async readWorkflow(sessionId, options = {}) {
+        return this.mgmt.readWorkflow(sessionId, options);
+    }
+
+    /**
+     * Workflow v2: a person's command to a workflow session (updateWorkflow;
+     * INACTIVE unless this transport was created with workflowCommands).
+     * Authorization is the caller's (the portal gates session:manage);
+     * `options.principal` is the signed-in caller, recorded as the actor. In
+     * the TUI's direct mode it is the TUI's own user, when one is known.
+     */
+    async updateWorkflow(sessionId, command, options = {}) {
+        // The portal always names the caller (null: no signed-in user); the TUI names none, and its own user is the caller.
+        const principal = Object.prototype.hasOwnProperty.call(options ?? {}, "principal") ? options.principal
+            : this.currentUser?.provider && this.currentUser?.subject ? { provider: this.currentUser.provider, subject: this.currentUser.subject } : null;
+        // The session the command comes from, when the portal passes one on (review SF-2).
+        return this.mgmt.updateWorkflow(sessionId, command, { principal,
+            ...(options?.originatingSessionId !== undefined ? { originatingSessionId: options.originatingSessionId } : {}) });
+    }
+
+    /**
+     * Workflow support as this host takes it now (design 04, D11): what the
+     * portal's bootstrap advertises as `workflows`, from the management
+     * client's configuration (getWorkflowCapabilities). It changes nothing.
+     */
+    async getWorkflowCapabilities() {
+        return this.mgmt.getWorkflowCapabilities();
     }
 
     async setSessionWorkspace(sessionId, input = {}, options = {}) {
@@ -1388,6 +1433,17 @@ export class NodeSdkTransport {
             reasoningEffort: created?.reasoningEffort || reasoningEffort || undefined,
             contextTier: created?.contextTier || contextTier || undefined,
         };
+    }
+
+    async createWorkflowSession({ yaml, inputs, owner, groupId, visibility } = {}) {
+        const created = await this.client.createWorkflowSession({
+            yaml,
+            inputs: inputs ?? {},
+            ...(owner ? { owner } : {}),
+            ...(groupId ? { groupId } : {}),
+            ...(visibility ? { visibility } : {}),
+        });
+        return { sessionId: created.sessionId, sessionKind: "workflow", workflowName: created.workflowName };
     }
 
     async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, isAdmin, groupId, visibility, workspace } = {}) {

@@ -379,6 +379,7 @@ new PilotSwarmWorker({
     waitThreshold: 30,       // seconds — waits above this become durable timers
     workerNodeId: "pod-1",   // identifier for this worker (default: hostname)
     turnTimeoutMs: 1_200_000, // explicit override; 0 disables the cap
+    workflowScripts: { enabled: false }, // run workflow script states (env PILOTSWARM_WORKFLOW_SCRIPTS=1)
 
     // Blob storage for session dehydration
     blobConnectionString: string,   // Azure Storage connection string
@@ -888,3 +889,15 @@ desired state rather than maintain a second long-lived configuration source.
 | `npm run tui:remote` | TUI client-only against a remote deployment (`.env.remote` carries `PILOTSWARM_API_URL`) |
 | `npm run worker` | Headless worker process |
 | `npm run db:reset` | Reset database schemas |
+
+## Workflow scripts
+
+Off by default: a workflow's script states run as processes on the worker.
+See [Workflow sessions](../building/workflow-sessions.md).
+
+| Variable | Default | Effect |
+|---|---|---|
+| `PILOTSWARM_WORKFLOW_SCRIPTS` | off | `1` runs workflow script states on this worker. The `workflowScripts.enabled` option wins. |
+| `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` | off | Test-only, for an isolated test environment. Exactly `isolated-test-only` (no other spelling, no spaces) makes the headless worker and the portal's embedded workers serve Workflow V2 controller 1.9.0 and session orchestration 1.0.83 (`testOptions.workflowRequests`), and the portal and the MCP server take a person's workflow commands (`workflowCommands: { requests: true }`). The portal's and the MCP server's direct-mode clients also start new sessions at 1.0.83, and so does a sub-agent a chat spawns, so a person's chat (or an agent it delegates to) can create workflows with agent, parallel and request steps; a session started before keeps its version (1.0.82 sessions still refuse those steps). Any other value is off and changes nothing. Every worker that shares the database must run the same image with the same value. Not an activation. |
+| `PILOTSWARM_WORKFLOW_PYTHON` | `python3` | The Python program for `runtime: python`. |
+| `PILOTSWARM_WORKFLOW_PWSH` | `pwsh` | The PowerShell 7 program for `runtime: powershell`. |

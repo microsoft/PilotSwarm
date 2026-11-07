@@ -916,6 +916,11 @@ function buildFromEnv(): ModelProviderRegistry | null {
 
 const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
+/** Whether a stored value (a session row's, which is plain text) names a reasoning effort. */
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+    return typeof value === "string" && REASONING_EFFORTS.has(value);
+}
+
 function normalizeReasoningEfforts(values?: ReasoningEffort[]): ReasoningEffort[] {
     if (!Array.isArray(values)) return [];
     const out: ReasoningEffort[] = [];

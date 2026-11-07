@@ -3,7 +3,8 @@
 import { parseArgs } from "node:util";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { Buffer } from "node:buffer";
-import { createContext } from "../src/context.js";
+import { workflowV2TestEnvironmentNotice } from "pilotswarm-sdk";
+import { createContext, workflowContextOptionsFromEnv } from "../src/context.js";
 import { createMcpServer } from "../src/server.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
@@ -58,11 +59,16 @@ if (!apiUrl && !store) {
 const agentMgmtRaw = (values["agent-mgmt"] ?? "full").toLowerCase();
 const agentMgmt = ["off", "read", "full"].includes(agentMgmtRaw) ? agentMgmtRaw as "off" | "read" | "full" : "full";
 
+// MCP over stdio: log lines go to stderr, never to the protocol stream. The switch is worth a warning either way.
+const workflowV2TestNotice = workflowV2TestEnvironmentNotice(process.env);
+if (workflowV2TestNotice) log.warn(`[pilotswarm-mcp] ${workflowV2TestNotice}`);
 const ctx = await createContext({
     ...(apiUrl ? { apiUrl } : { store }),
     modelProvidersPath: values["model-providers"],
     pluginDirs: values.plugin,
     agentMgmt,
+    // Workflow V2 test environment (test-only): nothing unless PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT=isolated-test-only.
+    ...workflowContextOptionsFromEnv(process.env),
 });
 
 if (values.transport === "stdio") {

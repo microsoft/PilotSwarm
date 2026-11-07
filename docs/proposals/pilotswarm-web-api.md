@@ -70,7 +70,8 @@ GET  /api/portal-config     public; portal branding + auth config
 GET  /api/auth-config       public; auth provider public config (MSAL clientId/authority/redirectUri)
 GET  /api/auth/me           authed; principal + authorization context
 GET  /api/bootstrap         authed; mode, workerCount, logConfig, defaultModel,
-                            modelsByProvider, creatableAgents, sessionCreationPolicy, auth
+                            modelsByProvider, creatableAgents, sessionCreationPolicy,
+                            workflows, auth
 POST /api/rpc               authed; { method, params } -> { ok, result | error }
 GET  /api/sessions/:sessionId/artifacts/:filename/download   authed; binary
 GET  /api/sessions/:sessionId/artifacts/:filename/meta       authed
@@ -230,12 +231,15 @@ GET  /api/v1/auth/config            public; { provider, displayName, allowUnauth
 GET  /api/v1/auth/me                authed; { principal, authorization }
 GET  /api/v1/bootstrap              authed; mode, workerCount, logConfig, defaultModel,
                                     modelsByProvider, creatableAgents,
-                                    sessionCreationPolicy, auth context, apiVersion
+                                    sessionCreationPolicy, workflows, auth context,
+                                    apiVersion
 GET  /api/v1/system/workers         authed; { workerCount }          (live value)
 GET  /api/v1/system/log-config      authed; { available, source }
 ```
 
 `/api/v1/auth/config` reuses the providers' existing `getPublicConfig()`; the browser-specific `redirectUri` field is included and simply ignored by CLI clients.
+
+`workflows` (workflow v2 design 04, D11) is the workflow support the deployment takes now, so a client gates its workflow surface before a call is refused: `v2.apiVersion` (the workflow document version), `v2.read` (`readWorkflow` reads version 2 workflows), `v2.create` and `v2.input` (false: a person creates no version 2 workflow and sends it no typed input; its parent agent does), `v2.commands` (a person's `updateWorkflow` commands: `{ available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } }` unless the deployment enables them, otherwise `{ available: true, controllerVersion, operations }`) and `legacyCreate` (`createWorkflowSession` keeps its version 1 semantics, never a version 2 draft). It reports configuration only; the server decides every call again. `HttpApiTransport.getWorkflowCapabilities()` and both management clients' `getWorkflowCapabilities()` return it (null from a server that advertises none).
 
 ### Client Surface (sessions and messaging)
 

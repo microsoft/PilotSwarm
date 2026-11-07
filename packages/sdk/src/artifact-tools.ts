@@ -34,6 +34,7 @@ import { extractCanvasAppManifest, normalizeCanvasResponseContract } from "./can
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { ArtifactStore } from "./session-store.js";
+import { isOwnerOnlyArtifact } from "../api/src/session-authz.js";
 
 const INLINE_READ_DEFAULT_BYTES = 65_536;
 const INLINE_READ_MAX_BYTES = 262_144;
@@ -44,6 +45,16 @@ function artifactLink(sessionId: string, filename: string): string {
 
 function toolError(code: string, message: string, hint?: string): string {
     return JSON.stringify({ error: code, message, ...(hint ? { hint } : {}) });
+}
+
+/**
+ * A Workflow agent's whole base instructions (isOwnerOnlyArtifact) are its Workflow owner's to read, in the portal
+ * (review SF-3). These tools act for any session and check no owner, so they neither read, copy nor write such a file:
+ * only the runtime keeps it (session-proxy, keepWorkflowBaseInstructions).
+ */
+function ownerOnlyRefusal(filename: string): string {
+    return toolError("ARTIFACT_OWNER_ONLY", `'${path.basename(String(filename))}' holds a Workflow agent's base instructions. `
+        + "Only the Workflow's owner can read them, in the portal; agent tools cannot read, copy or write this file.");
 }
 
 /**
@@ -196,6 +207,10 @@ export function createArtifactTools(opts: {
 
             const contentType = params.contentType ?? params.content_type;
             const pinned = params.pin === true;
+            const targetName = params.filename
+                ?? (params.fromFile ? path.basename(String(params.fromFile)) : params.fromArtifact ? path.basename(String(params.fromArtifact.filename)) : "");
+            if (isOwnerOnlyArtifact(targetName)) return ownerOnlyRefusal(targetName);
+            if (params.fromArtifact && isOwnerOnlyArtifact(params.fromArtifact.filename)) return ownerOnlyRefusal(params.fromArtifact.filename);
 
             try {
                 if (params.fromFile) {
@@ -320,6 +335,7 @@ export function createArtifactTools(opts: {
             maxBytes?: number;
             offset?: number;
         }) => {
+            if (isOwnerOnlyArtifact(params.filename)) return ownerOnlyRefusal(params.filename);
             if ([params.metaOnly, params.manifestOnly, params.toFile].filter(Boolean).length > 1) {
                 return toolError(
                     "EXCLUSIVE_MODE",

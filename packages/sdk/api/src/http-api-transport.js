@@ -104,6 +104,21 @@ export class HttpApiTransport {
         return this.bootstrap?.defaultModel || null;
     }
 
+    /**
+     * Workflow support as the server advertised it in its bootstrap (design
+     * 04, D11): its `workflows` field from the snapshot taken at start, or
+     * null from a server that advertises none (no field, or null). A
+     * `workflows` that is not an object rejects
+     * WORKFLOW_CAPABILITIES_MALFORMED rather than reading as an older server.
+     */
+    async getWorkflowCapabilities() {
+        const workflows = this.bootstrap?.workflows;
+        if (workflows === undefined || workflows === null) return null;
+        if (typeof workflows === "object" && !Array.isArray(workflows)) return workflows;
+        throw Object.assign(new Error(`The server's bootstrap advertises workflows as ${Array.isArray(workflows) ? "a list" : `a ${typeof workflows}`}, `
+            + "not an object, so its workflow support is unknown."), { code: "WORKFLOW_CAPABILITIES_MALFORMED" });
+    }
+
     getAuthContext() {
         if (this.bootstrap?.auth) return { ...this.bootstrap.auth, adminScope: this.bootstrap.authz?.adminScope ?? "unrestricted" };
         return {
@@ -208,6 +223,10 @@ export class HttpApiTransport {
         return this.api.call("createSession", options);
     }
 
+    async createWorkflowSession(options = {}) {
+        return this.api.call("createWorkflowSession", options);
+    }
+
     async createSessionForAgent(agentName, options = {}) {
         return this.api.call("createSessionForAgent", { agentName, ...options });
     }
@@ -238,6 +257,21 @@ export class HttpApiTransport {
 
     async getSessionWorkspace(sessionId) {
         return this.api.call("getSessionWorkspace", { sessionId });
+    }
+
+    /**
+     * Workflow v2: the read-only view of a workflow session (readWorkflow, session:read), a section's next page
+     * (`cursor`, a nextCursor a read returned) or one execution's whole value (`executionId`); `limit` sets the rows per
+     * page. The options are the operation's declared parameters: the request builder leaves out an absent (or null) one,
+     * and any other value is sent for the server to check. The session id is always the argument's.
+     */
+    async readWorkflow(sessionId, options = {}) {
+        return this.api.call("readWorkflow", { ...options, sessionId });
+    }
+
+    /** Workflow v2: a person's command to a workflow session (updateWorkflow, session:manage; inactive unless the deployment enables it). */
+    async updateWorkflow(sessionId, command) {
+        return this.api.call("updateWorkflow", { sessionId, command });
     }
 
     async setSessionWorkspace(sessionId, input = {}, options = {}) {

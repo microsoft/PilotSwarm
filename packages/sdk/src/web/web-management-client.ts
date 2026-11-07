@@ -7,7 +7,8 @@ import {
 import { createManagementOps, type ManagementOps } from "./generated-op-methods.js";
 import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "../feature-store.js";
 import type { MotdCreateInput, MotdViewer } from "../motd-store.js";
-import type { StopTurnOptions, StopTurnResult, SteerTurnOptions, SteerTurnResult } from "../types.js";
+import type { StopTurnOptions, StopTurnResult, SteerTurnOptions, SteerTurnResult, WorkflowReadOptions } from "../types.js";
+import type { WorkflowInputCapabilities } from "../workflow/v2/input-policy.js";
 
 const WAIT_SLICE_MS = 25_000;
 
@@ -335,6 +336,45 @@ export class WebPilotSwarmManagementClient {
     /** Session workspaces: the session's workspace view. */
     async getSessionWorkspace(sessionId: string): Promise<any> {
         return this._api.call("getSessionWorkspace", { sessionId });
+    }
+
+    /**
+     * Workflow v2: the read-only view of a workflow session (readWorkflow, session:read), a section's next page
+     * (`cursor`, a nextCursor a read returned) or one execution's whole value (`executionId`); `limit` sets the rows per
+     * page. The options are the operation's declared parameters: the request builder leaves out an absent (or null) one,
+     * and any other value is sent for the server to check. The session id is always the argument's.
+     */
+    async readWorkflow(sessionId: string, options: WorkflowReadOptions = {}): Promise<any> {
+        return this._api.call("readWorkflow", { ...options, sessionId });
+    }
+
+    /**
+     * Workflow v2: a person's command to a workflow session (updateWorkflow,
+     * session:manage; INACTIVE: the deployment answers 501
+     * WORKFLOW_COMMANDS_UNAVAILABLE unless it enables it). The server stamps
+     * the caller as the actor; `options` is accepted for the direct client's
+     * signature and not sent.
+     */
+    async updateWorkflow(sessionId: string, command: Record<string, unknown>, options: { originatingSessionId?: string | null } = {}): Promise<any> {
+        // The signed-in caller is the actor; the session the command comes from, when given, is passed on (review SF-2).
+        return this._api.call("updateWorkflow", { sessionId, command,
+            ...(typeof options?.originatingSessionId === "string" ? { originatingSessionId: options.originatingSessionId } : {}) });
+    }
+
+    /**
+     * Workflow support as the server advertises it in its bootstrap (design
+     * 04, D11; the direct client's getWorkflowCapabilities): its `workflows`
+     * field, or null from a server that advertises none (an older server: no
+     * field, or null). A bootstrap that cannot be read rejects as it failed,
+     * and a `workflows` that is not an object rejects
+     * WORKFLOW_CAPABILITIES_MALFORMED: neither is read as an older server.
+     */
+    async getWorkflowCapabilities(): Promise<Record<string, unknown> | null> {
+        const workflows = (await this._api.getBootstrap())?.workflows;
+        if (workflows === undefined || workflows === null) return null;
+        if (typeof workflows === "object" && !Array.isArray(workflows)) return workflows;
+        throw Object.assign(new Error(`The server's bootstrap advertises workflows as ${Array.isArray(workflows) ? "a list" : `a ${typeof workflows}`}, `
+            + "not an object, so its workflow support is unknown."), { code: "WORKFLOW_CAPABILITIES_MALFORMED" });
     }
 
     /** Session workspaces: set or clear the workspace (external flow). */
@@ -737,6 +777,29 @@ export class WebPilotSwarmManagementClient {
      */
     async getSessionAccess(sessionId: string, _viewer?: unknown): Promise<any> {
         return this.ops.getSessionAccess({ sessionId });
+    }
+
+    /**
+     * What a person may send to a session, by its workflow lineage (design 03
+     * human-input denial; INACTIVE outside controller 1.9.0's tests): read
+     * from the session's access route, which reports canSendPrompt, canAnswer
+     * and canSteer false, with the workflow and its controlling agent, for a
+     * session in a workflow agent state's subtree (the portal runtime asks the
+     * SDK). Every other session takes all three, as before. The refusal
+     * itself is the SDK's, whatever a client shows.
+     */
+    async getWorkflowInputPolicy(sessionId: string): Promise<WorkflowInputCapabilities> {
+        const access = await this.ops.getSessionAccess({ sessionId }) as unknown as Record<string, any> | null;
+        if (access?.canSendPrompt !== false) {
+            return { canSendPrompt: true, canAnswer: true, canSteer: true, reason: null, workflowSessionId: null, controllingSessionId: null };
+        }
+        const workflowInput = access.workflowInput ?? {};
+        return {
+            canSendPrompt: false, canAnswer: access.canAnswer === true, canSteer: access.canSteer === true,
+            reason: typeof workflowInput.reason === "string" ? workflowInput.reason : null,
+            workflowSessionId: typeof workflowInput.workflowSessionId === "string" ? workflowInput.workflowSessionId : null,
+            controllingSessionId: typeof workflowInput.controllingSessionId === "string" ? workflowInput.controllingSessionId : null,
+        };
     }
 
     async setSessionVisibility(sessionId: string, visibility: string): Promise<void> {

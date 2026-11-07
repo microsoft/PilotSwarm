@@ -13,6 +13,7 @@ import { registerEnhancedFactTools } from "./tools/facts-enhanced.js";
 import { registerGraphTools } from "./tools/graph.js";
 import { registerTurnControlTools } from "./tools/turn-control.js";
 import { registerWorkspaceTools } from "./tools/workspaces.js";
+import { registerWorkflowTools } from "./tools/workflows.js";
 import { registerArtifactTools } from "./tools/artifacts.js";
 import { registerAgentPackageTools } from "./tools/agent-packages.js";
 import { registerGroupTools } from "./tools/groups.js";
@@ -106,6 +107,7 @@ export function createMcpServer(ctx: ServerContext): McpServer {
     registerGraphTools(server, ctx);        // iff ctx.graph ([admin] subset iff ctx.admin)
     registerArtifactTools(server, ctx);     // iff web mode (ctx.api)
     registerAgentPackageTools(server, ctx); // iff web mode + ctx.agentMgmt != "off"
+    registerWorkflowTools(server, ctx);     // read_workflow always; update_workflow iff ctx.workflowCommands (Workflow v2, INACTIVE; test-only)
 
     // Resources
     registerSessionResources(server, ctx);

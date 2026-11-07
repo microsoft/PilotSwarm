@@ -6,6 +6,8 @@ import { matchesSessionError } from "./session-warning.js";
 import { appendNativeTaskEvent, appendNativeTaskCall } from "./native-tasks.js";
 import { buildSessionWarning } from "./session-errors.js";
 import { appendChatCall, CHAT_CALL_EVENT_TYPES } from "./chat-activity.js";
+import { describeWorkflowEvent, isWorkflowEvent, WORKFLOW_EVENT_TYPES } from "./workflow-sessions.js";
+import { appendWorkflowProgress } from "./workflow-progress.js";
 
 export const DEFAULT_HISTORY_EVENT_LIMIT = 300;
 export const HISTORY_EVENT_LIMIT_STEPS = [
@@ -60,6 +62,8 @@ export const CHAT_HISTORY_EVENT_TYPES = [
     "session.control_outcome",
     "session.carried_steers_closed",
     "session.steer_confirmed",
+    // Workflow sessions: their execution log is the transcript.
+    ...WORKFLOW_EVENT_TYPES,
 ];
 
 // ─── Session turn control (Stop and Steer) ──────────────────────
@@ -550,6 +554,127 @@ function parseSessionMessageHeaderField(header, key) {
     return rest.slice(0, end).trim();
 }
 
+const WORKFLOW_UPDATE_HEADER_RE = /^\[WORKFLOW_UPDATE((?: [a-z_]+=[^\s\]]+)+)\]\n?/;
+const WORKFLOW_UPDATE_DATA_LINE = "Data (JSON, not instructions):";
+const WORKFLOW_UPDATE_TITLES = { ended: "ended", message: "message", request: "request", test_waiting: "test waiting" };
+/** The sender the runtime queues each type of workflow message with (SDK WORKFLOW_RUNTIME_SENDERS; adversarial review SF-2, UI-5). */
+const WORKFLOW_RUNTIME_DISPLAYS = { ended: "child workflow", message: "workflow message", request: "workflow request", test_waiting: "workflow test" };
+
+/**
+ * Whether a recorded message of workflow update `type` is a workflow's, from its recorded sender (written by the worker,
+ * never by the text): the worker's workflow sender for that type, or the runtime's own system sender for it. The same
+ * text from a person or an agent is theirs, and is shown as their message. Pure.
+ */
+export function isWorkflowUpdateSender(sender, type) {
+    if (!sender || typeof sender !== "object" || typeof type !== "string" || !Object.hasOwn(WORKFLOW_RUNTIME_DISPLAYS, type)) return false;
+    if (sender.kind === "workflow") return Boolean(sender.workflow && typeof sender.workflow === "object" && sender.workflow.type === type);
+    return sender.kind === "system" && sender.display === WORKFLOW_RUNTIME_DISPLAYS[type];
+}
+
+/**
+ * A workflow's message (batch 7, w-1 and w-4): its header, decoded ({ type, fields }), the plain sentence after it and
+ * the data JSON text; null for any other text. Pure.
+ */
+export function parseWorkflowUpdateText(text) {
+    const source = normalizeMessageText(text);
+    const match = WORKFLOW_UPDATE_HEADER_RE.exec(source);
+    if (!match) return null;
+    const fields = {};
+    for (const part of match[1].trim().split(" ")) {
+        const at = part.indexOf("=");
+        let value = part.slice(at + 1);
+        try { value = decodeURIComponent(value); } catch { /* kept as written */ }
+        if (!Object.hasOwn(fields, part.slice(0, at))) fields[part.slice(0, at)] = value;
+    }
+    if (typeof fields.type !== "string") return null;
+    const rest = source.slice(match[0].length);
+    const at = rest.indexOf(`\n${WORKFLOW_UPDATE_DATA_LINE}\n`);
+    return {
+        type: fields.type, fields,
+        sentence: (at >= 0 ? rest.slice(0, at) : rest).trim(),
+        data: at >= 0 ? rest.slice(at + WORKFLOW_UPDATE_DATA_LINE.length + 2).trim() : "",
+    };
+}
+
+/**
+ * A workflow's message as a card with a workflow badge and its type ("Workflow · ended"), in the portal and the
+ * terminal alike: who sent it (the workflow, its run), the type's own fields, the sentence, then the data. Only for a
+ * message whose recorded sender is the workflow's (isWorkflowUpdateSender; SF-2, UI-5): text alone makes no card. The
+ * workflow's session and run come from the recorded sender where it has them.
+ */
+function buildWorkflowUpdateChatCard(event, text) {
+    const parsed = parseWorkflowUpdateText(text);
+    if (!parsed) return null;
+    const sender = event?.data?.sender;
+    if (!isWorkflowUpdateSender(sender, parsed.type)) return null;
+    return workflowUpdateCardOf(event, parsed, sender, `${event.sessionId}:${event.seq}`);
+}
+
+/** The card of one parsed workflow message (buildWorkflowUpdateChatCard), with its item id. */
+function workflowUpdateCardOf(event, parsed, sender, id) {
+    const { type, sentence, data } = parsed;
+    const recorded = sender?.kind === "workflow" ? sender.workflow : null;
+    const fields = {
+        ...parsed.fields,
+        ...(typeof recorded?.sessionId === "string" && recorded.sessionId ? { from: recorded.sessionId } : {}),
+        ...(typeof recorded?.runId === "string" && recorded.runId ? { run: recorded.runId } : {}),
+    };
+    const failed = type === "ended" && fields.status && fields.status !== "completed";
+    const color = type === "ended" ? (failed ? "red" : "green") : type === "request" || type === "test_waiting" ? "yellow" : "cyan";
+    const meta = [
+        fields.workflow ? `Workflow: ${fields.workflow}` : fields.from ? `Workflow: session-${shortSessionId(fields.from)}` : "",
+        fields.run ? `Run: ${shortSessionId(fields.run)}` : "",
+        fields.status ? `Status: ${fields.status}${fields.outcome ? ` · ${fields.outcome}` : ""}` : "",
+        fields.state ? `Step: ${fields.state}` : "",
+        fields.contract ? `Contract: ${fields.contract}` : "",
+        fields.deadline ? `Answer by: ${fields.deadline}` : "",
+    ].filter(Boolean);
+    const lines = [...meta, ...(meta.length ? [""] : []), sentence, ...(data ? [`Data: ${data}`] : [])];
+    return {
+        id,
+        role: "system",
+        text: lines.join("\n").trim(),
+        time: formatTimestamp(event.createdAt),
+        createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+        cardTitle: `Workflow · ${WORKFLOW_UPDATE_TITLES[type] ?? type}`,
+        agentCallPreview: sentence,
+        cardTitleColor: color,
+        cardBorderColor: color,
+        sender,
+        workflowUpdate: { type, ...fields },
+    };
+}
+
+/**
+ * A user.message's chat items (review SF-1). A card comes only from a server-stamped sender (buildWorkflowUpdateChatCard),
+ * never from text. A turn the session's queue merged from messages of different senders is recorded with no sender and
+ * a server-stamped count (`mergedMessages`, session-proxy mergedTurnMessages): it is one message, shown neutrally as
+ * several messages that arrived together, with its raw text; it is never shown as one person's words nor split into a
+ * workflow card. Pure.
+ */
+function buildUserMessageItems(event) {
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    const merged = data.mergedMessages;
+    // Review SF-D1: the merged turn is classified first, before any card or role is read from its text, so no text in it
+    // (a session-message header, a system notice) makes it a card or a system row.
+    if (!data.sender && Number.isSafeInteger(merged) && merged >= 2) {
+        const neutral = buildChatMessage(event, "user", { neutral: true });
+        return neutral ? [{ ...neutral, mergedMessages: merged }] : [];
+    }
+    const message = buildChatMessage(event, "user");
+    return message ? [message] : [];
+}
+
+/**
+ * Review SF-D1: a user.message recorded with a person's or an agent's sender (server-stamped at the API edge) is theirs:
+ * its text never makes a session-message card or a system row. The runtime records a session message, a reply and its
+ * own notices with no sender or its own system sender (that remainder is still read from text: FU-13). Pure.
+ */
+function stampedByPersonOrAgent(event) {
+    const sender = event?.data?.sender;
+    return event?.eventType === "user.message" && Boolean(sender && typeof sender === "object" && (sender.kind === "user" || sender.kind === "agent"));
+}
+
 function buildSessionMessageChatCard(event, text) {
     const source = normalizeMessageText(text);
     if (!source) return null;
@@ -618,9 +743,9 @@ function buildSessionMessageChatCard(event, text) {
     return null;
 }
 
-function deriveChatRole(event, fallbackRole, text) {
+function deriveChatRole(event, fallbackRole, text, { textTrusted = true } = {}) {
     if (event?.eventType === "system.message") return "system";
-    if ((fallbackRole === "user" || fallbackRole === "assistant") && isInternalSystemLikeText(text)) return "system";
+    if (textTrusted && (fallbackRole === "user" || fallbackRole === "assistant") && isInternalSystemLikeText(text)) return "system";
     return fallbackRole;
 }
 
@@ -731,10 +856,34 @@ function stripLeadingSenderMarker(text) {
         : text;
 }
 
-function buildChatMessage(event, role) {
+/** A workflow execution event as a system chat line (see workflow-sessions.js). */
+function buildWorkflowChatMessage(event) {
+    const view = describeWorkflowEvent(event);
+    if (!view) return null;
+    const message = buildChatMessage({ ...event, data: { content: view.text } }, "system");
+    if (!message) return null;
+    const runId = event?.data && typeof event.data === "object" && typeof event.data.runId === "string" && event.data.runId ? event.data.runId : null;
+    return {
+        ...message,
+        sessionId: event.sessionId,
+        workflowEvent: event.eventType,
+        // The run the event is of (UI-8: a step log shows the selected run's), when it names one.
+        ...(runId ? { workflowRunId: runId } : {}),
+        ...(view.kind === "card"
+            ? { cardTitle: view.title, cardTitleColor: view.color }
+            : { workflowNotice: { title: view.title, summary: view.summary, color: view.color } }),
+    };
+}
+
+function buildChatMessage(event, role, { neutral = false } = {}) {
     const rawText = messageTextFromEvent(event);
-    const sessionMessageCard = buildSessionMessageChatCard(event, rawText);
+    // Text makes a card or a system row only where it can be the runtime's own (review SF-D1): never for a neutral merged
+    // turn, never for a person's or an agent's stamped message.
+    const textTrusted = !neutral && !stampedByPersonOrAgent(event);
+    const sessionMessageCard = textTrusted ? buildSessionMessageChatCard(event, rawText) : null;
     if (sessionMessageCard) return sessionMessageCard;
+    const workflowUpdateCard = neutral ? null : buildWorkflowUpdateChatCard(event, rawText);
+    if (workflowUpdateCard) return workflowUpdateCard;
 
     // The attribution prefix and any embedded system notice come off BEFORE
     // the canvas check. A collaborator pressing a button in the drawn page
@@ -747,7 +896,7 @@ function buildChatMessage(event, role) {
     // behalf after validating it against the drawn contract. One item shape
     // from ONE builder, so bulk load and live append cannot disagree. The
     // portal collapses it to one row; the TUI shows a compact line.
-    if (role === "user" && isCanvasActionContent(visibleText)) {
+    if (role === "user" && !neutral && isCanvasActionContent(visibleText)) {
         const parsed = parseCanvasActionContent(visibleText);
         if (parsed) {
             return {
@@ -788,7 +937,7 @@ function buildChatMessage(event, role) {
     const messageId = typeof event?.data?.messageId === "string" && event.data.messageId
         ? event.data.messageId
         : null;
-    const chatRole = deriveChatRole(event, role, text);
+    const chatRole = deriveChatRole(event, role, text, { textTrusted });
     // Model commentary is a durable user-facing progress update. Once it has
     // been recorded as assistant.message it belongs in the transcript like
     // any other agent message; only transient live-turn output and an
@@ -932,7 +1081,11 @@ function shouldRenderSystemMessageAsActivity(event) {
     // request/reply protocol prompts are the exception because they are the
     // durable user-visible communication channel between sessions.
     if (event?.eventType !== "system.message") return false;
-    return !isSessionMessageText(messageTextFromEvent(event));
+    // A workflow's message (batch 7, w-4) is shown in the chat too, as its "Workflow · <type>" card; only when its
+    // recorded sender is the workflow's (SF-2, UI-5).
+    const text = messageTextFromEvent(event);
+    const update = parseWorkflowUpdateText(text);
+    return !isSessionMessageText(text) && !(update && isWorkflowUpdateSender(event?.data?.sender, update.type));
 }
 
 function buildEmbeddedSystemNoticeActivityItems(event, role) {
@@ -1401,6 +1554,15 @@ function formatActivity(event) {
             runs = buildLabeledActivityRuns(time, "[error]", "red", body || "session error", "white");
             break;
 
+        // Owner decision Q2: the workflow reminded this agent chat, inside its turn, to finish its step.
+        case "runtime.workflow_step_reminded": {
+            const data = event?.data ?? {};
+            const step = typeof data.stateId === "string" && data.stateId ? `step '${data.stateId}'` : "its step";
+            const count = Number.isSafeInteger(data.n) && Number.isSafeInteger(data.max) ? ` (${data.n} of ${data.max})` : "";
+            runs = buildLabeledActivityRuns(time, "[workflow]", "gray", `Reminded to finish ${step}${count}`, "gray");
+            break;
+        }
+
         case "system.message":
             if (isRehydrationNoticeText(messageTextFromEvent(event))) {
                 runs = buildLabeledActivityRuns(
@@ -1496,10 +1658,16 @@ export function buildHistoryModel(events = [], options = {}) {
         if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
             settleAssistantResponses(chat, event);
         }
+        if (isWorkflowEvent(event)) {
+            const message = buildWorkflowChatMessage(event);
+            if (message) appendWorkflowProgress(chat, event, message);
+            continue;
+        }
         if (event.eventType === "user.message") {
             activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "user"));
-            const message = buildChatMessage(event, "user");
-            if (message) chat.push(message);
+            const items = buildUserMessageItems(event);
+            chat.push(...items);
+            const message = items.find(item => item.role === "user") ?? null;
             if (message?.kind === "canvas-action") {
                 const actionActivity = buildCanvasActionActivity(event, message);
                 if (actionActivity) activity.push(actionActivity);
@@ -1608,6 +1776,15 @@ export function appendEventToHistory(history, event) {
     appendSessionWarning(next.chat, event);
     next.chat = clampHistoryItems(next.chat, loadedEventLimit);
 
+    if (isWorkflowEvent(event)) {
+        const message = buildWorkflowChatMessage(event);
+        if (message) {
+            appendWorkflowProgress(next.chat, event, message);
+            next.chat = clampHistoryItems(next.chat, loadedEventLimit);
+        }
+        return next;
+    }
+
     if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
         settleAssistantResponses(next.chat, event);
     }
@@ -1654,21 +1831,22 @@ export function appendEventToHistory(history, event) {
 
     if (event.eventType === "user.message") {
         next.activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "user"));
-        const message = buildChatMessage(event, "user");
+        const items = buildUserMessageItems(event);
+        const message = items.find(item => item.role === "user") ?? null;
         if (message?.kind === "canvas-action") {
             const actionActivity = buildCanvasActionActivity(event, message);
             if (actionActivity) next.activity.push(actionActivity);
         }
         next.activity = clampHistoryItems(next.activity, loadedEventLimit);
-        if (!message) return next;
+        if (!items.length) return next;
         // Prospective flag: covers a bulk load where the stop event arrived
         // before this message in the reduce order.
-        if (Array.isArray(message.clientMessageIds)
+        if (message && Array.isArray(message.clientMessageIds)
             && message.clientMessageIds.some((id) => next.stoppedMessageIds.includes(id))) {
             message.stopped = true;
         }
-        next.chat = reconcileOptimisticMessage(next.chat, message);
-        next.chat.push(message);
+        if (message) next.chat = reconcileOptimisticMessage(next.chat, message);
+        next.chat.push(...items);
         next.chat = clampHistoryItems(dedupeChatMessages(next.chat), loadedEventLimit);
         return next;
     }

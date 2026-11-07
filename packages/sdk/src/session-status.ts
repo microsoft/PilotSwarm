@@ -6,6 +6,7 @@ import type {
 } from "./types.js";
 
 type TerminalSessionLike = {
+    sessionKind?: string | null;
     parentSessionId?: string | null;
     isSystem?: boolean;
     rowState?: string | null;
@@ -30,7 +31,24 @@ export function isCompletedTerminalSession(input: TerminalSessionLike): boolean 
     return input.turnResultType === "completed" || input.latestResponseType === "completed";
 }
 
+/**
+ * Whether a workflow session's row holds its run's end (failed, completed or cancelled): the workflow store wrote it,
+ * and it stands over whatever its controller orchestration says (review note on F-C2, review B1, adversarial review
+ * R2-RT-2), so a status read answers it and never writes over it.
+ */
+export function workflowOwnsTerminalRow(input: Pick<TerminalSessionLike, "sessionKind" | "rowState">): boolean {
+    return input.sessionKind === "workflow" && (input.rowState === "failed" || input.rowState === "completed" || input.rowState === "cancelled");
+}
+
 export function deriveSessionStatus(input: TerminalSessionLike): PilotSwarmSessionStatus {
+    // A workflow's row is written by the workflow store, and a terminal one is its run's end. It stands while the
+    // controller finishes (it ends the step children and tells the parent first, still publishing "running"), so a read
+    // in that moment answers the run's end, as the row and the session list do (review note on F-C2). It stands too when
+    // the controller orchestration failed after the end was stored (its notice to the parent never got through: review
+    // R2-RT-2). Once the workflow has a live run the row is that run's: its admission resets the row to pending, and a
+    // test run's projections no longer change its state or error (WorkflowStore.project and insertRun; review B1). A
+    // draft with only test runs shows its latest test.
+    if (workflowOwnsTerminalRow(input)) return input.rowState as PilotSwarmSessionStatus;
     if (input.orchestrationStatus === "Failed") return "failed";
     if (isCompletedTerminalSession(input)) return "completed";
     if (input.orchestrationStatus === "Running" && !input.status) {
@@ -41,12 +59,28 @@ export function deriveSessionStatus(input: TerminalSessionLike): PilotSwarmSessi
     return (input.status || input.rowState || "pending") as PilotSwarmSessionStatus;
 }
 
+/**
+ * A conversational session's completion, written back by a status read. Never a workflow session's (R2-RT-2 and its
+ * re-check RC1): the workflow store writes its row, and a read's snapshot may be older than a run end or a repair
+ * committed since; a failed controller is written back by the store's own conditional write (recordControllerFailed).
+ */
 export function shouldSyncCompletedStatus(input: TerminalSessionLike): boolean {
-    return isCompletedTerminalSession(input) && input.rowState !== "completed";
+    return input.sessionKind !== "workflow" && isCompletedTerminalSession(input) && input.rowState !== "completed";
 }
 
+/** A failed orchestration, written back by a status read; never a workflow session's (see shouldSyncCompletedStatus). */
 export function shouldSyncFailedStatus(input: TerminalSessionLike): boolean {
-    return input.orchestrationStatus === "Failed" && input.rowState !== "failed";
+    return input.sessionKind !== "workflow" && input.orchestrationStatus === "Failed" && input.rowState !== "failed";
+}
+
+/**
+ * Whether a status read should ask the workflow store to record a workflow's failed controller (re-check R2-RT2-RC1): its
+ * controller orchestration failed and the row it read does not say the run ended. The store decides again under the
+ * session lock, from the row (and a v2 workflow's live run) as they are then; a legacy version 1 workflow, known by its
+ * stored admission, is recorded too (WorkflowStore.recordControllerFailed; R2-RC2-RT2-1).
+ */
+export function shouldRecordWorkflowControllerFailed(input: TerminalSessionLike): boolean {
+    return input.sessionKind === "workflow" && input.orchestrationStatus === "Failed" && !workflowOwnsTerminalRow(input);
 }
 
 export function deriveStatusFromCmsAndRuntime(opts: {
@@ -58,6 +92,7 @@ export function deriveStatusFromCmsAndRuntime(opts: {
     const row = opts.row ?? null;
     const customStatus = opts.customStatus ?? {};
     return deriveSessionStatus({
+        sessionKind: row?.sessionKind,
         parentSessionId: row?.parentSessionId,
         isSystem: row?.isSystem,
         rowState: row?.state,
@@ -80,12 +115,19 @@ export function deriveStatusFromCmsAndRuntime(opts: {
  * the same error to the caller. Rewriting the row to "running" here made the
  * list (row-based) and the detail (runtime-based) disagree, and the portal
  * flipped the Warning card off and on with every poll.
+ *
+ * Null for a workflow session: the workflow store writes its row, and a failed
+ * row is its run's end. Its controller is still Running for a moment after
+ * that (it tells the parent first), so a read in that moment rewrote a failed
+ * run to "running", and the list showed it running for good (F-C2).
  */
 export function resolveStaleRunningRowRecovery(input: {
     rowState?: string | null;
     status?: string | null;
     orchestrationStatus?: string | null;
+    sessionKind?: string | null;
 }): string | null {
+    if (input.sessionKind === "workflow") return null;
     if (input.orchestrationStatus !== "Running") return null;
     if (input.rowState !== "error" && input.rowState !== "failed") return null;
     const status = typeof input.status === "string" ? input.status : "";

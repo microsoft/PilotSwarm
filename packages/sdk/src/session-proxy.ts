@@ -1,4 +1,4 @@
-import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, routeTurnControlActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, registerWorkflowIntakeTurnActivity, routeTurnControlActivity, routeWorkflowRequestActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import nodeCrypto from "node:crypto";
 import { createCopilotClient } from "./copilot-client.js";
 import {
@@ -28,11 +28,12 @@ import { loadAdminScope } from "../api/src/admin-scope.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
 import type { StorageConfig } from "./storage-config.js";
-import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type OrchestrationInput, type LateSteer, type TurnEndKind, type TurnStartRecord } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, INTAKE_ENDED_BEFORE_SEND_MESSAGE, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type TurnOptions, type OrchestrationInput, type LateSteer, type TurnEndKind, type TurnStartRecord, type TurnControl } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
 import { PilotSwarmClient } from "./client.js";
+import { DURABLE_SESSION_INTAKE_VERSION } from "./orchestration-version.js";
 import { PilotSwarmManagementClient, type SessionOrchestrationStats } from "./management-client.js";
 import { replyInternalSessionMessage, sendInternalSessionMessage } from "./session-messages.js";
 import { loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
@@ -63,9 +64,10 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCursor, type TurnLifecycleContext } from "./session-lifecycle.js";
+import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCursor, savedTurnVisitFence, type TurnLifecycleContext } from "./session-lifecycle.js";
 import { readTurnCommitFile, supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 import { LiveTurnControl } from "./turn-control.js";
+import { workflowVisitOfStopRequestId, type WorkflowTurnVisit } from "./workflow/v2/store.js";
 import { CARRIED_STEERS_WAKE_PROMPT } from "./turn-control-contract.js";
 import { parentControlRequestId, steerChildTurn, stopChildTurn, type MessageAgentDelivery } from "./parent-turn-control.js";
 import { faultPoint, faultPointAsync } from "./fault-injection.js";
@@ -73,6 +75,21 @@ import { LatestValuePublisher, type LiveTurnPayload } from "./live-turn.js";
 import { STREAMING_EVENT_TYPES, keepOrchestrationTurnEvents, turnResultSizeWarning } from "./turn-result-events.js";
 import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } from "./model-event-logging.js";
 import type { NativeTasksPayload } from "./native-task-observer.js";
+import { spawnWorkflowFromTool } from "./workflow/spawn.js";
+import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, workflowToolErrorPayload, type WorkflowToolHost } from "./workflow/v2/tools.js";
+import { WORKFLOW_UPDATE_DATA_LINE, isWorkflowRuntimeSender, parseWorkflowUpdateHeader, workflowRuntimeSender } from "./workflow/v2/parent-messages.js";
+import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher, workflowRespondFailure } from "./workflow/v2/request-service.js";
+import { completeWorkflowNodeFromTool, workflowCompletionFailure } from "./workflow/v2/agent-node-service.js";
+import { keepWorkflowBaseInstructions, sdkSystemPromptEchoContent, workflowBaseInstructionsRef, workflowBaseInstructionsText } from "./workflow/v2/base-instructions.js";
+import { publishedScheduleActive } from "./workflow/v2/agent-reminder.js";
+import { createWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
+import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
+import { authorizeWorkflowTestNotice, workflowTestAgentScope, workflowTestAgentToolCall } from "./workflow/v2/test-agent-tools.js";
+import { sessionInsideWorkflow, spawnNesting, spawnNestingRefusal, workflowDefinitionToolsRefusal, workflowDefinitionToolsRefused } from "./workflow/v2/input-policy.js";
+import { applyOperatorCommandToWorkflowV2, applySessionCommandToWorkflowV2 } from "./workflow/v2/service.js";
+import { composeIntakePrompt, intakeExposedWitness, parseIntakeTurnField, type IntakeTurnField } from "./workflow/v2/intake.js";
+import { admitWorkflowIntake, WorkflowIntakeAdmissionError } from "./workflow/v2/intake-admission.js";
+import type { SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
 
@@ -102,12 +119,21 @@ export type RequiredToolAgentResolution =
     | { status: "not_found"; candidates: string[] }
     | { status: "ambiguous"; candidates: string[] };
 
-/** Same lineage principal for inline and durable agent selection. */
-async function resolveCallerAgentOwnerKey(catalog: SessionCatalog | null | undefined, sessionId?: string): Promise<string | null> {
+/** Same lineage principal for inline and durable agent selection (and a workflow v2 publication's named agents, agent-resolver.ts). */
+export async function resolveCallerAgentOwnerKey(catalog: Pick<SessionCatalog, "getSession"> | null | undefined, sessionId?: string): Promise<string | null> {
     const owner = catalog && sessionId
         ? await resolveEffectiveSpawnOwner((id) => catalog.getSession(id), sessionId).catch(() => null)
         : null;
     return owner?.provider && owner?.subject ? `${owner.provider}\u0001${owner.subject}` : null;
+}
+
+/**
+ * The loaded agents a name may resolve to: every one but an exact earlier
+ * package revision installed for pinned sessions (workflow package pins,
+ * R18; agent-package-pins.ts), which answers only a binding to its own id.
+ */
+export function unpinnedAgents<T>(agents?: T[]): T[] | undefined {
+    return agents?.filter((agent) => !(agent as any)?.pinnedRevision);
 }
 
 /**
@@ -486,9 +512,115 @@ function decorateRehydrationSystemPrompt(text?: string, workerNodeId?: string): 
     );
 }
 
-function isInternalSystemPrompt(text?: string): boolean {
+/**
+ * The sender a workflow's message is recorded with (batch 7, w-4): kind "workflow", the workflow's name (or its session),
+ * and the header's type and ids; null for any other text. Provenance comes from the queued message's server-stamped
+ * sender, never from the text (adversarial review SF-2): only a message the runtime queued with its own sender for the
+ * header's type (WORKFLOW_RUNTIME_SENDERS) is a workflow's. A person's or an agent's text that starts with the same
+ * header stays their message, with their sender.
+ */
+export function workflowUpdateSender(text: unknown, stampedSender: unknown): Record<string, unknown> | null {
+    const header = parseWorkflowUpdateHeader(typeof text === "string" ? normalizePromptText(text) : text);
+    if (!header || !isWorkflowRuntimeSender(stampedSender, header.type)) return null;
+    // `workflow=<name>@<version>`: the version has no "@" (a semantic version), so the name is everything before the last one.
+    const workflow = header.fields.workflow ?? "";
+    const name = workflow.includes("@") ? workflow.slice(0, workflow.lastIndexOf("@")) : workflow || null;
+    return {
+        kind: "workflow",
+        display: name || (header.fields.from ? `workflow ${header.fields.from.slice(0, 8)}` : "workflow"),
+        workflow: { type: header.type, sessionId: header.fields.from ?? null, runId: header.fields.run ?? null },
+    };
+}
+
+/**
+ * The prompt every session orchestration version gives a system-only turn: a child digest or a wake whose instructions
+ * are all system context (INTERNAL_SYSTEM_TURN_PROMPT in each version's state.ts; the same text in all of them).
+ */
+export const SYSTEM_ONLY_TURN_PROMPT = "Internal orchestration wake-up. The user did not send a new message. Continue with the latest system instructions.";
+
+/**
+ * F-C3: whether a turn carries only the runtime's own words: a ROOT session's system-only turn (SYSTEM_ONLY_TURN_PROMPT,
+ * a bootstrap turn) with no person's words folded in (held prompts, carried or open steers, workflow intake items), no
+ * attachments and no required tool. Its empty answer is completed quietly (TurnOptions.quietEmptyAnswer). A child
+ * session never is: its empty completion would be reported to its parent.
+ */
+export function isQuietSystemOnlyTurn(input: {
+    prompt?: string; bootstrap?: boolean; parentSessionId?: string; requiredTool?: string; systemContextInPrompt?: boolean;
+    stashedPrompts?: unknown; foldedText?: boolean; intake?: boolean; attachments?: number;
+}): boolean {
+    const bare = input.systemContextInPrompt ? splitSystemContextBlock(input.prompt ?? "").prompt : (input.prompt ?? "");
+    return !input.parentSessionId
+        && input.bootstrap === true
+        && bare.trim() === SYSTEM_ONLY_TURN_PROMPT
+        && !input.requiredTool
+        && !(Array.isArray(input.stashedPrompts) && input.stashedPrompts.length > 0)
+        && input.foldedText !== true
+        && input.intake !== true
+        && (input.attachments ?? 0) === 0;
+}
+
+/**
+ * The workflow notices that say they need no answer: a send state's message (WORKFLOW_UPDATE type `message`, "Use it as
+ * the user asked; it needs no answer"). The run's end asks for a report and a request for an answer, so neither is one.
+ */
+const NO_ANSWER_WORKFLOW_UPDATE_TYPES: ReadonlySet<string> = new Set(["message"]);
+
+/**
+ * Review SDK3-F1: the notice type when `text` is exactly ONE workflow notice that needs no answer, as the runtime renders
+ * it (workflowUpdateMessage): four lines, the header (type `message`), one plain sentence, the data line and the JSON on
+ * one line that parses. Null for anything else: another type, a malformed notice, or a notice with anything before or
+ * after it (a merged batch of queued messages joins their texts with blank lines). Fails closed.
+ */
+export function workflowSingleNoAnswerNotice(text: unknown): string | null {
+    if (typeof text !== "string") return null;
+    const lines = normalizePromptText(text).split("\n");
+    if (lines.length !== 4) return null;
+    const header = parseWorkflowUpdateHeader(lines[0]);
+    if (!header || !NO_ANSWER_WORKFLOW_UPDATE_TYPES.has(header.type)) return null;
+    if (!/^\[WORKFLOW_UPDATE(?: [a-z_]+=[^\s\]]+)+\]$/.test(lines[0])) return null;
+    if (!lines[1].trim() || /[[\]<>]/.test(lines[1]) || lines[2] !== WORKFLOW_UPDATE_DATA_LINE) return null;
+    try { JSON.parse(lines[3]); } catch { return null; }
+    return header.type;
+}
+
+/**
+ * Owner "No response" dump (2026-11-06): whether a turn answers only workflow notices that say they need no answer, in
+ * a ROOT session, with no person's words folded in (held prompts, carried or open steers), no attachments and no
+ * required tool. Two ways such a notice arrives:
+ * - queued (the legacy delivery): the turn's prompt is exactly one such notice, and its server-stamped sender is the
+ *   runtime's own for that notice type (SF-2), with no intake items. The queue merges messages whose senders share one
+ *   key, and every system sender shares the key `system` (review SDK3-F1): a run's end, a request or any other system
+ *   text merged after a message notice keeps the first one's sender. So the whole prompt must be one notice, as the
+ *   runtime renders it (workflowSingleNoAnswerNotice); any concatenation keeps the error and its retries;
+ * - durable intake: the turn's own prompt is the runtime's system-only prompt, and every intake item is exactly one such
+ *   notice (an intake item is a send state's message the runtime stored itself).
+ * Its empty answer is completed quietly, as F-C3's (TurnOptions.quietEmptyAnswer); every other empty answer keeps the
+ * error and its retries. A child session never is: its empty completion would be reported to its parent.
+ */
+export function isQuietWorkflowNoticeTurn(input: {
+    prompt?: string; parentSessionId?: string; requiredTool?: string; systemContextInPrompt?: boolean; sender?: unknown;
+    stashedPrompts?: unknown; foldedText?: boolean; intakeTexts?: readonly string[] | null; attachments?: number;
+}): boolean {
+    if (input.parentSessionId || input.requiredTool || input.foldedText === true || (input.attachments ?? 0) !== 0) return false;
+    if (Array.isArray(input.stashedPrompts) && input.stashedPrompts.length > 0) return false;
+    const bare = (input.systemContextInPrompt ? splitSystemContextBlock(input.prompt ?? "").prompt : (input.prompt ?? "")).trim();
+    const noAnswerType = (text: unknown): string | null => workflowSingleNoAnswerNotice(text);
+    const intakeTexts = input.intakeTexts ?? null;
+    if (intakeTexts !== null && intakeTexts.length > 0) {
+        return bare === SYSTEM_ONLY_TURN_PROMPT && intakeTexts.every(text => noAnswerType(text) !== null);
+    }
+    const type = noAnswerType(bare);
+    return type !== null && isWorkflowRuntimeSender(input.sender, type);
+}
+
+/**
+ * Whether a prompt is the runtime's own notice, recorded as a system.message. A workflow's message is one only when the
+ * runtime queued it with its own sender (`sender`, the queued message's server-stamped sender; SF-2).
+ */
+function isInternalSystemPrompt(text?: string, sender?: unknown): boolean {
     const normalized = normalizePromptText(text);
     if (!normalized) return false;
+    if (/^\[WORKFLOW_UPDATE\b/i.test(normalized)) return workflowUpdateSender(normalized, sender) !== null;
 
     return /^\[SYSTEM:/i.test(normalized)
         || /^\[CHILD_UPDATE\b/i.test(normalized)
@@ -544,6 +676,16 @@ function buildLossyReplayMessage(sessionId: string, detail: string): string {
 
 function normalizeEventData(eventData?: Record<string, unknown>): Record<string, unknown> | null {
     return eventData && typeof eventData === "object" ? eventData : null;
+}
+
+/**
+ * How many messages a turn without a sender was merged from (review SF-1), or null: the orchestration's queue merges
+ * consecutive queued prompts into one turn and gives it no sender when their senders differ, with every message's
+ * client id. Two or more ids without a sender is such a turn. Pure.
+ */
+export function mergedTurnMessages(sender: unknown, clientMessageIds: readonly string[]): number | null {
+    if (sender && typeof sender === "object") return null;
+    return clientMessageIds.length >= 2 ? clientMessageIds.length : null;
 }
 
 function summarizeSdkSystemPromptEchoEvent(
@@ -724,16 +866,23 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean; stashedPrompts?: string[]; stashedAttachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; workspaceRevision?: number; workspaceNotice?: string; carriedSteers?: import("./types.js").LateSteer[] },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean; stashedPrompts?: string[]; stashedAttachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; workspaceRevision?: number; workspaceNotice?: string; carriedSteers?: import("./types.js").LateSteer[]; intake?: IntakeTurnField },
         ) {
-            const turnControl = routingContract === "turn-control-v1";
+            // Workflow intake (1.0.83, INACTIVE): turns run as runTurnV5 /
+            // runTurnEpochV5, on the turn-control path, with the workflow-
+            // request tag only; their input may carry the invocation's
+            // `intake` field.
+            const workflowIntake = routingContract === "workflow-intake-v1";
+            const turnControl = routingContract === "turn-control-v1" || workflowIntake;
             const task = ctx.scheduleActivityOnSession(
                 // The epoch-start turn is a distinct activity name (runTurn2):
                 // with an explicit contract since 1.0.67. New handoffs ALSO
                 // require a capability tag: activity names alone do not stop
                 // old workers from dequeuing work they cannot execute.
                 // Session turn control (1.0.81): runTurnV4 / runTurnEpochV4.
-                turnControl
+                workflowIntake
+                    ? WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES[turnMeta?.epochStart ? "runTurn2" : "runTurn"]
+                    : turnControl
                     ? TURN_CONTROL_ACTIVITY_NAMES[turnMeta?.epochStart ? "runTurn2" : "runTurn"]
                     : routedActivityName(turnMeta?.epochStart ? "runTurn2" : "runTurn", routingContract),
                 {
@@ -784,9 +933,15 @@ export function createSessionProxy(
                     ...(turnControl && turnMeta?.carriedSteers && turnMeta.carriedSteers.length > 0
                         ? { carriedSteers: turnMeta.carriedSteers }
                         : {}),
+                    // 1.0.83: the invocation this attempt carries, composed by the worker before the prompt it sends.
+                    ...(workflowIntake && turnMeta?.intake ? { intake: turnMeta.intake } : {}),
                 },
                 affinityKey,
             );
+            // Workflow intake (1.0.83): only workers that declare the
+            // workflow-request capability run these turns; an older worker
+            // would ignore the `intake` field and drop its items.
+            if (workflowIntake) return routeWorkflowRequestActivity(task);
             // Session turn control (1.0.81): every turn goes only to workers
             // that listen for controls. Those workers also declare the
             // handoff and workspace tags.
@@ -1234,6 +1389,20 @@ export function registerActivities(
     workerNodeId?: string,
     /** Artifact store — resolves image attachment refs to bytes inside runTurn. */
     artifactStore?: ArtifactStore | null,
+    /**
+     * Test-only switches. `workflowIntakeTurns` registers orchestration
+     * 1.0.83's turn activities (runTurnV5 / runTurnEpochV5), whose input may
+     * carry an invocation's `intake` field; `intakeAdmissionRetryDelaysMs`
+     * replaces the in-place waits of their admission's transient retries
+     * (intake-admission.ts); `workflowRequests` gives those turns the
+     * respond_session_request tool (workflow request states), and starts the
+     * sessions a turn creates (spawn_agent, create_agent_session) and a
+     * non-system child the orchestration spawns (spawnChildSession) at 1.0.83.
+     * INACTIVE: only
+     * tests pass them, and a worker created with the test option
+     * workflowRequests (milestone-worker.ts).
+     */
+    testOptions?: { workflowIntakeTurns?: boolean; intakeAdmissionRetryDelaysMs?: readonly number[]; workflowRequests?: boolean },
 ) {
     // Shared config for every activity-layer internal PilotSwarmClient /
     // PilotSwarmManagementClient. Carries the FULL facts/CMS target (07 P3) so
@@ -1254,6 +1423,15 @@ export function registerActivities(
         ...(clientConfig?.aadDbUser != null && { aadDbUser: clientConfig.aadDbUser }),
         ...(clientConfig?.modelProvidersPath != null && { modelProvidersPath: clientConfig.modelProvidersPath }),
     });
+    // Batch 7 (n-5): those clients borrow this worker's own duroxide provider, session catalog and fact store
+    // (PilotSwarmClient._startOnShared) instead of opening three pools of their own per call or per turn, which is how one
+    // status turn opened 13 or more extra connections at once (2026-11-04). Their queries share the worker's bounded
+    // pools; stopping them leaves those open. A worker without all three (tests, SQLite) starts them as before.
+    const sharedClientStorage = provider && catalog && factStore ? { provider, catalog, factStore } : null;
+    const startInternalClient = async (client: PilotSwarmClient): Promise<void> => {
+        if (sharedClientStorage) await client._startOnShared(sharedClientStorage);
+        else await client.start();
+    };
 
     /**
      * Session workspaces: the attach and path check behind a change, on this
@@ -1468,6 +1646,14 @@ export function registerActivities(
             /** 1.0.81 (runTurnV4): steers carried from an earlier turn. Used from phase A4 on. */
             carriedSteers?: import("./types.js").LateSteer[];
         },
+        /** 1.0.83 (runTurnV5): the invocation this attempt carries, already checked; null on every other name. */
+        turnIntake: IntakeTurnField | null = null,
+        /**
+         * A 1.0.83 turn of a worker that runs workflow request states (test
+         * option workflowRequests; INACTIVE): the session can answer a
+         * workflow's request (respond_session_request).
+         */
+        workflowRequestTurn = false,
     ): Promise<TurnResult> => {
         // Attachment count is traced unconditionally: a 2026-07-21 incident
         // showed turns whose ActivityScheduled input carried refs executing
@@ -1538,6 +1724,9 @@ export function registerActivities(
         if (!orchestrationSupportsWorkspaces(activityCtx?.orchestrationVersion)) {
             (runConfig as ManagedSessionConfig).workspaceToolsBlocked = true;
         }
+        // Workflow v2 (INACTIVE: only on a worker that runs controller 1.9.0): the session's permission handler can refuse MCP
+        // tools while it runs under a real-agent test.
+        if (workflowRequestTurn) (runConfig as ManagedSessionConfig).workflowMilestoneTurn = true;
         // Session workspaces: a cleared workspace still sends its revision;
         // the worker then passes an explicit folder and keeps hooks off.
         if (!runConfig.workspace && (input.workspaceRevision ?? 0) > 0) {
@@ -1624,6 +1813,70 @@ export function registerActivities(
         let inlineSdkClientPromise: Promise<PilotSwarmClient> | null = null;
         let cancelPoll: ReturnType<typeof setInterval> | null = null;
         let finalTurnResult: TurnResult | null = null;
+        // Workflow intake (runTurnV5, design 5.5; exposure protocol revision
+        // 2, section 4; review of c1bda7a2, W1): each run of this attempt (the
+        // first, and each recovery re-run) keeps its own evidence: whether
+        // that run's model request included the carried items (set only by
+        // the model session's callback right before an initial send that
+        // includes them, once the store admitted them and after every check
+        // that ends a run without a send), and the store's refusal of them to
+        // that run, which then sent its prompt without them. The result's
+        // witness is the latest run's own: sent only when that run included
+        // the items; refused with its reason; otherwise not sent, and
+        // `exposed` when an earlier run of the attempt included them (they
+        // were possibly seen, though not by the run whose result this is). An
+        // earlier run's include never makes a later run's result sent, and
+        // never hides its refusal. A saved result that this attempt adopts
+        // (the preamble's already-committed turn, or the racing winner of the
+        // commit) keeps the witness it was saved with, or none: evidence of
+        // another attempt is never made up from this one's; the orchestration
+        // reads a missing witness as possibly sent and fails visibly on a
+        // foreign or malformed one (review W2-WIT1, W2-WIT2). Only an attempt
+        // that sent before it lost the commit adds that the items were
+        // possibly seen, to the winner's own witness of the same invocation
+        // that says not sent; the winner's response stands (review W2-WIT4).
+        let intakeIncludedAny = false;
+        let intakeRun: { included: boolean; refused: "exposed" | "settled" | null } | null = null;
+        let adoptedSavedResult = false;
+        const withIntakeWitness = (result: TurnResult): TurnResult => {
+            if (turnIntake === null) return result;
+            const invocationId = turnIntake.invocationId;
+            if (adoptedSavedResult) {
+                const exposed = intakeIncludedAny ? intakeExposedWitness(result.intakeDispatch, invocationId) : null;
+                return exposed === null ? result : { ...result, intakeDispatch: exposed };
+            }
+            if (intakeRun?.included) return { ...result, intakeDispatch: { invocationId, sent: true } };
+            if (intakeRun?.refused) return { ...result, intakeDispatch: { invocationId, sent: false, refused: intakeRun.refused } };
+            if (intakeIncludedAny) return { ...result, intakeDispatch: { invocationId, sent: false, exposed: true } };
+            return { ...result, intakeDispatch: { invocationId, sent: false } };
+        };
+        // The admission of one run's include (the first run's and each recovery re-run's): the same request, so a redelivery
+        // or a re-run of the attempt is the same attempt to the store. `eligible` says whether the activity may still send (it
+        // is false once the activity is cancelled; review of c1bda7a2, W2): asked before the store is, and by the model
+        // session immediately before every send of the run.
+        const intakeAdmissionFor = (promptWithoutIntake: string, run: NonNullable<typeof intakeRun>, eligible: () => boolean)
+            : NonNullable<TurnOptions["intakeAdmission"]> | undefined => {
+            if (turnIntake === null) return undefined;
+            const field = turnIntake;
+            return {
+                promptWithoutIntake,
+                eligible,
+                admit: async (signal: AbortSignal) => {
+                    if (!eligible()) throw new WorkflowIntakeAdmissionError("Workflow intake admission: the activity was cancelled.", true);
+                    const admission = await admitWorkflowIntake(catalog?.workflowStore ? catalog.workflowStore() : null, {
+                        recipientSessionId: input.sessionId, invocationId: field.invocationId, attemptId: field.attemptId,
+                        sentBefore: field.sentBefore, items: field.items,
+                    }, { signal, ...(testOptions?.intakeAdmissionRetryDelaysMs ? { delaysMs: testOptions.intakeAdmissionRetryDelaysMs } : {}) });
+                    if (admission.allowed) return "include";
+                    run.refused = admission.reason;
+                    return "omit";
+                },
+                included: () => {
+                    run.included = true;
+                    intakeIncludedAny = true;
+                },
+            };
+        };
 
         // ── Session turn control (runTurnV4, design 4.7) ───────────────
         // Present only on the V4 names and with a catalog. T3 turn start
@@ -1649,6 +1902,11 @@ export function registerActivities(
                 /** Text folded into the prompt at T3; a recovery re-run folds it again. */
                 carriedText: "",
                 foldedSteerText: "",
+                /**
+                 * Review RT-D2 (C1): a continued workflow chat's turn ends with its visit fence, exactly the turn visit live
+                 * admission uses (inherited included; null visit when it names none); null for every other turn.
+                 */
+                visitFence: null as { visit: string | null } | null,
             }
             : null;
         const sessionDirOf = () => path.join(sessionManager.getSessionStateDir(), input.sessionId);
@@ -1660,7 +1918,8 @@ export function registerActivities(
                 try {
                     // Test-only probe: a turn end that never succeeds (design 5.1, double fault).
                     await faultPointAsync("turn.control.before-end", { sessionId: input.sessionId });
-                    return await catalog!.turnEnd(input.sessionId, tc!.turn, cursor, kind, carried);
+                    return await catalog!.turnEnd(input.sessionId, tc!.turn, cursor, kind, carried,
+                        ...(tc!.visitFence ? [{ visitFence: tc!.visitFence }] : []));
                 } catch (err) {
                     lastErr = err;
                     activityCtx.traceInfo(`[turn-control] turnEnd attempt ${attempt} failed session=${input.sessionId}: ${String((err as Error)?.message ?? err)}`);
@@ -1668,6 +1927,22 @@ export function registerActivities(
                 }
             }
             throw lastErr;
+        };
+        // Review RT-D2 (C1), O-L1: a turn whose result an earlier attempt saved ends with the visit fence its live turn had,
+        // saved with that result (savedTurnVisitFence). This read is only the fallback for a result an older build saved
+        // without it: the turn visit read again as the live turn reads it (this input's prompt ids; a continued chat
+        // only). For an inherited visit that read can differ when a newer named prompt was recorded in between.
+        const rereadTurnVisitFence = async (): Promise<{ visit: string | null } | null> => {
+            if (!workflowRequestTurn || !catalog?.workflowStore) return null;
+            const store = catalog.workflowStore();
+            const lineage = await store.readWorkflowLineage(input.sessionId);
+            if (lineage?.agentRoot?.distance !== 0) return null;
+            const ids: string[] = Array.isArray((input as any).clientMessageIds)
+                ? ((input as any).clientMessageIds as unknown[]).filter((id) => typeof id === "string" && id) as string[]
+                : [];
+            const visit = await cmsRetryCritical(`runTurn.turnVisit session=${input.sessionId}`,
+                () => store.readTurnVisit(input.sessionId, ids), (msg) => activityCtx.traceInfo(msg));
+            return visit ? { visit: visit.nodeExecutionId } : null;
         };
         const finishTurnControl = async (result: TurnResult, cursor: number, opts: { alwaysEnd?: boolean } = {}): Promise<TurnResult> => {
             if (!tc || result.type === "cancelled") return result;
@@ -1693,6 +1968,8 @@ export function registerActivities(
                         ...((result as any).events ? { events: (result as any).events } : {}),
                         ...((result as any).snapshotVersion != null ? { snapshotVersion: (result as any).snapshotVersion } : {}),
                         ...((result as any).workspaceAttached ? { workspaceAttached: true } : {}),
+                        // Workflow intake (runTurnV5): the witness of the attempt that ran stays with the stopped turn.
+                        ...(result.intakeDispatch !== undefined ? { intakeDispatch: result.intakeDispatch } : {}),
                     } as TurnResult;
                 } else if (end.late.length > 0) {
                     out = { ...result, lateSteers: end.late } as TurnResult;
@@ -1776,10 +2053,14 @@ export function registerActivities(
                     snapshotVersion: pre.version,
                     ...(runConfig.workspace ? { workspaceAttached: true } : {}),
                 };
+                // Workflow intake: the saved turn's own witness, or none.
+                adoptedSavedResult = true;
                 if (tc) {
                     // An earlier attempt with this same input saved the turn:
                     // no model run, only T8 with the saved cursor.
                     tc.carriedTaken = tc.carried.length > 0;
+                    // O-L1: the fence saved with the result; an older build's result has none, so it is read again.
+                    tc.visitFence = savedTurnVisitFence(pre.result, tc.turn) ?? await rereadTurnVisitFence();
                     return await finishTurnControl(stored, savedControlCursor(pre.result, tc.turn), { alwaysEnd: true });
                 }
                 return stored;
@@ -2203,6 +2484,31 @@ export function registerActivities(
                 }
             }
         }
+        // Workflow agent states (INACTIVE: only on a turn of a worker that runs them): this session's stored lineage. An
+        // agent state's own child gets complete_workflow_node; every session in an agent state's subtree gets the ask_user
+        // refusal and nests up to level 3 (design 03 human-input denial and depth), and in a test run's agent state's
+        // subtree (design 05 agent mode real) its framework tool calls are intercepted. A session outside every agent state
+        // gets none of these. A lineage or test scope that cannot be read fails the turn (it is retried): a session in an
+        // agent state's subtree never runs a turn without its denial or, under a test, with live tools. Both are read before
+        // the session is created or resumed: the model is declared complete_workflow_node from this turn's config
+        // (session-manager), so the flag must be on it first; the turn's handlers alone are invisible to the model.
+        const workflowLineage = workflowRequestTurn && catalog?.workflowStore
+            ? await catalog.workflowStore().readWorkflowLineage(input.sessionId)
+            : null;
+        const workflowAgentChild = workflowLineage?.agentRoot?.distance === 0;
+        if (workflowAgentChild) (runConfig as ManagedSessionConfig).workflowAgentChild = true;
+        // A1 (Workflow Simplified, spec 14): a session inside a Workflow (an agent node's chat or one of its sub-agents) is
+        // declared no definition tools (spawn_workflow, update_workflow); the bridge below refuses them too.
+        if (workflowDefinitionToolsRefused(workflowLineage)) (runConfig as ManagedSessionConfig).workflowInsideWorkflow = true;
+        const workflowTestScope = workflowLineage?.agentRoot && catalog?.workflowStore
+            ? await workflowTestAgentScope(catalog.workflowStore(), workflowLineage)
+            : null;
+        // The turn-to-visit fence (review RT-1..RT-3; design wfs-rt1-3-fence-design.md, accepted with the parent's decisions):
+        // a turn of an agent state's chat that continues works for one visit, its turn visit (store.readTurnVisit), read
+        // right after the turn starts: a turn whose visit is decided does not run, only a Stop naming that visit stops it,
+        // and its reminder and completion name only that visit. Null for every other session (chat: new included).
+        const workflowFenceStore = workflowAgentChild && catalog?.workflowStore ? catalog.workflowStore() : null;
+        let workflowTurnVisit: WorkflowTurnVisit | null = null;
         // Conditional epoch init (runTurn2): create a brand-new SDK session
         // ONLY when the epoch's chain is empty (preamble "fresh"). A committed
         // grounding turn recovers via already-committed above; a non-empty
@@ -2348,7 +2654,12 @@ export function registerActivities(
             if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
             inlineSdkClientPromise = (async () => {
                 const startedClient = new PilotSwarmClient(internalClientConfig());
-                await startedClient.start();
+                // The turn's own client creates its sub-agents (spawn_agent) and agent sessions (create_agent_session). On a
+                // worker that serves the durable intake's orchestration (the test option workflowRequests, which the Workflow
+                // V2 test environment switch sets; INACTIVE) they start at 1.0.83, as a person's new chat does, so an agent
+                // can delegate writing request, agent and parallel states. Elsewhere they start at the latest version.
+                if (testOptions?.workflowRequests === true) startedClient._startSessionsAt(DURABLE_SESSION_INTAKE_VERSION);
+                await startInternalClient(startedClient);
                 inlineSdkClient = startedClient;
                 return startedClient;
             })();
@@ -2357,6 +2668,50 @@ export function registerActivities(
             } finally {
                 inlineSdkClientPromise = null;
             }
+        };
+
+        // On a turn of a worker that runs controller 1.9.0 (INACTIVE: only tests run one), the workflow tools take its
+        // request, agent and parallel states and its stop and test operations, and a publication pins its named agents:
+        // package agents at the registry's exact revision, this worker's deployment and system agents by name
+        // (agent-resolver.ts). Every other turn's host is unchanged.
+        const workflowV2Host = async (): Promise<WorkflowToolHost> => {
+            if (!catalog?.workflowStore) throw new Error("Workflow v2 storage is unavailable on this worker.");
+            const sdkClient = await getInlineClient();
+            return {
+                catalog, store: catalog.workflowStore(), duroxideClient: sdkClient._getDuroxideClient(),
+                ...(workflowRequestTurn ? {
+                    requests: true,
+                    // The test operations only while workflow test mode is on (spec 16; off by default).
+                    testMode: workflowTestModeFromEnv(),
+                    resolveAgent: createWorkflowAgentResolver({
+                        catalog,
+                        deploymentAgents: () => ({ userAgents: [...(unpinnedAgents(userAgents) ?? [])], systemAgents: [...(systemAgents ?? [])] }),
+                    }),
+                } : {}),
+            };
+        };
+        // A1 (Workflow Simplified, spec 14; E4): a session inside a Workflow (an agent node's chat or one of its sub-agents)
+        // may not create or change workflow definitions. The server decides by the stored lineage, whatever this worker runs
+        // and whatever the session was declared; a lineage that cannot be read refuses the call (it throws).
+        const definitionToolsRefused = async (): Promise<boolean> => {
+            if (workflowLineage) return workflowDefinitionToolsRefused(workflowLineage);
+            if (!catalog?.workflowStore) return false;
+            return await sessionInsideWorkflow(catalog.workflowStore(), input.sessionId);
+        };
+        // The request and agent-state bridges (INACTIVE) need only the workflow store and a duroxide client to wake the
+        // controller: on this worker's own provider, as notifyParent does, with no inline PilotSwarmClient (so no storeUrl).
+        let workflowBridgeClient: WorkflowToolHost["duroxideClient"] | null = null;
+        const workflowBridgeHost = async (): Promise<Pick<WorkflowToolHost, "store" | "duroxideClient">> => {
+            if (!catalog?.workflowStore) throw new Error("Workflow v2 storage is unavailable on this worker.");
+            if (!provider) {
+                const host = await workflowV2Host();
+                return { store: host.store, duroxideClient: host.duroxideClient };
+            }
+            if (!workflowBridgeClient) {
+                const { Client } = (await import("node:module")).createRequire(import.meta.url)("duroxide");
+                workflowBridgeClient = new Client(provider) as WorkflowToolHost["duroxideClient"];
+            }
+            return { store: catalog.workflowStore(), duroxideClient: workflowBridgeClient };
         };
 
         const isAutonomousSystemTurn = () => {
@@ -2385,7 +2740,7 @@ export function registerActivities(
         const resolveAgentConfigInline = (agentName: string) =>
             resolveAgentDefinitionForCaller({
                 agentName,
-                userAgents,
+                userAgents: unpinnedAgents(userAgents),
                 systemAgents,
                 getCallerOwnerKey: getCallerOwnerKeyInline,
             });
@@ -2408,6 +2763,7 @@ export function registerActivities(
                     parentSessionId: child.parentSessionId,
                     isSystem: child.isSystem ?? info.isSystem ?? false,
                     agentId: child.agentId ?? info.agentId,
+                    sessionKind: (child as any).sessionKind ?? info.sessionKind ?? "agent",
                     result: outcome?.summary ?? (typeof outcomeResult?.summary === "string" ? outcomeResult.summary : info.result),
                     contract: contractCurrent ?? undefined,
                     contractStatus: outcome?.contractJson ? "contracted" : undefined,
@@ -2431,6 +2787,21 @@ export function registerActivities(
                 throw new Error(`agent "${targetOrchId}" is a worker-managed system agent and is not a controllable spawned sub-agent`);
             }
             return child;
+        };
+
+        /**
+         * Workflow agent states (R12; INACTIVE: only on a turn of a worker that
+         * runs them): a session in the subtree of an agent state whose
+         * controlling parent agent is this session (recorded when the state
+         * was admitted), which this session may message although it is not its
+         * child. Null for any other session.
+         */
+        const resolveWorkflowDescendant = async (agentId: string) => {
+            if (!workflowRequestTurn || !catalog?.workflowStore) return null;
+            const sessionId = agentId.startsWith("session-") ? agentId.slice("session-".length) : agentId;
+            const lineage = await catalog.workflowStore().readWorkflowLineage(sessionId).catch(() => null);
+            if (!lineage?.agentRoot || lineage.agentRoot.controllingSessionId !== input.sessionId) return null;
+            return { orchId: `session-${sessionId}`, sessionId, sessionKind: "agent", isSystem: false, workflowDescendant: true as const };
         };
 
         /**
@@ -2660,25 +3031,112 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             await sdkClient.deleteSession(targetId);
                             return `[SYSTEM: session ${targetId.slice(0, 8)} was already ${target.state} and has been deleted. Reason: ${reason}]`;
                         }
-                        await sdkClient._getDuroxideClient().enqueueEvent(
-                            `session-${targetId}`,
-                            "messages",
-                            JSON.stringify({ type: "cmd", cmd: "delete", id: `delete-mgr-${Date.now()}`, args: { reason } }),
-                        );
+                        const deleteCommand = { type: "cmd", cmd: "delete", id: `delete-mgr-${Date.now()}`, args: { reason } };
+                        // S7-DX2 follow-up: a v2 workflow is deleted in its store at once; any other session gets the command queued.
+                        if (!await operatorCommandApplied(sdkClient, targetId, deleteCommand)) {
+                            await sdkClient._getDuroxideClient().enqueueEvent(`session-${targetId}`, "messages", JSON.stringify(deleteCommand));
+                        }
                         return `[SYSTEM: graceful deletion requested for ${targetId}. It cancels its descendants first, then deletes itself. Poll read_session_info to confirm. Reason: ${reason}]`;
                     }
 
                     const cmd = action === "complete" ? "done" : "cancel";
-                    await sdkClient._getDuroxideClient().enqueueEvent(
-                        `session-${targetId}`,
-                        "messages",
-                        JSON.stringify({ type: "cmd", cmd, id: `${cmd}-mgr-${Date.now()}`, args: { reason } }),
-                    );
+                    const command = { type: "cmd", cmd, id: `${cmd}-mgr-${Date.now()}`, args: { reason } };
+                    // S7-DX2 follow-up: a v2 workflow's active run ends in its store at once; the command is then queued only when
+                    // its controller is to finish it (any other session gets it queued as before).
+                    if (!await operatorCommandApplied(sdkClient, targetId, command)) {
+                        await sdkClient._getDuroxideClient().enqueueEvent(`session-${targetId}`, "messages", JSON.stringify(command));
+                    }
                     return `[SYSTEM: ${action} requested for ${targetId}. It settles on its own schedule — poll read_session_info to confirm. Reason: ${reason}]`;
                 } catch (error: any) {
                     return `[SYSTEM: manage_agent_session failed — ${error?.message || String(error)}]`;
                 }
             },
+
+            /**
+             * spawn_workflow: start a workflow session as a CHILD of
+             * this session. Runs inline in the runTurn activity and does not
+             * end the turn. See workflow/spawn.ts for the id rule.
+             */
+            spawnWorkflow: async (args: SpawnWorkflowToolArgs, call?: { toolCallId?: string }) => spawnWorkflowFromTool(args, call, {
+                parentSessionId: input.sessionId,
+                enabled: () => sessionManager.workflowScriptsEnabled,
+                definitionToolsRefused,
+                getSession: async (id) => catalog ? catalog.getSession(id) : null,
+                resolveOwner: async () => catalog
+                    ? resolveEffectiveSpawnOwner((id) => catalog!.getSession(id), input.sessionId)
+                    : null,
+                captureToolBinding: () => sessionManager.captureWorkflowToolBinding(input.sessionId),
+                createWorkflowSession: async (config, binding) => (await getInlineClient()).createWorkflowSession(config, binding),
+                workflowV2Host,
+            }),
+
+            /**
+             * update_workflow / read_workflow: the calling session is the host-stamped actor. A host that cannot be made (its
+             * store unreachable, for example) answers as the tool's own refusals do, with a code and the reason (batch 7, n-3),
+             * never as a failed tool call.
+             */
+            updateWorkflow: async (args: Record<string, unknown>) => {
+                // A1: refused inside a Workflow, before anything else is read.
+                try { if (await definitionToolsRefused()) return workflowDefinitionToolsRefusal("update_workflow"); } catch (error) { return workflowToolErrorPayload(error); }
+                let host: WorkflowToolHost;
+                try { host = await workflowV2Host(); } catch (error) { return workflowToolErrorPayload(error); }
+                return updateWorkflowFromTool(args, { callerSessionId: input.sessionId, host });
+            },
+            readWorkflow: async (args: Record<string, unknown>) => {
+                let host: WorkflowToolHost;
+                try { host = await workflowV2Host(); } catch (error) { return workflowToolErrorPayload(error); }
+                return readWorkflowFromTool(args, { callerSessionId: input.sessionId, host });
+            },
+            /** send_workflow_input: the calling session is the host-stamped sender. */
+            sendWorkflowInput: async (args: Record<string, unknown>) => {
+                let host: WorkflowToolHost;
+                try { host = await workflowV2Host(); } catch (error) { return workflowToolErrorPayload(error); }
+                return sendWorkflowInputFromTool(args, { callerSessionId: input.sessionId, host });
+            },
+            /** respond_session_request (request states, INACTIVE): the calling session is the host-stamped responder. */
+            ...(workflowRequestTurn ? {
+                respondSessionRequest: async (args: Record<string, unknown>) => {
+                    // Re-check S-SF-F3: a host that cannot be made is the tool's coded answer, never the error's own text.
+                    let host: Awaited<ReturnType<typeof workflowBridgeHost>>;
+                    try { host = await workflowBridgeHost(); } catch (error) { return workflowRespondFailure(error); }
+                    return respondSessionRequestFromTool(args, {
+                        callerSessionId: input.sessionId, store: host.store,
+                        dispatcher: new WorkflowResponseWakeDispatcher(host.store, host.duroxideClient),
+                    });
+                },
+            } : {}),
+            /** Workflow agent states (INACTIVE): a session in an agent state's subtree gets the ask_user refusal (R14). */
+            ...(workflowLineage?.agentRoot ? { workflowAgentSubtree: true } : {}),
+            /**
+             * Real-agent test runs (design 05 agent mode real; INACTIVE): a session in a test run's agent state's subtree runs
+             * no framework tool; each call is recorded for the test's parent, or a fixture, to answer (test-agent-tools.ts).
+             */
+            ...(workflowTestScope ? {
+                workflowTestToolCall: async (tool: string, args: Record<string, unknown>) => {
+                    const host = await workflowBridgeHost();
+                    return await workflowTestAgentToolCall({
+                        store: host.store,
+                        authorizeNotice: (workflowSessionId, parentSessionId) => authorizeWorkflowTestNotice(
+                            id => catalog!.getSession(id), workflowSessionId, parentSessionId),
+                        notice: (parentSessionId, prompt, clientMessageId) => host.duroxideClient.enqueueEvent(`session-${parentSessionId}`, "messages",
+                            JSON.stringify({ prompt, sender: { kind: "system", display: "workflow test" }, clientMessageIds: [clientMessageId] })),
+                    }, workflowTestScope, input.sessionId)(tool, args);
+                },
+            } : {}),
+            /** Controller 1.9.0's tool surface (INACTIVE): the workflow tools' descriptions match what their host takes (R26). */
+            ...(workflowRequestTurn ? { workflowMilestone: true } : {}),
+            /** complete_workflow_node (agent states, INACTIVE): the calling session is the host-stamped child of the state. */
+            ...(workflowAgentChild ? {
+                completeWorkflowNode: async (args: Record<string, unknown>) => {
+                    // Adversarial review R2-RT-3: a host that cannot be made is the tool's coded answer, never the error's own text.
+                    let host: Awaited<ReturnType<typeof workflowBridgeHost>>;
+                    try { host = await workflowBridgeHost(); } catch (error) { return workflowCompletionFailure(error); }
+                    return completeWorkflowNodeFromTool(args, { callerSessionId: input.sessionId, store: host.store, client: host.duroxideClient,
+                        // A continued chat's turn completes only the visit whose prompt it received (RT-3); a turn with none
+                        // (null) completes none (D1).
+                        ...(workflowTurnVisit ? { turnVisit: workflowTurnVisit.nodeExecutionId } : {}) });
+                },
+            } : {}),
 
             /**
              * Create a TOP-LEVEL session — the Agent Manager's test loop (§7).
@@ -2836,10 +3294,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     if (Object.hasOwn(args, "required_tool") || Object.hasOwn(args, "requiredTool")) {
                         return `[SYSTEM: spawn_agent failed — required_tool is no longer supported by spawn_agent. Use ps_list_agents to find a suitable named agent, then pass its exact agent_name and your assignment in task.]`;
                     }
-                    const childNestingLevel = (input.nestingLevel ?? 0) + 1;
-                    if (childNestingLevel > MAX_NESTING_LEVEL) {
-                        return `[SYSTEM: spawn_agent failed — you are already at nesting level ${input.nestingLevel ?? 0} (max ${MAX_NESTING_LEVEL}). ` +
-                            `Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]`;
+                    // Workflow agent states (R16): a session in an agent state's subtree nests by its stored lineage, up to
+                    // level 3 (an agent state's child at level 2 may spawn one level). Elsewhere the ordinary limit applies.
+                    const { childNestingLevel, maxNestingLevel } = spawnNesting(input.nestingLevel ?? 0, MAX_NESTING_LEVEL, workflowLineage);
+                    if (childNestingLevel > maxNestingLevel) {
+                        // Spec 14: inside a Workflow the refusal says so, with the levels, in words.
+                        return spawnNestingRefusal(childNestingLevel - 1, maxNestingLevel, workflowDefinitionToolsRefused(workflowLineage));
                     }
 
                     const existingChildren = (await loadDirectChildSessions()).filter(child => !child.isSystem);
@@ -2999,11 +3459,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     const parentSystemMsg = typeof childConfig.systemMessage === "string"
                         ? childConfig.systemMessage
                         : (childConfig.systemMessage as any)?.content ?? "";
-                    const canSpawnMore = childNestingLevel < MAX_NESTING_LEVEL;
+                    const canSpawnMore = childNestingLevel < maxNestingLevel;
                     const subAgentPreamble =
                         `[SUB-AGENT CONTEXT]\n` +
                         `You are a sub-agent spawned by a parent session (ID: session-${input.sessionId}).\n` +
-                        `Your nesting level: ${childNestingLevel} (max: ${MAX_NESTING_LEVEL}).\n` +
+                        `Your nesting level: ${childNestingLevel} (max: ${maxNestingLevel}).\n` +
                         `Your task: "${agentTask.slice(0, 500)}"\n\n` +
                         `Instructions:\n` +
                         `- Focus exclusively on your assigned task. You are autonomous — do NOT ask the user for input. ` +
@@ -3015,7 +3475,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         `- Model overrides: call list_available_models first and use only an exact provider:model value it returns.\n` +
                         `- Worker-managed system agents are not valid spawn targets; if one is missing, report that the workers likely need to be restarted.\n` +
                         (canSpawnMore
-                            ? `- If your parent task explicitly asks for sub-agents or fan-out, delegate within runtime limits (${MAX_NESTING_LEVEL - childNestingLevel} nesting level(s) remaining); otherwise use judgment and avoid unnecessary fan-out. ` +
+                            ? `- If your parent task explicitly asks for sub-agents or fan-out, delegate within runtime limits (${maxNestingLevel - childNestingLevel} nesting level(s) remaining); otherwise use judgment and avoid unnecessary fan-out. ` +
                               `After spawning, finish the turn normally and let qualifying child updates wake you according to contract.wakeOn. ` +
                               `Do not schedule wait or cron solely to poll check_agents; use wait_for_agents only when you need an explicit synchronization barrier.\n`
                             : `- You CANNOT spawn sub-agents — you are at the maximum nesting depth. Handle everything directly.\n`);
@@ -3133,7 +3593,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
                     const sdkClient = new PilotSwarmClient(internalClientConfig());
                     try {
-                        await sdkClient.start();
+                        await startInternalClient(sdkClient);
                         await (sdkClient as any).duroxideClient.enqueueEvent(
                             `session-${input.sessionId}`,
                             "messages",
@@ -3163,7 +3623,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     if (!storeUrl) return "[SYSTEM: regenerate_context failed: no storeUrl is configured.]";
                     const sdkClient = new PilotSwarmClient(internalClientConfig());
                     try {
-                        await sdkClient.start();
+                        await startInternalClient(sdkClient);
                         await (sdkClient as any).duroxideClient.enqueueEvent(
                             `session-${input.sessionId}`,
                             "messages",
@@ -3223,7 +3683,24 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 call?: { toolCallId?: string },
             ) => {
                 try {
-                    const child = await resolveManagedChild(args.agent_id);
+                    // Your own sub-agent, or a session your workflow's agent state runs (R12): you may message it, stamped as you.
+                    let descendant: Awaited<ReturnType<typeof resolveWorkflowDescendant>> = null;
+                    let child: { orchId: string; sessionId: string; sessionKind: string; isSystem: boolean };
+                    try {
+                        child = await resolveManagedChild(args.agent_id);
+                    } catch (error) {
+                        descendant = await resolveWorkflowDescendant(args.agent_id);
+                        if (!descendant) throw error;
+                        child = descendant;
+                    }
+                    if (child.sessionKind === "workflow") {
+                        return `[SYSTEM: message_agent refused — ${child.orchId} is a workflow session; it runs a workflow graph and takes no messages. `
+                            + `Use cancel_agent or delete_agent to stop it.]`;
+                    }
+                    if (descendant && args.contract_patch) {
+                        return `[SYSTEM: message_agent refused — ${child.orchId} runs a state of your workflow, not a sub-agent you spawned; `
+                            + `contract_patch applies to your own sub-agents only. Send the message without it.]`;
+                    }
                     if (catalog && args.contract_patch) {
                         const existing = await catalog.getChildOutcome(child.sessionId);
                         const contractJson = appendContractPatchJson(existing?.contractJson ?? null, args.contract_patch, input.sessionId, child.sessionId);
@@ -3244,7 +3721,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         await sdkClient._getDuroxideClient().enqueueEvent(
                             child.orchId,
                             "messages",
-                            JSON.stringify({ prompt: args.message }),
+                            // A workflow state's session is told who wrote (the controlling parent agent); an own sub-agent's
+                            // message stays as it always was.
+                            JSON.stringify(descendant
+                                ? { prompt: args.message, sender: { kind: "agent", sessionId: input.sessionId, display: "controlling parent agent" } }
+                                : { prompt: args.message }),
                         );
                     };
                     if (args.deliver === "now") {
@@ -3453,11 +3934,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }
                     const sdkClient = await getInlineClient();
                     const cmdId = `done-inline-${Date.now()}`;
-                    await sdkClient._getDuroxideClient().enqueueEvent(
-                        child.orchId,
-                        "messages",
-                        JSON.stringify({ type: "cmd", cmd: "done", id: cmdId, args: { reason: "Completed by parent" }, requestedBy: input.sessionId }),
-                    );
+                    const command = { type: "cmd", cmd: "done", id: cmdId, args: { reason: "Completed by parent" }, requestedBy: input.sessionId };
+                    // S7-DX2: a v2 workflow child's command goes through the store first, as the orchestration's path sends it.
+                    if (!await workflowChildCommandApplied(activityCtx, child.sessionId, command)) {
+                        await sdkClient._getDuroxideClient().enqueueEvent(child.orchId, "messages", JSON.stringify(command));
+                    }
                     return `[SYSTEM: Graceful completion requested for sub-agent ${child.orchId}. ` +
                         `Use check_agents or wait_for_agents to observe final completion.]`;
                 } catch (err: any) {
@@ -3491,11 +3972,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }
                     const sdkClient = await getInlineClient();
                     const cmdId = `cancel-inline-${Date.now()}`;
-                    await sdkClient._getDuroxideClient().enqueueEvent(
-                        child.orchId,
-                        "messages",
-                        JSON.stringify({ type: "cmd", cmd: "cancel", id: cmdId, args: { reason: args.reason ?? "Cancelled by parent" }, requestedBy: input.sessionId }),
-                    );
+                    const command = { type: "cmd", cmd: "cancel", id: cmdId, args: { reason: args.reason ?? "Cancelled by parent" }, requestedBy: input.sessionId };
+                    // S7-DX2: a v2 workflow child's command goes through the store first, as the orchestration's path sends it.
+                    if (!await workflowChildCommandApplied(activityCtx, child.sessionId, command)) {
+                        await sdkClient._getDuroxideClient().enqueueEvent(child.orchId, "messages", JSON.stringify(command));
+                    }
                     return `[SYSTEM: Graceful cancellation requested for sub-agent ${child.orchId}. ` +
                         `Use check_agents or wait_for_agents to observe final termination.${args.reason ? ` Reason: ${args.reason}` : ""}]`;
                 } catch (err: any) {
@@ -3526,11 +4007,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         return `[SYSTEM: Sub-agent ${child.orchId} has been deleted.${args.reason ? ` Reason: ${args.reason}` : ""}]`;
                     }
                     const cmdId = `delete-inline-${Date.now()}`;
-                    await sdkClient._getDuroxideClient().enqueueEvent(
-                        child.orchId,
-                        "messages",
-                        JSON.stringify({ type: "cmd", cmd: "delete", id: cmdId, args: { reason: args.reason ?? "Deleted by parent" }, requestedBy: input.sessionId }),
-                    );
+                    const command = { type: "cmd", cmd: "delete", id: cmdId, args: { reason: args.reason ?? "Deleted by parent" }, requestedBy: input.sessionId };
+                    // S7-DX2: a v2 workflow child's delete is applied in the store, as the orchestration's path sends it.
+                    if (!await workflowChildCommandApplied(activityCtx, child.sessionId, command)) {
+                        await sdkClient._getDuroxideClient().enqueueEvent(child.orchId, "messages", JSON.stringify(command));
+                    }
                     return `[SYSTEM: Graceful deletion requested for sub-agent ${child.orchId}. ` +
                         `It will cancel its descendants first and then delete itself.${args.reason ? ` Reason: ${args.reason}` : ""}]`;
                 } catch (err: any) {
@@ -4077,10 +4558,22 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }
                     if (EPHEMERAL_TYPES.has(event.eventType)) return;
                     if (!recordModelEvents && MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING.has(event.eventType)) return;
-                    const persistedEvent = summarizeSdkSystemPromptEchoEvent(event.eventType === "session.input_required_started"
+                    let persistedEvent = summarizeSdkSystemPromptEchoEvent(event.eventType === "session.input_required_started"
                         ? { ...event, data: { ...(event.data as Record<string, unknown>), ...(input.turnIndex != null ? { questionIteration: input.turnIndex + 1 } : {}) } }
                         : event);
                     if (!persistedEvent) return;
+                    // A workflow agent node's chat keeps its whole base instructions (finding 8): once per distinct text, as an
+                    // artifact of its Workflow, named in the summary event; the transcript still records only the summary.
+                    // The kept text has its secrets hidden, and only the Workflow's owner reads it (review SF-3).
+                    const echoed = workflowAgentChild && artifactStore && workflowLineage?.agentRoot ? sdkSystemPromptEchoContent(event) : null;
+                    if (echoed !== null && artifactStore && workflowLineage?.agentRoot) {
+                        const kept = workflowBaseInstructionsText(echoed);
+                        const ref = workflowBaseInstructionsRef(workflowLineage.agentRoot.workflowSessionId, kept);
+                        persistedEvent = { ...persistedEvent, data: { ...(persistedEvent.data as Record<string, unknown>), baseInstructions: ref } };
+                        trackEventWrite(keepWorkflowBaseInstructions(artifactStore, ref, kept).then(() => undefined, (error: unknown) => {
+                            activityCtx.traceInfo(`[runTurn] session=${input.sessionId} base instructions not kept: ${errorMessage(error)}`);
+                        }));
+                    }
                     if (event.eventType === "session.wait_started") {
                         const data = (event.data ?? {}) as { reason?: string };
                         void cmsRetryBestEffort(
@@ -4187,6 +4680,26 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     data: { content: decorateRehydrationSystemPrompt(input.config.turnSystemPrompt, workerNodeId) },
                 });
             }
+            // Workflow intake (runTurnV5, design section 3 and 5.5): the
+            // carried items, in batch order and before the turn's own prompt,
+            // as the model gets them. Each is recorded as its sender's plain
+            // copy of the same message would be: its canonical text, its
+            // canonical client id (which tombstones name) and the system
+            // sender `workflow message`. Each has an id, so turn start records
+            // it once, on whichever attempt first reaches it, a retry's
+            // included: only runTurnV5 carries a batch, and it runs the turn-
+            // control path, whose turn start is set wherever a catalog is.
+            if (catalog && turnIntake) {
+                // An intake item is a send state's message the runtime stored itself: its sender is the runtime's.
+                const intakeSender = workflowRuntimeSender("message");
+                for (const item of turnIntake.items) {
+                    promptRecords.push({
+                        eventType: isInternalSystemPrompt(item.text, intakeSender) ? "system.message" : "user.message",
+                        data: { content: item.text, clientMessageIds: [item.clientMessageId],
+                            sender: workflowUpdateSender(item.text, intakeSender) ?? intakeSender },
+                    });
+                }
+            }
             if (catalog && !isTimerPrompt && !input.bootstrap && !isCarriedWake && promptForRecord
                 && (!isRetryAttempt || (tc && incomingClientMessageIds.length > 0))) {
                 const eventData: Record<string, unknown> = { content: promptForRecord };
@@ -4200,6 +4713,19 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 if ((input as any).sender && typeof (input as any).sender === "object") {
                     eventData.sender = (input as any).sender;
                 }
+                // Review SF-1: a turn the queue merged from messages of different senders reaches this activity with no
+                // sender and every message's client id (orchestration queue decide(); constituent senders are not passed).
+                // It is recorded as what it is: several messages, of no one sender. The UI shows it neutrally, never as one
+                // person's words and never as a workflow card.
+                const merged = mergedTurnMessages((input as any).sender, incomingClientMessageIds);
+                if (merged !== null) eventData.mergedMessages = merged;
+                // A workflow's message (batch 7, w-4) is recorded as the workflow's: sender kind "workflow", its name, and
+                // the header's type, so the portal and the terminal show it with a workflow badge. Only the record changes;
+                // the queue payload (and the orchestration that reads it) keeps its system sender. Only a message the
+                // runtime queued with its own sender is (SF-2); the same text from anyone else keeps their sender.
+                const stampedSender = (input as any).sender;
+                const workflowSender = workflowUpdateSender(promptForRecord, stampedSender);
+                if (workflowSender) eventData.sender = workflowSender;
                 // Image attachment refs ride the durable user.message event so
                 // transcripts can render thumbnails; bytes stay in the store.
                 const eventAttachments = sanitizePromptAttachmentRefs(input.attachments);
@@ -4207,7 +4733,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     eventData.attachments = eventAttachments;
                 }
                 promptRecords.push({
-                    eventType: isInternalSystemPrompt(promptForRecord) ? "system.message" : "user.message",
+                    eventType: isInternalSystemPrompt(promptForRecord, stampedSender) ? "system.message" : "user.message",
                     data: eventData,
                 });
             }
@@ -4242,6 +4768,37 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 }
             }
 
+            // The turn-to-visit fence (RT-1..RT-3): the turn visit, read after the turn started (so a Stop recorded after the read
+            // binds to this turn), a read that fails failing the turn (it is retried); and the controls such a turn takes: a
+            // Stop that names another visit of the chat (its request id, workflow-cycle-stop:<nx>) is not this turn's.
+            const readWorkflowTurnVisit = async (): Promise<WorkflowTurnVisit | null> => workflowFenceStore
+                ? cmsRetryCritical(`runTurn.turnVisit session=${input.sessionId}`,
+                    () => workflowFenceStore.readTurnVisit(input.sessionId, incomingClientMessageIds), (msg) => activityCtx.traceInfo(msg))
+                : null;
+            // A read that fails fails the turn (it is retried), never applies every Stop (formal deviation D2); a Stop that is
+            // not this turn's gets its outcome (too_late) now, so a turn that fails later is not ended as stopped by it (D3).
+            const admitTurnControls = async (controls: TurnControl[]): Promise<TurnControl[]> => {
+                const visit = workflowTurnVisit?.nodeExecutionId ?? null;
+                if (!workflowFenceStore || !workflowTurnVisit || !tc || !controls.some((c) => c.kind === "stop")) return controls;
+                const ids = await cmsRetryCritical(`runTurn.stopVisits session=${input.sessionId}`,
+                    () => workflowFenceStore.readControlRequestIds(input.sessionId, controls.filter((c) => c.kind === "stop").map((c) => c.seq)),
+                    (msg) => activityCtx.traceInfo(msg));
+                const kept: TurnControl[] = [];
+                for (const c of controls) {
+                    const target = c.kind === "stop" ? workflowVisitOfStopRequestId(ids.get(c.seq) ?? null) : null;
+                    if (target === null || target === visit) {
+                        kept.push(c);
+                        continue;
+                    }
+                    await cmsRetryCritical(`runTurn.stopNotForTurn session=${input.sessionId} seq=${c.seq}`,
+                        () => workflowFenceStore.recordStopNotForTurn(input.sessionId, c.seq, tc.turn), (msg) => activityCtx.traceInfo(msg));
+                    activityCtx.traceInfo(`[turn-control] session=${input.sessionId} seq=${c.seq} stop for visit ${target} is not this turn's (${visit ?? "none"})`);
+                }
+                return kept;
+            };
+            const decidedTurnVisit = (): string | null =>
+                workflowTurnVisit?.nodeExecutionId && !workflowTurnVisit.open ? workflowTurnVisit.nodeExecutionId : null;
+
             // ── Turn control T3: turn start (replaces setActiveTurnIndex) ──
             // Not best-effort: without it no control could reach this turn,
             // so a failure throws and the turn retries (plan P21).
@@ -4256,24 +4813,33 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 if ("stale" in started) {
                     throw new Error(`runTurn: a newer turn of session ${input.sessionId} already started; turn ${tc.turn} is stale`);
                 }
+                workflowTurnVisit = await readWorkflowTurnVisit();
+                // RT-D2 (C1): the end's fence is the visit this admission uses, set before any path can end the turn.
+                tc.visitFence = workflowTurnVisit ? { visit: workflowTurnVisit.nodeExecutionId } : null;
+                const decided = decidedTurnVisit();
                 let start = 0;
                 if (lifecycle && (started.stopped || started.controls.length > 0)) {
                     // The saved cursor is read only when needed. A session
                     // without a store saves nothing (D4): cursor 0.
                     start = savedControlCursor(readTurnCommitFile(sessionDirOf())?.result, tc.turn);
                 }
-                const open = started.controls.filter((c) => c.seq > start);
+                const open = await admitTurnControls(started.controls.filter((c) => c.seq > start));
                 const openStop = open.find((c) => c.kind === "stop");
-                if (started.stopped || openStop) {
+                if (started.stopped || openStop || decided) {
                     // A Stop reached this turn before the model ran: end it
                     // without a model run. Carried steers are taken by the
-                    // stopped turn (D6).
+                    // stopped turn (D6). A continued chat's turn whose visit
+                    // is decided is ended the same way (the fence: its Stop
+                    // may have found no turn and is not sent again).
                     tc.earlyStop = true;
                     tc.startCursor = start;
                     tc.carriedTaken = tc.carried.length > 0;
                     await Promise.allSettled(pendingEventWrites.splice(0));
-                    activityCtx.traceInfo(`[turn-control] session=${input.sessionId} turn=${tc.turn} stopped at turn start`);
-                    return { type: "stopped", reason: openStop?.text || "Stopped by user" } as TurnResult;
+                    activityCtx.traceInfo(decided && !started.stopped && !openStop
+                        ? `[turn-control] session=${input.sessionId} turn=${tc.turn} not run: its workflow visit ${decided} is decided`
+                        : `[turn-control] session=${input.sessionId} turn=${tc.turn} stopped at turn start`);
+                    return { type: "stopped", reason: openStop?.text
+                        || (decided ? `The workflow already ended cycle ${decided}; this turn was not run.` : "Stopped by user") } as TurnResult;
                 }
                 // Fold carried steers (before the prompt; they replace the
                 // carried-steers wake prompt) and steers accepted for this
@@ -4293,6 +4859,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     sessionId: input.sessionId,
                     turn: tc.turn,
                     start,
+                    ...(workflowTurnVisit ? { admit: admitTurnControls } : {}),
                     abort: (reason) => sessionManager.abortWarmSessionTurn(input.sessionId, {
                         reason,
                         ...(input.turnIndex != null ? { expectedTurnIndex: input.turnIndex } : {}),
@@ -4305,6 +4872,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     trace: (message) => activityCtx.traceInfo(message),
                 });
                 void sessionManager.getTurnControlHub?.()?.register(tc.live);
+            } else if (workflowFenceStore) {
+                // No turn control: no Stop reaches a turn, but a turn whose visit is decided still does not run (the fence).
+                workflowTurnVisit = await readWorkflowTurnVisit();
+                const decided = decidedTurnVisit();
+                if (decided) {
+                    await Promise.allSettled(pendingEventWrites.splice(0));
+                    activityCtx.traceInfo(`[runTurn] session=${input.sessionId} not run: its workflow visit ${decided} is decided`);
+                    return { type: "stopped", reason: `The workflow already ended cycle ${decided}; this turn was not run.` } as TurnResult;
+                }
             }
 
             activityCtx.traceInfo(`[runTurn] invoking ManagedSession.runTurn for ${input.sessionId}`);
@@ -4474,20 +5050,110 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 }
             }
 
+            // F-C3: a root session's system-only turn (a child digest, a wake) whose model answers nothing ends completed.
+            const quietSystemOnly = isQuietSystemOnlyTurn({
+                prompt: input.prompt, bootstrap: input.bootstrap, parentSessionId: input.parentSessionId, requiredTool: input.requiredTool,
+                systemContextInPrompt: input.config?.systemContextInPrompt === true, stashedPrompts: (input as any).stashedPrompts,
+                foldedText: Boolean(tc?.carriedText || tc?.foldedSteerText), intake: turnIntake !== null,
+                attachments: requestedAttachments.length,
+            });
+            // Owner "No response" dump (2026-11-06): so does a root session's turn that answers only workflow notices that
+            // say they need no answer.
+            const quietWorkflowNotice = !quietSystemOnly && isQuietWorkflowNoticeTurn({
+                prompt: input.prompt, parentSessionId: input.parentSessionId, requiredTool: input.requiredTool,
+                systemContextInPrompt: input.config?.systemContextInPrompt === true, sender: (input as any).sender,
+                stashedPrompts: (input as any).stashedPrompts, foldedText: Boolean(tc?.carriedText || tc?.foldedSteerText),
+                intakeTexts: turnIntake ? turnIntake.items.map(item => item.text) : null, attachments: requestedAttachments.length,
+            });
+            const quietEmptyAnswer = quietSystemOnly || quietWorkflowNotice;
+            // Owner decision Q2 (workflow/v2/agent-reminder.ts): an agent state's own child is reminded inside its turn
+            // when the turn would end with nothing pending. The gate ManagedSession asks: no cron or cron_at schedule is
+            // active (this session's published status, unless the turn queued a cancel), then the store checks the step
+            // and records the reminder (recordAgentReminder).
+            const reminderStore = workflowAgentChild && workflowRequestTurn && catalog?.workflowStore ? catalog.workflowStore() : null;
+            const stepReminder: TurnOptions["stepReminder"] | undefined = reminderStore
+                ? {
+                    check: async ({ scheduleCancelled }) => {
+                        if (!scheduleCancelled) {
+                            const { duroxideClient } = await workflowBridgeHost();
+                            if (publishedScheduleActive(await duroxideClient.getStatus(`session-${input.sessionId}`))) {
+                                return { remind: false, reason: "schedule" };
+                            }
+                        }
+                        // A continued chat's turn is reminded only of its own visit (RT-3): the turn visit read at its start.
+                        const record = await reminderStore.recordAgentReminder({ childSessionId: input.sessionId, turn: input.turnIndex ?? 0,
+                            ...(workflowTurnVisit ? { visit: workflowTurnVisit.nodeExecutionId } : {}) });
+                        activityCtx.traceInfo(`[runTurn] session=${input.sessionId} step reminder: ` + (record.recorded
+                            ? `${record.repeat ? "again " : ""}${record.n} of ${record.max} for step ${record.nodeExecutionId}` : `none (${record.reason})`));
+                        return record.recorded
+                            ? { remind: true, n: record.n, max: record.max, stateId: record.stateId, ...(record.cycle ? { cycle: record.cycle } : {}) }
+                            : { remind: false, reason: record.reason };
+                    },
+                }
+                : undefined;
             const runTurnWithPrompt = async (targetSession: any, prompt: string) => {
-                return await targetSession.runTurn(prompt, {
+                // Workflow intake (runTurnV5, design 5.5; exposure protocol
+                // revision 2, section 4): the carried items come before
+                // whatever prompt this attempt finally sends, after any stash
+                // or bootstrap replacement: the first run's and each recovery
+                // re-run's alike, each admitted by the store before its send.
+                // A refused run sends that prompt without them. The model
+                // session says when a request that includes them is about to
+                // be issued (review W2-WIT1). Each run keeps its own evidence
+                // (review of c1bda7a2, W1). The activity's cancellation outlives
+                // every run and the poll (review of c1bda7a2, W2): read again
+                // before a run starts and by the model session immediately
+                // before each of its sends, a cancelled activity starts no run
+                // and sends nothing.
+                const modelPrompt = turnIntake ? composeIntakePrompt(prompt, turnIntake) : prompt;
+                let intakeAdmission: NonNullable<TurnOptions["intakeAdmission"]> | undefined;
+                if (turnIntake) {
+                    const run: NonNullable<typeof intakeRun> = { included: false, refused: null };
+                    intakeRun = run;
+                    // The activity's cancellation, latched: once read true it stays so for every later run and send of this
+                    // activity, and its tail returns cancelled, as when the poll observes it.
+                    const eligible = () => {
+                        if (!cancelled && typeof activityCtx.isCancelled === "function" && activityCtx.isCancelled() === true) cancelled = true;
+                        return !cancelled;
+                    };
+                    if (!eligible()) {
+                        traceWarn(`[runTurn] activity cancelled for ${input.sessionId}; this run of the attempt does not start, and nothing is sent`);
+                        return { type: "error", message: INTAKE_ENDED_BEFORE_SEND_MESSAGE } as TurnResult;
+                    }
+                    intakeAdmission = intakeAdmissionFor(prompt, run, eligible);
+                }
+                const ran = await targetSession.runTurn(modelPrompt, {
+                    ...(intakeAdmission ? { intakeAdmission } : {}),
                     onEvent,
                     trace: traceWarn,
                     liveTurn: liveTurnEnabled,
                     modelSummary,
                     bootstrap: input.bootstrap,
+                    ...(quietEmptyAnswer ? { quietEmptyAnswer: true } : {}),
+                    ...(quietWorkflowNotice ? { quietEmptyAnswerKind: "workflow_notice" as const } : {}),
                     requiredTool: input.requiredTool,
+                    ...(stepReminder ? { stepReminder } : {}),
                     cycleOrigin: input.cycleOrigin,
                     turnIndex: input.turnIndex,
                     controlToolBridge,
                     ...(turnAttachmentBlobs.length > 0 ? { attachments: turnAttachmentBlobs } : {}),
                     ...(tc?.live ? { turnControl: tc.live } : {}),
                 });
+                // Review RT-F1: a model run aborted after a turn-control failure that did not settle is not reused or saved
+                // live: its warm session is dropped (destroyed, so the CLI stops and flushes) before the snapshot is committed.
+                const unsettled = (targetSession as { takeUnsettledRun?: () => boolean }).takeUnsettledRun;
+                if (typeof unsettled === "function" && unsettled.call(targetSession)) {
+                    traceWarn(`[runTurn] session=${input.sessionId}: the model run aborted after a turn-control failure did not settle; dropping its warm session`);
+                    try {
+                        await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true });
+                    } catch (err: any) {
+                        // Review RT-F1-L1: the unsettled session is never committed or reused. invalidateWarmSession forgets
+                        // the handle whatever fails; this attempt fails (retryable) so nothing of it is saved.
+                        throw new Error(`The model run aborted after a turn-control failure did not settle, and its warm session `
+                            + `could not be dropped cleanly: ${err?.message ?? err}. The turn is retried.`);
+                    }
+                }
+                return ran;
             };
 
             if (tc) await faultPointAsync("turn.control.before-send", { sessionId: input.sessionId });
@@ -4811,7 +5477,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         // orchestration history) and in .ps-turn-commit.json (the session
         // snapshot). Keep only the events the orchestration reads; the CMS
         // already has every event from onEvent (issue #121).
-        const bodyResult: TurnResult = keepOrchestrationTurnEvents(fullBodyResult);
+        const bodyResult: TurnResult = withIntakeWitness(keepOrchestrationTurnEvents(fullBodyResult));
         const sizeWarning = turnResultSizeWarning(bodyResult);
         if (sizeWarning) traceWarn(`[runTurn] session=${input.sessionId} ${sizeWarning}`);
 
@@ -4833,9 +5499,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         const liveCursor = tc ? Math.max(tc.startCursor, tc.live?.cursor ?? 0) : 0;
         if (lifecycle && lifecycleSessionDir && fs.existsSync(path.join(lifecycleSessionDir, "workspace.yaml"))) {
             // T7: the save carries the cursor only when it is not 0.
-            const toSave: TurnResult = tc && liveCursor > 0 && bodyResult.type !== "stopped"
+            let toSave: TurnResult = tc && liveCursor > 0 && bodyResult.type !== "stopped"
                 ? { ...bodyResult, controlCursor: { turn: tc.turn, cursor: liveCursor } } as TurnResult
                 : bodyResult;
+            // Review O-L1 (C1): a continued chat's turn saves the visit fence it read at T3, so a turn end from this saved
+            // result (a retry, or an adopted racing winner) fences with exactly that visit.
+            if (tc?.visitFence) toSave = { ...toSave, turnVisitFence: { turn: tc.turn, visit: tc.visitFence.visit } } as TurnResult;
             const committed = await runTurnCommit(lifecycle, lifecycleBaseVersion, toSave);
             if (tc) await faultPointAsync("turn.control.after-commit", { sessionId: input.sessionId });
             if (!committed.published && catalog) {
@@ -4894,7 +5563,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     snapshotVersion: committed.version,
                     ...((runConfig as ManagedSessionConfig).workspaceAttach ? { workspaceAttached: true } : {}),
                 };
-                // The winner's result and cursor; T8 writes the same outcomes.
+                // Workflow intake: the winner's own witness, or none; never this losing attempt's.
+                adoptedSavedResult = true;
+                // The winner's result, cursor and visit fence (O-L1); T8 writes the same outcomes.
+                if (tc) {
+                    const winnerFence = savedTurnVisitFence(committed.storedResult, tc.turn);
+                    if (winnerFence !== undefined) tc.visitFence = winnerFence;
+                }
                 return tc ? await finishTurnControl(adopted, savedControlCursor(committed.storedResult, tc.turn), { alwaysEnd: true }) : adopted;
             }
             const saved: TurnResult = { ...toSave, snapshotVersion: committed.version } as TurnResult;
@@ -4906,12 +5581,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             if (!finalTurnResult) {
                 throw new Error("runTurn completed without a turn result");
             }
+            finalTurnResult = withIntakeWitness(finalTurnResult);
             return finalTurnResult;
         } catch (err: any) {
             if (err instanceof PackageToolBindingError || err instanceof BoundAgentPackageUnavailableError) {
                 const message = err.message || String(err);
                 activityCtx.traceInfo(`[runTurn] deterministic package-tool binding failure: ${message}`);
-                finalTurnResult = { type: "error", message, retryable: false } as TurnResult;
+                finalTurnResult = withIntakeWitness({ type: "error", message, retryable: false } as TurnResult);
                 return finalTurnResult;
             }
             if (isSessionLockAcquireTimeoutError(err)) {
@@ -4937,7 +5613,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         (msg) => activityCtx.traceInfo(msg),
                     );
                 }
-                finalTurnResult = { type: "error", message } as TurnResult;
+                finalTurnResult = withIntakeWitness({ type: "error", message } as TurnResult);
                 return finalTurnResult;
             }
             turnSpan.recordException(err);
@@ -4988,6 +5664,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // Session turn control (1.0.81): the V4 names run the turn-control path.
     registerTurnControlActivity(runtime, "runTurn", runTurnV4Handler);
     registerTurnControlActivity(runtime, "runTurn2", runTurnV4Handler);
+    // Workflow intake (1.0.83, INACTIVE): the V5 names run the turn-control
+    // path with the invocation the input's `intake` field carries, checked
+    // whole first. Only a test registers them, and the test-only milestone worker.
+    if (testOptions?.workflowIntakeTurns === true) {
+        const runTurnV5Handler = async (activityCtx: any, input: Parameters<typeof runTurnImpl>[2] & { intake?: unknown }) =>
+            runTurnImpl(true, activityCtx, input, parseIntakeTurnField(input.intake), testOptions.workflowRequests === true);
+        registerWorkflowIntakeTurnActivity(runtime, "runTurn", runTurnV5Handler);
+        registerWorkflowIntakeTurnActivity(runtime, "runTurn2", runTurnV5Handler);
+    }
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it
@@ -5391,7 +6076,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         // titling a session "canvas-action action send data"
                         // is how one leaked into a session list. Runtime
                         // notices ("[SYSTEM: ...]") are not the user's words.
-                        if (trimmed && !trimmed.startsWith("[canvas-action] ") && !/^\[SYSTEM:/i.test(trimmed)) {
+                        if (trimmed && !trimmed.startsWith("[canvas-action] ") && !/^\[(SYSTEM:|WORKFLOW_UPDATE\b)/i.test(trimmed)) {
                             lines.push(`User: ${trimmed.slice(0, 200)}`);
                             userMessages.push(trimmed);
                         }
@@ -5529,6 +6214,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         // An unavailable pin yields no definition; it never falls back by name.
         const pinnedCandidates = (agents?: any[]) => agents?.filter(agent =>
             (!input.binding?.packageId || agent.packageId === input.binding.packageId)
+            // An exact earlier package revision (workflow package pins, R18) answers only its own binding.
+            && (!agent.pinnedRevision || agent.packageId === input.binding?.packageId)
             && (input.binding?.source !== "deployment" || (!agent.packageId && agent.packageScope == null)));
         return resolveAgentDefinitionForCaller({
             agentName: input.agentName,
@@ -5560,7 +6247,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     ): Promise<RequiredToolAgentResolution> => {
         return resolveAgentDefinitionForRequiredToolForCaller({
             requiredTool: input.requiredTool,
-            userAgents,
+            userAgents: unpinnedAgents(userAgents),
             systemAgents,
             getCallerOwnerKey: () => resolveCallerAgentOwnerKey(catalog, input.callerSessionId),
         });
@@ -5590,9 +6277,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             ...internalClientConfig(),
             traceWriter: (message: string) => trace(message),
         });
+        // On a worker that serves the durable intake's orchestration (the test option workflowRequests, which the Workflow
+        // V2 test environment switch sets; INACTIVE), a non-system child the orchestration spawns starts at 1.0.83, as the
+        // sub-agents a turn spawns do (getInlineClient). System children keep the latest version.
+        if (testOptions?.workflowRequests === true && !input.isSystem) sdkClient._startSessionsAt(DURABLE_SESSION_INTAKE_VERSION);
         try {
             const clientStartAt = Date.now();
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             trace(`sdkClient.start done (${Date.now() - clientStartAt}ms)`);
 
             if (isDeterministicSystemChild && catalog) {
@@ -5713,7 +6404,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     ? agents?.filter(a => a.packageId === packageId)
                     : input.config.boundAgentSource === "deployment"
                         ? agents?.filter(a => !a.packageId && a.packageScope == null)
-                        : agents;
+                        : unpinnedAgents(agents);
                 const agentDef = await resolveAgentDefinitionForCaller({
                     agentName: input.config.boundAgentName ?? input.agentId,
                     userAgents: fromBoundCopy(userAgents),
@@ -5769,7 +6460,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             const info = await (sdkClient as any)._getSessionInfo(input.sessionId);
             if (info?.status === "failed") {
                 throw new Error(
@@ -5800,6 +6491,45 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         }
     });
 
+    // ── Workflow v2 lifecycle commands (S7-DX2) ────────────────
+    /**
+     * An operator's lifecycle command (the agent manager's manage_agent_session) for `targetSessionId`, which its caller has
+     * authorized: a v2 workflow's is applied in the store (applyOperatorCommandToWorkflowV2). True when nothing more is to
+     * be sent; false when the caller queues the command.
+     */
+    const operatorCommandApplied = async (sdkClient: any, targetSessionId: string, command: unknown): Promise<boolean> => {
+        if (!catalog?.workflowStore) return false;
+        const facts = factStore ?? null;
+        const applied = await applyOperatorCommandToWorkflowV2({
+            store: catalog.workflowStore(),
+            deleteSessionFacts: facts ? (sessionId: string) => facts.deleteSessionFactsForSession(sessionId) : null,
+            duroxideClient: sdkClient._getDuroxideClient(),
+        }, { targetSessionId, command });
+        // A workflow with no active run has nothing for the store to apply: the command goes as before.
+        return applied.action === "applied" && applied.receipt?.applied !== "none";
+    };
+
+    /**
+     * A lifecycle command (cancel, done or delete) from the session whose orchestration runs `activityCtx` to its child
+     * `targetSessionId`, for a v2 workflow child: the v2 store applies it (applySessionCommandToWorkflowV2: only the
+     * child's parent may send it; delete always deletes the child; cancel and done end its active run, S7-DX2). True when
+     * nothing more is to be sent; false when the caller queues the command (a cancel or done that ended a begun run, for
+     * its controller to finish, or any other target). Used by the sendCommandToSession activity and by the inline control
+     * tools (complete_agent, cancel_agent, delete_agent), so both reach the store the same way.
+     */
+    const workflowChildCommandApplied = async (activityCtx: any, targetSessionId: string, command: unknown): Promise<boolean> => {
+        if (!catalog?.workflowStore) return false;
+        const facts = factStore ?? null;
+        const applied = await applySessionCommandToWorkflowV2({
+            store: catalog.workflowStore(),
+            deleteSessionFacts: facts ? (sessionId: string) => facts.deleteSessionFactsForSession(sessionId) : null,
+        }, { callerInstanceId: String(activityCtx.instanceId ?? ""), targetSessionId, command });
+        if (applied.action !== "applied") return false;
+        const how = applied.receipt ? `${applied.receipt.applied}, ${applied.receipt.status ?? "no run"}` : "already deleted";
+        activityCtx.traceInfo(`[lifecycle] ${(command as { cmd?: string } | null)?.cmd} for workflow ${targetSessionId}: ${how}`);
+        return true;
+    };
+
     // ── sendCommandToSession ────────────────────────────────
     // Sends a raw JSON command directly to a session's orchestration event queue.
     // Unlike sendToSession, this does NOT wrap the payload in { prompt: ... }.
@@ -5808,11 +6538,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         input: { sessionId: string; command: any },
     ): Promise<void> => {
         activityCtx.traceInfo(`[sendCommandToSession] session=${input.sessionId} cmd=${input.command?.cmd}`);
+        // A v2 workflow child's lifecycle command is applied in the v2 store
+        // for the child's own parent (workflowChildCommandApplied); it is
+        // queued only when that says so. Every other target keeps the queued
+        // command. The activity's input and result are unchanged.
+        if (await workflowChildCommandApplied(activityCtx, input.sessionId, input.command)) return;
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             const orchestrationId = `session-${input.sessionId}`;
             await (sdkClient as any).duroxideClient.enqueueEvent(
                 orchestrationId,
@@ -5837,7 +6572,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             const info = await sdkClient._getSessionInfo(input.sessionId, includeResultSource ? { includeResultSource: true } : undefined);
             return JSON.stringify({
                 sessionId: info.sessionId,
@@ -5884,7 +6619,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             const sessions = (await sdkClient.listSessions()).filter((session) => matchesSessionOwnerFilters(session, input));
             return JSON.stringify(sessions.map(s => ({
                 sessionId: s.sessionId,
@@ -5915,7 +6650,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             const sessions = await sdkClient.listSessions();
             const directChildren = sessions.filter(s => s.parentSessionId === input.parentSessionId);
             const enriched = await Promise.all(directChildren.map(async (child) => {
@@ -5932,6 +6667,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     parentSessionId: child.parentSessionId,
                     isSystem: child.isSystem ?? info.isSystem ?? false,
                     agentId: child.agentId ?? info.agentId,
+                    sessionKind: (child as any).sessionKind ?? info.sessionKind ?? "agent",
                     result: outcome?.summary ?? (typeof outcomeResult?.summary === "string" ? outcomeResult.summary : info.result),
                     ...(includeResultSource ? {
                         resultSource: outcome?.summary != null || typeof outcomeResult?.summary === "string"
@@ -6007,7 +6743,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             const orchestrationId = `session-${input.sessionId}`;
             // Cancel the orchestration via duroxide
             await (sdkClient as any).duroxideClient.cancelInstance(
@@ -6045,7 +6781,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             // This does both: CMS soft-delete + duroxide cancel
             await sdkClient.deleteSession(input.sessionId);
             activityCtx.traceInfo(`[deleteSession] deleted session-${input.sessionId}`);
@@ -6229,7 +6965,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     const enqueueDistillerCmd = async (distillerSessionId: string, cmd: "done" | "cancel", idPrefix: string) => {
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             await (sdkClient as any).duroxideClient.enqueueEvent(
                 `session-${distillerSessionId}`,
                 "messages",
@@ -6299,7 +7035,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 const seed = await buildSeed();
                 const reseedClient = new PilotSwarmClient(internalClientConfig());
                 try {
-                    await reseedClient.start();
+                    await startInternalClient(reseedClient);
                     await catalog.markSessionService(distillerSessionId, REGEN_DISTILLER_SERVICE_KIND, input.sessionId);
                     // Stamped like the normal seed path below: a distiller
                     // seed is machinery, and an unstamped user-role prompt is
@@ -6340,7 +7076,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         const owner = await resolveEffectiveSpawnOwner((id) => catalog.getSession(id), rootId).catch(() => null);
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             const session = await sdkClient.createSession({
                 sessionId: distillerSessionId,
                 parentSessionId: rootId,

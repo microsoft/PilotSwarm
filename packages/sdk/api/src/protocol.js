@@ -48,7 +48,8 @@ export const WS_SERVER_MESSAGES = ["ready", "subscribedSession", "sessionEvent",
 export const WEB_MODE_UNSUPPORTED = "WEB_MODE_UNSUPPORTED";
 
 const path = (name) => ({ in: "path", name });
-const query = (type = "string") => ({ in: "query", type });
+// `strict`: a string query param that is an id. It is carried only as one string; see strictQueryText.
+const query = (type = "string", options = {}) => ({ in: "query", type, ...options });
 const body = () => ({ in: "body" });
 
 /**
@@ -56,7 +57,7 @@ const body = () => ({ in: "body" });
  *   name: string,
  *   method: "GET"|"POST"|"PUT"|"PATCH"|"DELETE",
  *   path: string,
- *   params?: Record<string, { in: "path"|"query"|"body", name?: string, type?: string }>,
+ *   params?: Record<string, { in: "path"|"query"|"body", name?: string, type?: string, strict?: boolean }>,
  *   summary: string,
  * }>}
  */
@@ -64,6 +65,9 @@ export const OPERATIONS = [
     // ── Sessions (client surface) ───────────────────────────────────────
     { name: "listSessions", access: "session:list", method: "GET", path: "/sessions", summary: "List session summaries." },
     { name: "createSession", access: "session:create", method: "POST", path: "/sessions", params: { model: body(), reasoningEffort: body(), contextTier: body(), groupId: body(), visibility: body(), workspace: body() }, summary: "Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. workspace { root, folder? } sets its working folder." },
+    { name: "createWorkflowSession", access: "session:create", method: "POST", path: "/sessions/workflow", params: { yaml: body(), inputs: body(), groupId: body(), visibility: body() }, summary: "Create a workflow session from Workflow YAML (kind: Workflow). It runs the workflow graph instead of a conversation; inputs is a JSON object checked against the workflow's inputs schema and read by its states as context.inputs." },
+    { name: "readWorkflow", access: "session:read", method: "GET", path: "/sessions/:sessionId/workflow", params: { sessionId: path("sessionId"), runId: query("string", { strict: true }), cursor: query("json"), executionId: query("string", { strict: true }), limit: query("json"), kvRevision: query("json"), kvKey: query("string", { strict: true }), agentVersions: query("json"), definitionRevision: query("json"), stepInput: query("json") }, summary: "Read a version 2 workflow session without changing it: its definition (state, current revision, diagnostics; no YAML), graph and runs, and one run (runId, default the live run). Each section of the run holds its newest rows; rows still open are listed apart, however old, and run.pages gives each section's nextCursor. Separate reads: cursor (JSON: a nextCursor given back as it was) reads that section's next, older page; executionId (not with cursor) one node execution's whole output or error; limit (a JSON integer, 1 to 200) sets the rows per page; kvRevision (a JSON integer) a revision of the run's variables, and kvKey with it one variable, whole; agentVersions (JSON true, alone) the agent versions publishing the current revision would lock now, locking nothing; definitionRevision (a JSON integer, alone) that revision's YAML as saved and formatted; stepInput (JSON { state, input? }, alone) an agent step's input fields in the current draft and, with input, the draft's YAML with only that step's inputs changed. The two YAML reads are for a caller who may change the workflow. 404 NOT_FOUND unless the session is readable, WORKFLOW_NOT_FOUND for a session that is not a version 2 workflow, RUN_NOT_FOUND, EXECUTION_NOT_FOUND, KV_REVISION_NOT_FOUND or DEFINITION_REVISION_NOT_FOUND for a run, execution or revision it does not have; 400 WORKFLOW_CURSOR_INVALID for a cursor that a read of this workflow did not return, WORKFLOW_READ_INVALID for an invalid limit or executionId, or a cursor with an executionId." },
+    { name: "updateWorkflow", access: "session:manage", method: "POST", path: "/sessions/:sessionId/workflow/commands", params: { sessionId: path("sessionId"), command: body(), originatingSessionId: body() }, summary: "A person's command to a version 2 workflow session (INACTIVE: 501 WORKFLOW_COMMANDS_UNAVAILABLE unless the deployment enables it): command is the update_workflow tool's command (operation, operation_id and the operation's arguments), run by the same implementation; the actor is the signed-in caller. Owner or admin only, enforced even while the ownership switch is off. A workflow in a workflow agent state's subtree takes only pause, stop and cancel (403 WORKFLOW_HUMAN_INPUT_DENIED). originatingSessionId (optional): the session the command comes from, when a caller passes one on for an agent; a definition operation from a session inside a Workflow is refused (403 WORKFLOW_DEFINITION_TOOLS_REFUSED). 404 WORKFLOW_NOT_FOUND for a session that is not a version 2 workflow; refusals carry their status and details." },
     { name: "createSessionForAgent", access: "session:create", method: "POST", path: "/sessions/for-agent", params: { agentName: body(), model: body(), reasoningEffort: body(), contextTier: body(), title: body(), splash: body(), splashMobile: body(), initialPrompt: body(), groupId: body(), visibility: body(), workspace: body() }, summary: "Create a session bound to a named agent. workspace { root, folder? } sets its working folder." },
     { name: "getSession", access: "session:read", method: "GET", path: "/sessions/:sessionId", params: { sessionId: path("sessionId") }, summary: "Get one session view (live orchestration status)." },
     { name: "deleteSession", access: "session:destroy", method: "DELETE", path: "/sessions/:sessionId", params: { sessionId: path("sessionId") }, summary: "Cancel and soft-delete a session." },
@@ -341,7 +345,7 @@ export function buildOperationRequest(name, params = {}) {
             resolvedPath = resolvedPath.replace(`:${spec.name || key}`, encodeURIComponent(raw));
         } else if (spec.in === "query") {
             if (value === undefined || value === null) continue;
-            queryParams.set(key, spec.type === "json" ? JSON.stringify(value) : String(value));
+            queryParams.set(key, spec.type === "json" ? JSON.stringify(value) : spec.strict ? strictQueryText(value) : String(value));
         } else {
             if (value === undefined) continue;
             if (!bodyPayload) bodyPayload = {};
@@ -355,8 +359,21 @@ export function buildOperationRequest(name, params = {}) {
     return { method: op.method, path: `${API_PREFIX}${resolvedPath}`, query: queryParams, body: bodyPayload };
 }
 
-/** Coerce a query-string value per the declared param type (server side). */
-export function coerceQueryValue(value, type) {
+/**
+ * A strict string query param (an id, `query("string", { strict: true })`)
+ * is carried only as one string, both when a client builds the request and
+ * when the server reads it. Anything else (a number, a list such as a
+ * repeated param, an object) becomes the empty string, which is never an id:
+ * the operation then refuses it (400) after its access gate, instead of
+ * reading an id coerced from it. A list is never joined into an id. The
+ * exact invalid value is not kept; only that it is invalid.
+ */
+function strictQueryText(value) {
+    return typeof value === "string" ? value : "";
+}
+
+/** Coerce a query-string value per the declared param type (server side); `strict` as for strictQueryText. */
+export function coerceQueryValue(value, type, { strict = false } = {}) {
     if (value === undefined || value === null) return undefined;
     if (type === "number") {
         const numeric = Number(value);
@@ -370,7 +387,7 @@ export function coerceQueryValue(value, type) {
             throw Object.assign(new Error("Malformed JSON query parameter"), { code: "INVALID_REQUEST" });
         }
     }
-    return String(value);
+    return strict ? strictQueryText(value) : String(value);
 }
 
 /** Path for the raw (streaming) artifact download route. */
@@ -379,7 +396,7 @@ export function artifactDownloadPath(sessionId, filename) {
 }
 
 export class ApiError extends Error {
-    constructor(message, { code = "INTERNAL_ERROR", status = 500, candidates = undefined, etag = undefined, size = undefined } = {}) {
+    constructor(message, { code = "INTERNAL_ERROR", status = 500, candidates = undefined, etag = undefined, size = undefined, details = undefined } = {}) {
         super(message);
         this.name = "ApiError";
         this.code = code;
@@ -389,5 +406,7 @@ export class ApiError extends Error {
         // and a too-large file's size.
         if (etag === null || typeof etag === "string") this.etag = etag;
         if (Number.isFinite(size)) this.size = size;
+        // A refusal's details the server marked safe to show (a workflow command's field errors).
+        if (details !== undefined && details !== null) this.details = details;
     }
 }

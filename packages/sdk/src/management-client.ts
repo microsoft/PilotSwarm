@@ -37,6 +37,7 @@ import type {
     PromptAttachmentRef,
     SessionWorkspace,
     SessionWorkspaceView,
+    WorkflowReadOptions,
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
 import { readDefaultsRecord } from "./workspace.js";
@@ -151,7 +152,10 @@ import { SessionDumper } from "./session-dumper.js";
 import { computeSessionFootprint, FootprintCache, type SessionFootprint } from "./footprint.js";
 import { loadModelProviders, loadModelProviderTypes, providerTypeUsesWorkloadIdentity, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort, type ContextTier } from "./model-providers.js";
 import { bootstrapProviders, resolveProviderCredential, resolveRuntimeModelSelection } from "./provider-catalog.js";
-import { resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus, resolveStaleRunningRowRecovery } from "./session-status.js";
+import {
+    resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldRecordWorkflowControllerFailed, shouldSyncCompletedStatus, shouldSyncFailedStatus,
+    resolveStaleRunningRowRecovery,
+} from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
 import { systemAgentUUID, type AgentConfig } from "./agent-loader.js";
@@ -163,6 +167,15 @@ import {
     type SystemAgentSessionPlan,
 } from "./system-agents.js";
 import type { ArtifactStore } from "./session-store.js";
+import { readWorkflowV2, workflowV2ExclusiveRead } from "./workflow/v2/tools.js";
+import { WORKFLOW_READ_STATUS } from "./workflow/v2/read-pages.js";
+import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/v2/human-commands.js";
+import { resolveWorkflowTestMode } from "./workflow/v2/test-mode-switch.js";
+import { createRegistryWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
+import { assertWorkflowHumanInputAllowed, workflowInputCapabilities, type WorkflowInputCapabilities } from "./workflow/v2/input-policy.js";
+import { WorkflowStoreError, type WorkflowActor } from "./workflow/v2/store.js";
+import { workflowAdapterFailure } from "./workflow/v2/failure.js";
+import { applyOperatorCommandToWorkflowV2, type WorkflowV2Host } from "./workflow/v2/service.js";
 import {
     AgentPackageValidationError,
     deleteAgentPackageEverywhere,
@@ -404,10 +417,19 @@ function normalizeSystemRestartDisposition(disposition: SystemSessionRestartDisp
     );
 }
 
+/** A workflow session runs a workflow graph; it has no conversation to send to. */
+function workflowNotConversationalError(sessionId: string): Error {
+    return Object.assign(
+        new Error(`Session ${sessionId.slice(0, 8)} is a workflow session; it runs a workflow graph and does not accept chat messages.`),
+        { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL", status: 409 },
+    );
+}
+
 function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
     const liveStatus: PilotSwarmSessionStatus = (row.state as PilotSwarmSessionStatus) || "pending";
     return {
         sessionId: row.sessionId,
+        sessionKind: row.sessionKind ?? "agent",
         title: row.title ?? undefined,
         agentId: row.agentId ?? undefined,
         splash: row.splash ?? undefined,
@@ -443,6 +465,8 @@ function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
 /** Merged view of a session for management UIs. */
 export interface PilotSwarmSessionView {
     sessionId: string;
+    /** Runtime implementation. Existing sessions are "agent". */
+    sessionKind: import("./types.js").SessionKind;
     title?: string;
     agentId?: string;
     splash?: string;
@@ -801,6 +825,21 @@ export interface PilotSwarmManagementClientOptions {
     aadDbUser?: string;
     /** Artifact store used by direct-mode agent-package publish/read/delete operations. */
     artifactStore?: ArtifactStore | null;
+    /**
+     * Workflow v2 (INACTIVE; test-only): take a person's workflow commands
+     * (updateWorkflow). `requests: true` when the deployment's workers run
+     * controller 1.9.0 (their test option workflowRequests): the commands then
+     * take the milestone operations (stop, test, test_respond, test_advance)
+     * and start runs at 1.9.0, as that host's tools do, and a publication pins
+     * its named agents: package agents only, at the agent registry's exact
+     * revision (a deployment agent's name is refused AGENT_UNAVAILABLE here).
+     * Unset: updateWorkflow answers WORKFLOW_COMMANDS_UNAVAILABLE (501) and
+     * changes nothing. `testMode`: whether those commands take the test
+     * operations (test, test_respond, test_advance) beside `requests`;
+     * absent, the deployment flag PILOTSWARM_WORKFLOW_TEST_MODE decides, off
+     * unless it is exactly `on` (spec 16: test mode hidden by default).
+     */
+    workflowCommands?: { requests?: boolean; testMode?: boolean } | null;
 }
 
 // ─── Management Client ──────────────────────────────────────────
@@ -1330,7 +1369,9 @@ export class PilotSwarmManagementClient {
             orchestrationStatus: orchStatus,
         });
 
+        // The session's kind too (review R2-RT-2): a workflow's run end is never written over by this read.
         const terminalStatusInput = {
+            sessionKind: row.sessionKind,
             parentSessionId: row.parentSessionId,
             isSystem: row.isSystem,
             rowState: row.state,
@@ -1360,11 +1401,19 @@ export class PilotSwarmManagementClient {
                 waitReason: null,
                 ...(failureMessage ? { lastError: failureMessage } : {}),
             }).catch(() => {});
+        } else if (shouldRecordWorkflowControllerFailed(terminalStatusInput)) {
+            // Re-check R2-RT2-RC1: a workflow's row is never written from this read's snapshot; the workflow store records a
+            // failed controller only while, under its lock, the row (and a v2 workflow's live run) still say the run has not
+            // ended. A legacy (version 1) workflow is recorded too (R2-RC2-RT2-1).
+            const message = typeof customStatus?.error === "string" && customStatus.error.trim() ? customStatus.error.trim() : null;
+            const store = this._catalog?.workflowStore?.() ?? null;
+            await store?.recordControllerFailed({ workflowSessionId: sessionId, message }).catch(() => {});
         } else {
             const recoveredState = resolveStaleRunningRowRecovery({
                 rowState: row.state,
                 status: customStatus?.status,
                 orchestrationStatus: orchStatus,
+                sessionKind: row.sessionKind,
             });
             if (recoveredState) {
                 await this._catalog!.updateSession(sessionId, {
@@ -1383,6 +1432,7 @@ export class PilotSwarmManagementClient {
 
         return {
             sessionId: row.sessionId,
+            sessionKind: row.sessionKind ?? "agent",
             title: row.title ?? undefined,
             agentId: row.agentId ?? undefined,
             splash: row.splash ?? undefined,
@@ -1585,7 +1635,7 @@ export class PilotSwarmManagementClient {
         if (session.status === "cancelled" || session.status === "failed") return;
 
         const doneReason = reason ?? "Completed by management client";
-        await this.sendCommand(sessionId, {
+        await this._sendLifecycleCommand(sessionId, {
             cmd: "done",
             id: buildLifecycleCommandId("done"),
             args: { reason: doneReason },
@@ -1639,7 +1689,7 @@ export class PilotSwarmManagementClient {
         }
 
         const cancelReason = reason ?? "Cancelled by management client";
-        await this.sendCommand(sessionId, {
+        await this._sendLifecycleCommand(sessionId, {
             cmd: "cancel",
             id: buildLifecycleCommandId("cancel"),
             args: { reason: cancelReason },
@@ -1698,7 +1748,7 @@ export class PilotSwarmManagementClient {
             return;
         }
 
-        await this.sendCommand(sessionId, {
+        await this._sendLifecycleCommand(sessionId, {
             cmd: "delete",
             id: buildLifecycleCommandId("delete"),
             args: { reason: deleteReason },
@@ -1818,6 +1868,7 @@ export class PilotSwarmManagementClient {
         if (!Number.isInteger(input?.expectedRevision) || input.expectedRevision < 0) {
             throw Object.assign(new Error("expectedRevision must be a non-negative integer"), { code: "WORKSPACE_PATH_INVALID", status: 400 });
         }
+        await assertWorkflowHumanInputAllowed(this._workflowStoreOrNull(), sessionId, "workspace");
         let workspace: SessionWorkspace | null = null;
         if (input.workspace !== null && input.workspace !== undefined) {
             const checked = validateWorkspaceText(input.workspace);
@@ -1853,6 +1904,183 @@ export class PilotSwarmManagementClient {
             workspace: (result.workspace ?? null) as SessionWorkspace | null,
             ...(result.path !== undefined ? { path: result.path } : {}),
         };
+    }
+
+    /**
+     * Workflow v2: the read-only view of a workflow session (readWorkflow,
+     * GET /api/v1/sessions/:sessionId/workflow, access session:read): its
+     * definition state, current revision with its diagnostics, graph, runs,
+     * and one run (runId, default the live run) with the newest page of its
+     * node executions, typed input inbox and outbox (and a test run's
+     * interceptions), the rows still open that a page does not hold, and how
+     * each section pages on (run.pages), bounded as the read_workflow tool
+     * bounds them; the YAML is omitted. `cursor` (a nextCursor a read
+     * returned, given back as it was) reads that section's next, older page
+     * instead, and `executionId` one node execution's whole output or error;
+     * `limit` (1 to 200) sets the rows per page, and `kvRevision` (with an
+     * optional `kvKey`) reads one revision of the run's variables
+     * (readWorkflowV2View; a revision it does not have is
+     * KV_REVISION_NOT_FOUND, 404). `agentVersions: true`, alone, reads the
+     * agent versions publishing the current revision would lock now
+     * (readWorkflowV2AgentVersions; owner decision q1), resolved as this
+     * client's publications resolve them; nothing is locked by reading.
+     * Authorization is the caller's (the portal gates session:read, with its
+     * not-found privacy, before this runs; the direct client is trusted). This
+     * is the human read adapter, separate from the agent tool: it never acts
+     * as the workflow's parent, and it changes nothing. A missing or deleted
+     * session is NOT_FOUND (404), a session that is not a version 2 workflow
+     * WORKFLOW_NOT_FOUND (404), a run that is not one of its runs
+     * RUN_NOT_FOUND (404), an execution that is not one of the run's
+     * EXECUTION_NOT_FOUND (404), an invalid run id INVALID_REQUEST (400), a
+     * cursor that is not one a read of this workflow returned
+     * WORKFLOW_CURSOR_INVALID (400), and an invalid limit or execution id, or
+     * a cursor and an execution id together, WORKFLOW_READ_INVALID (400). A
+     * client created with the test-only option `workflowCommands` (INACTIVE)
+     * also reports, with the view, the commands the workflow takes from a
+     * person (`personCommands`, human-commands.ts), so a screen offers only
+     * those, and, for a draft a person may change, its current YAML
+     * (`personCommands.draft`); without it the view is exactly the tool's.
+     * A store that cannot be reached or has no room now is
+     * WORKFLOW_STORE_UNAVAILABLE (503) with its reason (batch 7, n-3).
+     */
+    async readWorkflow(sessionId: string, options: WorkflowReadOptions = {})
+        : Promise<Record<string, unknown>> {
+        try {
+            return await this._readWorkflow(sessionId, options);
+        } catch (error) {
+            throw workflowAdapterFailure(error);
+        }
+    }
+
+    private async _readWorkflow(sessionId: string, options: WorkflowReadOptions)
+        : Promise<Record<string, unknown>> {
+        this._ensureStarted();
+        const failure = (code: string, status: number, message: string): Error => Object.assign(new Error(message), { code, status });
+        const runId = options?.runId ?? null;
+        if (runId !== null && (typeof runId !== "string" || !runId.trim() || runId.length > 256)) {
+            throw failure("INVALID_REQUEST", 400, "runId must be a run id of 1 to 256 characters.");
+        }
+        const session = await this._catalog!.getSession(sessionId);
+        if (!session || session.deletedAt) throw failure("NOT_FOUND", 404, "Session not found.");
+        const store = this._catalog!.workflowStore?.();
+        if (session.sessionKind !== "workflow" || !store) throw failure("WORKFLOW_NOT_FOUND", 404, "This session is not a version 2 workflow.");
+        const request = { ...options, runId };
+        const enabled = this.config?.workflowCommands;
+        let view: Record<string, unknown>;
+        try {
+            // The agent versions publishing would lock (owner decision q1) are resolved as this client's publications resolve them,
+            // and a step's proposed inputs (q6) compiled as its saves compile them. The portal reads a definition revision's and a
+            // step's YAML only for a person who may change the workflow; this client is trusted.
+            // With test mode off, test runs are not shown or found (review SF-5): this client's own test mode, or else the flag.
+            view = await readWorkflowV2({ store, ...(typeof enabled?.testMode === "boolean" ? { testMode: enabled.testMode } : {}), ...(enabled?.requests === true
+                ? { requests: true, resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}) }, sessionId, request, "api");
+        } catch (error) {
+            const status = error instanceof WorkflowStoreError ? WORKFLOW_READ_STATUS[error.code] : undefined;
+            if (error instanceof WorkflowStoreError && status !== undefined) throw failure(error.code, status, error.message);
+            throw error;
+        }
+        // The read never depends on the option: absent (or no options at all, as for a host that lends this adapter its
+        // catalog), the view is exactly the tool's. A page, an execution's value or a read of its own is not the view: it has
+        // no commands.
+        const given = (value: unknown) => value !== undefined && value !== null;
+        if (!enabled || workflowV2ExclusiveRead(request) !== null || given(request.cursor) || given(request.executionId)
+            || given(request.kvRevision) || given(request.kvKey)) return view;
+        const run = view.run as { runId?: unknown } | null | undefined;
+        const shown = run !== null && typeof run === "object" && typeof run.runId === "string" ? run.runId : null;
+        // A draft's current revision: its YAML is what a person who may change the draft edits.
+        const definition = view.definition as { state?: unknown; currentRevision?: unknown } | null | undefined;
+        const draftRevision = definition?.state === "draft" && typeof definition.currentRevision === "number" ? definition.currentRevision : null;
+        return { ...view, personCommands: await workflowCommandsForPerson(store, sessionId,
+            { requests: enabled.requests === true, runId: shown, draftRevision, published: definition?.state === "published",
+                testMode: resolveWorkflowTestMode(enabled.testMode) }) };
+    }
+
+    /**
+     * Workflow v2: a person's command to a workflow session (updateWorkflow;
+     * design 04, R26; INACTIVE: only a client created with the test-only
+     * option `workflowCommands` takes one, otherwise
+     * WORKFLOW_COMMANDS_UNAVAILABLE, 501, and nothing changes). The command is
+     * the update_workflow tool's: `operation`, `operation_id` and the
+     * operation's arguments (replace_definition, publish, publish_and_start,
+     * start, set_vars, pause, resume, cancel; stop and the test operations
+     * when the workers run controller 1.9.0), run by the same implementation
+     * (human-commands.ts). Authorization is the caller's (the portal gates
+     * the session before this runs; the direct client is trusted), and its
+     * actor is `options.principal` (a user) or, without one, this client as
+     * a system actor: never a field of the command. A workflow in a workflow
+     * agent state's subtree takes only pause, stop and cancel from a person
+     * (403 WORKFLOW_HUMAN_INPUT_DENIED). Returns the receipt; a refusal
+     * carries its code, its HTTP status and its details. A store that cannot
+     * be reached or has no room now is WORKFLOW_STORE_UNAVAILABLE (503) with
+     * its reason (batch 7, n-3).
+     */
+    async updateWorkflow(sessionId: string, command: Record<string, unknown>,
+        options: { principal?: { provider?: string | null; subject?: string | null } | null; originatingSessionId?: string | null } = {})
+        : Promise<Record<string, unknown>> {
+        try {
+            return await this._updateWorkflow(sessionId, command, options);
+        } catch (error) {
+            throw workflowAdapterFailure(error);
+        }
+    }
+
+    private async _updateWorkflow(sessionId: string, command: Record<string, unknown>,
+        options: { principal?: { provider?: string | null; subject?: string | null } | null; originatingSessionId?: string | null })
+        : Promise<Record<string, unknown>> {
+        this._ensureStarted();
+        const failure = (code: string, status: number, message: string, details?: unknown): Error =>
+            Object.assign(new Error(message), { code, status, ...(details !== undefined ? { details } : {}) });
+        const enabled = this.config.workflowCommands;
+        if (!enabled) {
+            throw Object.assign(failure("WORKFLOW_COMMANDS_UNAVAILABLE", 501, "This deployment does not take workflow commands from people yet; "
+                + "the workflow's parent agent changes it with its update_workflow tool."), { expose: true });
+        }
+        const session = await this._catalog!.getSession(sessionId);
+        if (!session || session.deletedAt) throw failure("NOT_FOUND", 404, "Session not found.");
+        const store = this._catalog!.workflowStore?.();
+        if (session.sessionKind !== "workflow" || !store) throw failure("WORKFLOW_NOT_FOUND", 404, "This session is not a version 2 workflow.");
+        const provider = typeof options.principal?.provider === "string" ? options.principal.provider.trim() : "";
+        const subject = typeof options.principal?.subject === "string" ? options.principal.subject.trim() : "";
+        const actor: WorkflowActor = provider && subject ? { kind: "user", provider, subject } : { kind: "system", name: "management-client" };
+        // With controller 1.9.0, a publication pins its named agents as the workers' publications do (agent-resolver.ts);
+        // this client knows the agent registry, not a worker's deployment agents, so it pins package agents only.
+        const host: WorkflowV2Host = {
+            catalog: this._catalog!, store, duroxideClient: this._duroxideClient,
+            ...(enabled.requests === true ? { requests: true, testMode: resolveWorkflowTestMode(enabled.testMode),
+                resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}),
+        };
+        try {
+            // A command that names the session it comes from is refused a definition operation from inside a Workflow (SF-2).
+            return await updateWorkflowForPerson(command, { host, workflowSessionId: sessionId, actor,
+                ...(options.originatingSessionId !== undefined ? { originatingSessionId: options.originatingSessionId } : {}) });
+        } catch (error) {
+            // The details of a refusal (field errors, the conflicting revision, the controlling agent) are safe to show over the
+            // Web API (exposeDetails), as its message is.
+            if (error instanceof WorkflowStoreError) {
+                throw Object.assign(failure(error.code, workflowCommandStatus(error.code), error.message, error.details), { exposeDetails: true });
+            }
+            if ((error as { code?: unknown })?.code === "WORKFLOW_HUMAN_INPUT_DENIED") throw Object.assign(error as Error, { exposeDetails: true });
+            throw error;
+        }
+    }
+
+    /**
+     * Workflow support as this client's host takes it now (design 04
+     * "Advertise capability/version in bootstrap"; D11), for a server's
+     * bootstrap and any client that gates its workflow surface
+     * (workflowCapabilities, human-commands.ts): version 2 reads when the
+     * catalog has a workflow store; a person's commands only with the
+     * test-only option `workflowCommands` (INACTIVE; otherwise the refusal
+     * every command gets), with the controller version the runs they start run
+     * at and the operations they take. It reports configuration and changes
+     * nothing. Async, as the Web client's answer is (from the server's
+     * bootstrap).
+     */
+    async getWorkflowCapabilities(): Promise<Record<string, unknown> | null> {
+        return workflowCapabilities({
+            read: typeof this._catalog?.workflowStore === "function",
+            commands: this.config?.workflowCommands ?? null,
+        });
     }
 
     /**
@@ -2396,6 +2624,7 @@ export class PilotSwarmManagementClient {
      */
     async retrySessionWorkspace(sessionId: string, opts?: { timeoutMs?: number }): Promise<{ retried: boolean } | { status: "pending"; commandId: string }> {
         this._ensureStarted();
+        await assertWorkflowHumanInputAllowed(this._workflowStoreOrNull(), sessionId, "workspace");
         const id = buildLifecycleCommandId("retry-workspace");
         await this._sendWorkspaceCommand(sessionId, { cmd: "retry_workspace", id });
         const resp = await this._awaitCommandResponse(sessionId, id, commandWaitMs(opts?.timeoutMs, 60_000));
@@ -2455,6 +2684,12 @@ export class PilotSwarmManagementClient {
         if ((session as any).serviceKind) {
             throw Object.assign(
                 new Error("Service sessions are runtime machinery and are excluded from regeneration"),
+                { code: "REGENERATE_UNSUPPORTED" },
+            );
+        }
+        if (session.sessionKind === "workflow") {
+            throw Object.assign(
+                new Error("Workflow sessions run a workflow graph and have no conversation to regenerate"),
                 { code: "REGENERATE_UNSUPPORTED" },
             );
         }
@@ -2592,6 +2827,11 @@ export class PilotSwarmManagementClient {
             throw invalidTurnControlRequest("steerSessionTurn requires a requestId");
         }
         const replaces = validReplacesClientMessageId(opts?.replacesClientMessageId);
+        if ((await this._catalog!.getSession(sessionId).catch(() => null))?.sessionKind === "workflow") {
+            throw workflowNotConversationalError(sessionId);
+        }
+        // A person's steer into a workflow agent state's subtree is refused; a parent agent's (agent-stamped) passes.
+        await assertWorkflowHumanInputAllowed(this._workflowStoreOrNull(), sessionId, "steer", opts?.caller?.sender);
         // The flag gates new steers only. The catalog checks it under the
         // session row lock after its request-id retry lookup, so a retry of
         // an already recorded request id still gets its first answer (or
@@ -3208,6 +3448,24 @@ export class PilotSwarmManagementClient {
     // principal; every rule is the SDK chokepoint's (canvas-kv.ts). The
     // runtime has already gated session read for door 1.
 
+    /** The workflow store, when this catalog has one (the workflow human-input policy reads lineage from it). */
+    private _workflowStoreOrNull(): import("./workflow/v2/store.js").WorkflowStore | null {
+        const catalog = this._catalog as any;
+        return typeof catalog?.workflowStore === "function" ? catalog.workflowStore() : null;
+    }
+
+    /**
+     * What a person may send to a session, by its workflow lineage (design 03
+     * human-input denial): prompts, answers and steers are refused to a
+     * session in a workflow agent state's subtree. Read access and lifecycle
+     * controls are decided by the session's access rules, not here.
+     */
+    async getWorkflowInputPolicy(sessionId: string): Promise<WorkflowInputCapabilities> {
+        this._ensureStarted();
+        const store = this._workflowStoreOrNull();
+        return workflowInputCapabilities(store ? await store.readWorkflowLineage(sessionId) : null);
+    }
+
     private _canvasKvStore(): CanvasKvStore {
         this._ensureStarted();
         const catalog = this._catalog as any;
@@ -3241,6 +3499,8 @@ export class PilotSwarmManagementClient {
         principal: CanvasKvPrincipal,
         ops: CanvasKvWriteOp[],
     ): Promise<{ results: CanvasKvWriteResult[]; me: CanvasKvMe }> {
+        // A person's write to a canvas of a workflow agent state's subtree is refused; the session's own agent writes as before.
+        if (principal?.kind !== "agent") await assertWorkflowHumanInputAllowed(this._workflowStoreOrNull(), sessionId, "canvas");
         return this._mapCanvasKvErrors(() => writeCanvasKv(this._canvasKvStore(), sessionId, slot, principal, ops));
     }
 
@@ -4054,6 +4314,11 @@ export class PilotSwarmManagementClient {
                 `Session ${sessionId.slice(0, 8)} is a service session (runtime machinery) — its transcript is a read-only trace and it does not accept messages.`,
             );
         }
+        if (session.sessionKind === "workflow") {
+            throw workflowNotConversationalError(sessionId);
+        }
+        // A workflow agent state's subtree takes no human prompts (R13); an agent-stamped message passes.
+        await assertWorkflowHumanInputAllowed(this._workflowStoreOrNull(), sessionId, "prompt", options?.sender);
         if (session.status === "failed" || session.status === "cancelled") {
             throw new Error(
                 `Session ${sessionId.slice(0, 8)} is a terminal orchestration and cannot accept new messages.`,
@@ -4144,6 +4409,10 @@ export class PilotSwarmManagementClient {
      */
     async sendAnswer(sessionId: string, answer: string, options?: { sender?: MessageSender; expectedQuestion?: { question: string; iteration?: number } | null }): Promise<void> {
         this._ensureStarted();
+        if ((await this.getSession(sessionId))?.sessionKind === "workflow") {
+            throw workflowNotConversationalError(sessionId);
+        }
+        await assertWorkflowHumanInputAllowed(this._workflowStoreOrNull(), sessionId, "answer", options?.sender);
         const orchId = `session-${sessionId}`;
         await this._assertOrchestrationLive(orchId, sessionId, "sendAnswer");
         const expectedQuestion = options?.expectedQuestion !== undefined
@@ -4177,6 +4446,26 @@ export class PilotSwarmManagementClient {
             "messages",
             JSON.stringify({ cancelPending: ids }),
         );
+    }
+
+    /**
+     * A cancel, done or delete for a session (S7-DX2 follow-up): a v2 workflow's is applied in its store first
+     * (applyOperatorCommandToWorkflowV2: delete deletes the workflow, cancel and done end its active run at once, so no
+     * further step starts), and the command is queued for its controller only when that says so; any other session's
+     * command is queued as before (sendCommand).
+     */
+    private async _sendLifecycleCommand(sessionId: string, command: { cmd: "cancel" | "done" | "delete"; id: string; args: { reason: string } }): Promise<void> {
+        this._ensureStarted();
+        const store = this._workflowStoreOrNull();
+        if (store) {
+            const facts = this._factStore;
+            const applied = await applyOperatorCommandToWorkflowV2({
+                store, deleteSessionFacts: facts ? (id: string) => facts.deleteSessionFactsForSession(id) : null, duroxideClient: this._duroxideClient,
+            }, { targetSessionId: sessionId, command: { type: "cmd", ...command } });
+            // A workflow with no active run has nothing for the store to apply: the command goes as before.
+            if (applied.action === "applied" && applied.receipt?.applied !== "none") return;
+        }
+        await this.sendCommand(sessionId, command);
     }
 
     /**

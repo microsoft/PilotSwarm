@@ -86,11 +86,25 @@ const SESSION_ATTACHED_TOOL_NAMES = [
     "store_fact",
 ] as const;
 
+/**
+ * Workflow v2 turn tools (INACTIVE: only a turn of a worker that runs
+ * controller 1.9.0 declares them, ManagedSession.subAgentToolDefs):
+ * respond_session_request on every such turn, complete_workflow_node for an
+ * agent state's own child. Reserved whatever a session declares, for the
+ * reason above: an ordinary session never declares them, so a package or
+ * capability tool of either name would otherwise pass validation and then
+ * be declared twice beside the platform's on such a turn. The names equal
+ * RESPOND_SESSION_REQUEST_TOOL and COMPLETE_WORKFLOW_NODE_TOOL (a unit test
+ * keeps them equal; their modules are not imported here).
+ */
+export const WORKFLOW_TURN_TOOL_NAMES = ["respond_session_request", "complete_workflow_node"] as const;
+
 /** Complete platform namespace, including tools gated by role or store. */
 export function reservedPlatformToolNames(baseToolNames: Iterable<string> = []): Set<string> {
     return new Set([
         ...baseToolNames,
         ...SESSION_ATTACHED_TOOL_NAMES,
+        ...WORKFLOW_TURN_TOOL_NAMES,
         ...PROVIDER_TOOL_NAMES,
         ...FEATURE_OPERATION_SPECS.map(spec => spec.name),
         ...MOTD_OPERATION_SPECS.map(spec => spec.name),

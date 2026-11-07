@@ -1,6 +1,43 @@
 // Only navigation references are persisted: never drafts, transcripts or file contents.
 export const VIEW_HISTORY_LIMIT = 10;
 const text = value => typeof value === "string" && value.length <= 1024 ? value : null;
+const SIDE_TABS = ["canvas", "workspace", "workflow"];
+const WORKFLOW_TAB_VIEWS = ["definition", "workflows"];
+/**
+ * Review UI-D3: the Workflow tab's context of a view (the session that owns its Workflows, the Workflow it shows, its
+ * definition and Definition | Workflows view), kept apart from the highlighted row. References only; null without an owner.
+ */
+function cleanWorkflowTab(value) {
+    const ownerId = value && typeof value === "object" ? text(value.ownerId) : null;
+    if (!ownerId) return null;
+    return { ownerId, workflowId: text(value.workflowId), definition: text(value.definition),
+        view: WORKFLOW_TAB_VIEWS.includes(value.view) ? value.view : null };
+}
+/**
+ * Review UI-F2: the session a reload's startup view can be taken for: the active session once its row is loaded and no deep
+ * link is still resolving; else null. A stored profile can select a session before the catalog answers, and a view taken
+ * then has no Workflow tab context (that needs the session's row). Pure.
+ */
+export function reloadReadySessionId(state) {
+    const sessions = state?.sessions;
+    const id = sessions?.activeSessionId ?? null;
+    if (!id || !sessions.byId?.[id]) return null;
+    return sessions.navigationIntent?.status === "pending" ? null : id;
+}
+/** The ui/workflowTab patch that shows a view's Workflow tab context again. */
+export function workflowTabPatch(tab) {
+    return { workflowId: tab.workflowId, definition: tab.definition, view: tab.view };
+}
+/**
+ * Review UI-D3: after a reload, the Workflow tab context the tab's saved current view had, when that view is of the
+ * session now active and its owner's tab has nothing chosen in this page yet: { ownerId, patch }; else null. Pure.
+ */
+export function workflowTabOnReload(entry, state) {
+    const tab = entry && entry.mode === "workspace" ? cleanWorkflowTab(entry.workflowTab) : null;
+    if (!tab || !entry.sessionId || entry.sessionId !== state?.sessions?.activeSessionId) return null;
+    if (state.ui?.workflowTabs?.[tab.ownerId]) return null;
+    return { ownerId: tab.ownerId, patch: workflowTabPatch(tab) };
+}
 export function cleanView(value) {
     if (!value || !["workspace", "moa", "admin", "budget"].includes(value.mode)) return null;
     return {
@@ -12,6 +49,11 @@ export function cleanView(value) {
         canvasSlot: Number.isInteger(value.canvasSlot) && value.canvasSlot >= 1 && value.canvasSlot <= 5 ? value.canvasSlot : 1,
         diagnosticsOpen: value.diagnosticsOpen === true,
         artifactSessionId: text(value.artifactSessionId), artifactFilename: text(value.artifactFilename),
+        // Workflow Simplified (review UI-8): the Workflow row selected under its chat, and the right block's tab.
+        workflowRowId: text(value.workflowRowId),
+        sidePaneTab: SIDE_TABS.includes(value.sidePaneTab) ? value.sidePaneTab : "canvas",
+        // Review UI-D3: the Workflow tab's context, restored with the view (choosing in the tab is not a visit).
+        workflowTab: cleanWorkflowTab(value.workflowTab),
     };
 }
 export function viewKey(view) {
@@ -19,7 +61,8 @@ export function viewKey(view) {
     if (view.mode !== "workspace") return view.mode;
     return JSON.stringify([view.mode, view.sessionId, view.canvasOpen,
         view.canvasOpen ? view.canvasSlot : null, view.canvasMaximized, view.canvasZen,
-        view.diagnosticsOpen, view.artifactSessionId, view.artifactFilename]);
+        view.diagnosticsOpen, view.artifactSessionId, view.artifactFilename,
+        view.workflowRowId ?? null, view.canvasOpen ? view.sidePaneTab ?? "canvas" : null]);
 }
 export function createViewHistory(saved) {
     let entries = [], index = -1;

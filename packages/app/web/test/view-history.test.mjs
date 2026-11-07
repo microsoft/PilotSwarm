@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createViewHistory, cleanView, navigationShortcut, viewKey } from "../src/navigation/view-history.js";
+import {
+    createViewHistory, cleanView, navigationShortcut, reloadReadySessionId, viewKey, workflowTabOnReload, workflowTabPatch,
+} from "../src/navigation/view-history.js";
 const view = id => cleanView({ mode: "workspace", sessionId: String(id) });
 
 test("history retains ten views, clamps ends, and replaces the forward branch", () => {
@@ -42,4 +44,79 @@ test("keyboard supports Option-produced characters and composer navigation witho
         assert.equal(navigationShortcut(event({ target: composer, ...extra })), 0);
     for (const extra of [{ altKey: false }, { ctrlKey: true }, { metaKey: true }, { repeat: true }, { isComposing: true }, { getModifierState: () => true }, { target: { isContentEditable: true } }, { target: { closest: () => ({}) } }])
         assert.equal(navigationShortcut(event(extra)), 0);
+});
+
+// Workflow Simplified, review UI-8: two Workflows of one chat are two views, and the right block's tab is part of a view.
+test("a Workflow selected under its chat and the right block's tab are part of a view", () => {
+    const base = { mode: "workspace", sessionId: "owner-1", canvasOpen: true, canvasSlot: 1 };
+    const a = cleanView({ ...base, workflowRowId: "wf-1", sidePaneTab: "workflow" });
+    const b = cleanView({ ...base, workflowRowId: "wf-2", sidePaneTab: "workflow" });
+    assert.equal(a.workflowRowId, "wf-1");
+    assert.equal(a.sidePaneTab, "workflow");
+    assert.notEqual(viewKey(a), viewKey(b), "two Workflows, two views");
+    assert.notEqual(viewKey(cleanView({ ...base, sidePaneTab: "canvas" })), viewKey(cleanView({ ...base, sidePaneTab: "workflow" })));
+    assert.equal(cleanView({ ...base, sidePaneTab: "junk" }).sidePaneTab, "canvas");
+    // With the right block closed, its tab does not make another view.
+    assert.equal(viewKey(cleanView({ ...base, canvasOpen: false, sidePaneTab: "canvas" })), viewKey(cleanView({ ...base, canvasOpen: false, sidePaneTab: "workflow" })));
+    const history = createViewHistory(null);
+    assert.equal(history.visit(a), true);
+    assert.equal(history.visit(b), true);
+    assert.equal(history.move(-1).workflowRowId, "wf-1");
+});
+
+// Review UI-D3: the Workflow tab's context (the Workflow it shows under its parent, the definition and the Definition |
+// Workflows view) is part of a view, apart from the highlighted row: Back/Forward and a reload show it again.
+test("UI-D3: a view keeps the Workflow tab's context; Back/Forward and a reload restore it", () => {
+    const base = { mode: "workspace", sessionId: "owner-1", canvasOpen: true, canvasSlot: 1, sidePaneTab: "workflow" };
+    const tab = (workflowId, definition, view) => ({ ownerId: "owner-1", workflowId, definition, view });
+    // Bounded references only.
+    assert.deepEqual(cleanView({ ...base, workflowTab: tab("wf-b", "watch-v2", "workflows") }).workflowTab,
+        { ownerId: "owner-1", workflowId: "wf-b", definition: "watch-v2", view: "workflows" });
+    assert.deepEqual(cleanView({ ...base, workflowTab: { ...tab(null, "x".repeat(2000), "junk") } }).workflowTab,
+        { ownerId: "owner-1", workflowId: null, definition: null, view: null });
+    assert.equal(cleanView({ ...base, workflowTab: { workflowId: "wf-b" } }).workflowTab, null, "no owner, no context");
+    assert.equal(cleanView(base).workflowTab, null);
+    // Choosing in the tab is not a visit: the same view, its context updated in place.
+    const shown = cleanView({ ...base, workflowTab: tab("wf-b", "watch-v2", "workflows") });
+    const other = cleanView({ ...base, workflowTab: tab(null, "report-v2", "definition") });
+    assert.equal(viewKey(shown), viewKey(other));
+    // Back/Forward: the row view (wf-b highlighted), then the parent showing a non-default definition view; Back to the
+    // row and Forward again gives the parent's own context back, also through storage.
+    const history = createViewHistory(null);
+    history.visit(cleanView({ ...base, workflowRowId: "wf-b", workflowTab: tab("wf-b", "watch-v2", "workflows") }));
+    history.visit(shown);
+    history.visit(other);
+    assert.equal(history.entries.length, 2);
+    assert.equal(history.move(-1).workflowRowId, "wf-b");
+    const restored = createViewHistory(history.serialize());
+    assert.deepEqual(restored.move(1).workflowTab, other.workflowTab);
+    assert.deepEqual(workflowTabPatch(other.workflowTab), { workflowId: null, definition: "report-v2", view: "definition" });
+    // A reload: the saved current view of the session now active, with nothing chosen in its tab yet, gives its context.
+    const state = (activeSessionId, workflowTabs = {}) => ({ sessions: { activeSessionId }, ui: { workflowTabs } });
+    assert.deepEqual(workflowTabOnReload(shown, state("owner-1")), { ownerId: "owner-1", patch: { workflowId: "wf-b", definition: "watch-v2", view: "workflows" } });
+    assert.equal(workflowTabOnReload(shown, state("someone-else")), null, "another session opened");
+    assert.equal(workflowTabOnReload(shown, state("owner-1", { "owner-1": { view: "definition" } })), null, "already chosen in this page");
+    assert.equal(workflowTabOnReload({ ...shown, mode: "admin" }, state("owner-1")), null);
+    assert.equal(workflowTabOnReload(undefined, state("owner-1")), null);
+});
+
+// Review UI-F2: a reload's saved view is applied, and the startup view taken, only once the initial session is resolved: a
+// stored profile can select the session before the catalog answers (the ca43135a/10447048 browser runs), and a view taken
+// then has no Workflow tab context, since that needs the session's row.
+test("UI-F2: the startup view waits for the selected session's row and for a deep link to resolve", () => {
+    const row = { sessionId: "owner-1", title: "Release triage agent" };
+    const state = (activeSessionId, byId = {}, navigationIntent = null) => ({ sessions: { activeSessionId, byId, navigationIntent } });
+    assert.equal(reloadReadySessionId(state(null)), null, "nothing selected");
+    assert.equal(reloadReadySessionId(state("owner-1")), null, "selected by the profile before the catalog answered");
+    assert.equal(reloadReadySessionId(state("owner-1", { "owner-1": row })), "owner-1");
+    assert.equal(reloadReadySessionId(state("owner-1", { "owner-1": row }, { sessionId: "owner-2", status: "pending" })), null,
+        "a deep link is still resolving");
+    assert.equal(reloadReadySessionId(state("owner-1", { "owner-1": row }, { sessionId: "owner-1", status: "resolved" })), "owner-1");
+    assert.equal(reloadReadySessionId(state("owner-1", { "owner-1": row }, { sessionId: "gone", status: "failed" })), "owner-1");
+    assert.equal(reloadReadySessionId(undefined), null);
+    // Once resolved, the saved view of that session still gives its context (nothing chosen in its tab yet).
+    const shown = cleanView({ mode: "workspace", sessionId: "owner-1", canvasOpen: true, sidePaneTab: "workflow",
+        workflowTab: { ownerId: "owner-1", workflowId: "wf-b", definition: "watch-v2", view: "workflows" } });
+    const ready = { ...state("owner-1", { "owner-1": row }), ui: { workflowTabs: {} } };
+    assert.deepEqual(workflowTabOnReload(shown, ready), { ownerId: "owner-1", patch: { workflowId: "wf-b", definition: "watch-v2", view: "workflows" } });
 });

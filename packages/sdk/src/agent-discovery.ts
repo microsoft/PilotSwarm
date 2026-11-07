@@ -1,5 +1,25 @@
 import { defineTool } from "@github/copilot-sdk";
 import { resolveAgentDefinitionForCaller } from "./session-proxy.js";
+import { readWorkflowInterfaceExport } from "./workflow/v2/package-interface.js";
+import type { JsonValue } from "./workflow/v2/json.js";
+
+/**
+ * A package agent's workflow interface as discovery shows it (design 04
+ * "Package-agent I/O export"; R09): the contract a Workflow V2 agent state
+ * names with `invoke.agent: { name, package, interface: <ref> }` and must
+ * match exactly at publication (its outcomes and schemas, copied without
+ * change), and the digest that publication pins.
+ */
+export interface AgentDiscoveryWorkflowInterface {
+    /** `<name>@<version>`, as an agent state's `interface` names it. */
+    ref: string;
+    name: string;
+    version: string;
+    outcomes: string[];
+    inputSchema: JsonValue | null;
+    outputSchema: JsonValue;
+    digest: string;
+}
 
 /** A selectable blueprint, with metadata from exactly the copy spawning binds. */
 export interface AgentDiscoveryEntry {
@@ -20,6 +40,12 @@ export interface AgentDiscoveryEntry {
     creatable: boolean;
     id: string | null;
     parent: string | null;
+    /**
+     * The workflow interface the agent's installed package version exports
+     * (agent schemaVersion 5). Present only for a published agent with a
+     * well-formed export; every other entry is unchanged.
+     */
+    workflowInterface?: AgentDiscoveryWorkflowInterface;
 }
 
 export async function listAgentDefinitionsForCaller(opts: {
@@ -27,11 +53,26 @@ export async function listAgentDefinitionsForCaller(opts: {
     systemAgents?: any[];
     getCallerOwnerKey: () => Promise<string | null>;
     systemOnly?: boolean;
+    /**
+     * The workflow interface the host's install manifest records for a listed
+     * agent (a worker: its installed package version's export), or undefined.
+     * Read once, with the agents' snapshot.
+     */
+    workflowInterfaceOf?: (agent: any) => unknown;
 }): Promise<AgentDiscoveryEntry[]> {
     // Snapshot the arrays: worker package refresh mutates them in place while
     // owner lookup awaits the catalog. A listing must use one coherent set.
     const userAgents = [...opts.userAgents];
     const systemAgents = [...(opts.systemAgents ?? [])];
+    // The interfaces in the same snapshot (no await in between), so a refresh cannot pair one revision's agent with
+    // another revision's interface.
+    const interfaces = new Map<any, unknown>();
+    if (opts.workflowInterfaceOf && !opts.systemOnly) {
+        for (const agent of userAgents) {
+            const exported = agent?.packageId ? opts.workflowInterfaceOf(agent) : undefined;
+            if (exported !== undefined) interfaces.set(agent, exported);
+        }
+    }
     let ownerKey: Promise<string | null> | undefined;
     const getCallerOwnerKey = () => ownerKey ??= Promise.resolve()
         .then(opts.getCallerOwnerKey).catch(() => null);
@@ -76,6 +117,8 @@ export async function listAgentDefinitionsForCaller(opts: {
             && agent.prompt === resolved.prompt);
         if (!selected || seen.has(selected)) continue;
         seen.add(selected);
+        // Checked again (shape, schemas, digest): a record that is not well formed is not advertised; publication refuses it.
+        const exported = resolved.packageId && interfaces.has(selected) ? readWorkflowInterfaceExport(interfaces.get(selected)) : null;
         entries.push({
             agent_name: agentName,
             name: resolved.name,
@@ -93,6 +136,10 @@ export async function listAgentDefinitionsForCaller(opts: {
             creatable: resolved.creatable !== false,
             id: resolved.id ?? null,
             parent: resolved.parent ?? null,
+            ...(exported ? { workflowInterface: {
+                ref: `${exported.name}@${exported.version}`, name: exported.name, version: exported.version, outcomes: [...exported.outcomes],
+                inputSchema: exported.inputSchema, outputSchema: exported.outputSchema, digest: exported.digest,
+            } } : {}),
         });
     }
     return entries.sort((a, b) => a.name.localeCompare(b.name) || a.agent_name.localeCompare(b.agent_name));
@@ -103,6 +150,8 @@ export function createAgentDiscoveryTool(opts: {
     getUserAgents: () => any[];
     getSystemAgents: () => any[];
     getCallerOwnerKey: (durableSessionId?: string) => Promise<string | null>;
+    /** A published agent's workflow interface from the host's install manifest (listAgentDefinitionsForCaller). */
+    getWorkflowInterface?: (agent: any) => unknown;
 }) {
     return defineTool("ps_list_agents", {
         description:
@@ -123,6 +172,7 @@ export function createAgentDiscoveryTool(opts: {
                 systemAgents: opts.getSystemAgents(),
                 getCallerOwnerKey: () => opts.getCallerOwnerKey(invocation?.durableSessionId),
                 systemOnly: args.systemOnly === true,
+                ...(opts.getWorkflowInterface ? { workflowInterfaceOf: opts.getWorkflowInterface } : {}),
             });
             return JSON.stringify({ agents, total: agents.length }, null, 2);
         },

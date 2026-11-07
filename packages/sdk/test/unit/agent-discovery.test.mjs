@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createAgentDiscoveryTool, listAgentDefinitionsForCaller } from '../../dist/agent-discovery.js';
 import { resolveAgentDefinitionForCaller } from '../../dist/session-proxy.js';
 import { PilotSwarmWorker } from '../../dist/worker.js';
+import { workflowInterfaceDigest } from '../../dist/workflow/v2/package-interface.js';
 
 const alice = { provider: 'test', subject: 'alice' };
 const bob = { provider: 'test', subject: 'bob' };
@@ -184,6 +185,53 @@ test('actual tool uses durable caller identity, reads fresh definitions and neve
     const unknown = JSON.parse(await tool.handler({}, { sessionId: 'alice-durable' }));
     assert.equal(unknown.total, 1);
     assert.equal(unknown.agents[0].scope, 'cluster');
+});
+
+const INTERFACE_BODY = { name: 'review_change', version: '1', inputSchema: null,
+    outputSchema: { type: 'object', required: ['verdict'], properties: { verdict: { type: 'string' } }, additionalProperties: false }, outcomes: ['accepted'] };
+const EXPORTED = { ...INTERFACE_BODY, digest: workflowInterfaceDigest(INTERFACE_BODY) };
+
+test('a published agent lists the workflow interface its installed version exports, checked, and only that agent', async () => {
+    const lookups = [];
+    const interfaces = new Map([[published, EXPORTED], [privateAgent, { ...EXPORTED, digest: '0'.repeat(64) }], [staticAgent, EXPORTED]]);
+    const rows = await list([published, privateAgent, staticAgent], alice, { workflowInterfaceOf: agent => { lookups.push(agent.name); return interfaces.get(agent); } });
+    const shared = rows.find(row => row.agent_name === `__shared:${published.name}`);
+    assert.deepEqual(shared.workflowInterface, { ref: 'review_change@1', name: 'review_change', version: '1', outcomes: ['accepted'],
+        inputSchema: null, outputSchema: INTERFACE_BODY.outputSchema, digest: EXPORTED.digest });
+    // A record whose digest does not match is not advertised; a deployment agent is never looked up.
+    assert.equal('workflowInterface' in rows.find(row => row.scope === 'user'), false);
+    assert.equal('workflowInterface' in rows.find(row => row.source === 'static'), false);
+    assert.deepEqual(lookups.sort(), [privateAgent.name, published.name].sort());
+    // Another caller does not see the private copy at all; without a lookup nothing changes.
+    assert.ok(!JSON.stringify(await list([privateAgent], bob, { workflowInterfaceOf: agent => interfaces.get(agent) })).includes('review_change'));
+    assert.ok((await list([published, staticAgent])).every(row => !('workflowInterface' in row)));
+    // System diagnostics never read one.
+    assert.equal((await list([published], null, { systemOnly: true, workflowInterfaceOf: () => { throw new Error('not read'); } })).length, 1);
+});
+
+test('the interfaces are read with the agents, so a refresh during the owner lookup cannot pair another revision', async () => {
+    const live = new Map([[published, EXPORTED]]);
+    let lookups = 0;
+    const rows = await list([privateAgent, published], null, {
+        workflowInterfaceOf: agent => live.get(agent),
+        // The private copy needs the owner: the listing awaits it while the worker's refresh replaces the interface.
+        getCallerOwnerKey: async () => { lookups++; live.set(published, { ...EXPORTED, outcomes: ['changed'] }); return ownerKey(alice); },
+    });
+    assert.equal(lookups, 1);
+    const shared = rows.find(row => row.agent_name === `__shared:${published.name}`);
+    assert.equal(shared.workflowInterface.digest, EXPORTED.digest);
+    assert.deepEqual(shared.workflowInterface.outcomes, ['accepted']);
+});
+
+test('the discovery tool takes the interface lookup of its host and advertises no new option', async () => {
+    const tool = createAgentDiscoveryTool({
+        getUserAgents: () => [published, staticAgent], getSystemAgents: () => [system], getCallerOwnerKey: async () => null,
+        getWorkflowInterface: agent => (agent === published ? EXPORTED : undefined),
+    });
+    assert.deepEqual(Object.keys(tool.parameters.properties), ['systemOnly']);
+    const listed = JSON.parse(await tool.handler({}, { durableSessionId: 'anyone' }));
+    assert.equal(listed.agents.find(row => row.name === published.name).workflowInterface.ref, 'review_change@1');
+    assert.equal('workflowInterface' in listed.agents.find(row => row.name === staticAgent.name), false);
 });
 
 test('production base declares discovery for ordinary and named sessions without caller tool overrides', async () => {

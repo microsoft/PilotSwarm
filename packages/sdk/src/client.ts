@@ -3,10 +3,10 @@ import {
     sanitizePromptAttachmentRefs,
     systemSessionProtectedError,
 } from "./types.js";
-import {
-    DURABLE_SESSION_LATEST_VERSION,
-    DURABLE_SESSION_ORCHESTRATION_NAME,
-} from "./orchestration-registry.js";
+import { DURABLE_SESSION_ORCHESTRATION_NAME } from "./orchestration-registry.js";
+// From the leaf module, not the registry's re-export: the registry sits on an import cycle
+// (registry -> orchestration_1_0_47 -> session-proxy -> client -> registry).
+import { DURABLE_SESSION_INTAKE_VERSION, DURABLE_SESSION_LATEST_VERSION } from "./orchestration-version.js";
 import type {
     PilotSwarmClientOptions,
     ManagedSessionConfig,
@@ -21,19 +21,33 @@ import type {
     SessionOwnerInfo,
     PromptAttachmentRef,
     SessionWorkspace,
+    WorkflowSessionConfig,
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
+import { resolveEffectiveSpawnOwner } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
+import { assertWorkflowHumanInputAllowed } from "./workflow/v2/input-policy.js";
 import type { FactStore } from "./facts-store.js";
 import { resolveStorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
-import { resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
+import {
+    resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldRecordWorkflowControllerFailed, shouldSyncCompletedStatus, shouldSyncFailedStatus,
+} from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmClient } from "./web/web-client.js";
 import { loadModelProviderTypes, type ModelProviderRegistry } from "./model-providers.js";
 import { resolveRuntimeModelSelection, type RuntimeModelSelection } from "./provider-catalog.js";
+import { compileWorkflow, validateWorkflowInputs, validateNodeWorkflowAdmission, WorkflowCompileError } from "./workflow/compiler.js";
+import { WORKFLOW_TOOL_POLICY, readWorkflowToolBinding, type WorkflowToolBinding } from "./workflow/tool-policy.js";
+import { readWorkflowAdmission, type WorkflowAdmission } from "./workflow/admission.js";
+import { isDeepStrictEqual } from "node:util";
+import {
+    WORKFLOW_SESSION_LATEST_VERSION,
+    WORKFLOW_SESSION_ORCHESTRATION_NAME,
+    type WorkflowOrchestrationInput,
+} from "./workflow/orchestration.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -54,6 +68,14 @@ function throwIfAborted(signal: AbortSignal | undefined, message: string): void 
     if (signal?.aborted) {
         throw createAbortError(message, signal.reason);
     }
+}
+
+/** A workflow session runs a workflow graph; it has no conversation to send to. */
+function workflowNotConversationalError(sessionId: string): Error {
+    return Object.assign(
+        new Error(`Session ${sessionId.slice(0, 8)} is a workflow session; it runs a workflow graph and does not accept chat messages.`),
+        { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL", status: 409 },
+    );
 }
 
 /**
@@ -132,12 +154,19 @@ export class PilotSwarmClient {
     /** System session flag. */
     systemSessions = new Set<string>();
     private activeOrchestrations = new Map<string, string>();
+    /**
+     * The orchestration version _startSessionsAt chose for new sessions; null = the latest version,
+     * read when a session starts (never captured at construction, so no import order can freeze it).
+     */
+    private sessionStartVersion: string | null = null;
     private lastSeenStatusVersion = new Map<string, number>();
     private lastSeenIteration = new Map<string, number>();
     private lastSeenResponseVersion = new Map<string, number>();
     private activeWaitControllers = new Set<AbortController>();
     private activeWaitPromises = new Set<Promise<unknown>>();
     private started = false;
+    /** True when the store, catalog and fact store are a worker's own, lent by _startOnShared: stop() leaves them open. */
+    private borrowedStorage = false;
     /** Tracks agentId bound to each session (for policy and title prefixing). */
     private sessionAgentIds = new Map<string, string>();
     /** Effective session policy (set via config from worker). */
@@ -164,6 +193,111 @@ export class PilotSwarmClient {
     }
 
     // ─── Session Management ──────────────────────────────────
+
+    /**
+     * Create and start a workflow session: a session that runs the
+     * workflow graph in `config.yaml` instead of a conversation. The YAML is
+     * compiled here first, so an invalid definition is refused before any
+     * session exists. Pass `parentSessionId` to create it as a child of an
+     * agent session; that session is told the result when it ends.
+     *
+     * Idempotent for a given `sessionId`: a second call returns the same
+     * session without starting a second run.
+     */
+    async createWorkflowSession(config: WorkflowSessionConfig & { notifyParent?: boolean }, binding?: WorkflowToolBinding): Promise<{ sessionId: string; workflowName: string }> {
+        if (!this.duroxideClient) throw new Error("PilotSwarmClient is not started.");
+        const sessionId = config.sessionId ?? crypto.randomUUID();
+        const existing = await this._catalog.getSession(sessionId);
+        const creation = existing ? await this._catalog.getSessionCreationConfig?.(sessionId) : null;
+        const admission = readWorkflowAdmission(creation?.workflowAdmission);
+        if (existing) {
+            if (existing.sessionKind !== "workflow") {
+                throw Object.assign(new Error(`Session ${sessionId} already exists and is not a workflow session.`), { code: "SESSION_EXISTS", status: 409 });
+            }
+            if (creation?.workflowV2) {
+                throw Object.assign(new Error(`Session ${sessionId} is a version 2 workflow; use its v2 commands.`), { code: "SESSION_EXISTS", status: 409 });
+            }
+            // Existing admitted runs continue through their own history, never a new policy/source.
+            if (!admission) return { sessionId, workflowName: existing.title?.replace(/^Workflow: /, "") ?? "workflow" };
+        }
+        if (!config.parentSessionId || binding?.policy !== WORKFLOW_TOOL_POLICY
+            || binding.parentSessionId !== config.parentSessionId) {
+            throw Object.assign(new Error("New workflows must be started by a parent agent with spawn_workflow; top-level workflow creation is deferred."),
+                { code: "WORKFLOW_PARENT_REQUIRED", status: 400 });
+        }
+        const inputs = config.inputs && typeof config.inputs === "object" && !Array.isArray(config.inputs)
+            ? config.inputs
+            : {};
+        let workflowName: string;
+        try {
+            const compiled = compileWorkflow(config.yaml, { allowOutcomeDelay: true });
+            validateNodeWorkflowAdmission(compiled);
+            validateWorkflowInputs(compiled, inputs);
+            workflowName = compiled.name;
+        } catch (error) {
+            if (error instanceof WorkflowCompileError) {
+                throw Object.assign(new Error(`Invalid workflow: ${error.message}`), { code: error.code, status: 400 });
+            }
+            throw error;
+        }
+        const orchestrationId = `session-${sessionId}`;
+        {
+            const parent = await this._catalog.getSession(config.parentSessionId!);
+            const parentOwner = parent && await resolveEffectiveSpawnOwner(id => this._catalog.getSession(id), parent.sessionId);
+            if (!parent || parent.deletedAt || parent.sessionKind === "workflow"
+                || ["completed", "failed", "cancelled"].includes(parent.state ?? "")
+                || !parentOwner || parentOwner.provider !== binding!.owner.provider || parentOwner.subject !== binding!.owner.subject
+                || config.owner?.provider !== binding!.owner.provider || config.owner?.subject !== binding!.owner.subject) {
+                throw Object.assign(new Error("Workflow tool binding does not match the authorized parent owner."),
+                    { code: "WORKFLOW_PARENT_INVALID", status: 403 });
+            }
+            if (!this._catalog.getSessionCreationConfig || !await this._catalog.getSessionCreationConfig(parent.sessionId)) {
+                throw new Error("Durable parent configuration is required before workflow admission.");
+            }
+        }
+        const input: WorkflowOrchestrationInput = {
+            sessionId,
+            yaml: config.yaml,
+            inputs,
+            parentSessionId: config.parentSessionId,
+            notifyParent: config.notifyParent !== false,
+            executionPolicy: WORKFLOW_TOOL_POLICY,
+        };
+        if (!existing) {
+            await this._catalog.createSession(sessionId, {
+                sessionKind: "workflow",
+                ...(config.parentSessionId ? { parentSessionId: config.parentSessionId } : {}),
+                ...(config.owner ? { owner: config.owner } : {}),
+                ...(config.groupId ? { groupId: config.groupId } : {}),
+                ...(config.visibility ? { visibility: config.visibility } : {}),
+                creationConfig: {
+                    workflowToolBinding: binding,
+                    workflowAdmission: { policy: WORKFLOW_TOOL_POLICY, workflowName, input } satisfies WorkflowAdmission,
+                },
+            });
+        }
+        const stored = await this._catalog.getSessionCreationConfig?.(sessionId);
+        const persisted = readWorkflowAdmission(stored?.workflowAdmission);
+        const storedBinding = readWorkflowToolBinding(stored?.workflowToolBinding);
+        const row = await this._catalog.getSession(sessionId);
+        if (!persisted || !storedBinding) throw new Error("Durable workflow admission and tool-policy storage are required before execution.");
+        if (!row || row.deletedAt || row.sessionKind !== "workflow" || row.parentSessionId !== config.parentSessionId
+            || !isDeepStrictEqual(persisted.input, input)
+            || storedBinding.owner.provider !== binding!.owner.provider || storedBinding.owner.subject !== binding!.owner.subject
+            || storedBinding.parentSessionId !== config.parentSessionId) {
+            throw Object.assign(new Error("This workflow session ID already has a different admission."), { code: "WORKFLOW_ADMISSION_CONFLICT", status: 409 });
+        }
+        if (row.orchestrationId || row.state !== "pending") return { sessionId, workflowName: persisted.workflowName };
+        await this._catalog.updateSession(sessionId, { title: `Workflow: ${persisted.workflowName}`, titleLocked: true });
+        await this.duroxideClient.startOrchestrationVersioned(
+            orchestrationId,
+            WORKFLOW_SESSION_ORCHESTRATION_NAME,
+            persisted.input,
+            WORKFLOW_SESSION_LATEST_VERSION,
+        );
+        await this._catalog.updateSession(sessionId, { orchestrationId, state: "running", lastActiveAt: new Date() });
+        return { sessionId, workflowName };
+    }
 
     async createSession(config?: Omit<ManagedSessionConfig, "workspace"> & {
         /** Session workspaces: the working folder. `schema` may be left out; the folder-text check normalizes it. */
@@ -234,8 +368,9 @@ export class PilotSwarmClient {
                 contextTier: resolved.context as ManagedSessionConfig["contextTier"],
             } : {}),
         };
+        let fullConfig: ManagedSessionConfig | undefined;
         if (config || resolved) {
-            const fullConfig: ManagedSessionConfig = {
+            fullConfig = {
                 model: resolvedConfig.model,
                 reasoningEffort: resolvedConfig.reasoningEffort,
                 contextTier: resolvedConfig.contextTier,
@@ -257,15 +392,16 @@ export class PilotSwarmClient {
                 toolNames: resolvedConfig.toolNames,
                 ...(workspace ? { workspace } : {}),
             };
-            this.sessionConfigs.set(sessionId, fullConfig);
         }
 
         // CMS: write session record (state=pending, no orchestration yet).
         // The creation config is persisted alongside it (migration 0072) so
         // the orchestration start can rebuild it on ANY process — the
-        // in-memory map above only covers the process that ran this create.
+        // in-memory map below only covers the process that ran this create.
         // JSON round-trip strips undefined fields for clean JSONB.
-        const configForRow = this.sessionConfigs.get(sessionId);
+        // A workflow session's id is refused below, before any local config,
+        // event or handle exists for it.
+        const configForRow = fullConfig ?? this.sessionConfigs.get(sessionId);
         await this._catalog.createSession(sessionId, {
             model: resolvedConfig.model,
             reasoningEffort: resolvedConfig.reasoningEffort ?? undefined,
@@ -283,6 +419,18 @@ export class PilotSwarmClient {
                 }
                 : null,
         });
+        // The catalog leaves a workflow session's row unchanged (a legacy
+        // workflow retry relies on that). Reading it back tells this caller the
+        // id is not an ordinary session it may hold a handle on.
+        const [createdRow, createdConfig] = await Promise.all([
+            this._catalog.getSession(sessionId),
+            this._catalog.getSessionCreationConfig ? this._catalog.getSessionCreationConfig(sessionId) : Promise.resolve(null),
+        ]);
+        if (createdRow?.sessionKind === "workflow" || createdConfig?.workflowAdmission || createdConfig?.workflowV2) {
+            throw Object.assign(new Error(`Session ${sessionId} already exists as a workflow session; no session was created.`),
+                { code: "SESSION_EXISTS", status: 409 });
+        }
+        if (fullConfig) this.sessionConfigs.set(sessionId, fullConfig);
         if (resolved) {
             await this._catalog.recordEvents(sessionId, [{
                 eventType: "session.model_resolved",
@@ -445,6 +593,13 @@ export class PilotSwarmClient {
     async resumeSession(sessionId: string, config?: ManagedSessionConfig & {
         onUserInputRequest?: UserInputHandler;
     }): Promise<PilotSwarmSession> {
+        const persisted = await this._catalog.getSession(sessionId).catch(() => null);
+        if (persisted?.sessionKind === "workflow") {
+            throw Object.assign(
+                new Error(`Session ${sessionId} is a workflow session; it runs a workflow graph and has no conversation to resume.`),
+                { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL", status: 409 },
+            );
+        }
         if (config) {
             this.sessionConfigs.set(sessionId, config);
         }
@@ -513,6 +668,7 @@ export class PilotSwarmClient {
         const rows = await this._catalog.listSessions();
         return rows.map(row => ({
             sessionId: row.sessionId,
+            sessionKind: row.sessionKind ?? "agent",
             status: (row.state as PilotSwarmSessionStatus) ?? "pending",
             title: row.title ?? undefined,
             owner: row.owner ?? undefined,
@@ -689,17 +845,36 @@ export class PilotSwarmClient {
         });
     }
 
+    /**
+     * @internal Start this client on a worker's own duroxide provider, session catalog and fact store instead of opening
+     * its own (batch 7, n-5). A worker's activities and turns make a client per call or per turn; each start() opened a
+     * duroxide pool, a catalog pool and a facts pool of its own (and ran the catalog's and facts' initialization), so one
+     * status turn (two read_workflow calls, list_sessions, and the parent's listChildSessions) opened 13 or more extra
+     * connections at once. Started this way it opens none, its queries share the worker's bounded pools, and stop()
+     * leaves them open. The worker initialized them already.
+     */
+    async _startOnShared(shared: { provider: any; catalog: SessionCatalog; factStore: FactStore }): Promise<void> {
+        if (this.started) return;
+        this.duroxideClient = new Client(shared.provider);
+        this._catalog = shared.catalog;
+        this._factStore = shared.factStore;
+        this._modelProviderTypes = loadModelProviderTypes(this.config.modelProvidersPath);
+        this.borrowedStorage = true;
+        this.started = true;
+    }
+
     async stop(): Promise<void> {
         for (const controller of [...this.activeWaitControllers]) {
             controller.abort(createAbortError("PilotSwarmClient stopped"));
         }
         await Promise.allSettled([...this.activeWaitPromises]);
 
-        if (this._factStore) {
+        // A worker's own storage (_startOnShared) is the worker's to close.
+        if (this._factStore && !this.borrowedStorage) {
             try { await this._factStore.close(); } catch {}
-            this._factStore = null;
         }
-        if (this._catalog) {
+        this._factStore = null;
+        if (this._catalog && !this.borrowedStorage) {
             try { await this._catalog.close(); } catch {}
         }
         this.duroxideClient = null;
@@ -761,6 +936,9 @@ export class PilotSwarmClient {
         opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
     ): Promise<string> {
         if (!this.duroxideClient) throw new Error("Not started.");
+        // A workflow agent state's subtree takes no human prompts (design 03, R13): refused before anything is queued or
+        // started. An agent-stamped prompt (a spawn's bootstrap, a workflow's first prompt) passes.
+        await assertWorkflowHumanInputAllowed(this._workflowStoreOrNull(), sessionId, "prompt", opts?.sender);
         const _trace = this.config.traceWriter ?? (() => {});
         const startedAt = Date.now();
         const trace = (message: string) => _trace(`[+${Date.now() - startedAt}ms] ${message}`);
@@ -804,6 +982,11 @@ export class PilotSwarmClient {
                     return null;
                 })
                 : null;
+            // A workflow session (live or deleted) owns session-<id> for its
+            // workflow controller; a conversation turn never starts or enqueues there.
+            if (cmsRow?.sessionKind === "workflow" || stored?.workflowAdmission || stored?.workflowV2) {
+                throw workflowNotConversationalError(sessionId);
+            }
             const { bootstrapNestingLevel: storedDepth, ...storedSessionConfig } = stored ?? {};
             bootstrapNestingLevel = storedDepth;
             if (stored && !fullConfig) {
@@ -860,10 +1043,11 @@ export class PilotSwarmClient {
             // Explicit local identity keeps its precedence; another process
             // reconstructs the named agent's startup contract from the row.
             const agentId = this.sessionAgentIds.get(sessionId) ?? cmsRow?.agentId;
+            const startVersion = this.sessionStartVersion ?? DURABLE_SESSION_LATEST_VERSION;
             const input: OrchestrationInput = {
                 sessionId,
                 config: serializableConfig,
-                sourceOrchestrationVersion: DURABLE_SESSION_LATEST_VERSION,
+                sourceOrchestrationVersion: startVersion,
                 iteration: 0,
                 // Client-created sessions are always durable. The worker's
                 // configured session store determines how that durability is
@@ -888,7 +1072,7 @@ export class PilotSwarmClient {
                 orchestrationId,
                 DURABLE_SESSION_ORCHESTRATION_NAME,
                 input,
-                DURABLE_SESSION_LATEST_VERSION,
+                startVersion,
             );
             this.activeOrchestrations.set(sessionId, orchestrationId);
             trace(`[client] startOrchestrationVersioned done (${Date.now() - startAt}ms)`);
@@ -974,9 +1158,34 @@ export class PilotSwarmClient {
         return this.duroxideClient;
     }
 
+    /**
+     * @internal INACTIVE (workflow v2 milestone; test-only): start this
+     * client's new sessions at the durable intake's orchestration
+     * (DURABLE_SESSION_INTAKE_VERSION) instead of the latest version. Called
+     * by the agent host of a worker created with the test option
+     * `workflowRequests`, which serves that version, for the children of
+     * workflow agent states, and, with the Workflow V2 test environment
+     * switch on (test-environment.ts), by the session clients of the portal
+     * and of the MCP server's direct mode, whose workers all serve it, and by
+     * such a worker's turn client and spawnChildSession for a sub-agent. A started session
+     * keeps its version.
+     */
+    _startSessionsAt(version: string): void {
+        if (version !== DURABLE_SESSION_LATEST_VERSION && version !== DURABLE_SESSION_INTAKE_VERSION) {
+            throw new Error(`New sessions start at ${DURABLE_SESSION_LATEST_VERSION}, or at ${DURABLE_SESSION_INTAKE_VERSION} on a worker that serves it; `
+                + `not at ${version}.`);
+        }
+        this.sessionStartVersion = version;
+    }
+
     /** @internal */
     _getCatalog(): SessionCatalog {
         return this._catalog;
+    }
+
+    /** @internal The workflow store, when this catalog has one (the workflow human-input policy reads lineage from it). */
+    _workflowStoreOrNull(): import("./workflow/v2/store.js").WorkflowStore | null {
+        return typeof this._catalog?.workflowStore === "function" ? this._catalog.workflowStore() : null;
     }
 
     /** @internal — exposed for PilotSwarmSession.wait() */
@@ -1082,7 +1291,9 @@ export class PilotSwarmClient {
             orchestrationStatus: orchStatus.status,
         });
 
+        // The session's kind too (review R2-RT-2): a workflow's run end is never written over by this read.
         const terminalStatusInput = cmsRow ? {
+            sessionKind: cmsRow.sessionKind,
             parentSessionId: cmsRow.parentSessionId,
             isSystem: cmsRow.isSystem,
             rowState: cmsRow.state,
@@ -1112,8 +1323,18 @@ export class PilotSwarmClient {
                 waitReason: null,
                 ...(failureMessage ? { lastError: failureMessage } : {}),
             }).catch(() => {});
+        } else if (cmsRow && terminalStatusInput && shouldRecordWorkflowControllerFailed(terminalStatusInput)) {
+            // Re-check R2-RT2-RC1: a workflow's row is never written from this read's snapshot; the workflow store records a
+            // failed controller only while, under its lock, the row (and a v2 workflow's live run) still say the run has not
+            // ended. A legacy (version 1) workflow is recorded too (R2-RC2-RT2-1).
+            const message = typeof customStatus?.error === "string" && customStatus.error.trim() ? customStatus.error.trim() : null;
+            const store = this._catalog?.workflowStore?.() ?? null;
+            await store?.recordControllerFailed({ workflowSessionId: sessionId, message }).catch(() => {});
         } else if (
             cmsRow
+            // A workflow's row is written by the workflow store; a failed one is its run's end (F-C2, see
+            // resolveStaleRunningRowRecovery).
+            && cmsRow.sessionKind !== "workflow"
             && orchStatus.status === "Running"
             && (cmsRow.state === "error" || cmsRow.state === "failed")
         ) {
@@ -1143,6 +1364,7 @@ export class PilotSwarmClient {
 
         return {
             sessionId,
+            sessionKind: cmsRow?.sessionKind ?? "agent",
             status,
             model: cmsRow?.model ?? undefined,
             title: cmsRow?.title ?? undefined,
@@ -1476,13 +1698,28 @@ export class PilotSwarmSession {
     }
 
     async sendEvent(eventName: string, data: unknown): Promise<void> {
+        // Durable workflow intake (design workflow-durable-intake.md section 3): `workflowIntake` is reserved on a
+        // session's message queue, where only a workflow's delivery puts it on a copy. This is the generic event
+        // ingress every transport reaches; it refuses the field (defense in depth: the recipient's claim verifies every
+        // envelope against the store), on the event as given and in its text: the event is serialized once, and that
+        // text, the one enqueued, is checked, so a toJSON cannot add the field after the check. A value JSON cannot
+        // serialize throws as before.
+        const reserved = (value: unknown) => value !== null && typeof value === "object" && !Array.isArray(value)
+            && Object.hasOwn(value, "workflowIntake");
+        const refusal = () => Object.assign(new Error("A session event cannot carry the reserved field workflowIntake."), { code: "INVALID_REQUEST", status: 400 });
+        if (reserved(data)) throw refusal();
+        const serialized = JSON.stringify(data);
+        if (serialized !== undefined && reserved(JSON.parse(serialized))) throw refusal();
+        // A person's custom event cannot feed a workflow agent state's subtree either (design 03, R13). A client that
+        // offers no workflow store (no lineage to read) has no agent states: the policy's own rule for a null store.
+        await assertWorkflowHumanInputAllowed(this.client._workflowStoreOrNull?.() ?? null, this.sessionId, "event");
         const duroxideClient = this.client._getDuroxideClient();
         const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
         if (duroxideClient) {
             await duroxideClient.enqueueEvent(
                 orchestrationId,
                 "messages",
-                JSON.stringify(data),
+                serialized,
             );
         }
     }

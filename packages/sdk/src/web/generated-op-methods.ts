@@ -24,6 +24,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "createSession",
     "createSessionForAgent",
     "createSessionGroup",
+    "createWorkflowSession",
     "deleteAgentPackage",
     "deleteArtifact",
     "deleteFact",
@@ -133,6 +134,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "readArtifactBase64",
     "readCanvasKv",
     "readFacts",
+    "readWorkflow",
     "regenerateSession",
     "removeCanvasShareLink",
     "removeProviderLimit",
@@ -184,6 +186,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "updateMyProviderCredential",
     "updateSessionGroup",
     "updateSharedProviderCredential",
+    "updateWorkflow",
     "uploadAgentPackage",
     "uploadArtifact",
     "upsertGraphEdge",
@@ -377,6 +380,17 @@ export interface ManagementOps {
      */
     createSessionGroup(params: {
         input?: any;
+    }): Promise<any>;
+
+    /**
+     * Create a workflow session from Workflow YAML (kind: Workflow). It runs the workflow graph instead of a conversation; inputs is a JSON object checked against the workflow's inputs schema and read by its states as context.inputs.
+     * @remarks `POST /sessions/workflow` — access: `session:create`
+     */
+    createWorkflowSession(params: {
+        yaml?: any;
+        inputs?: any;
+        groupId?: any;
+        visibility?: any;
     }): Promise<any>;
 
     /**
@@ -1292,6 +1306,23 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Read a version 2 workflow session without changing it: its definition (state, current revision, diagnostics; no YAML), graph and runs, and one run (runId, default the live run). Each section of the run holds its newest rows; rows still open are listed apart, however old, and run.pages gives each section's nextCursor. Separate reads: cursor (JSON: a nextCursor given back as it was) reads that section's next, older page; executionId (not with cursor) one node execution's whole output or error; limit (a JSON integer, 1 to 200) sets the rows per page; kvRevision (a JSON integer) a revision of the run's variables, and kvKey with it one variable, whole; agentVersions (JSON true, alone) the agent versions publishing the current revision would lock now, locking nothing; definitionRevision (a JSON integer, alone) that revision's YAML as saved and formatted; stepInput (JSON { state, input? }, alone) an agent step's input fields in the current draft and, with input, the draft's YAML with only that step's inputs changed. The two YAML reads are for a caller who may change the workflow. 404 NOT_FOUND unless the session is readable, WORKFLOW_NOT_FOUND for a session that is not a version 2 workflow, RUN_NOT_FOUND, EXECUTION_NOT_FOUND, KV_REVISION_NOT_FOUND or DEFINITION_REVISION_NOT_FOUND for a run, execution or revision it does not have; 400 WORKFLOW_CURSOR_INVALID for a cursor that a read of this workflow did not return, WORKFLOW_READ_INVALID for an invalid limit or executionId, or a cursor with an executionId.
+     * @remarks `GET /sessions/:sessionId/workflow` — access: `session:read`
+     */
+    readWorkflow(params: {
+        sessionId: string;
+        runId?: string;
+        cursor?: any;
+        executionId?: string;
+        limit?: any;
+        kvRevision?: any;
+        kvKey?: string;
+        agentVersions?: any;
+        definitionRevision?: any;
+        stepInput?: any;
+    }): Promise<any>;
+
+    /**
      * Regenerate the session's transcript in place (epoch rebirth): archive, distill, and recreate the Copilot session at a turn boundary. Enqueue-then-observe; outcomes arrive as session.regenerate_* events.
      * @remarks `POST /management/sessions/:sessionId/regenerate` — access: `session:manage`
      */
@@ -1788,6 +1819,16 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * A person's command to a version 2 workflow session (INACTIVE: 501 WORKFLOW_COMMANDS_UNAVAILABLE unless the deployment enables it): command is the update_workflow tool's command (operation, operation_id and the operation's arguments), run by the same implementation; the actor is the signed-in caller. Owner or admin only, enforced even while the ownership switch is off. A workflow in a workflow agent state's subtree takes only pause, stop and cancel (403 WORKFLOW_HUMAN_INPUT_DENIED). originatingSessionId (optional): the session the command comes from, when a caller passes one on for an agent; a definition operation from a session inside a Workflow is refused (403 WORKFLOW_DEFINITION_TOOLS_REFUSED). 404 WORKFLOW_NOT_FOUND for a session that is not a version 2 workflow; refusals carry their status and details.
+     * @remarks `POST /sessions/:sessionId/workflow/commands` — access: `session:manage`
+     */
+    updateWorkflow(params: {
+        sessionId: string;
+        command?: any;
+        originatingSessionId?: any;
+    }): Promise<any>;
+
+    /**
      * Publish a package from inline files ([{path, contentBase64}], ≤ 2 MB total); validates, canonically packs, and registers as the caller.
      * @remarks `POST /agent-packages/upload` — access: `authed`
      */
@@ -1879,6 +1920,7 @@ export function createManagementOps(
         createSession: (params: Record<string, unknown> = {}) => callOp("createSession", params),
         createSessionForAgent: (params: Record<string, unknown> = {}) => callOp("createSessionForAgent", params),
         createSessionGroup: (params: Record<string, unknown> = {}) => callOp("createSessionGroup", params),
+        createWorkflowSession: (params: Record<string, unknown> = {}) => callOp("createWorkflowSession", params),
         deleteAgentPackage: (params: Record<string, unknown> = {}) => callOp("deleteAgentPackage", params),
         deleteArtifact: (params: Record<string, unknown> = {}) => callOp("deleteArtifact", params),
         deleteFact: (params: Record<string, unknown> = {}) => callOp("deleteFact", params),
@@ -1988,6 +2030,7 @@ export function createManagementOps(
         readArtifactBase64: (params: Record<string, unknown> = {}) => callOp("readArtifactBase64", params),
         readCanvasKv: (params: Record<string, unknown> = {}) => callOp("readCanvasKv", params),
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),
+        readWorkflow: (params: Record<string, unknown> = {}) => callOp("readWorkflow", params),
         regenerateSession: (params: Record<string, unknown> = {}) => callOp("regenerateSession", params),
         removeCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("removeCanvasShareLink", params),
         removeProviderLimit: (params: Record<string, unknown> = {}) => callOp("removeProviderLimit", params),
@@ -2039,6 +2082,7 @@ export function createManagementOps(
         updateMyProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateMyProviderCredential", params),
         updateSessionGroup: (params: Record<string, unknown> = {}) => callOp("updateSessionGroup", params),
         updateSharedProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateSharedProviderCredential", params),
+        updateWorkflow: (params: Record<string, unknown> = {}) => callOp("updateWorkflow", params),
         uploadAgentPackage: (params: Record<string, unknown> = {}) => callOp("uploadAgentPackage", params),
         uploadArtifact: (params: Record<string, unknown> = {}) => callOp("uploadArtifact", params),
         upsertGraphEdge: (params: Record<string, unknown> = {}) => callOp("upsertGraphEdge", params),

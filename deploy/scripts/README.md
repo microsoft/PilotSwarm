@@ -497,6 +497,32 @@ drop the bootstrap admin password from Key Vault and the
 SecretProviderClass once their deploy path is on duroxide-node ≥ 0.1.25
 (pilotswarm-sdk ≥ 0.1.30).
 
+## Workflow V2 test environment (test-only, isolated environments only)
+
+Workflow V2's milestone features are INACTIVE in every deployment by default.
+An isolated test environment turns them on with one variable, set the same
+way on every PilotSwarm workload of that environment:
+
+| Variable | Enabling value | Effect when it is exactly that value |
+|---|---|---|
+| `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` | `isolated-test-only` | Workers (the `worker` image's `packages/sdk/examples/worker.js`, and the portal's embedded workers in local mode) serve controller 1.9.0 and session orchestration 1.0.83 (`testOptions.workflowRequests`). The portal and the MCP server take a person's workflow commands (`workflowCommands: { requests: true }`): stop, test, test answers and the virtual clock included. The portal's and the MCP server's direct-mode clients start new sessions at 1.0.83; sessions started before keep 1.0.82. |
+
+- Unset, empty or any other value (`1`, `true`, `on`, another case, extra
+  spaces) is off: every option is exactly as without the variable. Each
+  entry point logs one line when the variable is set: ON, or "ignored".
+- Every worker that shares the environment's database must run the same
+  image with the same value. Duroxide cannot route orchestration items by
+  version, so an older worker, or one without the switch, would fetch and
+  fail 1.9.0 and 1.0.83 work. Do not set it in an environment shared with
+  another fleet.
+- It is not an activation: production defaults, the latest session
+  orchestration version (1.0.82) and the orchestration registry do not
+  change; sessions started at the latest version run as before.
+- Script states still need `PILOTSWARM_WORKFLOW_SCRIPTS=1` on the workers
+  (unchanged). The workflow-authoring skills are not loaded by this switch.
+- See `docs/proposals/workflow-v2-milestone.md` for what the milestone
+  serves and what it does not cover.
+
 ## Model provider types and runtime instances
 
 The worker reads `model_providers.json` at startup as the provider TYPE/model

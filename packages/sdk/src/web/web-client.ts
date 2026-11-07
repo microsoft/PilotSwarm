@@ -77,6 +77,25 @@ export class WebPilotSwarmClient {
         return new WebPilotSwarmSession(view.sessionId, this._api, config?.onUserInputRequest);
     }
 
+    /**
+     * Create a workflow session through the Web API. The owner is the
+     * authenticated principal; the deployment's workers run the graph.
+     */
+    async createWorkflowSession(config: {
+        yaml: string;
+        inputs?: Record<string, unknown>;
+        groupId?: string | null;
+        visibility?: "private" | "shared_read" | "shared_write" | null;
+    }): Promise<{ sessionId: string; workflowName: string }> {
+        const view = await this._api.call("createWorkflowSession", {
+            yaml: config.yaml,
+            inputs: config.inputs ?? {},
+            ...(config.groupId != null ? { groupId: config.groupId } : {}),
+            ...(config.visibility != null ? { visibility: config.visibility } : {}),
+        });
+        return { sessionId: view.sessionId, workflowName: view.workflowName };
+    }
+
     async createSessionForAgent(agentName: string, opts?: {
         model?: string;
         reasoningEffort?: string;

@@ -1,5 +1,6 @@
 import { NodeSdkTransport } from "pilotswarm/host";
-import { adminCanAccessResource, adminCapabilities, ADMIN_SCOPE_POLICY_VERSION } from "pilotswarm-sdk/api";
+import { workflowV2ReaderView, workflowV2TestEnvironmentFromEnv } from "pilotswarm-sdk";
+import { adminCanAccessResource, adminCapabilities, ADMIN_SCOPE_POLICY_VERSION, getOperation, isOwnerOnlyArtifact } from "pilotswarm-sdk/api";
 import { projectFleetAccounting, projectUserAccounting, projectAgentWorkerState, projectWorker } from "pilotswarm-sdk/api";
 import {
     loadAuthzConfig,
@@ -118,6 +119,19 @@ function requireUserPrincipal(authContext, methodName) {
     return principal;
 }
 
+// New operations with no pre-model behavior to preserve: their session gate is
+// enforced even during the ownership dark-launch, as session:share's is.
+// readWorkflow is content-bearing (a run's outputs, KV, executions and
+// message previews, and the definition's revisions), so every one of its
+// selectors is gated whatever the switch says (adversarial review SF-1).
+const ENFORCED_NEW_METHODS = new Set(["updateWorkflow", "readWorkflow"]);
+
+// The artifact operations on one session's file. When the file is owner-only (a Workflow agent's base instructions,
+// isOwnerOnlyArtifact; review SF-3), each of them needs session:manage on that session, enforced whatever the ownership
+// switch says: a share reads the Workflow, not the composed prompt behind its agents, and cannot write such a file.
+const OWNER_ONLY_ARTIFACT_METHODS = new Set(["getArtifactMetadata", "downloadArtifact", "readArtifactBase64", "uploadArtifact",
+    "deleteArtifact", "setArtifactPinned"]);
+
 // Break-glass audit coverage: every non-read session op, plus the reads that
 // expose content (transcript, artifacts, history). Status polling and list
 // metadata are excluded to keep the audit stream signal-dense.
@@ -130,6 +144,8 @@ const BREAK_GLASS_AUDITED = {
     getExecutionHistory: true,
     getLatestResponse: true,
     listSessionShares: true,
+    // A workflow's view carries its run's outputs, KV and message previews.
+    readWorkflow: true,
 };
 
 // How often an unchanged role is re-confirmed in the users table.
@@ -176,9 +192,29 @@ function providerNames(raw) {
     return list.map((name) => String(name || "").trim()).filter(Boolean);
 }
 
+/**
+ * The PortalRuntime options the portal server builds (server.js): its storage options and mode, exactly, and with the
+ * Workflow V2 test environment switch on (PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT=isolated-test-only; test-only, never an
+ * activation) also a person's workflow commands, its embedded workers' test options and where its new sessions start
+ * (1.0.83, which the environment's workers serve). Off (unset or any other value), the options are exactly
+ * `{ ...storageOptions, mode }`. Pure.
+ */
+export function portalRuntimeOptions(storageOptions, mode, env = process.env) {
+    const test = workflowV2TestEnvironmentFromEnv(env);
+    return test
+        ? { ...storageOptions, mode, workflowCommands: test.workflowCommands, workerTestOptions: test.workerTestOptions,
+            sessionStartVersion: test.sessionStartVersion }
+        : { ...storageOptions, mode };
+}
+
 export class PortalRuntime {
-    constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
-        this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser });
+    constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands, workerTestOptions, sessionStartVersion } = {}) {
+        // workflowCommands (Workflow v2, INACTIVE; test-only): a person's workflow commands. Unset, updateWorkflow answers 501.
+        // workerTestOptions (test-only): the embedded workers' testOptions, so they serve what the environment's workers do.
+        // sessionStartVersion (test-only): where new sessions start; unset, the latest version.
+        this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser,
+            ...(workflowCommands ? { workflowCommands } : {}), ...(workerTestOptions ? { workerTestOptions } : {}),
+            ...(sessionStartVersion ? { sessionStartVersion } : {}) });
         this.mode = mode;
         this.started = false;
         this.startPromise = null;
@@ -336,10 +372,20 @@ export class PortalRuntime {
             return this._gateSession(method, "session:share", sessionId, authContext, { owner, isAdmin });
         }
 
+        if (OWNER_ONLY_ARTIFACT_METHODS.has(method) && isOwnerOnlyArtifact(safeParams.filename)) {
+            return this._gateSession(method, "session:manage", safeParams.sessionId, authContext, { owner, isAdmin, enforce: true });
+        }
+
         if (access === "session:copy") {
+            // An owner-only file is copied out of, or into, a session only by its owner (SF-3); the copy keeps the
+            // source's name when it names none.
+            const fromOwnerOnly = isOwnerOnlyArtifact(safeParams.fromFilename);
+            const toOwnerOnly = isOwnerOnlyArtifact(safeParams.toFilename || safeParams.fromFilename);
             const [from, to] = await Promise.all([
-                this._gateSession(method, "session:read", safeParams.fromSessionId, authContext, { owner, isAdmin }),
-                this._gateSession(method, "session:write", safeParams.toSessionId, authContext, { owner, isAdmin }),
+                this._gateSession(method, fromOwnerOnly ? "session:manage" : "session:read", safeParams.fromSessionId, authContext,
+                    { owner, isAdmin, enforce: fromOwnerOnly }),
+                this._gateSession(method, toOwnerOnly ? "session:manage" : "session:write", safeParams.toSessionId, authContext,
+                    { owner, isAdmin, enforce: toOwnerOnly }),
             ]);
             return { snapshot: to.snapshot ?? from.snapshot };
         }
@@ -365,14 +411,18 @@ export class PortalRuntime {
         });
     }
 
-    async _gateSession(method, accessClass, sessionId, authContext, { owner, isAdmin }) {
+    async _gateSession(method, accessClass, sessionId, authContext, { owner, isAdmin, enforce = false }) {
         // session:share is a brand-new capability with no pre-model behavior
         // to preserve, so it is enforced even during the ownership dark-launch
         // — otherwise a user could pre-plant a durable grant that survives the
         // flip to enforce (adversarial review HIGH-2).
         // session:files (the Workspace pane) is new as well: the session's
         // owner only, whatever the ownership switch says.
-        const effectiveEnforce = this.authz.enforce || accessClass === "session:share" || accessClass === "session:files";
+        // updateWorkflow (a person's workflow command) is new too: owner or admin, whatever the switch says;
+        // so is readWorkflow (a workflow's view): session:read, whatever the switch says (SF-1); and so is any operation on an
+        // owner-only artifact (`enforce`; review SF-3).
+        const effectiveEnforce = enforce || this.authz.enforce || accessClass === "session:share" || accessClass === "session:files"
+            || ENFORCED_NEW_METHODS.has(method);
         const hasSessionId = sessionId != null && String(sessionId).trim() !== "";
 
         // HIGH-1: a supplied-but-unresolvable id (missing OR soft-deleted —
@@ -397,6 +447,37 @@ export class PortalRuntime {
 
         const snapshot = await this._getAccessSnapshot(sessionId, owner);
         return this._decideSessionAccess(method, accessClass, snapshot, sessionId, authContext, { isAdmin, effectiveEnforce });
+    }
+
+    /**
+     * Workflow v2 (INACTIVE): whether the signed-in caller may send a person's
+     * workflow commands to the session a read was for, as updateWorkflow's own
+     * gate decides it (session:manage: owner or admin, enforced whatever the
+     * ownership switch says), on that read's access snapshot. Nothing is
+     * audited and nothing is granted: the command is gated again when sent.
+     */
+    _workflowCommandViewer(snapshot, isAdmin) {
+        const decision = evaluateSessionAccess("session:manage", snapshot, {
+            isAdmin,
+            adminScope: this.authz.adminScope,
+            systemReadable: this.authz.systemVisibility === "read",
+        });
+        if (decision.allowed) return { allowed: true, reason: null };
+        return { allowed: false, reason: decision.notFound ? "Only this workflow's owner or an admin can command it." : decision.reason };
+    }
+
+    /**
+     * Whether the caller of a session read may also read that session's owner-only artifacts (session:manage on the
+     * read's access snapshot; SF-3). A deployment that resolves no snapshots (no ownership model) shows them, as it
+     * shows everything. Audits nothing and grants nothing: each read of such a file is gated again.
+     */
+    _ownerOnlyArtifactsReadable(snapshot, isAdmin) {
+        if (!snapshot) return !this._accessSnapshotSupported();
+        return evaluateSessionAccess("session:manage", snapshot, {
+            isAdmin,
+            adminScope: this.authz.adminScope,
+            systemReadable: this.authz.systemVisibility === "read",
+        }).allowed;
     }
 
     _decideSessionAccess(method, accessClass, snapshot, sessionId, authContext, { isAdmin, effectiveEnforce }) {
@@ -653,6 +734,12 @@ export class PortalRuntime {
                 defaultVisibility: this.authz.defaultVisibility,
                 systemVisibility: this.authz.systemVisibility,
             },
+            // Workflow support (design 04 "Advertise capability/version in bootstrap"; D11): what this deployment takes now
+            // (version 2 reads, a person's commands off unless enabled, the legacy create's version 1 semantics), so clients
+            // gate their workflow surface before a call is refused. Configuration only; every call is decided again.
+            workflows: typeof this.transport.getWorkflowCapabilities === "function"
+                ? await this.transport.getWorkflowCapabilities()
+                : null,
         };
     }
 
@@ -720,6 +807,55 @@ export class PortalRuntime {
                 return this.transport.getSessionFootprint(safeParams.sessionId);
             case "getSessionWorkspace":
                 return this.transport.getSessionWorkspace(safeParams.sessionId);
+            // Workflow v2: the read-only view of a workflow session, after the session:read gate above (its not-found
+            // privacy comes first). Only an absent run is omitted: a run given, empty or not a string included, reaches the
+            // adapter's own validation unchanged. The run is looked up within the authorized workflow; nothing is changed.
+            // A section's next page (cursor) and one execution's whole value (executionId) are reads of the same workflow
+            // under the same gate; each option is passed only when given, and the adapter checks it.
+            // When the deployment takes a person's workflow commands (INACTIVE), the view says which ones this workflow
+            // takes, and this adds whether the caller may send them (updateWorkflow's own gate, decided on this read's access).
+            // A draft's YAML (personCommands.draft: the scripts and prompts the graph does not show) is for a caller who may
+            // change the draft; it is left out for anyone else. So are the values the definition's author wrote in its input
+            // schema and its diagnostics' paths and messages (adversarial review R2-SF-2, workflowV2ReaderView): a caller who
+            // can read the session but not change the workflow cannot read its YAML either.
+            case "readWorkflow": {
+                // The read's options are the operation's declared query parameters (protocol.js), each passed only when given.
+                const readOptions = {};
+                for (const [key, spec] of Object.entries(getOperation("readWorkflow").params)) {
+                    if (spec.in !== "path" && safeParams[key] !== undefined && safeParams[key] !== null) readOptions[key] = safeParams[key];
+                }
+                // A definition revision's YAML (comparing two versions, owner decision q4) and a step's inputs with the draft's
+                // YAML they propose (q6) are for a person who may change the workflow, as the draft's YAML is; anyone else who
+                // can read the session is refused before anything is read.
+                if (readOptions.definitionRevision !== undefined || readOptions.stepInput !== undefined) {
+                    const viewer = this._workflowCommandViewer(gate.snapshot, isAdmin);
+                    if (!viewer.allowed) throw forbiddenError(`${viewer.reason ?? "You cannot change this workflow."} Its versions' YAML is for those who can.`);
+                }
+                const read = await this.transport.readWorkflow(safeParams.sessionId, readOptions);
+                const viewer = this._workflowCommandViewer(gate.snapshot, isAdmin);
+                const readerView = viewer.allowed ? read : workflowV2ReaderView(read);
+                if (!readerView || typeof readerView !== "object" || Array.isArray(readerView)) return readerView;
+                // Review SF-D4: whether this viewer may read the Workflow's owner-only files (its whole base instructions),
+                // on every Workflow read, whether or not the deployment takes a person's workflow commands; the portal shows
+                // the owner-only summary otherwise. The file stays gated on each read of it.
+                const overview = !["cursor", "executionId", "kvRevision", "kvKey", "agentVersions", "definitionRevision", "stepInput"]
+                    .some((key) => readOptions[key] !== undefined);
+                const view = overview
+                    ? { ...readerView, ownerOnlyArtifacts: { readable: this._ownerOnlyArtifactsReadable(gate?.snapshot ?? null, isAdmin) } }
+                    : readerView;
+                if (!view.personCommands || typeof view.personCommands !== "object") return view;
+                const { draft, ...personCommands } = view.personCommands;
+                return { ...view, personCommands: { ...personCommands, ...(viewer.allowed && draft !== undefined ? { draft } : {}), viewer } };
+            }
+            // Workflow v2 (INACTIVE unless the deployment enables it): a person's command, after the session:manage gate
+            // above, which is enforced for it even while the ownership switch is off. The actor is the signed-in caller,
+            // never a field of the command; the command is passed as it is, and the adapter refuses what is not one.
+            case "updateWorkflow":
+                // The session the command comes from, when the caller names one: a definition operation from inside a Workflow
+                // is refused (review SF-2).
+                return this.transport.updateWorkflow(safeParams.sessionId, safeParams.command,
+                    { principal: owner ? { provider: owner.provider, subject: owner.subject } : null,
+                        ...(safeParams.originatingSessionId !== undefined ? { originatingSessionId: safeParams.originatingSessionId } : {}) });
             // Session workspaces: the wait for the answer holds this request,
             // so the caller's timeout is bounded like the other long waits.
             case "setSessionWorkspace":
@@ -919,6 +1055,23 @@ export class PortalRuntime {
                     owner,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
                     ...(safeParams.workspace != null ? { workspace: safeParams.workspace } : {}),
+                });
+                return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
+            }
+            case "createWorkflowSession": {
+                await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
+                if (typeof safeParams.yaml !== "string" || !safeParams.yaml.trim()) {
+                    throw Object.assign(new Error("createWorkflowSession requires yaml"), { code: "INVALID_REQUEST", status: 400 });
+                }
+                if (safeParams.inputs != null && (typeof safeParams.inputs !== "object" || Array.isArray(safeParams.inputs))) {
+                    throw Object.assign(new Error("createWorkflowSession inputs must be a JSON object"), { code: "INVALID_REQUEST", status: 400 });
+                }
+                const created = await this.transport.createWorkflowSession({
+                    yaml: safeParams.yaml,
+                    inputs: safeParams.inputs ?? {},
+                    groupId: safeParams.groupId,
+                    owner,
+                    visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }
@@ -1141,6 +1294,12 @@ export class PortalRuntime {
                 const rootView = snapshot.rootSessionId
                     ? await this.transport.mgmt.getSession(snapshot.rootSessionId, placementPrincipal(authContext)).catch(() => null)
                     : null;
+                // Workflow agent states (design 03 human-input denial): a session in an agent state's subtree takes no
+                // prompts, answers or steers from people, whatever their write access. Separate from canWrite, which
+                // still governs everything else; the SDK refuses such input wherever it comes from.
+                const workflowInput = typeof this.transport.getWorkflowInputPolicy === "function"
+                    ? await this.transport.getWorkflowInputPolicy(safeParams.sessionId)
+                    : null;
                 return {
                     sessionId: safeParams.sessionId,
                     rootSessionId: snapshot.rootSessionId,
@@ -1150,6 +1309,11 @@ export class PortalRuntime {
                     relation,
                     canWrite: snapshot.isSystem ? isAdmin : canWrite,
                     canManage: snapshot.isSystem ? isAdmin : canManage,
+                    ...(workflowInput && !workflowInput.canSendPrompt ? {
+                        canSendPrompt: false, canAnswer: false, canSteer: false,
+                        workflowInput: { reason: workflowInput.reason, workflowSessionId: workflowInput.workflowSessionId,
+                            controllingSessionId: workflowInput.controllingSessionId },
+                    } : {}),
                     viewerGroupId: rootView?.viewerGroupId ?? null,
                     enforced: this.authz.enforce,
                 };
@@ -1269,8 +1433,15 @@ export class PortalRuntime {
                 return this.transport.deleteSessionGroup(safeParams.groupId);
             case "listModels":
                 return this.transport.listModels({ principal: owner, isAdmin });
-            case "listArtifacts":
-                return this.transport.listArtifacts(safeParams.sessionId);
+            case "listArtifacts": {
+                // A caller who may not read an owner-only file (SF-3) is not shown its name either.
+                const listed = await this.transport.listArtifacts(safeParams.sessionId);
+                if (this._ownerOnlyArtifactsReadable(gate?.snapshot ?? null, isAdmin)) return listed;
+                const visible = entry => !isOwnerOnlyArtifact(typeof entry === "string" ? entry : entry?.filename);
+                if (Array.isArray(listed)) return listed.filter(visible);
+                if (listed && Array.isArray(listed.artifacts)) return { ...listed, artifacts: listed.artifacts.filter(visible) };
+                return listed;
+            }
             case "getArtifactMetadata":
                 return this.transport.getArtifactMetadata(safeParams.sessionId, safeParams.filename);
             case "deleteArtifact":
@@ -1586,20 +1757,20 @@ export class PortalRuntime {
 
     async downloadArtifact(sessionId, filename, authContext = null) {
         await this.start();
-        await this._gateBespokeRead("downloadArtifact", sessionId, authContext);
+        await this._gateBespokeRead("downloadArtifact", sessionId, authContext, filename);
         return this.transport.downloadArtifact(sessionId, filename);
     }
 
     async getArtifactMetadata(sessionId, filename, authContext = null) {
         await this.start();
-        await this._gateBespokeRead("getArtifactMetadata", sessionId, authContext);
+        await this._gateBespokeRead("getArtifactMetadata", sessionId, authContext, filename);
         if (typeof this.transport.getArtifactMetadata !== "function") return null;
         return this.transport.getArtifactMetadata(sessionId, filename);
     }
 
     async downloadArtifactBinary(sessionId, filename, authContext = null) {
         await this.start();
-        await this._gateBespokeRead("downloadArtifact", sessionId, authContext);
+        await this._gateBespokeRead("downloadArtifact", sessionId, authContext, filename);
         if (typeof this.transport.downloadArtifactBinary === "function") {
             return this.transport.downloadArtifactBinary(sessionId, filename);
         }
@@ -1623,12 +1794,16 @@ export class PortalRuntime {
         return this.transport.downloadAgentPackage(name, semver ?? null, owner, this._resourceAdmin(isAdmin), selector);
     }
 
-    /** session:read gate for the bespoke (non-dispatched) artifact routes. */
-    async _gateBespokeRead(action, sessionId, authContext) {
+    /**
+     * session:read gate for the bespoke (non-dispatched) artifact routes; session:manage, enforced, for an owner-only
+     * file (`filename`, isOwnerOnlyArtifact; SF-3).
+     */
+    async _gateBespokeRead(action, sessionId, authContext, filename = null) {
         const role = authContext?.authorization?.role;
         const isAdmin = role === "admin" || role === "anonymous";
         const owner = normalizeSessionOwner(authContext);
-        await this._gateSession(action, "session:read", sessionId, authContext, { owner, isAdmin });
+        const ownerOnly = isOwnerOnlyArtifact(filename);
+        await this._gateSession(action, ownerOnly ? "session:manage" : "session:read", sessionId, authContext, { owner, isAdmin, enforce: ownerOnly });
     }
 
     /**

@@ -195,7 +195,8 @@ async function runTuiApp(config, transport, authNotify, restoreHostRuntime) {
         collapsedSessionIds: userConfig.collapsedSessionIds,
         activeSessionId: userConfig.activeSessionId,
     }));
-    const controller = new PilotSwarmUiController({ store, transport });
+    // The terminal draws no Terminate picker: its row shortcuts confirm in the terminal (review UI-D1).
+    const controller = new PilotSwarmUiController({ store, transport, terminal: true });
     authNotify.dispatch = (message) => {
         try {
             store.dispatch({ type: "ui/status", text: message });

@@ -36,6 +36,9 @@ export function createCanvasPlane({
     let probeTimer = null;
     let reconnectTimer = null;
     let reconnectDelay = 1_000;
+    // The connection whose liveness probe has not answered yet, and how each connection is dropped (its onGone).
+    let probing = null;
+    const drops = new WeakMap();
 
     const clientConfig = connection !== undefined
         ? connection
@@ -103,6 +106,7 @@ export function createCanvasPlane({
             next.end().catch(() => { /* already dead */ });
             scheduleReconnect();
         };
+        drops.set(next, onGone);
         next.on("error", onGone);
         next.on("end", onGone);
     }
@@ -125,8 +129,20 @@ export function createCanvasPlane({
             await connect();
             // Liveness probe: a LISTEN connection can die silently behind
             // NAT/pools. A failed probe triggers the error path → reconnect.
+            // A probe still out at the next tick means the connection stopped answering: it is dropped and a new one
+            // opened, never given a second query while one is still out (pg warns "Calling client.query() when the
+            // client is already executing a query", and the probe would only queue behind the first).
             probeTimer = setInterval(() => {
-                if (client) client.query("SELECT 1").catch(() => { /* error handler reconnects */ });
+                const current = client;
+                if (!current) return;
+                if (probing === current) {
+                    probing = null;
+                    drops.get(current)?.();
+                    return;
+                }
+                probing = current;
+                const answered = () => { if (probing === current) probing = null; };
+                current.query("SELECT 1").then(answered, answered); // a failure: the error handler reconnects
             }, 30_000);
             if (probeTimer.unref) probeTimer.unref();
         },
