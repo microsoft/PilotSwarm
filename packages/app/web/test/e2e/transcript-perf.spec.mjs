@@ -103,7 +103,7 @@ test("re-laying out the chat pane stays cheap on a long transcript", async ({ pa
         relayout(ref); relayout(panel);
         const samples = { reference: [], panel: [], referenceBatches: [], panelBatches: [], relayoutsPerSample: 3 };
         const sample = node => Array.from({ length: samples.relayoutsPerSample }, () => relayout(node));
-        const startedAt = performance.timeOrigin + performance.now();
+        const startedAt = Date.now();
         for (let i = 0; i < 7; i++) {
             const referenceBatch = sample(ref);
             samples.referenceBatches.push(referenceBatch);
@@ -112,7 +112,7 @@ test("re-laying out the chat pane stays cheap on a long transcript", async ({ pa
             samples.panelBatches.push(panelBatch);
             samples.panel.push(panelBatch.reduce((sum, ms) => sum + ms, 0));
         }
-        samples.measurementWindow = { startedAt, endedAt: performance.timeOrigin + performance.now() };
+        samples.measurementWindow = { startedAt, endedAt: Date.now(), clock: "Date.now" };
         samples.ratios = samples.panel.map((ms, i) => ms / samples.reference[i]);
         const median = samples.ratios.map((ratio, index) => ({ ratio, index }))
             .sort((a, b) => a.ratio - b.ratio)[3];
