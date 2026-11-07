@@ -138,10 +138,11 @@ test("a transition from another session's running turn to an idle session does n
     });
     await soundFixture(page);
     const done = await cueNotes(page, "done");
+    const activeTitle = await page.locator(".ps-chat-panel .ps-panel-title").first().textContent();
     completed = true;
     await page.getByRole("button", { name: "Refresh session order", exact: true }).click();
     await expect(page.locator(`.ps-session-list-button[data-session-id="${sid(1)}"]`)).toContainText("Finished background turn");
-    await expect(page.locator(".ps-chat-panel .ps-panel-title").first()).toContainText("Session 0");
+    await expect(page.locator(".ps-chat-panel .ps-panel-title").first()).toHaveText(activeTitle);
     expect(await cueNotes(page, "done")).toBe(done);
     await page.locator(`.ps-session-list-button[data-session-id="${sid(1)}"]`).click();
     await expect(page.locator(".ps-chat-panel .ps-panel-title").first()).toContainText("Finished background turn");
