@@ -31,6 +31,16 @@ test("pinch zooms inside the box, two fingers move it, 1:1 resets", async ({ pag
     const frame = () => page.waitForTimeout(16);
     const transform = () => frameEl.evaluate((el) => el.style.transform);
     const translate = async () => (await transform()).match(/translate\((-?[\d.]+)px, (-?[\d.]+)px\)/)?.slice(1).map(Number) || [0, 0];
+    await page.evaluate(() => {
+        window.pinchHintSeen = false;
+        const observer = new MutationObserver(() => {
+            if (document.querySelector(".ps-canvas-pinch-hint")?.textContent === "Two fingers to move") {
+                window.pinchHintSeen = true;
+                observer.disconnect();
+            }
+        });
+        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    });
 
     // Spread two fingers: the canvas grows, the page does not.
     await touch("touchStart", [[cx - 30, cy], [cx + 30, cy]]);
@@ -38,7 +48,7 @@ test("pinch zooms inside the box, two fingers move it, 1:1 resets", async ({ pag
     await touch("touchEnd", []);
     await expect.poll(transform).toMatch(/scale\(3\)/);
     expect(await page.evaluate(() => window.visualViewport.scale)).toBe(1);
-    await expect(page.locator(".ps-canvas-pinch-hint")).toHaveText("Two fingers to move");
+    await expect.poll(() => page.evaluate(() => window.pinchHintSeen)).toBe(true);
     const [x0, y0] = await translate();
 
     // Two fingers together: the magnified page follows them.

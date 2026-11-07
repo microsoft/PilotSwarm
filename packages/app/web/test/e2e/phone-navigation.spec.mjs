@@ -181,12 +181,6 @@ test("a second swipe within slide-out flushes the first exactly once", async ({ 
     const before = (await savedHistory(page)).index;
     await page.clock.install({ time: new Date("2030-01-01T00:00:00Z") });
     await page.clock.pauseAt(new Date("2030-01-01T00:00:01Z"));
-    await page.evaluate(() => {
-        window.touchTrace = [];
-        for (const type of ["touchstart", "touchmove", "touchend", "touchcancel"]) {
-            window.addEventListener(type, event => window.touchTrace.push({ type, target: event.target.className, connected: event.target.isConnected }), true);
-        }
-    });
     const touch = await pageTouch(page, context);
     await touch("touchStart", 80);
     for (let x = 100; x <= 320; x += 20) await touch("touchMove", x);
@@ -203,7 +197,7 @@ test("a second swipe within slide-out flushes the first exactly once", async ({ 
     for (let x = 290; x <= 385; x += 19) await touch("touchMove", x);
     await touch("touchEnd");
     await page.clock.runFor(160);
-    expect((await savedHistory(page)).index, JSON.stringify(await page.evaluate(() => window.touchTrace))).toBe(before - 2);
+    expect((await savedHistory(page)).index).toBe(before - 2);
     await page.clock.runFor(600);
     expect((await savedHistory(page)).index).toBe(before - 2);
 });

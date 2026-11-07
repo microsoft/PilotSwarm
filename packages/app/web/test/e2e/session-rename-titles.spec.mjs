@@ -49,45 +49,50 @@ test("a renamed agent session leads with the person's title in the list and the 
 });
 
 test("Manage keeps the catalog prefix outside the 100-character input and saves only the editable title", async ({ page }) => {
-        const id = "11111111-2222-3333-4444-555555555551";
-        let title = "Ops: Fleet Watcher: nightly";
-        let readsAfterSave = 0;
-        const writes = [];
-        await page.route("**/api/v1/bootstrap", route => route.fulfill({ json: { ok: true, result: {
-            auth: { principal: { provider: "none", subject: "test", email: "test@example.com" }, authorization: { role: "user", allowed: true } },
-        } } }));
-        await page.route("**/access", route => route.fulfill({ json: { ok: true, result: { canManage: true, canWrite: true, relation: "owner", owner: { provider: "none", subject: "test" } } } }));
-        await page.route("**/api/v1/agents", route => route.fulfill({ json: { ok: true, result: [{ name: "ops", title: "Ops: Fleet Watcher" }] } }));
-        await page.route(url => /\/api\/.*\/sessions(?:\/[^/]+)?$/.test(url.pathname), async route => {
-            if (route.request().method() === "PATCH") {
-                writes.push(route.request().postDataJSON());
-                title = `Ops: Fleet Watcher: ${writes.at(-1).title}`;
-                return route.fulfill({ json: { ok: true, result: {} } });
-            }
-            if (route.request().method() !== "GET") return route.fallback();
-            if (writes.length) readsAfterSave++;
-            const response = await route.fetch();
-            const json = await response.json();
-            const relabel = s => s.sessionId === id ? { ...s, agentId: "ops", title } : s;
-            if (json.result?.sessions) json.result.sessions = json.result.sessions.map(relabel);
-            else if (json.sessions) json.sessions = json.sessions.map(relabel);
-            else if (json.result?.sessionId) json.result = relabel(json.result);
-            return route.fulfill({ response, json });
-        });
-        await page.setViewportSize({ width: 1440, height: 900 });
-        await page.goto(base + `/?session=${id}`);
-        const row = page.locator(`.ps-session-list-button[data-session-id="${id}"]`);
-        await expect(row).toContainText("nightly");
-        await row.click();
-        await page.getByRole("button", { name: /^Manage session/ }).first().click();
-        const modal = page.locator(".ps-share-modal");
-        const input = modal.getByRole("textbox", { name: "Session title after Ops: Fleet Watcher", exact: true });
-        await expect(modal.locator(".ps-manage-title-prefix")).toHaveText("Ops: Fleet Watcher:");
-        await expect(input).toHaveValue("nightly");
-        await expect(input).toHaveAttribute("maxlength", "100");
-        await input.fill("morning sweep");
-        await modal.getByRole("button", { name: "Save", exact: true }).click();
-        await expect.poll(() => writes).toEqual([{ title: "morning sweep" }]);
-        await expect.poll(() => readsAfterSave).toBeGreaterThan(0);
-        await expect(row).toContainText("morning sweep");
+    const id = "11111111-2222-3333-4444-555555555551";
+    let title = "Ops: Fleet Watcher: nightly";
+    let readsAfterSave = 0;
+    const writes = [];
+    await page.clock.install({ time: new Date("2030-01-01T00:00:00Z") });
+    await page.route("**/api/v1/bootstrap", route => route.fulfill({ json: { ok: true, result: {
+        auth: { principal: { provider: "none", subject: "test", email: "test@example.com" }, authorization: { role: "user", allowed: true } },
+    } } }));
+    await page.route("**/access", route => route.fulfill({ json: { ok: true, result: { canManage: true, canWrite: true, relation: "owner", owner: { provider: "none", subject: "test" } } } }));
+    await page.route("**/api/v1/agents", route => route.fulfill({ json: { ok: true, result: [{ name: "ops", title: "Ops: Fleet Watcher" }] } }));
+    await page.route(url => /\/api\/.*\/sessions(?:\/[^/]+)?$/.test(url.pathname), async route => {
+        if (route.request().method() === "PATCH") {
+            writes.push(route.request().postDataJSON());
+            title = `Ops: Fleet Watcher: ${writes.at(-1).title}`;
+            return route.fulfill({ json: { ok: true, result: {} } });
+        }
+        if (route.request().method() !== "GET") return route.fallback();
+        if (writes.length) readsAfterSave++;
+        const response = await route.fetch();
+        const json = await response.json();
+        const relabel = s => s.sessionId === id ? { ...s, agentId: "ops", title } : s;
+        if (json.result?.sessions) json.result.sessions = json.result.sessions.map(relabel);
+        else if (json.sessions) json.sessions = json.sessions.map(relabel);
+        else if (json.result?.sessionId) json.result = relabel(json.result);
+        return route.fulfill({ response, json });
+    });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(base + `/?session=${id}`);
+    const row = page.locator(`.ps-session-list-button[data-session-id="${id}"]`);
+    await expect(row).toContainText("nightly");
+    await row.click();
+    await page.getByRole("button", { name: /^Manage session/ }).first().click();
+    const modal = page.locator(".ps-share-modal");
+    const input = modal.getByRole("textbox", { name: "Session title after Ops: Fleet Watcher", exact: true });
+    await expect(modal.locator(".ps-manage-title-prefix")).toHaveText("Ops: Fleet Watcher:");
+    await expect(input).toHaveValue("nightly");
+    await expect(input).toHaveAttribute("maxlength", "100");
+    await input.fill("morning sweep");
+    const save = modal.getByRole("button", { name: "Save", exact: true });
+    await expect(save).toBeEnabled();
+    // Freeze the catalog poll: only Save's own refresh can update the list.
+    await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now() + 1000)));
+    await save.click({ force: true });
+    await expect.poll(() => writes).toEqual([{ title: "morning sweep" }]);
+    await expect.poll(() => readsAfterSave).toBeGreaterThan(0);
+    await expect(row).toContainText("morning sweep");
 });
