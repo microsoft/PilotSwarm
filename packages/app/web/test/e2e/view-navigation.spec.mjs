@@ -31,12 +31,13 @@ async function fixture(page, themeId = 'terminal-green', width = 1600, {reviewPa
     const cancelledByNavigation = message => navigating && process.env.PS_TEST_BROWSER === 'webkit'
         && /due to access control checks\.$/.test(message) && message.includes(`${new URL(base).host}/api/`);
     page.on('pageerror', e => { if (!cancelledByNavigation(e.message)) errors.push(e.message); });
+    page.on('load', () => { navigating = false; });
     for (const method of ['goto', 'reload']) {
         const original = page[method].bind(page);
         page[method] = async (...args) => {
             navigating = true;
             try { return await original(...args); }
-            finally { navigating = false; }
+            catch (error) { navigating = false; throw error; }
         };
     }
     let settings = { themeId, touchScale, moa: normalizeMoa({ version:3, activeDashboardId:'ops', dashboards:[
@@ -78,6 +79,19 @@ test('API access-control errors outside navigation are not suppressed', async ({
     const message = `Blocked ${new URL(base).host}/api/test due to access control checks.`;
     await page.evaluate(message => { queueMicrotask(() => { throw new Error(message); }); }, message);
     await expect.poll(() => f.errors).toContain(message);
+});
+
+test('API errors after load remain visible while goto awaits network idle', async ({page}) => {
+    const f = await fixture(page);
+    const message = `Blocked ${new URL(base).host}/api/after-load due to access control checks.`;
+    await page.addInitScript(message => {
+        if (window !== window.top) return;
+        window.addEventListener('load', () => {
+            requestAnimationFrame(() => requestAnimationFrame(() => { throw new Error(message); }));
+        }, { once: true });
+    }, message);
+    await page.goto(base + `/?session=${sid(0)}`, { waitUntil: 'networkidle' });
+    expect(f.errors).toContain(message);
 });
 
 test('session Back/Forward preserves drafts and branches after new navigation', async ({page}) => {
