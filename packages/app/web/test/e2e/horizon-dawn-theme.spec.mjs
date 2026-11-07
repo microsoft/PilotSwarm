@@ -99,3 +99,38 @@ test("phone: Orion stays on screen, nothing scrolls sideways", async ({ page }) 
     expect(failed).toEqual([]);
 });
 
+
+test("full-screen canvas: the header controls sit on a solid plate with bright text", async ({ page }) => {
+    const PAGE = "<!doctype html><html><body style='margin:0;background:#123'><h1 style='color:#fff'>Canvas</h1></body></html>";
+    await page.route("**/api/v1/**", route => {
+        const url = new URL(route.request().url());
+        if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_updated")) {
+            return route.fulfill({ json: { ok: true, result: [{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 3, sizeBytes: PAGE.length, name: "Code browser" } }] } });
+        }
+        if (url.pathname.includes("/artifacts/") && url.pathname.includes("canvas.html")) return route.fulfill({ contentType: "text/html", body: PAGE });
+        if (url.pathname.endsWith("/me/profile")) return route.fulfill({ json: { ok: true, result: { profileSettings: { themeId: "horizon-dawn" } } } });
+        return route.fallback();
+    });
+    await page.setViewportSize({ width: 1450, height: 900 });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}&view=canvas&max=1`);
+    const slot = page.locator(".portal-header .ps-toolbar-canvas-slot");
+    await expect(slot).toBeVisible({ timeout: 15_000 });
+    await expect(slot.getByRole("button", { name: "Restore canvas" })).toBeVisible();
+    const look = await slot.evaluate((el) => {
+        const alpha = (c) => { const m = c.match(/rgba?\(([^)]+)\)/); const p = m ? m[1].split(",").map(Number) : []; return p.length === 4 ? p[3] : 1; };
+        const lum = (c) => { const [r, g, b] = c.match(/\d+(\.\d+)?/g).slice(0, 3).map((v) => Number(v) / 255).map((v) => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+        const plate = getComputedStyle(el).backgroundColor;
+        // The controls' text and icons: the Canvas/Workspace switch is always there.
+        const text = getComputedStyle(el.querySelector(".ps-side-pane-tab:not(.is-on)") || el.querySelector(".ps-side-pane-tab")).color;
+        const restore = getComputedStyle(el.querySelector('[aria-label="Restore canvas"]'));
+        const a = lum(text), b = lum(plate);
+        return { plateAlpha: alpha(plate), contrast: (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05), restoreBorder: restore.borderTopWidth, restoreColor: restore.color, width: el.getBoundingClientRect().width };
+    });
+    expect(look.plateAlpha).toBeGreaterThan(0.9);
+    // WCAG AA for normal text.
+    expect(look.contrast).toBeGreaterThan(4.5);
+    expect(parseFloat(look.restoreBorder)).toBeGreaterThan(0);
+    // The plate hugs its controls rather than filling the header's left side.
+    const lastRight = await slot.evaluate((el) => Math.max(...[...el.children].map((c) => c.getBoundingClientRect().right)) - el.getBoundingClientRect().left);
+    expect(look.width - lastRight).toBeLessThan(16);
+});
