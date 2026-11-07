@@ -14,7 +14,7 @@ test("closing the browser stub resolves promptly with a request still in flight"
     let receive;
     const received = new Promise(resolve => { receive = resolve; });
     stub.server.removeAllListeners("request");
-    stub.server.on("request", () => receive());
+    stub.server.on("request", req => receive(req.socket));
     const response = new Promise((resolve, reject) => {
         request = http.get(`http://127.0.0.1:${stub.port}/pending`, res => {
             res.resume();
@@ -23,7 +23,10 @@ test("closing the browser stub resolves promptly with a request still in flight"
         });
         request.on("error", error => error.code === "ECONNRESET" ? resolve(error.code) : reject(error));
     });
-    await received;
-    await new Promise(resolve => stub.server.close(resolve));
+    const connection = await received;
+    assert.equal(connection.destroyed, false, "the request must still be active before teardown");
+    const closed = new Promise(resolve => stub.server.close(resolve));
+    assert.equal(connection.destroyed, true, "close must release the active connection without waiting for the page");
+    await closed;
     assert.equal(await response, "ECONNRESET", "teardown must close the still-active connection");
 });
