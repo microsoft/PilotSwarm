@@ -213,3 +213,93 @@ test("update_workflow replace_definition asks the store to refuse a reused versi
     assert.equal(replaced.length, 1);
     assert.equal(replaced[0].refuseVersionReuse, true);
 });
+
+// Review SDK3-F2: the claim's transaction reads what an earlier holder of the version lock committed, so it runs at READ
+// COMMITTED whatever the connection's default isolation (at REPEATABLE READ the check would keep the snapshot of its
+// first statement, the claim, taken before it waited for the lock).
+test("SDK3-F2: the claim's transaction is READ COMMITTED; the check runs after the claim, before the owner, on its client", async () => {
+    const { PgSessionCatalog } = await import("../../dist/cms.js");
+    const calls = [];
+    const client = {
+        query: async (sql) => {
+            calls.push(sql.replace(/\s+/g, " ").trim());
+            return { rows: /cms_create_workflow_session_v2/.test(sql) ? [{ created: true }] : [] };
+        },
+        release: () => calls.push("release"),
+    };
+    const catalog = Object.create(PgSessionCatalog.prototype);
+    catalog.pool = { connect: async () => client };
+    catalog.sql = { schema: "cms", fn: { setSessionOwner: "cms_set_session_owner", inheritSessionOwner: "cms_inherit_session_owner" } };
+    const seen = [];
+    await catalog.createWorkflowSessionV2("wf-new", { parentSessionId: "chat", owner: null, creationConfig: {},
+        afterClaim: async (given) => { seen.push(given === client); calls.push("afterClaim"); } });
+    assert.deepEqual(seen, [true]);
+    assert.equal(calls[0], "BEGIN ISOLATION LEVEL READ COMMITTED");
+    assert.match(calls[1], /cms_create_workflow_session_v2/);
+    assert.equal(calls[2], "afterClaim");
+    assert.match(calls[3], /cms_inherit_session_owner/);
+    assert.deepEqual(calls.slice(4), ["COMMIT", "release"]);
+    // A refusal rolls the claim back.
+    calls.length = 0;
+    await assert.rejects(catalog.createWorkflowSessionV2("wf-new", { parentSessionId: "chat", owner: null, creationConfig: {},
+        afterClaim: async () => { throw new WorkflowStoreError("SEMVER_REUSED", "reused"); } }), /reused/);
+    assert.deepEqual(calls.slice(-2), ["ROLLBACK", "release"]);
+});
+
+// Review SDK3-F3: a creation resumed on a claim it did not make now (its row found: an earlier attempt's claim, or an earlier
+// build's that records no version) is checked when its definition is stored, in that transaction, under the lock; a fresh
+// claim is checked in the claim and its definition is not checked again; a stored creation's replay is not checked.
+test("SDK3-F3: a resumed claim's definition is checked when it is stored; a fresh claim's and a replay's are not", async () => {
+    const compiled = compileWorkflowV2(YAML("1.1.3"));
+    const marker = createHost();
+    await refusal(createWorkflowV2(marker.host, request({ refuseVersionReuse: true })));
+    const stored = marker.calls.claims[0].opts.creationConfig;
+    const definitions = [];
+    const hostOf = ({ created, definition = null }) => ({
+        catalog: {
+            getSession: async id => (id === "wf-new" ? { sessionKind: "workflow", parentSessionId: "chat", deletedAt: null, owner: null }
+                : id === "chat" ? { sessionId: "chat", owner: null } : null),
+            getSessionCreationConfig: async () => stored,
+            createWorkflowSessionV2: async (id, opts) => { if (created && opts.afterClaim) await opts.afterClaim({}); return { created }; },
+        },
+        store: {
+            readDefinition: async () => definition,
+            requireVersionFreeLocked: async () => {},
+            createDefinition: async (input) => { definitions.push(input); throw new Error("definition reached"); },
+        },
+        duroxideClient: {},
+    });
+    assert.equal((await refusal(createWorkflowV2(hostOf({ created: false }), request({ refuseVersionReuse: true })))).message, "definition reached");
+    assert.deepEqual(definitions[0].versionGuard, { parentSessionId: "chat", workflowSessionId: "wf-new", name: "monitor", semver: "1.1.3",
+        yamlSha256: compiled.yamlSha256, irSha256: compiled.irSha256, nothingSaved: "Nothing was saved: the claim stays without a definition." });
+    assert.equal((await refusal(createWorkflowV2(hostOf({ created: true }), request({ refuseVersionReuse: true })))).message, "definition reached");
+    assert.equal(definitions[1].versionGuard, undefined, "a fresh claim was checked in its own transaction");
+    assert.equal((await refusal(createWorkflowV2(hostOf({ created: false }), request({})))).message, "definition reached");
+    assert.equal(definitions[2].versionGuard, undefined, "not asked");
+});
+
+test("SDK3-F3: the store runs the check after the new definition row and before its revision; a replay answers first", async () => {
+    const calls = [];
+    const client = {
+        query: async (sql) => {
+            const text = sql.replace(/\s+/g, " ").trim();
+            calls.push(text);
+            if (/^INSERT INTO "cms".workflow_definitions/.test(text)) return { rows: [{ workflow_session_id: "wf-new" }] };
+            if (/FOR NO KEY UPDATE|FOR UPDATE/.test(text)) return { rows: [{ deleted_at: null }] };
+            return { rows: [] };
+        },
+    };
+    const store = new WorkflowStore({ query: async () => ({ rows: [] }) }, "cms");
+    store.transaction = async (work) => work(client);
+    store.requireLiveSession = async () => {};
+    const order = [];
+    store.requireVersionFreeLocked = async (given, input) => { order.push(["guard", given === client, input.name]); throw new WorkflowStoreError("SEMVER_REUSED", "reused"); };
+    store.insertRevision = async () => { order.push(["revision"]); };
+    const compiled = compileWorkflowV2(YAML("1.1.3"));
+    const error = await refusal(store.createDefinition({ workflowSessionId: "wf-new", parentSessionId: "chat", notifyParent: true, yaml: YAML("1.1.3"),
+        compiled, actor: { kind: "agent", sessionId: "chat" }, operationId: "op", requestSha256: "r", publish: false, start: null, title: "Workflow: monitor",
+        versionGuard: { ...CHECK, name: "monitor" } }));
+    assert.equal(error.code, "SEMVER_REUSED");
+    assert.deepEqual(order, [["guard", true, "monitor"]], "checked before the revision; the transaction rolls back");
+    assert.match(calls[0], /^INSERT INTO "cms".workflow_definitions/);
+});

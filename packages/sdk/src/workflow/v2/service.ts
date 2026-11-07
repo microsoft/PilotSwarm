@@ -779,6 +779,9 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
         start: admission,
         title: `Workflow: ${compiled.name ?? "draft"}`,
         ...(agentPinsText !== null ? { agentPinsText } : {}),
+        // Review SDK3-F3: a resumed claim (this request found its row) was not checked when it was made, or was made by an
+        // earlier build that records no version: its definition is checked when it is stored.
+        ...(versionGuard && !claim.created ? { versionGuard: { ...versionGuard, nothingSaved: "Nothing was saved: the claim stays without a definition." } } : {}),
     });
     await dispatchWorkflowV2Run(host, stored.receipt);
     return stored;

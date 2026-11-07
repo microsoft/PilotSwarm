@@ -77,7 +77,7 @@ import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } fro
 import type { NativeTasksPayload } from "./native-task-observer.js";
 import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, workflowToolErrorPayload, type WorkflowToolHost } from "./workflow/v2/tools.js";
-import { isWorkflowRuntimeSender, parseWorkflowUpdateHeader, workflowRuntimeSender } from "./workflow/v2/parent-messages.js";
+import { WORKFLOW_UPDATE_DATA_LINE, isWorkflowRuntimeSender, parseWorkflowUpdateHeader, workflowRuntimeSender } from "./workflow/v2/parent-messages.js";
 import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher, workflowRespondFailure } from "./workflow/v2/request-service.js";
 import { completeWorkflowNodeFromTool, workflowCompletionFailure } from "./workflow/v2/agent-node-service.js";
 import { keepWorkflowBaseInstructions, sdkSystemPromptEchoContent, workflowBaseInstructionsRef, workflowBaseInstructionsText } from "./workflow/v2/base-instructions.js";
@@ -566,13 +566,34 @@ export function isQuietSystemOnlyTurn(input: {
 const NO_ANSWER_WORKFLOW_UPDATE_TYPES: ReadonlySet<string> = new Set(["message"]);
 
 /**
+ * Review SDK3-F1: the notice type when `text` is exactly ONE workflow notice that needs no answer, as the runtime renders
+ * it (workflowUpdateMessage): four lines, the header (type `message`), one plain sentence, the data line and the JSON on
+ * one line that parses. Null for anything else: another type, a malformed notice, or a notice with anything before or
+ * after it (a merged batch of queued messages joins their texts with blank lines). Fails closed.
+ */
+export function workflowSingleNoAnswerNotice(text: unknown): string | null {
+    if (typeof text !== "string") return null;
+    const lines = normalizePromptText(text).split("\n");
+    if (lines.length !== 4) return null;
+    const header = parseWorkflowUpdateHeader(lines[0]);
+    if (!header || !NO_ANSWER_WORKFLOW_UPDATE_TYPES.has(header.type)) return null;
+    if (!/^\[WORKFLOW_UPDATE(?: [a-z_]+=[^\s\]]+)+\]$/.test(lines[0])) return null;
+    if (!lines[1].trim() || /[[\]<>]/.test(lines[1]) || lines[2] !== WORKFLOW_UPDATE_DATA_LINE) return null;
+    try { JSON.parse(lines[3]); } catch { return null; }
+    return header.type;
+}
+
+/**
  * Owner "No response" dump (2026-11-06): whether a turn answers only workflow notices that say they need no answer, in
  * a ROOT session, with no person's words folded in (held prompts, carried or open steers), no attachments and no
  * required tool. Two ways such a notice arrives:
- * - queued (the legacy delivery): the turn's prompt is the notice, and its server-stamped sender is the runtime's own for
- *   that notice type (SF-2; the queue keeps a sender only when every merged message had it), with no intake items;
- * - durable intake: the turn's own prompt is the runtime's system-only prompt, and every intake item is such a notice
- *   (an intake item is a send state's message the runtime stored itself).
+ * - queued (the legacy delivery): the turn's prompt is exactly one such notice, and its server-stamped sender is the
+ *   runtime's own for that notice type (SF-2), with no intake items. The queue merges messages whose senders share one
+ *   key, and every system sender shares the key `system` (review SDK3-F1): a run's end, a request or any other system
+ *   text merged after a message notice keeps the first one's sender. So the whole prompt must be one notice, as the
+ *   runtime renders it (workflowSingleNoAnswerNotice); any concatenation keeps the error and its retries;
+ * - durable intake: the turn's own prompt is the runtime's system-only prompt, and every intake item is exactly one such
+ *   notice (an intake item is a send state's message the runtime stored itself).
  * Its empty answer is completed quietly, as F-C3's (TurnOptions.quietEmptyAnswer); every other empty answer keeps the
  * error and its retries. A child session never is: its empty completion would be reported to its parent.
  */
@@ -583,10 +604,7 @@ export function isQuietWorkflowNoticeTurn(input: {
     if (input.parentSessionId || input.requiredTool || input.foldedText === true || (input.attachments ?? 0) !== 0) return false;
     if (Array.isArray(input.stashedPrompts) && input.stashedPrompts.length > 0) return false;
     const bare = (input.systemContextInPrompt ? splitSystemContextBlock(input.prompt ?? "").prompt : (input.prompt ?? "")).trim();
-    const noAnswerType = (text: unknown): string | null => {
-        const header = parseWorkflowUpdateHeader(typeof text === "string" ? normalizePromptText(text) : null);
-        return header && NO_ANSWER_WORKFLOW_UPDATE_TYPES.has(header.type) ? header.type : null;
-    };
+    const noAnswerType = (text: unknown): string | null => workflowSingleNoAnswerNotice(text);
     const intakeTexts = input.intakeTexts ?? null;
     if (intakeTexts !== null && intakeTexts.length > 0) {
         return bare === SYSTEM_ONLY_TURN_PROMPT && intakeTexts.every(text => noAnswerType(text) !== null);

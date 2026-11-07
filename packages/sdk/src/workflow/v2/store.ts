@@ -2433,6 +2433,13 @@ export class WorkflowStore {
         title: string;
         /** The published revision's agent pins as canonical JSON (migration 0103); null or absent when there are none. */
         agentPinsText?: string | null;
+        /**
+         * Review SDK3-F3: the version check (requireVersionFreeLocked) for a definition stored on a claim this request did
+         * not make now (a resumed creation, its claim from an earlier attempt or an earlier build): run in this transaction
+         * once the definition row is new, before its revision. A replay of a stored creation is answered from its receipt
+         * first and is not checked.
+         */
+        versionGuard?: Parameters<WorkflowStore["requireVersionFree"]>[0] | null;
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
         requireStoredYamlWithinLimit(input.yaml);
         requirePublishable(input.compiled, input.publish || Boolean(input.start));
@@ -2453,6 +2460,7 @@ export class WorkflowStore {
                 if (prior) return { receipt: prior, replayed: true };
                 throw new WorkflowStoreError("WORKFLOW_EXISTS", `Workflow ${input.workflowSessionId} already exists with a different creation request.`);
             }
+            if (input.versionGuard) await this.requireVersionFreeLocked(client, input.versionGuard);
             await this.insertRevision(client, input.workflowSessionId, 1, input.yaml, input.compiled, input.actor);
             let definition = await this.lockDefinition(client, input.workflowSessionId);
             let run: WorkflowRunReceipt | null = null;

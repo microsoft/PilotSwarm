@@ -60,3 +60,30 @@ test("a notice that asks for an answer, a person's words, a child session or any
         assert.equal(isQuietWorkflowNoticeTurn(input), false, label);
     }
 });
+
+// Review SDK3-F1: the queue merges messages whose senders share one key, and every system sender shares "system". A run's
+// end, a request, a test run's held call or any other system text queued after a message notice is joined to it with a
+// blank line and keeps the first one's sender. Only exactly one message notice qualifies; a merged batch fails closed.
+test("SDK3-F1: a queued batch that starts with a message notice and goes on qualifies for nothing, whatever follows", async () => {
+    const { workflowSingleNoAnswerNotice } = await import("../../dist/session-proxy.js");
+    const TEST_WAITING = notice("test_waiting", " state=review interception=nx-1/call-1");
+    const merged = (...parts) => parts.join("\n\n");
+    assert.equal(workflowSingleNoAnswerNotice(MESSAGE), "message");
+    for (const [label, text] of [
+        ["message + ended", merged(MESSAGE, ENDED)],
+        ["message + request", merged(MESSAGE, REQUEST)],
+        ["message + test_waiting", merged(MESSAGE, TEST_WAITING)],
+        ["message + message", merged(MESSAGE, MESSAGE)],
+        ["message + a system line", merged(MESSAGE, "[SYSTEM: Sub-agent finished: 1 result is ready.]")],
+        ["message + a person's words", merged(MESSAGE, "Also check the comments.")],
+        ["a line before the notice", merged("Note:", MESSAGE)],
+        ["the JSON cut", MESSAGE.slice(0, -2)],
+        ["a header with trailing text", MESSAGE.replace("exchange=nx-1]", "exchange=nx-1] and more")],
+    ]) {
+        assert.equal(workflowSingleNoAnswerNotice(text), null, label);
+        assert.equal(isQuietWorkflowNoticeTurn(queued({ prompt: appendSystemContextBlock(text, "[RECURRING TASK] Watch the top 20.") })), false, label);
+        assert.equal(isQuietWorkflowNoticeTurn(queued({ prompt: text, systemContextInPrompt: false })), false, `${label} (no block)`);
+    }
+    // Durable intake items are single notices too: an item that holds a merged text does not qualify.
+    assert.equal(isQuietWorkflowNoticeTurn(intake([merged(MESSAGE, ENDED)])), false);
+});

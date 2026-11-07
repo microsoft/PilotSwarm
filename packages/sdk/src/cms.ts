@@ -1801,7 +1801,9 @@ export class PgSessionCatalog implements SessionCatalog {
         const client = await this.pool.connect();
         let released = false;
         try {
-            await client.query("BEGIN");
+            // Review SDK3-F2: the version check after the claim (afterClaim) takes its lock, then reads what an earlier
+            // holder committed: that needs a new snapshot per statement, whatever the connection's default isolation.
+            await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
             const { rows } = await client.query(
                 `SELECT "${this.sql.schema}".cms_create_workflow_session_v2($1, $2, $3::jsonb) AS created`,
                 [sessionId, opts.parentSessionId, JSON.stringify(opts.creationConfig)],

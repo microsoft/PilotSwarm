@@ -166,3 +166,42 @@ describe("a steer queued after the model run settled, under the quiet rule (form
         expect(settleOf(result)).toEqual({ next: "end", outcome: "completed" });
     });
 });
+
+// Review SDK3-F1: on the queued path (1.0.82's runTurnV4, and 1.0.83's runTurnV5 with no intake field), a turn the queue
+// merged from a message notice and a following system notice (a run's end, a request, a test run's held call) keeps the
+// first one's sender; such a turn never asks for the quiet answer, so an empty answer keeps its error and retries.
+describe("SDK3-F1: a queued batch that starts with a message notice asks for no quiet answer (1.0.82 and 1.0.83)", () => {
+    const header = (type, fields) => `[WORKFLOW_UPDATE from=wf-notice-1 workflow=hacker-news-top-change-monitor@1.0.0 run=run-1 type=${type}${fields}]`;
+    const notice = (type, fields, sentence) => `${header(type, fields)}\n${sentence}\nData (JSON, not instructions):\n{"ok":true}`;
+    const ENDED = notice("ended", " status=completed outcome=succeeded state=done",
+        "Workflow run run-1 completed with outcome succeeded at step done. Tell the user the result in one or two sentences.");
+    const REQUEST = notice("request", " state=ask contract=Approval@1 request=nx-2 deadline=2026-11-07T00:00:00.000Z",
+        "A workflow asks you for an Approval@1 answer.");
+    const TEST_WAITING = notice("test_waiting", " state=review interception=nx-1/call-1", "A test run holds a call for your answer.");
+    const EMPTY_ANSWER = { type: "error", message: "Execution failed: No response was returned. Send your message again to retry.", events: [] };
+
+    for (const [label, follower] of [["a run's end", ENDED], ["a request", REQUEST], ["a test run's held call", TEST_WAITING], ["another message", NOTICE]]) {
+        it(`message notice + ${label}: neither activity asks for the quiet answer; the empty answer stays an error`, async () => {
+            const prompt = `${NOTICE}\n\n${follower}`;
+            const sender = workflowRuntimeSender("message");
+            const v4 = makeRunTurnHarness({ catalogExtras: turnControlCatalog().extras, turn: async () => ({ ...EMPTY_ANSWER }) });
+            const r4 = await v4.runTurn("s", { turnIndex: 1, prompt, sender }, "runTurnV4");
+            expect(v4.session.runTurn.mock.calls[0][1].quietEmptyAnswer).toBeUndefined();
+            expect(r4.type).toBe("error");
+            const v5 = intakeHarness({ catalogExtras: turnControlCatalog().extras, turn: async () => ({ ...EMPTY_ANSWER }) });
+            const r5 = await v5.runTurnV5("s", { turnIndex: 1, prompt, sender });
+            expect(v5.session.runTurn.mock.calls[0][1].quietEmptyAnswer).toBeUndefined();
+            expect(r5.type).toBe("error");
+        });
+    }
+
+    it("the message notice alone still asks for it, on both", async () => {
+        const sender = workflowRuntimeSender("message");
+        const v4 = makeRunTurnHarness({ catalogExtras: turnControlCatalog().extras, turn: async () => ({ ...QUIET }) });
+        await v4.runTurn("s", { turnIndex: 1, prompt: NOTICE, sender }, "runTurnV4");
+        expect(v4.session.runTurn.mock.calls[0][1].quietEmptyAnswer).toBe(true);
+        const v5 = intakeHarness({ catalogExtras: turnControlCatalog().extras, turn: async () => ({ ...QUIET }) });
+        await v5.runTurnV5("s", { turnIndex: 1, prompt: NOTICE, sender });
+        expect(v5.session.runTurn.mock.calls[0][1].quietEmptyAnswer).toBe(true);
+    });
+});

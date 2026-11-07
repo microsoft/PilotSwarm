@@ -140,4 +140,80 @@ describe("workflow v2: one name and version is one definition among a session's 
             await catalog.close();
         }
     });
+
+    // Review SDK3-F2: on connections whose default isolation is REPEATABLE READ the claim's transaction still reads what an
+    // earlier holder of the version lock committed (it begins READ COMMITTED). Before, the check kept the snapshot of the
+    // claim statement, taken before the wait, and both creations could pass.
+    it("SDK3-F2: the same at a REPEATABLE READ default isolation: exactly one of two concurrent creations with other YAML", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        catalog.pool.on("connect", client => { client.query("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ").catch(() => {}); });
+        await catalog.initialize();
+        try {
+            const host = { catalog, store: catalog.workflowStore(), duroxideClient: {} };
+            const { rows } = await catalog.pool.query("SHOW default_transaction_isolation");
+            expect(rows[0].default_transaction_isolation).toBe("repeatable read");
+            const spawn = (chat, id, yaml) => createWorkflowV2(host, { workflowSessionId: id, parentSessionId: chat, yaml, actor: ACTOR,
+                operationId: `create-${id}`, publish: true, refuseVersionReuse: true });
+            for (let round = 0; round < 5; round += 1) {
+                const chat = randomUUID();
+                await catalog.createSession(chat, { owner: PERSON });
+                const ids = [randomUUID(), randomUUID()];
+                const results = await Promise.allSettled([spawn(chat, ids[0], YAML("3.0.0", 30)), spawn(chat, ids[1], YAML("3.0.0", 45))]);
+                expect(results.map(result => result.status).sort(), `round ${round}: ${JSON.stringify(results.map(result => result.reason?.message ?? null))}`)
+                    .toEqual(["fulfilled", "rejected"]);
+                const lost = results.findIndex(result => result.status === "rejected");
+                expect(results[lost].reason.code).toBe("SEMVER_REUSED");
+                expect(await catalog.getSession(ids[lost])).toBeNull();
+            }
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    // Review SDK3-F3: a claim an earlier build made records no version, so a guarded sibling cannot see it; resuming that
+    // creation must not store a second definition at the sibling's version. Its definition is checked when it is stored
+    // (refused, nothing saved); a completed creation's replay, earlier build or not, is still answered from its receipt.
+    it("SDK3-F3: resuming an earlier build's unfinished claim is checked when its definition is stored; a completed one replays", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        try {
+            const host = { catalog, store: catalog.workflowStore(), duroxideClient: {} };
+            const chat = randomUUID();
+            await catalog.createSession(chat, { owner: PERSON });
+            const create = (id, yaml, operationId = `create-${id}`) => createWorkflowV2(host, { workflowSessionId: id, parentSessionId: chat, yaml,
+                actor: ACTOR, operationId, publish: true, refuseVersionReuse: true });
+            // As an earlier build wrote it: the claim's marker without the name, version and hashes.
+            const asEarlierBuild = id => catalog.pool.query(
+                `UPDATE "${env.cmsSchema}".sessions SET creation_config = creation_config #- '{workflowV2,name}' #- '{workflowV2,version}'
+                    #- '{workflowV2,yamlSha256}' #- '{workflowV2,irSha256}' WHERE session_id = $1`, [id]);
+            // A: claimed, then its worker stopped before the definition was stored.
+            const a = randomUUID();
+            const storeDefinition = host.store.createDefinition;
+            host.store.createDefinition = async () => { throw new Error("the worker stopped"); };
+            await expect(create(a, YAML("4.0.0", 30))).rejects.toThrow("the worker stopped");
+            delete host.store.createDefinition;
+            expect(host.store.createDefinition).toBe(storeDefinition);
+            await asEarlierBuild(a);
+            expect(await catalog.getSession(a)).not.toBeNull();
+            // B: other YAML at 4.0.0. A records no version, so B is created.
+            const b = randomUUID();
+            await create(b, YAML("4.0.0", 45));
+            // A's own request resumed: refused when its definition would be stored; it stays a claim without one.
+            const resumed = await refusedWith(create(a, YAML("4.0.0", 30)), "SEMVER_REUSED");
+            expect(resumed.details).toMatchObject({ version: "4.0.0", workflowId: b, state: "published" });
+            expect(resumed.message).toMatch(/Nothing was saved: the claim stays without a definition\.$/);
+            expect(await host.store.readDefinition(a)).toBeNull();
+            // A completed creation, its marker as an earlier build wrote it: its replay is answered from its receipt.
+            const c = randomUUID();
+            const first = await create(c, YAML("5.0.0", 30));
+            await asEarlierBuild(c);
+            const replay = await create(c, YAML("5.0.0", 30));
+            expect(replay.replayed).toBe(true);
+            expect(replay.receipt).toEqual(first.receipt);
+        } finally {
+            await catalog.close();
+        }
+    });
 });
