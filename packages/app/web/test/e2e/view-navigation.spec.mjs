@@ -59,6 +59,27 @@ async function fixture(page, themeId = 'terminal-green', width = 1600, {reviewPa
 }
 async function select(page, i) { await row(page, i).click(); await expect(main(page)).toContainText(`Session ${i}`); }
 
+test('reload at a deep-linked session preserves the saved history index', async ({page}) => {
+    await fixture(page);
+    await select(page, 1);
+    await select(page, 2);
+    await back(page).click();
+    await expect(main(page)).toContainText('Session 1');
+    await expect.poll(async () => (await saved(page)).entries[(await saved(page)).index].sessionId).toBe(sid(1));
+    const before = await saved(page);
+    await page.reload({ waitUntil: 'load' });
+    await expect(main(page)).toContainText('Session 1');
+    await expect.poll(async () => (await saved(page)).index).toBe(before.index);
+    expect((await saved(page)).entries).toEqual(before.entries);
+});
+
+test('API access-control errors outside navigation are not suppressed', async ({page}) => {
+    const f = await fixture(page);
+    const message = `Blocked ${new URL(base).host}/api/test due to access control checks.`;
+    await page.evaluate(message => { queueMicrotask(() => { throw new Error(message); }); }, message);
+    await expect.poll(() => f.errors).toContain(message);
+});
+
 test('session Back/Forward preserves drafts and branches after new navigation', async ({page}) => {
     const f = await fixture(page);
     await select(page, 1); await main(page).locator('textarea').fill('unfinished first draft');

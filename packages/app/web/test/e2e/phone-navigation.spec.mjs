@@ -128,3 +128,98 @@ test("a vertical scroll is not a swipe", async ({ page, context }) => {
     expect(await page.locator(".ps-workspace").evaluate(el => el.style.transform)).toBe("");
     expect(await page.evaluate(() => Object.entries(sessionStorage).filter(([k]) => k.startsWith("pilotswarm.view-history.v1:")))).toEqual(before);
 });
+
+const savedHistory = page => page.evaluate(() => {
+    const key = Object.keys(sessionStorage).find(k => k.startsWith("pilotswarm.view-history.v1:"));
+    return key ? JSON.parse(sessionStorage.getItem(key)) : null;
+});
+async function pageTouch(page, context) {
+    const cdp = await context.newCDPSession(page);
+    return (type, x) => cdp.send("Input.dispatchTouchEvent", {
+        type, touchPoints: type === "touchEnd" ? [] : [520, 600].map((y, id) => ({ x, y, id })),
+    });
+}
+
+test("two-finger touches on the page do not navigate under an open dialog", async ({ page, context }) => {
+    test.skip(browserName !== "chromium", "real touch events need the Chromium protocol");
+    await signedIn(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(base);
+    await historyReady(page);
+    await diagnostics(page).click();
+    await expect.poll(async () => (await savedHistory(page)).index).toBeGreaterThan(0);
+    const before = (await savedHistory(page)).index;
+    await page.evaluate(() => {
+        const dialog = document.createElement("div");
+        dialog.className = "ps-modal-backdrop";
+        dialog.id = "touch-dialog";
+        dialog.setAttribute("role", "dialog");
+        document.querySelector(".ps-workspace").appendChild(dialog);
+    });
+    const touch = await pageTouch(page, context);
+    await touch("touchStart", 80);
+    for (let x = 100; x <= 320; x += 20) await touch("touchMove", x);
+    await touch("touchEnd");
+    expect((await savedHistory(page)).index).toBe(before);
+    expect(await page.locator(".ps-workspace").evaluate(el => el.style.transform)).toBe("");
+    await page.evaluate(() => document.getElementById("touch-dialog").remove());
+    await touch("touchStart", 80);
+    for (let x = 100; x <= 320; x += 20) await touch("touchMove", x);
+    await touch("touchEnd");
+    await expect.poll(async () => (await savedHistory(page)).index).toBe(before - 1);
+});
+
+test("a second swipe within slide-out flushes the first exactly once", async ({ page, context }) => {
+    test.skip(browserName !== "chromium", "real touch events need the Chromium protocol");
+    await signedIn(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(base);
+    await historyReady(page);
+    await diagnostics(page).click();
+    await diagnostics(page).click();
+    await expect.poll(async () => (await savedHistory(page)).index).toBeGreaterThanOrEqual(2);
+    const before = (await savedHistory(page)).index;
+    await page.clock.install();
+    await page.clock.pauseAt(new Date());
+    const touch = await pageTouch(page, context);
+    await touch("touchStart", 80);
+    for (let x = 100; x <= 320; x += 20) await touch("touchMove", x);
+    await touch("touchEnd");
+    expect((await savedHistory(page)).index).toBe(before);
+    await page.clock.runFor(60);
+    await touch("touchStart", 80);
+    expect((await savedHistory(page)).index).toBe(before - 1);
+    for (let x = 100; x <= 320; x += 20) await touch("touchMove", x);
+    await touch("touchEnd");
+    await page.clock.runFor(160);
+    expect((await savedHistory(page)).index).toBe(before - 2);
+    await page.clock.runFor(600);
+    expect((await savedHistory(page)).index).toBe(before - 2);
+});
+
+test("two-finger back on a full-screen Markdown artifact moves only the preview", async ({ page, context }) => {
+    test.skip(browserName !== "chromium", "real touch events need the Chromium protocol");
+    await signedIn(page);
+    await page.route("**/artifacts/notes.md/text", route => route.fulfill({ json: { ok: true, result: { content: "# Notes\n\nA full-screen Markdown artifact.", contentType: "text/markdown" } } }));
+    await page.route("**/artifacts/notes.md/meta", route => route.fulfill({ json: { ok: true, result: { filename: "notes.md", contentType: "text/markdown", sizeBytes: 80, isBinary: false } } }));
+    const id = "11111110-2222-3333-4444-555555555550";
+    const view = { mode: "workspace", sessionId: id, canvasOpen: false, canvasSlot: 1, canvasMaximized: false, canvasZen: false, diagnosticsOpen: false, artifactSessionId: null, artifactFilename: null, artifactFullscreen: false, mobilePane: "workspace" };
+    await page.addInitScript(([view, id]) => {
+        sessionStorage.setItem('pilotswarm.view-history.v1:["none","test"]', JSON.stringify({ version: 1, index: 1, entries: [
+            view, { ...view, artifactSessionId: id, artifactFilename: "notes.md", artifactFullscreen: true },
+        ] }));
+    }, [view, id]);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(base + `/?session=${id}&artifact=notes.md&view=full`);
+    const overlay = page.locator(".ps-artifact-overlay");
+    await expect(overlay).toContainText("A full-screen Markdown artifact.");
+    const before = (await savedHistory(page)).index;
+    const touch = await pageTouch(page, context);
+    await touch("touchStart", 80);
+    for (let x = 100; x <= 320; x += 20) await touch("touchMove", x);
+    await expect.poll(() => overlay.evaluate(el => el.style.transform)).toContain("translate3d(");
+    expect(await page.locator(".ps-workspace").evaluate(el => el.style.transform)).toBe("");
+    await touch("touchEnd");
+    await expect(overlay).toHaveCount(0);
+    expect((await savedHistory(page)).index).toBe(before - 1);
+});

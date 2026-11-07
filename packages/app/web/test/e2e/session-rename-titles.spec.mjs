@@ -32,7 +32,23 @@ test("a renamed agent session leads with the person's title in the list and the 
         return route.fulfill({ response });
     });
 
-    test("Manage keeps the catalog prefix outside the 100-character input and saves only the editable title", async ({ page }) => {
+    // The session's own detail read must agree, or it overwrites the row.
+    await page.route((url) => /\/api\/.*\/sessions\/11111111-[^/]+$/.test(url.pathname), async (route) => {
+        if (route.request().method() !== "GET") return route.fallback();
+        const response = await route.fetch();
+        const json = await response.json().catch(() => null);
+        if (!json?.result || typeof json.result !== "object") return route.fulfill({ response });
+        return route.fulfill({ response, json: { ...json, result: { ...json.result, agentId: "deepwiki", title: `DeepWiki Code Explorer: ${TITLE}` } } });
+    });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(base);
+    const row = page.locator(".ps-session-list-button", { hasText: "Investigate the nightly" }).first();
+    await expect(row).toContainText(`${TITLE} · DeepWiki Code Explorer`);
+    await row.click();
+    await expect(page.locator(".ps-chat-panel .ps-panel-title, .ps-chat-pane .ps-panel-title").first()).toContainText(`${TITLE} · DeepWiki Code Explorer`);
+});
+
+test("Manage keeps the catalog prefix outside the 100-character input and saves only the editable title", async ({ page }) => {
         const id = "11111111-2222-3333-4444-555555555551";
         let title = "Ops: Fleet Watcher: nightly";
         let readsAfterSave = 0;
@@ -69,19 +85,4 @@ test("a renamed agent session leads with the person's title in the list and the 
         await expect.poll(() => writes).toEqual([{ title: "morning sweep" }]);
         await expect.poll(() => readsAfterSave).toBeGreaterThan(0);
         await expect(row).toContainText("morning sweep");
-    });
-    // The session's own detail read must agree, or it overwrites the row.
-    await page.route((url) => /\/api\/.*\/sessions\/11111111-[^/]+$/.test(url.pathname), async (route) => {
-        if (route.request().method() !== "GET") return route.fallback();
-        const response = await route.fetch();
-        const json = await response.json().catch(() => null);
-        if (!json?.result || typeof json.result !== "object") return route.fulfill({ response });
-        return route.fulfill({ response, json: { ...json, result: { ...json.result, agentId: "deepwiki", title: `DeepWiki Code Explorer: ${TITLE}` } } });
-    });
-    await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto(base);
-    const row = page.locator(".ps-session-list-button", { hasText: "Investigate the nightly" }).first();
-    await expect(row).toContainText(`${TITLE} · DeepWiki Code Explorer`);
-    await row.click();
-    await expect(page.locator(".ps-chat-panel .ps-panel-title, .ps-chat-pane .ps-panel-title").first()).toContainText(`${TITLE} · DeepWiki Code Explorer`);
 });

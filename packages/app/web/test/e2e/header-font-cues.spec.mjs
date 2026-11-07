@@ -1,0 +1,120 @@
+import { test, expect } from "@playwright/test";
+import { startStubServer } from "./stub-server.mjs";
+
+test.use({ browserName: process.env.PS_TEST_BROWSER || "chromium" });
+let stub, base;
+test.beforeAll(async () => {
+    stub = await startStubServer(0, { sessionCount: 3, transcriptTurns: 8 });
+    base = `http://127.0.0.1:${stub.port}`;
+});
+test.afterAll(async () => { await new Promise(resolve => stub.server.close(resolve)); });
+const sid = i => `1111111${i}-2222-3333-4444-55555555555${i}`;
+
+test("the desktop toolbar changes from two rows to one at 1040 container pixels", async ({ page }) => {
+    await page.setViewportSize({ width: 1800, height: 1000 });
+    await page.goto(base);
+    const slot = page.locator(".portal-header-slot");
+    const toolbar = slot.locator(".ps-toolbar:not(.is-mobile)");
+    await expect(toolbar).toBeVisible();
+    for (const [width, rows] of [[1039, 2], [1041, 1]]) {
+        await slot.evaluate((el, width) => {
+            el.style.flex = `0 0 ${width}px`;
+            el.style.width = `${width}px`;
+        }, width);
+        expect(Math.round((await slot.boundingBox()).width)).toBe(width);
+        await expect.poll(() => toolbar.evaluate(el => getComputedStyle(el).gridTemplateRows.split(" ").length)).toBe(rows);
+    }
+});
+
+test("code uses the bundled mono face and loadingdone remeasures pane columns", async ({ page }) => {
+    const externalFonts = [];
+    page.on("request", req => {
+        if (req.resourceType() === "font" && new URL(req.url()).origin !== base) externalFonts.push(req.url());
+    });
+    await page.goto(base + `/?session=${sid(0)}`);
+    const code = page.locator(".ps-chat-panel code").first();
+    await expect(code).toBeVisible();
+    const font = await code.evaluate(el => getComputedStyle(el).fontFamily);
+    expect(font).toMatch(/^"PS JetBrains Mono"/);
+    const faces = await page.evaluate(async () => {
+        await document.fonts.ready;
+        await document.fonts.load('14px "PS JetBrains Mono"');
+        return [...document.fonts].filter(face => face.family.includes("PS JetBrains Mono")).map(face => face.status);
+    });
+    expect(faces.length).toBeGreaterThan(0);
+    expect(faces).toContain("loaded");
+    expect(externalFonts).toEqual([]);
+    const css = await page.locator('link[rel="stylesheet"]').first().evaluate(async el => (await fetch(el.href)).text());
+    expect(css).toMatch(/font-family:["']?PS JetBrains Mono/);
+    expect(css).toMatch(/data:font\/woff2;base64/);
+    // Observe the real measurement primitive, not a product-only test hook.
+    await page.evaluate(() => {
+        window.columnProbes = 0;
+        const original = Element.prototype.getBoundingClientRect;
+        Element.prototype.getBoundingClientRect = function (...args) {
+            if (this.tagName === "SPAN" && this.textContent === "0".repeat(100)) window.columnProbes++;
+            return original.apply(this, args);
+        };
+        document.fonts.dispatchEvent(new Event("loadingdone"));
+    });
+    await expect.poll(() => page.evaluate(() => window.columnProbes)).toBeGreaterThan(0);
+});
+
+async function soundFixture(page) {
+    await page.addInitScript(() => {
+        window.audioNotes = [];
+        const param = () => ({ value: 0, cancelScheduledValues() {}, setTargetAtTime() {}, setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} });
+        const node = extra => ({ connect() {}, disconnect() {}, ...extra });
+        class AudioContext {
+            constructor() { this.sampleRate = 100; this.currentTime = 0; this.state = "running"; this.destination = node(); }
+            createGain() { return node({ gain: param() }); }
+            createDynamicsCompressor() { return node({ threshold: param(), knee: param(), ratio: param(), attack: param(), release: param() }); }
+            createBuffer(_channels, length) { return { length, getChannelData: () => new Float32Array(length) }; }
+            createBufferSource() { return node({ start() {}, stop() {} }); }
+            createBiquadFilter() { return node({ frequency: param(), Q: param() }); }
+            createConvolver() { return node(); }
+            createOscillator() {
+                let at = 0;
+                const osc = node({ frequency: param(), detune: param(), start(time) { at = time; }, stop(end) {
+                    if (end !== undefined) window.audioNotes.push({ frequency: osc.frequency.value, duration: end - at });
+                } });
+                return osc;
+            }
+            resume() { return Promise.resolve(); }
+            close() { return Promise.resolve(); }
+        }
+        window.AudioContext = AudioContext;
+    });
+    await page.route("**/api/v1/me/profile", route => route.fulfill({ json: { ok: true, result: {
+        profileSettings: { themeId: "horizon-dawn", themeSound: { on: true, volume: 40 } },
+    } } }));
+    await page.goto(base + `/?session=${sid(0)}`);
+    await expect(page.locator(".ps-chat-panel textarea")).toBeVisible();
+    await expect.poll(() => page.evaluate(() => window.audioNotes.length)).toBeGreaterThan(0);
+}
+const cueNotes = (page, name) => page.evaluate(name => window.audioNotes.filter(note => {
+    if (name === "tick") return note.frequency >= 2300 && note.frequency <= 2800 && note.duration < 0.2;
+    if (name === "send") return note.frequency === 880 && note.duration < 1;
+    return note.frequency === 293.66 && note.duration < 3;
+}).length, name);
+
+test("an empty Send has no cue, while an enabled tab ticks", async ({ page }) => {
+    await soundFixture(page);
+    const sends = await cueNotes(page, "send");
+    await page.locator(".ps-chat-panel .ps-send-button").click();
+    expect(await cueNotes(page, "send")).toBe(sends);
+    const ticks = await cueNotes(page, "tick");
+    await page.getByRole("tab", { name: "Activity", exact: true }).first().click();
+    await expect.poll(() => cueNotes(page, "tick")).toBeGreaterThan(ticks);
+    await page.locator(".ps-chat-panel textarea").fill("a real outgoing message");
+    await page.locator(".ps-chat-panel .ps-send-button").click();
+    await expect.poll(() => cueNotes(page, "send")).toBeGreaterThan(sends);
+});
+
+test("a transition from another session's running turn to an idle session does not chime", async ({ page }) => {
+    await soundFixture(page);
+    const done = await cueNotes(page, "done");
+    await page.locator(`.ps-session-list-button[data-session-id="${sid(1)}"]`).click();
+    await expect(page.locator(".ps-chat-panel .ps-panel-title").first()).toContainText("Session 1");
+    expect(await cueNotes(page, "done")).toBe(done);
+});

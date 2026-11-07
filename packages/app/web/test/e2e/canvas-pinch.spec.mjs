@@ -167,3 +167,95 @@ test("no two-finger navigation while a dialog is open", async ({ page }) => {
     await forgedSwipe(frame);
     await expect(layer).toHaveClass(/is-hidden/);
 });
+
+const liveCanvas = page => page.locator(".ps-mobile-canvas-layer iframe.ps-html-preview-frame:not(.is-staging)");
+const postPinch = (frame, messages) => frame.evaluate(async messages => {
+    for (const message of messages) {
+        parent.postMessage({ type: "canvas-pinch", t: performance.timeOrigin + performance.now(), ...message }, "*");
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
+}, messages);
+const scaleCanvas = (frame, d = 200, next = 400) => postPinch(frame, [
+    { phase: "start", x: 150, y: 180, d },
+    { phase: "move", x: 150, y: 180, d: next },
+]);
+
+test("pinch below 1.08 snaps back rather than leaving a tiny magnification", async ({ page }) => {
+    const { frame } = await openCanvasWithHistory(page);
+    await scaleCanvas(frame, 200, 213);
+    await expect.poll(() => liveCanvas(page).evaluate(el => el.style.transform)).toContain("scale(1.065)");
+    await postPinch(frame, [{ phase: "end" }]);
+    await expect.poll(() => liveCanvas(page).evaluate(el => el.style.transform)).toBe("");
+});
+
+for (const invalid of ["non-finite", "outside"]) {
+    test(`a pinch with a ${invalid} start cannot magnify the canvas`, async ({ page }) => {
+        const { frame } = await openCanvasWithHistory(page);
+        const x = invalid === "outside" ? -40 : Infinity;
+        await postPinch(frame, [
+            { phase: "start", x, y: 180, d: 200 },
+            { phase: "move", x: 150, y: 180, d: 400 },
+            { phase: "end" },
+        ]);
+        expect(await liveCanvas(page).evaluate(el => el.style.transform)).toBe("");
+        // A valid gesture proves the bridge is live, not silently inactive.
+        await scaleCanvas(frame);
+        await expect.poll(() => liveCanvas(page).evaluate(el => el.style.transform)).toContain("scale(2)");
+    });
+}
+
+test("changing canvas zoom clears pinch translation and magnification", async ({ page }) => {
+    const { frame } = await openCanvasWithHistory(page);
+    await scaleCanvas(frame);
+    await postPinch(frame, [{ phase: "end" }]);
+    await expect.poll(() => liveCanvas(page).evaluate(el => el.style.transform)).toContain("scale(2)");
+    await page.locator(".ps-mobile-canvas-layer").getByRole("button", { name: "Zoom in", exact: true }).click();
+    await expect.poll(() => liveCanvas(page).evaluate(el => el.style.transform)).not.toContain("translate(");
+    await expect(liveCanvas(page)).not.toHaveCSS("transform", "none");
+    await expect(page.locator(".ps-mobile-canvas-layer .ps-canvas-pinch-reset")).toHaveCount(0);
+});
+
+test("a new canvas revision starts with no pinch transform", async ({ page }) => {
+    const { frame } = await openCanvasWithHistory(page);
+    await scaleCanvas(frame);
+    await postPinch(frame, [{ phase: "end" }]);
+    await expect.poll(() => liveCanvas(page).evaluate(el => el.style.transform)).toContain("scale(2)");
+    await page.route("**/api/v1/**/events-before?**", route => {
+        if (!route.request().url().includes("session.canvas_updated")) return route.fallback();
+        return route.fulfill({ json: { ok: true, result: [{ seq: 2, eventType: "session.canvas_updated", data: { slot: 1, rev: 2, sizeBytes: PAGE.length, name: "revision-two" } }] } });
+    });
+    await expect(page.locator(".ps-mobile-canvas-layer")).toContainText("revision-two", { timeout: 20_000 });
+    await expect.poll(() => liveCanvas(page).evaluate(el => el.style.transform)).toBe("");
+});
+
+for (const manual of [false, true]) {
+    test(`landscape maximizes the phone canvas and portrait respects a prior full-screen choice (manual=${manual})`, async ({ page }) => {
+        await openCanvasWithHistory(page);
+        const layer = page.locator(".ps-mobile-canvas-layer");
+        await expect(layer).not.toHaveClass(/is-maximized/);
+        if (manual) await layer.getByRole("button", { name: "Maximize canvas", exact: true }).click();
+        await page.setViewportSize({ width: 844, height: 390 });
+        await expect(layer).toHaveClass(/is-maximized/);
+        await page.setViewportSize({ width: 390, height: 844 });
+        if (manual) await expect(layer).toHaveClass(/is-maximized/);
+        else await expect(layer).not.toHaveClass(/is-maximized/);
+    });
+}
+
+test("two-finger back on a maximized canvas moves the full-screen layer, not the workspace", async ({ page, context }) => {
+    test.skip(browserName !== "chromium", "multi-touch input needs the Chromium protocol");
+    await openCanvasWithHistory(page);
+    const layer = page.locator(".ps-mobile-canvas-layer");
+    await layer.getByRole("button", { name: "Maximize canvas", exact: true }).click();
+    await expect(layer).toHaveClass(/is-maximized/);
+    const box = await liveCanvas(page).boundingBox();
+    const cy = box.y + box.height / 2;
+    const cdp = await context.newCDPSession(page);
+    const touch = (type, x) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [cy - 40, cy + 40].map((y, id) => ({ x, y, id })) });
+    await touch("touchStart", 80);
+    for (let x = 100; x <= 280; x += 20) await touch("touchMove", x);
+    await expect.poll(() => layer.evaluate(el => el.style.transform)).toContain("translate3d(");
+    expect(await page.locator(".ps-workspace").evaluate(el => el.style.transform)).toBe("");
+    await touch("touchEnd");
+    await expect(layer).toHaveClass(/is-hidden/);
+});
