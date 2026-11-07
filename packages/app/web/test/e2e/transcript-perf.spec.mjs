@@ -80,7 +80,7 @@ test("re-laying out the chat pane stays cheap on a long transcript", async ({ pa
     const blocks = await page.locator(".ps-chat-panel .ps-line").count();
     expect(blocks, "expected a long transcript to measure against").toBeGreaterThan(100);
 
-    const { ms, reference } = await page.evaluate(() => {
+    const { ms, reference, samples } = await page.evaluate(() => {
         const relayout = (node) => {
             const t0 = performance.now();
             node.style.width = `${node.clientWidth - 9}px`;
@@ -100,15 +100,20 @@ test("re-laying out the chat pane stays cheap on a long transcript", async ({ pa
         for (const line of lines) { const d = document.createElement("div"); d.textContent = line.textContent; ref.appendChild(d); }
         document.body.appendChild(ref);
         void ref.offsetHeight;
-        const reference = Math.min(relayout(ref), relayout(ref), relayout(ref));
+        relayout(ref); relayout(panel);
+        const samples = { reference: [], panel: [] };
+        for (let i = 0; i < 7; i++) {
+            samples.reference.push(relayout(ref));
+            samples.panel.push(relayout(panel));
+        }
         ref.remove();
-        return { ms: Math.min(relayout(panel), relayout(panel), relayout(panel)), reference };
+        return { ms: Math.min(...samples.panel), reference: Math.min(...samples.reference), samples };
     });
-    console.log(`TRANSCRIPT-PERF ${JSON.stringify({ browser: process.env.PS_TEST_BROWSER || "chromium", ms, reference, ratio: ms / reference, blocks })}`);
-    // Twenty runs per browser on the suite pod, two workers and 1,650 lines:
-    // the peak portal/reference ratios were 3.99 and 4.25. The 4.3 ceiling
-    // is the next one-decimal value above every observation. The reference
-    // keeps this relative to the machine rather than fixing a millisecond limit.
+    console.log(`TRANSCRIPT-PERF ${JSON.stringify({ browser: process.env.PS_TEST_BROWSER || "chromium", ms, reference, ratio: ms / reference, blocks, samples })}`);
+    // Warm both layouts, then alternate seven reference/panel pairs. Separate
+    // sampling windows can expose only the panel to a later scheduling burst.
+    // The reference keeps the ceiling relative to this machine rather than
+    // fixing a millisecond limit.
     //
     // The ceiling is a REGRESSION CEILING relative to this machine: it catches
     // the cost going up several-fold, which is what an accidental re-layout of
