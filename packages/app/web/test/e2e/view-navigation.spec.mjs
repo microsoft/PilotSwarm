@@ -454,6 +454,9 @@ async function headerGeometry(page) {
 const geometryCases = ['rust','terminal-green','win95','winamp','ms-dos'].flatMap(theme => [1920,1280,921].map(width => ({theme,width})));
 geometryCases.push({theme:'terminal-green',width:1600}, {theme:'terminal-green',width:1024}, {theme:'rust',width:1440,admin:true,touchScale:true}, {theme:'win95',width:1024,admin:true,touchScale:true});
 for (const {theme,width,admin=false,touchScale=false} of geometryCases) test(`${theme} ${width}px: identical navigation coordinates across desktop screens`, async ({page}) => {
+    // Eleven screens and two screenshots can exhaust WebKit's whole-test
+    // budget under suite load. Individual geometry assertions remain at 5 s.
+    if (process.env.PS_TEST_BROWSER === 'webkit') test.setTimeout(60_000);
     await page.route('**/api/v1/**', async route => {
         const url=new URL(route.request().url());
         if(url.pathname.endsWith('/events-before') && url.search.includes('session.canvas_updated')) return route.fulfill({json:{ok:true,result:[1,2].map(slot=>({seq:slot,eventType:'session.canvas_updated',data:{slot,rev:1,sizeBytes:128,name:`Long canvas display name for slot ${slot}`}}))}});
