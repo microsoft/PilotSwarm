@@ -12259,7 +12259,10 @@ textarea.ps-link-input {
   pointer-events: none;
   background-image: var(--dawn-mountains-front), var(--dawn-mountains-back), var(--dawn-orion), var(--dawn-sky);
   background-size: 100% 100%, 100% 100%, 300px 100px, 2000px 100px;
-  background-position: center bottom, center bottom, left 400px top, left top;
+  /* Orion sits midway between the brand (ends at about 154 px) and the
+     middle buttons (they start at 50vw - 147 px): its stars centre 145 px
+     into its tile. */
+  background-position: center bottom, center bottom, left calc(25vw - 142px) top, left top;
   background-repeat: no-repeat, no-repeat, no-repeat, repeat;
 }
 :root[data-ps-theme="horizon-dawn"] :is(.portal-header-brand, .portal-header-slot) {

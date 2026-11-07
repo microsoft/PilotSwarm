@@ -55,6 +55,27 @@ test("desktop: no words in the scenery, a compact header, and every layer from t
     expect(failed).toEqual([]);
 });
 
+for (const width of [1920, 1600, 1440]) test(`desktop ${width}px: Orion sits between the brand and the middle buttons`, async ({ page }) => {
+    await openTheme(page, { width, height: 900 });
+    const gap = await page.evaluate(() => {
+        const header = document.querySelector(".portal-header");
+        const brand = document.querySelector(".portal-header-brand").getBoundingClientRect();
+        const nav = document.querySelector(".portal-header .ps-toolbar-navigation").getBoundingClientRect();
+        // The constellation layer's x offset, resolved in px by a probe; its stars span 117-174 px of the tile.
+        const x = getComputedStyle(header, "::before").backgroundPosition.split(",")[2].trim().split(/\s(?![^(]*\))/)[0];
+        const probe = document.createElement("div");
+        probe.style.cssText = `position:absolute;left:0;width:${x}`;
+        header.append(probe);
+        const left = header.getBoundingClientRect().left + probe.getBoundingClientRect().width;
+        probe.remove();
+        return { brandRight: brand.right, navLeft: nav.left, first: left + 117, last: left + 174 };
+    });
+    expect(gap.first).toBeGreaterThan(gap.brandRight + 40);
+    expect(gap.last).toBeLessThan(gap.navLeft - 40);
+    const middle = (gap.first + gap.last) / 2, wanted = (gap.brandRight + gap.navLeft) / 2;
+    expect(Math.abs(middle - wanted)).toBeLessThan(40);
+});
+
 test("state signals survive the theme: focused pane, focused composer, pressed toggle, current tab", async ({ page }) => {
     await openTheme(page, { width: 1440, height: 900 });
     const states = await page.evaluate(() => {
