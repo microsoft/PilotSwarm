@@ -55,7 +55,11 @@ export function useViewNavigation(controller, moa) {
         const key = `pilotswarm.view-history.v1:${scope}`;
         let saved; try { saved = sessionStorage.getItem(key); } catch {}
         const history = createViewHistory(saved);
-        history.visit(capture(controller, latest.current));
+        // On a reload the deep-linked session is still loading: a workspace
+        // with no session yet is not a place, and recording it would push the
+        // saved history one step back. The next gesture records the real view.
+        const first = capture(controller, latest.current);
+        if (!history.current || first.mode !== "workspace" || first.sessionId) history.visit(first);
         data.current = { key, history }; publish();
         return () => { generation.current++; data.current = null; };
     }, [controller, scope, publish]);
