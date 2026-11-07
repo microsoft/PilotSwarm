@@ -390,4 +390,18 @@ describe("Base V2 adversarial policy boundaries", () => {
         expect(v2).toContain("Follow the base and selected workflow instructions");
         expect(v2).not.toContain("If a specialist fits, prefer spawn_agent");
     });
+
+    it("tells V2 agents to keep verbose, verdict-shaped work in native tasks and to run them in parallel", () => {
+        const guidance = nativeSubagentGuidance(undefined, "v2");
+        expect(guidance).toContain("keep verbose, verdict-shaped work out of your own context");
+        expect(guidance).toContain("Ask for a short verdict, the evidence");
+        expect(guidance).toContain("A task call runs alongside the other tool calls in the same response.");
+        expect(guidance.split("## Native local delegation")).toHaveLength(2);
+        const base = baseAgentInstructions({ version: "v2" }, "legacy");
+        expect(base).toContain("Your context is the scarcest resource in a long session.");
+        expect(base).toContain("Ask for a verdict with evidence pointers, not the raw output.");
+        expect(base).toContain("Issue independent native tasks and other tool calls in the same response so they run in parallel.");
+        // V1 keeps its own wording.
+        expect(nativeSubagentGuidance(undefined, "v1")).not.toContain("verdict-shaped work");
+    });
 });

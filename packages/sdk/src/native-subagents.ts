@@ -75,6 +75,10 @@ export const NATIVE_SUBAGENT_GUIDANCE_V2 = `
 ## Native local delegation
 Native task(agent_type="swarm-explore", mode="sync") performs bounded investigation;
 task(agent_type="swarm-task", mode="sync") performs bounded commands or builds.
+Use them to keep verbose, verdict-shaped work out of your own context: test runs and failure triage,
+log or diff reading, searches, debug loops, screenshot checks. Ask for a short verdict, the evidence
+(file:line, counts, artifact paths) and what remains uncertain.
+A task call runs alongside the other tool calls in the same response.
 Native tasks run on the immediate parent's worker, share its files and turn budget, and return results directly.
 They are not independent durable sessions. Follow the base and selected workflow instructions when choosing direct, native or durable execution.
 Provide the objective, relevant instructions, exact scope, input/artifact locations and expected evidence.
