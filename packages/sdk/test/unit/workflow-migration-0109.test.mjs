@@ -18,7 +18,7 @@ const flat = (sql) => sql.replace(/\s+/g, " ");
 test("0109 only replaces the chat-ended function (0110, the run's agent models, follows it)", () => {
     const list = CMS_MIGRATIONS("s");
     assert.deepEqual(list.find(item => item.version === "0109"), { version: "0109", name: "workflow_chat_ended_lock_order", sql: workflowChatEndedLockOrderMigration("s") });
-    assert.deepEqual(list.slice(-2).map(item => item.version), ["0109", "0110"]);
+    assert.equal(list[list.findIndex(item => item.version === "0109") + 1]?.version, "0110");
     const sql = flat(workflowChatEndedLockOrderMigration("s"));
     assert.equal((sql.match(/CREATE OR REPLACE FUNCTION/g) ?? []).length, 1);
     assert.match(sql, /CREATE OR REPLACE FUNCTION "s"\.workflow_v2_on_chat_ended\(\) RETURNS TRIGGER/);

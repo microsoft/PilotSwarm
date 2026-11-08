@@ -22,6 +22,7 @@ import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { DATABASE_URL, TEST_SCHEMA_PREFIX, useSuiteEnv } from "../helpers/local-env.js";
+import { cmsVersionsAfter } from "../helpers/cms-versions.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { CMS_MIGRATIONS } from "../../src/cms-migrations.ts";
 import { runMigrations } from "../../src/pg-migrator.ts";
@@ -121,7 +122,9 @@ describe("workflow v2 data from an earlier build", () => {
         try {
             await catalog.initialize();
             const after = (await q("SELECT version FROM SCHEMA.schema_migrations ORDER BY version")).rows.map(row => row.version);
-            expect(after).toEqual([...before, "0090", "0091", "0092", "0093", "0094", "0095", "0096", "0097", "0098", "0099", "0100", "0101", "0102", "0103", "0104", "0105", "0106", "0107", "0108", "0109", "0110"]);
+            // Every registered migration after 0089, 0090 (the creation function) first.
+            expect(cmsVersionsAfter("0089")[0]).toBe("0090");
+            expect(after).toEqual([...before, ...cmsVersionsAfter("0089")]);
             expect(await has()).toEqual({ fn: 1, trigger: 1 });
             const store = catalog.workflowStore();
             expect((await store.readDefinition(id)).state).toBe("published");

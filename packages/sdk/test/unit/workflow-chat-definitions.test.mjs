@@ -108,7 +108,7 @@ test("migration 0107: registered before 0108; one live definition per name; the 
     const at = list.findIndex(item => item.version === "0107");
     assert.equal(list[at].name, "workflow_chat_definitions");
     // Stage 2.3: 0108 (package definitions) follows it; stage 2 review: 0109 (the chat-ended trigger's lock order).
-    assert.deepEqual(list.slice(at + 1).map(item => item.version), ["0108", "0109", "0110"]);
+    assert.deepEqual(list.slice(at + 1, at + 3).map(item => item.version), ["0108", "0109"]);
     const sql = workflowChatDefinitionsMigration("s");
     assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS workflow_chat_definitions_live_name\s+ON "s"\.workflow_chat_definitions \(owner_session_id, name\) WHERE deleted_at IS NULL;/);
     assert.match(sql, /CONSTRAINT workflow_chat_revisions_valid_ir CHECK \(valid = \(ir IS NOT NULL AND ir_sha256 IS NOT NULL\)\)/);
