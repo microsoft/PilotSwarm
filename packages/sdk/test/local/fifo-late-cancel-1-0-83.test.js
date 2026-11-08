@@ -407,3 +407,61 @@ describe("so4b F2: a set_model the pre-dispatch sweep handles keeps the queued p
         expect(after.fifo()).toEqual([]);
     });
 });
+
+describe("so4b same-pass order: a prompt cancelled in the pass that took it leaves to a later prompt what that one carries", () => {
+    const tracked = () => harness({ subAgents: [{ orchId: "agent-x", sessionId: "child-x", task: "watch", status: "running" }] });
+    const update = (type, text) => ({ prompt: `[CHILD_UPDATE from=child-x type=${type}]\n${text}` });
+
+    it("progress taken by C, completed taken by D, C cancelled in the same pass: no progress entry comes after D's completed", () => {
+        const h = tracked();
+        h.messages.push(
+            update("progress", "X-PROGRESS"),
+            { prompt: "pC please", clientMessageIds: ["pC"] },
+            update("completed", "X-COMPLETED"),
+            { prompt: "pD please", clientMessageIds: ["pD"] },
+            { cancelPending: ["pC"] },
+        );
+        h.drive(drain(h.runtime));
+        expect(h.fifo().map(item => item.clientMessageIds)).toEqual([["pD"]]);
+        // C's progress note is not given back to come after D's completed.
+        expect(h.runtime.state.pendingChildDigest?.updates.some(u => u.sessionId === "child-x") ?? false).toBe(false);
+        h.run({ turnCount: 2, fireTimers: true });
+        expect(turnText(h.turns[0])).toContain("pD please");
+        expect(count(delivered(h), "X-COMPLETED")).toBe(1);
+        expect(delivered(h)).not.toContain("X-PROGRESS");
+    });
+
+    it("completed taken by C, progress taken by D, C cancelled in the same pass: completed still reaches the parent", () => {
+        const h = tracked();
+        h.messages.push(
+            update("completed", "X-COMPLETED"),
+            { prompt: "pC please", clientMessageIds: ["pC"] },
+            update("progress", "X-PROGRESS"),
+            { prompt: "pD please", clientMessageIds: ["pD"] },
+            { cancelPending: ["pC"] },
+        );
+        h.drive(drain(h.runtime));
+        expect(h.runtime.state.pendingChildDigest?.updates.map(u => [u.sessionId, u.updateType])).toEqual([["child-x", "completed"]]);
+        h.run({ turnCount: 2, fireTimers: true });
+        expect(count(delivered(h), "X-COMPLETED")).toBe(1);
+        expect(count(delivered(h), "X-PROGRESS")).toBe(1);
+    });
+});
+
+describe("so4b decide-merge: a dropped prompt's notice is not given back when the turn being dispatched carries one", () => {
+    it("the dispatched prompt and the cancelled one behind it each carry a hand-off's notice: the turn says it once, and no later turn again", () => {
+        const SECOND = `${NOTE} (second hand-off)`;
+        const h = harness({ needsHydration: true, blobEnabled: true });
+        appendToFifo(h.runtime, [
+            { kind: "prompt", prompt: `p0 first\n\n[SYSTEM: ${NOTE}\n]`, bootstrap: false, clientMessageIds: ["p0"], carriedRehydrationMessage: NOTE },
+            { kind: "prompt", prompt: `p1 please\n\n[SYSTEM: ${SECOND}\n]`, bootstrap: false, clientMessageIds: ["p1"], carriedRehydrationMessage: SECOND },
+        ]);
+        h.runtime.state.cancelledMessageIds.add("p1");
+        h.run({ turnCount: 1 });
+        expect(turnText(h.turns[0])).toContain("p0 first");
+        expect(turnText(h.turns[0])).not.toContain("p1 please");
+        expect(h.runtime.state.pendingRehydrationMessage).toBeUndefined();
+        h.run({ turnCount: 2, fireTimers: true });
+        expect(count(delivered(h), "REHYDRATED-NOTE")).toBe(1);
+    });
+});

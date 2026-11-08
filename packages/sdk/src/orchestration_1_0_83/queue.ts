@@ -399,23 +399,48 @@ interface CarriedWork {
     rehydrationMessage?: string;
 }
 
+/**
+ * 1.0.83 (formal finding so4b, same-pass order): what a later prompt carries
+ * is left to it, as at a late give-back (giveBackDroppedPromptWork). `stash`
+ * is the pass's prompts in order; the ones after a given-back prompt that are
+ * not given back too will be queued after it, so their entries are newer: a
+ * child's entry is not given back when one of them carries an entry for that
+ * child of the same or a higher rank. The notice is not given back when one
+ * of them, or a prompt already queued (its marker), carries one. Queued
+ * prompts came before this pass's, so their entries are older and never
+ * count for the digest.
+ */
 function giveBackCarriedWork(
     runtime: DurableSessionRuntime,
     carriedByItem: Map<any, CarriedWork>,
     items: any[],
     chronology: (entry: PendingChildDigest["updates"][number]) => number,
+    stash: readonly any[],
 ): void {
     const { ctx, state } = runtime;
+    const queuedNotice = queuedFifoItems(runtime).some((other) => other?.kind === "prompt" && typeof other.carriedRehydrationMessage === "string");
     for (const item of items) {
         const carried = carriedByItem.get(item);
         if (!carried) continue;
+        const index = stash.indexOf(item);
+        const laterWork = (index < 0 ? [] : stash.slice(index + 1))
+            .filter((other) => !items.includes(other))
+            .map((other) => carriedByItem.get(other))
+            .filter((work): work is CarriedWork => work !== undefined);
         carriedByItem.delete(item);
         if (carried.digest) {
-            restorePendingChildDigest(runtime, carried.digest, chronology);
-            ctx.traceInfo(`[drain] a prompt that was not queued gave back the child digest it carried (${carried.digest.updates.length} update(s))`);
+            const laterEntries = laterWork.flatMap((work) => work.digest?.updates ?? []);
+            const kept = carried.digest.updates.filter((entry) => !laterEntries.some((next) =>
+                next.sessionId === entry.sessionId && childUpdateRank(next.updateType) >= childUpdateRank(entry.updateType)));
+            if (kept.length > 0) restorePendingChildDigest(runtime, { ...carried.digest, updates: kept }, chronology);
+            ctx.traceInfo(`[drain] a prompt that was not queued gave back the child digest it carried (${kept.length} update(s); ${carried.digest.updates.length - kept.length} a later prompt carries)`);
         }
         if (carried.rehydrationMessage !== undefined && state.pendingRehydrationMessage === undefined) {
-            state.pendingRehydrationMessage = carried.rehydrationMessage;
+            if (queuedNotice || laterWork.some((work) => work.rehydrationMessage !== undefined)) {
+                ctx.traceInfo(`[drain] a prompt that was not queued left its rehydration notice to a later or queued prompt that carries one`);
+            } else {
+                state.pendingRehydrationMessage = carried.rehydrationMessage;
+            }
         }
     }
 }
@@ -452,9 +477,10 @@ function carriedChildDigestOf(value: unknown): PendingChildDigest | null {
 
 /**
  * 1.0.83 (formal finding so4b F1a): when a child update was observed
- * (bufferChildUpdate sets observedAtMs on every entry). An entry without a
- * time counts as older than every timed one; between two such entries the
- * pending one counts as newer, as before.
+ * (bufferChildUpdate sets observedAtMs on every entry; carriedChildDigestOf
+ * does not check it). An entry without a time counts as older than every
+ * timed one. On an equal time the pending entry counts as newer
+ * (restorePendingChildDigest's >=), as before.
  */
 function observedChronology(entry: PendingChildDigest["updates"][number]): number {
     return typeof entry?.observedAtMs === "number" && Number.isFinite(entry.observedAtMs) ? entry.observedAtMs : 0;
@@ -470,11 +496,15 @@ function observedChronology(entry: PendingChildDigest["updates"][number]): numbe
  * (so4b F1b): a prompt among them that carries the notice delivers it, so it
  * is not given back; and a child's entry is not given back when a prompt
  * among them carries a later entry for that child of the same or a higher
- * rank (a lifecycle update is never dropped for a later progress note). A
- * prompt whose marker was dropped for its size shows nothing, so the work is
- * given back.
+ * rank (a lifecycle update is never dropped for a later progress note).
+ * `runningNow` are the prompts of the turn being dispatched (decide-merge:
+ * the dispatched one and those merged into it so far): their notice is
+ * delivered now, so the dropped prompt's is not given back either. A prompt
+ * whose marker was dropped for its size shows nothing, so the work is given
+ * back.
  */
-function giveBackDroppedPromptWork(runtime: DurableSessionRuntime, item: any, where: string, later: readonly any[]): void {
+function giveBackDroppedPromptWork(runtime: DurableSessionRuntime, item: any, where: string, later: readonly any[],
+    runningNow: readonly any[] = []): void {
     const { ctx, state } = runtime;
     const laterPrompts = later.filter((other) => other?.kind === "prompt");
     const laterEntries = laterPrompts.flatMap((other) => carriedChildDigestOf(other.carriedChildDigest)?.updates ?? []);
@@ -486,8 +516,8 @@ function giveBackDroppedPromptWork(runtime: DurableSessionRuntime, item: any, wh
         ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the child digest it carried (${kept.length} update(s); ${digest.updates.length - kept.length} a later queued prompt carries)`);
     }
     if (typeof item?.carriedRehydrationMessage === "string" && state.pendingRehydrationMessage === undefined) {
-        if (laterPrompts.some((other) => typeof other.carriedRehydrationMessage === "string")) {
-            ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel left its rehydration notice to a later queued prompt that carries one`);
+        if ([...laterPrompts, ...runningNow].some((other) => typeof other?.carriedRehydrationMessage === "string")) {
+            ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel left its rehydration notice to a prompt that carries one and runs now or later`);
         } else {
             state.pendingRehydrationMessage = item.carriedRehydrationMessage;
             ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the rehydration notice it carried`);
@@ -1002,7 +1032,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 if (ids.some((id) => cancelledThisDrain.has(id))) {
                     ctx.traceInfo(`[drain] dropping stashed prompt cancelled by tombstone (ids=${ids.join(",")})`);
                     yield* dropCancelledPrompt(runtime, ids, "drain-stash");
-                    giveBackCarriedWork(runtime, carriedByItem, [item], updateChronology);
+                    giveBackCarriedWork(runtime, carriedByItem, [item], updateChronology, stash);
                     stash.splice(s, 1);
                 }
             }
@@ -1015,7 +1045,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 // resend later in this pass is not taken for a duplicate; the
                 // owed work a refused prompt carried is given back.
                 const lostItems: any[] = yield* appendPromptStashToFifo(runtime, stash);
-                giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology);
+                giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology, stash);
                 for (const item of lostItems) {
                     for (const id of validClientMessageIds(item?.clientMessageIds)) pendingClientMessageIds.delete(id);
                 }
@@ -1324,7 +1354,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
 
     if (stash.length > 0) {
         const lostItems: any[] = yield* appendPromptStashToFifo(runtime, stash);
-        giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology);
+        giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology, stash);
     }
     // 1.0.82 (issue 192): lookups put off behind user work are settled after
     // its turn. When no such work is left (it was cancelled or refused), no
@@ -1557,7 +1587,7 @@ function* collectMergeablePrompts(
             ctx.traceInfo(`[decide] dropping merged FIFO prompt cancelled by tombstone (ids=${peekIds.join(",")})`);
             removed.add(`${bucket}:${index}`);
             yield* dropCancelledPrompt(runtime, peekIds, "decide-merge");
-            giveBackDroppedPromptWork(runtime, peek, "decide-merge", flat.slice(k + 1).map((entry) => entry.item));
+            giveBackDroppedPromptWork(runtime, peek, "decide-merge", flat.slice(k + 1).map((entry) => entry.item), [first, ...taken]);
             continue;
         }
         if (first.carriedSteersWake === true || peek.carriedSteersWake === true
@@ -1658,6 +1688,11 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
         if (state.orchestrationResult !== null) return true;
     }
     const picked = popNextDispatchFifoItem(runtime);
+    // The sweep only appends behind the peeked item, and only queue.ts writes
+    // the FIFO, so the item taken is the one peeked; traced if it ever is not.
+    if (next && picked && JSON.stringify(picked.item) !== JSON.stringify(next)) {
+        ctx.traceWarn(`[decide] the dispatched FIFO item (${picked.item?.kind}) is not the one the pre-dispatch sweep ran for (${next.kind})`);
+    }
     if (picked) {
         const item = picked.item;
         switch (item.kind) {

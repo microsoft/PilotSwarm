@@ -154,7 +154,8 @@ function linesOnly(a, b) {
 
 /**
  * The lines of the frozen 1.0.82 queue.ts that 1.0.83 changes: one, so that a due intake write is raced, never blocked on;
- * and the pre-dispatch sweep of a popped prompt, which decide now runs before it takes the prompt (formal finding so4b F2).
+ * the pre-dispatch sweep of a popped prompt, which decide now runs before it takes the prompt (formal finding so4b F2);
+ * and drain's same-pass give-back, which now leaves to a later prompt what that one carries (so4b same-pass order).
  */
 const QUEUE_CHANGED_82 = [
     "        !hasFifoItems(runtime)",
@@ -162,6 +163,12 @@ const QUEUE_CHANGED_82 = [
     "                    yield* sweepMessagesBeforePromptDispatch(runtime);",
     "                    if (state.orchestrationResult !== null) return true;",
     "                }",
+    "            restorePendingChildDigest(runtime, carried.digest, chronology);",
+    "            ctx.traceInfo(`[drain] a prompt that was not queued gave back the child digest it carried (${carried.digest.updates.length} update(s))`);",
+    "            state.pendingRehydrationMessage = carried.rehydrationMessage;",
+    "                    giveBackCarriedWork(runtime, carriedByItem, [item], updateChronology);",
+    "                giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology);",
+    "        giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology);",
 ];
 
 /**
@@ -258,7 +265,10 @@ const QUEUE_LATE_CANCEL_ADDED = [
  *   queued after the dropped one a child's entry of the same or a lower rank, and the notice, when that prompt carries
  *   them (giveBackDroppedPromptWork's `later`).
  * - F2: decide runs the pre-dispatch sweep while the prompt is still queued (peekNextDispatchFifoItem), and takes it
- *   after, so a continue-as-new in the sweep keeps it.
+ *   after, so a continue-as-new in the sweep keeps it; the item taken is traced if it is not the one peeked.
+ * - Same-pass order (decision 2026-11-08T04:35Z): drain's give-back of a prompt that was not queued after all leaves to a
+ *   later prompt of the pass what that one carries, by the same rules, and its notice to any queued prompt that carries
+ *   one; a dropped prompt's notice at decide-merge is left to the turn being dispatched when that carries one.
  */
 const QUEUE_SO4B_ADDED = [
     "    childUpdateRank,",
@@ -277,24 +287,46 @@ const QUEUE_SO4B_ADDED = [
     "    return items;",
     "function observedChronology(entry: PendingChildDigest[\"updates\"][number]): number {",
     "    return typeof entry?.observedAtMs === \"number\" && Number.isFinite(entry.observedAtMs) ? entry.observedAtMs : 0;",
-    "function giveBackDroppedPromptWork(runtime: DurableSessionRuntime, item: any, where: string, later: readonly any[]): void {",
+    "function giveBackDroppedPromptWork(runtime: DurableSessionRuntime, item: any, where: string, later: readonly any[],",
+    "    runningNow: readonly any[] = []): void {",
     "    const laterPrompts = later.filter((other) => other?.kind === \"prompt\");",
     "    const laterEntries = laterPrompts.flatMap((other) => carriedChildDigestOf(other.carriedChildDigest)?.updates ?? []);",
     "        const kept = digest.updates.filter((entry) => !laterEntries.some((next) =>",
     "            next.sessionId === entry.sessionId && childUpdateRank(next.updateType) >= childUpdateRank(entry.updateType)));",
     "        if (kept.length > 0) restorePendingChildDigest(runtime, { ...digest, updates: kept }, observedChronology);",
     "        ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the child digest it carried (${kept.length} update(s); ${digest.updates.length - kept.length} a later queued prompt carries)`);",
-    "        if (laterPrompts.some((other) => typeof other.carriedRehydrationMessage === \"string\")) {",
-    "            ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel left its rehydration notice to a later queued prompt that carries one`);",
+    "        if ([...laterPrompts, ...runningNow].some((other) => typeof other?.carriedRehydrationMessage === \"string\")) {",
+    "            ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel left its rehydration notice to a prompt that carries one and runs now or later`);",
     "        } else {",
     "            state.pendingRehydrationMessage = item.carriedRehydrationMessage;",
     "            ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the rehydration notice it carried`);",
-    "            giveBackDroppedPromptWork(runtime, peek, \"decide-merge\", flat.slice(k + 1).map((entry) => entry.item));",
+    "            giveBackDroppedPromptWork(runtime, peek, \"decide-merge\", flat.slice(k + 1).map((entry) => entry.item), [first, ...taken]);",
     "    const next = peekNextDispatchFifoItem(runtime);",
     "    if (next?.kind === \"prompt\" && Array.isArray(next.clientMessageIds) && next.clientMessageIds.length > 0) {",
     "        yield* sweepMessagesBeforePromptDispatch(runtime);",
     "        if (state.orchestrationResult !== null) return true;",
     "                    giveBackDroppedPromptWork(runtime, item, \"decide-fifo\", queuedFifoItems(runtime));",
+    "    if (next && picked && JSON.stringify(picked.item) !== JSON.stringify(next)) {",
+    "        ctx.traceWarn(`[decide] the dispatched FIFO item (${picked.item?.kind}) is not the one the pre-dispatch sweep ran for (${next.kind})`);",
+    "    stash: readonly any[],",
+    "    const queuedNotice = queuedFifoItems(runtime).some((other) => other?.kind === \"prompt\" && typeof other.carriedRehydrationMessage === \"string\");",
+    "        const index = stash.indexOf(item);",
+    "        const laterWork = (index < 0 ? [] : stash.slice(index + 1))",
+    "            .filter((other) => !items.includes(other))",
+    "            .map((other) => carriedByItem.get(other))",
+    "            .filter((work): work is CarriedWork => work !== undefined);",
+    "            const laterEntries = laterWork.flatMap((work) => work.digest?.updates ?? []);",
+    "            const kept = carried.digest.updates.filter((entry) => !laterEntries.some((next) =>",
+    "                next.sessionId === entry.sessionId && childUpdateRank(next.updateType) >= childUpdateRank(entry.updateType)));",
+    "            if (kept.length > 0) restorePendingChildDigest(runtime, { ...carried.digest, updates: kept }, chronology);",
+    "            ctx.traceInfo(`[drain] a prompt that was not queued gave back the child digest it carried (${kept.length} update(s); ${carried.digest.updates.length - kept.length} a later prompt carries)`);",
+    "            if (queuedNotice || laterWork.some((work) => work.rehydrationMessage !== undefined)) {",
+    "                ctx.traceInfo(`[drain] a prompt that was not queued left its rehydration notice to a later or queued prompt that carries one`);",
+    "                state.pendingRehydrationMessage = carried.rehydrationMessage;",
+    "            } else {",
+    "                    giveBackCarriedWork(runtime, carriedByItem, [item], updateChronology, stash);",
+    "                giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology, stash);",
+    "        giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology, stash);",
 ];
 
 /**
