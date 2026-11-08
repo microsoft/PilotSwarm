@@ -60,32 +60,29 @@ test("selected session: the stronger theme fill survives pinned and hovered row 
     expect(await other.evaluate(el => getComputedStyle(el).backgroundImage)).not.toBe(selected.fill);
 });
 
-for (const soundOn of [true, false]) test(`cyan accent: appearance cue respects sounds ${soundOn ? "on" : "off"}`, async ({ page }) => {
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }])
+for (const soundOn of [true, false]) test(`cyan accent ${viewport.width}px: appearance cue respects sounds ${soundOn ? "on" : "off"}`, async ({ page }) => {
     await page.addInitScript(() => {
         Math.random = () => 0;
-        window.accentSweeps = 0;
+        window.accentDings = 0;
         const create = AudioContext.prototype.createOscillator;
         AudioContext.prototype.createOscillator = function () {
-            const osc = create.call(this), frequencies = [];
-            const set = osc.frequency.setValueAtTime.bind(osc.frequency);
-            const ramp = osc.frequency.exponentialRampToValueAtTime.bind(osc.frequency);
-            osc.frequency.setValueAtTime = (value, time) => { frequencies.push(value); return set(value, time); };
-            osc.frequency.exponentialRampToValueAtTime = (value, time) => { frequencies.push(value); return ramp(value, time); };
+            const osc = create.call(this);
             const start = osc.start.bind(osc);
             osc.start = (...args) => {
-                if (frequencies[0] === 660 && frequencies[1] === 1320) window.accentSweeps += 1;
+                if (osc.type === "sine" && osc.frequency.value === 1760) window.accentDings += 1;
                 return start(...args);
             };
             return osc;
         };
     });
     await page.clock.install();
-    await openTheme(page, { width: 390, height: 844 }, soundOn);
+    await openTheme(page, viewport, soundOn);
     await page.locator(".portal-header-brand").click();
     await page.clock.runFor(500);
     await page.clock.fastForward(30_001);
     await expect(page.locator(".portal-header-accent")).toHaveAttribute("data-active", "true");
-    expect(await page.evaluate(() => window.accentSweeps)).toBe(soundOn ? 1 : 0);
+    expect(await page.evaluate(() => window.accentDings)).toBe(soundOn ? 1 : 0);
 });
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {

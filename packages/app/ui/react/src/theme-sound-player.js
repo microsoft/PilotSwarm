@@ -283,21 +283,7 @@ function startDawn(ctx, output, cache) {
 function playCue(ctx, output, name, wet, track = null) {
     const at = ctx.currentTime + 0.005;
     if (name === "accent") {
-        const osc = ctx.createOscillator();
-        osc.type = "triangle";
-        osc.frequency.setValueAtTime(660, at);
-        osc.frequency.exponentialRampToValueAtTime(1320, at + 0.18);
-        const gain = ctx.createGain();
-        gain.gain.setValueAtTime(0.0001, at);
-        gain.gain.linearRampToValueAtTime(0.025, at + 0.015);
-        gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.28);
-        osc.connect(gain);
-        gain.connect(output);
-        const entry = { osc, gain };
-        track?.add(entry);
-        osc.onended = () => { track?.delete(entry); gain.disconnect(); };
-        osc.start(at);
-        osc.stop(at + 0.3);
+        bell(ctx, output, at, 1760, 0.05, 0.35, 2.4, track);
     } else if (name === "tick") {
         bell(ctx, output, at, 2300 + Math.random() * 500, 0.07, 0.07, 2.4, track);
     } else if (name === "send") {

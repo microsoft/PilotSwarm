@@ -14,14 +14,16 @@ import { getTheme } from "../src/themes/index.js";
 import { createThemeSoundPlayer } from "../../react/src/theme-sound-player.js";
 
 function param(value = 0) {
+    const calls = [];
     return {
         value,
         target: value,
+        calls,
         cancelScheduledValues() {},
         setTargetAtTime(target) { this.target = target; },
-        setValueAtTime() {},
-        linearRampToValueAtTime() {},
-        exponentialRampToValueAtTime() {},
+        setValueAtTime(value, at) { calls.push(["set", value, at]); },
+        linearRampToValueAtTime(value, at) { calls.push(["linear", value, at]); },
+        exponentialRampToValueAtTime(value, at) { calls.push(["exponential", value, at]); },
     };
 }
 
@@ -220,15 +222,28 @@ test("action cues sound only for a theme that has them, while its sound is on", 
     player.dispose();
 });
 
-test("the accent is one quiet short sweep, limited to the dawn sound and once per 30 seconds", (t) => {
+test("the accent is a quiet short bell like the dawn action cues, limited to once per 30 seconds", (t) => {
     t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
     const audio = fakeAudio();
     const player = createThemeSoundPlayer({ win: audio.win });
     player.update({ sound: dawn, enabled: true, volume: 0.4 });
+    const before = audio.stats.oscs.length;
     assert.equal(player.cue("accent"), true);
-    const note = audio.stats.oscs.at(-1);
-    assert.equal(note.type, "triangle");
-    assert.equal(note.end, 0.305);
+    const notes = audio.stats.oscs.slice(before);
+    assert.equal(notes.length, 2, "one bell has a fundamental and a quieter partial");
+    for (const [index, ratio, level] of [[0, 1, 1], [1, 2.4, 0.28]]) {
+        const note = notes[index];
+        assert.equal(note.type, "sine", "same bell voice as the session-click cue");
+        assert.equal(note.frequency.value, 1760 * ratio);
+        assert.equal(note.frequency.calls.length, 0, "fixed pitch, not a rising sweep");
+        assert.ok(Math.abs(note.end - (0.005 + 0.35 / ratio + 0.05)) < 1e-10);
+        const gain = [...note.to][0].gain;
+        assert.deepEqual(gain.calls, [
+            ["set", 0.0001, 0.005],
+            ["linear", 0.05 * level, 0.011],
+            ["exponential", 0.0001, 0.005 + 0.35 / ratio],
+        ]);
+    }
     assert.equal(player.cue("accent"), false);
     audio.stats.ctx.state = "suspended";
     advance(t, 30_000);
@@ -250,12 +265,13 @@ test("muting, zero volume and hidden tabs silence and cut the accent cue", (t) =
         const audio = fakeAudio();
         const player = createThemeSoundPlayer({ win: audio.win });
         player.update({ sound: dawn, enabled: true, volume: 0.4 });
+        const before = audio.stats.oscs.length;
         assert.equal(player.cue("accent"), true);
-        const note = audio.stats.oscs.at(-1);
+        const notes = audio.stats.oscs.slice(before);
         change(player, audio);
         advance(t, 400);
         assert.equal(player.cue("accent"), false);
-        assert.equal(note.cut, true);
+        assert.ok(notes.every(note => note.cut), "both bell oscillators are cut");
         player.dispose();
     }
 });
