@@ -14,7 +14,7 @@ import {
     normalizeWorkflowPanelHeights, normalizeWorkflowPanelWidths, WORKFLOW_SIDE_TAB, selectWorkflowTabContext, workflowHighlightedSessionId, shownSidePaneTab,
     workflowTabButtonTip,
 } from "../../core/src/workflow-owner.js";
-import { WORKFLOW_LIFECYCLE_READ_MS, chatLifecycleStamp, workflowLifecycleNeedsAttention } from "../../core/src/workflow-lifecycle.js";
+import { WORKFLOW_LIFECYCLE_READ_MS, chatLifecycleStamp, workflowDefinitionsReadDelay, workflowLifecycleNeedsAttention } from "../../core/src/workflow-lifecycle.js";
 import { normalizeSidePaneTab } from "../../core/src/state.js";
 import { ModalDialog, focusGivenBack } from "./modal-dialog.js";
 import { WorkflowInputWait, workflowInputWait } from "./workflow-input-wait.js";
@@ -107,6 +107,7 @@ import {
     selectSteerAction,
     nextSteerHold,
     STEER_HOLD_MS,
+    SESSION_NAV_SETTLE_MS,
     selectConfirmModal,
     defaultOwnerFilterForPrincipal,
     normalizeStoredLayoutAdjustments,
@@ -11494,9 +11495,9 @@ function useWorkflowLifecycleReads(controller, active) {
     }, [controller, ownerId]);
     React.useEffect(() => {
         if (!active || !ownerId) return undefined;
-        // OF-S2-4d: arriving at a chat reads it at once (its panel may open on arrival); its own changes at most every 5 s.
-        const last = lastReadRef.current;
-        const timer = setTimeout(read, last.ownerId === ownerId ? Math.max(0, 5_000 - (Date.now() - last.at)) : 0);
+        // OF-S2-4d: arriving at a chat reads it once the selection settles (its panel may open on arrival), not per key while
+        // the list is moved through; its own changes at most every 5 s.
+        const timer = setTimeout(read, workflowDefinitionsReadDelay(ownerId, lastReadRef.current, SESSION_NAV_SETTLE_MS));
         return () => clearTimeout(timer);
     }, [active, ownerId, stamp, read]);
     React.useEffect(() => {

@@ -13,7 +13,7 @@ import {
 } from "../../core/src/workflow-v2-commands.js";
 import { workflowModelFromKey, workflowRefusalText, workflowRunsText, workflowSessionModelKey, workflowShortTime, workflowTimeTitle,
     workflowV1NodeWords } from "../../core/src/workflow-words.js";
-import { AUTO_HISTORY_EVENT_SOFT_CAP } from "../../core/src/controller.js";
+import { AUTO_HISTORY_EVENT_SOFT_CAP, SESSION_NAV_SETTLE_MS } from "../../core/src/controller.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
 import {
     WORKFLOW_AGENT_LOG_VISITS, workflowAgentLogChats, workflowAgentNodeLog, workflowBaseInstructionsMatch, workflowBaseInstructionsReadable,
@@ -135,8 +135,12 @@ export function WorkflowTab(props) {
     // Stage 2.1b: the chat's own definitions, read again when the chat's row or its Workflows change.
     const stamp = useControllerSelector(controller, state => chatDefinitionsStamp(state.sessions.byId, ownerId));
     const entry = useControllerSelector(controller, state => (ownerId ? state.ui.chatDefinitions?.[ownerId] ?? null : null));
+    // Read once the selection settles (the session list's own settle): with the tab open, moving through the list changes the
+    // chat per key, and a read per key put one request per row on the network.
     React.useEffect(() => {
-        if (ownerId) controller.ensureChatWorkflowDefinitions?.(ownerId)?.catch?.(() => {});
+        if (!ownerId) return undefined;
+        const timer = setTimeout(() => { controller.ensureChatWorkflowDefinitions?.(ownerId)?.catch?.(() => {}); }, SESSION_NAV_SETTLE_MS);
+        return () => clearTimeout(timer);
     }, [controller, ownerId, stamp]);
     // UX2D-F6: a revision saved from another page changes neither the chat's row nor its Workflows; the list is read again
     // when this page comes back (it is shown again, or the window takes focus), so the editor says a newer one was saved.

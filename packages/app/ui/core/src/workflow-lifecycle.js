@@ -32,6 +32,22 @@ const msOf = value => (typeof value === "number" ? value : typeof value === "str
 /** C: the slowest the portal reads the active chat's definitions while the Workflow panel is closed. */
 export const WORKFLOW_LIFECYCLE_READ_MS = 30_000;
 
+/** C: the background reads of one chat's definitions are at least this far apart (review F3). */
+export const WORKFLOW_LIFECYCLE_MIN_GAP_MS = 5_000;
+
+/**
+ * How long the background read (C) waits before it reads `ownerId`'s definitions. Moving through the session list with
+ * j and k changes the active chat on every key, and a read at once put one request per row on the network
+ * (session-list-perf, 3b70e2c5). So a chat just arrived at waits `settleMs`, the session list's own settle (the
+ * controller's SESSION_NAV_SETTLE_MS), and the caller cancels it on the next move; the same chat read before waits until
+ * WORKFLOW_LIFECYCLE_MIN_GAP_MS after that read, and never less than the settle. `last` is the last read
+ * ({ ownerId, at }). Pure.
+ */
+export function workflowDefinitionsReadDelay(ownerId, last, settleMs, now = Date.now()) {
+    if (!last || last.ownerId !== ownerId || !Number.isFinite(last.at)) return settleMs;
+    return Math.max(settleMs, WORKFLOW_LIFECYCLE_MIN_GAP_MS - (now - last.at));
+}
+
 /** Review F5: where a key was read from, from the least to the most exact: the definitions list, the row, the read model. */
 const SOURCE_RANK = Object.freeze({ list: 0, row: 1, model: 2 });
 

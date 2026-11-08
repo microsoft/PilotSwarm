@@ -78,6 +78,48 @@ test("moving through the session list does not fetch per keypress", async ({ pag
         .toBeLessThanOrEqual(8);
 });
 
+// Workflows are always on (3b70e2c5): a chat's Workflow Definitions are read for the chat the selection lands on, not
+// per keypress, both by the background read (Workflow tab closed) and by the open Workflow tab.
+for (const tabOpen of [false, true]) {
+    test(`moving through the session list reads the landing chat's Workflow Definitions only, Workflow tab ${tabOpen ? "open" : "closed"}`, async ({ page }) => {
+        await page.goto(base, { waitUntil: "networkidle" });
+        await page.waitForSelector(".ps-session-list-button", { timeout: 20_000 });
+        if (tabOpen) {
+            await page.getByRole("button", { name: /^Workflow( —|$)/ }).click();
+            await expect(page.locator(".ps-wf-tab")).toBeVisible();
+        }
+        await page.waitForTimeout(600);
+        await page.locator(".ps-session-list-button").first().click();
+        await page.waitForTimeout(400);
+        const before = await page.locator(".ps-session-list-button.is-selected").getAttribute("data-session-id");
+
+        const calls = [];
+        page.on("request", (r) => {
+            const url = r.url();
+            if (url.includes("/api/")) calls.push(url.replace(base, "").split("?")[0]);
+        });
+        const MOVES = 30;
+        await page.evaluate(async (moves) => {
+            for (let i = 0; i < moves; i += 1) {
+                window.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true }));
+                await new Promise((r) => requestAnimationFrame(r));
+            }
+        }, MOVES);
+        await page.waitForTimeout(900);
+
+        const landed = await page.locator(".ps-session-list-button.is-selected").getAttribute("data-session-id");
+        expect(landed).not.toBe(before);
+        if (tabOpen) await expect(page.locator(".ps-wf-tab")).toBeVisible();
+        const definitions = calls.filter((c) => /\/workflow-definitions$/.test(c));
+        expect(definitions.length, JSON.stringify(definitions)).toBeGreaterThanOrEqual(1);
+        expect(definitions.length, JSON.stringify(definitions)).toBeLessThanOrEqual(2);
+        expect(definitions.every((c) => c.includes(`/sessions/${landed}/`)), JSON.stringify({ landed, definitions })).toBe(true);
+        const perSession = calls.filter((c) => /\/sessions\//.test(c));
+        expect(perSession.length, `${MOVES} moves issued ${perSession.length} session requests: ${JSON.stringify(perSession)}`)
+            .toBeLessThanOrEqual(8);
+    });
+}
+
 test("the selection still lands on the right session and loads it", async ({ page }) => {
     // The guard on the optimisation: deferring the fetch must not lose it.
     await openListFocused(page);

@@ -1720,8 +1720,8 @@ function normalizePreviewPayload(filename, rawContent, contentType = "", metadat
 const FILES_LIST_TTL_MS = 10_000;
 // How long keyboard navigation must rest on a session before it is fetched.
 // Long enough that scrolling past a row costs nothing, short enough that
-// landing on one feels immediate.
-const SESSION_NAV_SETTLE_MS = 140;
+// landing on one feels immediate. The Workflow Definitions reads wait for the same settle (web-app.js, workflow-tab.js).
+export const SESSION_NAV_SETTLE_MS = 140;
 // Ceiling on the window a session re-opens with, in events (5 history pages).
 //
 // `loadedEventLimit` is sticky: scrolling back through a long session escalates
