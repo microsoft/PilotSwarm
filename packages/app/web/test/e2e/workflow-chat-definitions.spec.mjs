@@ -1361,6 +1361,11 @@ for (const theme of listThemes()) {
         await page.mouse.move(2, 400);
         const result = await viewerContrast(page);
         if (SHOTS) await main.screenshot({ path: path.join(SHOTS, `fui-f2-result-${theme.id}.png`) });
+        // win95: the error result sits in a white well (read while the Node panel shows it; the Log replaces the panel).
+        if (theme.id === "win95") {
+            const well = await main.locator(".ps-wf-result.is-error pre").evaluate(element => getComputedStyle(element).backgroundColor);
+            expect(well, "win95: the error result is a white well").toBe("rgb(255, 255, 255)");
+        }
         await main.getByRole("tablist", { name: "Workflow panel" }).getByRole("tab", { name: "Log", exact: true }).click();
         await expect(main.locator('.ps-wf-log li[data-level="error"]').first()).toBeVisible();
         const log = await viewerContrast(page);
@@ -1371,10 +1376,6 @@ for (const theme of listThemes()) {
         }
         const low = all.filter(item => item.ratio < item.min);
         expect(low, `${theme.id}: under the target`).toEqual([]);
-        if (theme.id === "win95") {
-            const well = await main.locator(".ps-wf-result.is-error pre").evaluate(element => getComputedStyle(element).backgroundColor);
-            expect(well, "win95: the error result is a white well").toBe("rgb(255, 255, 255)");
-        }
         expect(errors).toEqual([]);
     });
 }
