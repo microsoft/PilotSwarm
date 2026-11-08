@@ -71,13 +71,13 @@ test("cyan accent: no early pass or immediate repeat, and reduced motion cancels
     const accent = page.locator(".portal-header-accent");
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await expect(accent).toHaveAttribute("data-enabled", "true");
-    await page.clock.fastForward(59_000);
+    await page.clock.fastForward(29_000);
     await expect(accent).not.toHaveAttribute("data-active", "true");
     await page.clock.runFor(1_500);
     await expect(accent).toHaveAttribute("data-active", "true");
     await page.clock.runFor(5_500);
     await expect(accent).toHaveAttribute("data-active", "false");
-    await page.clock.fastForward(59_000);
+    await page.clock.fastForward(29_000);
     await expect(accent).not.toHaveAttribute("data-active", "true");
     await page.clock.runFor(1_500);
     await expect(accent).toHaveAttribute("data-active", "true");

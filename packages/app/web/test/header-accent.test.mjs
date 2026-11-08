@@ -30,54 +30,54 @@ function fixture(random = () => 0) {
     return { accent, advance, timers, events };
 }
 
-test("first pass waits a minute; later passes wait a minute after the previous pass ends", () => {
+test("first pass waits 30 seconds; later passes wait 30 seconds after the previous pass ends", () => {
     const f = fixture();
     f.accent.setEnabled(true);
-    f.advance(59_999);
+    f.advance(29_999);
     assert.deepEqual(f.events, []);
     f.advance(1);
-    assert.deepEqual(f.events, [["start", 60_000]]);
+    assert.deepEqual(f.events, [["start", 30_000]]);
     f.advance(HEADER_ACCENT_PASS_MS);
-    assert.deepEqual(f.events[1], ["stop", 65_500]);
-    f.advance(59_999);
+    assert.deepEqual(f.events[1], ["stop", 35_500]);
+    f.advance(29_999);
     assert.equal(f.events.length, 2);
     f.advance(1);
-    assert.deepEqual(f.events[2], ["start", 125_500]);
+    assert.deepEqual(f.events[2], ["start", 65_500]);
 });
 
-test("random idle spans 60 to 180 seconds and is chosen again for each pass", () => {
+test("random idle spans 30 to 60 seconds and is chosen again for each pass", () => {
     const values = [0.5, 1, 0];
     const f = fixture(() => values.shift());
     f.accent.setEnabled(true);
-    f.advance(120_000 + HEADER_ACCENT_PASS_MS);
-    assert.deepEqual(f.events, [["start", 120_000], ["stop", 125_500]]);
-    f.advance(179_999);
+    f.advance(45_000 + HEADER_ACCENT_PASS_MS);
+    assert.deepEqual(f.events, [["start", 45_000], ["stop", 50_500]]);
+    f.advance(59_999);
     assert.equal(f.events.length, 2);
     f.advance(1);
-    assert.deepEqual(f.events[2], ["start", 305_500]);
+    assert.deepEqual(f.events[2], ["start", 110_500]);
 });
 
 test("ordinary controller updates do not restart the timer", () => {
     const f = fixture();
     f.accent.setEnabled(true);
-    f.advance(30_000);
+    f.advance(15_000);
     f.accent.setEnabled(true);
-    f.advance(30_000);
-    assert.deepEqual(f.events, [["start", 60_000]]);
+    f.advance(15_000);
+    assert.deepEqual(f.events, [["start", 30_000]]);
 });
 
 test("disabling during a pass stops it and returning starts a fresh cooldown", () => {
     const f = fixture();
     f.accent.setEnabled(true);
-    f.advance(61_000);
+    f.advance(31_000);
     f.accent.setEnabled(false);
-    assert.deepEqual(f.events, [["start", 60_000], ["stop", 61_000]]);
+    assert.deepEqual(f.events, [["start", 30_000], ["stop", 31_000]]);
     assert.equal(f.timers.size, 0);
     f.accent.setEnabled(true);
-    f.advance(59_999);
+    f.advance(29_999);
     assert.equal(f.events.length, 2);
     f.advance(1);
-    assert.deepEqual(f.events[2], ["start", 121_000]);
+    assert.deepEqual(f.events[2], ["start", 61_000]);
 });
 
 test("disabling during cooldown cancels the pending pass", () => {
@@ -93,10 +93,10 @@ test("disabling during cooldown cancels the pending pass", () => {
 test("disposal stops an active pass, clears timers and prevents reactivation", () => {
     const f = fixture();
     f.accent.setEnabled(true);
-    f.advance(60_000);
+    f.advance(30_000);
     f.accent.dispose();
     f.accent.setEnabled(true);
     f.advance(180_000);
-    assert.deepEqual(f.events, [["start", 60_000], ["stop", 60_000]]);
+    assert.deepEqual(f.events, [["start", 30_000], ["stop", 30_000]]);
     assert.equal(f.timers.size, 0);
 });

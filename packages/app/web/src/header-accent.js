@@ -1,6 +1,6 @@
 export const HEADER_ACCENT_PASS_MS = 5_500;
-export const HEADER_ACCENT_MIN_IDLE_MS = 60_000;
-export const HEADER_ACCENT_MAX_IDLE_MS = 180_000;
+export const HEADER_ACCENT_MIN_IDLE_MS = 30_000;
+export const HEADER_ACCENT_MAX_IDLE_MS = 60_000;
 
 export function createHeaderAccent({
     start,
