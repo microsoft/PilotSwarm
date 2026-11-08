@@ -15,10 +15,14 @@
  *   - a system-only turn retries with its prompt AND its bootstrap flag
  *
  * Each pin was verified red against the 1.0.70 behaviour.
+ *
+ * These cases drive 1.0.83, the latest, where a failed turn's retry is owed in the continue-as-new input's
+ * `ownedRetry` (prompt, bootstrap flag, count) rather than in its `prompt`. The frozen 1.0.82 copy, for the chats
+ * still on it, is prefix-cache-system-context-1-0-82.test.js.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration_1_0_82/state.ts";
+import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration/state.ts";
 import { SYSTEM_CONTEXT_OPEN, SYSTEM_CONTEXT_CLOSE } from "../../src/prompt-system-context.ts";
 
 let mockSession;
@@ -127,10 +131,9 @@ function drive(gen, harness, { maxSteps = 400 } = {}) {
     throw new Error("drive exceeded step limit");
 }
 
-// The handler these cases were written for: 1.0.82, frozen since 1.0.83 opened (in-flight sessions of the previous release
-// replay it). 1.0.83's owned retry and intake turn paths are covered by the orchestration-intake-* tests.
+// The latest handler, 1.0.83.
 async function latestHandler() {
-    const { durableSessionOrchestration_1_0_82: fn } = await import("../../src/orchestration_1_0_82/index.ts");
+    const { durableSessionOrchestration_1_0_83: fn } = await import("../../src/orchestration/index.ts");
     expect(fn).toBeTypeOf("function");
     return fn;
 }
@@ -146,7 +149,7 @@ const INPUT = (overrides = {}) => ({
 
 const countBlocks = (text) => (String(text).match(new RegExp(SYSTEM_CONTEXT_OPEN, "g")) ?? []).length;
 
-describe("orchestration 1.0.71: the wake-up note rides in the user turn", () => {
+describe("orchestration 1.0.71 and later: the wake-up note rides in the user turn (1.0.83, the latest)", () => {
     beforeEach(() => { mockSession = null; mockManager = null; capturedConfig = undefined; });
 
     it("a wait-resume turn carries the note as a trailing <system_context> block and flags the config", async () => {
@@ -195,15 +198,16 @@ describe("orchestration 1.0.71: the wake-up note rides in the user turn", () => 
     it("a runTurn.throw retry re-sends the note exactly once", async () => {
         const handler = await latestHandler();
 
-        // Attempt 1 throws → continue-as-new with retryCount 1.
+        // Attempt 1 throws → continue-as-new owing the retry (count 1).
         let harness = createHarness({ queue: [{ prompt: "ship it\n\n[SYSTEM: keep it short]" }], throwOnTurn: true });
         let out = drive(handler(harness.ctx, INPUT()), harness);
         expect(out.kind).toBe("continueAsNew");
-        expect(out.input.retryCount).toBe(1);
+        expect(out.input.ownedRetry.retryCount).toBe(1);
+        expect(out.input.prompt).toBeUndefined();
         // The note travels inside the prompt only. Forwarding systemPrompt as
         // well is how 1.0.70's shape would have appended it a second time.
         expect(out.input.systemPrompt).toBeUndefined();
-        expect(countBlocks(out.input.prompt)).toBe(1);
+        expect(countBlocks(out.input.ownedRetry.prompt)).toBe(1);
 
         // Attempt 2 runs the retried prompt: still exactly one block.
         harness = createHarness();
@@ -222,9 +226,16 @@ describe("orchestration 1.0.71: the wake-up note rides in the user turn", () => 
         expect(out.kind).toBe("continueAsNew");
         // ≤1.0.70 forwarded NO prompt here and re-derived the internal prompt
         // from systemPrompt. The note now lives in the prompt, so it must ride.
-        expect(out.input.prompt.startsWith(INTERNAL_SYSTEM_TURN_PROMPT)).toBe(true);
-        expect(out.input.prompt).toContain("only a note, no user text");
-        expect(out.input.bootstrapPrompt).toBe(true);
+        expect(out.input.ownedRetry.prompt.startsWith(INTERNAL_SYSTEM_TURN_PROMPT)).toBe(true);
+        expect(out.input.ownedRetry.prompt).toContain("only a note, no user text");
+        expect(out.input.ownedRetry.bootstrap).toBe(true);
         expect(out.input.systemPrompt).toBeUndefined();
+
+        // The retry runs with that prompt and the bootstrap flag.
+        const retry = createHarness();
+        const again = drive(handler(retry.ctx, INPUT(out.input)), retry);
+        expect(again.kind).toBe("turn");
+        expect(retry.turns[0].prompt.startsWith(INTERNAL_SYSTEM_TURN_PROMPT)).toBe(true);
+        expect(retry.turns[0].bootstrap).toBe(true);
     });
 });

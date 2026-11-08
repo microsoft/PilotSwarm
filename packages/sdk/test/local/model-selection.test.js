@@ -16,9 +16,10 @@ import { assertEqual, assertNotNull, assertThrows } from "../helpers/assertions.
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { TEST_CLAUDE_MODEL, TEST_GPT_MODEL } from "../helpers/fixtures.js";
 import { ModelProviderRegistry, ManagedSession, PilotSwarmManagementClient, SessionManager } from "../../src/index.ts";
-import { detectFailedModelSwitch } from "../../src/orchestration_1_0_82/turn.ts";
-import { handleTurnResult, processPrompt } from "../../src/orchestration_1_0_82/turn.ts";
-import { handleCommand } from "../../src/orchestration_1_0_82/lifecycle.ts";
+import { detectFailedModelSwitch } from "../../src/orchestration/turn.ts";
+import { handleTurnResult, processPrompt } from "../../src/orchestration/turn.ts";
+import { handleCommand } from "../../src/orchestration/lifecycle.ts";
+import { emptyIntakeState } from "../../src/orchestration/intake-state.ts";
 import { findConfiguredModel, findSameProviderModel, matchesModel, isCompletedTurnOnModelAfter, assertRootTurnModel } from "../helpers/model-selection.mjs";
 
 const TIMEOUT = 180_000;
@@ -420,7 +421,8 @@ function createFakeModelSwitchRuntime(timerKind) {
             },
         },
         input: { sessionId: "session-model-switch-timer", config: { model: "github-copilot:gpt-5.4" } },
-        versions: { currentVersion: "1.0.test", latestVersion: "1.0.test" },
+        // 1.0.83, the latest version (the frozen 1.0.82 copy of these cases is model-selection-1-0-82.test.js).
+        versions: { currentVersion: "1.0.83", latestVersion: "1.0.83" },
         manager: {
             loadKnowledgeIndex() { return null; },
             listChildSessions() { return "[]"; },
@@ -442,6 +444,11 @@ function createFakeModelSwitchRuntime(timerKind) {
             nestingLevel: 0,
         },
         state: {
+            // 1.0.83: the durable intake's state (empty), no owed retry and no invocation awaiting one.
+            intake: emptyIntakeState(),
+            intakeRetryInvocationId: null,
+            intakeArrivalPending: false,
+            ownedRetry: null,
             config: { model: "github-copilot:gpt-5.4" },
             affinityKey: "affinity",
             iteration: 1,
