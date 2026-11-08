@@ -1,5 +1,6 @@
 /**
- * Orchestration 1.0.83 (INACTIVE): the durable intake state that every
+ * Orchestration 1.0.83 (the latest version; durable intake is off unless the
+ * deployment capability is on): the durable intake state that every
  * continue-as-new carries (design docs/proposals/workflow-durable-intake.md
  * 5.4, 5.5 and 5.7, amendment 2). Intake writes no KV: its queue and its one
  * invocation are orchestration state, rebuilt by replay within an execution

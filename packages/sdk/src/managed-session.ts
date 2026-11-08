@@ -1458,10 +1458,10 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        // On a turn of a worker that runs controller 1.9.0 (INACTIVE: only tests; session-manager passes workflowMilestone
+        // On a turn of session orchestration 1.0.83 (a workflow request turn; session-manager passes workflowMilestone
         // and workflowAgentChild from the turn's config), the model is declared what the turn's handlers take (R26): the
         // workflow tools' milestone descriptions and respond_session_request, and, for an agent state's own child,
-        // complete_workflow_node. Every other session's declarations are unchanged.
+        // complete_workflow_node. Every other turn's declarations are unchanged.
         const workflowMilestone = opts?.workflowMilestone === true;
         // Workflow test mode is hidden unless the deployment flag is on (spec 16): the 1.9.0 declarations then name stop only.
         const workflowSpecs = { milestone: workflowMilestone, testMode: workflowTestModeFromEnv() };

@@ -84,7 +84,7 @@ test("refusals, adapter errors and sanitized messages hide secrets", () => {
     assert.equal(failure.code, "WORKFLOW_COMMAND_INVALID");
     assert.equal(failure.message, "bad value token=<hidden>");
     assert.deepEqual(failure.details, { authorization: "<hidden>" });
-    const plain = new WorkflowStoreError("WORKFLOW_NOT_FOUND", "No v2 workflow x.");
+    const plain = new WorkflowStoreError("WORKFLOW_NOT_FOUND", "No Workflow x.");
     assert.equal(workflowStoreFailure(plain), plain);
 
     const other = Object.assign(new Error(`read failed: {"password":"${SENTINEL}"}`), { code: "X", status: 400, details: { secret: SENTINEL } });

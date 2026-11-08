@@ -229,7 +229,7 @@ test("discards a superseded answer (then asks again), records an older one witho
 });
 
 test("READ-WIRE-03: WORKFLOW_NOT_FOUND is asked again once on a changed session row or new events, never in a loop, never for a legacy definition", async () => {
-    const notYet = () => { throw Object.assign(new Error("This session is not a version 2 workflow."), { code: "WORKFLOW_NOT_FOUND", status: 404 }); };
+    const notYet = () => { throw Object.assign(new Error("This session is not a durable Workflow."), { code: "WORKFLOW_NOT_FOUND", status: 404 }); };
     // The creation window: the session row committed, its definition not yet.
     const h = seeded({ lastSeq: 0, updatedAt: 1 });
     h.transport.respond = async () => notYet();

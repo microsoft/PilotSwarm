@@ -2196,7 +2196,7 @@ export class WorkflowStore {
 
     private async lockDefinition(client: PoolClient, workflowSessionId: string): Promise<WorkflowDefinitionRow> {
         const { rows } = await client.query(`SELECT * FROM ${this.t.definitions} WHERE workflow_session_id = $1 FOR UPDATE`, [workflowSessionId]);
-        if (!rows[0]) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `Workflow ${workflowSessionId} has no v2 definition.`);
+        if (!rows[0]) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `Workflow ${workflowSessionId} has no definition.`);
         return definitionFrom(rows[0]);
     }
 
@@ -4582,7 +4582,7 @@ export class WorkflowStore {
         });
     }
 
-    // ─── Request runtime: deadline, observation, delivery and wakes (controller 1.9.0; inactive: only tests run it) ──
+    // ─── Request runtime: deadline, observation, delivery and wakes (controller 1.9.0) ──
 
     /**
      * Elapse a pending request (design workflow-messaging-request.md 4.3;
@@ -5183,7 +5183,7 @@ export class WorkflowStore {
         });
     }
 
-    // ─── Durable recipient intake (migrations 0098 and 0099; inactive: no runtime calls these yet) ──
+    // ─── Durable recipient intake (migrations 0098 and 0099; called only while the deployment capability is on) ──
 
     /** One reading of the store's clock, as text that later statements of the transaction read back exactly. */
     private async clockIn(client: PoolClient): Promise<string> {

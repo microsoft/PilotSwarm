@@ -1157,8 +1157,8 @@ export class PilotSwarmWorker {
             // with MCP references already reduced to their admitted grants.
             getUserAgents: () => this._loadedAgents,
             getSystemAgents: () => this._loadedSystemAgents,
-            // A package agent's workflow interface, from its installed version's install manifest (INACTIVE in effect: only
-            // a schemaVersion 5 package exports one, and only Workflow V2 publication on a 1.9.0 host matches it).
+            // A package agent's workflow interface, from its installed version's install manifest (only a schemaVersion 5
+            // package exports one; a Workflow's publication checks an agent state that names the agent against it).
             getWorkflowInterface: (agent) => typeof agent?.packageId === "string" && typeof agent?.name === "string"
                 ? this._packageWorkflowInterfaces.get(packageAgentKey(agent.packageId, agent.name)) : undefined,
             getCallerOwnerKey: async (sessionId) => {
@@ -1719,8 +1719,8 @@ export class PilotSwarmWorker {
     }
 
     /**
-     * Workflow package pins (R18; design 03 package agents, test plan T070),
-     * INACTIVE: make the exact earlier revision that `pinnedPackageId` names
+     * Workflow package pins (R18; design 03 package agents, test plan T070):
+     * make the exact earlier revision that `pinnedPackageId` names
      * (agent-package-pins.ts) servable on this worker, and say whether it is.
      *
      * The revision must still be in the registry, and its package must still

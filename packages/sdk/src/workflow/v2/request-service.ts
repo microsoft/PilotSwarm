@@ -6,8 +6,10 @@ import { ACTIVE_RUN_STATUSES, type WorkflowStore } from "./store.js";
 /**
  * Workflow v2 request states: the responder's tool and the durable wake
  * dispatcher (design workflow-messaging-request.md sections 5, 6 and 8.3).
- * INACTIVE: only a test registers the tool (on a 1.0.83 turn) and starts a
- * dispatcher; no worker does.
+ * Every 1.0.83 turn (a workflow request turn, session-proxy) has the tool,
+ * and an answer dispatches its wake at once (dispatchNow). No worker starts
+ * a dispatcher's periodic passes (start): a wake whose dispatch is lost is
+ * left to the controller's backstop.
  */
 
 /** The tool an agent session answers a workflow's request with (design 6, 8.3). */

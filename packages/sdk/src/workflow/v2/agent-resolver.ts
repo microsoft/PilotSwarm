@@ -5,10 +5,10 @@ import { WorkflowStoreError } from "./store.js";
 
 /**
  * Workflow v2 named agents as a host resolves them (design 03 "package
- * agents", 02 publication; R09, R18). INACTIVE: only a host that runs
- * controller 1.9.0 resolves agents, which is a worker's turn with the test
- * option workflowRequests (session-proxy) or a management client created
- * with workflowCommands.requests.
+ * agents", 02 publication; R09, R18). A host that runs controller 1.9.0
+ * resolves agents: every worker's turn host (session-proxy) and agent host
+ * (milestone-worker.ts), and a management client that takes a person's
+ * commands, as it does by default (registry packages only).
  *
  * A publication pins each named agent state to what its workflow's owner
  * sees by that name (WorkflowV2Host.resolveAgent, service.ts). The name

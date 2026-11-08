@@ -177,7 +177,7 @@ export const UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC = {
 
 const READ_MILESTONE_WORDS = " It also shows a run's stop, each agent step's chat and each branch. Each section holds its newest rows, open "
     + "rows listed apart; limit and cursor (from run.pages) page older rows. execution_id, kv_revision with kv_key, agent_versions, "
-    + "definition_revision and step_input are separate reads (load_skill workflow-tools has each).";
+    + "definition_revision and step_input are separate reads (call load_skill with name workflow-tools for each).";
 
 /** read_workflow on a 1.0.83 turn while workflow test mode is off: paging and the separate reads (design 04; R01; mock M10). */
 export const READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC = {
@@ -274,7 +274,7 @@ function receiptJson(receipt: WorkflowDefinitionReceipt, replayed: boolean): { [
 async function authorizeParent(host: WorkflowToolHost, workflowSessionId: string, callerSessionId: string): Promise<void> {
     const [row, definition] = await Promise.all([host.catalog.getSession(workflowSessionId), host.store.readDefinition(workflowSessionId)]);
     if (!row || row.deletedAt || row.sessionKind !== "workflow" || !definition) {
-        throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId} is visible to this session.`);
+        throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No Workflow ${workflowSessionId} is visible to this session.`);
     }
     if (row.parentSessionId !== callerSessionId || definition.parentSessionId !== callerSessionId) {
         throw new WorkflowStoreError("FORBIDDEN", "Only the agent that created this workflow may change or read it with this tool.");
@@ -422,8 +422,8 @@ const RUN_COMMANDS: ReadonlySet<string> = new Set(UPDATE_WORKFLOW_OPERATIONS.run
  * test run of the exact current revision), test_respond (answer an
  * intercepted effect by its interception id) and test_advance (move a test
  * run's virtual clock). Taken, like a graceful stop (operation stop), only by
- * a host that starts runs at controller 1.9.0 (WorkflowV2Host.requests;
- * INACTIVE, test hosts only), and there only while workflow test mode is on
+ * a host that starts runs at controller 1.9.0 (WorkflowV2Host.requests, as
+ * every production host does), and there only while workflow test mode is on
  * (test-mode-switch.ts; hidden by default, spec 16); elsewhere they are
  * refused. The tool's published description and operation enum are unchanged.
  */
@@ -706,7 +706,7 @@ export async function readWorkflowV2DefinitionRevision(store: WorkflowStore, wor
     if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) throw readInvalid("definition_revision (definitionRevision) must be a positive integer.");
     readAlone("A definition revision is a read of its own", extra);
     const definition = await store.readDefinition(workflowSessionId);
-    if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
+    if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No Workflow ${workflowSessionId}.`);
     const revision = value <= definition.currentRevision ? await store.readRevision(workflowSessionId, value) : null;
     if (!revision) {
         throw new WorkflowStoreError("DEFINITION_REVISION_NOT_FOUND", `Workflow ${workflowSessionId} has revisions 1 to ${definition.currentRevision}, not ${value}.`);
@@ -891,7 +891,7 @@ export async function readWorkflowV2StepInput(host: Pick<WorkflowV2Host, "store"
     if (value.input !== undefined && !isJsonObject(value.input)) throw readInvalid("stepInput.input must map each input field to where its value comes from.");
     const state = value.state;
     const definition = await host.store.readDefinition(workflowSessionId);
-    if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
+    if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No Workflow ${workflowSessionId}.`);
     if (definition.state !== "draft") throw readInvalid("Only a draft's step inputs are edited; a published workflow does not change.");
     const revision = await host.store.readRevision(workflowSessionId, definition.currentRevision);
     if (!revision) throw new WorkflowStoreError("DEFINITION_REVISION_NOT_FOUND", `Workflow ${workflowSessionId} has no revision ${definition.currentRevision}.`);
@@ -1006,7 +1006,7 @@ async function readKvRevision(store: WorkflowStore, workflowSessionId: string, r
     if (key !== null && (typeof key !== "string" || !key || key.length > WORKFLOW_V2_KV_LIMITS.maxKeyLength || !isStorableText(key))) {
         throw readInvalid(`kv_key must be a variable name of 1 to ${WORKFLOW_V2_KV_LIMITS.maxKeyLength} characters.`);
     }
-    if (!await store.readDefinition(workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
+    if (!await store.readDefinition(workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No Workflow ${workflowSessionId}.`);
     const runs = readableRuns(await store.listRuns(workflowSessionId), hideTestRuns);
     const run = runId ? runs.find(item => item.runId === runId) : runs.find(item => item.mode === "live");
     if (!run) {
@@ -1089,7 +1089,7 @@ export function workflowV2GraphJson(ir: WorkflowIR, revision: number): { [key: s
 
 async function readOverview(store: WorkflowStore, workflowSessionId: string, options: WorkflowV2ReadOptions): Promise<{ [key: string]: JsonValue }> {
     const definition = await store.readDefinition(workflowSessionId);
-    if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
+    if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No Workflow ${workflowSessionId}.`);
     // Each section's page size, checked before anything else is read.
     const limits: Record<WorkflowReadSection, number> = {
         executions: workflowReadLimit(options.limit, "executions"), inbox: workflowReadLimit(options.limit, "inbox"),
@@ -1350,7 +1350,7 @@ function outboxViewOf(message: WorkflowOutboxMessage, intakeOutcomes: ReadonlyMa
 /** The next page of one section of a run (read-pages.ts): its rows, oldest first, and the cursor of the page after it. */
 async function readSectionPage(store: WorkflowStore, workflowSessionId: string, runId: string | null, cursorValue: unknown, limitValue: unknown,
     hideTestRuns?: boolean): Promise<{ [key: string]: JsonValue }> {
-    if (!await store.readDefinition(workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
+    if (!await store.readDefinition(workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No Workflow ${workflowSessionId}.`);
     const cursor = parseWorkflowReadCursor(cursorValue, workflowSessionId, runId);
     const limit = workflowReadLimit(limitValue, cursor.section);
     const run = await store.readRun(cursor.runId);
@@ -1399,7 +1399,7 @@ async function readExecution(store: WorkflowStore, workflowSessionId: string, ru
         throw readInvalid("execution_id must be a node execution id of 1 to 256 characters.");
     }
     const definition = await store.readDefinition(workflowSessionId);
-    if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
+    if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No Workflow ${workflowSessionId}.`);
     const runs = readableRuns(await store.listRuns(workflowSessionId), hideTestRuns);
     const run = runId ? runs.find(item => item.runId === runId) : runs.find(item => item.mode === "live");
     if (runId && !run) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${runId} is not a run of this workflow.`);

@@ -9,8 +9,9 @@ import { ACTIVE_RUN_STATUSES, WorkflowStoreError, type WorkflowLineage, type Wor
 
 /**
  * Workflow v2 real-agent test runs (design 05 agent mode real; R19, R20,
- * T112; INACTIVE: only a worker that runs controller 1.9.0, the test-only
- * option workflowRequests, wires it).
+ * T112). Every worker wires it on a 1.0.83 turn of a session in a test run's
+ * agent state's subtree (session-proxy); test runs start only while workflow
+ * test mode is on (test-mode-switch.ts; off by default).
  *
  * An agent state of a real-agent test run has a real child: an ordinary
  * agent session, created and bound as a live run's is (agent-host.ts: the

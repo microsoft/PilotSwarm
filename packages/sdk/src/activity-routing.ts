@@ -94,9 +94,8 @@ export function registerTurnControlActivity(runtime: any, name: keyof typeof TUR
  * Workflow request and durable intake (design workflow-messaging-request.md
  * 8.2, workflow-durable-intake.md section 8): every activity of orchestration
  * 1.0.83's intake goes only to workers that declare this tag, so an older
- * worker never fetches work it cannot run. INACTIVE: only tests declare it,
- * and a worker created with the test option workflowRequests
- * (workflow/v2/milestone-worker.ts), as only they serve 1.0.83.
+ * worker never fetches work it cannot run. Every worker declares it
+ * (WORKFLOW_MILESTONE_WORKER_TAGS, workflow/v2/milestone-worker.ts).
  */
 export const WORKFLOW_REQUEST_CAPABILITY = "pilotswarm.workflow-request.v1";
 
@@ -114,8 +113,9 @@ export function routeWorkflowRequestActivity(task: any): any {
  * may carry an invocation's `intake` field and whose result carries the
  * `intakeDispatch` witness. An older worker would ignore the field and drop
  * the items, so they have names of their own and go only to workers that
- * declare WORKFLOW_REQUEST_CAPABILITY. INACTIVE: only tests register them,
- * and a worker created with the test option workflowRequests.
+ * declare WORKFLOW_REQUEST_CAPABILITY. Every worker registers them
+ * (registerActivities, session-proxy.ts), and every 1.0.83 turn runs under
+ * them.
  */
 export const WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES = {
     runTurn: "runTurnV5",

@@ -1,8 +1,8 @@
 /**
  * Exact package revisions for sessions that must not follow a republish
  * (workflow v2 package pins, design 03 "package agents", R09 and R18;
- * test plan T070). INACTIVE: only a workflow agent state's child is bound
- * this way, and only test hosts start runs that have one.
+ * test plan T070). Only a workflow agent state's child is bound this way:
+ * a publication pins each named package agent (agent-resolver.ts).
  *
  * A session is ordinarily bound to a published package by its registry id,
  * and it follows that package's active version: a republish changes the

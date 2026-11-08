@@ -1,8 +1,10 @@
 /**
  * Durable recipient intake: the worker's admission of an attempt's include
  * (exposure protocol revision 2, section 4; decision
- * intake-exposure-r2-implementation). INACTIVE: only runTurnV5, which only a
- * test registers, calls it.
+ * intake-exposure-r2-implementation). Only runTurnV5 (every worker registers
+ * it for orchestration 1.0.83's turns) calls it, and only for a turn that
+ * carries an intake invocation: durable intake is off unless the deployment
+ * capability is on.
  *
  * Before a model request may include an invocation's items, the store
  * records that they were possibly seen, or refuses

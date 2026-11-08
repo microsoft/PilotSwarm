@@ -114,7 +114,7 @@ test("a workflow tool whose host cannot be made answers like its own refusals: o
     assert.doesNotMatch(unreachable.error.message, /secret/);
     const other = JSON.parse(workflowToolErrorPayload(new Error("unexpected")));
     assert.deepEqual(other, { ok: false, error: { code: "WORKFLOW_ERROR", message: "unexpected" } });
-    const refusal = JSON.parse(workflowToolErrorPayload(new WorkflowStoreError("WORKFLOW_NOT_FOUND", "No v2 workflow x.")));
+    const refusal = JSON.parse(workflowToolErrorPayload(new WorkflowStoreError("WORKFLOW_NOT_FOUND", "No Workflow x.")));
     assert.equal(refusal.error.code, "WORKFLOW_NOT_FOUND");
-    assert.equal(refusal.error.message, "No v2 workflow x.");
+    assert.equal(refusal.error.message, "No Workflow x.");
 });

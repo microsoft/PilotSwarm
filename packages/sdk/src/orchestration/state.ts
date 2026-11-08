@@ -247,7 +247,7 @@ export interface DurableSessionState {
      */
     pendingEpochCommit: PendingEpochCommit | null;
 
-    // ── Durable workflow intake (1.0.83, inactive) ───────────────
+    // ── Durable workflow intake (1.0.83; off unless the deployment capability is on) ──
     /**
      * The intake queue and the one invocation (design
      * workflow-durable-intake.md 5.4, 5.5). Orchestration state, never KV:

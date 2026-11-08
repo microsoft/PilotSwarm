@@ -39,8 +39,8 @@ export const WORKFLOW_V2_KIND = "Workflow";
  *   never reads it as version 6.
  * - 8: version 7 plus agent states and parallel states
  *   (WORKFLOW_V2_AGENT_IR_VERSION), written only for a workflow that has one
- *   of them and only when they are enabled (WorkflowCompileOptions;
- *   INACTIVE: only controller 1.9.0 runs them). A parallel state's body
+ *   of them and only when they are enabled (WorkflowCompileOptions; a host
+ *   that starts runs at controller 1.9.0 enables them). A parallel state's body
  *   states are in `nodes` with the others, named by its `body.states`. A
  *   reader takes it only when asked to, as version 7.
  * - 9: version 8 plus a parallel state's join of the first k successes
@@ -455,14 +455,14 @@ export interface WorkflowCompileOptions {
      */
     enableRequests?: boolean;
     /**
-     * Compile agent states to IR 8 (INACTIVE: only a host that starts runs
-     * at controller 1.9.0 sets it). Off by default: a state of type agent
+     * Compile agent states to IR 8 (a host that starts runs at controller
+     * 1.9.0, as every production host does, sets it). Off by default: a state of type agent
      * stays unsupported, as before.
      */
     enableAgents?: boolean;
     /**
-     * Compile parallel states to IR 8 (INACTIVE: only a host that starts runs
-     * at controller 1.9.0 sets it). Off by default: a state of type parallel
+     * Compile parallel states to IR 8 (a host that starts runs at controller
+     * 1.9.0, as every production host does, sets it). Off by default: a state of type parallel
      * stays unsupported, as before.
      */
     enableParallel?: boolean;
@@ -474,8 +474,8 @@ export interface WorkflowCompileOptions {
      */
     enableRunLimits?: boolean;
     /**
-     * Compile clock waits (a wait state's `at`) to IR 10 (INACTIVE: only a host that starts runs at controller 1.9.0 sets
-     * it). Off by default: `at` is refused with WORKFLOW_FEATURE_UNSUPPORTED.
+     * Compile clock waits (a wait state's `at`) to IR 10 (a host that starts runs at controller 1.9.0, as every production
+     * host does, sets it). Off by default: `at` is refused with WORKFLOW_FEATURE_UNSUPPORTED.
      */
     enableClockWaits?: boolean;
 }
@@ -655,7 +655,7 @@ function compileScript(id: string, raw: Record<string, unknown>, nodeIds: Readon
     const path = `states.${id}`;
     checkKeys(raw, ["type", "description", "runtime", "source", "timeoutSeconds", "input", "inputSchema", "outputSchema", "outcomes", "transition"], path, diagnostics);
     if (raw.runtime !== undefined && raw.runtime !== "node") {
-        diagnostics.error("WORKFLOW_RUNTIME_UNSUPPORTED", `${path}.runtime`, "workflow v2 scripts run as Node ES modules; runtime must be 'node' when given.");
+        diagnostics.error("WORKFLOW_RUNTIME_UNSUPPORTED", `${path}.runtime`, "Workflow scripts run as Node ES modules; runtime must be 'node' when given.");
     }
     const source = typeof raw.source === "string" && raw.source.trim() ? raw.source : null;
     if (!source) diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.source`, "a script needs non-empty source.");

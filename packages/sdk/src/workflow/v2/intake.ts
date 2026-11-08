@@ -1,10 +1,12 @@
 /**
  * Durable recipient intake (design docs/proposals/workflow-durable-intake.md,
  * revision 3 with amendment 2): the wire-level pieces that the sender, the
- * store's claim and the recipient orchestration (1.0.83) share. The intake
- * is inactive (decision intake-inactive-implementation): no worker sends an
- * envelope, no registered orchestration reads one, and only tests call the
- * store's intake methods.
+ * store's claim and the recipient orchestration (1.0.83) share. Durable
+ * intake is off unless the deployment capability is on
+ * (WorkflowV2RuntimeDeps.workflowIntake; decision
+ * intake-inactive-implementation): while it is off no send attaches an
+ * envelope, so orchestration 1.0.83, which reads one, gets none, and nothing
+ * calls the store's intake methods.
  *
  * Every size here is in UTF-8 bytes of the exact JSON text that is kept
  * (JSON.stringify of the plain value, escaping included), measured the same

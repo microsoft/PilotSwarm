@@ -10,8 +10,7 @@ import type { JsonValue } from "./json.js";
 /**
  * Workflow v2 agent states (IR 8; design 03 agent node, R09 to R11, R16):
  * the host that creates an agent state's child, an ordinary agent session.
- * INACTIVE: only tests build one, and a worker created with the test option
- * workflowRequests (milestone-worker.ts).
+ * Every worker builds one (milestone-worker.ts workflowMilestoneAgentNodes).
  *
  * The child:
  * - is a child session of the workflow (its parent in the session tree), at

@@ -2,10 +2,11 @@
  * Durable recipient intake (design docs/proposals/workflow-durable-intake.md
  * 5.2, 5.4 and section 8, amendment 2): the two activities a session on
  * orchestration 1.0.83 schedules, claimWorkflowIntake and
- * settleWorkflowIntake, as handlers over the workflow store. INACTIVE: only
- * tests call registerWorkflowIntakeActivities, and a worker created with the
- * test option workflowRequests (milestone-worker.ts), as only they serve
- * orchestration 1.0.83.
+ * settleWorkflowIntake, as handlers over the workflow store. Every worker
+ * registers them (milestone-worker.ts registerWorkflowMilestoneSessions); a
+ * session schedules them only for a message that carries an intake envelope,
+ * which a workflow send attaches only while durable intake is on (off unless
+ * the deployment capability is on).
  *
  * - The claim renders the canonical item with the sender's own renderer
  *   (workflowSendPrompt and workflowSendClientMessageId), so the store, which
@@ -227,9 +228,8 @@ export async function runWorkflowIntakeSettle(deps: WorkflowIntakeActivityDeps, 
 }
 
 /**
- * Register the two intake activities on a runtime. While the intake is
- * inactive, only tests and the test-only milestone worker call this; a
- * production worker registers neither.
+ * Register the two intake activities on a runtime. Every worker calls this
+ * through the milestone worker module (registerWorkflowMilestoneSessions).
  */
 export function registerWorkflowIntakeActivities(runtime: Pick<WorkflowV2ActivityRuntime, "registerActivity">, deps: WorkflowIntakeActivityDeps): void {
     const traced = (actx: ActivityContext) => (message: string) => actx.traceWarn(message);

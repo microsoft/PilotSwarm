@@ -2709,7 +2709,7 @@ export function registerActivities(
         // stays registered but unreachable), and a publication pins its named agents: package agents at the registry's
         // exact revision, this worker's deployment and system agents by name (agent-resolver.ts).
         const workflowV2Host = async (): Promise<WorkflowToolHost> => {
-            if (!catalog?.workflowStore) throw new Error("Workflow v2 storage is unavailable on this worker.");
+            if (!catalog?.workflowStore) throw new Error("Workflow storage is unavailable on this worker.");
             const sdkClient = await getInlineClient();
             return {
                 catalog, store: catalog.workflowStore(), duroxideClient: sdkClient._getDuroxideClient(),
@@ -2762,7 +2762,7 @@ export function registerActivities(
         // controller: on this worker's own provider, as notifyParent does, with no inline PilotSwarmClient (so no storeUrl).
         let workflowBridgeClient: WorkflowToolHost["duroxideClient"] | null = null;
         const workflowBridgeHost = async (): Promise<Pick<WorkflowToolHost, "store" | "duroxideClient">> => {
-            if (!catalog?.workflowStore) throw new Error("Workflow v2 storage is unavailable on this worker.");
+            if (!catalog?.workflowStore) throw new Error("Workflow storage is unavailable on this worker.");
             if (!provider) {
                 const host = await workflowV2Host();
                 return { store: host.store, duroxideClient: host.duroxideClient };
@@ -2850,8 +2850,8 @@ export function registerActivities(
         };
 
         /**
-         * Workflow agent states (R12; INACTIVE: only on a turn of a worker that
-         * runs them): a session in the subtree of an agent state whose
+         * Workflow agent states (R12; on a 1.0.83 turn, a workflow request
+         * turn): a session in the subtree of an agent state whose
          * controlling parent agent is this session (recorded when the state
          * was admitted), which this session may message although it is not its
          * child. Null for any other session.

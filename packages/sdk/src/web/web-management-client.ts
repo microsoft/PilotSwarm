@@ -394,8 +394,9 @@ export class WebPilotSwarmManagementClient {
 
     /**
      * Workflow v2: a person's command to a workflow session (updateWorkflow,
-     * session:manage; INACTIVE: the deployment answers 501
-     * WORKFLOW_COMMANDS_UNAVAILABLE unless it enables it). The server stamps
+     * session:manage; taken by default: only a deployment whose management
+     * client was created with `workflowCommands: null` answers 501
+     * WORKFLOW_COMMANDS_UNAVAILABLE). The server stamps
      * the caller as the actor; `options` is accepted for the direct client's
      * signature and not sent.
      */

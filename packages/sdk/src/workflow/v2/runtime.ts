@@ -170,9 +170,8 @@ export const WORKFLOW_V2_NOTIFY_VERSION = "1.0.0";
 export const WORKFLOW_V2_SEND_NAME = "workflow-v2-send";
 export const WORKFLOW_V2_SEND_VERSION = "1.0.0";
 /**
- * Controller 1.9.0 (design workflow-messaging-request.md 8.1, 8.2;
- * INACTIVE: only tests, and a worker created with the test option
- * workflowRequests, register it and start runs at it). It runs request
+ * Controller 1.9.0 (design workflow-messaging-request.md 8.1, 8.2; every
+ * worker registers it, and every new run starts at it). It runs request
  * states as well, and every activity it schedules, and every activity of an
  * orchestration it starts, goes under a name of its own
  * (WORKFLOW_V2_REQUEST_ACTIVITIES) with the workflow-request capability tag,
@@ -293,8 +292,8 @@ export const WORKFLOW_V2_ACTIVITIES = {
  * (design workflow-messaging-request.md 8.2): the legacy activities under
  * names of their own, scheduled with the workflow-request capability tag,
  * the request's own (its responder's observation, its delivery and its
- * delivery's failure) and the graceful stop's end (stop). INACTIVE: only a
- * test registers them.
+ * delivery's failure) and the graceful stop's end (stop). Registered with
+ * controller 1.9.0.
  */
 export const WORKFLOW_V2_REQUEST_ACTIVITIES = {
     begin: "workflow.v2.r1.begin",
@@ -1374,7 +1373,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
 }
 
 /**
- * Controller 1.9.0's loop (INACTIVE; design workflow-messaging-request.md
+ * Controller 1.9.0's loop (design workflow-messaging-request.md
  * 4, 8.1, 8.5): 1.8.0's (controlRun) with these differences. Every activity
  * is tagged (storeTagged, REQUEST_PROFILE). Its plan may hold request states.
  * A request admitted pending starts its delivery orchestration
@@ -2441,13 +2440,12 @@ export interface WorkflowV2RuntimeDeps {
      * (`workflowIntakeV1`, design workflow-durable-intake.md section 4): with
      * it on, a send to an agent session observed at 1.0.83 or later is
      * delivered in durable intake mode. Absent or false: every exchange is
-     * legacy_window. INACTIVE: no worker sets it.
+     * legacy_window. Off in this release: no worker sets it.
      */
     workflowIntake?: () => boolean;
     /**
-     * Request states (design workflow-messaging-request.md 8; INACTIVE: only
-     * a test sets it, and a worker created with the test option
-     * workflowRequests): controller 1.9.0, the orchestrations it starts at
+     * Request states (design workflow-messaging-request.md 8; every worker
+     * sets it): controller 1.9.0, the orchestrations it starts at
      * WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION, a request's delivery, and
      * their tagged activities are registered. Absent or false: none is, and
      * nothing reads IR 7.
@@ -2460,8 +2458,7 @@ export interface WorkflowV2RuntimeDeps {
      */
     respondToolAvailable?: (sessionId: string) => Promise<boolean>;
     /**
-     * Agent states (IR 8; INACTIVE: only a test passes it, with
-     * workflowRequests, and a worker created with that test option, whose
+     * Agent states (IR 8; every worker passes it, with workflowRequests; its
      * host is milestone-worker.ts's): what creates an agent state's child
      * agent session.
      * Absent: an agent state fails unavailable when its child would be
@@ -2507,8 +2504,8 @@ export interface WorkflowAgentSpawnRequest {
 }
 
 /**
- * What creates agent states' children (WorkflowV2RuntimeDeps.agentNodes;
- * INACTIVE). spawn creates the child session, or finds the one an earlier
+ * What creates agent states' children (WorkflowV2RuntimeDeps.agentNodes).
+ * spawn creates the child session, or finds the one an earlier
  * attempt created (its id is stable), and gives it its first prompt once.
  * A refusal no retry can change (an unknown or invisible agent definition,
  * or one the workflow's owner may not use) is returned; anything else
@@ -4833,7 +4830,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         }
         const status = message.recipientKind === "agent" ? await queue.status(recipient) : null;
         const ended = status !== null && ENDED_SESSION_STATUSES.includes(status);
-        // Durable recipient intake (design workflow-durable-intake.md section 4; INACTIVE unless the deployment capability
+        // Durable recipient intake (design workflow-durable-intake.md section 4; off unless the deployment capability
         // is on): an agent recipient whose live session orchestration was observed at 1.0.83 or later. Read before the
         // transaction, for a live session only: an observation, not a fence; the count decides the mode once, under the
         // outbox lock. A failed read fails this attempt before its count, with nothing enqueued.

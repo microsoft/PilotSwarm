@@ -87,12 +87,13 @@ const SESSION_ATTACHED_TOOL_NAMES = [
 ] as const;
 
 /**
- * Workflow v2 turn tools (INACTIVE: only a turn of a worker that runs
- * controller 1.9.0 declares them, ManagedSession.subAgentToolDefs):
- * respond_session_request on every such turn, complete_workflow_node for an
- * agent state's own child. Reserved whatever a session declares, for the
- * reason above: an ordinary session never declares them, so a package or
- * capability tool of either name would otherwise pass validation and then
+ * Workflow v2 turn tools (ManagedSession.subAgentToolDefs):
+ * respond_session_request on every turn of session orchestration 1.0.83 (a
+ * workflow request turn), complete_workflow_node for an agent state's own
+ * child. Reserved whatever a session declares, for the reason above: not
+ * every turn declares them (a frozen version's turn declares neither, and
+ * only an agent state's child declares complete_workflow_node), so a package
+ * or capability tool of either name would otherwise pass validation and then
  * be declared twice beside the platform's on such a turn. The names equal
  * RESPOND_SESSION_REQUEST_TOOL and COMPLETE_WORKFLOW_NODE_TOOL (a unit test
  * keeps them equal; their modules are not imported here).

@@ -124,8 +124,9 @@ type CarriedSteersConsumedCarrier = {
 };
 
 /**
- * Workflow intake (1.0.83, runTurnV5, INACTIVE; design
- * workflow-durable-intake.md 5.5, exposure protocol revision 2): the
+ * Workflow intake (1.0.83, runTurnV5; design workflow-durable-intake.md
+ * 5.5, exposure protocol revision 2; durable intake is off unless the
+ * deployment capability is on): the
  * dispatch witness of the attempt that carried an invocation, on every
  * result of that attempt. `sent` is true only once the model request that
  * included its items, after the store admitted them, was about to be issued
@@ -216,8 +217,10 @@ export interface TurnOptions {
      */
     turnControl?: import("./turn-control.js").TurnControlBinding;
     /**
-     * Workflow intake (runTurnV5, INACTIVE; exposure protocol revision 2,
-     * section 4): the carried items' admission. After every check that ends
+     * Workflow intake (runTurnV5, only on a turn that carries an intake
+     * invocation; durable intake is off unless the deployment capability is
+     * on; exposure protocol revision 2, section 4): the carried items'
+     * admission. After every check that ends
      * a run without a send (a missing required tool, a held Stop), the run
      * awaits `admit`, raced with its guards (the turn timeout, the inactivity
      * watchdog) and with a Stop, an abort or a forced settle, then checks

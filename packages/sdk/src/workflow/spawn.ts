@@ -68,7 +68,7 @@ export async function spawnWorkflowFromTool(
             // the tool binding is read, or anything else (e02ec6f8 run). Only the A1 refusal above comes first: inside a Workflow
             // no definition tool works at all, and it reads only the stored lineage.
             try { requireWorkflowScriptsInYaml(deps.enabled(), args.yaml, args.start === true ? "start" : "save"); } catch (error) { return workflowToolErrorPayload(error); }
-            if (!deps.workflowV2Host) return JSON.stringify({ ok: false, error: { code: "WORKFLOW_V2_UNAVAILABLE", message: "This worker cannot store v2 workflows." } });
+            if (!deps.workflowV2Host) return JSON.stringify({ ok: false, error: { code: "WORKFLOW_V2_UNAVAILABLE", message: "This worker cannot store Workflows." } });
             const slug = typeof args.key === "string" && args.key.trim() ? `key:${args.key.trim()}` : `call:${call?.toolCallId ?? ""}`;
             if (slug === "call:") return JSON.stringify({ ok: false, error: { code: "WORKFLOW_COMMAND_INVALID", message: "spawn_workflow needs a key or a tool call id." } });
             // Stage 2.1 (D2): spawn_workflow saves a revision of the chat's definition of this name and, with start, starts

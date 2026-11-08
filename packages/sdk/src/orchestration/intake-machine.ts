@@ -1,5 +1,6 @@
 /**
- * Orchestration 1.0.83 (INACTIVE): the durable intake's transitions (design
+ * Orchestration 1.0.83 (the latest version; durable intake is off unless the
+ * deployment capability is on): the durable intake's transitions (design
  * docs/proposals/workflow-durable-intake.md 5.2 to 5.5, 5.7 and 9, amendment
  * 2), as pure functions of the carried intake state (intake-state.ts).
  *

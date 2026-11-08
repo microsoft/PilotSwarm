@@ -267,7 +267,7 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
             // so it answers as the portal does for one. A test that needs a v2 read model routes this path itself.
             if (/\/sessions\/[^/]+\/workflow$/.test(pathname) && req.method === "GET") {
                 res.writeHead(404, { "content-type": "application/json" });
-                res.end(JSON.stringify({ ok: false, error: { code: "WORKFLOW_NOT_FOUND", message: "This session is not a version 2 workflow." } }));
+                res.end(JSON.stringify({ ok: false, error: { code: "WORKFLOW_NOT_FOUND", message: "This session is not a durable Workflow." } }));
                 return;
             }
             const sessionMatch = /\/sessions\/([^/]+)$/.exec(pathname);

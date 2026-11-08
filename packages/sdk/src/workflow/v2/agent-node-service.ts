@@ -12,8 +12,8 @@ import {
 
 /**
  * Workflow v2 agent states (IR 8; design 03 agent node, 04 tool surface):
- * the child's completion tool. INACTIVE: only a test gives an agent state's
- * child this tool (on a turn of a worker that runs controller 1.9.0).
+ * the child's completion tool, which an agent state's own child is given on
+ * its 1.0.83 turns (session-proxy, from the session's stored lineage).
  */
 
 /** The tool an agent state's child finishes its state with. */

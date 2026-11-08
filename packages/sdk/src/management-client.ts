@@ -1994,18 +1994,18 @@ export class PilotSwarmManagementClient {
      * not-found privacy, before this runs; the direct client is trusted). This
      * is the human read adapter, separate from the agent tool: it never acts
      * as the workflow's parent, and it changes nothing. A missing or deleted
-     * session is NOT_FOUND (404), a session that is not a version 2 workflow
+     * session is NOT_FOUND (404), a session that is not a durable Workflow
      * WORKFLOW_NOT_FOUND (404), a run that is not one of its runs
      * RUN_NOT_FOUND (404), an execution that is not one of the run's
      * EXECUTION_NOT_FOUND (404), an invalid run id INVALID_REQUEST (400), a
      * cursor that is not one a read of this workflow returned
      * WORKFLOW_CURSOR_INVALID (400), and an invalid limit or execution id, or
      * a cursor and an execution id together, WORKFLOW_READ_INVALID (400). A
-     * client created with the test-only option `workflowCommands`
+     * client that takes a person's commands (`workflowCommands`, on by default)
      * also reports, with the view, the commands the workflow takes from a
      * person (`personCommands`, human-commands.ts), so a screen offers only
      * those, and, for a draft a person may change, its current YAML
-     * (`personCommands.draft`); without it the view is exactly the tool's.
+     * (`personCommands.draft`); with `workflowCommands: null` the view is exactly the tool's.
      * A store that cannot be reached or has no room now is
      * WORKFLOW_STORE_UNAVAILABLE (503) with its reason (batch 7, n-3).
      */
@@ -2029,7 +2029,7 @@ export class PilotSwarmManagementClient {
         const session = await this._catalog!.getSession(sessionId);
         if (!session || session.deletedAt) throw failure("NOT_FOUND", 404, "Session not found.");
         const store = this._catalog!.workflowStore?.();
-        if (session.sessionKind !== "workflow" || !store) throw failure("WORKFLOW_NOT_FOUND", 404, "This session is not a version 2 workflow.");
+        if (session.sessionKind !== "workflow" || !store) throw failure("WORKFLOW_NOT_FOUND", 404, "This session is not a durable Workflow.");
         const request = { ...options, runId };
         const enabled = this.config?.workflowCommands;
         let view: Record<string, unknown>;
@@ -2063,13 +2063,13 @@ export class PilotSwarmManagementClient {
 
     /**
      * Workflow v2: a person's command to a workflow session (updateWorkflow;
-     * design 04, R26; INACTIVE: only a client created with the test-only
-     * option `workflowCommands` takes one, otherwise
-     * WORKFLOW_COMMANDS_UNAVAILABLE, 501, and nothing changes). The command is
+     * design 04, R26). Taken by default; a client created with
+     * `workflowCommands: null` refuses every command
+     * WORKFLOW_COMMANDS_UNAVAILABLE, 501, and nothing changes. The command is
      * the update_workflow tool's: `operation`, `operation_id` and the
      * operation's arguments (replace_definition, publish, publish_and_start,
-     * start, set_vars, pause, resume, cancel; stop and the test operations
-     * when the workers run controller 1.9.0), run by the same implementation
+     * start, set_vars, pause, resume, cancel; stop, and the test operations
+     * while workflow test mode is on), run by the same implementation
      * (human-commands.ts). Authorization is the caller's (the portal gates
      * the session before this runs; the direct client is trusted), and its
      * actor is `options.principal` (a user) or, without one, this client as
@@ -2104,7 +2104,7 @@ export class PilotSwarmManagementClient {
         const session = await this._catalog!.getSession(sessionId);
         if (!session || session.deletedAt) throw failure("NOT_FOUND", 404, "Session not found.");
         const store = this._catalog!.workflowStore?.();
-        if (session.sessionKind !== "workflow" || !store) throw failure("WORKFLOW_NOT_FOUND", 404, "This session is not a version 2 workflow.");
+        if (session.sessionKind !== "workflow" || !store) throw failure("WORKFLOW_NOT_FOUND", 404, "This session is not a durable Workflow.");
         const provider = typeof options.principal?.provider === "string" ? options.principal.provider.trim() : "";
         const subject = typeof options.principal?.subject === "string" ? options.principal.subject.trim() : "";
         const actor: WorkflowActor = provider && subject ? { kind: "user", provider, subject } : { kind: "system", name: "management-client" };
@@ -2140,9 +2140,9 @@ export class PilotSwarmManagementClient {
      * "Advertise capability/version in bootstrap"; D11), for a server's
      * bootstrap and any client that gates its workflow surface
      * (workflowCapabilities, human-commands.ts): version 2 reads when the
-     * catalog has a workflow store; a person's commands only with the
-     * test-only option `workflowCommands` (INACTIVE; otherwise the refusal
-     * every command gets), with the controller version the runs they start run
+     * catalog has a workflow store; a person's commands unless the client
+     * was created with `workflowCommands: null` (then the refusal every
+     * command gets), with the controller version the runs they start run
      * at and the operations they take. It reports configuration and changes
      * nothing. Async, as the Web client's answer is (from the server's
      * bootstrap).

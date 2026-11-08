@@ -9,9 +9,9 @@ import { resolveWorkflowTestMode, WORKFLOW_TEST_MODE_OPERATIONS } from "./test-m
 
 /**
  * Workflow v2: a person's command to a workflow session (design 04 REST/SDK/MCP
- * mapping: `updateWorkflow`, POST /sessions/{id}/workflow/commands; R26, D11;
- * INACTIVE: only a management client created with the test-only option
- * `workflowCommands` takes one).
+ * mapping: `updateWorkflow`, POST /sessions/{id}/workflow/commands; R26, D11).
+ * A management client takes one unless it was created with
+ * `workflowCommands: null`.
  *
  * The command is the update_workflow tool's command (same operations, same
  * arguments, same receipts), run by the same implementation
@@ -23,7 +23,7 @@ import { resolveWorkflowTestMode, WORKFLOW_TEST_MODE_OPERATIONS } from "./test-m
  *   host itself (system); a command never names its actor, and an agent's
  *   actor is refused here (an agent uses its tool).
  * - The command targets the session it is sent to: a workflow_id, when given,
- *   must be that session. It must be a version 2 workflow that exists and is
+ *   must be that session. It must be a durable Workflow that exists and is
  *   not deleted (WORKFLOW_NOT_FOUND).
  * - recover stays an agent's (and an operator's) path: it is refused here.
  * - Human input to a workflow agent state's subtree (design 03; R13, R14): a
@@ -74,9 +74,10 @@ export const WORKFLOW_CAPABILITIES_SCHEMA = 1;
  *   sends one no typed input over this API; the workflow's parent agent does
  *   (spawn_workflow, send_workflow_input).
  * - v2.commands: a person's commands (updateWorkflow, POST
- *   /sessions/{id}/workflow/commands). Off unless the host was created with
- *   the test-only option workflowCommands: then it names the
- *   refusal every command gets (501 WORKFLOW_COMMANDS_UNAVAILABLE). On: the
+ *   /sessions/{id}/workflow/commands). On unless the host has no
+ *   workflowCommands (a management client created with `workflowCommands:
+ *   null`): then it names the refusal every command gets (501
+ *   WORKFLOW_COMMANDS_UNAVAILABLE). On: the
  *   controller version the runs they start run at, and the operations they
  *   take (a workflow in a workflow agent state's subtree takes fewer; its read
  *   model's personCommands names them).
@@ -117,8 +118,8 @@ export function workflowCapabilities(options: { read: boolean; commands: { reque
 
 /**
  * The commands a workflow session takes from a person (design 04; R26, R13),
- * as its read model reports them (`personCommands`; INACTIVE: the management
- * client adds it only when it takes a person's commands), so a screen offers
+ * as its read model reports them (`personCommands`; the management client
+ * adds it whenever it takes a person's commands, as it does by default), so a screen offers
  * only commands the workflow would take. It decides nothing:
  * updateWorkflowForPerson decides each command again, and the caller's access
  * to the session is decided where the read model is served (the portal adds
@@ -253,7 +254,7 @@ export async function updateWorkflowForPerson(command: unknown,
     const absent = workflowTestModeAbsentError(args.operation, host);
     const [row, definition] = await Promise.all([host.catalog.getSession(workflowSessionId), host.store.readDefinition(workflowSessionId)]);
     if (!row || row.deletedAt || row.sessionKind !== "workflow" || !definition) {
-        throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `Session ${workflowSessionId} is not a version 2 workflow.`);
+        throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `Session ${workflowSessionId} is not a durable Workflow.`);
     }
     if (typeof args.operation !== "string" || !WORKFLOW_HUMAN_BRAKE_OPERATIONS.includes(args.operation)) {
         const lineage = await host.store.readWorkflowLineage(workflowSessionId);

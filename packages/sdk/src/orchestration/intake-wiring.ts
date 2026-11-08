@@ -1,5 +1,6 @@
 /**
- * Orchestration 1.0.83 (INACTIVE): the durable intake wired into drain, the
+ * Orchestration 1.0.83 (the latest version; durable intake is off unless the
+ * deployment capability is on): the durable intake wired into drain, the
  * pre-dispatch sweep, decide and the turn (design
  * docs/proposals/workflow-durable-intake.md 3, 5.3 to 5.5, 6.1, 6.2 and
  * section 8, amendment 2). The transitions are intake-machine.ts's; this
@@ -66,9 +67,11 @@
  *   a newly arrived prompt as its system context: the released timer's note
  *   and the buffered child digest (6.2); never during a graceful shutdown.
  *
- * Inactive: no production registry entry, latest version, start, upward
- * continue-as-new, worker capability or tool routes to this code; only
- * tests register 1.0.83 and the turn activities that carry `intake`.
+ * 1.0.83 is the latest version: every worker registers it and the turn
+ * activities that carry `intake`. A session's intake state stays empty, and
+ * this code makes no intake activity call, until a message that carries
+ * `workflowIntake` arrives; a workflow send attaches one only while durable
+ * intake is on (off unless the deployment capability is on).
  */
 import { routeWorkflowRequestActivity } from "../activity-routing.js";
 import { IntakeShapeError, WORKFLOW_INTAKE_ACTIVITIES, WORKFLOW_INTAKE_NON_RETRYABLE, intakeObject, type IntakeTurnField } from "../workflow/v2/intake.js";
