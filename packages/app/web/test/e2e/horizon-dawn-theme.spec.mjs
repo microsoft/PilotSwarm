@@ -15,13 +15,15 @@ let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 2, transcriptTurns: 1 }); });
 test.afterAll(async () => { if (stub) await new Promise(resolve => stub.server.close(resolve)); });
 
-async function openTheme(page, viewport) {
+async function openTheme(page, viewport, soundOn = true) {
     const failed = [];
     page.on("requestfailed", request => failed.push(request.url()));
     page.on("response", response => { if (response.status() >= 400 && /horizon-dawn|sora|\.svg|\.woff2/i.test(response.url())) failed.push(`${response.status()} ${response.url()}`); });
     await page.route("**/api/v1/**", route => {
         const url = new URL(route.request().url());
-        if (url.pathname.endsWith("/me/profile")) return route.fulfill({ json: { ok: true, result: { profileSettings: { themeId: "horizon-dawn" } } } });
+        if (url.pathname.endsWith("/me/profile")) return route.fulfill({ json: { ok: true, result: { profileSettings: {
+            themeId: "horizon-dawn", themeSound: { on: soundOn, volume: 40 }, themeSoundMobile: { on: soundOn, volume: 40 },
+        } } } });
         return route.fallback();
     });
     await page.setViewportSize(viewport);
@@ -36,6 +38,34 @@ const layers = page => page.locator(".portal-header").evaluate(header => getComp
 // the large ones as hashed files, so a layer is found by either form.
 const art = name => new RegExp(`hd-${name}(?![-a-z])|/${name}-[A-Za-z0-9_-]{8}\\.svg`);
 const where = (images, name) => images.search(art(name));
+
+for (const soundOn of [true, false]) test(`cyan accent: appearance cue respects sounds ${soundOn ? "on" : "off"}`, async ({ page }) => {
+    await page.addInitScript(() => {
+        Math.random = () => 0;
+        window.accentSweeps = 0;
+        const create = AudioContext.prototype.createOscillator;
+        AudioContext.prototype.createOscillator = function () {
+            const osc = create.call(this), frequencies = [];
+            const set = osc.frequency.setValueAtTime.bind(osc.frequency);
+            const ramp = osc.frequency.exponentialRampToValueAtTime.bind(osc.frequency);
+            osc.frequency.setValueAtTime = (value, time) => { frequencies.push(value); return set(value, time); };
+            osc.frequency.exponentialRampToValueAtTime = (value, time) => { frequencies.push(value); return ramp(value, time); };
+            const start = osc.start.bind(osc);
+            osc.start = (...args) => {
+                if (frequencies[0] === 660 && frequencies[1] === 1320) window.accentSweeps += 1;
+                return start(...args);
+            };
+            return osc;
+        };
+    });
+    await page.clock.install();
+    await openTheme(page, { width: 390, height: 844 }, soundOn);
+    await page.locator(".portal-header-brand").click();
+    await page.clock.runFor(500);
+    await page.clock.fastForward(30_001);
+    await expect(page.locator(".portal-header-accent")).toHaveAttribute("data-active", "true");
+    expect(await page.evaluate(() => window.accentSweeps)).toBe(soundOn ? 1 : 0);
+});
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     test(`cyan accent ${viewport.width}px: solid dot and fading trail stay in the header without changing geometry`, async ({ page }) => {
