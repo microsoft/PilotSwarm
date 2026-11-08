@@ -365,30 +365,49 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
 
     // V-2 at the rollover: the condition the old pre-continue-as-new drain met. A paused run counts every wait, so with wakes
     // flowing it reaches its 50th wait and continues as new while the queue is still being filled; the old drain read on
-    // until the queue was empty. The run deadline must still end the run on time, and the controller must roll over.
+    // until the queue was empty. The run deadline must still end the run, and the controller must roll over.
+    //
+    // Deterministic (review of the DEV runs at d52e5ed2, aa5bb84a and 67fe212c): each counted wait of a paused 1.9.0 run is
+    // one pass of its loop, a store collection and at least one orchestration turn, and under four producers every queued
+    // wake adds a history event and a turn that replays the whole history. How many passes fit in the run's 15 s depends
+    // on the machine; at 67fe212c the deadline came at the 49th counted wait (its 54 status writes: begin, admission, one
+    // per pass and the end), one short of the rollover, and the run ended with no continue-as-new. So the store's expire
+    // answers "not yet" (as when its clock is behind the controller's: the controller moves its deadline later and goes on)
+    // until the controller has continued as new; from then on the store decides as it does. The rollover no longer races
+    // the deadline, and the run still ends by its deadline, through the store, in the new execution.
     it("V-2 (1.9.0): under sustained wakes a paused run continues as new and still ends at its run deadline", { timeout: TIMEOUT }, async () => {
-        const h = await harness(getEnv(), { requests: true });
+        let rolledOver = async () => false;
+        let held = 0;
+        const h = await harness(getEnv(), { requests: true, wrap: {
+            [WORKFLOW_V2_REQUEST_ACTIVITIES.expire]: fn => async (ctx, input) => {
+                if (await rolledOver()) return fn(ctx, input);
+                held += 1;
+                return { ended: false, remainingMs: 60_000 };
+            },
+        } });
         let pump = null;
         try {
             const DEADLINE_SECONDS = 15;
             const run = await started(h, HOLD({ limits: { timeoutSeconds: DEADLINE_SECONDS } }));
             const began = Date.now();
-            const diagnose = diagnosis(h, run.controller);
+            const diagnose = async () => ({ ...(await diagnosis(h, run.controller)()), heldExpires: held });
             await until(async () => (await h.store.listNodeExecutions(run.runId)).some(node => node.nodeId === "hold" && node.state === "pending") || null,
                 "the wait to start", 30_000, diagnose);
             await controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "pause", runId: null, reason: "hold still" },
                 { actor: ACTOR, operationId: "pause-1" });
             await until(async () => (await h.store.readRun(run.runId))?.status === "paused" || null, "the pause", 30_000, diagnose);
             const executions = (await h.client.listExecutions(run.controller)).length;
+            rolledOver = async () => (await h.client.listExecutions(run.controller)).length > executions;
             pump = pumpWakes(h, run.controller, run.runId, 4);
             // The rollover happens while the wakes flow: more executions, and at least 50 accepted wakes (one per paused wait).
-            await until(async () => (await h.client.listExecutions(run.controller)).length > executions || null,
-                "a continue-as-new under sustained wakes", 30_000, diagnose);
+            await until(rolledOver, "a continue-as-new under sustained wakes", 90_000, diagnose);
+            const rolledAt = Date.now();
             expect(pump.sent()).toBeGreaterThanOrEqual(50);
             const atRollover = pump.sent();
-            const endedRun = await ended(h, run.runId, diagnose, (DEADLINE_SECONDS + 25) * 1_000);
+            // It ends at its deadline, or at once after the rollover when that came later.
+            const endedRun = await ended(h, run.runId, diagnose, 30_000);
             expect(endedRun).toMatchObject({ runId: run.runId, status: "failed", terminalNodeId: null });
-            expect(Date.now() - began).toBeLessThan((DEADLINE_SECONDS + 25) * 1_000);
+            expect(Date.now() - Math.max(began + DEADLINE_SECONDS * 1_000, rolledAt)).toBeLessThan(25_000);
             expect(pump.sent(), "wakes kept flowing after the rollover").toBeGreaterThan(atRollover);
             await pump.stop();
             pump = null;
