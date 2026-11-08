@@ -497,34 +497,33 @@ drop the bootstrap admin password from Key Vault and the
 SecretProviderClass once their deploy path is on duroxide-node ≥ 0.1.25
 (pilotswarm-sdk ≥ 0.1.30).
 
-## Workflow V2 test environment (test-only, isolated environments only)
+## Workflows: always on, with the full engine
 
-Workflow V2's milestone features are INACTIVE in every deployment by default.
-An isolated test environment turns them on with one variable, set the same
-way on every PilotSwarm workload of that environment:
+Workflows need no setting. Every worker serves session orchestration 1.0.83
+(the latest version) and Workflow controller 1.9.0: agent, parallel and request
+states, clock waits, revision tests and a person's workflow commands, on every
+deployment. Script states still need `PILOTSWARM_WORKFLOW_SCRIPTS=1` on the
+workers, and workflow test mode still needs `PILOTSWARM_WORKFLOW_TEST_MODE=on`.
 
-| Variable | Enabling value | Effect when it is exactly that value |
-|---|---|---|
-| `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` | `isolated-test-only` | Workers (the `worker` image's `packages/sdk/examples/worker.js`, and the portal's embedded workers in local mode) serve controller 1.9.0 and session orchestration 1.0.83 (`testOptions.workflowRequests`). The portal and the MCP server take a person's workflow commands (`workflowCommands: { requests: true }`): stop, test, test answers and the virtual clock included. The portal's and the MCP server's direct-mode clients start new sessions at 1.0.83; sessions started before keep 1.0.82. |
+Two settings are retired. A deployment that still sets one, to any value, is
+ignored with one startup warning on each worker, the portal and the MCP server;
+remove it from the environment:
 
-- Unset, empty or any other value (`1`, `true`, `on`, another case, extra
-  spaces) is off: every option is exactly as without the variable. Each
-  entry point logs one line when the variable is set: ON, or "ignored".
-- Every worker that shares the environment's database must run the same
-  image with the same value. Duroxide cannot route orchestration items by
-  version, so an older worker, or one without the switch, would fetch and
-  fail 1.9.0 and 1.0.83 work. Do not set it in an environment shared with
-  another fleet.
-- It is not an activation: production defaults, the latest session
-  orchestration version (1.0.82) and the orchestration registry do not
-  change; sessions started at the latest version run as before.
-- Workflows themselves are always on, everywhere; they need no setting.
-  `PILOTSWARM_WORKFLOWS` is retired: a deployment that still sets it is
-  ignored with one startup warning, so remove it from the environment.
-- Script states still need `PILOTSWARM_WORKFLOW_SCRIPTS=1` on the workers
-  (unchanged). The workflow-authoring skills are not loaded by this switch.
-- See `docs/proposals/workflow-v2-milestone.md` for what the milestone
-  serves and what it does not cover.
+| Retired variable | Why |
+|---|---|
+| `PILOTSWARM_WORKFLOWS` | Workflows are always on. |
+| `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` | Every worker runs the full Workflow engine. |
+
+Rolling out this release follows the earlier orchestration bumps (design.md,
+"Rolling deployment and rollback"): sessions of the previous release keep
+replaying on the frozen 1.0.82 and move to 1.0.83 at their next
+continue-as-new. Roll the workers before, or with, the portal. A worker of the
+previous image that fetches a 1.0.83 or controller 1.9.0 item has no such
+version and abandons it with duroxide's unregistered-version backoff, so a
+worker of this image takes it; the 1.0.83 turn and intake activities carry the
+workflow-request capability tag, so the previous image never fetches them. As
+for every release, run one image per database and leave no old workers in
+another namespace.
 
 ## Model provider types and runtime instances
 

@@ -313,7 +313,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Stage 2.3: a person's Make a copy of a package's locked Workflow Definition in a chat (INACTIVE: 501 unless the deployment enables a person's workflow commands): its revision (default the newest) is saved as the chat's own, editable definition at revision 1, named as its YAML names it; the chat reads a note about it on its next turn. A name the chat already has refuses it (409 DEFINITION_EXISTS). Owner or admin.
+     * Stage 2.3: a person's Make a copy of a package's locked Workflow Definition in a chat (every deployment takes a person's workflow commands; 501 only from a client created without them): its revision (default the newest) is saved as the chat's own, editable definition at revision 1, named as its YAML names it; the chat reads a note about it on its next turn. A name the chat already has refuses it (409 DEFINITION_EXISTS). Owner or admin.
      * @remarks `POST /sessions/:sessionId/workflow-definitions/copy` — access: `session:manage`
      */
     copyChatWorkflowDefinition(params: {
@@ -435,7 +435,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * A person deletes a chat's Workflow Definition (INACTIVE: 501 unless enabled). Refused while one of its Workflows is running (409 DEFINITION_IN_USE, naming them). Its revisions stay, so a finished Workflow keeps its copy. Owner or admin.
+     * A person deletes a chat's Workflow Definition (501 only from a client created without a person's workflow commands). Refused while one of its Workflows is running (409 DEFINITION_IN_USE, naming them). Its revisions stay, so a finished Workflow keeps its copy. Owner or admin.
      * @remarks `POST /sessions/:sessionId/workflow-definitions/delete` — access: `session:manage`
      */
     deleteChatWorkflowDefinition(params: {
@@ -1484,7 +1484,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * A person saves the next revision of a chat's Workflow Definition (INACTIVE: 501 WORKFLOW_COMMANDS_UNAVAILABLE unless the deployment enables a person's workflow commands). definitionId and expectedRevision name the revision the edit was based on; without them, the first save of name. A newer revision saved meanwhile refuses it (409 REVISION_STALE, with who saved it and when); a deleted definition 409 DEFINITION_DELETED; a revision with errors is saved with them. The chat reads a note about it on its next turn; nothing wakes it. Owner or admin; operationId makes a retry return its first receipt.
+     * A person saves the next revision of a chat's Workflow Definition (every deployment takes a person's workflow commands; 501 WORKFLOW_COMMANDS_UNAVAILABLE only from a client created without them). definitionId and expectedRevision name the revision the edit was based on; without them, the first save of name. A newer revision saved meanwhile refuses it (409 REVISION_STALE, with who saved it and when); a deleted definition 409 DEFINITION_DELETED; a revision with errors is saved with them. The chat reads a note about it on its next turn; nothing wakes it. Owner or admin; operationId makes a retry return its first receipt.
      * @remarks `POST /sessions/:sessionId/workflow-definitions/save` — access: `session:manage`
      */
     saveChatWorkflowDefinition(params: {
@@ -1798,7 +1798,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * A person starts a new Workflow from a revision of a chat's Workflow Definition (INACTIVE: 501 unless enabled): revision, default the newest valid one; runAgainOf, a Workflow of this definition whose revision is started again (with its agent node models unless agentModels is given); agentModels (OF-S2-7), optional: agent node id (its key under states:) to { model: provider:model, reasoningEffort?, contextTier? }, checked against that revision and the owning chat's catalog (the agent nodes spend as that chat's owner, whoever starts it), an effort or tier being one the model lists (400 AGENT_MODELS_INVALID, 422 AGENT_MODEL_UNAVAILABLE); an empty map clears Run again's choices; without it every agent node uses the chat's model. Refused for a chat that has ended (409 CHAT_NOT_LIVE), a deleted definition (409 DEFINITION_DELETED) or a revision with errors (422 DEFINITION_INVALID). Owner or admin; operationId names the new Workflow, so a retry returns it.
+     * A person starts a new Workflow from a revision of a chat's Workflow Definition (501 only from a client created without a person's workflow commands): revision, default the newest valid one; runAgainOf, a Workflow of this definition whose revision is started again (with its agent node models unless agentModels is given); agentModels (OF-S2-7), optional: agent node id (its key under states:) to { model: provider:model, reasoningEffort?, contextTier? }, checked against that revision and the owning chat's catalog (the agent nodes spend as that chat's owner, whoever starts it), an effort or tier being one the model lists (400 AGENT_MODELS_INVALID, 422 AGENT_MODEL_UNAVAILABLE); an empty map clears Run again's choices; without it every agent node uses the chat's model. Refused for a chat that has ended (409 CHAT_NOT_LIVE), a deleted definition (409 DEFINITION_DELETED) or a revision with errors (422 DEFINITION_INVALID). Owner or admin; operationId names the new Workflow, so a retry returns it.
      * @remarks `POST /sessions/:sessionId/workflow-definitions/start` — access: `session:manage`
      */
     startChatWorkflowDefinition(params: {
@@ -1878,7 +1878,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Stage 2.3: a person takes the package's newer version of a locked Workflow Definition for the chat's next Workflow (INACTIVE: 501 unless enabled): it becomes the definition's next revision; running Workflows keep theirs. Owner or admin.
+     * Stage 2.3: a person takes the package's newer version of a locked Workflow Definition for the chat's next Workflow (501 only from a client created without a person's workflow commands): it becomes the definition's next revision; running Workflows keep theirs. Owner or admin.
      * @remarks `POST /sessions/:sessionId/workflow-definitions/update-package` — access: `session:manage`
      */
     updateChatWorkflowPackage(params: {
@@ -1915,7 +1915,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * A person's command to a version 2 workflow session (INACTIVE: 501 WORKFLOW_COMMANDS_UNAVAILABLE unless the deployment enables it): command is the update_workflow tool's command (operation, operation_id and the operation's arguments), run by the same implementation; the actor is the signed-in caller. Owner or admin only, enforced even while the ownership switch is off. A workflow in a workflow agent state's subtree takes only pause, stop and cancel (403 WORKFLOW_HUMAN_INPUT_DENIED). originatingSessionId (optional): the session the command comes from, when a caller passes one on for an agent; a definition operation from a session inside a Workflow is refused (403 WORKFLOW_DEFINITION_TOOLS_REFUSED). 404 WORKFLOW_NOT_FOUND for a session that is not a version 2 workflow; refusals carry their status and details.
+     * A person's command to a version 2 workflow session (every deployment takes it; 501 WORKFLOW_COMMANDS_UNAVAILABLE only from a client created without a person's workflow commands): command is the update_workflow tool's command (operation, operation_id and the operation's arguments), run by the same implementation; the actor is the signed-in caller. Owner or admin only, enforced even while the ownership switch is off. A workflow in a workflow agent state's subtree takes only pause, stop and cancel (403 WORKFLOW_HUMAN_INPUT_DENIED). originatingSessionId (optional): the session the command comes from, when a caller passes one on for an agent; a definition operation from a session inside a Workflow is refused (403 WORKFLOW_DEFINITION_TOOLS_REFUSED). 404 WORKFLOW_NOT_FOUND for a session that is not a version 2 workflow; refusals carry their status and details.
      * @remarks `POST /sessions/:sessionId/workflow/commands` — access: `session:manage`
      */
     updateWorkflow(params: {

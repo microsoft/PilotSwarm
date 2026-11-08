@@ -15,7 +15,7 @@ export type WorkflowReadOptions = { [K in Exclude<keyof ReadWorkflowParams, "ses
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 /**
- * Workflow intake (runTurnV5, INACTIVE): a run that ended before its request
+ * Workflow intake (runTurnV5): a run that ended before its request
  * was sent, with nothing sent: a Stop's abort, a forced settle or the
  * activity's cancellation while it awaited its admission, or an activity
  * cancelled before the run started.
@@ -323,21 +323,21 @@ export interface TurnOptions {
         /**
          * Workflow v2 request states: answer a workflow's request as this
          * session (respond_session_request). Present only on a 1.0.83 turn of
-         * a worker that runs request states (INACTIVE: only tests). Returns JSON.
+         * a worker that runs request states. Returns JSON.
          */
         respondSessionRequest?(args: Record<string, unknown>): Promise<string>;
         /**
          * Workflow v2 agent states: finish the workflow state this session
          * runs with a typed result (complete_workflow_node). Present only for
          * an agent state's child on a turn of a worker that runs agent states
-         * (INACTIVE: only tests). Returns JSON.
+         *. Returns JSON.
          */
         completeWorkflowNode?(args: Record<string, unknown>): Promise<string>;
         /**
          * Workflow v2 agent states: this session is in an agent state's
          * subtree (its stored lineage), so ask_user is refused with guidance
          * instead of asking a person (R14). Set only on a turn of a worker
-         * that runs agent states (INACTIVE: only tests).
+         * that runs agent states.
          */
         workflowAgentSubtree?: boolean;
         /**
@@ -347,12 +347,12 @@ export interface TurnOptions {
          * ask_user) is intercepted through this function instead of running,
          * and returns the answer the test gives it; MCP tools are refused
          * for the turn. Set only on a turn of a worker that runs agent states
-         * (INACTIVE: only tests).
+         *.
          */
         workflowTestToolCall?(tool: string, args: Record<string, unknown>): Promise<unknown>;
         /**
          * Workflow v2: this turn runs on a worker that runs controller 1.9.0
-         * (INACTIVE: only tests register one). Its workflow tools take request,
+         *. Its workflow tools take request,
          * agent and parallel states and the stop and test operations, and
          * their descriptions say so; every other turn's are unchanged.
          */
@@ -843,7 +843,7 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
      */
     workspaceCleared?: boolean;
     /**
-     * Workflow v2 (INACTIVE: only the test option workflowRequests sets it):
+     * Workflow v2:
      * this turn runs on a worker that runs controller 1.9.0, so a session
      * created or resumed for it gets the permission handler that refuses MCP
      * tools while the session runs under a real-agent test
@@ -852,7 +852,7 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
      */
     workflowMilestoneTurn?: boolean;
     /**
-     * Workflow v2 (INACTIVE: only on a worker that runs controller 1.9.0): this
+     * Workflow v2: this
      * turn's session is an agent state's own child (its stored lineage), so it
      * is declared complete_workflow_node, whose handler the turn's bridge
      * gives. With workflowMilestoneTurn, the session is also declared the

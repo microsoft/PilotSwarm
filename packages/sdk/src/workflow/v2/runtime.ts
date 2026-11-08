@@ -184,7 +184,7 @@ export const WORKFLOW_V2_STOP_CONTROLLER_VERSIONS: readonly string[] = [WORKFLOW
 /** Delivers a request state's request (one per node execution, stable instance id), then wakes the controller. */
 export const WORKFLOW_V2_REQUEST_NAME = "workflow-v2-request";
 export const WORKFLOW_V2_REQUEST_VERSION = "1.0.0";
-/** Creates an agent state's child agent session (one per node execution, stable instance id; IR 8, INACTIVE), then wakes the controller on a failure. */
+/** Creates an agent state's child agent session (one per node execution, stable instance id; IR 8), then wakes the controller on a failure. */
 export const WORKFLOW_V2_AGENT_NAME = "workflow-v2-agent";
 export const WORKFLOW_V2_AGENT_VERSION = "1.0.0";
 /**
@@ -346,7 +346,7 @@ export function workflowEffectInstanceId(nodeExecutionId: string): string {
     return `wfx-${nodeExecutionId}`;
 }
 
-/** The controller instance of a test run (migration 0102; INACTIVE): one per test run, beside the workflow's live controller. */
+/** The controller instance of a test run (migration 0102): one per test run, beside the workflow's live controller. */
 export function workflowTestControllerInstanceId(runId: string): string {
     return `wft-${runId}`;
 }
@@ -1053,7 +1053,7 @@ export function* workflowV2Controller(ctx: OrchestrationContext, rawInput: unkno
     return yield* controlWithFailure(ctx, rawInput, LEGACY_PROFILE, controlRun);
 }
 
-/** Controller 1.9.0 (WORKFLOW_V2_REQUEST_CONTROLLER_VERSION): 1.8.0's loop with request states and tagged activities. INACTIVE. */
+/** Controller 1.9.0 (WORKFLOW_V2_REQUEST_CONTROLLER_VERSION): 1.8.0's loop with request states and tagged activities. */
 export function* workflowV2RequestController(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, ControllerResult | null, unknown> {
     return yield* controlWithFailure(ctx, rawInput, REQUEST_PROFILE, controlRequestRun);
 }
@@ -2218,7 +2218,7 @@ export function* workflowV2RequestDelivery(ctx: OrchestrationContext, rawInput: 
 }
 
 /**
- * An agent state's child (WORKFLOW_V2_AGENT_NAME; IR 8, INACTIVE): the
+ * An agent state's child (WORKFLOW_V2_AGENT_NAME; IR 8): the
  * spawnAgent activity with the run-ending writes' schedule. Each attempt
  * decides again whether to create the child (store.beginAgentSpawn): a
  * state decided meanwhile is not spawned, and a child an earlier attempt
@@ -3257,7 +3257,7 @@ export const WORKFLOW_V2_OWED_AGENT_PAGE = 200;
 
 export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: WorkflowV2RuntimeDeps): void {
     const { store } = deps;
-    // Request states (design workflow-messaging-request.md 8; INACTIVE): only a test, or the test-only milestone worker, sets workflowRequests.
+    // Request states (design workflow-messaging-request.md 8): only a test, or the test-only milestone worker, sets workflowRequests.
     const requestsEnabled = deps.workflowRequests === true;
     // duroxide accepts an orchestration's versions only in ascending order:
     // the fenced pre-release versions first, the version new runs use last.

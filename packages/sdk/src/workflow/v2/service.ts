@@ -106,7 +106,7 @@ export interface WorkflowV2Host {
     scripts?: boolean;
     /**
      * Resolve a named agent as an agent state's child would be bound to it
-     * (INACTIVE; design 03 package agents): the definition the caller's
+     *: the definition the caller's
      * owner sees by that name, among the agents of `packageName` when the
      * state names one, or null. When the host has it, publication pins every
      * named agent state of the published revision to what it returns
@@ -1046,7 +1046,7 @@ export async function updateWorkflowV2(
 export type WorkflowV2RunCommand =
     | { operation: "set_vars"; runId: string | null; set: { [key: string]: JsonValue }; delete: string[]; expectedKvRevision: number }
     | { operation: "pause" | "resume" | "cancel"; runId: string | null; reason: string | null }
-    /** A graceful stop (controller 1.9.0 only; INACTIVE): graceSeconds null is the default grace. */
+    /** A graceful stop (controller 1.9.0 only): graceSeconds null is the default grace. */
     | { operation: "stop"; runId: string | null; reason: string | null; graceSeconds: number | null };
 
 /** The grace a stop gives a run's admitted work to settle when the request names none (design D03; at most WORKFLOW_V2_STOP_MAX_GRACE_SECONDS). */
@@ -1383,7 +1383,7 @@ async function acceptTypedInput(host: TypedInputHost, request: TypedInputRequest
     const run = request.runId ? runs.find(item => item.runId === request.runId) : runs.find(item => item.mode === "live");
     if (!run) throw new WorkflowStoreError("RUN_NOT_FOUND", request.runId ? `Run ${request.runId} is not a run of this workflow.` : "This workflow has no live run to give input to.");
     if (typeof request.contract !== "string") throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "contract must name a contract, such as BuildEvent@1.");
-    // Reading the contracts runs nothing: a run of request or agent states (IR 7 and 8, INACTIVE) takes input as any run.
+    // Reading the contracts runs nothing: a run of request or agent states (IR 7 and 8) takes input as any run.
     const ir = await host.store.readRevisionIr(workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION });
     const contract = ir.contracts?.[request.contract];
     const received = new Set(Object.values(ir.nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? [node.contract] : []));
@@ -1422,9 +1422,9 @@ async function acceptTypedInput(host: TypedInputHost, request: TypedInputRequest
     return { receipt: stored.receipt, replayed: stored.replayed };
 }
 
-// ─── Test runs (migration 0102; design 05 tool-mocked testing; INACTIVE) ───
+// ─── Test runs (migration 0102; design 05 tool-mocked testing) ───
 
-/** update_workflow operation test: a test run of the exact current revision (INACTIVE: only a host that starts 1.9.0 runs takes it). */
+/** update_workflow operation test: a test run of the exact current revision. */
 export interface WorkflowV2TestCommand {
     expectedRevision: number;
     definitionHash: string;
@@ -1513,7 +1513,7 @@ export async function previewWorkflowV2AgentVersions(host: Pick<WorkflowV2Host, 
 }
 
 /**
- * Start a test run (design 05; R19, R20; INACTIVE): the exact current
+ * Start a test run (design 05; R19, R20): the exact current
  * revision the request names (expected_revision and definition_hash), draft
  * or published, with its inputs (checked against inputs.schema), its own
  * initial KV, and the fixtures it answers intercepted effects from. The run

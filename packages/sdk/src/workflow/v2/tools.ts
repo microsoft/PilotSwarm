@@ -502,7 +502,7 @@ function unknownOperationError(_operation: unknown, options: { milestone?: boole
 const RUN_COMMANDS: ReadonlySet<string> = new Set(UPDATE_WORKFLOW_OPERATIONS.run);
 
 /**
- * The test operations of update_workflow (design 05; INACTIVE): test (start a
+ * The test operations of update_workflow (design 05): test (start a
  * test run of the exact current revision), test_respond (answer an
  * intercepted effect by its interception id) and test_advance (move a test
  * run's virtual clock). Taken, like a graceful stop (operation stop), only by
@@ -1183,7 +1183,7 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
     if (!revision) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "The current revision is missing.");
     const graphRevision = definition.publishedRevision ?? definition.currentRevision;
     const graphRow = graphRevision === revision.revision ? revision : await store.readRevision(workflowSessionId, graphRevision);
-    // Reading shows any stored graph, request and agent states (IR 7 and 8, INACTIVE) included; it runs nothing.
+    // Reading shows any stored graph, request and agent states (IR 7 and 8) included; it runs nothing.
     const ir = graphRow?.valid && graphRow.irSha256
         ? await store.readRevisionIr(workflowSessionId, graphRow.revision, graphRow.irSha256, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION }) : null;
     const runs = readableRuns(await store.listRuns(workflowSessionId), options.hideTestRuns);
@@ -1194,7 +1194,7 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
     const pauseSettled = selected?.status === "paused" ? !await store.hasPendingNodes(selected.runId) : null;
     const stopping = selected?.stop && ACTIVE_RUN_STATUSES.includes(selected.status) ? selected.stop : null;
     const stopSettled = stopping !== null ? !await store.hasPendingNodes(selected!.runId) : null;
-    // A test run (migration 0102, INACTIVE): its notice, virtual clock, interceptions and coverage.
+    // A test run (migration 0102): its notice, virtual clock, interceptions and coverage.
     const test = selected && sections && selected.mode === "test"
         ? await testViewOf(store, workflowSessionId, selected, definition.currentRevision, [...sections.executions.rows, ...sections.openExecutions], limits.interceptions)
         : null;
@@ -1316,7 +1316,7 @@ function openNotPaged<T>(open: readonly T[], paged: readonly T[], id: (row: T) =
     return open.filter(row => !shown.has(id(row)));
 }
 
-/** An agent state's child session and its lifecycle (IR 8, INACTIVE), by node execution id: read only for the agent states shown. */
+/** An agent state's child session and its lifecycle (IR 8), by node execution id: read only for the agent states shown. */
 async function agentInvocationsOf(store: WorkflowStore, runId: string, nodes: readonly WorkflowNodeExecutionRow[]): Promise<Map<string, WorkflowAgentInvocation>> {
     const ids = nodes.filter(node => node.nodeType === "agent").map(node => node.nodeExecutionId);
     return ids.length > 0 ? new Map((await store.listAgentInvocationsFor(runId, ids)).map(invocation => [invocation.nodeExecutionId, invocation] as const))
@@ -1388,7 +1388,7 @@ function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap
         outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts, kvRevision: node.kvRevision,
         // When the visit started and ended (owner feedback 2026-11-06, finding 7: the Node panel's Now and Runs lines).
         enteredAt: node.enteredAt.toISOString(), ...(node.completedAt !== null ? { endedAt: node.completedAt.toISOString() } : {}),
-        // A parallel branch's state (IR 8, INACTIVE): its branch's parallel state execution and index, and the state before
+        // A parallel branch's state (IR 8): its branch's parallel state execution and index, and the state before
         // it in its branch (its last state is the one no other names; owner decision join-k-of-n, review J1-R1).
         ...(node.scopeId !== ROOT_SCOPE ? { scopeId: node.scopeId, ...branchViewOf(node.scopeId), predecessorId: node.predecessorId } : {}),
         ...(node.nodeType === "parallel" && Array.isArray(node.input) ? { branches: node.input.length } : {}),

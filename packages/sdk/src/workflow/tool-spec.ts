@@ -135,7 +135,7 @@ export const SPAWN_WORKFLOW_TOOL_SPEC = {
 
 /**
  * spawn_workflow as a turn of a worker that runs controller 1.9.0 shows it
- * (R26, T125; INACTIVE: only tests register such a worker): its definitions
+ * (R26, T125): its definitions
  * may also hold request, agent and parallel states, so the description says
  * so instead of "mode request is not supported yet". Every other turn keeps
  * SPAWN_WORKFLOW_TOOL_SPEC byte for byte.

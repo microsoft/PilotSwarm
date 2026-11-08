@@ -359,7 +359,7 @@ export class PilotSwarmWorker {
     private _packageWorkflowInterfaces = new Map<string, unknown>();
     /**
      * Exact earlier package revisions that sessions on this worker are bound
-     * to (workflow package pins, R18; INACTIVE), by pinned id. Installed with
+     * to (workflow package pins, R18), by pinned id. Installed with
      * every refresh beside the active versions; their agents serve only the
      * sessions bound to that id (ensurePinnedAgentPackageRevision).
      */
@@ -462,7 +462,7 @@ export class PilotSwarmWorker {
                 appDefaultToolNames: this._appDefaultToolNames,
                 systemMessage: this._frameworkBasePrompt ?? undefined,
                 agentPromptLookup: this._agentPromptLookup,
-                // Workflow package pins (R18, INACTIVE): an exact earlier package revision, installed on demand.
+                // Workflow package pins (R18): an exact earlier package revision, installed on demand.
                 ensurePinnedAgentPackageRevision: (packageId: string) => this.ensurePinnedAgentPackageRevision(packageId),
                 frameworkBaseDescriptor: this._frameworkBaseDescriptor ?? undefined,
                 appDefaultDescriptor: this._appDefaultDescriptor ?? undefined,
@@ -1547,7 +1547,7 @@ export class PilotSwarmWorker {
                 artifactStore: this.artifactStore,
                 cacheDir: this._agentPackagesCacheDir,
             });
-            // Workflow package pins (R18, INACTIVE): the exact earlier revisions that sessions here are bound to, each in a
+            // Workflow package pins (R18): the exact earlier revisions that sessions here are bound to, each in a
             // cache of its own beside the active versions (ensurePinnedAgentPackageRevision). None unless one was asked for.
             const pinnedRevisions: Array<InstalledAgentPackage & { pinnedOf: string }> = [];
             const livePackages = new Map<string, InstalledAgentPackage>(result.packages.map((p): [string, InstalledAgentPackage] => [p.packageId, p]));
@@ -2457,7 +2457,7 @@ export class PilotSwarmWorker {
         }
 
         const provenance = this._packageDirOwners.get(absDir);
-        // Workflow package pins (R18, INACTIVE): an exact earlier revision installed for the sessions bound to it. It adds
+        // Workflow package pins (R18): an exact earlier revision installed for the sessions bound to it. It adds
         // nothing to the worker's shared state (no skill directory or flat skill, no catalog MCP server, no capability
         // source, no session policy, no base or system agent); its named agents serve only those sessions.
         const pinnedRevision = provenance?.pinnedOf !== undefined ? provenance.revision : null;

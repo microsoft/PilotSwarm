@@ -1,5 +1,14 @@
 # Changelog — agent-manager
 
+## 1.4.10
+
+### Changed
+
+- Every deployment runs the full Workflow engine (owner 2026-11-08T15:30Z):
+  `workflow_definition` and its `test` operation are offered in every current
+  session. The untested-publish fallback is for a chat of an earlier release
+  that has not continued yet.
+
 ## 1.4.9
 
 ### Changed

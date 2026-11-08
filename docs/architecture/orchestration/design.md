@@ -11,10 +11,14 @@ It does **not** own tool implementations or Copilot SDK session state. Those
 live in worker activities and the session manager.
 
 Primary source: [`packages/sdk/src/orchestration/`](../../../packages/sdk/src/orchestration).
-The current latest version is `1.0.82`. Frozen prior versions live as siblings
-(single files `packages/sdk/src/orchestration_1_0_47.ts` … `_1_0_51.ts`, then
-directories `orchestration_1_0_52/` … `orchestration_1_0_81/`) and run
-unchanged for any in-flight execution that started against them.
+The current latest version is `1.0.83`: 1.0.82 plus the durable workflow
+intake (design `docs/proposals/workflow-durable-intake.md`; its turns are
+workflow request turns). Frozen prior versions live as siblings (single files
+`packages/sdk/src/orchestration_1_0_47.ts` … `_1_0_51.ts`, then directories
+`orchestration_1_0_52/` … `orchestration_1_0_82/`) and run unchanged for any
+in-flight execution that started against them. The sections below describe
+1.0.82's queue and turn behaviour, which 1.0.83 keeps; the intake's additions
+are in the intake design.
 
 In 1.0.81, Stop and Steer are handled inside the worker's turn activity through
 the session catalog. The orchestration yields that activity directly; it no
@@ -550,6 +554,21 @@ existing continue-as-new mechanism. Disabling Steer is not an orchestration
 rollback. Retain V4-capable workers until 1.0.81 sessions drain, unless a
 separately authorized coordinated rollback restores both code and durable state.
 
+1.0.83 (the durable workflow intake, released with the Workflow work) follows
+the same pattern. 1.0.82 is frozen in `orchestration_1_0_82/` and stays
+registered: in-flight 1.0.82 histories replay on it, and each such session
+moves to 1.0.83 at its next continue-as-new, which carries its queued prompts
+(the KV FIFO), its pending child digest, its rehydration notice and its model.
+Duroxide does not route orchestration items by version: during a rolling
+restart a worker of the previous image that fetches a 1.0.83 (or Workflow
+controller 1.9.0) item has no such version registered and abandons it with
+duroxide's unregistered-version backoff (it marks an item poison only after
+its maximum attempts), so a worker of the new image takes it. 1.0.83's turn
+and intake activities carry the workflow-request capability tag, which the
+previous image does not declare, so it never fetches them. Roll the workers
+before, or with, the portal, run one image per database, and leave no old
+workers in another namespace.
+
 ### processTimer
 
 Fired timers reach decide as `{kind:"timer", timer, firedAtMs}`. `processTimer`
@@ -815,8 +834,8 @@ src/orchestration_1_0_53/     │ frozen — replay only (directory form)
 src/orchestration_1_0_54/     │
 src/orchestration_1_0_55/     │
 ...                          │
-src/orchestration_1_0_81/     ┘
-src/orchestration/            ← current latest (1.0.82)
+src/orchestration_1_0_82/     ┘
+src/orchestration/            ← current latest (1.0.83: 1.0.82 plus the durable workflow intake)
 ```
 
 All registered versions are listed in

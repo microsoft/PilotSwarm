@@ -868,7 +868,7 @@ export function createSessionProxy(
             turnIndex?: number,
             turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean; stashedPrompts?: string[]; stashedAttachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; workspaceRevision?: number; workspaceNotice?: string; carriedSteers?: import("./types.js").LateSteer[]; intake?: IntakeTurnField },
         ) {
-            // Workflow intake (1.0.83, INACTIVE): turns run as runTurnV5 /
+            // Workflow intake (1.0.83): turns run as runTurnV5 /
             // runTurnEpochV5, on the turn-control path, with the workflow-
             // request tag only; their input may carry the invocation's
             // `intake` field.
@@ -1719,7 +1719,7 @@ export function registerActivities(
         if (!orchestrationSupportsWorkspaces(activityCtx?.orchestrationVersion)) {
             (runConfig as ManagedSessionConfig).workspaceToolsBlocked = true;
         }
-        // Workflow v2 (INACTIVE: only on a worker that runs controller 1.9.0): the session's permission handler can refuse MCP
+        // Workflow v2: the session's permission handler can refuse MCP
         // tools while it runs under a real-agent test.
         if (workflowRequestTurn) (runConfig as ManagedSessionConfig).workflowMilestoneTurn = true;
         // Session workspaces: a cleared workspace still sends its revision;
@@ -2495,7 +2495,7 @@ export function registerActivities(
                 }
             }
         }
-        // Workflow agent states (INACTIVE: only on a turn of a worker that runs them): this session's stored lineage. An
+        // Workflow agent states: this session's stored lineage. An
         // agent state's own child gets complete_workflow_node; every session in an agent state's subtree gets the ask_user
         // refusal and nests up to level 3 (design 03 human-input denial and depth), and in a test run's agent state's
         // subtree (design 05 agent mode real) its framework tool calls are intercepted. A session outside every agent state
@@ -2685,7 +2685,7 @@ export function registerActivities(
             }
         };
 
-        // On a turn of a worker that runs controller 1.9.0 (INACTIVE: only tests run one), the workflow tools take its
+        // On a turn of a worker that runs controller 1.9.0, the workflow tools take its
         // request, agent and parallel states and its stop and test operations, and a publication pins its named agents:
         // package agents at the registry's exact revision, this worker's deployment and system agents by name
         // (agent-resolver.ts). Every other turn's host is unchanged.
@@ -2741,7 +2741,7 @@ export function registerActivities(
             if (!catalog?.workflowStore) return false;
             return await sessionInsideWorkflow(catalog.workflowStore(), input.sessionId);
         };
-        // The request and agent-state bridges (INACTIVE) need only the workflow store and a duroxide client to wake the
+        // The request and agent-state bridges need only the workflow store and a duroxide client to wake the
         // controller: on this worker's own provider, as notifyParent does, with no inline PilotSwarmClient (so no storeUrl).
         let workflowBridgeClient: WorkflowToolHost["duroxideClient"] | null = null;
         const workflowBridgeHost = async (): Promise<Pick<WorkflowToolHost, "store" | "duroxideClient">> => {
@@ -3160,7 +3160,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 try { host = await workflowV2Host(); } catch (error) { return workflowToolErrorPayload(error); }
                 return sendWorkflowInputFromTool(args, { callerSessionId: input.sessionId, host });
             },
-            /** respond_session_request (request states, INACTIVE): the calling session is the host-stamped responder. */
+            /** respond_session_request (request states): the calling session is the host-stamped responder. */
             ...(workflowRequestTurn ? {
                 respondSessionRequest: async (args: Record<string, unknown>) => {
                     // Re-check S-SF-F3: a host that cannot be made is the tool's coded answer, never the error's own text.
@@ -3172,10 +3172,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     });
                 },
             } : {}),
-            /** Workflow agent states (INACTIVE): a session in an agent state's subtree gets the ask_user refusal (R14). */
+            /** Workflow agent states: a session in an agent state's subtree gets the ask_user refusal (R14). */
             ...(workflowLineage?.agentRoot ? { workflowAgentSubtree: true } : {}),
             /**
-             * Real-agent test runs (design 05 agent mode real; INACTIVE): a session in a test run's agent state's subtree runs
+             * Real-agent test runs (design 05 agent mode real): a session in a test run's agent state's subtree runs
              * no framework tool; each call is recorded for the test's parent, or a fixture, to answer (test-agent-tools.ts).
              */
             ...(workflowTestScope ? {
@@ -3190,9 +3190,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }, workflowTestScope, input.sessionId)(tool, args);
                 },
             } : {}),
-            /** Controller 1.9.0's tool surface (INACTIVE): the workflow tools' descriptions match what their host takes (R26). */
+            /** Controller 1.9.0's tool surface: the workflow tools' descriptions match what their host takes (R26). */
             ...(workflowRequestTurn ? { workflowMilestone: true } : {}),
-            /** complete_workflow_node (agent states, INACTIVE): the calling session is the host-stamped child of the state. */
+            /** complete_workflow_node (agent states): the calling session is the host-stamped child of the state. */
             ...(workflowAgentChild ? {
                 completeWorkflowNode: async (args: Record<string, unknown>) => {
                     // Adversarial review R2-RT-3: a host that cannot be made is the tool's coded answer, never the error's own text.

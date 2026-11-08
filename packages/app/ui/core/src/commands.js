@@ -55,14 +55,14 @@ export const UI_COMMANDS = {
     WORKFLOW_VIEW_NEXT_RUN: "workflowViewNextRun",
     WORKFLOW_VIEW_DETAILS_UP: "workflowViewDetailsUp",
     WORKFLOW_VIEW_DETAILS_DOWN: "workflowViewDetailsDown",
-    // A person's run controls for the run the workflow view shows (INACTIVE: only a deployment that takes them offers any),
+    // A person's run controls for the run the workflow view shows,
     // and dismissing the notice about the last one.
     WORKFLOW_VIEW_PAUSE_RUN: "workflowViewPauseRun",
     WORKFLOW_VIEW_RESUME_RUN: "workflowViewResumeRun",
     WORKFLOW_VIEW_STOP_RUN: "workflowViewStopRun",
     WORKFLOW_VIEW_CANCEL_RUN: "workflowViewCancelRun",
     WORKFLOW_VIEW_DISMISS_NOTICE: "workflowViewDismissNotice",
-    // The shown run's variables (INACTIVE likewise): open the variables form, and remove the variable it names; open the
+    // The shown run's variables: open the variables form, and remove the variable it names; open the
     // several-variables form, and send what it names as one update.
     WORKFLOW_VIEW_EDIT_VARIABLES: "workflowViewEditVariables",
     WORKFLOW_VARIABLE_REMOVE: "workflowVariableRemove",
@@ -71,24 +71,24 @@ export const UI_COMMANDS = {
     // R2-UI-1: a variables form whose edit is behind the revision shown keeps the edit (ctrl-k) or loads the new values (ctrl-l).
     WORKFLOW_VARIABLE_KEEP: "workflowVariableKeep",
     WORKFLOW_VARIABLE_RELOAD: "workflowVariableReload",
-    // The draft's YAML (INACTIVE likewise): open the draft editor, save the edit, discard it, keep it on a newer revision.
+    // The draft's YAML: open the draft editor, save the edit, discard it, keep it on a newer revision.
     WORKFLOW_VIEW_EDIT_DRAFT: "workflowViewEditDraft",
     WORKFLOW_DRAFT_SAVE: "workflowDraftSave",
     WORKFLOW_DRAFT_DISCARD: "workflowDraftDiscard",
     WORKFLOW_DRAFT_KEEP: "workflowDraftKeep",
-    // The definition's publication (INACTIVE likewise): open its review, then publish only, publish and start (or start a
+    // The definition's publication: open its review, then publish only, publish and start (or start a
     // published definition's live run), each after the confirm dialog, or review a workflow that changed meanwhile again.
     WORKFLOW_VIEW_PUBLICATION_REVIEW: "workflowViewPublicationReview",
     WORKFLOW_PUBLICATION_PUBLISH: "workflowPublicationPublish",
     WORKFLOW_PUBLICATION_RUN: "workflowPublicationRun",
     WORKFLOW_PUBLICATION_RELOAD: "workflowPublicationReload",
-    // A test of the definition's current revision (INACTIVE likewise): open its review, start it after the confirm dialog,
+    // A test of the definition's current revision: open its review, start it after the confirm dialog,
     // switch its agent states between mocked and real, or review a workflow that changed meanwhile again.
     WORKFLOW_VIEW_TEST_REVIEW: "workflowViewTestReview",
     WORKFLOW_TEST_START: "workflowTestStart",
     WORKFLOW_TEST_AGENTS: "workflowTestAgents",
     WORKFLOW_TEST_RELOAD: "workflowTestReload",
-    // The shown test run's answers and virtual clock (INACTIVE likewise): open the answer form and send its answer, open the
+    // The shown test run's answers and virtual clock: open the answer form and send its answer, open the
     // clock form and advance it.
     WORKFLOW_VIEW_TEST_ANSWER: "workflowViewTestAnswer",
     WORKFLOW_TEST_ANSWER_SEND: "workflowTestAnswerSend",

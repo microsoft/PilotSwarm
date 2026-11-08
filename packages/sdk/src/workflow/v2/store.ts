@@ -634,7 +634,7 @@ export interface RequestSpecInput extends SendSpecInput {
     workflowRecipient: { result: NodeResultInput; projection?: SessionProjection };
 }
 
-// ─── Agent states (IR 8, migration 0101; INACTIVE: only controller 1.9.0 admits them) ──
+// ─── Agent states (IR 8, migration 0101) ──
 
 /**
  * An agent state's task: its inline prompt, or the named agent definition it
@@ -3535,7 +3535,7 @@ export class WorkflowStore {
         request?: RequestSpecInput | null;
         /**
          * What an agent state records (null for other states and for one that
-         * failed at admission; INACTIVE: only controller 1.9.0 passes one).
+         * failed at admission).
          * Its deadline is the admission's accepted-entry reading plus its
          * seconds, as a wait's; waitSeconds is null with it.
          */
@@ -5887,7 +5887,7 @@ export class WorkflowStore {
         return { sessionId, level, agentRoot };
     }
 
-    // ─── Agent states (IR 8, migration 0101; INACTIVE: only controller 1.9.0 and tests call these) ──
+    // ─── Agent states (IR 8, migration 0101) ──
 
     /**
      * FU-17: the tools an agent state limits its agent to (`tools`), for the session of a turn in that state's subtree: the
@@ -7140,7 +7140,7 @@ export class WorkflowStore {
         return cancelled;
     }
 
-    // ─── Test runs (migration 0102; design 05 tool-mocked testing; INACTIVE) ───
+    // ─── Test runs (migration 0102; design 05 tool-mocked testing) ───
 
     /**
      * Admit a test run (mode test) of the definition's current revision, once

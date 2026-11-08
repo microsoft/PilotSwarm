@@ -825,7 +825,7 @@ export class WebPilotSwarmManagementClient {
 
     /**
      * What a person may send to a session, by its workflow lineage (design 03
-     * human-input denial; INACTIVE outside controller 1.9.0's tests): read
+     * human-input denial;): read
      * from the session's access route, which reports canSendPrompt, canAnswer
      * and canSteer false, with the workflow and its controlling agent, for a
      * session in a workflow agent state's subtree (the portal runtime asks the

@@ -10,7 +10,7 @@ export const AGENT_HANDOFF_CAPABILITY = "pilotswarm.agent-handoff.v2";
  * - "turn-control-v1" (1.0.81+): turns run as runTurnV4/runTurnEpochV4 with
  *   TURN_CONTROL_CAPABILITY; every other routed activity keeps the handoff
  *   names and tag.
- * - "workflow-intake-v1" (1.0.83, INACTIVE): turns run as
+ * - "workflow-intake-v1" (1.0.83): turns run as
  *   runTurnV5/runTurnEpochV5 with WORKFLOW_REQUEST_CAPABILITY; their input
  *   may carry `intake` and their result carries `intakeDispatch`; every other
  *   routed activity keeps the handoff names and tag, as under turn-control-v1.

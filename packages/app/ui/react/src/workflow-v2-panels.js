@@ -771,7 +771,7 @@ export function WorkflowV2RunPicker({ controller, sessionId, workflowModel, sele
 }
 
 /**
- * A test run's held calls (design 05; INACTIVE outside controller 1.9.0's tests): what each reached, the
+ * A test run's held calls (design 05;): what each reached, the
  * schema its answer must match and its answer. The parent answers through its own tools; a person may answer one that
  * waits only when `responder` (workflowV2TestResponder's answer) says so: its Answer button opens the answer form for it.
  * The notice that scripts run normally stays in the banners above.
@@ -865,7 +865,7 @@ export function WorkflowV2TestAnswer({ controller, sessionId, responder, interce
 }
 
 /**
- * A test run's virtual clock (design 05 timer simulation; mock M19; R08, R19, R26; INACTIVE): how far it is from the
+ * A test run's virtual clock (design 05 timer simulation; mock M19; R08, R19, R26): how far it is from the
  * test's start, and an advance by a whole number of seconds (1 to 30 days) that decides what came due. Script clocks
  * are real, and the control says so.
  */

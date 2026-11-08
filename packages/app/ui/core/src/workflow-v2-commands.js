@@ -5,7 +5,7 @@ import {
 
 /**
  * Workflow v2: a person's workflow commands in the workflow view (design 04
- * and 07, mocks M03, M04, M15 and M16; R04, R05, R17, R18, R26; INACTIVE): the
+ * and 07, mocks M03, M04, M15 and M16; R04, R05, R17, R18, R26): the
  * run controls (pause, resume, stop, cancel), the run's variables (set_vars:
  * set or remove a key, or several in one update, at the expected KV
  * revision), the draft's YAML

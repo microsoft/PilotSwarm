@@ -1998,7 +1998,7 @@ export class PilotSwarmManagementClient {
      * cursor that is not one a read of this workflow returned
      * WORKFLOW_CURSOR_INVALID (400), and an invalid limit or execution id, or
      * a cursor and an execution id together, WORKFLOW_READ_INVALID (400). A
-     * client created with the test-only option `workflowCommands` (INACTIVE)
+     * client created with the test-only option `workflowCommands`
      * also reports, with the view, the commands the workflow takes from a
      * person (`personCommands`, human-commands.ts), so a screen offers only
      * those, and, for a draft a person may change, its current YAML

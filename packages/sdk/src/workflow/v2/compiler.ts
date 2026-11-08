@@ -70,7 +70,7 @@ export const WORKFLOW_V2_CLOCK_WAIT_IR_VERSION = 10;
 export const WORKFLOW_V2_BRANCHES_IR_VERSION = 11;
 /**
  * The newest IR version controller 1.9.0's activities read (request, agent and parallel states, joins of the first k,
- * clock waits and named branches; INACTIVE).
+ * clock waits and named branches).
  */
 export const WORKFLOW_V2_MILESTONE_IR_VERSION = WORKFLOW_V2_BRANCHES_IR_VERSION;
 /** The newest IR version a worker reads unless asked for more: request states are not run yet. */
@@ -100,7 +100,7 @@ export const WORKFLOW_V2_AGENT_COMPLETION_TOOL = "complete_workflow_node";
 /** The most branches of one parallel state that are active at once. */
 export const WORKFLOW_V2_PARALLEL_MAX_CONCURRENCY = 16;
 /**
- * A run's deadline (root limits.timeoutSeconds; IR 8, INACTIVE: only controller 1.9.0 runs it): at most this many seconds,
+ * A run's deadline (root limits.timeoutSeconds; IR 8): at most this many seconds,
  * counted from when the run begins. onExceeded expired (the only policy) ends the run failed with timed_out.
  */
 export const WORKFLOW_V2_RUN_TIMEOUT_MAX_SECONDS = 30 * 86_400;
@@ -292,7 +292,7 @@ export interface WorkflowIRRequest {
 }
 
 /**
- * An agent state (IR 8; INACTIVE): an ordinary child agent session with the
+ * An agent state (IR 8): an ordinary child agent session with the
  * standard base, given the state's validated input in a host-generated
  * wrapper, that finishes the state only with a typed completion
  * (complete_workflow_node: one of `outcomes` with an output that satisfies
@@ -335,7 +335,7 @@ export interface WorkflowIRAgent {
 }
 
 /**
- * A parallel state (IR 8; INACTIVE): its manifest (`forEach`, evaluated once
+ * A parallel state (IR 8): its manifest (`forEach`, evaluated once
  * on entry and frozen as the state's input; a JSON array of at most
  * WORKFLOW_V2_PARALLEL_MAX_ITEMS items) runs one branch per item through
  * its body, at most `concurrency` at a time. A branch starts at the body's
@@ -468,7 +468,7 @@ export interface WorkflowCompileOptions {
     enableParallel?: boolean;
     /**
      * Compile a run deadline (limits.timeoutSeconds and onExceeded) to IR 8
-     * (INACTIVE: only a host that starts runs at controller 1.9.0 sets it).
+     *.
      * Off by default: the fields are refused with WORKFLOW_FEATURE_UNSUPPORTED,
      * so no definition that a 1.8.0 run would not enforce is published.
      */

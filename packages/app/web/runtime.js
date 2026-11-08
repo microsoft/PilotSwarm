@@ -447,7 +447,7 @@ export class PortalRuntime {
     }
 
     /**
-     * Workflow v2 (INACTIVE): whether the signed-in caller may send a person's
+     * Workflow v2: whether the signed-in caller may send a person's
      * workflow commands to the session a read was for, as updateWorkflow's own
      * gate decides it (session:manage: owner or admin, enforced whatever the
      * ownership switch says), on that read's access snapshot. Nothing is
@@ -809,7 +809,7 @@ export class PortalRuntime {
             // adapter's own validation unchanged. The run is looked up within the authorized workflow; nothing is changed.
             // A section's next page (cursor) and one execution's whole value (executionId) are reads of the same workflow
             // under the same gate; each option is passed only when given, and the adapter checks it.
-            // When the deployment takes a person's workflow commands (INACTIVE), the view says which ones this workflow
+            // When the deployment takes a person's workflow commands, the view says which ones this workflow
             // takes, and this adds whether the caller may send them (updateWorkflow's own gate, decided on this read's access).
             // A draft's YAML (personCommands.draft: the scripts and prompts the graph does not show) is for a caller who may
             // change the draft; it is left out for anyone else. So are the values the definition's author wrote in its input
@@ -844,7 +844,7 @@ export class PortalRuntime {
                 const { draft, ...personCommands } = view.personCommands;
                 return { ...view, personCommands: { ...personCommands, ...(viewer.allowed && draft !== undefined ? { draft } : {}), viewer } };
             }
-            // Workflow v2 (INACTIVE unless the deployment enables it): a person's command, after the session:manage gate
+            // Workflow v2: a person's command, after the session:manage gate
             // above, which is enforced for it even while the ownership switch is off. The actor is the signed-in caller,
             // never a field of the command; the command is passed as it is, and the adapter refuses what is not one.
             // Stage 2.1: a chat's Workflow Definitions, after the gate above (session:read for list and read, session:manage for

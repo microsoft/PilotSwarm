@@ -417,12 +417,12 @@ needs a test. People do not run tests themselves.
 - The Definition view says `Last test · passed 17:42` (or `failed`, or
   `Test running`) beside the revision picker, only for a revision that was
   tested (`revisions[].lastTest` of `listChatWorkflowDefinitions`).
-- A deployment runs tests only where it runs controller 1.9.0 (the test
-  environment switch), and only on a chat's workflow request turn: the chat
-  must run at session orchestration 1.0.83, as a person's new chat does there.
-  Only such a turn declares `test` (with `fixtures` and `test_id`) and
-  teaches testing; every other turn declares `workflow_definition` without
-  it, and its guidance says a test cannot run here (stage 2.5). A call of
+- Every deployment runs tests (every worker runs controller 1.9.0), on a
+  chat's workflow request turn: a turn of session orchestration 1.0.83, as
+  every chat's is. Only such a turn declares `test` (with `fixtures` and `test_id`) and
+  teaches testing; a turn of a previous-release chat still on 1.0.82 declares
+  `workflow_definition` without it, and its guidance says a test cannot run
+  there (stage 2.5). A call of
   `test` there is still refused (`WORKFLOW_TEST_UNAVAILABLE`), a test read
   again by its `test_id` too. A revision
   with errors, or with a script node where scripts are off, is refused
@@ -867,10 +867,14 @@ worker's activity slot stays held until that task ends, or at most for a
 
 ## Running workflows (operators)
 
-### Workflows are always on
+### Workflows are always on, with the full engine
 
-Workflows need no setting (owner decision, 2026-11-08): every worker, the
-portal, the MCP server and the terminal UI have them.
+Workflows need no setting (owner decisions, 2026-11-08): every worker, the
+portal, the MCP server and the terminal UI have them, with the full engine.
+Every worker serves session orchestration 1.0.83 (the latest version) and
+Workflow controller 1.9.0, so every Workflow can use agent, parallel and
+request states, clock waits and a run deadline, every chat can test a revision,
+and a person can send workflow commands.
 
 - Every eligible agent is declared `workflow_definition`, `spawn_workflow`,
   `update_workflow`, `read_workflow` and `send_workflow_input`, and its base
@@ -878,24 +882,29 @@ portal, the MCP server and the terminal UI have them.
   tuner gets no workflow tool; a session inside a Workflow gets no definition
   tools (`workflow_definition`, `spawn_workflow`, `update_workflow`); an agent
   node's chat also gets `complete_workflow_node` and its node's tool limit.
-- The guidance teaches only what the session's engine runs. A turn on the full
-  engine (`PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT=isolated-test-only`, below)
-  is taught agent, parallel and request states, clock waits and revision tests.
-  Every other session, so every default deployment, is taught script, wait,
-  messaging (receive and send) and terminal states only: its engine refuses
-  the others when a definition is saved.
+- Every session's guidance teaches the full engine, and every worker loads
+  the Workflow authoring skills (`workflow-authoring`, `workflow-reference`,
+  `workflow-patterns`; `workflow-testing` with test mode), so the base points
+  to them.
 - The portal and the terminal UI always show the Workflow button, tab, pane,
   `w` key and Workflow rows.
-- MCP always registers `read_workflow`; `update_workflow` still needs the
-  test-only option below.
+- MCP always registers `read_workflow` and `update_workflow`; the portal and
+  MCP take a person's workflow commands.
 - The bootstrap's `workflows` keeps its `enabled` field and always says
   `true`, so an older portal or client keeps working; today's clients do not
   read it.
 
-`PILOTSWARM_WORKFLOWS` is retired. A deployment that still sets it, to any
-value (`off` included), is ignored with one startup warning on each worker,
-the portal and the MCP server: "PILOTSWARM_WORKFLOWS is ignored: Workflows are
-always on. Remove it from the deployment's settings."
+`PILOTSWARM_WORKFLOWS` and `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` are
+retired. A deployment that still sets one, to any value (`off` included), is
+ignored with one startup warning on each worker, the portal and the MCP server,
+for example: "PILOTSWARM_WORKFLOWS is ignored: Workflows are always on. Remove
+it from the deployment's settings."
+
+Sessions of the previous release (orchestration 1.0.82) keep running on the
+frozen 1.0.82 and move to 1.0.83 at their next continue-as-new, which carries
+their queued prompts, pending child updates, notices and model. Until then a
+turn of such a session runs on 1.0.82, whose Workflows cannot use agent,
+parallel or request states.
 
 The five tools, the guidance and the screens are there whether or not the
 workers run scripts. `PILOTSWARM_WORKFLOW_SCRIPTS` (below) decides only whether
@@ -937,9 +946,9 @@ is on, and the screens show test runs only on that word. Stored test
 runs are kept but not shown: the workflow read (SDK, Web API, MCP) does not
 list them, and refuses a test run's id, as a run, a page cursor's run, an
 execution's or a variables revision's, exactly as it refuses an unknown run's.
-The MCP `read_workflow` description names no test part. The flag is separate
-from `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` and changes nothing else; test
-operations still need workers that run controller 1.9.0. The `workflow-testing`
+The MCP `read_workflow` description names no test part. The flag changes
+nothing else. A chat's revision test (`workflow_definition` `test`, stage 2.2)
+does not need it: it runs on every deployment. The `workflow-testing`
 guide is kept apart from the authoring skills, in
 `packages/sdk/plugins/workflow-v2/test-mode-skills`, so an agent reads it only
 where test mode is on. The SDK's local tests run with the flag on.

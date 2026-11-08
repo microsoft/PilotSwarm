@@ -107,9 +107,9 @@ by a publish plan: quote the report's failure (its code and message), fix, and
 test again; the same failure twice, stop and show the person the report and the
 fixtures. The person's request to publish is their request for this test. Tell
 them the passing result with the publish plan. If the test
-operation is not offered in your session (it runs only where the deployment
-runs Workflow tests), say so and do not publish without the person's explicit
-yes. Then have it started once from the new-session
+operation is not offered in your session (every current session has it; a
+chat of an earlier release may not, until it continues), say so and do not
+publish without the person's explicit yes. Then have it started once from the new-session
 picker in a disposable chat before the shared publish, and check that the chat
 asks for the card's inputs and that the Workflow ends as the card says.
 

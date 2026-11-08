@@ -1574,6 +1574,11 @@ Not an activation: duroxide cannot route orchestration items by version, so
 every worker that can fetch 1.9.0 or 1.0.83 work must run the same option
 (the request design's activation gate, 8.4, stays required).
 
+> **Superseded (2026-11-08T15:30Z):** the milestone is released on every
+> deployment with session orchestration 1.0.83 and controller 1.9.0; the switch
+> below is retired and ignored with one warning. See
+> `docs/developer/building/workflow-sessions.md`, "Workflows are always on".
+
 **The test environment switch (test-only; isolated test environments
 only).** `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT`, exactly
 `isolated-test-only` (no other spelling, no spaces), is read by the deployed

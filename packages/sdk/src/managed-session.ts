@@ -951,7 +951,7 @@ export class ManagedSession {
             && (this.config.nativeFeatureAllowed?.() ?? false);
     }
     /**
-     * Workflow v2 real-agent test runs (INACTIVE): set once a turn of this
+     * Workflow v2 real-agent test runs: set once a turn of this
      * session ran under such a test (its bridge intercepts its framework
      * tools), and never cleared, since a session's lineage does not change.
      * While set, the session's permission handler refuses MCP tools
@@ -3246,7 +3246,7 @@ export class ManagedSession {
         // spawn_workflow runs inline through the control bridge and does not
         // end the turn. Without a bridge it refuses rather than staying
         // silent: a declared tool with no answer hangs the turn.
-        // On a turn of a worker that runs controller 1.9.0 (INACTIVE: only tests), the workflow tools describe what their host
+        // On a turn of a worker that runs controller 1.9.0, the workflow tools describe what their host
         // takes there (R26); every other turn keeps the production descriptions byte for byte.
         const workflowMilestone = controlBridge?.workflowMilestone === true;
         // Workflow test mode is hidden unless the deployment flag is on (spec 16): the 1.9.0 tools then describe stop only.
@@ -3309,7 +3309,7 @@ export class ManagedSession {
                 try { return await controlBridge.sendWorkflowInput(args ?? {}); } catch (error) { return workflowToolErrorPayload(error); }
             },
         });
-        // Workflow request states (INACTIVE): a turn whose bridge can answer a request gets the tool; a session declared it
+        // Workflow request states: a turn whose bridge can answer a request gets the tool; a session declared it
         // (workflowMilestoneTurn) always has a handler, which refuses without the bridge rather than leave the call unanswered.
         const respondSessionRequestTools: Tool<any>[] = controlBridge?.respondSessionRequest || this.config.workflowMilestoneTurn === true
             ? [defineTool(RESPOND_SESSION_REQUEST_TOOL, {
@@ -3326,7 +3326,7 @@ export class ManagedSession {
                 },
             })]
             : [];
-        // Workflow agent states (INACTIVE): only an agent state's child, on a turn whose bridge can complete it, gets the tool; a
+        // Workflow agent states: only an agent state's child, on a turn whose bridge can complete it, gets the tool; a
         // session declared it (workflowAgentChild) always has a handler, which refuses without the bridge.
         const completeWorkflowNodeTools: Tool<any>[] = controlBridge?.completeWorkflowNode || this.config.workflowAgentChild === true
             ? [defineTool(COMPLETE_WORKFLOW_NODE_TOOL, {
@@ -3652,7 +3652,7 @@ export class ManagedSession {
             ...manageAgentSessionForTurn,
             ...workspaceToolsForTurn,
         ];
-        // Workflow v2 real-agent test runs (INACTIVE: only a worker that runs agent states sets the bridge's function): a session
+        // Workflow v2 real-agent test runs: a session
         // in a test run's agent state subtree runs no framework tool; each call is intercepted for the test to answer.
         const workflowTestToolCall = controlBridge?.workflowTestToolCall;
         return workflowTestToolCall

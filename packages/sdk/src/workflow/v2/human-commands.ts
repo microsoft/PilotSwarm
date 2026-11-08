@@ -75,7 +75,7 @@ export const WORKFLOW_CAPABILITIES_SCHEMA = 1;
  *   (spawn_workflow, send_workflow_input).
  * - v2.commands: a person's commands (updateWorkflow, POST
  *   /sessions/{id}/workflow/commands). Off unless the host was created with
- *   the test-only option workflowCommands (INACTIVE): then it names the
+ *   the test-only option workflowCommands: then it names the
  *   refusal every command gets (501 WORKFLOW_COMMANDS_UNAVAILABLE). On: the
  *   controller version the runs they start run at, and the operations they
  *   take (a workflow in a workflow agent state's subtree takes fewer; its read

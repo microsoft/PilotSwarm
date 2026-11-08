@@ -17,7 +17,7 @@ import { WORKFLOW_RUN_STATE_WORDS, workflowAgentModel, workflowSpawnedModels, wo
     workflowDuration, workflowFailureDetail, workflowNodeCardWords, workflowOutcomeWord, workflowShortTime, workflowTimeTitle, workflowVisitBadge,
 } from "./workflow-words.js";
 
-// Agent and parallel states (IR 8) and stopped runs are written only by controller 1.9.0 (INACTIVE: only tests run it);
+// Agent and parallel states (IR 8) and stopped runs are written only by controller 1.9.0;
 // they are read here so a test deployment shows them, and nothing else changes for the others.
 const STATE_TYPES = new Set(["script", "wait", "messaging", "agent", "parallel", "terminal"]);
 const MESSAGING_MODES = new Set(["receive", "send", "request"]);
@@ -673,7 +673,7 @@ export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now
         // The portal says this once, in the run's status (batch 5, g-07); the terminal lists it among its notices.
         banners.push({ level: "info", text: "Not started yet.", code: "no-run" });
     }
-    // A test run (design 05; INACTIVE outside controller 1.9.0's tests): its notice stays visible, with the revision it tested,
+    // A test run (design 05;): its notice stays visible, with the revision it tested,
     // its virtual clock and what still waits for the parent's answer. Never shown as a production result.
     if (run?.test) {
         const test = run.test;

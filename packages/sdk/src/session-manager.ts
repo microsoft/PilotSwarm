@@ -253,7 +253,7 @@ export function pickAgentCopyByPackageIdForOwner(
 /** Worker-level defaults — applied to every session. */
 export interface WorkerDefaults {
     /**
-     * Workflow package pins (R18, INACTIVE): install the exact earlier package
+     * Workflow package pins (R18): install the exact earlier package
      * revision a pinned bound package id names (agent-package-pins.ts) on this
      * worker, before such a session's copy is resolved; false when it cannot
      * be served.
@@ -2061,7 +2061,7 @@ export class SessionManager {
         options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean; workflowTools?: WorkflowToolBinding },
     ): Promise<ManagedSession> {
         this.sessionLastTouchedAt.set(sessionId, Date.now());
-        // Workflow package pins (R18, INACTIVE: only a workflow agent state's child is bound so): the exact earlier package
+        // Workflow package pins (R18): the exact earlier package
         // revision this session runs is installed here before its copy is resolved. One that cannot be served leaves the
         // binding unresolved, and the session fails as any unavailable bound package does.
         if (isPinnedAgentPackageId(serializableConfig.boundAgentPackageId)) {
@@ -2411,7 +2411,7 @@ export class SessionManager {
             .map((tool: any) => (this.workflowScriptsEnabled && !isTunerSession
                 ? workflowAwareSchedulingTool(tool, { clockWaits: config.workflowMilestoneTurn === true }) : tool));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
-        // Workflow v2 (INACTIVE): a turn of a worker that runs controller 1.9.0 is declared the milestone's workflow tools and
+        // Workflow v2: a turn of a worker that runs controller 1.9.0 is declared the milestone's workflow tools and
         // respond_session_request, and an agent state's own child complete_workflow_node, as the turn's handlers take them.
         // A session inside a Workflow is declared no definition tools (Workflow Simplified A1).
         const subAgentTools = ManagedSession.subAgentToolDefs({
@@ -2855,7 +2855,7 @@ export class SessionManager {
                     noteRequested: () => this.sessions.get(sessionId)?.noteWorkspaceChangeRequested(),
                 } : null,
             ),
-            // Workflow v2 real-agent test runs (INACTIVE: only on a worker that runs controller 1.9.0): a session whose turn ran
+            // Workflow v2 real-agent test runs: a session whose turn ran
             // under such a test refuses MCP tools, which cannot be intercepted; its other requests go to its handler unchanged.
             // Every other session gets its handler as it is.
             // A session inside a Workflow is refused any MCP tool named as a definition tool, however it was offered (review SF-2).
@@ -4851,7 +4851,7 @@ export class SessionManager {
         boundAgentCopy: AgentCopyEntry | null = resolveBoundAgentCopy(this.workerDefaults, config, sessionOwnerKey) ?? null,
     ): SystemMessageConfig | undefined {
         const base = baseAgentInstructions(config.baseAgentPolicy, this.workerDefaults.frameworkBasePrompt ?? this.workerDefaults.systemMessage);
-        // The authoring skill's pointer (R24) only on a worker that loaded that skill (INACTIVE: none does yet). Neither mentions
+        // The authoring skill's pointer (R24) only on a worker that loaded that skill. Neither mentions
         // testing unless workflow test mode is on (spec 16).
         const testMode = workflowTestModeFromEnv();
         // Workflows are always on with the full engine (owner 2026-11-08T08:03Z and 15:30Z): every session's framework base

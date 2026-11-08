@@ -85,7 +85,7 @@ function useWorkflowView(controller) {
         controller.dispatch({ type: "ui/workflowView", sessionId, view: { sidePanel: panel } });
         if (open) openSide();
     };
-    // A person's run controls (INACTIVE): only the selection's own read model can offer them, for the run it shows, and only
+    // A person's run controls: only the selection's own read model can offer them, for the run it shows, and only
     // when it says which commands the workflow takes from people.
     const runCommand = view.runCommand ?? null;
     const runControls = React.useMemo(() => v2 ? workflowV2RunControls(readModel, runCommand) : null, [v2, readModel, runCommand]);

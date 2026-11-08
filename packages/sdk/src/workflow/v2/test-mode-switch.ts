@@ -14,8 +14,8 @@
  * - the MCP update_workflow tool does not name them;
  * - the base guidance does not mention them (guidance.ts).
  *
- * The flag is separate from the Workflow V2 test environment switch (test-environment.ts): it changes nothing else,
- * and test operations still need a host that runs controller 1.9.0. Stored test runs are kept, not shown.
+ * The flag changes nothing else; every worker runs controller 1.9.0, which the test operations need. Stored test runs
+ * are kept, not shown.
  */
 export const WORKFLOW_TEST_MODE_VARIABLE = "PILOTSWARM_WORKFLOW_TEST_MODE";
 
