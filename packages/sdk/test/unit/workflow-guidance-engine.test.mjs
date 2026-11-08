@@ -1,14 +1,14 @@
 /**
- * AOS-F1 (always-on review of 6290e66f..f2e793ca, high): with Workflows always on, every session's base instructions carry the
- * Workflow guidance, but only a workflow request turn's host runs the full engine (session-proxy.ts gives it requests: true;
- * compileWorkflowV2ForHost). Every other host, so every default deployment, compiles script, wait, messaging (receive and send)
- * and terminal states only, and refuses agent and parallel states (WORKFLOW_NODE_TYPE_UNSUPPORTED) and request states
- * (WORKFLOW_FEATURE_UNSUPPORTED). The guidance now follows the session's actual engine:
- * a) a default worker with scripts off and no request turn: its system prompt recommends no agent, parallel or request state,
- *    no For each, no agent model choice, and no tool it is not declared (respond_session_request, complete_workflow_node);
- * b) every Workflow example and every state type that prompt recommends compiles on the default host, with the real compiler;
- * c) a request turn (the isolated full engine) keeps the full text, and what it recommends compiles on its host.
- * (a) and (b) fail at f2e793ca, whose default prompt teaches agent and parallel states and the request answer.
+ * The Workflow guidance and the engine every session has (owner decision 2026-11-08T15:30Z, which supersedes the
+ * always-on review's AOS-F1 fix): session orchestration 1.0.83 is the latest version and every worker runs controller
+ * 1.9.0, so every session's host compiles agent, parallel and request states (compileWorkflowV2ForHost with requests:
+ * true), and every session is taught them.
+ * a) a default worker (scripts off, no request-turn flag) carries the full text: agent nodes, named branches, agent models
+ *    and the request answer, and a scripts-off line that names agent and parallel nodes;
+ * b) every state type and inline example that prompt teaches compiles, with the real compiler, on the host every session
+ *    has;
+ * c) a 1.0.83 turn (a workflow request turn) has the same text, with clock waits and revision tests;
+ * d) the basic-engine text of 0f03f215 is gone.
  *
  * Run: node --test test/unit/workflow-guidance-engine.test.mjs (after npm run build).
  */
@@ -16,10 +16,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../../dist/session-manager.js";
 import { compileWorkflowV2ForHost } from "../../dist/workflow/v2/service.js";
-import { workflowSessionGuidance, WORKFLOW_SESSION_GUIDANCE } from "../../dist/workflow/guidance.js";
+import * as guidance from "../../dist/workflow/guidance.js";
 import { workflowTestModeFromEnv } from "../../dist/workflow/v2/test-mode-switch.js";
 
-const DEFAULT_HOST = { requests: undefined };
+const { workflowSessionGuidance, WORKFLOW_SESSION_GUIDANCE } = guidance;
+
 const FULL_HOST = { requests: true };
 
 /** The whole system prompt a session manager builds for one session, as text. */
@@ -45,13 +46,6 @@ function workflowBlock(prompt) {
     const end = rest.slice(3).search(/\n#{1,2} /);
     return end < 0 ? rest : rest.slice(0, end + 3);
 }
-
-/** What only the full engine runs, as the guidance would teach it. */
-const FULL_ENGINE_TEACHING = [
-    /agent (node|state|step)s?\b/i, /agent and parallel/i, /parallel (state|node)s?\b/i, /`branches`/, /named branches/i,
-    /request (state|step)s?\b/i, /`request`/, /mode: request/, /type: (agent|parallel)/, /respond_session_request/, /complete_workflow_node/,
-    /agent_models/, /chat: (new|continue)/, /For each/i, /`joined`/,
-];
 
 const definition = (states, extra = {}) => JSON.stringify({
     apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "guidance-example", version: "1.0.0" },
@@ -122,72 +116,54 @@ function inlineExamples(text) {
 
 const compileErrors = (host, yaml) => compileWorkflowV2ForHost(host, yaml).diagnostics.filter(item => item.severity === "error");
 
-test("the canonical examples are real: each compiles on the full engine's host; agent, parallel, request and clock waits only there", () => {
+test("the canonical examples are real: each compiles on the host every session has", () => {
     for (const [type, { yaml }] of Object.entries(STATE_TYPES)) {
-        assert.deepEqual(compileErrors(FULL_HOST, yaml), [], `${type} on the full engine`);
-        const onDefault = compileErrors(DEFAULT_HOST, yaml);
-        assert.equal(onDefault.length > 0, ["request", "agent", "parallel", "clock"].includes(type), `${type} on the default host: ${JSON.stringify(onDefault)}`);
+        assert.deepEqual(compileErrors(FULL_HOST, yaml), [], type);
     }
 });
 
-test("AOS-F1 (a): a default worker (scripts off, no request turn) is taught no agent, parallel or request state, and no tool it lacks", () => {
-    const prompt = systemPrompt({ scripts: false, requestTurn: false });
-    for (const pattern of FULL_ENGINE_TEACHING) assert.doesNotMatch(prompt, pattern);
-    const block = workflowBlock(prompt);
-    assert.doesNotMatch(block, /\bparallel\b/i, "the Workflow block names no parallel work");
-    // It still teaches what this engine runs, and says scripts are off in words that name only those states.
-    assert.match(block, /runs script, wait, messaging \(receive and send\) and terminal states only/);
-    assert.match(block, /Script nodes are turned off on this server \(PILOTSWARM_WORKFLOW_SCRIPTS\)[^\n]*can only wait and send or receive messages/);
-    assert.doesNotMatch(block, /Use wait, messaging, agent and parallel nodes instead/);
+test("(a) a default worker (scripts off, no request-turn flag) carries the full text, and its scripts-off line names agent and parallel nodes", () => {
+    const block = workflowBlock(systemPrompt({ scripts: false, requestTurn: false }));
+    for (const phrase of ["An agent node has two chat modes.", "a parallel state with named `branches`", "`agent_models`",
+        "answer it once with `respond_session_request`", "The Workflow calls a model only at the agent nodes that need judgment."]) {
+        assert.ok(block.includes(phrase), phrase);
+    }
+    assert.match(block, /Use wait, messaging, agent and parallel nodes instead/);
 });
 
-test("AOS-F1 (b): every Workflow example and state type the default worker's prompt recommends compiles on its host", () => {
+test("(b) every state type and inline example the default worker's prompt teaches compiles on the host every session has", () => {
     for (const scripts of [false, true]) {
         const block = workflowBlock(systemPrompt({ scripts, requestTurn: false }));
-        const recommended = Object.entries(STATE_TYPES).filter(([, { named }]) => named.test(block));
-        assert.ok(recommended.some(([type]) => type === "wait"), "it teaches the wait state");
-        for (const [type, { yaml }] of recommended) {
-            assert.deepEqual(compileErrors(DEFAULT_HOST, yaml), [], `scripts ${scripts}: the prompt names ${type}, which this host must run`);
-        }
+        const taught = Object.entries(STATE_TYPES).filter(([, { named }]) => named.test(block));
+        for (const type of ["wait", "agent", "parallel", "request"]) assert.ok(taught.some(([name]) => name === type), `scripts ${scripts}: it teaches ${type}`);
+        for (const [type, { yaml }] of taught) assert.deepEqual(compileErrors(FULL_HOST, yaml), [], `scripts ${scripts}: ${type}`);
         const inline = inlineExamples(block);
         assert.ok(inline.length >= 1, "the wait example is there");
-        for (const { example, yaml } of inline) assert.deepEqual(compileErrors(DEFAULT_HOST, yaml), [], `scripts ${scripts}: ${example}`);
+        for (const { example, yaml } of inline) assert.deepEqual(compileErrors(FULL_HOST, yaml), [], `scripts ${scripts}: ${example}`);
     }
 });
 
-test("AOS-F1 (c): a request turn (the isolated full engine) keeps the full text, and what it teaches compiles on its host", () => {
+test("(c) a 1.0.83 turn has the same text, with clock waits and revision tests", () => {
     const testMode = workflowTestModeFromEnv();
     for (const scripts of [false, true]) {
         const prompt = systemPrompt({ scripts, requestTurn: true });
-        const full = workflowSessionGuidance(testMode, { scripts, clockWaits: true, tests: true, fullEngine: true });
-        assert.ok(prompt.includes(full), `scripts ${scripts}: the full-engine guidance`);
+        assert.ok(prompt.includes(workflowSessionGuidance(testMode, { scripts, clockWaits: true, tests: true })), `scripts ${scripts}`);
         const block = workflowBlock(prompt);
-        for (const phrase of ["An agent node has two chat modes.", "a parallel state with named `branches`", "`agent_models`",
-            "answer it once with `respond_session_request`", "Testing is optional."]) {
-            assert.ok(block.includes(phrase), `scripts ${scripts}: ${phrase}`);
-        }
-        if (!scripts) assert.match(block, /Use wait, messaging, agent and parallel nodes instead/);
+        assert.ok(block.includes("Testing is optional."));
+        assert.match(block, /give the wait state `at` instead of `seconds`/);
         for (const [type, { named, yaml }] of Object.entries(STATE_TYPES)) {
             if (named.test(block)) assert.deepEqual(compileErrors(FULL_HOST, yaml), [], `scripts ${scripts}: ${type}`);
         }
-        for (const { example, yaml } of inlineExamples(block)) assert.deepEqual(compileErrors(FULL_HOST, yaml), [], example);
     }
-    // Test mode on gives the full text exactly; the basic text is the full one less what only the full engine runs.
-    assert.equal(workflowSessionGuidance(true, { fullEngine: true }), WORKFLOW_SESSION_GUIDANCE);
-    assert.ok(workflowSessionGuidance(true).length < WORKFLOW_SESSION_GUIDANCE.length);
+    assert.equal(workflowSessionGuidance(true), WORKFLOW_SESSION_GUIDANCE);
 });
 
-test("AOS-F1: the default text is the full one less the full-engine paragraphs; no option turns the engine on", () => {
-    const basic = workflowSessionGuidance(false, { scripts: true });
-    for (const kept of ["Your Workflow Definitions belong to this chat.", "To wait, use a wait state:", "For recurring or polling work",
-        "Choose `notify_on_completion` on each `start` deliberately", "### Messages from workflow children", "- `ended`: the run ended",
-        "- `message`: a send step's typed message.", "A person's \"Ask the parent agent\" note"]) {
-        assert.ok(basic.includes(kept), kept);
+test("(d) the basic-engine text is gone: no export, and no option gives a session less than the full text", () => {
+    for (const name of ["WORKFLOW_BASIC_ENGINE_INTRO", "WORKFLOW_BASIC_ENGINE_SIMPLE", "WORKFLOW_SCRIPTS_OFF_BASIC_ENGINE_GUIDANCE"]) {
+        assert.equal(name in guidance, false, name);
     }
-    assert.ok(!/\n{3}/.test(basic), "no paragraph gap is left where a full-engine paragraph was");
-    // Neither tests nor a clock wait make a default session's text the full engine's.
-    assert.equal(workflowSessionGuidance(false, { scripts: true, tests: true }), basic);
-    const testModeOn = workflowSessionGuidance(true, { scripts: false, tests: true });
-    for (const pattern of FULL_ENGINE_TEACHING) assert.doesNotMatch(testModeOn, pattern);
-    assert.doesNotMatch(testModeOn, /test_waiting|test_respond/, "no test run reaches a basic-engine session, so no held-call notice");
+    assert.equal(workflowSessionGuidance(false, { scripts: true, fullEngine: false }), workflowSessionGuidance(false, { scripts: true }));
+    for (const phrase of ["An agent node has two chat modes.", "named `branches`"]) {
+        assert.ok(workflowSessionGuidance(false, { scripts: true }).includes(phrase), phrase);
+    }
 });

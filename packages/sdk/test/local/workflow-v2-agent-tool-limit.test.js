@@ -89,7 +89,7 @@ describe("FU-17: an agent node's tool limit on a real 1.0.83 turn (runTurnV5, te
                 seen.push({ child: typeof opts.controlToolBridge?.completeWorkflowNode === "function" });
                 return { type: "completed", content: "done", events: [] };
             };
-            await intakeNativeCase(getEnv(), `tool limit ${label}`, script, { testOptions: { workflowRequests: true } }, async h => {
+            await intakeNativeCase(getEnv(), `tool limit ${label}`, script, {}, async h => {
                 const P = randomUUID();
                 await h.catalog.createSession(P, {});
                 await agentStateOf(h, P, h.sessionId, tools);

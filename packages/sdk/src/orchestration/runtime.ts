@@ -9,6 +9,7 @@ import { advanceRegenPipeline,
     versionedContinueAsNew,
 } from "./lifecycle.js";
 import { decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "./queue.js";
+import { intakeDueAtMs } from "./intake-machine.js";
 import {
     HISTORY_SIZE_CHECK_INTERVAL_ITERATIONS,
     MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES,
@@ -143,7 +144,7 @@ export function* resolveTopLevelAgentConfig(runtime: DurableSessionRuntime): Gen
         }
         if (agentDef.crawler === true) state.config.isCrawler = true;
         if (agentDef.harvester === true) state.config.isHarvester = true;
-        runtime.session = createSessionProxy(runtime.ctx, input.sessionId, state.affinityKey, state.config, "turn-control-v1");
+        runtime.session = createSessionProxy(runtime.ctx, input.sessionId, state.affinityKey, state.config, "workflow-intake-v1");
     }
 }
 
@@ -170,8 +171,8 @@ export function* createRuntime(
     state.lastResponseVersion = readCounter(ctx, RESPONSE_VERSION_KEY);
     state.lastCommandVersion = readCounter(ctx, COMMAND_VERSION_KEY);
 
-    const manager = createSessionManagerProxy(ctx, "turn-control-v1", { childResultProvenance: true });
-    const session = createSessionProxy(ctx, input.sessionId, state.affinityKey, state.config, "turn-control-v1");
+    const manager = createSessionManagerProxy(ctx, "workflow-intake-v1", { childResultProvenance: true });
+    const session = createSessionProxy(ctx, input.sessionId, state.affinityKey, state.config, "workflow-intake-v1");
 
     const runtime: DurableSessionRuntime = { ctx, input, versions, manager, session, state, options };
 
@@ -253,19 +254,22 @@ export function* runLoop(runtime: DurableSessionRuntime): Generator<any, string,
 
         // Periodic history-size check forces a CAN before duroxide history grows too large.
         if (state.loopIteration % HISTORY_SIZE_CHECK_INTERVAL_ITERATIONS === 0) {
+            // 1.0.83: only the stats read is tolerated; the continue-as-new's own refusals (its version floor, the intake's
+            // carried-state checks) fail the execution, as at every other continue-as-new.
+            let historySizeBytes = 0;
             try {
                 const stats = yield runtime.manager.getOrchestrationStats(runtime.input.sessionId);
-                const historySizeBytes = Number(stats?.historySizeBytes) || 0;
-                if (historySizeBytes >= MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES) {
-                    ctx.traceInfo(
-                        `[orch] history size cap (${historySizeBytes} >= ${MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES}) ` +
-                        `at loop ${state.loopIteration} — continuing as new`,
-                    );
-                    yield* versionedContinueAsNew(runtime, continueInput(runtime));
-                    return "";
-                }
+                historySizeBytes = Number(stats?.historySizeBytes) || 0;
             } catch (err: any) {
                 ctx.traceInfo(`[orch] history size check failed at loop ${state.loopIteration}: ${err?.message ?? err}`);
+            }
+            if (historySizeBytes >= MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES) {
+                ctx.traceInfo(
+                    `[orch] history size cap (${historySizeBytes} >= ${MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES}) ` +
+                    `at loop ${state.loopIteration} — continuing as new`,
+                );
+                yield* versionedContinueAsNew(runtime, continueInput(runtime));
+                return "";
             }
         }
 
@@ -296,6 +300,7 @@ export function* runLoop(runtime: DurableSessionRuntime): Generator<any, string,
 
         if (didWork) continue;
         if (state.activeTimer) continue;        // drain will race the timer next iteration
+        if (intakeDueAtMs(state.intake) !== null) continue; // 1.0.83: drain will race the intake's due write
         if (state.pendingInputQuestion) continue; // drain will block on dequeue for an answer
 
         ctx.traceInfo(`[orch] no buffered work, continuing as new`);

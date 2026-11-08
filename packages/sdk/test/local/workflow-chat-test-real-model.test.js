@@ -1,7 +1,7 @@
 /**
  * Stage 2.2's real-model scenario (spec "Order of work": "asked to test: build, test, fix, start"), on a REAL model with
- * Workflows on and a worker that runs Workflow tests: the Workflow V2 test environment switch (its worker serves request turns)
- * and a chat started at its session version (1.0.83), as on TEST; only a request turn can test (stage 2.5):
+ * Workflows on and a worker that runs Workflow tests: every worker serves 1.0.83's request turns, and a chat starts at the
+ * latest version (1.0.83); only a request turn can test (stage 2.5):
  * 1. the chat is asked to build a definition and to test it before starting it, with no prepared answers: it saves it and
  *    tests it (workflow_definition test); the test fails, naming the tool call it had no answer for;
  * 2. it is asked to fix the test with a prepared answer for that call, test again, and start the revision once its test
@@ -25,11 +25,9 @@ import { dirname } from "node:path";
 import { createTestEnv } from "../helpers/local-env.js";
 import { PilotSwarmManagementClient, withClient } from "../helpers/local-workers.js";
 import { realModelPlan } from "../helpers/workflow-v2-real-model.mjs";
-import { loadModelProviders, workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentFromEnv } from "../../src/index.ts";
+import { loadModelProviders } from "../../src/index.ts";
 
 const OWNER = { provider: "test", subject: "workflow-chat-test-real-model" };
-/** The Workflow V2 test environment switch, as the TEST deployment sets it: the worker serves request turns, and new chats start at 1.0.83. */
-const ON = { PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: "isolated-test-only" };
 const NAME = "fact-count";
 const TURN_MS = 360_000;
 const RUN_MS = 180_000;
@@ -76,9 +74,8 @@ describe("An agent's test of a revision, on request (stage 2.2), on a real model
         try {
             // Stage 2.5: a test runs only on a workflow request turn (chat-test.ts requires host.requests), so the chat starts
             // at the session version that has them, as a person's new chat does on TEST; a chat at the latest version has none.
-            const worker = workerOptionsForWorkflowV2TestEnvironment({ workflowScripts: { enabled: true }, logLevel: "warning" }, ON);
+            const worker = { workflowScripts: { enabled: true }, logLevel: "warning" };
             await withClient(env, { worker }, async (client) => {
-                client._startSessionsAt(workflowV2TestEnvironmentFromEnv(ON).sessionStartVersion);
                 mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
                     factsSchema: env.factsSchema });
                 await mgmt.start();

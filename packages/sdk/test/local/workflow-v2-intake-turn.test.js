@@ -151,7 +151,7 @@ function intakeHarness(options = {}) {
     const handlers = {};
     registerActivities({ registerActivity(name, handler) { handlers[name] = handler; } }, h.sessionManager, options.sessionStore ?? null, undefined,
         h.catalog, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "worker-1", undefined, undefined,
-        { workflowIntakeTurns: true, intakeAdmissionRetryDelaysMs: [1, 1, 1] });
+        { intakeAdmissionRetryDelaysMs: [1, 1, 1] });
     const activityCtx = { traceInfo: () => {}, traceWarn: () => {}, isCancelled: () => (options.isCancelled ? options.isCancelled() === true : false) };
     return {
         ...h,

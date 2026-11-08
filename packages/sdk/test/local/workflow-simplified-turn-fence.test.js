@@ -63,7 +63,6 @@ function harness({ visit, start = { stopped: false, controls: [] }, requestIds, 
     const calls = [];
     const aborts = [];
     const h = makeRunTurnHarness({
-        testOptions: { workflowIntakeTurns: true, workflowRequests: true },
         catalogExtras: {
             workflowStore: () => fence.store,
             turnStart: vi.fn(async (...args) => { calls.push(["turnStart", ...args]); return start; }),

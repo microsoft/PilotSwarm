@@ -3,8 +3,8 @@
 import { parseArgs } from "node:util";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { Buffer } from "node:buffer";
-import { warnRetiredWorkflowsSetting, workflowV2TestEnvironmentNotice } from "pilotswarm-sdk";
-import { createContext, workflowContextOptionsFromEnv } from "../src/context.js";
+import { warnRetiredWorkflowsSetting } from "pilotswarm-sdk";
+import { createContext } from "../src/context.js";
 import { createMcpServer } from "../src/server.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
@@ -59,18 +59,14 @@ if (!apiUrl && !store) {
 const agentMgmtRaw = (values["agent-mgmt"] ?? "full").toLowerCase();
 const agentMgmt = ["off", "read", "full"].includes(agentMgmtRaw) ? agentMgmtRaw as "off" | "read" | "full" : "full";
 
-// MCP over stdio: log lines go to stderr, never to the protocol stream. The switch is worth a warning either way.
-const workflowV2TestNotice = workflowV2TestEnvironmentNotice(process.env);
-if (workflowV2TestNotice) log.warn(`[pilotswarm-mcp] ${workflowV2TestNotice}`);
-// Workflows are always on; the retired PILOTSWARM_WORKFLOWS is ignored with one warning.
+// MCP over stdio: log lines go to stderr, never to the protocol stream. Workflows are always on, with the full engine: the
+// retired PILOTSWARM_WORKFLOWS and PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT are ignored with one warning each.
 warnRetiredWorkflowsSetting(process.env, message => log.warn(`[pilotswarm-mcp] ${message}`));
 const ctx = await createContext({
     ...(apiUrl ? { apiUrl } : { store }),
     modelProvidersPath: values["model-providers"],
     pluginDirs: values.plugin,
     agentMgmt,
-    // Workflow V2 test environment (test-only): nothing unless PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT=isolated-test-only.
-    ...workflowContextOptionsFromEnv(process.env),
 });
 
 if (values.transport === "stdio") {

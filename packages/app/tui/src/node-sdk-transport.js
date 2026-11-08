@@ -518,18 +518,12 @@ function resolveUserPrincipalFor(transport, principal) {
 }
 
 export class NodeSdkTransport {
-    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands, workerTestOptions, sessionStartVersion } = {}) {
+    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands } = {}) {
         this.store = store;
         this.mode = mode;
         this.useManagedIdentity = useManagedIdentity;
         this.cmsFactsDatabaseUrl = cmsFactsDatabaseUrl;
         this.aadDbUser = aadDbUser;
-        // The embedded workers' testOptions (test-only; the Workflow V2 test environment switch, portalRuntimeOptions): unset,
-        // they are created exactly as before.
-        this.workerTestOptions = workerTestOptions || null;
-        // Where new sessions start (test-only; the same switch: 1.0.83, which the environment's workers serve). Unset, the
-        // latest version, as before.
-        this.sessionStartVersion = sessionStartVersion || null;
         this.pluginDirs = getPluginDirsFromEnv();
         // Optional EnhancedFactStore (HorizonDB) target. The client and
         // management client each build their own fact store, so they MUST
@@ -560,8 +554,8 @@ export class NodeSdkTransport {
             workspaceFiles: workspaceFilesConfigFromEnv(),
             // canvas-ws commands: off unless PORTAL_CANVAS_COMMANDS_RUNNER is set.
             canvasCommands: canvasCommandsConfigFromEnv(),
-            // Workflow v2 (INACTIVE; test-only): a person's workflow commands. Unset, they answer 501.
-            ...(workflowCommands ? { workflowCommands } : {}),
+            // Workflow v2: a person's workflow commands; unset, the management client's default (taken, on the full engine).
+            ...(workflowCommands !== undefined ? { workflowCommands } : {}),
             // Stage 2.0: whether the workers run script nodes, when this process says (PILOTSWARM_WORKFLOW_SCRIPTS).
             ...workflowScriptsOptionFromEnv(),
         });
@@ -606,7 +600,6 @@ export class NodeSdkTransport {
             this.workers = await startEmbeddedWorkers({
                 count: workerCount,
                 store: this.store,
-                ...(this.workerTestOptions ? { testOptions: this.workerTestOptions } : {}),
             });
         }
         const sessionCreationMetadata = this.resolveSessionCreationMetadata();
@@ -622,7 +615,6 @@ export class NodeSdkTransport {
             ...(this.sessionPolicy ? { sessionPolicy: this.sessionPolicy } : {}),
             ...(this.allowedAgentNames.length > 0 ? { allowedAgentNames: this.allowedAgentNames } : {}),
         });
-        if (this.sessionStartVersion) this.client._startSessionsAt(this.sessionStartVersion);
         await this.client.start();
         await this.mgmt.start();
     }
@@ -1227,8 +1219,8 @@ export class NodeSdkTransport {
     }
 
     /**
-     * Workflow v2: a person's command to a workflow session (updateWorkflow;
-     * INACTIVE unless this transport was created with workflowCommands).
+     * Workflow v2: a person's command to a workflow session (updateWorkflow; taken unless this transport was created with
+     * `workflowCommands: null`).
      * Authorization is the caller's (the portal gates session:manage);
      * `options.principal` is the signed-in caller, recorded as the actor. In
      * the TUI's direct mode it is the TUI's own user, when one is known.

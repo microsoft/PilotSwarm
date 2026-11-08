@@ -76,16 +76,16 @@ export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store
 export { PgFactStore, createFactStoreForUrl, createGraphStoreForUrl, resolveFactsTarget, isEnhancedFactStore, EnhancedFactsUnsupportedError } from "./facts-store.js";
 // Convenience: map HORIZON_* env vars to worker enhanced-facts/graph config.
 export { horizonConfigFromEnv } from "./horizon-env.js";
-export {
-    WORKFLOW_V2_TEST_ENVIRONMENT_ENABLED, WORKFLOW_V2_TEST_ENVIRONMENT_VARIABLE, workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentFromEnv,
-    workflowV2TestEnvironmentNotice, type WorkflowV2TestEnvironment,
-} from "./workflow/v2/test-environment.js";
 // Workflow test mode, hidden unless PILOTSWARM_WORKFLOW_TEST_MODE=on (Workflow Simplified, spec 16).
 export {
     WORKFLOW_TEST_MODE_ENABLED, WORKFLOW_TEST_MODE_OPERATIONS, WORKFLOW_TEST_MODE_VARIABLE, workflowTestModeFromEnv, workflowTestModeNotice,
 } from "./workflow/v2/test-mode-switch.js";
-// Workflows are always on (owner 2026-11-08T08:03Z); the retired PILOTSWARM_WORKFLOWS setting is ignored with one warning.
-export { RETIRED_WORKFLOWS_VARIABLE, RETIRED_WORKFLOWS_WARNING, warnRetiredWorkflowsSetting } from "./workflow/retired-workflows-setting.js";
+// Workflows are always on (owner 2026-11-08T08:03Z) with the full engine (2026-11-08T15:30Z); the retired PILOTSWARM_WORKFLOWS
+// and PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT settings are ignored with one warning each.
+export {
+    RETIRED_WORKFLOW_SETTINGS, RETIRED_WORKFLOW_TEST_ENVIRONMENT_VARIABLE, RETIRED_WORKFLOW_TEST_ENVIRONMENT_WARNING, RETIRED_WORKFLOWS_VARIABLE,
+    RETIRED_WORKFLOWS_WARNING, warnRetiredWorkflowsSetting,
+} from "./workflow/retired-workflows-setting.js";
 export { WORKFLOW_SCRIPTS_DISABLED, workflowScriptsOptionFromEnv, workflowV2ScriptNodes, workflowScriptsDisabledText } from "./workflow/v2/scripts-gate.js";
 // Workflow v2: the view of a person who may read a workflow but not change it (adversarial review R2-SF-2).
 export { workflowV2ReaderView } from "./workflow/v2/tools.js";

@@ -146,7 +146,7 @@ describe("A package's Workflow Definitions (stage 2.3), on a real model", () => 
             } finally {
                 await registryCatalog.close();
             }
-            const worker = { testOptions: { workflowRequests: true }, workflowScripts: { enabled: true }, logLevel: "warning",
+            const worker = { workflowScripts: { enabled: true }, logLevel: "warning",
                 agentPackages: { cacheDir: join(env.baseDir, `package-definitions-${tag}`), refreshIntervalMs: 0 } };
             await withClient(env, { worker }, async (client) => {
                 mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,

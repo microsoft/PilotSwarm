@@ -4854,14 +4854,13 @@ export class SessionManager {
         // The authoring skill's pointer (R24) only on a worker that loaded that skill (INACTIVE: none does yet). Neither mentions
         // testing unless workflow test mode is on (spec 16).
         const testMode = workflowTestModeFromEnv();
-        // Workflows are always on (owner 2026-11-08T08:03Z): every session's framework base carries the Workflow guidance.
-        // Stage 2.4: a turn that runs controller 1.9.0 is told of clock waits, which only it runs.
-        // Stage 2.5: and only such a turn can test a revision (chat-test.ts requires host.requests); elsewhere it is told it cannot.
-        // AOS-F1: and only such a turn's host runs agent, parallel and request states (session-proxy.ts gives it requests: true;
-        // compileWorkflowV2ForHost); every other session is taught only the states its engine runs.
-        const fullEngine = config.workflowMilestoneTurn === true;
-        const frameworkBase = [base, workflowSessionGuidance(testMode, { scripts: this.workflowScriptsEnabled, clockWaits: fullEngine,
-            tests: fullEngine, fullEngine }),
+        // Workflows are always on with the full engine (owner 2026-11-08T08:03Z and 15:30Z): every session's framework base
+        // carries the full Workflow guidance. A 1.0.83 turn (a workflow request turn) runs controller 1.9.0: it is told of clock
+        // waits and can test a revision (chat-test.ts requires host.requests); a frozen 1.0.82 turn, until its continue-as-new,
+        // is told it cannot test.
+        const requestTurn = config.workflowMilestoneTurn === true;
+        const frameworkBase = [base, workflowSessionGuidance(testMode, { scripts: this.workflowScriptsEnabled, clockWaits: requestTurn,
+            tests: requestTurn }),
             workflowAuthoringSkillLoaded(this.workerDefaults.skills) ? workflowAuthoringPointer(testMode) : null]
             .filter(Boolean).join("\n\n");
         const boundAgentName = config.boundAgentName;

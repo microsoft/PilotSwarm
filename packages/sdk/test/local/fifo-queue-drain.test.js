@@ -13,7 +13,7 @@ import { createRuntime, runLoop } from "../../src/orchestration/runtime.ts";
 import { appendToFifo, decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "../../src/orchestration/queue.ts";
 import * as lifecycle from "../../src/orchestration/lifecycle.ts";
 import * as agents from "../../src/orchestration/agents.ts";
-import { FIFO_BUCKET_COUNT, MAX_BUCKET_BYTES, MAX_FIFO_ITEM_BYTES, NON_BLOCKING_TIMER_MS } from "../../src/orchestration/state.ts";
+import { CHILD_UPDATE_BATCH_MS, FIFO_BUCKET_COUNT, MAX_BUCKET_BYTES, MAX_FIFO_ITEM_BYTES, NON_BLOCKING_TIMER_MS } from "../../src/orchestration/state.ts";
 
 // The real runtime fails the whole orchestration on a KV value above this many
 // UTF-8 bytes; the fake context below enforces the same limit.
@@ -148,9 +148,10 @@ function harness(overrides = {}) {
         return didWork;
     };
     // The real run loop, until the session parks: on a race whose only exit
-    // is a timer of a second or more (an armed timer), on a blocking dequeue,
-    // or on a continue-as-new.
-    const runUntilParked = () => {
+    // is a timer of a second or more (an armed timer; `throughMs`: a longer
+    // one, such as the child-update batch window, is waited out), on a
+    // blocking dequeue, or on a continue-as-new.
+    const runUntilParked = ({ throughMs = 0 } = {}) => {
         const gen = runLoop(runtime);
         let value;
         let failure;
@@ -159,7 +160,7 @@ function harness(overrides = {}) {
             failure = undefined;
             if (next.done) return { parked: "done", value: next.value };
             const effect = next.value;
-            if (effect?.effect === "race" && effect.left?.effect === "dequeue" && !messages.length && effect.right?.ms >= 1000) {
+            if (effect?.effect === "race" && effect.left?.effect === "dequeue" && !messages.length && effect.right?.ms >= Math.max(1000, throughMs + 1)) {
                 return { parked: "timer", ms: effect.right.ms };
             }
             if (effect?.effect === "dequeue" && !messages.length) return { parked: "blocking" };
@@ -958,7 +959,9 @@ describe("issue 192 defect E review: refusing an item never loses other owed wor
         h.drive(drain(h.runtime));
         expect(pendingFor(h)).toEqual([["child-a", "completed", "NEWRESULT"]]);
         for (let i = 0; i < 6; i++) h.results.push({ type: "completed", content: "ok" });
-        h.runUntilParked();
+        // 1.0.83 (the latest version) holds the restored digest for the child-update batch window before its own turn;
+        // 1.0.82 gave it to the next turn. Either way it is delivered once, and the older update never.
+        h.runUntilParked({ throughMs: CHILD_UPDATE_BATCH_MS });
         expect(h.turns.filter(t => String(t[0]).includes("NEWRESULT"))).toHaveLength(1);
         expect(h.turns.filter(t => String(t[0]).includes("OLDRESULT"))).toHaveLength(0);
     });

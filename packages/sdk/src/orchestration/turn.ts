@@ -52,6 +52,7 @@ import {
     workspaceChangedNote,
     extraFoldersChangedNote,
     workspaceRetryDelayMs,
+    ownedRetryOverrides,
     type DurableSessionRuntime,
 } from "./state.js";
 import {
@@ -68,6 +69,7 @@ import {
     mergePrompt,
     updateContextUsageFromEvents,
 } from "./utils.js";
+import { intakeBeforeAttempt, intakeResultEvent, intakeReusesThrownTurnKey, noteIntakeAttempt, noteIntakeResult, noteIntakeThrew } from "./intake-wiring.js";
 
 // ─── runTurn error / retry handling ─────────────────────────
 
@@ -128,6 +130,7 @@ function* handleConnectionClosedRetry(
 ): Generator<any, void, any> {
     const { state } = runtime;
     if (state.retryCount <= COPILOT_CONNECTION_CLOSED_MAX_RETRIES) {
+        yield* noteIntakeAttempt(runtime, { kind: "retrying" });
         const retryDetail = buildConnectionClosedRetryDetail(state.retryCount);
         publishStatus(runtime, "error", {
             error: `${errorMessage} (${retryDetail})`,
@@ -153,11 +156,13 @@ function* handleConnectionClosedRetry(
         }
 
         yield runtime.ctx.scheduleTimer(COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS * 1000);
-        yield* versionedContinueAsNew(runtime, continueInput(runtime, retryContinueOverrides(state, rc)));
+        yield* versionedContinueAsNew(runtime, continueInput(runtime, ownedRetryOverrides(retryContinueOverrides(state, rc))));
         return;
     }
 
     const handoffMessage = buildLossyHandoffSummary(errorMessage);
+    // The lossy handoff is the turn's retry; without blob persistence the turn gives up (design 5.5, rows 5 to 7).
+    yield* noteIntakeAttempt(runtime, state.blobEnabled ? { kind: "retrying" } : { kind: "failed", cause: "exhausted" });
     runtime.ctx.traceInfo(`[orch] ${handoffMessage}`);
     publishStatus(runtime, "error", {
         error: handoffMessage,
@@ -186,7 +191,7 @@ function* handleConnectionClosedRetry(
             nextStep: "release_affinity_and_resume_on_any_worker",
         });
         yield* versionedContinueAsNew(runtime, continueInput(runtime, {
-            ...retryContinueOverrides(state, rc),
+            ...ownedRetryOverrides(retryContinueOverrides(state, rc), true),
             retryCount: 0,
             rehydrationMessage: buildLossyHandoffRehydrationMessage(errorMessage),
         }));
@@ -215,6 +220,9 @@ function promptEnvelope(rc: RetryContext): Partial<OrchestrationInput> {
     };
 }
 
+// 1.0.83 (ordinary retry ownership; review Q-W2-7): every retry passes these
+// overrides through state.ts ownedRetryOverrides, so the retry is owed apart
+// from the pending prompt, which keeps the follow-ups and their own fields.
 function retryContinueOverrides(state: DurableSessionRuntime["state"], rc: RetryContext): Partial<OrchestrationInput> {
     if (rc.phase === "turn.result.error") {
         return {
@@ -251,6 +259,7 @@ export function* projectAuthFailure(
     runtime: DurableSessionRuntime,
     errorMessage: string,
 ): Generator<any, void, any> {
+    yield* noteIntakeAttempt(runtime, { kind: "failed", cause: "credential" });
     const blockedDetail = `${errorMessage} — ${AUTH_FAILURE_USER_HINT}`;
     runtime.state.blockedError = { message: blockedDetail, authFailure: true };
     publishStatus(runtime, "error", {
@@ -273,6 +282,7 @@ function* projectNonRetryableTurnFailure(
     runtime: DurableSessionRuntime,
     errorMessage: string,
 ): Generator<any, void, any> {
+    yield* noteIntakeAttempt(runtime, { kind: "failed", cause: "non_retryable" });
     runtime.state.blockedError = { message: errorMessage };
     publishStatus(runtime, "error", {
         error: errorMessage,
@@ -308,6 +318,7 @@ function* handleGenericRetry(
 ): Generator<any, void, any> {
     const { state } = runtime;
     if (state.retryCount >= MAX_RETRIES) {
+        yield* noteIntakeAttempt(runtime, { kind: "failed", cause: "exhausted" });
         runtime.ctx.traceInfo(`[orch] max retries exhausted, waiting for user input`);
         publishStatus(runtime, "error", {
             error: `Failed after ${MAX_RETRIES} attempts: ${errorMessage}`,
@@ -333,6 +344,7 @@ function* handleGenericRetry(
     }
 
     const retryDelay = 15 * Math.pow(2, state.retryCount - 1);
+    yield* noteIntakeAttempt(runtime, { kind: "retrying" });
     publishStatus(runtime, "error", {
         error: `${errorMessage} (retry ${state.retryCount}/${MAX_RETRIES} in ${retryDelay}s)`,
     });
@@ -349,7 +361,7 @@ function* handleGenericRetry(
         });
     }
     yield runtime.ctx.scheduleTimer(retryDelay * 1000);
-    yield* versionedContinueAsNew(runtime, continueInput(runtime, retryContinueOverrides(state, rc)));
+    yield* versionedContinueAsNew(runtime, continueInput(runtime, ownedRetryOverrides(retryContinueOverrides(state, rc))));
 }
 
 // ─── processPrompt: hydrate → runTurn → handleTurnResult ────
@@ -369,6 +381,9 @@ export function* processPrompt(
     // settleQueuedWorkAfterDecide never re-arms a timer behind an attempt the
     // turn path already handled (a gate refusal, an error, a thrown failure).
     runtime.turnsStarted = (runtime.turnsStarted ?? 0) + 1;
+    // 1.0.83 (design 5.5): latch, form and bind, and whether this attempt carries the invocation; for decide's dispatch of
+    // the owed retry, also that retry's count and thrown-turn key (ordinary retry ownership, review Q-W2-7).
+    const intakePayload = yield* intakeBeforeAttempt(runtime);
     // A provider-budget refusal stashes the whole pending turn contract, not
     // just its text. Any wake or interrupt that finally reaches the model must
     // enforce the same requiredTool as the refused attempt.
@@ -404,15 +419,22 @@ export function* processPrompt(
         }
     }
 
-    let turnSystemPrompt = state.pendingSystemPrompt;
-    state.pendingSystemPrompt = undefined;
+    // 1.0.83 (ordinary retry ownership; review Q-W2-7): the owed retry that
+    // sends its thrown attempt's key may adopt that attempt's saved turn, so
+    // it carries only what that attempt carried, whose own notes its prompt
+    // holds. A note queued after that attempt (a pending system note, the
+    // runtime model notice of a set_model while the retry waited) stays for
+    // the next turn that runs, and is never lost to an adopted result.
+    const ownedRetryMayAdopt = intakeReusesThrownTurnKey(state);
+    let turnSystemPrompt = ownedRetryMayAdopt ? undefined : state.pendingSystemPrompt;
+    if (!ownedRetryMayAdopt) state.pendingSystemPrompt = undefined;
     const extractedPrompt = extractPromptSystemContext(carriedOnlyTurn
         ? splitPrompt.prompt.slice(CARRIED_STEERS_WAKE_PROMPT.length)
         : prompt);
     prompt = extractedPrompt.prompt ?? "";
     turnSystemPrompt = mergePrompt(turnSystemPrompt, extractedPrompt.systemPrompt);
     if (carriedOnlyTurn) turnSystemPrompt = mergePrompt(mergePrompt(turnSystemPrompt, splitPrompt.note), carriedResumeNote);
-    if (prompt && state.runtimeModelNotice) {
+    if (prompt && state.runtimeModelNotice && !ownedRetryMayAdopt) {
         turnSystemPrompt = mergePrompt(turnSystemPrompt, state.runtimeModelNotice);
         state.runtimeModelNotice = undefined;
     }
@@ -447,7 +469,7 @@ export function* processPrompt(
                 if (!state.preserveAffinityOnHydrate) {
                     state.affinityKey = yield ctx.newGuid();
                 }
-                runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
+                runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "workflow-intake-v1");
                 yield runtime.session.hydrate();
                 state.needsHydration = false;
                 state.preserveAffinityOnHydrate = false;
@@ -487,7 +509,7 @@ export function* processPrompt(
                 yield ctx.scheduleTimer(hydrateDelay * 1000);
             }
         }
-        if (state.needsHydration) return;
+        if (state.needsHydration) return yield* noteIntakeAttempt(runtime, { kind: "hydration" });
     }
 
     if (state.config.agentIdentity !== "facts-manager") {
@@ -516,7 +538,15 @@ export function* processPrompt(
         // saved under this key and adopts it: no second model run and no
         // second commit. Otherwise the retry runs the turn normally. The key
         // came from the earlier ctx.newGuid(), so nothing new is generated.
-        const reusedTurnKey = state.blobEnabled && state.retryCount > 0 && state.thrownTurnKey
+        //
+        // 1.0.83 (ordinary retry ownership; reviews D-W2-1, Q-W2-7): only
+        // decide's dispatch of the owed retry starts with a thrown attempt's
+        // key (its first step, intakeBeforeAttempt, restores it); every other
+        // attempt starts with none, so no other turn can adopt that retry's
+        // saved result, witness included. The intake asks the same before the
+        // attempt: an attempt that sends a thrown attempt's key carries only
+        // what that attempt carried (W2-WIT3).
+        const reusedTurnKey = intakeReusesThrownTurnKey(state)
             ? state.thrownTurnKey
             : null;
         if (reusedTurnKey) ctx.traceInfo(`[orch] retrying a thrown turn with its earlier turnKey ${reusedTurnKey}`);
@@ -569,6 +599,8 @@ export function* processPrompt(
             ...(snapshotTurnKey
                 ? { snapshot: { turnKey: snapshotTurnKey } }
                 : {}),
+            // 1.0.83 (design 5.5): the invocation this attempt carries, in a field of its own, never in the prompt.
+            ...(intakePayload ? { intake: intakePayload } : {}),
         });
         turnResult = yield turnTask;
 
@@ -611,6 +643,8 @@ export function* processPrompt(
         }
     } catch (err: any) {
         state.config.turnSystemPrompt = undefined;
+        // 1.0.83 (design 5.5): an attempt that threw possibly sent the invocation it carried.
+        noteIntakeThrew(runtime);
         // 1.0.81: keep this attempt's key for the retry of the same turn.
         state.thrownTurnKey = attemptTurnKey || null;
         const errorMsg = err.message || String(err);
@@ -658,6 +692,8 @@ export function* processPrompt(
     state.config.turnSystemPrompt = undefined;
 
     let result: TurnResult = typeof turnResult === "string" ? JSON.parse(turnResult) : turnResult;
+    // 1.0.83 (design 5.5): the attempt's dispatch witness, or none.
+    yield* noteIntakeResult(runtime, (result as any)?.intakeDispatch);
     // Queued messages that delivered converted steers replaced never run as
     // their own turn. Handled before anything else can dequeue them.
     yield* dropConvertedMessages(runtime, (result as any)?.replacedClientMessageIds);
@@ -1114,7 +1150,7 @@ function* applyAgentWorkspaceChange(runtime: DurableSessionRuntime, result: Turn
     const extraPaths = action.extraPaths && typeof action.extraPaths === "object" ? action.extraPaths as Record<string, string> : null;
     if (next) state.config.workspace = next;
     else delete state.config.workspace;
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "workflow-intake-v1");
     state.workspaceRevision = revision;
     state.workspaceNotice = [workspaceChangedNote(previous, next, path), next ? extraFoldersChangedNote(previous, next, extraPaths) : undefined]
         .filter(Boolean).join(" ");
@@ -1280,6 +1316,8 @@ export function* handleTurnResult(
     result = coerceChildQuestionToWait(runtime, result);
     const gate = result.type === "wait" ? timerGate(result as any) : undefined;
     const budgetRefusal = gate !== undefined;
+    // 1.0.83 (design 5.5): the transition table for the attempt that carried the invocation (an error result's row is noted where it is handled).
+    yield* noteIntakeAttempt(runtime, intakeResultEvent(result.type, budgetRefusal));
     // "I'm here. Resuming the timer." is for a turn that RAN and said
     // nothing. A gate refusal is a turn that never ran — fabricating an
     // assistant reply for it put words in the transcript that answered a
@@ -1661,6 +1699,7 @@ export function* processTimer(
             // 1.0.80: a budget wait's timer is not the agent's own wait, so
             // it does not wake with the agent's wait text (test F11).
             if (timerGate(timer) === "budget") {
+                runtime.intakeStimulus = "gate_retry";
                 yield* processPrompt(runtime, flushPendingChildDigestIntoPrompt(runtime, BUDGET_TIMER_WAKE_PROMPT) ?? BUDGET_TIMER_WAKE_PROMPT, false);
                 return;
             }
@@ -1675,6 +1714,7 @@ export function* processTimer(
             // ≥1.0.71: a child digest held for this wake-up (queue.ts
             // nextTimerCandidate) rides into the prompt here, so holding it
             // never loses it.
+            runtime.intakeStimulus = "timer";
             yield* processPrompt(
                 runtime,
                 flushPendingChildDigestIntoPrompt(runtime, appendSystemContext(timerPrompt, resumeSystemPrompt) ?? timerPrompt) ?? timerPrompt,
@@ -1696,6 +1736,7 @@ export function* processTimer(
             }]);
             const cycleReportGuidance = "If this cycle finds material changes or blockers that should wake your parent, call report_cycle(status='material' or status='blocked', summary='...') before finishing. If nothing material changed, do NOT call report_cycle at all — just end the turn silently. Do not emit report_cycle(status='quiet') on an uneventful cycle, and never write a tool call as text.";
             const cronPrompt = `[SYSTEM: Scheduled cron wake-up for: "${activeCron.reason}". Resume your recurring task. ${cycleReportGuidance}]`;
+            runtime.intakeStimulus = "timer";
             if (timer.shouldRehydrate) {
                 yield* processPrompt(
                     runtime,
@@ -1755,6 +1796,7 @@ export function* processTimer(
                 `If this cycle finds material changes or blockers that should wake your parent, call report_cycle(status='material' or status='blocked', summary='...') before finishing. ` +
                 `If nothing material changed, do NOT call report_cycle at all — just end the turn silently. ` +
                 `Do not emit report_cycle(status='quiet') on an uneventful cycle, and never write a tool call as text.]`;
+            runtime.intakeStimulus = "timer";
             if (timer.shouldRehydrate) {
                 yield* processPrompt(
                     runtime,
@@ -1779,6 +1821,7 @@ export function* processTimer(
             // the path check first; if they pass, the held prompts run as one
             // normal turn, and if not, no model is called and the session is
             // held again. The wake text is [SYSTEM:] traffic, never stashed.
+            runtime.intakeStimulus = "gate_retry";
             yield* processPrompt(runtime, WORKSPACE_RETRY_WAKE_PROMPT, true);
             return;
         }

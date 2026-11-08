@@ -233,10 +233,9 @@ test("a person's commands (Web API, MCP): with test mode off a test operation an
 });
 
 test("base guidance: with test mode off, neither the guidance nor the authoring pointer mentions testing", async () => {
-    // The full engine's text (a request turn); the default engine's is in workflow-guidance-engine.test.mjs (AOS-F1).
-    assert.equal(workflowSessionGuidance(true, { fullEngine: true }), WORKFLOW_SESSION_GUIDANCE);
+    assert.equal(workflowSessionGuidance(true), WORKFLOW_SESSION_GUIDANCE);
     assert.equal(workflowAuthoringPointer(true), WORKFLOW_AUTHORING_POINTER);
-    const guidance = workflowSessionGuidance(false, { fullEngine: true });
+    const guidance = workflowSessionGuidance(false);
     assert.ok(!guidance.includes("test_waiting") && !guidance.includes("test_respond"));
     assert.ok(guidance.includes("- `request`: answer it once with `respond_session_request`"));
     assert.ok(guidance.includes("\n\nA person's \"Ask the parent agent\" note"));
@@ -252,10 +251,10 @@ test("base guidance: with test mode off, neither the guidance nor the authoring 
     };
     assert.ok(prompt().includes("## Workflow Sessions"));
     assert.ok(!prompt().includes("test_waiting") && !prompt(true).includes("test_waiting"), "off by default");
-    // On, a request turn (the full engine, where test runs exist) is told of a held call; a default session never gets one (AOS-F1).
+    // On, every session (each runs the full engine) is told of a held call.
     await withFlag("on", () => {
         assert.ok(prompt(true).includes("test_waiting"));
-        assert.ok(!prompt().includes("test_waiting"));
+        assert.ok(prompt().includes("test_waiting"));
     });
 });
 

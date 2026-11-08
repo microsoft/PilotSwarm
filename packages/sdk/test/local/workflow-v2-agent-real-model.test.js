@@ -14,8 +14,8 @@
  *   test schemas, its model catalog from PS_MODEL_PROVIDERS_PATH (the test catalog unless the environment names
  *   another, such as a TEST-pool catalog) and that catalog's credentials from the environment. The packaged reviewer
  *   is a synthetic package the test publishes into its own registry. Everything is dropped afterwards.
- * - deployed: an existing isolated test environment whose workers run controller 1.9.0 (the deployment switch
- *   PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT=isolated-test-only on every worker) and serve the named model from their own
+ * - deployed: an existing isolated test environment whose workers run controller 1.9.0 (every worker of this release
+ *   does) and serve the named model from their own
  *   catalog and credentials. The test runs no worker: as a client of the environment's database it creates one parent
  *   session row (the controlling agent, whose model and effort the agent states' children take) and one workflow, then
  *   reads what the environment's workers did. The packaged reviewer must already be published there
@@ -275,7 +275,7 @@ async function runLocal(plan, receipt) {
             });
             receipt.packagedReviewer = { ...reviewer, version: "1.0.0", packageId: published.packageId, revision: published.sha256, publishedByThisTest: true };
             const worker = {
-                testOptions: { workflowRequests: true }, workerPool: "default", logLevel: "warning",
+                workerPool: "default", logLevel: "warning",
                 agentPackages: { cacheDir: join(env.baseDir, `real-model-packages-${tag}`), refreshIntervalMs: 0 },
             };
             await withClient(env, { worker }, async (client) => {

@@ -8,12 +8,12 @@ import { jsonResult, errorResult, withToolErrors, type ToolResult } from "../uti
 /**
  * Workflow v2 over MCP (design 04 REST/SDK/MCP mapping; R01, R26):
  *
- * Workflows are always on (owner 2026-11-08T08:03Z):
+ * Workflows are always on (owner 2026-11-08T08:03Z), with the full engine and a person's commands (2026-11-08T15:30Z):
  *
  *   read_workflow     the workflow read (always registered): the view of a workflow session, a section's next page
  *                     (cursor) or one node execution's whole output or error (execution_id)
- *   update_workflow   the update_workflow tool's command, sent to one workflow session (INACTIVE: registered only when
- *                     the server is created with the test-only option workflowCommands, so it is absent everywhere else)
+ *   update_workflow   the update_workflow tool's command, sent to one workflow session (registered unless the server is
+ *                     created with `workflowCommands: null`, which only a test does)
  *
  * The management client runs each (direct mode) or the Web API does (web mode: GET /sessions/{id}/workflow, POST
  * /sessions/{id}/workflow/commands): the same implementation, authority and refusals as for any person, the signed-in

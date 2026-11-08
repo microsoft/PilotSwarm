@@ -81,12 +81,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { INTERNAL_SYSTEM_TURN_PROMPT, createInitialState, deriveOptions } from "../../dist/orchestration_1_0_83/state.js";
-import { appendToFifo, decide, drain } from "../../dist/orchestration_1_0_83/queue.js";
-import { runLoop } from "../../dist/orchestration_1_0_83/runtime.js";
-import { INTAKE_RECORDED_EVENT, intakeWantsTurn, runIntakeWake } from "../../dist/orchestration_1_0_83/intake-wiring.js";
-import { intakeDueAtMs } from "../../dist/orchestration_1_0_83/intake-machine.js";
-import { COPILOT_CONNECTION_CLOSED_MAX_RETRIES } from "../../dist/orchestration_1_0_83/utils.js";
+import { INTERNAL_SYSTEM_TURN_PROMPT, createInitialState, deriveOptions } from "../../dist/orchestration/state.js";
+import { appendToFifo, decide, drain } from "../../dist/orchestration/queue.js";
+import { runLoop } from "../../dist/orchestration/runtime.js";
+import { INTAKE_RECORDED_EVENT, intakeWantsTurn, runIntakeWake } from "../../dist/orchestration/intake-wiring.js";
+import { intakeDueAtMs } from "../../dist/orchestration/intake-machine.js";
+import { COPILOT_CONNECTION_CLOSED_MAX_RETRIES } from "../../dist/orchestration/utils.js";
 import { TURN_CONTROL_CAPABILITY, WORKFLOW_REQUEST_CAPABILITY } from "../../dist/activity-routing.js";
 import { createSessionProxy, registerActivities } from "../../dist/session-proxy.js";
 import {
@@ -997,19 +997,12 @@ test("1.0.83's turns run as runTurnV5 / runTurnEpochV5 with only the workflow-re
     assert.equal(Object.hasOwn(v4.input, "intake"), false);
 });
 
-test("only a test registers 1.0.83's turn activities: without the test option registerActivities registers no V5 name", () => {
-    const registered = testOptions => {
-        const names = [];
-        const catalog = { getSession: async sessionId => ({ sessionId, owner: null, parentSessionId: null }) };
-        registerActivities({ registerActivity: name => names.push(name) }, {}, null, undefined, catalog, undefined, undefined, undefined,
-            undefined, [], null, [], [], undefined, undefined, undefined, testOptions);
-        return names;
-    };
-    const plain = registered(undefined);
-    const tested = registered({ workflowIntakeTurns: true });
-    for (const name of ["runTurn", "runTurnV3", "runTurnV4", "runTurnEpochV4"]) assert.ok(plain.includes(name) && tested.includes(name), name);
-    assert.ok(!plain.includes("runTurnV5") && !plain.includes("runTurnEpochV5"));
-    assert.deepEqual(tested.filter(name => !plain.includes(name)), ["runTurnV5", "runTurnEpochV5"]);
+test("every worker registers 1.0.83's turn activities (the latest version's), beside the frozen versions' names, with no test option", () => {
+    const names = [];
+    const catalog = { getSession: async sessionId => ({ sessionId, owner: null, parentSessionId: null }) };
+    registerActivities({ registerActivity: name => names.push(name) }, {}, null, undefined, catalog, undefined, undefined, undefined,
+        undefined, [], null, [], [], undefined, undefined, undefined, undefined);
+    for (const name of ["runTurn", "runTurnV3", "runTurnV4", "runTurnEpochV4", "runTurnV5", "runTurnEpochV5"]) assert.ok(names.includes(name), name);
 });
 
 // ─── Turns (design 5.5) ──────────────────────────────────────

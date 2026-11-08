@@ -107,7 +107,7 @@ export function createMcpServer(ctx: ServerContext): McpServer {
     registerGraphTools(server, ctx);        // iff ctx.graph ([admin] subset iff ctx.admin)
     registerArtifactTools(server, ctx);     // iff web mode (ctx.api)
     registerAgentPackageTools(server, ctx); // iff web mode + ctx.agentMgmt != "off"
-    registerWorkflowTools(server, ctx);     // read_workflow; update_workflow iff ctx.workflowCommands too (test-only)
+    registerWorkflowTools(server, ctx);     // read_workflow, and update_workflow unless ctx.workflowCommands is false
 
     // Resources
     registerSessionResources(server, ctx);

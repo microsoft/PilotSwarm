@@ -2,12 +2,12 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { CARRIED_STEERS_WAKE_PROMPT } from "../../src/turn-control-contract.ts";
 import { SESSION_STATE_MISSING_PREFIX } from "../../src/types.ts";
-import { createRuntime } from "../../src/orchestration/runtime.ts";
-import { processPrompt } from "../../src/orchestration/turn.ts";
+import { createRuntime } from "../../src/orchestration_1_0_82/runtime.ts";
+import { processPrompt } from "../../src/orchestration_1_0_82/turn.ts";
 import { processPrompt as legacyProcessPrompt } from "../../src/orchestration_1_0_80/turn.ts";
-import { appendToFifo, decide, drain } from "../../src/orchestration/queue.ts";
-import { buildContinueInput } from "../../src/orchestration/lifecycle.ts";
-import { completeSession, cancelSession, failPendingShutdown } from "../../src/orchestration/agents.ts";
+import { appendToFifo, decide, drain } from "../../src/orchestration_1_0_82/queue.ts";
+import { buildContinueInput } from "../../src/orchestration_1_0_82/lifecycle.ts";
+import { completeSession, cancelSession, failPendingShutdown } from "../../src/orchestration_1_0_82/agents.ts";
 
 vi.mock("../../src/session-proxy.js", () => ({
     createSessionProxy: (ctx, sessionId, affinity, config, contract) => ctx.proxy("session", contract),
@@ -345,7 +345,7 @@ describe("1.0.81 turn control orchestration", () => {
         h.run({ type: "completed", content: "done", carriedSteersConsumed: true });
         expect(h.calls.filter(c => /closeCarriedSteers/i.test(c.effect))).toEqual([]);
         const source = ["turn", "state", "runtime", "lifecycle"].map(file =>
-            readFileSync(new URL(`../../src/orchestration/${file}.ts`, import.meta.url), "utf8")).join("\n");
+            readFileSync(new URL(`../../src/orchestration_1_0_82/${file}.ts`, import.meta.url), "utf8")).join("\n");
         expect(source).not.toMatch(/Date\.now\(|Math\.random\(|crypto\.randomUUID\(|setTimeout\(|setInterval\(/);
         expect(source).not.toMatch(/stopTurnQueueName|abortTurn\(/);
     });

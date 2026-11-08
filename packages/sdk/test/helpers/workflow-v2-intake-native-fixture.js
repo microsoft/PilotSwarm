@@ -66,7 +66,7 @@ import { registerActivities } from "../../src/session-proxy.ts";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
 import { readSnapshotMarker } from "../../src/snapshot-protocol.ts";
 import { registerWorkflowIntakeActivities } from "../../src/workflow/v2/intake-activities.ts";
-import { createRuntime, runLoop } from "../../src/orchestration_1_0_83/runtime.ts";
+import { createRuntime, runLoop } from "../../src/orchestration/runtime.ts";
 import { DURABLE_SESSION_ORCHESTRATION_NAME } from "../../src/orchestration-registry.ts";
 
 const { PostgresProvider, Runtime, Client } = createRequire(import.meta.url)("duroxide");
@@ -327,7 +327,7 @@ export async function intakeNativeFixture(env, script, options = {}) {
                 inline ? env.store : undefined, inline ? env.cmsSchema : undefined,
                 inline ? { duroxideSchema: env.duroxideSchema, factsSchema: env.factsSchema } : undefined,
                 options.systemAgents, null, [], options.userAgents, null, workerNodeId, null,
-                { workflowIntakeTurns: true, ...(options.testOptions ?? {}) });
+                { ...(options.testOptions ?? {}) });
             // No fact store here: the knowledge index is empty.
             adapter.registerActivity("loadKnowledgeIndex", async () => ({ skills: [], asks: [] }));
             registerWorkflowIntakeActivities(adapter, intake.deps);

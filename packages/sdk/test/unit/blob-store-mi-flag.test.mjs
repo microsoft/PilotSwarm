@@ -130,18 +130,14 @@ for (const entrypoint of ["packages/sdk/examples/worker.js", "packages/app/tui/s
     for (const [flag, expected] of [["1", true], [" FALSE ", false], [undefined, undefined]]) {
         test(`${entrypoint} forwards Blob flag ${String(flag)} independently of database auth`, () => {
             const sdkUrl = new URL("../../dist/index.js", import.meta.url).href;
-            const switchUrl = new URL("../../dist/workflow/v2/test-environment.js", import.meta.url).href;
             const entryUrl = new URL(entrypoint, new URL("../../../../", import.meta.url)).href;
             const script = `
                 import { mock } from "node:test";
-                import { workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentNotice } from ${JSON.stringify(switchUrl)};
                 mock.module(${JSON.stringify(sdkUrl)}, { namedExports: {
                     horizonConfigFromEnv: () => ({}),
                     // Both entry points load extension modules before start.
                     loadExtensionModules: async () => [],
                     parseExtensionModules: () => [],
-                    // The worker entry applies the Workflow V2 test environment switch (the real functions).
-                    workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentNotice,
                     PilotSwarmWorker: class {
                         constructor(options) { this.options = options; }
                         async start() {
@@ -173,31 +169,28 @@ for (const entrypoint of ["packages/sdk/examples/worker.js", "packages/app/tui/s
             const options = JSON.parse(match[1]);
             assert.equal(options.db, false);
             assert.equal(options.blob, expected);
-            assert.equal(options.test, null, "no test options without the Workflow V2 test environment switch");
+            assert.equal(options.test, null, "no test options: every worker runs the full Workflow engine without one");
         });
     }
 }
 
-// The Workflow V2 test environment switch (test-only) through the two entry points: the headless worker reads it from the
-// environment (exactly "isolated-test-only"); the portal's embedded workers take the test options it passes.
+// The retired Workflow V2 test environment switch through the two entry points (owner decision 2026-11-08T15:30Z): every
+// worker runs the full Workflow engine, so neither passes test options for it, whatever it is set to; the portal's embedded
+// workers still take test options a caller passes.
 for (const [entrypoint, switchValue, embeddedTestOptions, expected] of [
-    ["packages/sdk/examples/worker.js", "isolated-test-only", null, { workflowRequests: true }],
-    ["packages/sdk/examples/worker.js", "true", null, null],
-    ["packages/sdk/examples/worker.js", "isolated-test-only ", null, null],
-    ["packages/app/tui/src/embedded-workers.js", undefined, { workflowRequests: true }, { workflowRequests: true }],
+    ["packages/sdk/examples/worker.js", "isolated-test-only", null, null],
+    ["packages/sdk/examples/worker.js", undefined, null, null],
     ["packages/app/tui/src/embedded-workers.js", "isolated-test-only", null, null],
+    ["packages/app/tui/src/embedded-workers.js", undefined, { intakeAdmissionRetryDelaysMs: [1] }, { intakeAdmissionRetryDelaysMs: [1] }],
 ]) {
-    test(`${entrypoint} with the Workflow V2 test environment switch ${JSON.stringify(switchValue)} and test options ${JSON.stringify(embeddedTestOptions)}`, () => {
+    test(`${entrypoint} with the retired Workflow V2 test environment switch ${JSON.stringify(switchValue)} and test options ${JSON.stringify(embeddedTestOptions)}`, () => {
         const sdkUrl = new URL("../../dist/index.js", import.meta.url).href;
-        const switchUrl = new URL("../../dist/workflow/v2/test-environment.js", import.meta.url).href;
         const entryUrl = new URL(entrypoint, new URL("../../../../", import.meta.url)).href;
         const embedded = embeddedTestOptions ? `, testOptions: ${JSON.stringify(embeddedTestOptions)}` : "";
         const script = `
             import { mock } from "node:test";
-            import { workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentNotice } from ${JSON.stringify(switchUrl)};
             mock.module(${JSON.stringify(sdkUrl)}, { namedExports: {
                 horizonConfigFromEnv: () => ({}), loadExtensionModules: async () => [], parseExtensionModules: () => [],
-                workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentNotice,
                 PilotSwarmWorker: class {
                     constructor(options) { this.options = options; }
                     async start() {
@@ -209,7 +202,7 @@ for (const [entrypoint, switchValue, embeddedTestOptions, expected] of [
             const entry = await import(${JSON.stringify(entryUrl)});
             if (entry.startEmbeddedWorkers) await entry.startEmbeddedWorkers({count: 1, store: process.env.DATABASE_URL${embedded}});
         `;
-        const env = { ...process.env, DATABASE_URL: "postgresql://u:p@unittest.invalid/app", PILOTSWARM_USE_MANAGED_IDENTITY: "0" };
+        const env = { ...process.env, DATABASE_URL: "******unittest.invalid/app", PILOTSWARM_USE_MANAGED_IDENTITY: "0" };
         if (switchValue === undefined) delete env.PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT;
         else env.PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT = switchValue;
         const result = spawnSync(process.execPath, [

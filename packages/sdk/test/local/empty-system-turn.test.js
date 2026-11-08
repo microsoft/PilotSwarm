@@ -18,7 +18,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
 import { isQuietSystemOnlyTurn, SYSTEM_ONLY_TURN_PROMPT } from "../../src/session-proxy.ts";
-import { INTERNAL_SYSTEM_TURN_PROMPT as PROMPT_1_0_83 } from "../../src/orchestration_1_0_83/state.ts";
+import { INTERNAL_SYSTEM_TURN_PROMPT as PROMPT_1_0_83 } from "../../src/orchestration/state.ts";
 import { INTERNAL_SYSTEM_TURN_PROMPT as PROMPT_LATEST } from "../../src/orchestration/state.ts";
 import { appendSystemContextBlock } from "../../src/prompt-system-context.ts";
 

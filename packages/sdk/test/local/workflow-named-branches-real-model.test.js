@@ -122,7 +122,7 @@ describe("named branches on a real model, two branches on two models (local targ
             const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
             await catalog.initialize();
             try {
-                const worker = { testOptions: { workflowRequests: true }, workerPool: "default", logLevel: "warning" };
+                const worker = { workerPool: "default", logLevel: "warning" };
                 await withClient(env, { worker }, async (client) => {
                     const store = catalog.workflowStore();
                     // Each branch's agent node is its own state id, so each takes its own entry, checked against the owning

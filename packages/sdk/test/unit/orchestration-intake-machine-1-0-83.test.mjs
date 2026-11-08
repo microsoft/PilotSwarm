@@ -38,10 +38,10 @@ import {
     intakeArrivalClaimCall, intakeArrivalEnvelope, intakeBindCall, intakeCanForm, intakeDueAtMs, intakeDueWork, intakeEndCall,
     intakeInvocationCancelCall, intakeOwnTurnStimulus, intakePlacementClaim, intakeRefuseClaimCall, intakeRetryAfterFailure, intakeUnclaimedRetryCall,
     latchIntakeCancels,
-} from "../../dist/orchestration_1_0_83/intake-machine.js";
+} from "../../dist/orchestration/intake-machine.js";
 import {
     INTAKE_MAX_HELD, INTAKE_MAX_HELD_ENTRY_BYTES, INTAKE_MAX_UNCLAIMED, IntakeShapeError, carryIntakeState, intakeHeldEntryCapBytes, restoreIntakeState,
-} from "../../dist/orchestration_1_0_83/intake-state.js";
+} from "../../dist/orchestration/intake-state.js";
 import {
     INTAKE_MAX_INVOCATION_ITEMS_BYTES, INTAKE_MAX_TEXT_BYTES, intakeBoundItem, intakeEnvelopeClientMessageId, intakeItemBytes, intakeItemsBytes,
 } from "../../dist/workflow/v2/intake.js";

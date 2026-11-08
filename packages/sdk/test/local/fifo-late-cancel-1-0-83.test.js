@@ -28,10 +28,10 @@
  */
 import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
-import { createRuntime, runLoop } from "../../src/orchestration_1_0_83/runtime.ts";
-import { appendToFifo, drain } from "../../src/orchestration_1_0_83/queue.ts";
-import { bufferChildUpdate, continueInput } from "../../src/orchestration_1_0_83/lifecycle.ts";
-import { FIFO_BUCKET_COUNT, MAX_FIFO_ITEM_BYTES, PREDISPATCH_CANCEL_SWEEP_MS } from "../../src/orchestration_1_0_83/state.ts";
+import { createRuntime, runLoop } from "../../src/orchestration/runtime.ts";
+import { appendToFifo, drain } from "../../src/orchestration/queue.ts";
+import { bufferChildUpdate, continueInput } from "../../src/orchestration/lifecycle.ts";
+import { FIFO_BUCKET_COUNT, MAX_FIFO_ITEM_BYTES, PREDISPATCH_CANCEL_SWEEP_MS } from "../../src/orchestration/state.ts";
 
 const { MAX_KV_VALUE_BYTES } = createRequire(import.meta.url)("duroxide");
 

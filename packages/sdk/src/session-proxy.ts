@@ -35,7 +35,6 @@ import type { ArtifactStore } from "./session-store.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
 import { PilotSwarmClient } from "./client.js";
-import { DURABLE_SESSION_INTAKE_VERSION } from "./orchestration-version.js";
 import { PilotSwarmManagementClient, type SessionOrchestrationStats } from "./management-client.js";
 import { replyInternalSessionMessage, sendInternalSessionMessage } from "./session-messages.js";
 import { loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
@@ -1391,19 +1390,11 @@ export function registerActivities(
     /** Artifact store — resolves image attachment refs to bytes inside runTurn. */
     artifactStore?: ArtifactStore | null,
     /**
-     * Test-only switches. `workflowIntakeTurns` registers orchestration
-     * 1.0.83's turn activities (runTurnV5 / runTurnEpochV5), whose input may
-     * carry an invocation's `intake` field; `intakeAdmissionRetryDelaysMs`
-     * replaces the in-place waits of their admission's transient retries
-     * (intake-admission.ts); `workflowRequests` gives those turns the
-     * respond_session_request tool (workflow request states), and starts the
-     * sessions a turn creates (spawn_agent, create_agent_session) and a
-     * non-system child the orchestration spawns (spawnChildSession) at 1.0.83.
-     * INACTIVE: only
-     * tests pass them, and a worker created with the test option
-     * workflowRequests (milestone-worker.ts).
+     * Test-only tuning: `intakeAdmissionRetryDelaysMs` replaces the in-place waits of the intake admission's transient
+     * retries (intake-admission.ts). Orchestration 1.0.83's turn activities (runTurnV5 / runTurnEpochV5) are always
+     * registered, and their turns are workflow request turns (owner decision 2026-11-08T15:30Z).
      */
-    testOptions?: { workflowIntakeTurns?: boolean; intakeAdmissionRetryDelaysMs?: readonly number[]; workflowRequests?: boolean },
+    testOptions?: { intakeAdmissionRetryDelaysMs?: readonly number[] },
 ) {
     // Shared config for every activity-layer internal PilotSwarmClient /
     // PilotSwarmManagementClient. Carries the FULL facts/CMS target (07 P3) so
@@ -1653,9 +1644,9 @@ export function registerActivities(
         /** 1.0.83 (runTurnV5): the invocation this attempt carries, already checked; null on every other name. */
         turnIntake: IntakeTurnField | null = null,
         /**
-         * A 1.0.83 turn of a worker that runs workflow request states (test
-         * option workflowRequests; INACTIVE): the session can answer a
-         * workflow's request (respond_session_request).
+         * A 1.0.83 turn (the latest version's runTurnV5 names): a workflow request turn, whose host runs controller 1.9.0's
+         * request, agent and parallel states, and whose session can answer a workflow's request (respond_session_request).
+         * A frozen version's turn (runTurn, runTurnV4) is not.
          */
         workflowRequestTurn = false,
     ): Promise<TurnResult> => {
@@ -2681,11 +2672,8 @@ export function registerActivities(
             if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
             inlineSdkClientPromise = (async () => {
                 const startedClient = new PilotSwarmClient(internalClientConfig());
-                // The turn's own client creates its sub-agents (spawn_agent) and agent sessions (create_agent_session). On a
-                // worker that serves the durable intake's orchestration (the test option workflowRequests, which the Workflow
-                // V2 test environment switch sets; INACTIVE) they start at 1.0.83, as a person's new chat does, so an agent
-                // can delegate writing request, agent and parallel states. Elsewhere they start at the latest version.
-                if (testOptions?.workflowRequests === true) startedClient._startSessionsAt(DURABLE_SESSION_INTAKE_VERSION);
+                // The turn's own client creates its sub-agents (spawn_agent) and agent sessions (create_agent_session), at the
+                // latest version (1.0.83), as a person's new chat starts.
                 await startInternalClient(startedClient);
                 inlineSdkClient = startedClient;
                 return startedClient;
@@ -5761,15 +5749,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // Session turn control (1.0.81): the V4 names run the turn-control path.
     registerTurnControlActivity(runtime, "runTurn", runTurnV4Handler);
     registerTurnControlActivity(runtime, "runTurn2", runTurnV4Handler);
-    // Workflow intake (1.0.83, INACTIVE): the V5 names run the turn-control
-    // path with the invocation the input's `intake` field carries, checked
-    // whole first. Only a test registers them, and the test-only milestone worker.
-    if (testOptions?.workflowIntakeTurns === true) {
-        const runTurnV5Handler = async (activityCtx: any, input: Parameters<typeof runTurnImpl>[2] & { intake?: unknown }) =>
-            runTurnImpl(true, activityCtx, input, parseIntakeTurnField(input.intake), testOptions.workflowRequests === true);
-        registerWorkflowIntakeTurnActivity(runtime, "runTurn", runTurnV5Handler);
-        registerWorkflowIntakeTurnActivity(runtime, "runTurn2", runTurnV5Handler);
-    }
+    // Workflow intake (1.0.83, the latest version): the V5 names run the turn-control path with the invocation the input's
+    // `intake` field carries, checked whole first; each is a workflow request turn.
+    const runTurnV5Handler = async (activityCtx: any, input: Parameters<typeof runTurnImpl>[2] & { intake?: unknown }) =>
+        runTurnImpl(true, activityCtx, input, parseIntakeTurnField(input.intake), true);
+    registerWorkflowIntakeTurnActivity(runtime, "runTurn", runTurnV5Handler);
+    registerWorkflowIntakeTurnActivity(runtime, "runTurn2", runTurnV5Handler);
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it
@@ -6374,10 +6359,6 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             ...internalClientConfig(),
             traceWriter: (message: string) => trace(message),
         });
-        // On a worker that serves the durable intake's orchestration (the test option workflowRequests, which the Workflow
-        // V2 test environment switch sets; INACTIVE), a non-system child the orchestration spawns starts at 1.0.83, as the
-        // sub-agents a turn spawns do (getInlineClient). System children keep the latest version.
-        if (testOptions?.workflowRequests === true && !input.isSystem) sdkClient._startSessionsAt(DURABLE_SESSION_INTAKE_VERSION);
         try {
             const clientStartAt = Date.now();
             await startInternalClient(sdkClient);

@@ -25,8 +25,8 @@ import { workflowRuntimeSender } from "../../src/workflow/v2/parent-messages.ts"
 import { intakeBoundItem, intakeItemBytes } from "../../src/workflow/v2/intake.ts";
 import {
     applyIntakeAttempt, applyIntakeBound, applyIntakeClaim, carryIntakeInvocation, formIntakeInvocation, intakeArrivalClaimCall,
-} from "../../src/orchestration_1_0_83/intake-machine.ts";
-import { intakeResultEvent } from "../../src/orchestration_1_0_83/intake-wiring.ts";
+} from "../../src/orchestration/intake-machine.ts";
+import { intakeResultEvent } from "../../src/orchestration/intake-wiring.ts";
 
 const sha256 = text => createHash("sha256").update(text, "utf8").digest("hex");
 const EXCHANGE = `nx-${"1".repeat(40)}`;
@@ -71,7 +71,7 @@ function intakeHarness({ store = admissionStore({ allowed: true }), catalogExtra
     const handlers = {};
     registerActivities({ registerActivity(name, handler) { handlers[name] = handler; } }, h.sessionManager, null, undefined,
         h.catalog, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "worker-1", undefined, undefined,
-        { workflowIntakeTurns: true, intakeAdmissionRetryDelaysMs: [1, 1, 1] });
+        { intakeAdmissionRetryDelaysMs: [1, 1, 1] });
     const activityCtx = { traceInfo: () => {}, traceWarn: () => {}, isCancelled: () => false };
     return { ...h, runTurnV5: (sessionId, input) => handlers.runTurnV5(activityCtx, { sessionId, config: {}, turnIndex: 0, ...input }) };
 }

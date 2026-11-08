@@ -9,7 +9,6 @@ import {
     createWebGraphStore,
     isEnhancedFactStore,
     horizonConfigFromEnv,
-    workflowV2TestEnvironmentFromEnv,
     workflowScriptsOptionFromEnv,
     loadModelProviders,
     ModelProviderRegistry,
@@ -87,8 +86,8 @@ interface ServerContextBase {
     /** Agent-package management tool tier ("off" | "read" | "full"). */
     agentMgmt: "off" | "read" | "full";
     /**
-     * Workflow v2 (INACTIVE; test-only): register update_workflow, a person's
-     * workflow command. False (the default): the tool is absent.
+     * Workflow v2: register update_workflow, a person's workflow command. True for every server; false only for one
+     * created with `workflowCommands: null` (a test).
      */
     workflowCommands?: boolean;
     /**
@@ -153,29 +152,11 @@ export interface CreateContextOptions {
      */
     agentMgmt?: "off" | "read" | "full";
     /**
-     * Workflow v2 (INACTIVE; test-only): register update_workflow. In direct
-     * mode the management client then takes a person's workflow commands
-     * (`requests: true` when the workers run controller 1.9.0); in web mode the
-     * deployment decides (501 unless it enables them).
+     * Workflow v2: a person's workflow commands. Unset (every deployment): update_workflow is registered, and in direct mode
+     * the management client takes them on the full engine (its default); in web mode the deployment takes them. `null`: no
+     * update_workflow, and in direct mode no person's commands (a test).
      */
     workflowCommands?: { requests?: boolean } | null;
-    /**
-     * Workflow v2 (INACTIVE; test-only): in direct mode, where new sessions
-     * start (1.0.83 when the workers serve it). Unset, the latest version.
-     * In web mode the deployment starts them.
-     */
-    sessionStartVersion?: string | null;
-}
-
-/**
- * The context options the Workflow V2 test environment switch adds (PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT, exactly
- * `isolated-test-only`; test-only, never an activation): a person's workflow commands (update_workflow registered; in
- * direct mode the management client takes them, stop and the test operations included), and in direct mode new sessions
- * at 1.0.83. Off: nothing, so the context is created exactly as before. Pure.
- */
-export function workflowContextOptionsFromEnv(env: Record<string, string | undefined> = process.env): Pick<CreateContextOptions, "workflowCommands" | "sessionStartVersion"> {
-    const test = workflowV2TestEnvironmentFromEnv(env);
-    return test ? { workflowCommands: test.workflowCommands, sessionStartVersion: test.sessionStartVersion } : {};
 }
 
 /** The session an MCP server acts for (PILOTSWARM_ORIGINATING_SESSION_ID, trimmed), or null when it was not started for one. */
@@ -271,9 +252,8 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         admin = true;
         ctxRole = "admin";
         client = new PilotSwarmClient({ store: opts.store });
-        if (opts.sessionStartVersion) client._startSessionsAt(opts.sessionStartVersion);
         await client.start();
-        mgmt = new PilotSwarmManagementClient({ store: opts.store, ...(opts.workflowCommands ? { workflowCommands: opts.workflowCommands } : {}),
+        mgmt = new PilotSwarmManagementClient({ store: opts.store, ...(opts.workflowCommands !== undefined ? { workflowCommands: opts.workflowCommands } : {}),
             ...workflowScriptsOptionFromEnv() });
         await mgmt.start();
 
@@ -390,7 +370,7 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         })(),
         role: ctxRole,
         authz: ctxAuthz,
-        ...(opts.workflowCommands ? { workflowCommands: true } : {}),
+        workflowCommands: opts.workflowCommands !== null,
         // The session this server acts for, when it was started for one (review SF-2).
         ...(originatingSessionIdFromEnv() ? { originatingSessionId: originatingSessionIdFromEnv()! } : {}),
         webMode: Boolean(opts.apiUrl),

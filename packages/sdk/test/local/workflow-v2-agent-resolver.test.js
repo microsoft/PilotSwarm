@@ -284,7 +284,7 @@ describe("workflow v2: a worker's publication pins named agents from the agent r
             }
             return { type: "completed", content: "done", events: [] };
         };
-        await intakeNativeCase(getEnv(), "worker publication pins", script, { testOptions: { workflowRequests: true }, inlineClient: true, userAgents },
+        await intakeNativeCase(getEnv(), "worker publication pins", script, { inlineClient: true, userAgents },
             async h => {
                 const sharedV1 = await h.catalog.publishAgentPackage(packageInput(shared, "1.0.0", S1, [{ name: checker, tools: ["read_file"] }],
                     { scope: "shared" }));

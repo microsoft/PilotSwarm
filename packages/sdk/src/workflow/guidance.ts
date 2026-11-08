@@ -2,9 +2,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * The runtime base guidance for a session whose Workflows run on the full engine (a workflow request turn: its host has
- * `requests: true` and starts controller 1.9.0, so agent, parallel and request states compile and run). Every other session
- * gets workflowSessionGuidance's basic-engine text (AOS-F1).
+ * The runtime base guidance. Every session's Workflows run on the full engine (owner decision 2026-11-08T15:30Z: controller
+ * 1.9.0 and session orchestration 1.0.83 on every worker), so every session is taught agent, parallel and request states.
  */
 export const WORKFLOW_SESSION_GUIDANCE = `## Workflow Sessions
 
@@ -54,50 +53,6 @@ A workflow's message to you starts with one header line, \`[WORKFLOW_UPDATE from
 
 A person's "Ask the parent agent" note arrives as that person's message, naming the workflow, its step and its run.`;
 
-/**
- * AOS-F1 (always-on review): a session whose host is not on the full engine (every turn but a workflow request turn, so
- * every default deployment) compiles only script, wait, messaging (receive and send) and terminal states
- * (compileWorkflowV2ForHost; compiler SUPPORTED_NODE_TYPES): agent and parallel states are refused with
- * WORKFLOW_NODE_TYPE_UNSUPPORTED and a request state with WORKFLOW_FEATURE_UNSUPPORTED. Its guidance teaches only those, and
- * names no tool it is not declared (respond_session_request, complete_workflow_node).
- */
-export const WORKFLOW_BASIC_ENGINE_INTRO = "Some work is prescriptive or repetitive and needs little judgment most of the time. For that "
-    + "work, write a Workflow Definition and start a Workflow instead of doing each step yourself. A Workflow on this server calls no "
-    + "model: it runs script, wait, messaging (receive and send) and terminal states only, and a definition with any other state type is "
-    + "refused when you save it. You may still spawn sub-agents when that fits better. Any session may hand work off this way, a "
-    + "sub-agent too.";
-
-export const WORKFLOW_BASIC_ENGINE_SIMPLE = "Keep a Workflow simple: few nodes and a straight path that a reader understands in one look. "
-    + "A Workflow here cannot make a judgment: where a part needs judgment, parsing, many branches, nested conditions or string logic, "
-    + "do that part yourself or in a sub-agent and keep the Workflow to the fixed steps. Scripts do work, not decisions, and there is no "
-    + "code in YAML.";
-
-/** The full-engine paragraphs and lines the basic engine cannot follow (agent, parallel and request states), by their start. */
-const FULL_ENGINE_ONLY_STARTS = [
-    "When different branches must run different nodes at once",
-    "An agent node has two chat modes.",
-    "Write an agent node's task so the agent can work from its input.",
-    "To keep an agent node to the tools it needs,",
-    "A definition never names a model:",
-    "- `request`: answer it once with `respond_session_request`",
-];
-/** The full-engine paragraphs the basic engine says differently, by their start. */
-const BASIC_ENGINE_REPLACEMENTS: ReadonlyArray<readonly [string, string]> = [
-    ["Some work is prescriptive or repetitive", WORKFLOW_BASIC_ENGINE_INTRO],
-    ["Keep a Workflow simple:", WORKFLOW_BASIC_ENGINE_SIMPLE],
-];
-
-/** The full text as the basic engine needs it: the full-engine-only lines left out, the two that differ replaced. Pure. */
-function basicEngineGuidance(text: string): string {
-    const lines: string[] = [];
-    for (const line of text.split("\n")) {
-        if (FULL_ENGINE_ONLY_STARTS.some(start => line.startsWith(start))) continue;
-        const replaced = BASIC_ENGINE_REPLACEMENTS.find(([start]) => line.startsWith(start));
-        lines.push(replaced ? replaced[1] : line);
-    }
-    return lines.join("\n").replace(/\n{3,}/g, "\n\n");
-}
-
 /** The guidance's paragraph on testing a revision (stage 2.2), as it stands in WORKFLOW_SESSION_GUIDANCE. */
 const DEFINITION_TEST_GUIDANCE = WORKFLOW_SESSION_GUIDANCE.split("\n").find(line => line.startsWith("Testing is optional.")) ?? "";
 
@@ -110,14 +65,9 @@ export const WORKFLOW_TESTS_UNAVAILABLE_GUIDANCE = "Workflow tests do not run on
 
 const TEST_WAITING_GUIDANCE_LINE = "\n- `test_waiting`: a test run's held call. Answer it with `update_workflow` operation `test_respond`.";
 
-/** The line the full-engine guidance carries on a worker that runs no script nodes (stage 2.0: Workflows and scripts are separate settings). */
+/** The line the guidance carries on a worker that runs no script nodes (stage 2.0: Workflows and scripts are separate settings). */
 export const WORKFLOW_SCRIPTS_OFF_GUIDANCE = "Script nodes are turned off on this server (PILOTSWARM_WORKFLOW_SCRIPTS): a definition with a script node is "
     + "refused when you save or start it. Use wait, messaging, agent and parallel nodes instead, or tell the user an operator must turn scripts on.";
-
-/** AOS-F1: the same line for the basic engine, which runs no agent or parallel state either: it names only what runs. */
-export const WORKFLOW_SCRIPTS_OFF_BASIC_ENGINE_GUIDANCE = "Script nodes are turned off on this server (PILOTSWARM_WORKFLOW_SCRIPTS): a definition "
-    + "with a script node is refused when you save or start it, so a Workflow here can only wait and send or receive messages. Do the work "
-    + "yourself or with a sub-agent, or tell the user an operator must turn scripts on.";
 
 /**
  * Stage 2.4: the line the guidance carries where clock waits run (a host that runs controller 1.9.0): a wait until a
@@ -165,23 +115,17 @@ export function workflowAwareSchedulingTool<T extends { name?: string; descripti
 }
 
 /**
- * The runtime base guidance for one session:
- * - `fullEngine` (AOS-F1): whether its Workflows run on the full engine (a workflow request turn, whose host compiles
- *   agent, parallel and request states). Without it (the default, and every default deployment), the basic-engine text,
- *   which teaches none of those, and no revision test (a test needs the full engine);
- * - `tests: false`: no revision test either (the stage 2.5 notice in its place);
- * - `testMode` (spec 16): with test mode off, or on the basic engine (no test runs there), the test notice's line is left out;
- * - `clockWaits`: the clock-wait line (controller 1.9.0); `scripts: false`: the scripts-off line, in the engine's words.
+ * The runtime base guidance for one session (every session runs the full engine):
+ * - `testMode` (spec 16): with test mode off, the test notice's line is left out;
+ * - `tests: false`: a turn that cannot run a revision test (a frozen 1.0.82 turn, until its continue-as-new): the stage 2.5
+ *   notice in the test paragraph's place;
+ * - `clockWaits`: the clock-wait line (controller 1.9.0); `scripts: false`: the scripts-off line.
  */
-export function workflowSessionGuidance(testMode: boolean, options: { scripts?: boolean; clockWaits?: boolean; tests?: boolean; fullEngine?: boolean } = {}): string {
-    const fullEngine = options.fullEngine === true;
-    const withNotices = testMode && fullEngine ? WORKFLOW_SESSION_GUIDANCE : WORKFLOW_SESSION_GUIDANCE.replace(TEST_WAITING_GUIDANCE_LINE, "");
-    const tests = fullEngine && options.tests !== false;
-    const withTests = !tests && DEFINITION_TEST_GUIDANCE
+export function workflowSessionGuidance(testMode: boolean, options: { scripts?: boolean; clockWaits?: boolean; tests?: boolean } = {}): string {
+    const withNotices = testMode ? WORKFLOW_SESSION_GUIDANCE : WORKFLOW_SESSION_GUIDANCE.replace(TEST_WAITING_GUIDANCE_LINE, "");
+    const text = options.tests === false && DEFINITION_TEST_GUIDANCE
         ? withNotices.replace(DEFINITION_TEST_GUIDANCE, WORKFLOW_TESTS_UNAVAILABLE_GUIDANCE) : withNotices;
-    const text = fullEngine ? withTests : basicEngineGuidance(withTests);
-    const scriptsOff = fullEngine ? WORKFLOW_SCRIPTS_OFF_GUIDANCE : WORKFLOW_SCRIPTS_OFF_BASIC_ENGINE_GUIDANCE;
-    const lines = [text, ...(options.clockWaits === true ? [WORKFLOW_CLOCK_WAIT_GUIDANCE] : []), ...(options.scripts === false ? [scriptsOff] : [])];
+    const lines = [text, ...(options.clockWaits === true ? [WORKFLOW_CLOCK_WAIT_GUIDANCE] : []), ...(options.scripts === false ? [WORKFLOW_SCRIPTS_OFF_GUIDANCE] : [])];
     return lines.join("\n");
 }
 
@@ -191,9 +135,9 @@ export function workflowSessionGuidance(testMode: boolean, options: { scripts?: 
  * core), `workflow-reference` and `workflow-patterns` (loaded only when one
  * Workflow must run different nodes per branch), in the SDK package's
  * plugins/workflow-v2/skills (`workflow-testing` is apart, hidden with test
- * mode: WORKFLOW_V2_TEST_MODE_SKILLS_DIR). INACTIVE: no worker tier loads this
- * directory; a test passes it as a skill directory, beside the workers that run
- * controller 1.9.0.
+ * mode: WORKFLOW_V2_TEST_MODE_SKILLS_DIR). Every worker loads this directory
+ * with the SDK's system skills (worker.ts), so every session can load them and
+ * its base carries the authoring pointer.
  */
 export const WORKFLOW_V2_SKILLS_DIR = fileURLToPath(new URL("../../plugins/workflow-v2/skills", import.meta.url));
 export const WORKFLOW_AUTHORING_SKILL = "workflow-authoring";

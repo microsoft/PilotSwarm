@@ -1,6 +1,8 @@
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
 import { isWorkflowTestBench } from "./workflow/v2/test-bench.js";
 import { warnRetiredWorkflowsSetting } from "./workflow/retired-workflows-setting.js";
+import { WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR } from "./workflow/guidance.js";
+import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
 import { AGENT_HANDOFF_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
@@ -929,14 +931,12 @@ export class PilotSwarmWorker {
         const inspectClient = new Client(this._provider);
         this.sessionManager.setDuroxideClient(inspectClient);
 
-        // Workflow v2 milestone (INACTIVE): only the test option loads what such a worker serves (milestone-worker.ts).
-        const milestone = this.config.testOptions?.workflowRequests === true ? await import("./workflow/v2/milestone-worker.js") : null;
-        if (milestone && !this._catalog?.workflowStore) {
-            throw new Error("PilotSwarmWorker testOptions.workflowRequests needs the workflow store (a CMS catalog).");
-        }
+        // The full Workflow engine (owner decision 2026-11-08T15:30Z): every worker serves orchestration 1.0.83's intake and
+        // request turns, controller 1.9.0 and the agent host of agent states (milestone-worker.ts).
+        const milestone = await import("./workflow/v2/milestone-worker.js");
 
         const runtimeOptions = {
-            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPABILITY, ...(milestone?.WORKFLOW_MILESTONE_WORKER_TAGS ?? [])] },
+            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPABILITY, ...milestone.WORKFLOW_MILESTONE_WORKER_TAGS] },
             orchestrationConcurrency,
             workerConcurrency,
             dispatcherPollIntervalMs: 10,
@@ -1005,7 +1005,7 @@ export class PilotSwarmWorker {
             this.factStore,
             this.config.workerNodeId,
             this.artifactStore,
-            milestone ? milestone.workflowMilestoneActivityOptions() : undefined,
+            this.config.testOptions?.intakeAdmissionRetryDelaysMs ? { intakeAdmissionRetryDelaysMs: this.config.testOptions.intakeAdmissionRetryDelaysMs } : undefined,
         );
 
         for (const registration of DURABLE_SESSION_ORCHESTRATION_REGISTRY) {
@@ -1015,8 +1015,8 @@ export class PilotSwarmWorker {
                 registration.handler,
             );
         }
-        // After the registry's versions (duroxide takes them in ascending order).
-        milestone?.registerWorkflowMilestoneSessions(this.runtime, { store: this._catalog?.workflowStore?.() ?? null });
+        // Orchestration 1.0.83's intake activities (claim and settle).
+        milestone.registerWorkflowMilestoneSessions(this.runtime, { store: this._catalog?.workflowStore?.() ?? null });
 
         // Workflow sessions: a sibling controller orchestration. It is
         // registered on every worker so that a workflow started where scripts
@@ -1096,15 +1096,13 @@ export class PilotSwarmWorker {
                     await this.factStore?.deleteSessionFactsForSession(sessionId);
                 },
                 runnerOptions: { executables: workflowScriptSettings.executables },
-                // Controller 1.9.0 with this worker's agent host (INACTIVE: the test option only).
-                ...(milestone ? {
-                    workflowRequests: true,
-                    agentNodes: milestone.workflowMilestoneAgentNodes({
-                        catalog: this._catalog,
-                        deploymentAgents: () => ({ userAgents: [...this._rawLoadedAgents], systemAgents: [...this._loadedSystemAgents] }),
-                        clientOptions: { store: storage.duroxide.url, cmsSchema: storage.runtime.cmsSchema, ...internalClientConfig },
-                    }),
-                } : {}),
+                // Controller 1.9.0 with this worker's agent host: every run starts at 1.9.0.
+                workflowRequests: true,
+                agentNodes: milestone.workflowMilestoneAgentNodes({
+                    catalog: this._catalog,
+                    deploymentAgents: () => ({ userAgents: [...this._rawLoadedAgents], systemAgents: [...this._loadedSystemAgents] }),
+                    clientOptions: { store: storage.duroxide.url, cmsSchema: storage.runtime.cmsSchema, ...internalClientConfig },
+                }),
             });
         }
         trace(`[worker] workflow scripts ${workflowScriptSettings.enabled ? "enabled" : "disabled"}`);
@@ -1883,6 +1881,10 @@ export class PilotSwarmWorker {
         const sdkPluginsDir = path.resolve(__sdkDir, "..", "plugins");
         const systemDir = path.join(sdkPluginsDir, "system");
         this._loadPluginDir(systemDir, "system");
+        // The Workflow authoring skills (workflow-authoring, workflow-reference, workflow-patterns), for every session: the
+        // guidance and Agent Smith point to them. workflow-testing only where test mode is on (spec 16).
+        this._loadSdkSkillDir(WORKFLOW_V2_SKILLS_DIR);
+        if (workflowTestModeFromEnv()) this._loadSdkSkillDir(WORKFLOW_V2_TEST_MODE_SKILLS_DIR);
 
         // ── Tier 2: SDK management plugins (opt-out) ─────────────────
         if (!(this.config as any).disableManagementAgents) {
@@ -2431,6 +2433,16 @@ export class PilotSwarmWorker {
     /**
      * Load agents, skills, MCP config, and session policy from a single plugin directory.
      */
+    /** An SDK-bundled skill directory (its skills, nothing else), loaded as the system tier's skills are. */
+    private _loadSdkSkillDir(skillsDir: string): void {
+        if (!fs.existsSync(skillsDir)) return;
+        this._loadedSkillDirs.push(skillsDir);
+        for (const skill of loadSkillsSync(skillsDir)) {
+            this._loadedSkills.set(skill.name, skill);
+            this._loadedSkillsAll.push(skill);
+        }
+    }
+
     private _loadPluginDir(absDir: string, layer: "system" | "management" | "app"): void {
         if (!fs.existsSync(absDir)) return;
 

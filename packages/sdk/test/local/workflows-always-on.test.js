@@ -147,7 +147,7 @@ states:
                 return { type: "completed", content: "done", events: [] };
             };
             await intakeNativeCase(env, "workflows always on turn", script,
-                { testOptions: { workflowRequests: true }, managerExtras: { workflowScriptsEnabled: true } }, async h => {
+                { managerExtras: { workflowScriptsEnabled: true } }, async h => {
                     await h.start();
                     await h.until(({ history }) => history.some(event => event.kind === "QueueSubscribed"), "the session waits for its messages");
                     await h.say("probe the workflow tools", "cm-switch-1");
@@ -195,7 +195,7 @@ states:
         // a script node can be stored; the refused ones never reach it (the gate decides from the YAML first; the e02ec6f8
         // run answered WORKFLOW_ERROR because this case had no host and the gate came after it).
         await intakeNativeCase(env, "workflows on, scripts off", script,
-            { testOptions: { workflowRequests: true }, inlineClient: true, managerExtras: { workflowScriptsEnabled: false } }, async h => {
+            { inlineClient: true, managerExtras: { workflowScriptsEnabled: false } }, async h => {
                 // The Workflow children under the chat other than the intake fixture's own (h.workflowSessionId, "Workflow: intake
                 // activity tests", which the fixture makes right after the chat, before any turn, for its activity tests): it is
                 // not the turn's, so it is left out by id, as in the first case above. Each row's id and title show in a failure.

@@ -3,8 +3,8 @@
 // workflow support get_capabilities and the pilotswarm://capabilities resource describe (design 04 "Advertise
 // capability/version in bootstrap", D11; R01, R26).
 //
-// update_workflow is registered only when the server context enables workflow
-// commands (test-only); it sends { session_id, command } to the management
+// update_workflow is registered when the server context enables workflow commands (every server's context does, unless a
+// test creates it with workflowCommands: null); it sends { session_id, command } to the management
 // client's updateWorkflow and answers its receipt; every refusal with a code
 // (an invalid command, the subtree denial, a 501 while the deployment has it
 // off) answers in one JSON shape with its code, status and details. read_workflow refuses in the same shape.
@@ -21,7 +21,8 @@ import { PilotSwarmManagementClient, WebPilotSwarmManagementClient } from "pilot
 import { registerWorkflowTools } from "../../dist/src/tools/workflows.js";
 import { registerCapabilityTools } from "../../dist/src/tools/capabilities.js";
 import { registerCapabilityResources } from "../../dist/src/resources/capabilities.js";
-import { workflowContextOptionsFromEnv } from "../../dist/src/context.js";
+import * as context from "../../dist/src/context.js";
+import { readFileSync } from "node:fs";
 
 // Workflows are always on (owner 2026-11-08T08:03Z): read_workflow is always registered, PILOTSWARM_WORKFLOWS (retired)
 // changes nothing.
@@ -323,14 +324,14 @@ console.log("✅ read_workflow: always registered, arguments as given, the read'
 
 console.log("✅ update_workflow: exact registration gate, duplicate delivery forwarded unchanged, generic refusal mapping (tester r2 M0-M2)");
 
-// 8. The Workflow V2 test environment switch (test-only): the MCP server's context gains a person's workflow commands
-//    only for the exact enabling value; otherwise nothing, so the context is created exactly as before.
-for (const value of [undefined, "", "1", "true", "on", "ISOLATED-TEST-ONLY", " isolated-test-only", "isolated-test-only "]) {
-    assert.deepEqual(workflowContextOptionsFromEnv(value === undefined ? {} : { PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: value }), {}, JSON.stringify(value));
-}
-assert.deepEqual(workflowContextOptionsFromEnv({ PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: "isolated-test-only" }),
-    { workflowCommands: { requests: true }, sessionStartVersion: "1.0.83" });
-console.log("✅ the Workflow V2 test environment switch: off for every value but the exact enabling one");
+// 8. The Workflow V2 test environment switch is retired (owner decision 2026-11-08T15:30Z): every MCP server registers
+//    update_workflow and, in direct mode, takes a person's commands on the full engine; only `workflowCommands: null` (a
+//    test) leaves them off. No environment variable decides it.
+assert.equal("workflowContextOptionsFromEnv" in context, false, "no export reads the retired switch");
+const contextSource = readFileSync(new URL("../../src/context.ts", import.meta.url), "utf8");
+assert.match(contextSource, /workflowCommands: opts\.workflowCommands !== null,/);
+assert.doesNotMatch(contextSource, /PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT|sessionStartVersion|_startSessionsAt/);
+console.log("✅ the retired Workflow V2 test environment switch: every server registers update_workflow unless a test passes null");
 
 // 9. Workflow test mode is hidden (Workflow Simplified, spec 16): update_workflow names stop and no test operation or
 //    argument unless test mode is on (the context's own value, or this process's PILOTSWARM_WORKFLOW_TEST_MODE=on).

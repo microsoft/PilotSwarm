@@ -33,7 +33,7 @@ describe("a person's save note reaches the chat's next turn once (E2-4, F3)", ()
             if (attempt === 1) return { type: "error", message: "the model did not answer (scripted)", events: [] };
             return { type: "completed", content: "noted", events: [] };
         };
-        await intakeNativeCase(getEnv(), "save note turn", script, { testOptions: { workflowRequests: true },
+        await intakeNativeCase(getEnv(), "save note turn", script, {
             managerExtras: { workflowScriptsEnabled: true } }, async h => {
             const host = { catalog: h.catalog, store: h.store, duroxideClient: { startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "Running" }),
                 enqueueEvent: async () => {} } };
@@ -63,7 +63,7 @@ describe("a person's save note reaches the chat's next turn once (E2-4, F3)", ()
             prompts.push(String(prompt));
             return { type: "completed", content: "noted", events: [] };
         };
-        await intakeNativeCase(getEnv(), "end notice first turn", script, { testOptions: { workflowRequests: true },
+        await intakeNativeCase(getEnv(), "end notice first turn", script, {
             managerExtras: { workflowScriptsEnabled: true } }, async h => {
             const delivery = await workflowParentNotifier(h.client)(h.sessionId, "ended", { kind: "system", display: "workflow" }, "ds2-id");
             expect(delivery).toEqual({ delivered: false, notStarted: true });

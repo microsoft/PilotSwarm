@@ -1,58 +1,54 @@
 /**
- * The test-only milestone worker module (workflow/v2/milestone-worker.ts;
- * INACTIVE): what a worker created with testOptions.workflowRequests serves.
+ * The full-engine worker module (workflow/v2/milestone-worker.ts): what every worker serves since 1.0.83 is the latest
+ * version (owner decision 2026-11-08T15:30Z).
  *
- * - Its activity tag is the workflow-request capability, and its activity
- *   options give orchestration 1.0.83's turns the request and agent-state
- *   tools.
- * - It registers 1.0.83 under the durable session name, at the intake
- *   version, with the two intake activities; the registry still has no 1.0.83
- *   and its latest version is another.
- * - A client starts sessions at the latest version unless told to start them
- *   at 1.0.83, and refuses any other version.
+ * - Its activity tag is the workflow-request capability; every worker adds it to its tag filter (worker.ts).
+ * - It registers 1.0.83's two intake activities, and no orchestration: the registry registers 1.0.83 as the latest.
+ * - A client starts sessions at the latest version unless a test tells it to start them at another registered version
+ *   (an upgrade test), and refuses a version that is not registered.
  * - A stored reasoning effort is used only when it names one.
  *
  * Run: node --test test/unit/workflow-v2-milestone-worker.test.mjs
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-    WORKFLOW_MILESTONE_WORKER_TAGS, registerWorkflowMilestoneSessions, workflowMilestoneActivityOptions,
-} from "../../dist/workflow/v2/milestone-worker.js";
+import { readFileSync } from "node:fs";
+import { WORKFLOW_MILESTONE_WORKER_TAGS, registerWorkflowMilestoneSessions } from "../../dist/workflow/v2/milestone-worker.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../dist/activity-routing.js";
-import {
-    DURABLE_SESSION_LATEST_VERSION, DURABLE_SESSION_ORCHESTRATION_NAME, DURABLE_SESSION_ORCHESTRATION_REGISTRY,
-} from "../../dist/orchestration-registry.js";
-import { DURABLE_SESSION_INTAKE_VERSION } from "../../dist/orchestration-version.js";
+import { DURABLE_SESSION_LATEST_VERSION, DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration-registry.js";
 import { WORKFLOW_INTAKE_ACTIVITIES } from "../../dist/workflow/v2/intake.js";
 import { PilotSwarmClient } from "../../dist/client.js";
 import { isReasoningEffort } from "../../dist/model-providers.js";
 
-test("the milestone worker declares the workflow-request tag and gives 1.0.83's turns the request and agent-state tools", () => {
+const WORKER = readFileSync(new URL("../../src/worker.ts", import.meta.url), "utf8");
+
+test("every worker declares the workflow-request tag and serves the full engine, with no test option", () => {
     assert.deepEqual([...WORKFLOW_MILESTONE_WORKER_TAGS], [WORKFLOW_REQUEST_CAPABILITY]);
-    assert.deepEqual(workflowMilestoneActivityOptions(), { workflowIntakeTurns: true, workflowRequests: true });
+    assert.match(WORKER, /const milestone = await import\("\.\/workflow\/v2\/milestone-worker\.js"\);/);
+    assert.match(WORKER, /\.\.\.milestone\.WORKFLOW_MILESTONE_WORKER_TAGS\]/);
+    assert.match(WORKER, /workflowRequests: true,\n\s+agentNodes: milestone\.workflowMilestoneAgentNodes\(/);
+    assert.doesNotMatch(WORKER, /testOptions\?\.workflowRequests/);
 });
 
-test("it registers 1.0.83 under the durable session name with the intake activities; the registry has no 1.0.83", () => {
+test("it registers 1.0.83's intake activities and no orchestration; the registry's latest version is 1.0.83", () => {
     const orchestrations = [];
     const activities = [];
     registerWorkflowMilestoneSessions({
-        registerOrchestrationVersioned: (name, version, handler) => orchestrations.push({ name, version, handler: typeof handler }),
+        registerOrchestrationVersioned: (name, version) => orchestrations.push({ name, version }),
         registerActivity: name => activities.push(name),
     }, { store: null });
-    assert.equal(DURABLE_SESSION_INTAKE_VERSION, "1.0.83");
-    assert.deepEqual(orchestrations, [{ name: DURABLE_SESSION_ORCHESTRATION_NAME, version: DURABLE_SESSION_INTAKE_VERSION, handler: "function" }]);
+    assert.deepEqual(orchestrations, []);
     assert.deepEqual(activities, [WORKFLOW_INTAKE_ACTIVITIES.claim, WORKFLOW_INTAKE_ACTIVITIES.settle]);
-    assert.ok(!DURABLE_SESSION_ORCHESTRATION_REGISTRY.some(entry => entry.version === DURABLE_SESSION_INTAKE_VERSION));
-    assert.notEqual(DURABLE_SESSION_LATEST_VERSION, DURABLE_SESSION_INTAKE_VERSION);
+    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.83");
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, DURABLE_SESSION_LATEST_VERSION);
 });
 
-test("a client starts sessions at the latest version unless told to start them at 1.0.83, and refuses any other version", () => {
+test("a client starts sessions at the latest version unless a test names another registered one, and refuses any other", () => {
     const client = new PilotSwarmClient({ store: "postgres://unused.invalid/pilotswarm" });
-    for (const version of ["1.0.81", "1.0.84", ""]) {
-        assert.throws(() => client._startSessionsAt(version), /New sessions start at/, version);
+    for (const version of ["1.0.84", "1.0.46", ""]) {
+        assert.throws(() => client._startSessionsAt(version), /New sessions start at a registered version/, version);
     }
-    client._startSessionsAt(DURABLE_SESSION_INTAKE_VERSION);
+    client._startSessionsAt("1.0.82");
     client._startSessionsAt(DURABLE_SESSION_LATEST_VERSION);
 });
 

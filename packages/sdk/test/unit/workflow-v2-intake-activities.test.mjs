@@ -1,12 +1,12 @@
 /**
- * Durable recipient intake, inactive: the claim and settle activities
+ * Durable recipient intake (1.0.83, the latest version): the claim and settle activities
  * (workflow/v2/intake-activities.ts; design docs/proposals/workflow-durable-intake.md
  * 5.2, 5.4 and section 8, amendment 2), driven over a recording fake store
  * with recorded waits.
  *
- * - Only a test registers them, under their design names, and the test-only
- *   milestone worker module (workflow/v2/milestone-worker.ts, which a worker
- *   loads only behind its test option workflowRequests); no other production
+ * - Only a test registers them, under their design names, and the full-engine
+ *   worker module (workflow/v2/milestone-worker.ts, which every worker
+ *   loads); no other production
  *   source imports their module or registers them, their names are written
  *   once in the shared intake definition, and only that module declares the
  *   workflow-request capability for a worker (controller 1.9.0 routes its own
@@ -104,7 +104,7 @@ async function refused(promise, code) {
 
 // ─── Registration ────────────────────────────────────────────
 
-test("only a test or the test-only milestone worker registers the intake activities; no other production source imports their module or registers them, their names live in the shared definition, and only that worker module declares the capability that routes them", async () => {
+test("only a test or the full-engine worker module registers the intake activities; no other production source imports their module or registers them, their names live in the shared definition, and only that worker module declares the capability that routes them", async () => {
     assert.deepEqual({ ...WORKFLOW_INTAKE_ACTIVITIES }, { claim: "claimWorkflowIntake", settle: "settleWorkflowIntake" });
     const registered = new Map();
     const h = harness({ claimWorkflowIntake: { result: "duplicate", state: "holding" } });
@@ -134,7 +134,7 @@ test("only a test or the test-only milestone worker registers the intake activit
         if (!["activity-routing.ts", "workflow/v2/runtime.ts", MILESTONE].includes(path)) {
             assert.ok(!code.includes("WORKFLOW_REQUEST_CAPABILITY") && !code.includes("pilotswarm.workflow-request.v1"), `${path} names the workflow-request capability`);
         }
-        if (path !== "activity-routing.ts" && !path.startsWith("orchestration_1_0_83/") && path !== "session-proxy.ts") {
+        if (path !== "activity-routing.ts" && !path.startsWith("orchestration/") && path !== "session-proxy.ts") {
             assert.ok(!code.includes("routeWorkflowRequestActivity"), `${path} routes with the workflow-request capability`);
         }
         // Only the worker loads the milestone worker module.
@@ -146,9 +146,9 @@ test("only a test or the test-only milestone worker registers the intake activit
     const workerText = readFileSync(new URL("worker.ts", SRC), "utf8");
     const worker = withoutComments(workerText);
     assert.ok(!/workflow-request|WORKFLOW_REQUEST|WorkflowIntake|workflowIntake/.test(worker), "worker.ts registers, routes or declares nothing of the intake itself");
-    // It loads the milestone worker module once, dynamically, and only behind its test option.
+    // It loads the full-engine worker module once, always (owner decision 2026-11-08T15:30Z: every worker serves it).
     assert.deepEqual(importsOf(workerText).filter(specifier => specifier.includes("milestone-worker")), ["./workflow/v2/milestone-worker.js"]);
-    assert.match(worker, /this\.config\.testOptions\?\.workflowRequests === true \? await import\("\.\/workflow\/v2\/milestone-worker\.js"\) : null/);
+    assert.match(worker, /const milestone = await import\("\.\/workflow\/v2\/milestone-worker\.js"\);/);
 });
 
 // ─── The claim ───────────────────────────────────────────────

@@ -78,7 +78,7 @@ import { sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 import { FilesystemArtifactStore, publishAgentPackageDir } from "../../src/index.ts";
 import { pinnedAgentPackageId } from "../../src/agent-package-pins.ts";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { DURABLE_SESSION_INTAKE_VERSION } from "../../src/orchestration-version.ts";
+import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
 import { pickAgentCopyByPackageIdForOwner, pickAgentCopyForOwner } from "../../src/session-manager.ts";
 import { createWorkflowAgentResolver } from "../../src/workflow/v2/agent-resolver.ts";
 import { createWorkflowV2, updateWorkflowV2 } from "../../src/workflow/v2/service.ts";
@@ -363,7 +363,7 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
             return { content: "I looked at the change; it seems fine." };
         };
         const { traces, traceWriter } = traceTail();
-        const worker = { testOptions: { workflowRequests: true }, logLevel: "warning", traceWriter };
+        const worker = { logLevel: "warning", traceWriter };
         await withScriptedModel(env, { respond, worker }, async ({ client, model }) => {
             const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
             await catalog.initialize();
@@ -454,7 +454,7 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
             return { content: "STATE_COMPLETED" };
         };
         const { traces, traceWriter } = traceTail();
-        const worker = { testOptions: { workflowRequests: true }, logLevel: "warning", traceWriter };
+        const worker = { logLevel: "warning", traceWriter };
         await withScriptedModel(env, { respond, worker }, async ({ client, model }) => {
             const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
             await catalog.initialize();
@@ -500,7 +500,7 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
             return { content: "Still checking; the schedule wakes me." };
         };
         const { traces, traceWriter } = traceTail();
-        const worker = { testOptions: { workflowRequests: true }, logLevel: "warning", traceWriter };
+        const worker = { logLevel: "warning", traceWriter };
         await withScriptedModel(env, { respond, worker }, async ({ client, model }) => {
             const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
             await catalog.initialize();
@@ -541,7 +541,7 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
         const turns = [];
         const respond = completingModel(turns, { verdict: "approved" });
         const { traces, traceWriter } = traceTail();
-        const worker = { pluginDirs: [pluginDir], testOptions: { workflowRequests: true }, logLevel: "warning", traceWriter };
+        const worker = { pluginDirs: [pluginDir], logLevel: "warning", traceWriter };
         await withScriptedModel(env, { respond, worker }, async ({ client, model }) => {
             const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
             await catalog.initialize();
@@ -583,7 +583,7 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                 // The child: under the workflow, owned as its owner, bound to the worker's deployment agent, at 1.0.83.
                 expect(await catalog.getSession(child)).toMatchObject({ parentSessionId: workflowSessionId, agentId: "workflow-reviewer",
                     owner: { provider: OWNER.provider, subject: OWNER.subject } });
-                expect(await sessionOrchestrationVersion(client, child)).toBe(DURABLE_SESSION_INTAKE_VERSION);
+                expect(await sessionOrchestrationVersion(client, child)).toBe(DURABLE_SESSION_LATEST_VERSION);
                 // Its real turn: the wrapper first, the bound agent's prompt, the completion tool; the completion was accepted.
                 expect(turns[0].prompt).toContain("WORKFLOW NODE INVOCATION");
                 expect(turns[0].prompt).toContain("Apply your role (agent workflow-reviewer) to the input above.");
@@ -599,7 +599,7 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                 expect(ended.endRequested).toBe("done");
                 expect(ended.endChildStatus).not.toMatch(/fail|terminat|notfound/i);
                 await boundary("the child completes", async () => ((await duroxide.getStatus(`session-${child}`))?.status === "Completed" ? true : null));
-                expect(await sessionOrchestrationVersion(client, child)).toBe(DURABLE_SESSION_INTAKE_VERSION);
+                expect(await sessionOrchestrationVersion(client, child)).toBe(DURABLE_SESSION_LATEST_VERSION);
             } finally {
                 await catalog.close();
             }
@@ -635,7 +635,7 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
         const turnOf = stateExecutionId => turns.find(turn => String(turn.prompt ?? "").includes(stateExecutionId));
         const { traces, traceWriter } = traceTail();
         const worker = {
-            testOptions: { workflowRequests: true }, workerPool: "default", logLevel: "warning", traceWriter,
+            workerPool: "default", logLevel: "warning", traceWriter,
             agentPackages: { cacheDir: join(env.baseDir, `agent-worker-packages-${tag}`), refreshIntervalMs: 0 },
         };
         try {
@@ -711,7 +711,7 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                 expect(await catalog.getSession(child)).toMatchObject({ parentSessionId: workflowSessionId, agentId: reviewer,
                     owner: { provider: OWNER.provider, subject: OWNER.subject } });
                 expect(await catalog.getSessionCreationConfig(child)).toMatchObject({ boundAgentName: reviewer, boundAgentPackageId: pinnedId });
-                expect(await sessionOrchestrationVersion(client, child)).toBe(DURABLE_SESSION_INTAKE_VERSION);
+                expect(await sessionOrchestrationVersion(client, child)).toBe(DURABLE_SESSION_LATEST_VERSION);
                 await boundary("the child's turn gets its completion's receipt", async () => turnOf(nodeExecutionId)?.result ?? null);
                 const turn = turnOf(nodeExecutionId);
                 expect(turn.prompt).toContain("WORKFLOW NODE INVOCATION");
@@ -816,7 +816,7 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
         const turnOf = stateExecutionId => turns.find(turn => turn.id === stateExecutionId);
         const { traces, traceWriter } = traceTail();
         const worker = {
-            testOptions: { workflowRequests: true }, workerPool: "default", logLevel: "warning", traceWriter,
+            workerPool: "default", logLevel: "warning", traceWriter,
             agentPackages: { cacheDir: join(env.baseDir, `agent-worker-contract-packages-${tag}`), refreshIntervalMs: 0 },
         };
         try {

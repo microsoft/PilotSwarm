@@ -82,7 +82,7 @@ describe("Workflow Definitions with revisions (stage 2.1), on a real model", () 
         const env = createTestEnv("workflow-chat-definitions-real-model");
         let mgmt = null;
         try {
-            const worker = { testOptions: { workflowRequests: true }, workflowScripts: { enabled: true }, logLevel: "warning" };
+            const worker = { workflowScripts: { enabled: true }, logLevel: "warning" };
             await withClient(env, { worker }, async (client) => {
                 mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
                     factsSchema: env.factsSchema, workflowCommands: { requests: true } });

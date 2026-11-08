@@ -1502,21 +1502,12 @@ export interface PilotSwarmWorkerOptions {
         executables?: Partial<Record<"node" | "python" | "powershell", string>>;
     };
     /**
-     * @internal Test-only switches (INACTIVE): no deployment sets them by default. The SDK itself reads no
-     * environment variable for them; the deployed entry points set `workflowRequests` only for the Workflow V2 test
-     * environment switch (PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT=isolated-test-only; test-environment.ts). `workflowRequests` runs workflow v2
-     * controller 1.9.0 on this worker (request, agent and parallel states),
-     * with its agent host for agent states' children: definitions from the
-     * agent registry and this worker's agents, each child created through a
-     * client of this worker's store. It also serves the durable session
-     * orchestration those children start at (1.0.83, continuing as new to
-     * itself) with its turn and intake activities, and the activity tag
-     * they are routed with (workflow/v2/milestone-worker.ts). Sessions
-     * started at the latest version run as before. Not an activation:
-     * duroxide cannot route orchestration items by version, so every worker
-     * that can fetch this work must run the same switch.
+     * @internal Test-only tuning. Every worker serves the full Workflow engine (controller 1.9.0 and session orchestration
+     * 1.0.83's intake and request turns; workflow/v2/milestone-worker.ts), so nothing here turns it on or off.
+     * `intakeAdmissionRetryDelaysMs` replaces the in-place waits of the intake admission's transient retries
+     * (intake-admission.ts).
      */
-    testOptions?: { workflowRequests?: boolean };
+    testOptions?: { intakeAdmissionRetryDelaysMs?: readonly number[] };
     /**
      * Fact key prefixes reserved for tools, in addition to the built-in
      * `tools/`. No agent can read, write, delete or search under them; a

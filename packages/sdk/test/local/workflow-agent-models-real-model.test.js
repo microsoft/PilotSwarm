@@ -98,7 +98,7 @@ describe("OF-S2-7: per-node models on a real model (local target)", () => {
             const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
             await catalog.initialize();
             try {
-                const worker = { testOptions: { workflowRequests: true }, workerPool: "default", logLevel: "warning" };
+                const worker = { workerPool: "default", logLevel: "warning" };
                 await withClient(env, { worker }, async (client) => {
                     const store = catalog.workflowStore();
                     // Review OF7-R1: the start's choice is checked as a worker checks it, against the owning chat's catalog.

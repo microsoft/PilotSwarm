@@ -18,7 +18,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration/state.ts";
+import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration_1_0_82/state.ts";
 import { SYSTEM_CONTEXT_OPEN, SYSTEM_CONTEXT_CLOSE } from "../../src/prompt-system-context.ts";
 
 let mockSession;
@@ -127,11 +127,11 @@ function drive(gen, harness, { maxSteps = 400 } = {}) {
     throw new Error("drive exceeded step limit");
 }
 
+// The handler these cases were written for: 1.0.82, frozen since 1.0.83 opened (in-flight sessions of the previous release
+// replay it). 1.0.83's owned retry and intake turn paths are covered by the orchestration-intake-* tests.
 async function latestHandler() {
-    const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
-    const mod = await import("../../src/orchestration.ts");
-    const fn = mod[`durableSessionOrchestration_${DURABLE_SESSION_LATEST_VERSION.replace(/\./g, "_")}`];
-    expect(fn, `latest handler for ${DURABLE_SESSION_LATEST_VERSION}`).toBeTypeOf("function");
+    const { durableSessionOrchestration_1_0_82: fn } = await import("../../src/orchestration_1_0_82/index.ts");
+    expect(fn).toBeTypeOf("function");
     return fn;
 }
 

@@ -46,7 +46,7 @@ import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.
 import { admitAndSend, intakeNativeCase, scheduled, eventText, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-v2-intake-native-fixture.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 import { WORKFLOW_INTAKE_ACTIVITIES } from "../../src/workflow/v2/intake.ts";
-import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration_1_0_83/state.ts";
+import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration/state.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 /**

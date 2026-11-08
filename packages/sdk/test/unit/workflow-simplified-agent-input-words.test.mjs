@@ -79,8 +79,7 @@ test("the cycle prompt says its input, variables and previous result are the dat
 });
 
 test("the base guidance tells authors to name an agent node's input fields, give inputSchema properties and say whether it may fetch", () => {
-    // The full engine's text (a request turn): only there do agent nodes run (AOS-F1).
-    for (const [where, text] of [["test mode on", workflowSessionGuidance(true, { fullEngine: true })], ["test mode off", workflowSessionGuidance(false, { fullEngine: true })]]) {
+    for (const [where, text] of [["test mode on", workflowSessionGuidance(true)], ["test mode off", workflowSessionGuidance(false)]]) {
         assert.equal(text.split(AUTHORING).length - 1, 1, where);
         assert.ok(text.indexOf("An agent node has two chat modes.") < text.indexOf(AUTHORING), where);
         assert.ok(text.indexOf(AUTHORING) < text.indexOf("To wait, use a wait state"), where);

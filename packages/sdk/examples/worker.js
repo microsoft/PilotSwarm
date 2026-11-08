@@ -27,9 +27,6 @@
  *   PS_MODEL_PROVIDERS_PATH         — Explicit model provider config path
  *   POD_NAME                        — K8s pod name (default: hostname)
  *   PLUGIN_DIRS                     — Comma-separated plugin directories (default: /app/plugin)
- *   PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT — Test-only: exactly "isolated-test-only" serves Workflow V2 controller
- *                                     1.9.0 and session orchestration 1.0.83 (testOptions.workflowRequests); any
- *                                     other value is off. Every worker of the environment must run the same switch.
  *   PILOTSWARM_EXTENSION_MODULES    — Comma-separated modules; each exports register(worker), called
  *                                     before start (for example a session workspace provider)
  *
@@ -41,8 +38,7 @@
 import os from "node:os";
 import fs from "node:fs";
 import {
-    PilotSwarmWorker, horizonConfigFromEnv, loadExtensionModules, parseExtensionModules, workerOptionsForWorkflowV2TestEnvironment,
-    workflowV2TestEnvironmentNotice,
+    PilotSwarmWorker, horizonConfigFromEnv, loadExtensionModules, parseExtensionModules,
 } from "pilotswarm-sdk";
 
 // Sentinel value written to KV by the bicep-deploy `seed-secrets` step
@@ -98,12 +94,9 @@ if (process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH) {
 // Set explicitly to override the plugin default, or leave undefined to use it.
 const SYSTEM_MESSAGE = undefined;
 
-// Workflow V2 test environment (test-only; off unless PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT=isolated-test-only): the
-// worker options exactly as below when off; testOptions.workflowRequests when on.
-const workflowV2TestNotice = workflowV2TestEnvironmentNotice(process.env);
-if (workflowV2TestNotice) console.log(`[worker] ${workflowV2TestNotice}`);
-// Workflows are always on; the worker warns once if the retired PILOTSWARM_WORKFLOWS is still set.
-const worker = new PilotSwarmWorker(workerOptionsForWorkflowV2TestEnvironment({
+// Workflows are always on, with the full engine; the worker warns once for each retired setting still set
+// (PILOTSWARM_WORKFLOWS, PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT).
+const worker = new PilotSwarmWorker({
     store: process.env.DATABASE_URL,
     githubToken: process.env.GITHUB_TOKEN,
     logLevel,
@@ -145,7 +138,7 @@ const worker = new PilotSwarmWorker(workerOptionsForWorkflowV2TestEnvironment({
                 })(),
             },
         }),
-}, process.env));
+});
 
 // Extension modules (for example a session workspace provider) register
 // before start, so the first turn already sees them.

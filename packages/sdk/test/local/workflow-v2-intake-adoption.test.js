@@ -48,7 +48,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { admitAndSend, eventText, intakeNativeCase, scheduled, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-v2-intake-native-fixture.js";
 import { WORKFLOW_INTAKE_ACTIVITIES } from "../../src/workflow/v2/intake.ts";
-import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration_1_0_83/state.ts";
+import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration/state.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const FAULT = "PILOTSWARM_FAULT_INJECT";

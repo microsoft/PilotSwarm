@@ -21,13 +21,11 @@ import { describe, it, expect } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
-import { workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentFromEnv } from "../../src/index.ts";
 import { workflowRuntimeSender } from "../../src/workflow/v2/parent-messages.ts";
 import { appendSystemContextBlock } from "../../src/prompt-system-context.ts";
 
 const TIMEOUT = 240_000;
 const OWNER = { provider: "test", subject: "workflow-notice-empty-answer" };
-const ON = { PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: "isolated-test-only" };
 const getEnv = useSuiteEnv(import.meta.url);
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -84,9 +82,8 @@ describe("a workflow notice that needs no answer, answered with nothing (real wo
             if (position.lastUserText.includes("type=ended")) { asked.ended += 1; return {}; }
             return { content: "Watching." };
         };
-        const worker = workerOptionsForWorkflowV2TestEnvironment({ workflowScripts: { enabled: true } }, ON);
+        const worker = { workflowScripts: { enabled: true } };
         await withScriptedModel(getEnv(), { respond, worker }, async ({ client, qualifiedModel }) => {
-            client._startSessionsAt(workflowV2TestEnvironmentFromEnv(ON).sessionStartVersion);
             const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
             expect(await chat.sendAndWait("Watch the top 20 and tell me what changes.", TIMEOUT)).toBe("Watching.");
             const turns = async () => (await client._catalog.getSessionEvents(chat.sessionId, 0, 500, ["session.turn_completed"]))

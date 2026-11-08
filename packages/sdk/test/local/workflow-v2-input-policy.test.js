@@ -247,7 +247,7 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
             seen.at(-1).finished = true;
             return { type: "completed", content: "done", events: [] };
         };
-        await intakeNativeCase(getEnv(), "agent state child turn", script, { testOptions: { workflowRequests: true } }, async h => {
+        await intakeNativeCase(getEnv(), "agent state child turn", script, {}, async h => {
             // The fixture's session becomes an agent state's child: a workflow of another parent admitted it.
             const P = randomUUID();
             await h.catalog.createSession(P, {});
@@ -289,7 +289,7 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
             entry.finished = true;
             return { type: "completed", content: "done", events: [] };
         };
-        await intakeNativeCase(getEnv(), "real-agent test child turn", script, { testOptions: { workflowRequests: true } }, async h => {
+        await intakeNativeCase(getEnv(), "real-agent test child turn", script, {}, async h => {
             const P = randomUUID();
             await h.catalog.createSession(P, {});
             const { nodeExecutionId, runId } = await realTestAgentStateOf(h, P, h.sessionId);
@@ -319,7 +319,7 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
                 test: typeof bridge?.workflowTestToolCall === "function" });
             return { type: "completed", content: "done", events: [] };
         };
-        await intakeNativeCase(getEnv(), "ordinary session turn", script, { testOptions: { workflowRequests: true } }, async h => {
+        await intakeNativeCase(getEnv(), "ordinary session turn", script, {}, async h => {
             await h.start();
             await h.until(({ history }) => history.some(event => event.kind === "QueueSubscribed"), "the session waits for its messages");
             await h.say("hello", "cm-plain-1");

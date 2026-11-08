@@ -868,18 +868,14 @@ export interface PilotSwarmManagementClientOptions {
     /** Artifact store used by direct-mode agent-package publish/read/delete operations. */
     artifactStore?: ArtifactStore | null;
     /**
-     * Workflow v2 (INACTIVE; test-only): take a person's workflow commands
-     * (updateWorkflow). `requests: true` when the deployment's workers run
-     * controller 1.9.0 (their test option workflowRequests): the commands then
-     * take the milestone operations (stop, test, test_respond, test_advance)
-     * and start runs at 1.9.0, as that host's tools do, and a publication pins
-     * its named agents: package agents only, at the agent registry's exact
-     * revision (a deployment agent's name is refused AGENT_UNAVAILABLE here).
-     * Unset: updateWorkflow answers WORKFLOW_COMMANDS_UNAVAILABLE (501) and
-     * changes nothing. `testMode`: whether those commands take the test
-     * operations (test, test_respond, test_advance) beside `requests`;
-     * absent, the deployment flag PILOTSWARM_WORKFLOW_TEST_MODE decides, off
-     * unless it is exactly `on` (spec 16: test mode hidden by default).
+     * Workflow v2: a person's workflow commands (updateWorkflow and the chat definition operations). Unset (the default):
+     * `{ requests: true }`, as every worker runs controller 1.9.0: the commands take the milestone operations (stop, and
+     * with test mode the test operations) and start runs at 1.9.0, as the agents' tools do, and a publication pins its named
+     * agents: package agents only, at the agent registry's exact revision (a deployment agent's name is refused
+     * AGENT_UNAVAILABLE here). `null`: no person's commands (updateWorkflow answers WORKFLOW_COMMANDS_UNAVAILABLE, 501, and
+     * changes nothing); only a test sets it. `testMode`: whether those commands take the test operations (test,
+     * test_respond, test_advance); absent, the deployment flag PILOTSWARM_WORKFLOW_TEST_MODE decides, off unless it is
+     * exactly `on` (spec 16: test mode hidden by default).
      */
     workflowCommands?: { requests?: boolean; testMode?: boolean } | null;
     /**
@@ -933,7 +929,9 @@ export class PilotSwarmManagementClient {
             // async over HTTP.
             return new WebPilotSwarmManagementClient(options) as unknown as PilotSwarmManagementClient;
         }
-        this.config = options;
+        // Every deployment takes a person's workflow commands on the full engine (owner decision 2026-11-08T15:30Z); only an
+        // explicit `workflowCommands: null` (a test that needs them off) leaves them off.
+        this.config = options.workflowCommands === undefined ? { ...options, workflowCommands: { requests: true } } : options;
         this._artifactStore = options.artifactStore ?? null;
     }
 

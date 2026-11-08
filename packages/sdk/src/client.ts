@@ -4,10 +4,10 @@ import {
     sanitizePromptAttachmentRefs,
     systemSessionProtectedError,
 } from "./types.js";
-import { DURABLE_SESSION_ORCHESTRATION_NAME } from "./orchestration-registry.js";
+import { DURABLE_SESSION_ORCHESTRATION_NAME, DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "./orchestration-registry.js";
 // From the leaf module, not the registry's re-export: the registry sits on an import cycle
 // (registry -> orchestration_1_0_47 -> session-proxy -> client -> registry).
-import { DURABLE_SESSION_INTAKE_VERSION, DURABLE_SESSION_LATEST_VERSION } from "./orchestration-version.js";
+import { DURABLE_SESSION_LATEST_VERSION } from "./orchestration-version.js";
 import type {
     PilotSwarmClientOptions,
     ManagedSessionConfig,
@@ -1190,21 +1190,13 @@ export class PilotSwarmClient {
     }
 
     /**
-     * @internal INACTIVE (workflow v2 milestone; test-only): start this
-     * client's new sessions at the durable intake's orchestration
-     * (DURABLE_SESSION_INTAKE_VERSION) instead of the latest version. Called
-     * by the agent host of a worker created with the test option
-     * `workflowRequests`, which serves that version, for the children of
-     * workflow agent states, and, with the Workflow V2 test environment
-     * switch on (test-environment.ts), by the session clients of the portal
-     * and of the MCP server's direct mode, whose workers all serve it, and by
-     * such a worker's turn client and spawnChildSession for a sub-agent. A started session
-     * keeps its version.
+     * @internal Test-only: start this client's new sessions at a registered older version instead of the latest, as a
+     * session of an earlier release runs (an upgrade test: a 1.0.82 chat that continues as new into 1.0.83). Products never
+     * call it: new sessions start at the latest version. A started session keeps its version until its continue-as-new.
      */
     _startSessionsAt(version: string): void {
-        if (version !== DURABLE_SESSION_LATEST_VERSION && version !== DURABLE_SESSION_INTAKE_VERSION) {
-            throw new Error(`New sessions start at ${DURABLE_SESSION_LATEST_VERSION}, or at ${DURABLE_SESSION_INTAKE_VERSION} on a worker that serves it; `
-                + `not at ${version}.`);
+        if (!DURABLE_SESSION_ORCHESTRATION_REGISTRY.some(registration => registration.version === version)) {
+            throw new Error(`New sessions start at a registered version (the latest is ${DURABLE_SESSION_LATEST_VERSION}); not at ${version}.`);
         }
         this.sessionStartVersion = version;
     }

@@ -201,7 +201,7 @@ test("isWorkflowUpdateSender", () => {
 });
 
 // Owner feedback 2026-11-06 ("the workflow response was mixed up with my prompt") and review SF-1: the session's queue
-// merges consecutive queued prompts into one turn (orchestration_1_0_83/queue.ts decide()) and records a turn of mixed
+// merges consecutive queued prompts into one turn (orchestration/queue.ts decide()) and records a turn of mixed
 // senders with NO sender. A card comes only from a server-stamped sender, never from text: such a turn is one message,
 // labelled "Several messages arrived together" with its raw text (the runtime stamps how many messages it merged,
 // session-proxy mergedTurnMessages), never "You" and never a Workflow card. A message that only LOOKS merged (a header

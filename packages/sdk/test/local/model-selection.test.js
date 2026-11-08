@@ -16,9 +16,9 @@ import { assertEqual, assertNotNull, assertThrows } from "../helpers/assertions.
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { TEST_CLAUDE_MODEL, TEST_GPT_MODEL } from "../helpers/fixtures.js";
 import { ModelProviderRegistry, ManagedSession, PilotSwarmManagementClient, SessionManager } from "../../src/index.ts";
-import { detectFailedModelSwitch } from "../../src/orchestration/turn.ts";
-import { handleTurnResult, processPrompt } from "../../src/orchestration/turn.ts";
-import { handleCommand } from "../../src/orchestration/lifecycle.ts";
+import { detectFailedModelSwitch } from "../../src/orchestration_1_0_82/turn.ts";
+import { handleTurnResult, processPrompt } from "../../src/orchestration_1_0_82/turn.ts";
+import { handleCommand } from "../../src/orchestration_1_0_82/lifecycle.ts";
 import { findConfiguredModel, findSameProviderModel, matchesModel, isCompletedTurnOnModelAfter, assertRootTurnModel } from "../helpers/model-selection.mjs";
 
 const TIMEOUT = 180_000;

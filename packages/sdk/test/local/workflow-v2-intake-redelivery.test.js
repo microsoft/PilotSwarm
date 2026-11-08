@@ -49,7 +49,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { admitAndSend, eventText, intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-v2-intake-native-fixture.js";
 import { WORKFLOW_INTAKE_ACTIVITIES } from "../../src/workflow/v2/intake.ts";
 import { sha256Hex } from "../../src/workflow/v2/json.ts";
-import { INTAKE_RECORDED_EVENT } from "../../src/orchestration_1_0_83/intake-wiring.ts";
+import { INTAKE_RECORDED_EVENT } from "../../src/orchestration/intake-wiring.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 /** Short locks, so the crashed runtime's work item and session are taken over soon. */

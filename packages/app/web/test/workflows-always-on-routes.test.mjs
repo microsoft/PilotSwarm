@@ -44,7 +44,8 @@ async function harness() {
     const mgmt = {
         _ensureStarted() {},
         _started: true,
-        config: {},
+        // As every management client is now configured (its default): a person's commands, on the full engine.
+        config: { workflowCommands: { requests: true } },
         _catalog: {
             workflowStore: () => { counts.reads += 1; return { readDefinition: async () => ({ parentSessionId: "p1" }), readWorkflowLineage: async () => null }; },
             getSession: async (sessionId) => { counts.reads += 1; return { sessionId, sessionKind: "workflow", deletedAt: null }; },
@@ -97,8 +98,9 @@ for (const [label, env] of [["no setting", {}], ["the retired PILOTSWARM_WORKFLO
                 assert.ok(h.counts.reads > 0, "the read reached the catalog");
                 const command = await h.call("/sessions/wf1/workflow/commands", { method: "POST",
                     body: JSON.stringify({ command: { operation: "pause", operation_id: "op-1" } }) });
-                assert.equal(command.body.ok, false, "this deployment takes no command from a person");
-                assert.equal(command.body.error.code, "WORKFLOW_COMMANDS_UNAVAILABLE");
+                // Every deployment takes a person's commands (owner decision 2026-11-08T15:30Z): the stand-in store has no run,
+                // so the command is refused by the store, never as unavailable or disabled.
+                assert.ok(!["WORKFLOW_COMMANDS_UNAVAILABLE", "WORKFLOWS_DISABLED"].includes(command.body?.error?.code), JSON.stringify(command.body));
                 // Stage 2.5 (PR 235 8055fcd8): the legacy create is gone; it is an unknown route.
                 const legacy = await h.call("/sessions/workflow", { method: "POST", body: JSON.stringify({ yaml: "apiVersion: pilotswarm.dev/v1alpha1\n" }) });
                 assert.equal(legacy.status, 404);

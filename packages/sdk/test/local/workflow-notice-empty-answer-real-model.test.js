@@ -24,11 +24,10 @@ import { dirname } from "node:path";
 import { createTestEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
 import { realModelPlan } from "../helpers/workflow-v2-real-model.mjs";
-import { loadModelProviders, workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentFromEnv } from "../../src/index.ts";
+import { loadModelProviders } from "../../src/index.ts";
 import { workflowRuntimeSender } from "../../src/workflow/v2/parent-messages.ts";
 
 const OWNER = { provider: "test", subject: "workflow-notice-real-model" };
-const ON = { PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: "isolated-test-only" };
 const TURN_MS = 180_000;
 const TEST_TIMEOUT = 15 * 60_000;
 const REPEATS = 3;
@@ -63,9 +62,8 @@ describe("a workflow notice that needs no answer, on a real model (owner No resp
             model: { ref: plan.model.ref, effort: plan.effort ?? "the model's default" }, notices: [], verdict: null };
         const env = createTestEnv("notice-real-model");
         try {
-            const worker = workerOptionsForWorkflowV2TestEnvironment({ workflowScripts: { enabled: true }, logLevel: "warning" }, ON);
+            const worker = { workflowScripts: { enabled: true }, logLevel: "warning" };
             await withClient(env, { worker }, async (client) => {
-                client._startSessionsAt(workflowV2TestEnvironmentFromEnv(ON).sessionStartVersion);
                 const chat = await client.createSession({ model: plan.model.ref, owner: OWNER, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });
                 await chat.sendAndWait(INSTRUCTION, TURN_MS);
                 const events = types => client._catalog.getSessionEvents(chat.sessionId, 0, 2_000, types);
