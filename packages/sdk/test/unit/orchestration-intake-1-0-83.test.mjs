@@ -169,6 +169,18 @@ const QUEUE_CHANGED_82 = [
     "                    giveBackCarriedWork(runtime, carriedByItem, [item], updateChronology);",
     "                giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology);",
     "        giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology);",
+    // FU-9 (option b): the merge also stops between a person's prompt and a non-person one.
+    "            || Boolean(peek.bootstrap) !== Boolean(first.bootstrap)) {",
+    'import { messageSenderKey } from "../message-sender.js";',
+];
+/** FU-9 (1.0.83, option b): a person's words never merge with a non-person prompt (queue.ts isPersonPrompt). */
+const QUEUE_FU9_ADDED = [
+    'import { messageSenderKey, normalizeMessageSender } from "../message-sender.js";',
+    "function isPersonPrompt(item: any): boolean {",
+    "    const kind = normalizeMessageSender(item?.sender)?.kind;",
+    '    return kind !== "agent" && kind !== "system";',
+    "            || Boolean(peek.bootstrap) !== Boolean(first.bootstrap)",
+    "            || isPersonPrompt(peek) !== isPersonPrompt(first)) {",
 ];
 
 /**
@@ -370,7 +382,8 @@ test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change 
     const queue82 = read("orchestration_1_0_82/queue.ts");
     const queue83 = read("orchestration/queue.ts");
     assert.deepEqual(linesOnly(queue82, queue83).sort(), [...QUEUE_CHANGED_82].sort());
-    assertIntakeOnlyAdditions("queue.ts", linesOnly(queue83, queue82), [...QUEUE_ADDED_GENERIC, ...QUEUE_LATE_CANCEL_ADDED, ...QUEUE_SO4B_ADDED]);
+    assertIntakeOnlyAdditions("queue.ts", linesOnly(queue83, queue82), [...QUEUE_ADDED_GENERIC, ...QUEUE_LATE_CANCEL_ADDED, ...QUEUE_SO4B_ADDED,
+        ...QUEUE_FU9_ADDED]);
     // turn.ts: only the intake's hooks (each attempt's carry, its dispatch and outcome, each timer turn's stimulus), the
     // owed retry of a failed turn and the listed frozen lines; every line it adds names the intake or the owed retry or
     // is a comment or structure.

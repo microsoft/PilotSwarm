@@ -311,6 +311,65 @@ describe("issue 192: one turn takes the backlog", () => {
     });
 });
 
+// FU-9 (1.0.83, option b): a person's words never share a turn with a non-person prompt (a workflow message, another
+// session's message). Two persons' prompts still merge, and so do two non-person prompts; child updates still batch.
+describe("FU-9: a person's words and a non-person prompt run as two turns", () => {
+    const PERSON = { kind: "user", provider: "test", subject: "ada", display: "Ada" };
+    const WORKFLOW = { kind: "system", display: "workflow message" };
+    const AGENT = { kind: "agent", sessionId: "other-session", display: "another agent" };
+    const drainAndRun = (h, items, results) => {
+        appendToFifo(h.runtime, items);
+        for (let i = 0; i < results; i++) h.results.push({ type: "completed", content: `turn ${i + 1}` });
+        while (h.turns.length < results && h.step()) { /* one turn per pass */ }
+        return h.turns.map(t => String(t[0]));
+    };
+
+    it("a person's prompt then a workflow message: two turns, in order", () => {
+        const turns = drainAndRun(harness(), [prompt("PERSON-1", { sender: PERSON }), prompt("WORKFLOW-1", { sender: WORKFLOW })], 2);
+        expect(turns).toHaveLength(2);
+        expect(turns[0]).toContain("PERSON-1");
+        expect(turns[0]).not.toContain("WORKFLOW-1");
+        expect(turns[1]).toContain("WORKFLOW-1");
+    });
+
+    it("a workflow message then a person's prompt (no sender stamped): two turns, in order", () => {
+        const turns = drainAndRun(harness(), [prompt("WORKFLOW-1", { sender: WORKFLOW }), prompt("PERSON-1")], 2);
+        expect(turns).toHaveLength(2);
+        expect(turns[0]).toContain("WORKFLOW-1");
+        expect(turns[0]).not.toContain("PERSON-1");
+        expect(turns[1]).toContain("PERSON-1");
+    });
+
+    it("two persons' prompts still merge into one turn", () => {
+        const turns = drainAndRun(harness(), [prompt("PERSON-1", { sender: PERSON }), prompt("PERSON-2")], 1);
+        expect(turns).toHaveLength(1);
+        expect(turns[0]).toMatch(/PERSON-1[\s\S]*PERSON-2/);
+    });
+
+    it("two non-person prompts (a workflow message and another agent's) still merge into one turn", () => {
+        const turns = drainAndRun(harness(), [prompt("WORKFLOW-1", { sender: WORKFLOW }), prompt("AGENT-1", { sender: AGENT })], 1);
+        expect(turns).toHaveLength(1);
+        expect(turns[0]).toMatch(/WORKFLOW-1[\s\S]*AGENT-1/);
+    });
+
+    it("a batch of sub-agent updates still arrives as one digest turn, apart from a person's prompt", () => {
+        const h = harness({ subAgents: [
+            { orchId: "agent-a", sessionId: "child-a", task: "a", status: "running" },
+            { orchId: "agent-b", sessionId: "child-b", task: "b", status: "running" },
+        ] });
+        h.messages.push(
+            { prompt: "[CHILD_UPDATE from=child-a type=completed]\nRESULT-A" },
+            { prompt: "[CHILD_UPDATE from=child-b type=completed]\nRESULT-B" },
+        );
+        for (let i = 0; i < 4; i++) h.results.push({ type: "completed", content: `turn ${i + 1}` });
+        h.runUntilParked({ throughMs: CHILD_UPDATE_BATCH_MS });
+        const turns = h.turns.map(t => String(t[0]));
+        const digest = turns.filter(t => t.includes("RESULT-A") || t.includes("RESULT-B"));
+        expect(digest).toHaveLength(1);
+        expect(digest[0]).toMatch(/RESULT-A[\s\S]*RESULT-B|RESULT-B[\s\S]*RESULT-A/);
+    });
+});
+
 describe("issue 192: nothing is dropped silently", () => {
     function fillFifo(h) {
         // Every bucket holds as many equal items as fit, so compaction gains nothing.

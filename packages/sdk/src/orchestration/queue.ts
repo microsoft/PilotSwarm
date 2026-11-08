@@ -1,6 +1,6 @@
 import type { CommandMessage, OrchestrationInput, TurnResult } from "../types.js";
 import { sanitizePromptAttachmentRefs, ATTACHMENTS_MAX_COUNT } from "../types.js";
-import { messageSenderKey } from "../message-sender.js";
+import { messageSenderKey, normalizeMessageSender } from "../message-sender.js";
 import { CARRIED_STEERS_WAKE_PROMPT } from "../turn-control-contract.js";
 import {
     applyChildUpdate,
@@ -1544,6 +1544,15 @@ function* processAnswer(runtime: DurableSessionRuntime, answerItem: any): Genera
 }
 
 /**
+ * FU-9: whether a queued prompt is a person's words: its sender is not an agent or the runtime (kind `agent` or
+ * `system`, which the runtime always stamps); a person's sender, or none (a client that names no sender), is a person's.
+ */
+function isPersonPrompt(item: any): boolean {
+    const kind = normalizeMessageSender(item?.sender)?.kind;
+    return kind !== "agent" && kind !== "system";
+}
+
+/**
  * The prompts that merge into the turn of `first`, in arrival order, removed
  * from the FIFO. Scans from position `start` (the items before it were queued
  * ahead of `first` and are all non-interactive) without moving anything:
@@ -1558,6 +1567,13 @@ function* processAnswer(runtime: DurableSessionRuntime, answerItem: any): Genera
  * bootstrap prompt as a user.message, and the budget stash stamps one as
  * machine-authored, so a merged prompt hid the person's message. A kickoff
  * and a person's prompt run as two turns, in order.
+ *
+ * FU-9 (1.0.83, option b): never merge a person's words with a non-person
+ * prompt either (an agent's or the runtime's: a workflow message, another
+ * session's message). The merge stops where exactly one of the two is a
+ * person's (isPersonPrompt), so they run as two turns, in order. Two persons'
+ * prompts still merge, and so do two non-person prompts; child updates are
+ * batched apart (the child digest) and are not prompts here.
  *
  * Before 1.0.82 the merge popped the FIFO head to peek and put a non-mergeable
  * item back at the head. A timer item at the head therefore stopped every
@@ -1591,7 +1607,8 @@ function* collectMergeablePrompts(
             continue;
         }
         if (first.carriedSteersWake === true || peek.carriedSteersWake === true
-            || Boolean(peek.bootstrap) !== Boolean(first.bootstrap)) {
+            || Boolean(peek.bootstrap) !== Boolean(first.bootstrap)
+            || isPersonPrompt(peek) !== isPersonPrompt(first)) {
             break;
         }
         removed.add(`${bucket}:${index}`);
