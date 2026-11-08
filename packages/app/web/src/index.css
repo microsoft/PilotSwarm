@@ -12423,10 +12423,11 @@ textarea.ps-link-input {
   background: #1c4865;
   border-color: #5cc8f2;
 }
-:root[data-ps-theme="horizon-dawn"] .ps-list-button.is-selected {
-  background: linear-gradient(90deg, #1c4865, #153d59);
+:root[data-ps-theme="horizon-dawn"] .ps-list-button.is-selected,
+:root[data-ps-theme="horizon-dawn"] .ps-session-pane .ps-session-list-button.is-selected {
+  background: linear-gradient(90deg, #21465f, #18384f);
   border-color: #5cc8f28c;
-  box-shadow: inset 3px 0 0 #5cc8f2;
+  box-shadow: inset 0 0 0 1px #5cc8f273, inset 3px 0 0 #79e7f2;
 }
 :root[data-ps-theme="horizon-dawn"] .ps-session-list-button { border-radius: 8px; }
 /* State signals survive the theme's resting styles: the focused pane, the

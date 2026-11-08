@@ -39,6 +39,27 @@ const layers = page => page.locator(".portal-header").evaluate(header => getComp
 const art = name => new RegExp(`hd-${name}(?![-a-z])|/${name}-[A-Za-z0-9_-]{8}\\.svg`);
 const where = (images, name) => images.search(art(name));
 
+test("selected session: the stronger theme fill survives pinned and hovered row styles", async ({ page }) => {
+    await openTheme(page, { width: 1440, height: 900 });
+    const row = page.locator(".ps-session-list-button.is-selected").first();
+    await expect(row).toBeVisible();
+    const before = await row.boundingBox();
+    const style = () => row.evaluate(el => {
+        const s = getComputedStyle(el);
+        return { fill: s.backgroundImage, shadow: s.boxShadow, color: s.color };
+    });
+    const selected = await style();
+    expect(selected.fill).toContain("rgb(33, 70, 95)");
+    expect(selected.fill).toContain("rgb(24, 56, 79)");
+    expect(selected.shadow).toContain("rgb(121, 231, 242)");
+    await row.evaluate(el => el.classList.add("is-pinned"));
+    await row.hover();
+    expect(await style()).toEqual(selected);
+    expect(await row.boundingBox()).toEqual(before);
+    const other = page.locator(".ps-session-list-button:not(.is-selected)").first();
+    expect(await other.evaluate(el => getComputedStyle(el).backgroundImage)).not.toBe(selected.fill);
+});
+
 for (const soundOn of [true, false]) test(`cyan accent: appearance cue respects sounds ${soundOn ? "on" : "off"}`, async ({ page }) => {
     await page.addInitScript(() => {
         Math.random = () => 0;
