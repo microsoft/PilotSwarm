@@ -124,7 +124,7 @@ describe("workflow v2 request migration: populated send compatibility", () => {
 
             // The real catalog initialization applies the registered 0097 transaction, not copied migration SQL.
             await h.catalog.initialize();
-            expect(await versions()).toEqual([...beforeVersions, "0097", "0098", "0099", "0100", "0101", "0102", "0103", "0104", "0105", "0106", "0107", "0108", "0109"]);
+            expect(await versions()).toEqual([...beforeVersions, "0097", "0098", "0099", "0100", "0101", "0102", "0103", "0104", "0105", "0106", "0107", "0108", "0109", "0110"]);
             expect(await modeConstraint()).toContain("request");
             expect(await legacyRows(h, runId)).toEqual(before);
             expect(await h.q("SELECT yaml, yaml_sha256, ir, ir_sha256 FROM SCHEMA.workflow_revisions WHERE workflow_session_id = $1",
@@ -165,7 +165,7 @@ describe("workflow v2 request migration: populated send compatibility", () => {
             expect(after[0]).toMatchObject({ payload: before[0].payload, payload_sha256: before[0].payload_sha256,
                 created: before[0].created, entered: before[0].entered, recipient_kind: null, correlation: null });
             await runMigrations(h.pool, env.cmsSchema, migrations, CMS_LOCK_SEED);
-            expect(await versions()).toEqual([...beforeVersions, "0097", "0098", "0099", "0100", "0101", "0102", "0103", "0104", "0105", "0106", "0107", "0108", "0109"]);
+            expect(await versions()).toEqual([...beforeVersions, "0097", "0098", "0099", "0100", "0101", "0102", "0103", "0104", "0105", "0106", "0107", "0108", "0109", "0110"]);
             expect(await legacyRows(h, runId)).toEqual(after);
         } finally { await h.stop(); }
     });
