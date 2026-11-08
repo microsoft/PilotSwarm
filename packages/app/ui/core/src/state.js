@@ -260,6 +260,11 @@ export function normalizeStoredSessionViews(value) {
     return out;
 }
 
+/** The side pane's tab (canvas, Workspace or, for Workflow Simplified, the Workflow tab); anything else is the canvas. */
+export function normalizeSidePaneTab(value) {
+    return value === "workspace" || value === "workflow" ? value : "canvas";
+}
+
 export function normalizeStoredDesktopPanes(value, legacyRightPaneMode) {
     const candidate = value && typeof value === "object" ? value : null;
     if (candidate && (typeof candidate.canvasOpen === "boolean" || typeof candidate.diagnosticsOpen === "boolean")) {
@@ -269,8 +274,8 @@ export function normalizeStoredDesktopPanes(value, legacyRightPaneMode) {
             // Zen: chat as a narrow rail, canvas as the workbench. Only
             // meaningful with the canvas open.
             zen: candidate.zen === true && candidate.canvasOpen === true,
-            // The side pane's tab: the session's canvas, or its Workspace.
-            sideTab: candidate.sideTab === "workspace" ? "workspace" : "canvas",
+            // The side pane's tab: the session's canvas, its Workspace or its Workflow tab.
+            sideTab: normalizeSidePaneTab(candidate.sideTab),
         };
     }
     return {
@@ -315,11 +320,14 @@ export function normalizeStoredCanvasPrefs(value) {
         if (!id || !entry || typeof entry !== "object") continue;
         const lastViewedRev = Number(entry.lastViewedRev);
         const lastViewedDataRev = Number(entry.lastViewedDataRev);
+        const lastViewedWorkflowAt = Number(entry.lastViewedWorkflowAt);
         const zenRailPx = Number(entry.zenRailPx);
         out[id] = {
             optedOut: entry.optedOut === true,
             lastViewedRev: Number.isFinite(lastViewedRev) && lastViewedRev > 0 ? Math.floor(lastViewedRev) : 0,
             lastViewedDataRev: Number.isFinite(lastViewedDataRev) && lastViewedDataRev > 0 ? Math.floor(lastViewedDataRev) : 0,
+            // Workflow Simplified (owner F4): the newest Workflow attention change the Workflow panel showed (server ms).
+            ...(Number.isFinite(lastViewedWorkflowAt) && lastViewedWorkflowAt > 0 ? { lastViewedWorkflowAt: Math.floor(lastViewedWorkflowAt) } : {}),
             // Zen chat-rail width, remembered for THIS session only.
             ...(Number.isFinite(zenRailPx) && zenRailPx > 0 ? { zenRailPx: Math.floor(zenRailPx) } : {}),
         };
@@ -383,7 +391,12 @@ export const BUDGET_PERIODS = Object.freeze(["day", "week", "month"]);
 export const BUDGET_SERIES_RANGES = Object.freeze([14, 30, 90]);
 export const BUDGET_SERIES_DAYS = 14;
 
-export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, desktopPanes: storedDesktopPanes = null, canvasPrefs = null } = {}) {
+/**
+ * `workflowsEnabled` (stage 2.0): whether the Workflow surface starts on. Off by default, for every host (fail closed): the
+ * portal and the terminal UI take the server's word at start (PilotSwarmUiController.readWorkflowTestMode: its bootstrap's
+ * `workflows.enabled`), before the session list loads, and with no answer Workflows stay off. Tests opt in (true).
+ */
+export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, desktopPanes: storedDesktopPanes = null, canvasPrefs = null, workflowsEnabled = false } = {}) {
     const desktopPanes = normalizeStoredDesktopPanes(
         storedDesktopPanes,
         normalizeStoredRightPaneMode(rightPaneMode),
@@ -439,10 +452,38 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Chat-rail + canvas-workbench mode. Persisted with the columns.
             canvasZen: desktopPanes.zen,
             sidePaneTab: desktopPanes.sideTab,
+            // Whether this tab chose its side tab (the person, or a Workflow opened): profile reads then keep it (UI-7).
+            sidePaneTabChosen: false,
             // Canvas filling the workspace. Deliberately NOT persisted: it is
             // a "look at this now" gesture, and returning to a portal with no
             // chat and no session list would read as a broken app.
             canvasMaximized: false,
+            workflowViews: {},
+            // Workflow Simplified: each session's Workflow tab (its definition, Definition | Workflows view, the Workflow it
+            // shows and its bottom panel), keyed by the session that owns the workflows. Not persisted.
+            workflowTabs: {},
+            // The Workflow tab's bottom panel height per device class (profile settings workflowPanelHeights).
+            workflowPanelHeights: {},
+            // OF-S2-1: the side panel's width in full screen and zen (profile settings workflowPanelWidths).
+            workflowPanelWidths: {},
+            // Failed Workflows a person has opened (O6: the badge counts failed ones not yet opened). Not persisted.
+            workflowSeen: {},
+            // Ticks when a Workflow row is selected, so the phone brings its Workflow pane up (as canvas/flip does for a canvas).
+            workflowOpenSeq: 0,
+            // Review F7: ticks when the Workflow panel opens by itself (OF-S2-4d), so the phone shows its Workflow pane without
+            // the hand-opening path's side effects (it neither withdraws a canvas opt-out nor closes Budget).
+            workflowAutoOpenSeq: 0,
+            // What a person may send to a session in a workflow agent state's subtree, as the server reported it
+            // (normalizeWorkflowInputPolicy; read by the TUI's composer). Per session; absent until read.
+            workflowInputPolicies: {},
+            // Review SF-D5: whether the server says workflow test mode is on (its bootstrap's workflows.v2.testMode); only
+            // then does a chat show a stored "Workflow · test waiting" card. Off until the server says so.
+            workflowTestMode: false,
+            // Stage 2.0: whether Workflows are on (the server's workflow capabilities' `enabled: true`). Off: the client keeps no
+            // workflow session (no rows, no reads) and shows no Workflow button, tab or pane.
+            workflowsEnabled: workflowsEnabled === true,
+            // That read in flight ("checking") or failed ("failed"), per session; absent otherwise (owner decision q18).
+            workflowInputChecks: {},
             // Per-session desktop views (see normalizeStoredSessionViews).
             // Applied when the active session changes, recorded when the
             // columns or the right-side sizes change — desktop only, and only
@@ -549,6 +590,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Clicking empty space in the list clears the LIST highlight while
             // the chat/inspector panes keep showing the session.
             listDeselected: false,
+            // Workflow Simplified (S4): the Workflow row selected in the list. The active session is then the session that
+            // owns it (its chat stays in the middle), and the list highlights this row.
+            workflowRowId: null,
             orderById: {},
             nextOrderOrdinal: 0,
             filterQuery: "",

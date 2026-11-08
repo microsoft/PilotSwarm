@@ -130,19 +130,25 @@ for (const entrypoint of ["packages/sdk/examples/worker.js", "packages/app/tui/s
     for (const [flag, expected] of [["1", true], [" FALSE ", false], [undefined, undefined]]) {
         test(`${entrypoint} forwards Blob flag ${String(flag)} independently of database auth`, () => {
             const sdkUrl = new URL("../../dist/index.js", import.meta.url).href;
+            const switchUrl = new URL("../../dist/workflow/v2/test-environment.js", import.meta.url).href;
+            const workflowsUrl = new URL("../../dist/workflow/workflows-switch.js", import.meta.url).href;
             const entryUrl = new URL(entrypoint, new URL("../../../../", import.meta.url)).href;
             const script = `
                 import { mock } from "node:test";
+                import { workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentNotice } from ${JSON.stringify(switchUrl)};
+                import { workflowsNotice } from ${JSON.stringify(workflowsUrl)};
                 mock.module(${JSON.stringify(sdkUrl)}, { namedExports: {
                     horizonConfigFromEnv: () => ({}),
                     // Both entry points load extension modules before start.
                     loadExtensionModules: async () => [],
                     parseExtensionModules: () => [],
+                    // The worker entry applies the Workflow V2 test environment switch (the real functions).
+                    workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentNotice, workflowsNotice,
                     PilotSwarmWorker: class {
                         constructor(options) { this.options = options; }
                         async start() {
                             process.stdout.write("AUTH_OPTIONS:" + JSON.stringify({
-                                db: this.options.useManagedIdentity, blob: this.options.blobUseManagedIdentity
+                                db: this.options.useManagedIdentity, blob: this.options.blobUseManagedIdentity, test: this.options.testOptions ?? null
                             }) + "\\n");
                             process.exit(0);
                         }
@@ -156,6 +162,7 @@ for (const entrypoint of ["packages/sdk/examples/worker.js", "packages/app/tui/s
                 DATABASE_URL: "postgresql://u:p@unittest.invalid/app",
                 PILOTSWARM_USE_MANAGED_IDENTITY: "0",
             };
+            delete env.PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT;
             if (flag === undefined) delete env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY;
             else env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY = flag;
             const result = spawnSync(process.execPath, [
@@ -168,6 +175,54 @@ for (const entrypoint of ["packages/sdk/examples/worker.js", "packages/app/tui/s
             const options = JSON.parse(match[1]);
             assert.equal(options.db, false);
             assert.equal(options.blob, expected);
+            assert.equal(options.test, null, "no test options without the Workflow V2 test environment switch");
         });
     }
+}
+
+// The Workflow V2 test environment switch (test-only) through the two entry points: the headless worker reads it from the
+// environment (exactly "isolated-test-only"); the portal's embedded workers take the test options it passes.
+for (const [entrypoint, switchValue, embeddedTestOptions, expected] of [
+    ["packages/sdk/examples/worker.js", "isolated-test-only", null, { workflowRequests: true }],
+    ["packages/sdk/examples/worker.js", "true", null, null],
+    ["packages/sdk/examples/worker.js", "isolated-test-only ", null, null],
+    ["packages/app/tui/src/embedded-workers.js", undefined, { workflowRequests: true }, { workflowRequests: true }],
+    ["packages/app/tui/src/embedded-workers.js", "isolated-test-only", null, null],
+]) {
+    test(`${entrypoint} with the Workflow V2 test environment switch ${JSON.stringify(switchValue)} and test options ${JSON.stringify(embeddedTestOptions)}`, () => {
+        const sdkUrl = new URL("../../dist/index.js", import.meta.url).href;
+        const switchUrl = new URL("../../dist/workflow/v2/test-environment.js", import.meta.url).href;
+        const workflowsUrl = new URL("../../dist/workflow/workflows-switch.js", import.meta.url).href;
+        const entryUrl = new URL(entrypoint, new URL("../../../../", import.meta.url)).href;
+        const embedded = embeddedTestOptions ? `, testOptions: ${JSON.stringify(embeddedTestOptions)}` : "";
+        const script = `
+            import { mock } from "node:test";
+            import { workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentNotice } from ${JSON.stringify(switchUrl)};
+            import { workflowsNotice } from ${JSON.stringify(workflowsUrl)};
+            mock.module(${JSON.stringify(sdkUrl)}, { namedExports: {
+                horizonConfigFromEnv: () => ({}), loadExtensionModules: async () => [], parseExtensionModules: () => [],
+                workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentNotice, workflowsNotice,
+                PilotSwarmWorker: class {
+                    constructor(options) { this.options = options; }
+                    async start() {
+                        process.stdout.write("TEST_OPTIONS:" + JSON.stringify(this.options.testOptions ?? null) + "\\n");
+                        process.exit(0);
+                    }
+                }
+            } });
+            const entry = await import(${JSON.stringify(entryUrl)});
+            if (entry.startEmbeddedWorkers) await entry.startEmbeddedWorkers({count: 1, store: process.env.DATABASE_URL${embedded}});
+        `;
+        const env = { ...process.env, DATABASE_URL: "postgresql://u:p@unittest.invalid/app", PILOTSWARM_USE_MANAGED_IDENTITY: "0" };
+        if (switchValue === undefined) delete env.PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT;
+        else env.PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT = switchValue;
+        const result = spawnSync(process.execPath, [
+            "--experimental-test-module-mocks", "--no-warnings=ExperimentalWarning",
+            "--input-type=module", "-e", script,
+        ], { cwd: repoRoot, env, encoding: "utf8" });
+        assert.equal(result.status, 0, result.stderr);
+        const match = result.stdout.match(/TEST_OPTIONS:(.*)/);
+        assert.ok(match, result.stdout);
+        assert.deepEqual(JSON.parse(match[1]), expected);
+    });
 }

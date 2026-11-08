@@ -45,13 +45,14 @@ function fakeArtifacts() {
     };
 }
 
-function toolsWith({ artifacts = fakeArtifacts(), catalog = {}, viewer = VIEWER, reservedAgentNames } = {}) {
+function toolsWith({ artifacts = fakeArtifacts(), catalog = {}, viewer = VIEWER, reservedAgentNames, knownModelNames } = {}) {
     const list = createAgentManagerTools({
         catalog,
         artifactStore: artifacts,
         sessionId: SESSION,
         resolveViewer: async () => viewer,
         ...(reservedAgentNames ? { reservedAgentNames } : {}),
+        ...(knownModelNames ? { knownModelNames } : {}),
     });
     return { artifacts, byName: new Map(list.map((t) => [t.name, t])) };
 }
@@ -573,4 +574,34 @@ test("the manager bundle exposes exactly the expected tools", () => {
         "set_agent_package_enabled",
         "stage_agent_package_edit",
     ]);
+});
+
+// OF-S2-7 review D8: Agent Smith's publish refuses a Workflow card whose model hint note names a model of the worker's
+// configured catalog (the names the worker gives it), as a person's publication does.
+test("publish refuses a Workflow card hint that names a model of the worker's configured catalog", async () => {
+    const yaml = [
+        "apiVersion: pilotswarm.dev/v2-draft", "kind: Workflow", "metadata: { name: triage, version: \"1.0.0\" }", "initial: classify", "states:",
+        "  classify:", "    type: agent", "    invoke: { prompt: \"Classify it.\" }", "    timeoutSeconds: 600",
+        "    transition: { next: { done: done, failure: failed } }",
+        "  done: { type: terminal, outcome: succeeded }", "  failed: { type: terminal, outcome: failed }", "",
+    ].join("\n");
+    const card = "---\nname: triage\ndescription: Triages.\nwhenToUse: Always.\noutcomes:\n  done: Done.\n  failed: Failed.\neffects: One agent turn.\n"
+        + "modelHints:\n  classify: { strength: strong, note: as good as gpt-5.6-terra }\n---\n";
+    const files = {
+        "plugin.json": JSON.stringify({ name: "wfkit", version: "1.0.0", description: "Workflow kit." }),
+        [CHANGELOG_PATH]: "## 1.0.0\n\n- first",
+        "agents/kit.agent.md": "---\nname: kit\ndescription: A kit agent.\n---\nYou help.\n",
+        "workflows/triage/workflow.yaml": yaml,
+        "workflows/triage/card.md": card,
+    };
+    const publish = async (knownModelNames) => {
+        const { byName } = toolsWith({ ...(knownModelNames ? { knownModelNames } : {}) });
+        await byName.get("stage_agent_package_edit").handler({ package: "wfkit", files });
+        return byName.get("publish_agent_package").handler({ package: "wfkit", semver: "1.0.0", approved_by: "alice" });
+    };
+    const refused = await publish(() => ["azure-openai:gpt-5.6-terra", "gpt-5.6-terra"]);
+    assert.match(refused.error, /\[workflow_card_mismatch\] workflows\/triage\/card\.md does not match workflows\/triage\/workflow\.yaml: modelHints\.classify\.note names the model gpt-5\.6-terra/);
+    // Without the worker's names nothing matches the note: validation passes (the fake catalog then fails the publish itself).
+    const unnamed = await publish(null);
+    assert.ok(!/modelHints\.classify\.note names the model/.test(unnamed.error ?? ""), unnamed.error);
 });

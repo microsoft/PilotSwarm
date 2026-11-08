@@ -18,7 +18,8 @@ let stub;
 let base;
 
 test.beforeAll(async () => {
-    stub = await startStubServer(0);
+    // Stage 2.0: Workflows on (the toolbar count below includes the Workflow button); off is the default.
+    stub = await startStubServer(0, { workflows: true });
     base = `http://127.0.0.1:${stub.port}`;
 });
 
@@ -124,7 +125,8 @@ test("full-screen canvas keeps actions in their permanent navigation slot", asyn
     // Full screen now shares the same action/history anchor as every other
     // view; the flexible left rail holds the canvas controls instead.
     await expect(page.locator(".ps-toolbar-side.is-left .ps-icon-button")).toHaveCount(0);
-    await expect(page.locator(".ps-toolbar-navigation .ps-icon-button")).toHaveCount(6);
+    // New, Filter, Back, Forward, Canvas, Workflow (Workflow Simplified, L1) and Diagnostics.
+    await expect(page.locator(".ps-toolbar-navigation .ps-icon-button")).toHaveCount(7);
     await expect(page.locator(".ps-toolbar-side.is-left").getByRole("button", { name: "Restore canvas", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Restore canvas" })).toBeVisible();
 });

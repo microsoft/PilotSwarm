@@ -93,8 +93,17 @@ export interface AgentConfig {
      * them.
      */
     inheritDefaultMcpServers?: boolean;
-    /** Explicit per-native-task external tool allowlists (schemaVersion 4). */
+    /** Explicit per-native-task external tool allowlists (schemaVersion 4 or later). */
     nativeTaskTools?: NativeTaskTools;
+    /**
+     * A package agent's workflow interface, as its front matter declares it
+     * (schemaVersion 5; design 04 "Package-agent I/O export"): name, version,
+     * outcomes, and the package files of its output and optional input
+     * schemas. The package validator reads and checks the files and exports
+     * the interface in the package manifest (workflow/v2/package-interface.ts);
+     * nothing else reads this field.
+     */
+    workflowInterface?: AgentWorkflowInterfaceDeclaration;
     /** If true, this is a system agent started automatically by workers. */
     system?: boolean;
     /** Deterministic ID slug for system agents (e.g. "sweeper"). Used to derive a fixed session UUID. */
@@ -155,30 +164,60 @@ export interface AgentConfig {
      * that is also useful on its own.
      */
     supportsDirectStart?: boolean;
+    /**
+     * Workflow Simplified stage 2.3 (P4): the Workflow Definitions this agent's chat may start, by package and name
+     * (`ops-kit/incident-digest`), or by name alone for one in the agent's own package. Its chat reads their cards and
+     * starts them with workflow_definition. A loader that does not know the field drops it, and the chat then cannot
+     * start them (fail closed). An agent that names definitions may not be used by a Workflow's agent step (A2).
+     */
+    workflows?: string[];
     /** Absolute path the agent was loaded from, when known. Used for diagnostics. */
     sourcePath?: string;
 }
 
+/** A workflowInterface mapping as front matter gives it: each field's text, or a list for a list field. Checked by the package validator. */
+export type AgentWorkflowInterfaceDeclaration = { [field: string]: string | string[] };
+
+/** A `workflows` entry: `<package>/<name>` or `<name>` (Workflow Simplified stage 2.3, P4; package-card.ts parses it). */
+const AGENT_WORKFLOW_REF = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\/)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/** The lowest front matter schemaVersion that declares a workflow interface. */
+export const AGENT_WORKFLOW_INTERFACE_SCHEMA_VERSION = 5;
+
 export interface AgentDefinitionIssue {
-    code: "initial_required_tool_schema" | "initial_required_tool_not_declared" | "native_task_policy";
+    code: "initial_required_tool_schema" | "initial_required_tool_not_declared" | "native_task_policy" | "workflow_interface_requires_schema_v5" | "invalid_workflow_ref";
     message: string;
 }
 
 export function validateAgentDefinition(
-    agent: Pick<AgentConfig, "schemaVersion" | "tools" | "initialRequiredTool" | "nativeTaskTools">,
+    agent: Pick<AgentConfig, "schemaVersion" | "tools" | "initialRequiredTool" | "nativeTaskTools" | "workflowInterface" | "workflows">,
 ): AgentDefinitionIssue[] {
     const requiredTool = typeof agent.initialRequiredTool === "string"
         ? agent.initialRequiredTool.trim()
         : "";
     const issues: AgentDefinitionIssue[] = [];
+    for (const ref of agent.workflows ?? []) {
+        if (!AGENT_WORKFLOW_REF.test(ref)) {
+            issues.push({
+                code: "invalid_workflow_ref",
+                message: `workflows names "${ref}", which is not a Workflow Definition reference: use <package>/<name> (a package's name, a slash, and the definition's name), or <name> for one in this agent's own package`,
+            });
+        }
+    }
     if (agent.nativeTaskTools !== undefined) {
         try {
-            if (agent.schemaVersion !== 4) throw new Error("nativeTaskTools requires schemaVersion 4");
+            if (![4, 5].includes(agent.schemaVersion ?? 1)) throw new Error("nativeTaskTools requires schemaVersion 4 or 5");
             validateNativeTaskTools(agent.nativeTaskTools);
         } catch (error: any) { issues.push({code: "native_task_policy", message: error.message}); }
     }
+    if (agent.workflowInterface !== undefined && (agent.schemaVersion ?? 1) < AGENT_WORKFLOW_INTERFACE_SCHEMA_VERSION) {
+        issues.push({
+            code: "workflow_interface_requires_schema_v5",
+            message: `workflowInterface requires schemaVersion 5 so older loaders skip the agent rather than silently drop its workflow contract (it declares schemaVersion ${agent.schemaVersion ?? 1})`,
+        });
+    }
     if (!requiredTool) return issues;
-    if (![3, 4].includes(agent.schemaVersion ?? 1)) {
+    if (![3, 4, 5].includes(agent.schemaVersion ?? 1)) {
         issues.push({
             code: "initial_required_tool_schema",
             message: "initialRequiredTool requires schemaVersion 3 so older workers skip rather than silently ignore the contract",
@@ -223,15 +262,83 @@ export function agentSupportsDirectStart(agent: {
  */
 const BLOCK_SCALAR_KEYS = new Set(["splash", "splashMobile", "initialPrompt", "description"]);
 
+const unquoteFrontmatterValue = (text: string): string => {
+    const value = text.trim();
+    return value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
+        ? value.slice(1, -1) : value;
+};
+
+/**
+ * Parse the nested `workflowInterface:` mapping (schemaVersion 5) out of the
+ * front matter lines and remove it from them, as nativeTaskTools is: each
+ * field on its own two-space-indented line (`  name: review_change`), a list
+ * inline (`  outcomes: [accepted, changes_required]`) or as four-space
+ * `    - item` lines under an empty field. The values are checked by the
+ * package validator (workflow/v2/package-interface.ts). Throws on a
+ * malformed or duplicate entry, so the agent fails to load instead of
+ * losing its contract.
+ */
+function parseWorkflowInterfaceBlock(lines: string[]): AgentWorkflowInterfaceDeclaration | undefined {
+    const index = lines.findIndex(line => /^workflowInterface:/.test(line));
+    if (index < 0) return undefined;
+    if (lines.filter(line => /^workflowInterface:/.test(line)).length !== 1) throw new Error("Duplicate workflowInterface declaration");
+    if (lines[index].trim() !== "workflowInterface:") {
+        throw new Error("workflowInterface requires an indented mapping of name, version, outputSchema, outcomes and optionally inputSchema");
+    }
+    const declared: AgentWorkflowInterfaceDeclaration = {};
+    let list: string | undefined;
+    let end = index + 1;
+    for (; end < lines.length && !/^[^\s#]/.test(lines[end]); end++) {
+        const line = lines[end];
+        if (!line.trim() || line.trim().startsWith("#")) continue;
+        const field = /^  ([A-Za-z][\w-]*):(?:\s+(.*?))?\s*$/.exec(line);
+        if (field) {
+            const key = field[1];
+            if (Object.hasOwn(declared, key)) throw new Error(`Duplicate workflowInterface field: ${key}`);
+            const value = field[2] ?? "";
+            list = undefined;
+            if (!value) {
+                declared[key] = [];
+                list = key;
+            } else if (value.startsWith("[")) {
+                if (!value.endsWith("]")) throw new Error(`Malformed workflowInterface list: ${key}`);
+                declared[key] = value.slice(1, -1).split(",").map(unquoteFrontmatterValue).filter(Boolean);
+            } else {
+                declared[key] = unquoteFrontmatterValue(value);
+            }
+            continue;
+        }
+        const item = /^    - (.+?)\s*$/.exec(line);
+        if (!item || list === undefined) throw new Error(`Malformed workflowInterface entry: ${line.trim()}`);
+        (declared[list] as string[]).push(unquoteFrontmatterValue(item[1]));
+    }
+    lines.splice(index, end - index);
+    return declared;
+}
+
+/**
+ * Why an agent file's front matter does not parse (a malformed
+ * nativeTaskTools or workflowInterface mapping), or null when it parses. The
+ * package validator names this reason for an agent the loader skipped.
+ */
+export function agentFrontmatterProblem(content: string): string | null {
+    try {
+        parseAgentFrontmatter(content);
+        return null;
+    } catch (error: any) {
+        return String(error?.message ?? error);
+    }
+}
+
 /**
  * Parse YAML frontmatter from an .agent.md file.
  * Handles simple `key: value` pairs and YAML list syntax for `tools` and `skills`.
  */
 function parseAgentFrontmatter(content: string): {
-    meta: { nativeTaskTools?: NativeTaskTools; name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; initialRequiredTool?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean };
+    meta: { nativeTaskTools?: NativeTaskTools; workflowInterface?: AgentWorkflowInterfaceDeclaration; name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; initialRequiredTool?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean; workflows?: string[] };
     body: string;
 } {
-    const meta: { nativeTaskTools?: NativeTaskTools; name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; initialRequiredTool?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean } = {};
+    const meta: { nativeTaskTools?: NativeTaskTools; workflowInterface?: AgentWorkflowInterfaceDeclaration; name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; initialRequiredTool?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean; workflows?: string[] } = {};
 
     if (!content.startsWith("---")) {
         return { meta, body: content };
@@ -271,6 +378,8 @@ function parseAgentFrontmatter(content: string): {
         meta.nativeTaskTools = policy;
         lines.splice(nativeIndex, end-nativeIndex);
     }
+    const workflowInterface = parseWorkflowInterfaceBlock(lines);
+    if (workflowInterface !== undefined) meta.workflowInterface = workflowInterface;
     let currentKey: string | null = null;
     let multilineValue: string[] | null = null;
     let currentBlockStyle: string | null = null;
@@ -317,7 +426,7 @@ function parseAgentFrontmatter(content: string): {
         if (trimmed.startsWith("#")) continue;
 
         // YAML list item (e.g. "  - view")
-        if (trimmed.startsWith("- ") && (currentKey === "tools" || currentKey === "skills" || currentKey === "mcpServers" || currentKey === "startedBy")) {
+        if (trimmed.startsWith("- ") && (currentKey === "tools" || currentKey === "skills" || currentKey === "mcpServers" || currentKey === "startedBy" || currentKey === "workflows")) {
             let item = trimmed.slice(2).trim();
             if ((item.startsWith('"') && item.endsWith('"') && item.length >= 2) ||
                 (item.startsWith("'") && item.endsWith("'") && item.length >= 2)) {
@@ -329,6 +438,9 @@ function parseAgentFrontmatter(content: string): {
             } else if (currentKey === "startedBy") {
                 if (!meta.startedBy) meta.startedBy = [];
                 meta.startedBy.push(item);
+            } else if (currentKey === "workflows") {
+                if (!meta.workflows) meta.workflows = [];
+                meta.workflows.push(item);
             } else if (currentKey === "skills") {
                 if (!meta.skills) meta.skills = [];
                 meta.skills.push(item);
@@ -394,6 +506,11 @@ function parseAgentFrontmatter(content: string): {
             meta.startedBy = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean);
         } else if (key === "startedBy" && !value) {
             meta.startedBy = [];
+        } else if (key === "workflows" && value) {
+            // Inline array: workflows: [ops-kit/incident-digest, release-watch]
+            meta.workflows = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim().replace(/^['"]|['"]$/g, "")).filter(Boolean);
+        } else if (key === "workflows" && !value) {
+            meta.workflows = [];
         } else if (key === "supportsDirectStart" && (value === "true" || value === "false")) {
             // Explicit only. A bare `supportsDirectStart:` with no value must
             // stay UNDECLARED so the default still applies — reading it as
@@ -456,8 +573,8 @@ export function loadAgentFiles(agentsDir: string, options: LoadAgentFilesOptions
                 continue;
             }
 
-            if (meta.schemaVersion !== undefined && ![1, 2, 3, 4].includes(meta.schemaVersion)) {
-                console.warn(`[agent-loader] Skipping ${entry.name}: unsupported schemaVersion ${meta.schemaVersion}; expected schemaVersion 1, 2, 3, or 4`);
+            if (meta.schemaVersion !== undefined && ![1, 2, 3, 4, 5].includes(meta.schemaVersion)) {
+                console.warn(`[agent-loader] Skipping ${entry.name}: unsupported schemaVersion ${meta.schemaVersion}; expected schemaVersion 1, 2, 3, 4, or 5`);
                 continue;
             }
 
@@ -480,6 +597,7 @@ export function loadAgentFiles(agentsDir: string, options: LoadAgentFilesOptions
                 mcpServers: meta.mcpServers && meta.mcpServers.length > 0 ? meta.mcpServers : undefined,
                 inheritDefaultMcpServers: meta.inheritDefaultMcpServers,
                 nativeTaskTools: meta.nativeTaskTools,
+                ...(meta.workflowInterface !== undefined ? { workflowInterface: meta.workflowInterface } : {}),
                 system: meta.system,
                 id: meta.id,
                 title: meta.title,
@@ -494,6 +612,7 @@ export function loadAgentFiles(agentsDir: string, options: LoadAgentFilesOptions
                 version: meta.version,
                 startedBy: meta.startedBy && meta.startedBy.length > 0 ? meta.startedBy : undefined,
                 supportsDirectStart: meta.supportsDirectStart,
+                ...(meta.workflows && meta.workflows.length > 0 ? { workflows: meta.workflows } : {}),
                 sourcePath: filePath,
             };
             const definitionIssues = validateAgentDefinition(agent);

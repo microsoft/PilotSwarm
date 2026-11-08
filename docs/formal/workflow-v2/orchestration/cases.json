@@ -1,0 +1,2977 @@
+[
+ {
+  "id": "graph.linear",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.linear.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport"
+  ],
+  "expected": "PASS",
+  "note": "Routes, an unrouted outcome, every run end.",
+  "batch": "r2d"
+ },
+ {
+  "id": "graph.catch",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.catch.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport"
+  ],
+  "expected": "PASS",
+  "note": "The catch-all state: entered once, by an unhandled error or an invalid terminal output.",
+  "batch": "r2d"
+ },
+ {
+  "id": "graph.catch-route",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.catch-route.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport"
+  ],
+  "expected": "PASS",
+  "note": "An explicit failure route into the catch-all state, and the catch-all's own route back to it.",
+  "batch": "r2d"
+ },
+ {
+  "id": "graph.loop-limit",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.loop-limit.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport"
+  ],
+  "expected": "PASS",
+  "note": "A loop ended by maxNodeExecutions.",
+  "batch": "r2d"
+ },
+ {
+  "id": "graph.par-failfast",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.par-failfast.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport"
+  ],
+  "expected": "PASS",
+  "note": "Two branches, one at a time, failFast.",
+  "batch": "r2d"
+ },
+ {
+  "id": "graph.par-failfast-conc2",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.par-failfast-conc2.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport"
+  ],
+  "expected": "PASS",
+  "note": "Two branches at once, failFast: one batch may hold both results.",
+  "batch": "r2d"
+ },
+ {
+  "id": "graph.par-all",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.par-all.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport"
+  ],
+  "expected": "PASS",
+  "note": "Two branches at once, every branch runs to its end.",
+  "batch": "r2d"
+ },
+ {
+  "id": "graph.par-catch",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.par-catch.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport"
+  ],
+  "expected": "PASS",
+  "note": "A parallel state in a workflow with a catch-all state.",
+  "batch": "r2d"
+ },
+ {
+  "id": "graph.par-k3",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.par-k3.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport"
+  ],
+  "expected": "PASS",
+  "note": "Three branches, two at a time, failFast: a not-started branch.",
+  "batch": "r2d"
+ },
+ {
+  "id": "graph.live-linear",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "graph.live-linear.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_ControllerEnds",
+   "Prop_RunEnds"
+  ],
+  "expected": "PASS",
+  "note": "Every run ends and its controller ends.",
+  "batch": "r2d"
+ },
+ {
+  "id": "graph.live-loop",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "graph.live-loop.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_ControllerEnds",
+   "Prop_RunEnds"
+  ],
+  "expected": "PASS",
+  "note": "A loop ends at its limit at the latest.",
+  "batch": "r2d"
+ },
+ {
+  "id": "graph.live-par",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "graph.live-par.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_ControllerEnds",
+   "Prop_RunEnds"
+  ],
+  "expected": "PASS",
+  "note": "A parallel run ends with every environment choice.",
+  "batch": "r2d"
+ },
+ {
+  "id": "graph.live-par-all",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "graph.live-par-all.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_ControllerEnds",
+   "Prop_RunEnds"
+  ],
+  "expected": "PASS",
+  "note": "Both branches at once, no failFast.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.graph-failfast-cancels",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.graph-failfast-cancels.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_FailFastCancels"
+  ],
+  "expected": "safety",
+  "note": "failFast cancels a running branch.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.graph-dropped-skipped",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.graph-dropped-skipped.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_DroppedResultSkipped"
+  ],
+  "expected": "safety",
+  "note": "A dropped branch's result is in the batch being routed.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.graph-join-blocked",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.graph-join-blocked.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_JoinBlocked"
+  ],
+  "expected": "safety",
+  "note": "A join is blocked.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.graph-joined",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.graph-joined.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_Joined"
+  ],
+  "expected": "safety",
+  "note": "A join succeeds.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.graph-limit",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.graph-limit.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_LimitEnds"
+  ],
+  "expected": "safety",
+  "note": "The limit ends the run.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.graph-catchall",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.graph-catchall.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_CatchAllEntered"
+  ],
+  "expected": "safety",
+  "note": "The catch-all state is entered.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.graph-stopped-with-work",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.graph-stopped-with-work.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_StoppedWithWork"
+  ],
+  "expected": "safety",
+  "note": "A stop ends a run with work still pending.",
+  "batch": "r2d"
+ },
+ {
+  "id": "fault.graph-no-limit",
+  "module": "WfGraph",
+  "mode": "deliberate",
+  "spec": "Spec",
+  "config": "fault.graph-no-limit.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_StepsBound"
+  ],
+  "expected": "safety",
+  "note": "Without the limit check.",
+  "batch": "r2d"
+ },
+ {
+  "id": "fault.graph-branch-catchall",
+  "module": "WfGraph",
+  "mode": "deliberate",
+  "spec": "Spec",
+  "config": "fault.graph-branch-catchall.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_BranchConfined"
+  ],
+  "expected": "safety",
+  "note": "A branch's unrouted error goes to the catch-all.",
+  "batch": "r2d"
+ },
+ {
+  "id": "fault.graph-join-early",
+  "module": "WfGraph",
+  "mode": "deliberate",
+  "spec": "Spec",
+  "config": "fault.graph-join-early.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_JoinAccountsAll"
+  ],
+  "expected": "safety",
+  "note": "The join is called before every branch ended.",
+  "batch": "r2d"
+ },
+ {
+  "id": "fault.graph-no-dropped",
+  "module": "WfGraph",
+  "mode": "deliberate",
+  "spec": "Spec",
+  "config": "fault.graph-no-dropped.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_NoProtocolFault"
+  ],
+  "expected": "safety",
+  "note": "The dropped set is not consulted.",
+  "batch": "r2d"
+ },
+ {
+  "id": "fault.graph-catchall-twice",
+  "module": "WfGraph",
+  "mode": "deliberate",
+  "spec": "Spec",
+  "config": "fault.graph-catchall-twice.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_CatchAllOnce"
+  ],
+  "expected": "safety",
+  "note": "The catch-all state is entered again.",
+  "batch": "r2d"
+ },
+ {
+  "id": "fault.graph-store-admits-stopping",
+  "module": "WfGraph",
+  "mode": "deliberate",
+  "spec": "Spec",
+  "config": "fault.graph-store-admits-stopping.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_NoAdmissionAfterStop"
+  ],
+  "expected": "safety",
+  "note": "The store admits a node of a stopping run.",
+  "batch": "r2d"
+ },
+ {
+  "id": "agent.safety",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "agent.safety.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_NoCompletionAfterDeadline",
+   "Inv_PromptOnce",
+   "Inv_EndOnlyDecided",
+   "Inv_EndMatchesWinner",
+   "Inv_ChildOnlyFromAttempt"
+  ],
+  "expected": "PASS",
+  "note": "Every agent-state safety rule, with crashes, refusals, exhausted spawns and failed ends.",
+  "batch": "r2d"
+ },
+ {
+  "id": "agent.live",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "agent.live.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_StateDecided",
+   "Prop_ChildReleased"
+  ],
+  "expected": "PASS",
+  "note": "The state is decided and its child ends, with crashes and refusals.",
+  "batch": "r2d"
+ },
+ {
+  "id": "agent.exhausted-orphan",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "agent.exhausted-orphan.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_ChildReleased"
+  ],
+  "expected": "liveness",
+  "note": "Every spawn attempt after the child's creation fails.",
+  "batch": "r2d"
+ },
+ {
+  "id": "agent.end-fails",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "agent.end-fails.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_ChildReleased"
+  ],
+  "expected": "liveness",
+  "note": "Both end commands fail (design limit: best effort, traced).",
+  "batch": "r2d"
+ },
+ {
+  "id": "agent.prompt-evicted",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "agent.prompt-evicted.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_PromptOnce"
+  ],
+  "expected": "safety",
+  "note": "The child's 20-id window forgot the prompt's id before a retry.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.agent-completes",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.agent-completes.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_ChildCompletes"
+  ],
+  "expected": "safety",
+  "note": "The child completes its state.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.agent-timed-out-ended",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.agent-timed-out-ended.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_TimedOutChildEnded"
+  ],
+  "expected": "safety",
+  "note": "A timed-out state's child is ended.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.agent-spawn-after-decision",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.agent-spawn-after-decision.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_SpawnAfterDecision"
+  ],
+  "expected": "safety",
+  "note": "A child created after its state was decided is ended.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.agent-invalid-exhausted",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.agent-invalid-exhausted.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_InvalidExhausted"
+  ],
+  "expected": "safety",
+  "note": "Invalid completions spend the correction budget.",
+  "batch": "r2d"
+ },
+ {
+  "id": "fault.agent-no-end-after-spawn",
+  "module": "WfAgent",
+  "mode": "deliberate",
+  "spec": "LiveSpec",
+  "config": "fault.agent-no-end-after-spawn.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_ChildReleased"
+  ],
+  "expected": "liveness",
+  "note": "The spawn does not end a child created after the decision.",
+  "batch": "r2d"
+ },
+ {
+  "id": "fault.agent-end-ignores-spawn",
+  "module": "WfAgent",
+  "mode": "deliberate",
+  "spec": "LiveSpec",
+  "config": "fault.agent-end-ignores-spawn.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_ChildReleased"
+  ],
+  "expected": "liveness",
+  "note": "The end after a spawn is skipped once an end was marked.",
+  "batch": "r2d"
+ },
+ {
+  "id": "fault.agent-accept-late",
+  "module": "WfAgent",
+  "mode": "deliberate",
+  "spec": "Spec",
+  "config": "fault.agent-accept-late.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_NoCompletionAfterDeadline"
+  ],
+  "expected": "safety",
+  "note": "A completion is accepted past the deadline.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.safety",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.safety.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_EndedIsLast",
+   "Inv_GivenOnce",
+   "Inv_NotifiedAccepted",
+   "Inv_SkipMeansNotGiven",
+   "Inv_NotifiedXorSkipped",
+   "Inv_NoDecisionAfterExpiry"
+  ],
+  "expected": "PASS",
+  "note": "The controller ends the run: the parent gets the message, then the end, once each.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.safety-request",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.safety-request.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_EndedIsLast",
+   "Inv_GivenOnce",
+   "Inv_NotifiedAccepted",
+   "Inv_SkipMeansNotGiven",
+   "Inv_NotifiedXorSkipped",
+   "Inv_NoDecisionAfterExpiry"
+  ],
+  "expected": "safety",
+  "note": "The same with a request: its own deadline opens the WFO-1 gap (r1: predicted PASS, failed).",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.live-default-on",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "parent.live-default-on.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_ParentLearnsEnd"
+  ],
+  "expected": "PASS",
+  "note": "Notifications on by default (fe01b956): the parent learns the end.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.live-off",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "parent.live-off.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_ParentLearnsEnd"
+  ],
+  "expected": "PASS",
+  "note": "Notifications off: the skip is recorded (61a622c2).",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.late-message",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.late-message.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_EndedIsLast"
+  ],
+  "expected": "safety",
+  "note": "Another end while the send's delivery is between its begin and its enqueue.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.late-request",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.late-request.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_EndedIsLast"
+  ],
+  "expected": "safety",
+  "note": "The same for a request: the parent is given it after the run's end.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.parent-answer-expired",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.parent-answer-expired.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_AnswerExpired"
+  ],
+  "expected": "safety",
+  "note": "The parent answers a pending request after the store's clock passed its deadline (REQUEST_EXPIRED).",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.parent-answer-closed",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.parent-answer-closed.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_AnswerClosed"
+  ],
+  "expected": "safety",
+  "note": "The parent answers a request of a run that ended (REQUEST_CLOSED).",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.parent-answer-after-timeout",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.parent-answer-after-timeout.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_AnswerAfterTimeout"
+  ],
+  "expected": "safety",
+  "note": "The parent answers a request the elapse decided timed_out (REQUEST_CLOSED, not EXPIRED; FR-4).",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.parent-answer-early",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.parent-answer-early.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_AnswerEarly"
+  ],
+  "expected": "safety",
+  "note": "The parent's answer is accepted before the delivery was recorded (MF-1, FR-4).",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.expiry-durable",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.expiry-durable.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_NoDecisionAfterExpiry"
+  ],
+  "expected": "PASS",
+  "note": "A bound expiry stands although the store's clock steps back and a second copy is answered.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.notified-lost",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.notified-lost.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_NotifiedAccepted"
+  ],
+  "expected": "safety",
+  "note": "The parent ends between the authority read and the enqueue.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.fifo-lost",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "parent.fifo-lost.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_ParentLearnsEnd"
+  ],
+  "expected": "liveness",
+  "note": "The parent's FIFO is full when the end arrives.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.skip-after-given",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.skip-after-given.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_SkipMeansNotGiven"
+  ],
+  "expected": "safety",
+  "note": "A retry after the parent ended records a skip of an end it was given.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.evicted-duplicate",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.evicted-duplicate.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_GivenOnce"
+  ],
+  "expected": "safety",
+  "note": "20 other messages between two copies (design limit).",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.parent-message-then-end",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.parent-message-then-end.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_GivenMessageThenEnd"
+  ],
+  "expected": "safety",
+  "note": "The normal order.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.parent-skip-recorded",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.parent-skip-recorded.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_SkipRecorded"
+  ],
+  "expected": "safety",
+  "note": "notify_on_completion false records the skip.",
+  "batch": "r2d"
+ },
+ {
+  "id": "fault.parent-no-prior-check",
+  "module": "WfParent",
+  "mode": "deliberate",
+  "spec": "Spec",
+  "config": "fault.parent-no-prior-check.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_NotifiedXorSkipped"
+  ],
+  "expected": "safety",
+  "note": "Without the per-run event check.",
+  "batch": "r2d"
+ },
+ {
+  "id": "fault.parent-no-window",
+  "module": "WfParent",
+  "mode": "deliberate",
+  "spec": "Spec",
+  "config": "fault.parent-no-window.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_GivenOnce"
+  ],
+  "expected": "safety",
+  "note": "Without the parent's duplicate check.",
+  "batch": "r2d"
+ },
+ {
+  "id": "fault.parent-no-durable-expiry",
+  "module": "WfParent",
+  "mode": "deliberate",
+  "spec": "Spec",
+  "config": "fault.parent-no-durable-expiry.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_NoDecisionAfterExpiry"
+  ],
+  "expected": "safety",
+  "note": "Without the durable expiry: a stepped-back clock lets a later copy be answered.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.safety-request-d",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.safety-request-d.cfg",
+  "head": "proposedD",
+  "properties": [
+   "TypeOK",
+   "Inv_EndedIsLast",
+   "Inv_GivenOnce",
+   "Inv_NotifiedAccepted",
+   "Inv_SkipMeansNotGiven",
+   "Inv_NotifiedXorSkipped",
+   "Inv_NoDecisionAfterExpiry"
+  ],
+  "expected": "PASS",
+  "note": "parent.safety-request with the proposed WFO-1 fix.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.late-message-d",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.late-message-d.cfg",
+  "head": "proposedD",
+  "properties": [
+   "Inv_EndedIsLast"
+  ],
+  "expected": "PASS",
+  "note": "parent.late-message with the proposed WFO-1 fix.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.notified-lost-d",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.notified-lost-d.cfg",
+  "head": "proposedD",
+  "properties": [
+   "Inv_NotifiedAccepted"
+  ],
+  "expected": "PASS",
+  "note": "parent.notified-lost with the proposed WFO-3 fix.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.skip-after-given-d",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.skip-after-given-d.cfg",
+  "head": "proposedD",
+  "properties": [
+   "Inv_SkipMeansNotGiven"
+  ],
+  "expected": "PASS",
+  "note": "parent.skip-after-given with the proposed WFO-4 fix.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.safety-d",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.safety-d.cfg",
+  "head": "proposedD",
+  "properties": [
+   "TypeOK",
+   "Inv_EndedIsLast",
+   "Inv_GivenOnce",
+   "Inv_NotifiedAccepted",
+   "Inv_SkipMeansNotGiven",
+   "Inv_NotifiedXorSkipped",
+   "Inv_NoDecisionAfterExpiry"
+  ],
+  "expected": "PASS",
+  "note": "Every parent rule with the proposed group D fixes, other ends, the parent's end and clock steps.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.live-d",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "parent.live-d.cfg",
+  "head": "proposedD",
+  "properties": [
+   "Prop_ParentLearnsEnd"
+  ],
+  "expected": "PASS",
+  "note": "The parent still learns the end with the proposed group D fixes.",
+  "batch": "r2d"
+ },
+ {
+  "id": "agent.exhausted-orphan-d",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "agent.exhausted-orphan-d.cfg",
+  "head": "proposedD",
+  "properties": [
+   "Prop_ChildReleased"
+  ],
+  "expected": "PASS",
+  "note": "agent.exhausted-orphan with the proposed WFO-2 fix.",
+  "batch": "r2d"
+ },
+ {
+  "id": "agent.safety-d",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "agent.safety-d.cfg",
+  "head": "proposedD",
+  "properties": [
+   "TypeOK",
+   "Inv_NoCompletionAfterDeadline",
+   "Inv_PromptOnce",
+   "Inv_EndOnlyDecided",
+   "Inv_EndMatchesWinner",
+   "Inv_ChildOnlyFromAttempt"
+  ],
+  "expected": "PASS",
+  "note": "Every agent-state safety rule with the proposed WFO-2 fix.",
+  "batch": "r2d"
+ },
+ {
+  "id": "agent.live-d",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "agent.live-d.cfg",
+  "head": "proposedD",
+  "properties": [
+   "Prop_StateDecided",
+   "Prop_ChildReleased"
+  ],
+  "expected": "PASS",
+  "note": "agent.live with the proposed WFO-2 fix.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.late-message-1f7",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.late-message-1f7.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Inv_EndedIsLast"
+  ],
+  "expected": "safety",
+  "note": "WFO-1 at 1f7bdc77: a delivery that outlasts the notice's bounded wait still lands after the end (documented bound).",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.late-message-1f7-bound",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.late-message-1f7-bound.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Inv_EndedIsLast"
+  ],
+  "expected": "PASS",
+  "note": "WFO-1 at 1f7bdc77: every delivery in flight is recorded or fails within the wait's bound.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.late-request-1f7-bound",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.late-request-1f7-bound.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Inv_EndedIsLast"
+  ],
+  "expected": "PASS",
+  "note": "WFO-1 at 1f7bdc77 for a request (counted in flight too), within the bound.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.safety-request-1f7",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.safety-request-1f7.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "TypeOK",
+   "Inv_EndedIsLast",
+   "Inv_GivenOnce",
+   "Inv_NotifiedAccepted",
+   "Inv_SkipMeansNotGiven",
+   "Inv_NotifiedXorSkipped",
+   "Inv_NoDecisionAfterExpiry"
+  ],
+  "expected": "safety",
+  "note": "parent.safety-request at 1f7bdc77 when the wait gives up (documented bound).",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.safety-request-1f7-bound",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.safety-request-1f7-bound.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "TypeOK",
+   "Inv_EndedIsLast",
+   "Inv_GivenOnce",
+   "Inv_NotifiedAccepted",
+   "Inv_SkipMeansNotGiven",
+   "Inv_NotifiedXorSkipped",
+   "Inv_NoDecisionAfterExpiry"
+  ],
+  "expected": "PASS",
+  "note": "parent.safety-request at 1f7bdc77 within the wait's bound.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.notified-lost-1f7",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.notified-lost-1f7.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Inv_NotifiedAccepted"
+  ],
+  "expected": "safety",
+  "note": "WFO-3 at 1f7bdc77: the parent ends between the status read and the enqueue (the race that remains).",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.skip-after-given-1f7",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.skip-after-given-1f7.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Inv_SkipMeansNotGiven"
+  ],
+  "expected": "PASS",
+  "note": "WFO-4 at 1f7bdc77: a retry after parent_notifying never records a skip.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.told-by-earlier-1f7",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.told-by-earlier-1f7.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Inv_ToldMeansAccepted"
+  ],
+  "expected": "safety",
+  "note": "WFO-4 at 1f7bdc77: a crash between parent_notifying and the enqueue, then the parent ends: told byEarlierAttempt, nothing queued.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.parent-told-by-earlier",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.parent-told-by-earlier.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Wit_ToldByEarlier"
+  ],
+  "expected": "safety",
+  "note": "1f7bdc77 records parent_notified byEarlierAttempt.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.safety-1f7",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.safety-1f7.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "TypeOK",
+   "Inv_EndedIsLast",
+   "Inv_GivenOnce",
+   "Inv_SkipMeansNotGiven",
+   "Inv_NotifiedXorSkipped",
+   "Inv_NoDecisionAfterExpiry"
+  ],
+  "expected": "PASS",
+  "note": "Every parent rule but notified-accepted at 1f7bdc77 within the wait's bound, with other ends, the parent's end and clock steps.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.live-1f7",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "parent.live-1f7.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Prop_ParentLearnsEnd"
+  ],
+  "expected": "PASS",
+  "note": "The parent still learns the end at 1f7bdc77.",
+  "batch": "r2d"
+ },
+ {
+  "id": "agent.exhausted-orphan-1f7",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "agent.exhausted-orphan-1f7.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Prop_ChildReleased"
+  ],
+  "expected": "PASS",
+  "note": "WFO-2 at 1f7bdc77: agentSpawnFailed ends the child an attempt created.",
+  "batch": "r2d"
+ },
+ {
+  "id": "agent.safety-1f7",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "agent.safety-1f7.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "TypeOK",
+   "Inv_NoCompletionAfterDeadline",
+   "Inv_PromptOnce",
+   "Inv_EndOnlyDecided",
+   "Inv_EndMatchesWinner",
+   "Inv_ChildOnlyFromAttempt"
+  ],
+  "expected": "PASS",
+  "note": "Every agent-state safety rule at 1f7bdc77.",
+  "batch": "r2d"
+ },
+ {
+  "id": "agent.live-1f7",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "agent.live-1f7.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Prop_StateDecided",
+   "Prop_ChildReleased"
+  ],
+  "expected": "PASS",
+  "note": "agent.live at 1f7bdc77 (a spawn that never created a child leaves its row owed, and nothing to end).",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.agent-second-end",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.agent-second-end.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Wit_SecondEndCommand"
+  ],
+  "expected": "safety",
+  "note": "A child gets a second end command with the same id (also at efe44835: the end after a spawn).",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.zombie-1f7",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.zombie-1f7.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Inv_EndedIsLast"
+  ],
+  "expected": "safety",
+  "note": "WFO-1 at 1f7bdc77: a retry fails the outbox row while the first attempt's enqueue still runs; the count drops to 0 and M lands after E.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.concurrent-1f7",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.concurrent-1f7.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Inv_SkipMeansNotGiven",
+   "Inv_NotifiedXorSkipped"
+  ],
+  "expected": "safety",
+  "note": "WFO-4 at 1f7bdc77: two notifier instances both read attempted false; one queues the end, the other records a skip.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.zombie-e3",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.zombie-e3.cfg",
+  "head": "proposedE3",
+  "properties": [
+   "Inv_EndedIsLast"
+  ],
+  "expected": "PASS",
+  "note": "proposedE3: rows decided after a recent attempt are counted; the zombie enqueue lands within the bound.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.zombie-e3-timeout",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.zombie-e3-timeout.cfg",
+  "head": "proposedE3",
+  "properties": [
+   "Inv_EndedIsLast"
+  ],
+  "expected": "safety",
+  "note": "proposedE3: a zombie enqueue slower than the 15 s bound still lands after the end (documented bound).",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.concurrent-e3",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.concurrent-e3.cfg",
+  "head": "proposedE3",
+  "properties": [
+   "Inv_SkipMeansNotGiven",
+   "Inv_NotifiedXorSkipped"
+  ],
+  "expected": "PASS",
+  "note": "proposedE3: the per-run lock serializes the two notifier instances.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.told-by-earlier-e3",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.told-by-earlier-e3.cfg",
+  "head": "proposedE3",
+  "properties": [
+   "Inv_ToldMeansAccepted"
+  ],
+  "expected": "PASS",
+  "note": "D-R1 under proposedE3: a marker plus a refusal records a skip with earlierAttempt, not told.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.notified-lost-e3",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.notified-lost-e3.cfg",
+  "head": "proposedE3",
+  "properties": [
+   "Inv_NotifiedAccepted"
+  ],
+  "expected": "safety",
+  "note": "proposedE3 leaves the status-read race of WFO-3 as it is.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.safety-e3",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.safety-e3.cfg",
+  "head": "proposedE3",
+  "properties": [
+   "TypeOK",
+   "Inv_EndedIsLast",
+   "Inv_GivenOnce",
+   "Inv_SkipMeansNotGiven",
+   "Inv_NotifiedXorSkipped",
+   "Inv_NoDecisionAfterExpiry"
+  ],
+  "expected": "PASS",
+  "note": "Every parent rule but the accepted-copy rules under proposedE3, with a zombie enqueue and two notifier instances.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.live-e3",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "parent.live-e3.cfg",
+  "head": "proposedE3",
+  "properties": [
+   "Prop_ParentLearnsEnd"
+  ],
+  "expected": "PASS",
+  "note": "The parent still learns the end under proposedE3.",
+  "batch": "r2d"
+ },
+ {
+  "id": "exec.e1-safety",
+  "module": "WfExecLease",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "exec.e1-safety.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_OneHolder",
+   "Inv_NoCallOnForeignSession",
+   "Inv_NoSetupAfterFailedTeardown",
+   "Inv_NoForeignBackground"
+  ],
+  "expected": "PASS",
+  "note": "E1 at 0c3b4ceb: one holder; calls only on its own session; no setup after a failed teardown; no foreign background work.",
+  "batch": "r2d"
+ },
+ {
+  "id": "exec.e1-live",
+  "module": "WfExecLease",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "exec.e1-live.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_WaitersServed"
+  ],
+  "expected": "PASS",
+  "note": "E1 at 0c3b4ceb: every waiter is served, refused or aborted, with scripts that end.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.exec-e1-after-abort",
+  "module": "WfExecLease",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.exec-e1-after-abort.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Wit_ServedAfterAbort"
+  ],
+  "expected": "safety",
+  "note": "A waiter behind an aborted one is served after the holder.",
+  "batch": "r2d"
+ },
+ {
+  "id": "fault.exec-e1-link-skips-aborted",
+  "module": "WfExecLease",
+  "mode": "deliberate",
+  "spec": "Spec",
+  "config": "fault.exec-e1-link-skips-aborted.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_OneHolder"
+  ],
+  "expected": "safety",
+  "note": "An aborted waiter's link resolves at once: the next waiter holds beside the holder.",
+  "batch": "r2d"
+ },
+ {
+  "id": "fault.exec-e1-no-recheck",
+  "module": "WfExecLease",
+  "mode": "deliberate",
+  "spec": "Spec",
+  "config": "fault.exec-e1-no-recheck.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_NoSetupAfterFailedTeardown"
+  ],
+  "expected": "safety",
+  "note": "No check after the wait: setup after a failed teardown (VR-2).",
+  "batch": "r2d"
+ },
+ {
+  "id": "exec.e1-dep",
+  "module": "WfExecLease",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "exec.e1-dep.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_BothComplete"
+  ],
+  "expected": "liveness",
+  "note": "E1-R1 at 0c3b4ceb: the holder waits for its sibling's first call, which waits for the lease.",
+  "batch": "r2d"
+ },
+ {
+  "id": "exec.e1b-safety",
+  "module": "WfExecShare",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "exec.e1b-safety.cfg",
+  "head": "proposedE1b",
+  "properties": [
+   "TypeOK",
+   "Inv_NoCallForClosedOwner",
+   "Inv_NoCallOnForeignSession",
+   "Inv_RunningOwnerActive",
+   "Inv_NoSetupAfterFailedTeardown",
+   "Inv_NoOrphanBackground"
+  ],
+  "expected": "PASS",
+  "note": "E1b as proposed: dequeue re-checks, own-call abort, release after calls settle, background cancel per owner, barrier re-checked.",
+  "batch": "r2d"
+ },
+ {
+  "id": "exec.e1b-live",
+  "module": "WfExecShare",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "exec.e1b-live.cfg",
+  "head": "proposedE1b",
+  "properties": [
+   "Prop_WaitersServed"
+  ],
+  "expected": "PASS",
+  "note": "E1b as proposed: every waiter is served, refused or aborted.",
+  "batch": "r2d"
+ },
+ {
+  "id": "exec.e1b-dep",
+  "module": "WfExecShare",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "exec.e1b-dep.cfg",
+  "head": "proposedE1b",
+  "properties": [
+   "Prop_BothComplete"
+  ],
+  "expected": "PASS",
+  "note": "E1b as proposed: the sibling dependency of exec.e1-dep completes.",
+  "batch": "r2d"
+ },
+ {
+  "id": "fault.exec-e1b-no-dequeue-recheck",
+  "module": "WfExecShare",
+  "mode": "deliberate",
+  "spec": "Spec",
+  "config": "fault.exec-e1b-no-dequeue-recheck.cfg",
+  "head": "proposedE1b",
+  "properties": [
+   "Inv_NoCallForClosedOwner"
+  ],
+  "expected": "safety",
+  "note": "Without the dequeue re-check, a closed or revoked owner's queued call runs (VR-1).",
+  "batch": "r2d"
+ },
+ {
+  "id": "fault.exec-e1b-no-barrier-recheck",
+  "module": "WfExecShare",
+  "mode": "deliberate",
+  "spec": "Spec",
+  "config": "fault.exec-e1b-no-barrier-recheck.cfg",
+  "head": "proposedE1b",
+  "properties": [
+   "Inv_NoSetupAfterFailedTeardown"
+  ],
+  "expected": "safety",
+  "note": "Without the barrier re-check after the wait, setup follows a failed teardown (VR-2).",
+  "batch": "r2d"
+ },
+ {
+  "id": "recover.rt3-efe",
+  "module": "WfRecover",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "recover.rt3-efe.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_ChildReleased"
+  ],
+  "expected": "liveness",
+  "note": "RT-3 at efe44835: a recover ends the run, and its agent child is never ended.",
+  "batch": "r2d"
+ },
+ {
+  "id": "recover.rt3-fixed",
+  "module": "WfRecover",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "recover.rt3-fixed.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Prop_RunEnds",
+   "Prop_ChildReleased",
+   "Prop_NoticePaid"
+  ],
+  "expected": "PASS",
+  "note": "RT-3 at 1c117a47: the recover ends the child; a failed end is ended by the next recover.",
+  "batch": "r2d"
+ },
+ {
+  "id": "recover.rt4-efe",
+  "module": "WfRecover",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "recover.rt4-efe.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_NoticePaid"
+  ],
+  "expected": "liveness",
+  "note": "RT-4 at efe44835: the controller dies after the terminal commit; no recover tells the parent.",
+  "batch": "r2d"
+ },
+ {
+  "id": "recover.rt4-fixed",
+  "module": "WfRecover",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "recover.rt4-fixed.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Prop_RunEnds",
+   "Prop_ChildReleased",
+   "Prop_NoticePaid"
+  ],
+  "expected": "PASS",
+  "note": "RT-4 at 1c117a47: a recover pays the notice and child debts of any terminal run.",
+  "batch": "r2d"
+ },
+ {
+  "id": "recover.rt4-exhaust-efe",
+  "module": "WfRecover",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "recover.rt4-exhaust-efe.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_NoticePaid"
+  ],
+  "expected": "liveness",
+  "note": "RT-4 at efe44835: the recovered run's notifier runs out of attempts; a second start of it is ignored.",
+  "batch": "r2d"
+ },
+ {
+  "id": "recover.rt4-exhaust-fixed",
+  "module": "WfRecover",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "recover.rt4-exhaust-fixed.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Prop_RunEnds",
+   "Prop_ChildReleased",
+   "Prop_NoticePaid"
+  ],
+  "expected": "PASS",
+  "note": "RT-4 at 1c117a47: a later recover starts a notifier named for its operation id.",
+  "batch": "r2d"
+ },
+ {
+  "id": "recover.nodeath-efe",
+  "module": "WfRecover",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "recover.nodeath-efe.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_RunEnds",
+   "Prop_ChildReleased",
+   "Prop_NoticePaid"
+  ],
+  "expected": "PASS",
+  "note": "Control: with no controller death, efe44835 pays every debt.",
+  "batch": "r2d"
+ },
+ {
+  "id": "recover.safety-efe",
+  "module": "WfRecover",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "recover.safety-efe.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_RecoverEndsOnlyDeadController",
+   "Inv_ChildEndedOnlyAfterRunEnd",
+   "Inv_NotifierOnlyForEndedRun"
+  ],
+  "expected": "PASS",
+  "note": "Recover safety at efe44835.",
+  "batch": "r2d"
+ },
+ {
+  "id": "recover.safety-fixed",
+  "module": "WfRecover",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "recover.safety-fixed.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "TypeOK",
+   "Inv_RecoverEndsOnlyDeadController",
+   "Inv_ChildEndedOnlyAfterRunEnd",
+   "Inv_NotifierOnlyForEndedRun"
+  ],
+  "expected": "PASS",
+  "note": "Recover safety at 1c117a47.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.recover-ends-run",
+  "module": "WfRecover",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.recover-ends-run.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Wit_RecoverEnds"
+  ],
+  "expected": "safety",
+  "note": "A recover ends a run whose controller died.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.recover-named-notifier",
+  "module": "WfRecover",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.recover-named-notifier.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Wit_RecoverNamedNotifier"
+  ],
+  "expected": "safety",
+  "note": "A recover's own notifier tells the parent.",
+  "batch": "r2d"
+ },
+ {
+  "id": "paging.rt5-efe",
+  "module": "WfPaging",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "paging.rt5-efe.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_CleanCallEndsAll"
+  ],
+  "expected": "safety",
+  "note": "RT-5 at efe44835: a settled first page hides the owed third child (200 settled, 201st owed).",
+  "batch": "r2d"
+ },
+ {
+  "id": "paging.rt5-fixed",
+  "module": "WfPaging",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "paging.rt5-fixed.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "TypeOK",
+   "Inv_CleanCallEndsAll"
+  ],
+  "expected": "PASS",
+  "note": "RT-5 at 1c117a47: only owed invocations are listed, page after page.",
+  "batch": "r2d"
+ },
+ {
+  "id": "paging.rt5-fixed-live",
+  "module": "WfPaging",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "paging.rt5-fixed-live.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Prop_AllEnded",
+   "Prop_CallEnds"
+  ],
+  "expected": "PASS",
+  "note": "1c117a47: three owed children over two pages, one failed end retried.",
+  "batch": "r2d"
+ },
+ {
+  "id": "paging.one-page-efe",
+  "module": "WfPaging",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "paging.one-page-efe.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_CleanCallEndsAll"
+  ],
+  "expected": "PASS",
+  "note": "Control: at efe44835 a run within one page is cleaned.",
+  "batch": "r2d"
+ },
+ {
+  "id": "paused.rt6-efe",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "paused.rt6-efe.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_DeadlineEnforced"
+  ],
+  "expected": "liveness",
+  "note": "RT-6 at efe44835: a permanently paused run with a ready branch never elapses the other branch's deadline.",
+  "batch": "r2d"
+ },
+ {
+  "id": "paused.rt6-fixed",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "paused.rt6-fixed.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Prop_DeadlineEnforced",
+   "Prop_TimedOutChildEnded"
+  ],
+  "expected": "PASS",
+  "note": "RT-6 at 1c117a47: the paused path elapses the state and ends its child.",
+  "batch": "r2d"
+ },
+ {
+  "id": "paused.fixed-any",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "paused.fixed-any.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Prop_DeadlineEnforced",
+   "Prop_TimedOutChildEnded"
+  ],
+  "expected": "PASS",
+  "note": "1c117a47 with the pause at any time, a resume and the child's own completion.",
+  "batch": "r2d"
+ },
+ {
+  "id": "paused.safety-efe",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "paused.safety-efe.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_NoAdmissionWhilePaused",
+   "Inv_NoChildAfterTimeoutRouted"
+  ],
+  "expected": "PASS",
+  "note": "No admission while paused, efe44835.",
+  "batch": "r2d"
+ },
+ {
+  "id": "paused.safety-fixed",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "paused.safety-fixed.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "TypeOK",
+   "Inv_NoAdmissionWhilePaused",
+   "Inv_NoChildAfterTimeoutRouted"
+  ],
+  "expected": "PASS",
+  "note": "No admission while paused, 1c117a47.",
+  "batch": "r2d"
+ },
+ {
+  "id": "paused.end-fails-fixed",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "paused.end-fails-fixed.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Prop_TimedOutChildEnded"
+  ],
+  "expected": "liveness",
+  "note": "1c117a47 residual: an end that fails on the paused path is not retried while paused.",
+  "batch": "r2d"
+ },
+ {
+  "id": "paused.done-child",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "paused.done-child.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Prop_DoneChildEnded"
+  ],
+  "expected": "liveness",
+  "note": "Design question: a child that completed its state while the run is paused is ended only after the resume.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.paused-elapse",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.paused-elapse.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Wit_PausedElapse"
+  ],
+  "expected": "safety",
+  "note": "The paused path elapses a state and ends its child before any routing.",
+  "batch": "r2d"
+ },
+ {
+  "id": "exec.rt2-refused-efe",
+  "module": "WfExecutor",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "exec.rt2-refused-efe.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_NoRefusal"
+  ],
+  "expected": "safety",
+  "note": "RT-2 at efe44835: the second parallel script state is refused.",
+  "batch": "r2d"
+ },
+ {
+  "id": "exec.rt2-destroyed-efe",
+  "module": "WfExecutor",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "exec.rt2-destroyed-efe.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Inv_NoBrokenCall"
+  ],
+  "expected": "safety",
+  "note": "RT-2 at efe44835: one state's close destroys the native session the other uses.",
+  "batch": "r2d"
+ },
+ {
+  "id": "exec.rt2-fixed",
+  "module": "WfExecutor",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "exec.rt2-fixed.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "TypeOK",
+   "Inv_NoRefusal",
+   "Inv_NoBrokenCall"
+  ],
+  "expected": "PASS",
+  "note": "RT-2 at 1c117a47: the share is reserved, shared and torn down by the last close.",
+  "batch": "r2d"
+ },
+ {
+  "id": "exec.rt2-fixed-live",
+  "module": "WfExecutor",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "exec.rt2-fixed-live.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Prop_BothDone"
+  ],
+  "expected": "PASS",
+  "note": "1c117a47: both states finish their tool call.",
+  "batch": "r2d"
+ },
+ {
+  "id": "exec.sequential-efe",
+  "module": "WfExecutor",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "exec.sequential-efe.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_NoRefusal",
+   "Inv_NoBrokenCall"
+  ],
+  "expected": "PASS",
+  "note": "Control: one state after the other works at efe44835.",
+  "batch": "r2d"
+ },
+ {
+  "id": "wit.exec-shared",
+  "module": "WfExecutor",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.exec-shared.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Wit_Shared"
+  ],
+  "expected": "safety",
+  "note": "Both executors hold the shared native session at once.",
+  "batch": "r2d"
+ },
+ {
+  "id": "parent.zombie-holder-a10",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "parent.zombie-holder-a10.cfg",
+  "head": "a10c2e07",
+  "properties": [
+   "Prop_ParentLearnsEnd"
+  ],
+  "expected": "liveness",
+  "note": "a10c2e07: an attempt that timed out holds the lock; the retry returns at the lock; the holder fails before its enqueue; no recover.",
+  "batch": "r2e"
+ },
+ {
+  "id": "parent.zombie-holder-recover-a10",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "parent.zombie-holder-recover-a10.cfg",
+  "head": "a10c2e07",
+  "properties": [
+   "Prop_ParentLearnsEnd"
+  ],
+  "expected": "PASS",
+  "note": "a10c2e07: the same, and recover starts the notifier again while the notice is owed.",
+  "batch": "r2e"
+ },
+ {
+  "id": "parent.safety-a10",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.safety-a10.cfg",
+  "head": "a10c2e07",
+  "properties": [
+   "TypeOK",
+   "Inv_EndedIsLast",
+   "Inv_GivenOnce",
+   "Inv_SkipMeansNotGiven",
+   "Inv_NotifiedXorSkipped",
+   "Inv_NoDecisionAfterExpiry"
+  ],
+  "expected": "PASS",
+  "note": "Every parent rule but notified-accepted at a10c2e07: a delivery zombie, a concurrent notifier, a timed-out lock holder, other ends, the parent's end, clock steps.",
+  "batch": "r2e"
+ },
+ {
+  "id": "parent.live-a10",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "parent.live-a10.cfg",
+  "head": "a10c2e07",
+  "properties": [
+   "Prop_ParentLearnsEnd"
+  ],
+  "expected": "PASS",
+  "note": "a10c2e07: the parent learns the end, with a concurrent notifier, crashes and the wait's bound.",
+  "batch": "r2e"
+ },
+ {
+  "id": "parent.concurrent-a10",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.concurrent-a10.cfg",
+  "head": "a10c2e07",
+  "properties": [
+   "Inv_SkipMeansNotGiven",
+   "Inv_NotifiedXorSkipped"
+  ],
+  "expected": "PASS",
+  "note": "a10c2e07: two notifier instances; the try-lock lets one tell the parent.",
+  "batch": "r2e"
+ },
+ {
+  "id": "parent.told-by-earlier-a10",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.told-by-earlier-a10.cfg",
+  "head": "a10c2e07",
+  "properties": [
+   "Inv_ToldMeansAccepted"
+  ],
+  "expected": "PASS",
+  "note": "D-R1 at a10c2e07, the status race excluded: a marker and a known refusal record a skip with earlierAttempt.",
+  "batch": "r2e"
+ },
+ {
+  "id": "parent.told-by-earlier-1f7-norace",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.told-by-earlier-1f7-norace.cfg",
+  "head": "1f7bdc77",
+  "properties": [
+   "Inv_ToldMeansAccepted"
+  ],
+  "expected": "safety",
+  "note": "D-R1 at 1f7bdc77 alone (the status race excluded): told byEarlierAttempt with nothing queued.",
+  "batch": "r2e"
+ },
+ {
+  "id": "parent.told-by-earlier-e3-norace",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.told-by-earlier-e3-norace.cfg",
+  "head": "proposedE3",
+  "properties": [
+   "Inv_ToldMeansAccepted"
+  ],
+  "expected": "PASS",
+  "note": "D-R1 under proposedE3 with the status race excluded (r2d's told-by-earlier-E3 did not exclude it).",
+  "batch": "r2e"
+ },
+ {
+  "id": "parent.notified-lost-a10",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.notified-lost-a10.cfg",
+  "head": "a10c2e07",
+  "properties": [
+   "Inv_NotifiedAccepted"
+  ],
+  "expected": "safety",
+  "note": "a10c2e07 keeps WFO-3's race: the parent ends between the status read and the enqueue.",
+  "batch": "r2e"
+ },
+ {
+  "id": "parent.zombie-a10",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.zombie-a10.cfg",
+  "head": "a10c2e07",
+  "properties": [
+   "Inv_EndedIsLast"
+  ],
+  "expected": "PASS",
+  "note": "WFO-1 at a10c2e07: the count of failed rows keeps a zombie enqueue in front of the end, within the bound.",
+  "batch": "r2e"
+ },
+ {
+  "id": "parent.zombie-a10-timeout",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.zombie-a10-timeout.cfg",
+  "head": "a10c2e07",
+  "properties": [
+   "Inv_EndedIsLast"
+  ],
+  "expected": "safety",
+  "note": "WFO-1 at a10c2e07: an enqueue slower than the 15 s wait still lands after the end (documented bound).",
+  "batch": "r2e"
+ },
+ {
+  "id": "wit.parent-skip-earlier-a10",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.parent-skip-earlier-a10.cfg",
+  "head": "a10c2e07",
+  "properties": [
+   "Wit_SkipEarlier"
+  ],
+  "expected": "safety",
+  "note": "a10c2e07 records a skip with earlierAttempt.",
+  "batch": "r2e"
+ },
+ {
+  "id": "agent.safety-a10",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "agent.safety-a10.cfg",
+  "head": "a10c2e07",
+  "properties": [
+   "TypeOK",
+   "Inv_NoCompletionAfterDeadline",
+   "Inv_PromptOnce",
+   "Inv_EndOnlyDecided",
+   "Inv_EndMatchesWinner",
+   "Inv_ChildOnlyFromAttempt"
+  ],
+  "expected": "PASS",
+  "note": "Every agent-state safety rule at a10c2e07.",
+  "batch": "r2e"
+ },
+ {
+  "id": "agent.live-a10",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "agent.live-a10.cfg",
+  "head": "a10c2e07",
+  "properties": [
+   "Prop_StateDecided",
+   "Prop_ChildReleased"
+  ],
+  "expected": "PASS",
+  "note": "agent.live at a10c2e07.",
+  "batch": "r2e"
+ },
+ {
+  "id": "agent.exhausted-orphan-a10",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "agent.exhausted-orphan-a10.cfg",
+  "head": "a10c2e07",
+  "properties": [
+   "Prop_ChildReleased"
+  ],
+  "expected": "PASS",
+  "note": "WFO-2 at a10c2e07: a child an attempt created is still ended.",
+  "batch": "r2e"
+ },
+ {
+  "id": "agent.second-end-a10",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "agent.second-end-a10.cfg",
+  "head": "a10c2e07",
+  "properties": [
+   "Wit_SecondEndCommand"
+  ],
+  "expected": "PASS",
+  "note": "a10c2e07: no child gets a second end command (wit.agent-second-end breaks at 1f7bdc77).",
+  "batch": "r2e"
+ },
+ {
+  "id": "paused.rt6-a99",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "paused.rt6-a99.cfg",
+  "head": "a99cd382",
+  "properties": [
+   "Prop_DeadlineEnforced",
+   "Prop_TimedOutChildEnded"
+  ],
+  "expected": "PASS",
+  "note": "RT-6 at a99cd382: the paused path elapses the state; its collection ends the child.",
+  "batch": "r2e"
+ },
+ {
+  "id": "paused.end-fails-a99",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "paused.end-fails-a99.cfg",
+  "head": "a99cd382",
+  "properties": [
+   "Prop_TimedOutChildEnded"
+  ],
+  "expected": "PASS",
+  "note": "a99cd382: a failed end is tried again at the next paused wake (paused.end-fails-fixed breaks at 1f7bdc77).",
+  "batch": "r2e"
+ },
+ {
+  "id": "paused.done-child-a99",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "paused.done-child-a99.cfg",
+  "head": "a99cd382",
+  "properties": [
+   "Prop_DoneChildEnded"
+  ],
+  "expected": "PASS",
+  "note": "a99cd382: a child that completed while paused is ended while paused (paused.done-child breaks at 1f7bdc77).",
+  "batch": "r2e"
+ },
+ {
+  "id": "paused.done-end-fails-a99",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "paused.done-end-fails-a99.cfg",
+  "head": "a99cd382",
+  "properties": [
+   "Prop_DoneChildEnded"
+  ],
+  "expected": "PASS",
+  "note": "a99cd382: the same with a failed end, tried again.",
+  "batch": "r2e"
+ },
+ {
+  "id": "paused.safety-a99",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "paused.safety-a99.cfg",
+  "head": "a99cd382",
+  "properties": [
+   "TypeOK",
+   "Inv_NoAdmissionWhilePaused",
+   "Inv_NoChildAfterTimeoutRouted"
+  ],
+  "expected": "PASS",
+  "note": "No admission while paused, a99cd382.",
+  "batch": "r2e"
+ },
+ {
+  "id": "paused.any-a99",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "paused.any-a99.cfg",
+  "head": "a99cd382",
+  "properties": [
+   "Prop_DeadlineEnforced",
+   "Prop_TimedOutChildEnded",
+   "Prop_DoneChildEnded"
+  ],
+  "expected": "PASS",
+  "note": "a99cd382 with the pause at any time, a resume and the child's completion.",
+  "batch": "r2e"
+ },
+ {
+  "id": "wit.paused-done-ended-a99",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.paused-done-ended-a99.cfg",
+  "head": "a99cd382",
+  "properties": [
+   "Wit_PausedDoneEnded"
+  ],
+  "expected": "safety",
+  "note": "a99cd382 ends a completed state's child while the run is still paused.",
+  "batch": "r2e"
+ },
+ {
+  "id": "exec.e1b-8dd-safety",
+  "module": "WfExecShare",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "exec.e1b-8dd-safety.cfg",
+  "head": "8dd3eae1",
+  "properties": [
+   "TypeOK",
+   "Inv_NoCallForClosedOwner",
+   "Inv_NoCallOnForeignSession",
+   "Inv_RunningOwnerHolds",
+   "Inv_NoSetupAfterFailedTeardown",
+   "Inv_NoOrphanBackground"
+  ],
+  "expected": "PASS",
+  "note": "E1b at 8dd3eae1: turn checks, close while queued and while running, an abort that does not settle, per-owner cancel, the barrier.",
+  "batch": "r2e"
+ },
+ {
+  "id": "exec.e1b-8dd-live",
+  "module": "WfExecShare",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "exec.e1b-8dd-live.cfg",
+  "head": "8dd3eae1",
+  "properties": [
+   "Prop_WaitersServed"
+  ],
+  "expected": "PASS",
+  "note": "E1b at 8dd3eae1: every waiter is served, refused or aborted.",
+  "batch": "r2e"
+ },
+ {
+  "id": "exec.e1b-8dd-dep",
+  "module": "WfExecShare",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "exec.e1b-8dd-dep.cfg",
+  "head": "8dd3eae1",
+  "properties": [
+   "Prop_BothComplete"
+  ],
+  "expected": "PASS",
+  "note": "E1b at 8dd3eae1: the sibling dependency completes.",
+  "batch": "r2e"
+ },
+ {
+  "id": "exec.e1b-8dd-unattributed",
+  "module": "WfExecShare",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "exec.e1b-8dd-unattributed.cfg",
+  "head": "8dd3eae1",
+  "properties": [
+   "Inv_NoOrphanBackgroundAll"
+  ],
+  "expected": "safety",
+  "note": "8dd3eae1: a task without a readable start time is not cancelled at its owner's close (VR-3 gap).",
+  "batch": "r2e"
+ },
+ {
+  "id": "exec.e1b-8dd-boundary",
+  "module": "WfExecShare",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "exec.e1b-8dd-boundary.cfg",
+  "head": "8dd3eae1",
+  "properties": [
+   "Inv_NoForeignCancel"
+  ],
+  "expected": "safety",
+  "note": "8dd3eae1: a task started in the millisecond two windows share is cancelled by the other owner's close.",
+  "batch": "r2e"
+ },
+ {
+  "id": "wit.exec-e1b-8dd-unsettled",
+  "module": "WfExecShare",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "wit.exec-e1b-8dd-unsettled.cfg",
+  "head": "8dd3eae1",
+  "properties": [
+   "Wit_CallAfterRelease"
+  ],
+  "expected": "safety",
+  "note": "8dd3eae1: a call that did not settle after its abort still runs after its owner released; the barrier is set.",
+  "batch": "r2e"
+ },
+ {
+  "id": "exec.e1c-safety",
+  "module": "WfExecShare",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "exec.e1c-safety.cfg",
+  "head": "412f7b00",
+  "properties": [
+   "TypeOK",
+   "Inv_NoCallForClosedOwner",
+   "Inv_NoCallOnForeignSession",
+   "Inv_RunningOwnerHolds",
+   "Inv_NoSetupAfterFailedTeardown",
+   "Inv_NoOrphanBackground"
+  ],
+  "expected": "PASS",
+  "note": "E1c at 412f7b00: every E1b rule with an abort that does not settle.",
+  "batch": "r2e"
+ },
+ {
+  "id": "exec.e1c-live",
+  "module": "WfExecShare",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "exec.e1c-live.cfg",
+  "head": "412f7b00",
+  "properties": [
+   "Prop_WaitersServed"
+  ],
+  "expected": "PASS",
+  "note": "E1c at 412f7b00: every waiter is served, refused or aborted.",
+  "batch": "r2e"
+ },
+ {
+  "id": "exec.e1c-dep",
+  "module": "WfExecShare",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "exec.e1c-dep.cfg",
+  "head": "412f7b00",
+  "properties": [
+   "Prop_BothComplete"
+  ],
+  "expected": "PASS",
+  "note": "E1c at 412f7b00: the sibling dependency completes.",
+  "batch": "r2e"
+ },
+ {
+  "id": "exec.e1c-unattributed",
+  "module": "WfExecShare",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "exec.e1c-unattributed.cfg",
+  "head": "412f7b00",
+  "properties": [
+   "Inv_NoOrphanBackgroundAll"
+  ],
+  "expected": "PASS",
+  "note": "E1c: a task without a readable start time is claimed by its id (exec.e1b-8dd-unattributed breaks at 8dd3eae1).",
+  "batch": "r2e"
+ },
+ {
+  "id": "exec.e1c-boundary",
+  "module": "WfExecShare",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "exec.e1c-boundary.cfg",
+  "head": "412f7b00",
+  "properties": [
+   "Inv_NoForeignCancel"
+  ],
+  "expected": "PASS",
+  "note": "E1c: ownership by id and half-open windows; no other owner's task is cancelled (exec.e1b-8dd-boundary breaks at 8dd3eae1).",
+  "batch": "r2e"
+ },
+ {
+  "id": "exec.e1c-unlisted",
+  "module": "WfExecShare",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "exec.e1c-unlisted.cfg",
+  "head": "412f7b00",
+  "properties": [
+   "Inv_NoOrphanBackgroundAll"
+  ],
+  "expected": "safety",
+  "note": "E1c: a task no listing claimed and no window holds is left to the last owner's teardown (documented).",
+  "batch": "r2e"
+ },
+ {
+  "id": "parent.zombie-holder-recover-late-a10",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "parent.zombie-holder-recover-late-a10.cfg",
+  "head": "a10c2e07",
+  "properties": [
+   "Prop_ParentLearnsEnd"
+  ],
+  "expected": "PASS",
+  "note": "a10c2e07: the zombie holder fails before its enqueue; a recover made after it released the lock pays the notice.",
+  "batch": "r2e"
+ },
+ {
+  "id": "parent.zombie-holder-e3b",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "parent.zombie-holder-e3b.cfg",
+  "head": "fc6d7a65",
+  "properties": [
+   "Prop_ParentLearnsEnd"
+  ],
+  "expected": "PASS",
+  "note": "E3b (fc6d7a65): the attempt that finds the lock held fails and runs again; no recover is needed.",
+  "batch": "r2e"
+ },
+ {
+  "id": "parent.safety-e3b",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "parent.safety-e3b.cfg",
+  "head": "fc6d7a65",
+  "properties": [
+   "TypeOK",
+   "Inv_EndedIsLast",
+   "Inv_GivenOnce",
+   "Inv_SkipMeansNotGiven",
+   "Inv_NotifiedXorSkipped",
+   "Inv_NoDecisionAfterExpiry"
+  ],
+  "expected": "PASS",
+  "note": "Every parent rule but notified-accepted at fc6d7a65, as parent.safety-a10.",
+  "batch": "r2e"
+ },
+ {
+  "id": "parent.live-e3b",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "parent.live-e3b.cfg",
+  "head": "fc6d7a65",
+  "properties": [
+   "Prop_ParentLearnsEnd"
+  ],
+  "expected": "PASS",
+  "note": "fc6d7a65: the parent learns the end with a concurrent notifier, a timed-out holder, crashes and the wait's bound.",
+  "batch": "r2e"
+ },
+ {
+  "id": "graph.pause-pending-par",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.pause-pending-par.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_NoRouteWhilePaused"
+  ],
+  "expected": "safety",
+  "note": "R2-RT-1 at 8d568890: with both branches pending, a pause is not seen; a failed branch is routed and failFast cancels its sibling.",
+  "batch": "r2e"
+ },
+ {
+  "id": "graph.pause-pending-root",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.pause-pending-root.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_NoRouteWhilePaused"
+  ],
+  "expected": "safety",
+  "note": "R2-RT-1 at 8d568890: the root state pending, a pause, then an unhandled error ends the paused run.",
+  "batch": "r2e"
+ },
+ {
+  "id": "cmp.graph-pause-on-collect",
+  "module": "WfGraph",
+  "mode": "comparison",
+  "spec": "Spec",
+  "config": "cmp.graph-pause-on-collect.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport",
+   "Inv_NoRouteWhilePaused"
+  ],
+  "expected": "PASS",
+  "note": "The R2-RT-1 fix (batch S, not in code): the collection reads the paused status and routes nothing before the resume.",
+  "batch": "r2e"
+ },
+ {
+  "id": "graph.srt1-par",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.srt1-par.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport",
+   "Inv_NoRouteWhilePaused",
+   "Inv_NoFailWhilePaused"
+  ],
+  "expected": "PASS",
+  "note": "S-RT1 at 07c29b05: a paused run routes nothing, also with every cursor waiting; the limit reads the run first.",
+  "batch": "r2e"
+ },
+ {
+  "id": "graph.srt1-loop",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.srt1-loop.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport",
+   "Inv_NoRouteWhilePaused",
+   "Inv_NoFailWhilePaused"
+  ],
+  "expected": "PASS",
+  "note": "S-RT1: a loop at its node limit is not ended while paused; it ends after the resume.",
+  "batch": "r2e"
+ },
+ {
+  "id": "graph.srt1b-linear",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.srt1b-linear.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport",
+   "Inv_NoRouteWhilePaused"
+  ],
+  "expected": "PASS",
+  "note": "S-RT1b at c4481682 (1.8.0): a paused run's collection returns no result, so nothing is routed while paused.",
+  "batch": "r2e"
+ },
+ {
+  "id": "graph.srt1b-loop-residual",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.srt1b-loop-residual.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_NoFailWhilePaused"
+  ],
+  "expected": "safety",
+  "note": "S-RT1b residual (stated by the commit): a pause between a collection and the next admission lets 1.8.0 end the run at its node limit.",
+  "batch": "r2e"
+ },
+ {
+  "id": "cmp.graph-limit-paused-8d5",
+  "module": "WfGraph",
+  "mode": "comparison",
+  "spec": "Spec",
+  "config": "cmp.graph-limit-paused-8d5.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_NoFailWhilePaused"
+  ],
+  "expected": "safety",
+  "note": "Before S-RT1: the node limit ends a paused run at the next admission.",
+  "batch": "r2e"
+ },
+ {
+  "id": "graph.dx2-linear",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.dx2-linear.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport",
+   "Inv_NoAdmitAfterAccept",
+   "Inv_NoCollectAfterEnd",
+   "Prop_FirstEndWins"
+  ],
+  "expected": "PASS",
+  "note": "S7-DX2: an accepted cancel or done ends the run at once (running, paused or stopping); nothing is admitted or collected after it; the first end wins. Hints may be lost.",
+  "batch": "r2e"
+ },
+ {
+  "id": "graph.dx2-loop",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.dx2-loop.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport",
+   "Inv_NoAdmitAfterAccept",
+   "Inv_NoCollectAfterEnd",
+   "Prop_FirstEndWins"
+  ],
+  "expected": "PASS",
+  "note": "S7-DX2 on a loop that reaches its node limit: the same rules.",
+  "batch": "r2e"
+ },
+ {
+  "id": "graph.dx2-par",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.dx2-par.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport",
+   "Inv_NoAdmitAfterAccept",
+   "Inv_NoCollectAfterEnd",
+   "Prop_FirstEndWins"
+  ],
+  "expected": "PASS",
+  "note": "S7-DX2 on a parallel state, two branches at once, failFast: the same rules.",
+  "batch": "r2e"
+ },
+ {
+  "id": "graph.dx2-live-linear",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "graph.dx2-live-linear.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_ControllerEnds",
+   "Prop_RunEnds",
+   "Prop_CommandEnds",
+   "Prop_CommandTold"
+  ],
+  "expected": "PASS",
+  "note": "S7-DX2: every accepted command ends the run by its own transaction; the controller ends and tells the parent, also with every hint lost.",
+  "batch": "r2e"
+ },
+ {
+  "id": "graph.dx2-live-par",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "graph.dx2-live-par.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_ControllerEnds",
+   "Prop_RunEnds",
+   "Prop_CommandEnds",
+   "Prop_CommandTold"
+  ],
+  "expected": "PASS",
+  "note": "S7-DX2 on a parallel state: the same progress rules.",
+  "batch": "r2e"
+ },
+ {
+  "id": "wit.graph-dx2-command-ends",
+  "module": "WfGraph",
+  "mode": "witness",
+  "spec": "Spec",
+  "config": "wit.graph-dx2-command-ends.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Wit_CommandEndsBusyRun"
+  ],
+  "expected": "safety",
+  "note": "S7-DX2: a command accepted after an admission ends the run, and the controller tells the parent once.",
+  "batch": "r2e"
+ },
+ {
+  "id": "cmp.graph-queue-admits",
+  "module": "WfGraph",
+  "mode": "comparison",
+  "spec": "Spec",
+  "config": "cmp.graph-queue-admits.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_NoAdmitAfterAccept"
+  ],
+  "expected": "safety",
+  "note": "Before S7-DX2 (queue): a cancel accepted while the controller is between reads; the next state is admitted first.",
+  "batch": "r2e"
+ },
+ {
+  "id": "cmp.graph-queue-lost",
+  "module": "WfGraph",
+  "mode": "comparison",
+  "spec": "LiveSpec",
+  "config": "cmp.graph-queue-lost.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_CommandEnds"
+  ],
+  "expected": "liveness",
+  "note": "Before S7-DX2 (queue): a queued cancel lost at continue-as-new (behind 100 unread messages) never ends the run.",
+  "batch": "r2e"
+ },
+ {
+  "id": "cmp.graph-queue-terminal-first",
+  "module": "WfGraph",
+  "mode": "comparison",
+  "spec": "LiveSpec",
+  "config": "cmp.graph-queue-terminal-first.cfg",
+  "head": "efe44835",
+  "properties": [
+   "Prop_CommandEnds"
+  ],
+  "expected": "liveness",
+  "note": "Before S7-DX2 (queue): a terminal admitted first finishes the run while the accepted cancel waits in the queue.",
+  "batch": "r2e"
+ },
+ {
+  "id": "cmp.graph-queue-collect-after-delete",
+  "module": "WfGraph",
+  "mode": "comparison",
+  "spec": "Spec",
+  "config": "cmp.graph-queue-collect-after-delete.cfg",
+  "head": "efe44835",
+  "properties": [
+   "TypeOK",
+   "Inv_NoCollectAfterEnd"
+  ],
+  "expected": "safety",
+  "note": "Before S7-DX2: 1.9.0's collect did not report an ended run, so a deleted run's results were collected for routing.",
+  "batch": "r2e"
+ }
+]

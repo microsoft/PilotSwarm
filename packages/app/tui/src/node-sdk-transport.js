@@ -22,6 +22,7 @@ import {
     normalizeAgentName,
     workspaceFilesConfigFromEnv,
     canvasCommandsConfigFromEnv,
+    workflowScriptsOptionFromEnv,
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
@@ -517,12 +518,18 @@ function resolveUserPrincipalFor(transport, principal) {
 }
 
 export class NodeSdkTransport {
-    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
+    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands, workerTestOptions, sessionStartVersion } = {}) {
         this.store = store;
         this.mode = mode;
         this.useManagedIdentity = useManagedIdentity;
         this.cmsFactsDatabaseUrl = cmsFactsDatabaseUrl;
         this.aadDbUser = aadDbUser;
+        // The embedded workers' testOptions (test-only; the Workflow V2 test environment switch, portalRuntimeOptions): unset,
+        // they are created exactly as before.
+        this.workerTestOptions = workerTestOptions || null;
+        // Where new sessions start (test-only; the same switch: 1.0.83, which the environment's workers serve). Unset, the
+        // latest version, as before.
+        this.sessionStartVersion = sessionStartVersion || null;
         this.pluginDirs = getPluginDirsFromEnv();
         // Optional EnhancedFactStore (HorizonDB) target. The client and
         // management client each build their own fact store, so they MUST
@@ -553,6 +560,10 @@ export class NodeSdkTransport {
             workspaceFiles: workspaceFilesConfigFromEnv(),
             // canvas-ws commands: off unless PORTAL_CANVAS_COMMANDS_RUNNER is set.
             canvasCommands: canvasCommandsConfigFromEnv(),
+            // Workflow v2 (INACTIVE; test-only): a person's workflow commands. Unset, they answer 501.
+            ...(workflowCommands ? { workflowCommands } : {}),
+            // Stage 2.0: whether the workers run script nodes, when this process says (PILOTSWARM_WORKFLOW_SCRIPTS).
+            ...workflowScriptsOptionFromEnv(),
         });
         this.sessionHandles = new Map();
         this.workers = [];
@@ -595,6 +606,7 @@ export class NodeSdkTransport {
             this.workers = await startEmbeddedWorkers({
                 count: workerCount,
                 store: this.store,
+                ...(this.workerTestOptions ? { testOptions: this.workerTestOptions } : {}),
             });
         }
         const sessionCreationMetadata = this.resolveSessionCreationMetadata();
@@ -610,6 +622,7 @@ export class NodeSdkTransport {
             ...(this.sessionPolicy ? { sessionPolicy: this.sessionPolicy } : {}),
             ...(this.allowedAgentNames.length > 0 ? { allowedAgentNames: this.allowedAgentNames } : {}),
         });
+        if (this.sessionStartVersion) this.client._startSessionsAt(this.sessionStartVersion);
         await this.client.start();
         await this.mgmt.start();
     }
@@ -1072,6 +1085,11 @@ export class NodeSdkTransport {
         return this.mgmt.getSessionAccess(sessionId, viewer);
     }
 
+    /** What a person may send to a session by its workflow lineage (workflow agent states refuse human input). */
+    async getWorkflowInputPolicy(sessionId) {
+        return typeof this.mgmt.getWorkflowInputPolicy === "function" ? this.mgmt.getWorkflowInputPolicy(sessionId) : null;
+    }
+
     async setSessionVisibility(sessionId, visibility) {
         return this.mgmt.setSessionVisibility(sessionId, visibility);
     }
@@ -1114,6 +1132,123 @@ export class NodeSdkTransport {
 
     async getSessionWorkspace(sessionId) {
         return this.mgmt.getSessionWorkspace(sessionId);
+    }
+
+    /** Workflow v2: the read-only view of a workflow session (readWorkflow). Authorization is the caller's (the portal gates session:read). */
+    async readWorkflow(sessionId, options = {}) {
+        return this.mgmt.readWorkflow(sessionId, options);
+    }
+
+    /** Stage 2.1: a chat's Workflow Definitions (list, read; a person's save, start and delete with its principal). */
+    async listChatWorkflowDefinitions(sessionId, options = {}) {
+        return this.mgmt.listChatWorkflowDefinitions(sessionId, options);
+    }
+
+    async readChatWorkflowDefinition(sessionId, ref = {}) {
+        return this.mgmt.readChatWorkflowDefinition(sessionId, ref);
+    }
+
+    _definitionPrincipal(options) {
+        return Object.prototype.hasOwnProperty.call(options ?? {}, "principal") ? options.principal
+            : this.currentUser?.provider && this.currentUser?.subject
+                ? { provider: this.currentUser.provider, subject: this.currentUser.subject, displayName: this.currentUser.displayName ?? null } : null;
+    }
+
+    async saveChatWorkflowDefinition(sessionId, request, options = {}) {
+        return this.mgmt.saveChatWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
+    }
+
+    async startChatWorkflowDefinition(sessionId, request, options = {}) {
+        return this.mgmt.startChatWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
+    }
+
+    async deleteChatWorkflowDefinition(sessionId, request, options = {}) {
+        return this.mgmt.deleteChatWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
+    }
+
+    /** Stage 2.3: a person's Make a copy of a package's locked definition, and taking a package's newer version. */
+    async copyChatWorkflowDefinition(sessionId, request, options = {}) {
+        return this.mgmt.copyChatWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
+    }
+
+    async updateChatWorkflowPackage(sessionId, request, options = {}) {
+        return this.mgmt.updateChatWorkflowPackage(sessionId, request, { principal: this._definitionPrincipal(options) });
+    }
+
+    /** Stage 2.3 (P1): the package Workflow Definitions `viewer` can make a chat for (the picker's Workflows group). */
+    async listCreatableWorkflows(viewer = null) {
+        const who = viewer ?? (this.currentUser?.provider && this.currentUser?.subject ? this.currentUser : null);
+        return this.mgmt.listCreatableWorkflows(who ? { provider: who.provider, subject: who.subject } : null);
+    }
+
+    /**
+     * Stage 2.3 (P2, P3, D8): a chat made for a package's Workflow Definition: a session with the coordinating
+     * instructions (its card and how to run it), the definition attached and locked at the package's version, its title
+     * naming it, and a first message (a system kickoff) that asks the chat to greet the person and ask for the inputs it
+     * needs. The model is the one asked for, else the deployment's default (the picker offers the card's suggestion).
+     */
+    async createWorkflowChat(ref, { model, reasoningEffort, contextTier, owner, groupId, visibility } = {}) {
+        const viewer = owner ?? (this.currentUser?.provider && this.currentUser?.subject ? this.currentUser : null);
+        const principal = viewer ? { provider: viewer.provider, subject: viewer.subject, displayName: viewer.displayName ?? viewer.email ?? null } : null;
+        const prepared = await this.mgmt.prepareWorkflowChat(ref, principal);
+        const session = await this.client.createSession({
+            ...(model ? { model } : {}),
+            ...(reasoningEffort ? { reasoningEffort } : {}),
+            ...(contextTier ? { contextTier } : {}),
+            systemMessage: prepared.systemMessage,
+            ...(owner ? { owner } : {}),
+            ...(groupId ? { groupId } : {}),
+            ...(visibility ? { visibility } : {}),
+        });
+        this.sessionHandles.set(session.sessionId, session);
+        // Stage 2 review S2SF-F3: the attach takes exactly the package version the instructions were written from. When that
+        // version is no longer the active one (or the package is gone), nothing is attached and the chat, which has had no
+        // turn, is deleted: no chat is left whose instructions describe another version than the one it would run.
+        try {
+            await this.mgmt.attachChatWorkflowPackage(session.sessionId, { ref: prepared.ref, operationId: `workflow-chat:${session.sessionId}`,
+                coordinating: true, title: prepared.title, packageId: prepared.packageId, sha256: prepared.sha256 }, { principal });
+        } catch (error) {
+            this.sessionHandles.delete(session.sessionId);
+            await this.mgmt.deleteSession(session.sessionId).catch(() => {});
+            throw error;
+        }
+        await session.send(prepared.kickoff, {
+            bootstrap: true,
+            sender: { kind: "system", display: `${prepared.ref} kickoff`, origin: "api" },
+        });
+        const created = await this.mgmt.getSession(session.sessionId).catch(() => null);
+        return {
+            sessionId: session.sessionId,
+            model: created?.model || null,
+            reasoningEffort: created?.reasoningEffort || reasoningEffort || undefined,
+            workflowRef: prepared.ref,
+            title: prepared.title,
+        };
+    }
+
+    /**
+     * Workflow v2: a person's command to a workflow session (updateWorkflow;
+     * INACTIVE unless this transport was created with workflowCommands).
+     * Authorization is the caller's (the portal gates session:manage);
+     * `options.principal` is the signed-in caller, recorded as the actor. In
+     * the TUI's direct mode it is the TUI's own user, when one is known.
+     */
+    async updateWorkflow(sessionId, command, options = {}) {
+        // The portal always names the caller (null: no signed-in user); the TUI names none, and its own user is the caller.
+        const principal = Object.prototype.hasOwnProperty.call(options ?? {}, "principal") ? options.principal
+            : this.currentUser?.provider && this.currentUser?.subject ? { provider: this.currentUser.provider, subject: this.currentUser.subject } : null;
+        // The session the command comes from, when the portal passes one on (review SF-2).
+        return this.mgmt.updateWorkflow(sessionId, command, { principal,
+            ...(options?.originatingSessionId !== undefined ? { originatingSessionId: options.originatingSessionId } : {}) });
+    }
+
+    /**
+     * Workflow support as this host takes it now (design 04, D11): what the
+     * portal's bootstrap advertises as `workflows`, from the management
+     * client's configuration (getWorkflowCapabilities). It changes nothing.
+     */
+    async getWorkflowCapabilities() {
+        return this.mgmt.getWorkflowCapabilities();
     }
 
     async setSessionWorkspace(sessionId, input = {}, options = {}) {

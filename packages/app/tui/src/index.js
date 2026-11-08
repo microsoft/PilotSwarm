@@ -194,8 +194,11 @@ async function runTuiApp(config, transport, authNotify, restoreHostRuntime) {
         pinnedSessionIds: userConfig.pinnedSessionIds,
         collapsedSessionIds: userConfig.collapsedSessionIds,
         activeSessionId: userConfig.activeSessionId,
+        // Stage 2.0: no Workflow pane, key or rows until the server says Workflows are on.
+        workflowsEnabled: false,
     }));
-    const controller = new PilotSwarmUiController({ store, transport });
+    // The terminal draws no Terminate picker: its row shortcuts confirm in the terminal (review UI-D1).
+    const controller = new PilotSwarmUiController({ store, transport, terminal: true });
     authNotify.dispatch = (message) => {
         try {
             store.dispatch({ type: "ui/status", text: message });

@@ -1,0 +1,109 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { SessionManager } from "../../dist/session-manager.js";
+import { loadSkillsSync } from "../../dist/skills.js";
+import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
+import {
+    WORKFLOW_AUTHORING_POINTER, WORKFLOW_AUTHORING_SKILL, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR,
+    workflowAuthoringSkillLoaded, workflowSessionGuidance,
+} from "../../dist/workflow/guidance.js";
+
+// The base's workflow guidance mentions testing only with workflow test mode on (Workflow Simplified, spec 16); these
+// tests compare the prompt with the guidance as it is with test mode on. workflow-test-mode-switch.test.mjs covers it off.
+process.env.PILOTSWARM_WORKFLOW_TEST_MODE = "on";
+
+/**
+ * The workflow-authoring skills (design 04; R24, T124; INACTIVE): loaded on
+ * demand, kept out of every production worker tier, with complete examples
+ * that the compiler accepts as they are written.
+ */
+
+const PLUGINS = fileURLToPath(new URL("../../plugins", import.meta.url));
+const MILESTONE = { enableRequests: true, enableAgents: true, enableParallel: true };
+const skills = () => loadSkillsSync(WORKFLOW_V2_SKILLS_DIR);
+// The testing guide is hidden with test mode (Workflow Simplified, spec 16): apart from the guides agents read.
+const testModeSkills = () => loadSkillsSync(WORKFLOW_V2_TEST_MODE_SKILLS_DIR);
+
+test("the workflow skills load from their own plugin directory, which no worker tier loads", () => {
+    assert.equal(path.resolve(WORKFLOW_V2_SKILLS_DIR), path.join(PLUGINS, "workflow-v2", "skills"));
+    assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-authoring", "workflow-patterns", "workflow-reference"]);
+    assert.equal(path.resolve(WORKFLOW_V2_TEST_MODE_SKILLS_DIR), path.join(PLUGINS, "workflow-v2", "test-mode-skills"));
+    assert.deepEqual(testModeSkills().map(skill => skill.name), ["workflow-testing"]);
+    for (const skill of [...skills(), ...testModeSkills()]) {
+        // The skills index clips a description at 240 characters; each body stays small enough to load on demand: 20 KiB,
+        // and 8 KiB for workflow-patterns, which a chat loads only when one Workflow runs different nodes per branch (OF-S2-6).
+        assert.ok(skill.description.length >= 80 && skill.description.length <= 240, `${skill.name} description: ${skill.description.length}`);
+        const budget = skill.name === "workflow-patterns" ? 8 * 1024 : 20 * 1024;
+        assert.ok(Buffer.byteLength(skill.prompt, "utf8") <= budget, `${skill.name} body: ${Buffer.byteLength(skill.prompt, "utf8")} bytes`);
+    }
+    // The worker's tiers 1 to 3 load plugins/system, plugins/mgmt and plugins/default-agents only.
+    for (const tier of ["system", "mgmt", "default-agents"]) {
+        assert.equal(loadSkillsSync(path.join(PLUGINS, tier, "skills")).filter(skill => skill.name.startsWith("workflow-")).length, 0, tier);
+    }
+    const core = skills().find(skill => skill.name === WORKFLOW_AUTHORING_SKILL);
+    for (const phrase of ["workflow-reference", "complete_workflow_node", "needs_input", "all_required",
+        "expected_revision", "definition_id", "does not run that feature", "Bound every loop"]) {
+        assert.ok(core.prompt.includes(phrase), `the core skill covers: ${phrase}`);
+    }
+    // The guides agents read do not teach test mode (spec 16): no test operation, test run or testing guide.
+    for (const skill of skills()) {
+        for (const word of ["workflow-testing", "test_respond", "test_advance", "test run", "test_waiting", "TEST_NEEDS_DRAFT"]) {
+            assert.ok(!skill.prompt.includes(word), `${skill.name} does not mention ${word}`);
+        }
+    }
+    assert.match(testModeSkills()[0].prompt, /Hidden \(Workflow Simplified, spec 16\)/);
+});
+
+test("the base names the authoring skill only with workflows enabled and only on a worker that loaded it from its directory", () => {
+    const loaded = skills();
+    const elsewhere = loaded.map(skill => ({ ...skill, dir: path.join(PLUGINS, "elsewhere", skill.name) }));
+    assert.equal(workflowAuthoringSkillLoaded(loaded), true);
+    assert.equal(workflowAuthoringSkillLoaded(elsewhere), false);
+    assert.equal(workflowAuthoringSkillLoaded(undefined), false);
+    // A workflow request turn (workflowMilestoneTurn), the one turn that can test a revision, is taught testing (stage 2.5).
+    const prompt = (workerSkills, enabled, version, requestTurn = true) => {
+        const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "Legacy base.", ...(workerSkills ? { skills: workerSkills } : {}) });
+        manager.workflowScriptsEnabled = enabled;
+        manager.workflowsEnabled = enabled;
+        return JSON.stringify(manager._buildSystemMessage("session", { baseAgentPolicy: { version, fingerprint: "test", revision: null },
+            ...(requestTurn ? { workflowMilestoneTurn: true } : {}) }));
+    };
+    for (const version of ["v1", "v2"]) {
+        const on = prompt(loaded, true, version);
+        assert.equal(on.split(WORKFLOW_AUTHORING_POINTER).length - 1, 1, version);
+        assert.ok(on.indexOf("## Workflow Sessions") < on.indexOf(WORKFLOW_AUTHORING_POINTER), version);
+        assert.ok(!prompt(loaded, false, version).includes(WORKFLOW_AUTHORING_POINTER), version);
+        // Every other worker's prompt is as before: the guidance alone.
+        for (const workerSkills of [undefined, [], elsewhere]) {
+            const before = prompt(workerSkills, true, version);
+            assert.ok(!before.includes(WORKFLOW_AUTHORING_POINTER), version);
+            assert.ok(before.includes(JSON.stringify(WORKFLOW_SESSION_GUIDANCE).slice(1, -1)), version);
+            const noTests = prompt(workerSkills, true, version, false);
+            assert.ok(noTests.includes(JSON.stringify(workflowSessionGuidance(true, { tests: false })).slice(1, -1)), version);
+            assert.ok(!noTests.includes("Testing is optional."), version);
+        }
+    }
+});
+
+test("every complete example in the workflow skills compiles as written, with no diagnostics, and together they use every state type", () => {
+    const examples = [];
+    for (const skill of [...skills(), ...testModeSkills()]) {
+        for (const match of skill.prompt.matchAll(/```yaml\n([\s\S]*?)```/g)) {
+            if (match[1].startsWith("# example: ")) examples.push({ skill: skill.name, name: match[1].split("\n")[0].slice("# example: ".length), yaml: match[1] });
+        }
+    }
+    assert.deepEqual(examples.map(item => `${item.skill}/${item.name}`).sort(),
+        ["workflow-authoring/build-watch", "workflow-patterns/two-lane-summary", "workflow-patterns/two-views", "workflow-reference/change-review",
+            "workflow-testing/release-notes"]);
+    const kinds = new Set();
+    for (const example of examples) {
+        const compiled = compileWorkflowV2(example.yaml, MILESTONE);
+        assert.equal(compiled.valid, true, `${example.name}: ${JSON.stringify(compiled.diagnostics)}`);
+        assert.deepEqual(compiled.diagnostics, [], example.name);
+        assert.equal(compiled.name, example.name);
+        for (const node of Object.values(compiled.ir.nodes)) kinds.add(node.type === "messaging" ? node.mode : node.type);
+    }
+    assert.deepEqual([...kinds].sort(), ["agent", "parallel", "receive", "request", "script", "send", "terminal", "wait"]);
+});

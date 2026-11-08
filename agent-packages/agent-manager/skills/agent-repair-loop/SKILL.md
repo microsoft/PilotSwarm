@@ -80,6 +80,38 @@ preamble differs from the entry point a user runs. Tag the test with `test_of`,
 reuse its key when appropriate, and observe its events and actual outputs.
 Respect the session owner's authorization before messaging or ending it.
 
+For a Workflow Definition (`workflows/<name>/` with its card), first check that
+it is simple: few nodes, a straight path, readable in one look. It does not
+encode every corner case: it writes the common path and routes the rest to an
+agent node. Judgement, parsing, many branches, nested conditions or string
+logic belong in an agent node with a short, clear prompt, not in conditions,
+expressions or scripts. Scripts do work, not decisions; no code in YAML. The
+aim is fewer tokens on the repetitive parts, and an agent node for the hard
+part beats a brittle definition. When unsure, choose the simpler definition
+and tell the person what the agent node now handles. Different branches
+running different nodes at once (a different prompt or model for each) are one
+Workflow, never several: a parallel state with named `branches`, each its own
+small graph whose agent node has its own state id, joined as
+`{ <name>: output }`. When the branches come from a list, the older router
+pattern (a router script first in a For each body over a literal list of
+lanes) does it. The `workflow-patterns` skill has both, with examples.
+
+Test it before you publish the package that adds or changes it: save that exact YAML in your
+own chat (`workflow_definition` `save`), run `workflow_definition` `test` on
+the revision the save returned, read the report, and publish only on a pass.
+On a fail, fix, save and test again. A fixture answers one step: a tool call's
+success value is what the tool returns; an agent node's is `{ outcome, output }`;
+an ask (request) node's is `{ response: <the contract's response> }` or
+`{ decline: { reason } }`; a send's is any value. A failed test is never followed
+by a publish plan: quote the report's failure (its code and message), fix, and
+test again; the same failure twice, stop and show the person the report and the
+fixtures. The person's request to publish is their request for this test. Tell
+them the passing result with the publish plan. If the test
+operation is not offered in your session, say so and do not publish without
+the person's explicit yes. Then have it started once from the new-session
+picker in a disposable chat before the shared publish, and check that the chat
+asks for the card's inputs and that the Workflow ends as the card says.
+
 **The named-entry-point check is mandatory when you were spawned by the agent
 you are editing.** In that arrangement you are the child and the thing you are about
 to break is your own parent — the argument that "the publisher still runs the

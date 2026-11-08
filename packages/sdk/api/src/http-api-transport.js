@@ -104,6 +104,21 @@ export class HttpApiTransport {
         return this.bootstrap?.defaultModel || null;
     }
 
+    /**
+     * Workflow support as the server advertised it in its bootstrap (design
+     * 04, D11): its `workflows` field from the snapshot taken at start, or
+     * null from a server that advertises none (no field, or null). A
+     * `workflows` that is not an object rejects
+     * WORKFLOW_CAPABILITIES_MALFORMED rather than reading as an older server.
+     */
+    async getWorkflowCapabilities() {
+        const workflows = this.bootstrap?.workflows;
+        if (workflows === undefined || workflows === null) return null;
+        if (typeof workflows === "object" && !Array.isArray(workflows)) return workflows;
+        throw Object.assign(new Error(`The server's bootstrap advertises workflows as ${Array.isArray(workflows) ? "a list" : `a ${typeof workflows}`}, `
+            + "not an object, so its workflow support is unknown."), { code: "WORKFLOW_CAPABILITIES_MALFORMED" });
+    }
+
     getAuthContext() {
         if (this.bootstrap?.auth) return { ...this.bootstrap.auth, adminScope: this.bootstrap.authz?.adminScope ?? "unrestricted" };
         return {
@@ -238,6 +253,68 @@ export class HttpApiTransport {
 
     async getSessionWorkspace(sessionId) {
         return this.api.call("getSessionWorkspace", { sessionId });
+    }
+
+    /**
+     * Workflow v2: the read-only view of a workflow session (readWorkflow, session:read), a section's next page
+     * (`cursor`, a nextCursor a read returned) or one execution's whole value (`executionId`); `limit` sets the rows per
+     * page. The options are the operation's declared parameters: the request builder leaves out an absent (or null) one,
+     * and any other value is sent for the server to check. The session id is always the argument's.
+     */
+    async readWorkflow(sessionId, options = {}) {
+        return this.api.call("readWorkflow", { ...options, sessionId });
+    }
+
+    /** Workflow v2: a person's command to a workflow session (updateWorkflow, session:manage; inactive unless the deployment enables it). */
+    async updateWorkflow(sessionId, command) {
+        return this.api.call("updateWorkflow", { sessionId, command });
+    }
+
+    /** Stage 2.1: a chat's Workflow Definitions (listChatWorkflowDefinitions, session:read). */
+    async listChatWorkflowDefinitions(sessionId, options = {}) {
+        return this.api.call("listChatWorkflowDefinitions", { sessionId, ...(options.includeDeleted === true ? { includeDeleted: true } : {}) });
+    }
+
+    /** Stage 2.1: one definition with a revision's YAML, diagnostics and graph (readChatWorkflowDefinition, session:read). */
+    async readChatWorkflowDefinition(sessionId, ref = {}) {
+        return this.api.call("readChatWorkflowDefinition", { sessionId,
+            ...(ref.definitionId ? { definitionId: ref.definitionId } : {}), ...(ref.name ? { name: ref.name } : {}),
+            ...(Number.isSafeInteger(ref.revision) ? { revision: ref.revision } : {}) });
+    }
+
+    /** Stage 2.1: a person saves a revision (saveChatWorkflowDefinition, session:manage); the server stamps the caller. */
+    async saveChatWorkflowDefinition(sessionId, request) {
+        return this.api.call("saveChatWorkflowDefinition", { sessionId, ...request });
+    }
+
+    /** Stage 2.1: a person starts a Workflow from a revision (startChatWorkflowDefinition, session:manage). */
+    async startChatWorkflowDefinition(sessionId, request) {
+        return this.api.call("startChatWorkflowDefinition", { sessionId, ...request });
+    }
+
+    /** Stage 2.1: a person deletes a definition (deleteChatWorkflowDefinition, session:manage). */
+    async deleteChatWorkflowDefinition(sessionId, request) {
+        return this.api.call("deleteChatWorkflowDefinition", { sessionId, ...request });
+    }
+
+    /** Stage 2.3: a person's Make a copy of a package's locked definition (copyChatWorkflowDefinition, session:manage). */
+    async copyChatWorkflowDefinition(sessionId, request) {
+        return this.api.call("copyChatWorkflowDefinition", { sessionId, ...request });
+    }
+
+    /** Stage 2.3: a person takes a package's newer version for the next Workflow (updateChatWorkflowPackage, session:manage). */
+    async updateChatWorkflowPackage(sessionId, request) {
+        return this.api.call("updateChatWorkflowPackage", { sessionId, ...request });
+    }
+
+    /** Stage 2.3: the package Workflow Definitions the caller can make a chat for (listCreatableWorkflows). */
+    async listCreatableWorkflows() {
+        return this.api.call("listCreatableWorkflows");
+    }
+
+    /** Stage 2.3: a chat made for a package's Workflow Definition (createWorkflowChat, session:create). */
+    async createWorkflowChat(ref, options = {}) {
+        return this.api.call("createWorkflowChat", { ref, ...options });
     }
 
     async setSessionWorkspace(sessionId, input = {}, options = {}) {

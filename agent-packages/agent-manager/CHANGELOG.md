@@ -1,5 +1,103 @@
 # Changelog — agent-manager
 
+## 1.4.8
+
+### Changed
+
+- Carries 1.3.1 from main (0.8.10): flags listed with `alwaysOn: true` (native
+  tasks, Base Agent V2 and steering) are always on and cannot be changed. The
+  version stays above main's.
+
+## 1.4.7
+
+### Changed
+
+- Named branches (owner 2026-11-08T00:35Z, option A): different branches running
+  different nodes at once are one parallel state with named `branches`, each its
+  own small graph whose agent node has its own state id, joined as
+  `{ <name>: output }`, with `timeoutSeconds` when a branch runs an agent. The
+  router pattern is the older form, for branches that come from a list. The
+  `workflow-patterns` skill has both, with examples.
+
+## 1.4.6
+
+### Changed
+
+- The router pattern: different branches running different nodes at once (a
+  different prompt or model for each) are one Workflow, never several: a
+  parallel state over a literal list of lanes, concurrency equal to their
+  number, join all, a router script first in the body, one agent node per lane
+  (its own state id), and one item end whose output names the lane. The
+  `workflow-patterns` skill has the pattern and a complete example.
+
+## 1.4.5
+
+### Changed
+
+- Card model hints are structured (OF-S2-7 review OF7-R5): `strength`,
+  `reasoning`, `context` and a short `note` (at most 120 characters) per agent
+  node. Publication refuses a note that names a model.
+
+## 1.4.4
+
+### Changed
+
+- Models of agent nodes (OF-S2-7): a definition never names a model, and every
+  agent node uses the model of the chat that starts it. A card may give
+  `modelHints` for a node that really needs another kind of model: words for
+  the kind of model, reasoning or context, keyed by the node's id, never a
+  provider or model name, so the package works on every deployment.
+
+## 1.4.3
+
+### Changed
+
+- Test fixtures by step kind: a tool call's success value is what it returns,
+  an agent node's `{ outcome, output }`, an ask (request) node's
+  `{ response }` or `{ decline: { reason } }`, a send's any value; an error is
+  `{ code, message }`, a cancel has none. With an example for an ask node.
+- A failed test is never followed by a publish plan: quote the report's
+  failure in its own words, fix and test again. The same failure twice: stop
+  and show the person the report and the fixtures.
+
+## 1.4.2
+
+### Changed
+
+- Workflow Definitions stay simple: the simplest Workflow that does the job
+  (few nodes, a straight path, readable in one look). Write the common path
+  and route corner cases to an agent node. Judgement, parsing, many branches,
+  nested conditions or string logic go to an agent node with a short, clear
+  prompt, not to conditions, expressions or scripts. Scripts do work, not
+  decisions; no code in YAML. When unsure, choose the simpler definition and
+  tell the person what the agent node now handles. The test before publish
+  stays.
+
+## 1.4.1
+
+### Changed
+
+- A Workflow Definition is tested before its package is published: save that
+  exact YAML in your own chat, run `workflow_definition` `test` on that
+  revision, read the report, and publish only on a pass (on a fail: fix, save,
+  test again). The request to publish counts as the request for the test. The
+  result goes with the publish plan; without the test operation, say so and
+  publish only on the person's explicit yes.
+
+## 1.4.0
+
+### Added
+
+- Write Workflow Definitions as package entries: `workflows/<name>/workflow.yaml`
+  with its interface card `card.md`, named inputs and outputs, and a wait loop
+  for recurring work. An agent names the definitions its chat may start.
+- Verify a Workflow Definition by starting it once from the new-session picker
+  in a disposable chat before the shared publish.
+
+### Changed
+
+- "Agent workflow" means a named agent; definitions are Workflow Definitions.
+
 ## 1.3.1
 
 ### Changed

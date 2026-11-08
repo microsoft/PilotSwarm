@@ -31,6 +31,12 @@ export default defineConfig({
             DUROXIDE_PG_POOL_MAX: process.env.DUROXIDE_PG_POOL_MAX || "6",
             PILOTSWARM_CMS_PG_POOL_MAX: process.env.PILOTSWARM_CMS_PG_POOL_MAX || "2",
             PILOTSWARM_FACTS_PG_POOL_MAX: process.env.PILOTSWARM_FACTS_PG_POOL_MAX || "2",
+            // Workflow test mode is hidden unless PILOTSWARM_WORKFLOW_TEST_MODE=on (Workflow Simplified, spec 16). Its code
+            // stays, and its tests keep running with the flag on; a deployment leaves it off.
+            PILOTSWARM_WORKFLOW_TEST_MODE: process.env.PILOTSWARM_WORKFLOW_TEST_MODE || "on",
+            // Workflows are off unless PILOTSWARM_WORKFLOWS=on (stage 2.0). The workflow suites run with them on; the switch's
+            // own tests set each worker's or client's option.
+            PILOTSWARM_WORKFLOWS: process.env.PILOTSWARM_WORKFLOWS || "on",
         },
     },
 });

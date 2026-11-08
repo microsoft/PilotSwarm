@@ -189,7 +189,11 @@ function rpc(method, SESSIONS, PROFILE_SETTINGS = {}) {
     }
 }
 
-export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, assistantMarkdown = null, groups = [], themeId = null, groupMembers = {}, admin = false, parents = {} } = {}) {
+/**
+ * `workflows` (stage 2.0): whether the bootstrap says Workflows are on (`workflows.enabled: true`), as the test environment
+ * does. Off by default, a deployment's default (fail closed); a spec that uses Workflows opts in.
+ */
+export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, assistantMarkdown = null, groups = [], themeId = null, groupMembers = {}, admin = false, parents = {}, workflows = false } = {}) {
     assertFreshBundle();
     const SESSIONS = makeSessions(Math.max(1, sessionCount), groupMembers, parents);
     const WORKERS = admin ? makeWorkers(8, Date.now()) : [];
@@ -248,11 +252,26 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
                 res.end(JSON.stringify({ ok: true, result: TRANSCRIPT }));
                 return;
             }
+            // The bootstrap names no signed-in person (as before); it says only whether Workflows are on (stage 2.0). Its
+            // fields are top level, as the portal's (api/router.js: { ok, ...bootstrap, apiVersion, auth }), never under `result`: a
+            // fixture that adds `auth` to this body (motd-fixture.mjs) is read only when the body has no `result`.
+            if (pathname === "/api/v1/bootstrap") {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: true, workflows: workflows ? { schema: 1, enabled: true } : { schema: 1, enabled: false } }));
+                return;
+            }
             // These routes are path-shaped, so the last-segment heuristic below
             // cannot answer them. The client unwraps `result`.
             if (/\/management\/sessions$/.test(pathname)) {
                 res.writeHead(200, { "content-type": "application/json" });
                 res.end(JSON.stringify({ ok: true, result: { sessions: SESSIONS, hasMore: false, nextCursor: null } }));
+                return;
+            }
+            // readWorkflow (the workflow v2 read model): every fixture session here is an agent or a version 1 workflow,
+            // so it answers as the portal does for one. A test that needs a v2 read model routes this path itself.
+            if (/\/sessions\/[^/]+\/workflow$/.test(pathname) && req.method === "GET") {
+                res.writeHead(404, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: false, error: { code: "WORKFLOW_NOT_FOUND", message: "This session is not a version 2 workflow." } }));
                 return;
             }
             const sessionMatch = /\/sessions\/([^/]+)$/.exec(pathname);

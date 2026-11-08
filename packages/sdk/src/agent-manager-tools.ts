@@ -158,6 +158,11 @@ export interface CreateAgentManagerToolsOptions {
     reservedAgentNames?: string[];
     /** Deployment MCP catalog names restricted with `allowedAgents`; a package may not define them. */
     reservedMcpServerNames?: string[];
+    /**
+     * OF-S2-7 review OF7-R5, D8: the model ids and names of the worker's configured model catalog (catalogModelNames of the
+     * worker's own registry, the one its sessions use), which a Workflow card's model hint may not name. None given: none.
+     */
+    knownModelNames?: () => string[];
 }
 
 /** Turn an FQN into a registry selector, or explain why it cannot be one. */
@@ -524,6 +529,10 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
             + "published version (the bytes actually running) and edit from there; call without it to author a "
             + "brand-new package from an empty staging area. Repeat calls accumulate. "
             + "Staging is written to a session artifact, so a human can see it while deciding. "
+            + "A package may ship Workflow Definitions: workflows/<name>/workflow.yaml (metadata.name = <name>) with its interface "
+            + "card workflows/<name>/card.md (front matter: name, description, whenToUse, inputs.example, outcomes for every terminal "
+            + "state, asks for every request state, sends for every send state, effects, optional model; then notes). An agent names "
+            + "the definitions its chat may start in its front matter: workflows: [<name>, <package>/<name>]. "
             + "Nothing is published until you call publish_agent_package.",
         parameters: {
             type: "object" as const,
@@ -596,7 +605,9 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
         description:
             "Publish the staged edit as a new version. ONLY call this after you have shown the human the diff "
             + "from propose_agent_patch and they have explicitly approved it. "
-            + "Requires a CHANGELOG.md entry for this version. Published versions are immutable — bump the semver.",
+            + "Requires a CHANGELOG.md entry for this version. Published versions are immutable — bump the semver. "
+            + "Publishing compiles every Workflow Definition under workflows/ and checks its card against it; any mismatch, or an "
+            + "agent step that uses an agent that names definitions, refuses the publish with each reason.",
         parameters: {
             type: "object" as const,
             properties: {
@@ -676,6 +687,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                         validate: {
                             reservedAgentNames: opts.reservedAgentNames ?? listBundledAgentNames(),
                             reservedMcpServerNames: opts.reservedMcpServerNames ?? [],
+                            knownModelNames: opts.knownModelNames?.() ?? [],
                         },
                     },
                 );
@@ -684,12 +696,16 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                 const collisionWarnings = ((outcome as any)?.warnings ?? [])
                     .filter((w: any) => w?.code === "AGENT_NAME_COLLISION")
                     .map((w: any) => w.message);
+                // Workflow Simplified stage 2.3: the Workflow Definitions it ships, by the name a chat starts them with.
+                const workflows = (outcome.manifest?.workflows ?? []).map((item) => ({ name: `${outcome.name}/${item.name}`, description: item.description,
+                    outcomes: Object.keys(item.interface?.outcomes ?? {}) }));
                 return {
                     status,
                     package: outcome.name,
                     semver: outcome.semver,
                     scope: args.scope === "shared" ? "shared" : "user",
                     approvedBy: args.approved_by,
+                    ...(workflows.length > 0 ? { workflows } : {}),
                     // "noop" is not success: it means this exact semver+content
                     // already exists in the TARGET scope — nothing changed.
                     note: (status === "noop"

@@ -1,4 +1,6 @@
 import { normalizeSessionSortMode, normalizeSessionUsage } from "../../core/src/session-sort.js";
+import { normalizeWorkflowLayouts } from "../../core/src/workflow-layouts.js";
+import { workflowSessionDetails, workflowStepLogHistory, workflowStepLogScope, workflowStepParent } from "../../core/src/workflow-view.js";
 import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
@@ -6,6 +8,16 @@ import { MotdOverlay, MotdAdminPanel } from "./motd.js";
 import { useMobileAdminNavigation, useMobileAdminOverlay } from "./mobile-admin-navigation.js";
 import { imageFiles, handleImagePaste, handleImageDrop, hasFileDrag } from "./image-transfer.js";
 import { NativeTaskCard } from "./native-task-card.js";
+import { WorkflowTab } from "./workflow-tab.js";
+import { WorkflowToolButton } from "./workflow-tool-button.js";
+import {
+    normalizeWorkflowPanelHeights, normalizeWorkflowPanelWidths, WORKFLOW_SIDE_TAB, selectWorkflowTabContext, workflowHighlightedSessionId, shownSidePaneTab, workflowsShown,
+    workflowTabButtonTip,
+} from "../../core/src/workflow-owner.js";
+import { WORKFLOW_LIFECYCLE_READ_MS, chatLifecycleStamp, workflowLifecycleNeedsAttention } from "../../core/src/workflow-lifecycle.js";
+import { normalizeSidePaneTab } from "../../core/src/state.js";
+import { ModalDialog, focusGivenBack } from "./modal-dialog.js";
+import { WorkflowInputWait, workflowInputWait } from "./workflow-input-wait.js";
 import { themeSoundPlayer } from "./theme-sound-player.js";
 import { TWO_FINGER_SWIPE_EVENT, classifyTwoFinger, useSwipeNavigation } from "./swipe-navigation.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
@@ -17,7 +29,11 @@ import { createPortal } from "react-dom";
 import { appendAnimatedDotsToRuns, useAnimatedDots, useSpinnerFrame } from "./chat-status.js";
 import {
     normalizeMoa,
+    ownerKeyForOwner,
     UI_COMMANDS,
+    workflowInputPolicyApplies,
+    workflowStepLogLines,
+    WORKFLOW_SESSION_GLYPH,
     INSPECTOR_TABS,
     ARTIFACT_DOWNLOAD_HINT,
     appReducer,
@@ -36,6 +52,9 @@ import {
     getTheme,
     isThemeLight,
     themeCodeColors,
+    themeWorkflowColors,
+    WORKFLOW_COLOR_NAMES,
+    themeControlBorder,
     normalizeStoredCanvasPrefs,
     parseTerminalMarkupRuns,
     parseMarkdownLines,
@@ -98,6 +117,7 @@ import {
     normalizeStoredSessionOrder,
     computeFitWidthColumnLayout,
     normalizeTableCellText,
+    workflowInputNoteText,
     MOBILE_MEDIA_QUERY,
     PHONE_LANDSCAPE_MEDIA_QUERY,
     matchesMobileViewport,
@@ -105,10 +125,10 @@ import {
     resolveCodeFont,
 } from "pilotswarm/ui-core";
 import { useControllerSelector } from "./use-controller-state.js";
+import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
 
-// Phones, in either orientation: the one-line composer (no "you" label, the
+// Phones, in either orientation (PHONE_MEDIA_QUERY, use-media-query.js): the one-line composer (no "you" label, the
 // blue button steers).
-const PHONE_MEDIA_QUERY = `(max-width: 600px), ${PHONE_LANDSCAPE_MEDIA_QUERY}`;
 // A touch keyboard (no hover, coarse pointer): its return key adds a line and
 // the button sends. With a physical keyboard Enter sends at every width.
 const TOUCH_KEYBOARD_MEDIA_QUERY = "(hover: none) and (pointer: coarse)";
@@ -198,6 +218,7 @@ function supportsLocalFileOpen(controller) {
     return typeof controller?.transport?.openPathInDefaultApp === "function";
 }
 
+const WORKFLOW_COMPOSER_NOTE = "Workflow session";
 const SESSION_LINK_COPIED_STATUS = "Session link copied to clipboard";
 const ARTIFACT_LINK_COPIED_STATUS = "Artifact link copied to clipboard";
 // Mirrors SESSION_NAV_SETTLE_MS in the controller: the access probe rides the
@@ -428,7 +449,9 @@ function normalizeProfileSettings(settings) {
             canvasOpen: candidate.desktopPanes.canvasOpen === true,
             diagnosticsOpen: candidate.desktopPanes.diagnosticsOpen === true,
             zen: candidate.desktopPanes.zen === true,
-            sideTab: candidate.desktopPanes.sideTab === "workspace" ? "workspace" : "canvas",
+            // The Workflow tab is a side tab too (L1): a profile that maps it to "canvas" turns the right block back to the
+            // canvas on the next profile read (owner feedback 2026-11-06, "the canvas pops back up").
+            sideTab: normalizeSidePaneTab(candidate.desktopPanes.sideTab),
         };
     }
     if (hasOwn(candidate, "canvasPrefs")) {
@@ -439,6 +462,18 @@ function normalizeProfileSettings(settings) {
     // would silently drop it.
     if (hasOwn(candidate, "sessionViews")) {
         normalized.sessionViews = normalizeStoredSessionViews(candidate.sessionViews);
+    }
+    // Where the person moved each workflow's step boxes (batch 6, f-03), bounded: see workflow-layouts.js.
+    if (hasOwn(candidate, "workflowLayouts")) {
+        normalized.workflowLayouts = normalizeWorkflowLayouts(candidate.workflowLayouts);
+    }
+    // The Workflow tab's bottom panel height per device class (owner feedback 2026-11-06).
+    if (hasOwn(candidate, "workflowPanelHeights")) {
+        normalized.workflowPanelHeights = normalizeWorkflowPanelHeights(candidate.workflowPanelHeights);
+    }
+    // OF-S2-1: the side panel's width in full screen and zen.
+    if (hasOwn(candidate, "workflowPanelWidths")) {
+        normalized.workflowPanelWidths = normalizeWorkflowPanelWidths(candidate.workflowPanelWidths);
     }
     // Phones and desktops keep SEPARATE view preferences: rich prose reads well
     // on a wide transcript and poorly in a 390px column, so a single shared
@@ -507,7 +542,8 @@ function profileViewState(root) {
         ...root.ui, ...root.ui.layout,
         ownerFilter: root.sessions.ownerFilter, pinnedIds: root.sessions.pinnedIds,
         manualOrder: root.sessions.manualOrder, sessionSortMode: root.sessions.sortMode, sessionUsedAt: root.sessions.usedAt, collapsedSessionIds: root.sessions.collapsedIds,
-        activeSessionId: root.sessions.activeSessionId, canvasPrefs: root.canvas?.prefs,
+        // Review UI-8: a Workflow selected under its chat is saved as the selection (a reload selects it again).
+        activeSessionId: workflowHighlightedSessionId(root.sessions), canvasPrefs: root.canvas?.prefs,
     };
 }
 
@@ -553,13 +589,26 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
             }
             : {
                 rightPaneMode: state.canvasOpen ? "canvas" : "panes",
-                desktopPanes: { canvasOpen: state.canvasOpen === true, diagnosticsOpen: state.diagnosticsOpen === true, zen: state.canvasZen === true, sideTab: state.sidePaneTab === "workspace" ? "workspace" : "canvas" },
+                desktopPanes: { canvasOpen: state.canvasOpen === true, diagnosticsOpen: state.diagnosticsOpen === true, zen: state.canvasZen === true, sideTab: normalizeSidePaneTab(state.sidePaneTab) },
             }),
         canvasPrefs: state.canvasPrefs,
         // Written from BOTH device classes: a phone carries the desktop's
         // per-session views through its saves untouched (the reducer never
         // records on a phone), so a phone save cannot erase them.
         sessionViews: state.sessionViews,
+        // The step boxes the person moved (f-03), once there is anything: from
+        // both device classes, as the places are the person's, not the screen's.
+        ...(state.workflowLayouts && typeof state.workflowLayouts === "object"
+            ? { workflowLayouts: state.workflowLayouts }
+            : {}),
+        // The bottom panel heights, once there is one: from both device classes (each keeps the other's).
+        ...(state.workflowPanelHeights && Object.keys(state.workflowPanelHeights).length
+            ? { workflowPanelHeights: state.workflowPanelHeights }
+            : {}),
+        // The side panel's width (OF-S2-1), once there is one: a phone carries the desktop's through its saves.
+        ...(state.workflowPanelWidths && Object.keys(state.workflowPanelWidths).length
+            ? { workflowPanelWidths: state.workflowPanelWidths }
+            : {}),
         // setCurrentUserProfileSettings REPLACES the settings object, so the
         // other device class's slot has to be written back verbatim or saving
         // from a desktop would wipe the phone's preference (and vice versa).
@@ -618,7 +667,7 @@ function buildDefaultProfileSettingsFromState(state, preservedOtherTouchScale = 
                     canvasOpen: state?.ui?.canvasOpen === true,
                     diagnosticsOpen: state?.ui?.diagnosticsOpen === true,
                     zen: state?.ui?.canvasZen === true,
-                    sideTab: state?.ui?.sidePaneTab === "workspace" ? "workspace" : "canvas",
+                    sideTab: normalizeSidePaneTab(state?.ui?.sidePaneTab),
                 },
             }),
         canvasPrefs: state?.canvas?.prefs,
@@ -718,6 +767,16 @@ function materializeProfileSettings(remoteSettings, defaults) {
         ...(hasOwn(normalizedRemote, "agentPickerUsage")
             ? { agentPickerUsage: normalizedRemote.agentPickerUsage }
             : {}),
+        // Same rule: an absent key leaves the places this tab has.
+        ...(hasOwn(normalizedRemote, "workflowLayouts")
+            ? { workflowLayouts: normalizedRemote.workflowLayouts }
+            : {}),
+        ...(hasOwn(normalizedRemote, "workflowPanelHeights")
+            ? { workflowPanelHeights: normalizedRemote.workflowPanelHeights }
+            : {}),
+        ...(hasOwn(normalizedRemote, "workflowPanelWidths")
+            ? { workflowPanelWidths: normalizedRemote.workflowPanelWidths }
+            : {}),
     });
 }
 
@@ -790,6 +849,72 @@ const PORTAL_CANVAS_MIN_PX = 480;
  */
 const PORTAL_CANVAS_COL_DEFAULT_PX = 640;
 const PORTAL_DIAG_COL_DEFAULT_PX = 320;
+/** The zen chat rail's width until a person drags it (and what a double-click on its seam restores). */
+const PORTAL_ZEN_RAIL_DEFAULT_PX = 380;
+/** How far one arrow key moves a column seam. */
+const PORTAL_COLUMN_KEY_STEP_PX = 24;
+
+/**
+ * The right block's columns as they are ON SCREEN, as pixel deltas from each column's opening width (of-03), and how
+ * far the block may still grow: what chat can give before it reaches its floor.
+ *
+ * A stored width can be larger than the width shown. The grid caps the right block at the window minus chat's floor,
+ * and with both columns open diagnostics only gets what the canvas's fixed width leaves; so a narrower window, a wide
+ * sessions column, a key press past the cap, or opening both columns on a small screen leaves the stored widths ahead
+ * of the screen. The seams used to start from the stored widths: the seam a person dragged then did not move until the
+ * hidden excess was unwound, or the other seam moved instead. Every seam now starts from these shown widths.
+ * Null for a column that is not on screen, and for Diagnostics while it is squeezed below the snap width (a window
+ * narrowed under a wide canvas leaves it at 0px): its stored width is kept, so it gets that width back first as the
+ * canvas narrows, instead of the squeeze being remembered.
+ *
+ * How far the block may still grow is what the grid's cap on it leaves (the workspace minus the resizer track and the
+ * reserve beside it: the session list, its 32px and chat's floor, data-right-reserve), and never more than chat can
+ * give. Chat alone was not enough: the session list keeps its width (0.8.9), so with the cap reached chat is still a
+ * few pixels over its floor, and each drag or key grew the canvas by them while the block could not grow: Diagnostics
+ * paid, down to 0px with its toggle still on (of-03).
+ */
+function measureRightBlock(handle) {
+    const grid = handle?.closest?.(".ps-workspace-grid");
+    if (!grid) return null;
+    const box = (element) => (element ? element.getBoundingClientRect().width : null);
+    const host = grid.querySelector(":scope > .ps-workspace-column-host");
+    const hostWidth = box(host) ?? 0;
+    const canvas = box(host?.querySelector(":scope > .ps-canvas-layer:not(.is-hidden):not(.is-maximized)"));
+    const diagnostics = box(host?.querySelector(":scope > .ps-workspace-column:not(.is-artifact)"));
+    const chat = box(grid.querySelector(":scope > .ps-workspace-main-grid > .ps-workspace-pane-slot:last-child"));
+    const chatRoom = chat === null ? Number.POSITIVE_INFINITY : Math.max(0, Math.floor(chat - PORTAL_MIN_CHAT_COLUMN_PX));
+    let capRoom = Number.POSITIVE_INFINITY;
+    const reserve = Number(grid.getAttribute("data-right-reserve"));
+    if (grid.hasAttribute("data-right-reserve") && Number.isFinite(reserve) && typeof window !== "undefined") {
+        const css = window.getComputedStyle(grid);
+        const content = grid.clientWidth - (parseFloat(css.paddingLeft) || 0) - (parseFloat(css.paddingRight) || 0);
+        const track = parseFloat(String(css.gridTemplateColumns || "").trim().split(/\s+/)[1]);
+        capRoom = Math.max(0, Math.floor(content - (Number.isFinite(track) ? track : 16) - reserve - hostWidth));
+    }
+    return {
+        // A canvas wider than its host is cut off by the grid: only the part on screen counts.
+        canvasAdjust: canvas === null ? null : Math.round(Math.min(canvas, hostWidth)) - PORTAL_CANVAS_COL_DEFAULT_PX,
+        diagnosticsAdjust: diagnostics === null || diagnostics < PORTAL_COLUMN_SNAP_CLOSED_PX
+            ? null : Math.round(diagnostics) - PORTAL_DIAG_COL_DEFAULT_PX,
+        chatSpare: Math.min(chatRoom, capRoom),
+    };
+}
+
+/**
+ * Store the shown widths (measureRightBlock) for the columns on screen, so a seam moves from where it is. A difference
+ * under 2px is rounding, not a hidden excess, and is left alone. Nothing on screen changes: the block already shows
+ * these widths.
+ */
+function adoptShownRightWidths(controller, shown) {
+    if (!shown) return;
+    const layout = controller.getState()?.ui?.layout || {};
+    if (shown.canvasAdjust !== null && Math.abs(shown.canvasAdjust - (Number(layout.canvasPaneAdjust) || 0)) >= 2) {
+        controller.dispatch({ type: "ui/canvasPaneAdjust", canvasPaneAdjust: shown.canvasAdjust });
+    }
+    if (shown.diagnosticsAdjust !== null && Math.abs(shown.diagnosticsAdjust - (Number(layout.diagnosticsPaneAdjust) || 0)) >= 2) {
+        controller.dispatch({ type: "ui/diagnosticsPaneAdjust", diagnosticsPaneAdjust: shown.diagnosticsAdjust });
+    }
+}
 
 
 function portalSessionAvailableWidth(width) {
@@ -1066,6 +1191,8 @@ function compactTitleRuns(title, maxWidth = 40) {
     const isSeparator = (run) => /^[\s·—-]+$/.test(String(run?.text || ""));
     let remaining = Math.max(8, maxWidth);
     for (const run of title) {
+        // OF-S2-5: the "Has Workflows" mark is a glyph, not text: it stays on a tight title too.
+        if (run?.role === "workflowOwner") { compactRuns.push(run); continue; }
         if (remaining <= 0) break;
         const color = run?.color;
         if (color === "gray" && compactRuns.length > 0 && !isSeparator(run)) continue;
@@ -1113,6 +1240,8 @@ function applyDocumentTheme(themeId) {
     root.style.setProperty("--ps-foreground", theme.tui.foreground);
     root.style.setProperty("--ps-muted", theme.tui.gray);
     root.style.setProperty("--ps-border", theme.tui.border || theme.tui.gray);
+    // UX2D-F7: a form control's edge, 3:1 against the background and the panel (themeControlBorder).
+    root.style.setProperty("--ps-control-border", themeControlBorder(theme) || theme.tui.border || theme.tui.gray);
     root.style.setProperty("--ps-selection-background", theme.tui.selectionBackground);
     root.style.setProperty("--ps-selection-foreground", theme.tui.selectionForeground);
     root.style.setProperty("--ps-highlight-background", theme.tui.activeHighlightBackground);
@@ -1149,6 +1278,12 @@ function applyDocumentTheme(themeId) {
     root.style.setProperty("--ps-code-invalid", code.invalid);
     root.style.setProperty("--ps-code-inserted", code.inserted);
     root.style.setProperty("--ps-code-deleted", code.deleted);
+    // OF-S2-8: the Workflow viewer's colours, each seen on what it is drawn on in this theme (themeWorkflowColors).
+    const workflow = themeWorkflowColors(theme);
+    for (const name of WORKFLOW_COLOR_NAMES) {
+        if (workflow[name]) root.style.setProperty(`--ps-wf-${name}`, workflow[name]);
+        else root.style.removeProperty(`--ps-wf-${name}`);
+    }
     // Expose the theme id so a theme can carry CHROME, not just colours. Win95
     // is defined by its bevels — raised faces, inset wells, square corners —
     // and none of that is expressible as a palette entry.
@@ -1609,6 +1744,19 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         topPullDistance, loadingOlderHistory: loadingHistorySessionId === historySessionId };
 }
 
+function WorkflowGlyph({ className = "", decorative = false }) {
+    return React.createElement("svg", {
+        className: `ps-workflow-glyph ${className}`.trim(),
+        viewBox: "0 0 20 20", fill: "none", stroke: "currentColor", strokeWidth: 1.5,
+        ...(decorative ? { "aria-hidden": true } : { "aria-label": "Workflow", role: "img" }),
+        focusable: "false",
+    },
+    React.createElement("rect", { x: 1, y: 7, width: 6, height: 6, rx: 1.5 }),
+    React.createElement("rect", { x: 13, y: 1, width: 6, height: 6, rx: 1.5 }),
+    React.createElement("rect", { x: 13, y: 13, width: 6, height: 6, rx: 1.5 }),
+    React.createElement("path", { d: "M7 10h3M10 4v12m0-12h3m-3 12h3" }));
+}
+
 function Runs({ runs, theme }) {
     return React.createElement(React.Fragment, null,
         (runs || []).map((run, index, all) => {
@@ -1620,6 +1768,18 @@ function Runs({ runs, theme }) {
                 fontWeight: run.bold ? 700 : 400,
                 textDecoration: run.underline ? "underline" : "none",
             };
+            if (run?.role === "workflowOwner") {
+                // OF-S2-5: the session has grown Workflows; the glyph with its words as its tooltip and accessible name.
+                const words = run.title || "Has Workflows";
+                return React.createElement("span", { key: index, className: "ps-workflow-owner-mark", title: words, role: "img", "aria-label": words,
+                    "data-workflow-owner": "true" }, React.createElement(WorkflowGlyph, { decorative: true }));
+            }
+            if (run?.role === "sessionKind") {
+                // Stage 2.3: a chat made for a package's Workflow Definition says which one.
+                return React.createElement("span", { key: index, style, className: `ps-workflow-kind${run.workflowRef ? " is-coordinating" : ""}`,
+                    ...(run.workflowRef ? { title: `Runs the Workflow ${run.workflowRef}`, "data-workflow-ref": run.workflowRef } : {}) },
+                    React.createElement(WorkflowGlyph));
+            }
             // A run flagged trailingRule renders its text then a CSS rule that
             // fills the remaining width — see selectors.js for why this is not
             // a repeated box-drawing character.
@@ -1672,13 +1832,16 @@ function Runs({ runs, theme }) {
 function SystemNoticeLine({ line, theme }) {
     const [open, setOpen] = React.useState(false);
     const body = String(line?.body || "").trim();
-    const className = `ps-system-notice${line?.liveReasoning || line?.streamReasoning ? " is-live-reasoning" : ""}`;
+    const className = `ps-system-notice${line?.liveReasoning || line?.streamReasoning ? " is-live-reasoning" : ""}${line?.workflowProgress ? " ps-workflow-progress" : ""}`;
     return React.createElement("details", { className, onToggle: (event) => setOpen(event.currentTarget.open) },
         React.createElement("summary", {
             className: "ps-system-notice-summary",
             style: { color: resolveColor(theme, line?.color) || "var(--ps-muted)" },
         },
-        React.createElement("span", { className: "ps-system-notice-summary-text" }, line?.text || "System notice")),
+        line?.workflowProgress ? React.createElement(WorkflowGlyph, { decorative: true }) : null,
+        React.createElement("span", { className: "ps-system-notice-summary-text",
+            ...(line?.workflowProgress ? { "aria-live": "polite", "aria-atomic": true } : {}) },
+            line?.workflowProgress ? String(line.text).replace(`${WORKFLOW_SESSION_GLYPH} `, "") : line?.text || "System notice")),
         body && open
             ? React.createElement("div", { className: "ps-system-notice-body" },
                 React.createElement(MarkdownPreviewContent, { content: body, theme }))
@@ -4447,9 +4610,12 @@ function Panel({ title, titleRight = null, color = "gray", focused = false, acti
         style: { "--ps-panel-accent": accent || "var(--ps-border)" },
     },
     hasHeader ? React.createElement("header", { className: "ps-panel-header" },
-        React.createElement("div", { className: "ps-panel-title" },
+        // OF-S2-5-F1: a title with the "Has Workflows" mark keeps the mark on screen right after the title text.
+        React.createElement("div", { className: `ps-panel-title${splitOwnerMark(title) ? " has-owner-mark" : ""}` },
             Array.isArray(title)
-                ? React.createElement(Runs, { runs: title, theme })
+                ? splitOwnerMark(title)
+                    ? React.createElement(TitleTextWithOwnerMark, { runs: title, theme, textClassName: "ps-panel-title__text", restClassName: "ps-panel-title__rest" })
+                    : React.createElement(Runs, { runs: title, theme })
                 : flattenTitleText(title)),
         titleRight || actions
             ? React.createElement("div", { className: "ps-panel-header-right" },
@@ -4863,6 +5029,9 @@ export function waitReasonLabel(session) {
     return session?.cronActive === true ? "On wake" : "Waiting";
 }
 
+/** A store that never changes, for a detail box drawn without a controller. */
+const NO_DETAIL_CONTROLLER = Object.freeze({ getState: () => ({}), subscribe: () => () => {} });
+
 function SessionDetailBox({ session, childCount = 0, pause = null, controller = null, collapsed = false, onToggle = null, onOpenBudget = null }) {
     // EVERY field renders on EVERY selection, empty ones as an em dash. The box
     // is a fixed grid of rows, so moving through the list cannot change its
@@ -4878,6 +5047,34 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
             React.createElement("span", { className: "ps-session-detail-label" }, label),
             React.createElement("span", { className: "ps-session-detail-value", title: text }, text));
     };
+    // A row whose value is another session: its title, a link that selects it (one clamped line, like the others).
+    const sessionField = (label, target) => {
+        if (!target?.sessionId) return field(label, null);
+        const text = target.title || `session ${String(target.sessionId).slice(0, 8)}`;
+        return React.createElement("div", { className: "ps-session-detail-field", key: label },
+            React.createElement("span", { className: "ps-session-detail-label" }, label),
+            React.createElement("button", {
+                type: "button", className: "ps-session-detail-value ps-session-detail-link", title: `Open ${text}`,
+                onClick: () => { controller?.loadSession?.(target.sessionId)?.catch?.(() => {}); },
+            }, text));
+    };
+
+    // Batch 8 (d-1): a workflow session has no model, context, cron or agent of its own. Its rows say what it runs, from
+    // what the portal already holds (the session rows, and the workflow's view once its screen has read it: no fetch is
+    // made for this box). An agent session that runs one of its steps says which workflow, instead of its cron.
+    const store = controller || NO_DETAIL_CONTROLLER;
+    const workflowViews = useControllerSelector(store, state => state?.ui?.workflowViews ?? null);
+    const sessionsById = useControllerSelector(store, state => state?.sessions?.byId ?? null);
+    const viewerKey = useControllerSelector(store, state => ownerKeyForOwner(state?.auth?.principal));
+    const isWorkflow = session?.sessionKind === "workflow" && !session?.isGroup;
+    const lookup = { ui: { workflowViews }, sessions: { byId: sessionsById } };
+    const workflow = isWorkflow ? workflowSessionDetails(lookup, session) : null;
+    const stepOf = isWorkflow ? null : workflowStepParent(lookup, session);
+    // Started by a person (no parent agent): "You" for the viewer's own workflow, else its owner.
+    const startedBy = !workflow ? null : workflow.startedBy
+        ? sessionField("Started by", workflow.startedBy)
+        : field("Started by", viewerKey && viewerKey === ownerKeyForOwner(session?.owner) ? "You"
+            : session?.owner ? formatAdminPrincipalLabel(session.owner) : null);
 
     const usage = session?.contextUsage;
     const hasUsage = usage && Number.isFinite(usage.currentTokens) && Number.isFinite(usage.tokenLimit) && usage.tokenLimit > 0;
@@ -4973,10 +5170,13 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
     // Collapsed, the box is one line: the state you check constantly (how full
     // the context is, when it last moved, whether it is stuck) without the ten
     // rows you look up once. Expanding is a click, and the choice is a
-    // preference so it survives switching sessions and reloading.
+    // preference so it survives switching sessions and reloading. A workflow
+    // shows its run instead of a context percentage.
     if (collapsed) {
         const marks = [];
-        if (context) {
+        if (workflow) {
+            if (workflow.run) marks.push(React.createElement("span", { key: "run", className: "ps-session-detail-mark" }, workflow.run));
+        } else if (context) {
             marks.push(React.createElement("span", {
                 key: "context",
                 className: `ps-session-detail-mark${percent != null && percent >= 85 ? " is-hot" : percent != null && percent >= 70 ? " is-warm" : ""}`,
@@ -5030,15 +5230,25 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
         field("Title", session?.title, "is-title"),
         field("ID", session?.sessionId, "is-id"),
         field("Owner", session?.owner ? formatAdminPrincipalLabel(session.owner) : null),
-        field("Model", model),
-        field("Context", context, percent != null && percent >= 85 ? "is-hot" : percent != null && percent >= 70 ? "is-warm" : ""),
-        field("Cron", cron, session?.cronActive === true ? "is-armed" : ""),
-        field("Agent", session?.agentId),
+        // A workflow: five rows of its own in place of Model, Context, Cron, Agent and Children, so the box keeps its
+        // ten rows and its height.
+        ...(workflow ? [
+            field("Workflow", workflow.workflow),
+            field("Revision", workflow.revision),
+            field("Run", workflow.run),
+            startedBy,
+            field("Steps", workflow.steps),
+        ] : [
+            field("Model", model),
+            field("Context", context, percent != null && percent >= 85 ? "is-hot" : percent != null && percent >= 70 ? "is-warm" : ""),
+            stepOf ? sessionField("Step of", stepOf) : field("Cron", cron, session?.cronActive === true ? "is-armed" : ""),
+            field("Agent", session?.agentId),
+        ]),
         // "when, and what it is doing" in one row. The status comes from the
         // shared derivation rather than the raw field — see
         // selectSessionStatusSummary for why raw made this flip idle/waiting.
         field("Updated", statusSummary ? `${statusSummary.relative} (${statusSummary.status})` : null),
-        field("Children", children),
+        workflow ? null : field("Children", children),
         field("Access", access),
         // Outside the fixed grid above: this one is a sentence, and the grid's
         // whole point is that every row is one clamped line.
@@ -5054,22 +5264,6 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
  * fleet. That only holds while every prop is referentially stable — hence the
  * hoisted click handler and ref setter rather than closures built per row.
  */
-/** Subscribe to viewport or input changes without remounting the pane. */
-function useMediaQuery(query) {
-    const read = () => (typeof window !== "undefined" && typeof window.matchMedia === "function"
-        ? window.matchMedia(query).matches
-        : false);
-    const [matches, setMatches] = React.useState(read);
-    React.useEffect(() => {
-        if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
-        const media = window.matchMedia(query);
-        const onChange = (event) => setMatches(event.matches);
-        setMatches(media.matches);
-        media.addEventListener?.("change", onChange);
-        return () => media.removeEventListener?.("change", onChange);
-    }, [query]);
-    return matches;
-}
 
 // Withhold drag-to-folder on touch screens so finger drags can scroll the list.
 function useCoarsePointer() { return useMediaQuery("(pointer: coarse)"); }
@@ -5140,7 +5334,7 @@ const SessionListRow = React.memo(function SessionListRow({
     return React.createElement("button", {
         type: "button",
         ref,
-        className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}${inDropZone ? " is-drop-zone" : ""}${isDropTarget ? " is-drop-target" : ""}${insertBefore ? " is-insert-before" : ""}${insertAfter ? " is-insert-after" : ""}${row.depth > 0 ? " is-nested" : ""}`,
+        className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.chatOwner ? " is-chat-owner" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}${inDropZone ? " is-drop-zone" : ""}${isDropTarget ? " is-drop-target" : ""}${insertBefore ? " is-insert-before" : ""}${insertAfter ? " is-insert-after" : ""}${row.depth > 0 ? " is-nested" : ""}`,
         // Guide rails: one hairline per ancestor level, painted as background
         // images so each row covers its OWN full height and the levels join
         // into continuous lines down the branch. No wrapper element, so the
@@ -5180,7 +5374,8 @@ const SessionListRow = React.memo(function SessionListRow({
         },
     },
         React.createElement("div", {
-            className: "ps-line ps-session-row-content",
+            // OF-S2-5-F1: a row that wears the "Has Workflows" mark lays its title, the mark and the rest out in one line.
+            className: `ps-line ps-session-row-content${!structuredRows && splitOwnerMark(row.runs) ? " has-owner-mark" : ""}`,
             style: {
                 // Nested content starts where its node mark does, so the mark
                 // lands centred on the deepest rail and the text clears it.
@@ -5280,9 +5475,37 @@ function OwnerAvatar({ badge, size = "sm" }) {
             : null);
 }
 
-/** Drop the TUI-only text chip; the portal draws OwnerAvatar instead. */
+/**
+ * Drop the TUI-only text chips: the portal draws OwnerAvatar instead of the owner chip, and a chip for a Workflow's state
+ * (WorkflowStateChip) instead of its words (Workflow Simplified, S2).
+ */
 function withoutOwnerChip(runs) {
-    return Array.isArray(runs) ? runs.filter((run) => !run?.ownerChip) : runs;
+    return Array.isArray(runs) ? runs.filter((run) => !run?.ownerChip && run?.role !== "workflowState") : runs;
+}
+
+/**
+ * OF-S2-5-F1: a title's runs around the "Has Workflows" mark, so the mark stays on screen right after the title: the title
+ * (shrinks, ellipsis), the mark (never shrinks), then the rest (gives way first). Null without a mark.
+ */
+function splitOwnerMark(runs) {
+    const at = Array.isArray(runs) ? runs.findIndex((run) => run?.role === "workflowOwner") : -1;
+    return at < 0 ? null : { before: runs.slice(0, at), mark: runs.slice(at, at + 1), after: runs.slice(at + 1) };
+}
+
+/** The title text of a row or a header, with the "Has Workflows" mark kept on screen after it (OF-S2-5-F1). */
+function TitleTextWithOwnerMark({ runs, theme, textClassName, restClassName }) {
+    const split = splitOwnerMark(runs);
+    if (!split) return React.createElement("span", { className: textClassName }, React.createElement(Runs, { runs, theme }));
+    return React.createElement(React.Fragment, null,
+        React.createElement("span", { className: textClassName }, React.createElement(Runs, { runs: split.before, theme })),
+        React.createElement(Runs, { runs: split.mark, theme }),
+        split.after.length ? React.createElement("span", { className: restClassName }, React.createElement(Runs, { runs: split.after, theme })) : null);
+}
+
+/** A Workflow row's own state (S2, 05), as a chip at the row's end. */
+function WorkflowStateChip({ state }) {
+    if (!state?.label) return null;
+    return React.createElement("span", { className: `ps-wf-state is-${state.tone} ps-session-row-workflow-state`, "data-state": state.key }, state.label);
 }
 function SessionRowContent({ row, theme, structured = false, showInlineDetail = false, onToggleChildren = null }) {
     // Sub-agent chevron (phone slide-over). It takes the place of the row's
@@ -5314,8 +5537,9 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
             mark(plain.statusColor),
             React.createElement(OwnerAvatar, { badge: row.ownerBadge }),
             React.createElement(SessionCanvasMark, { mark: row.canvasMark }),
-            React.createElement("span", { className: "ps-session-row-title__text" },
-                React.createElement(Runs, { runs: plain.rest, theme })));
+            React.createElement(TitleTextWithOwnerMark, { runs: plain.rest, theme, textClassName: "ps-session-row-title__text",
+                restClassName: "ps-session-row-title__rest" }),
+            React.createElement(WorkflowStateChip, { state: row.chrome?.workflowState }));
     }
 
     // Dense row: the title takes one line (clamped by CSS) and the context %
@@ -5330,6 +5554,8 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
     const titleRunsAll = withoutOwnerChip(row.titleRuns);
     const title = portalRowRuns(titleRunsAll.filter((run) => run?.role !== "collapseBadge"), theme);
     const badgeRuns = titleRunsAll.filter((run) => run?.role === "collapseBadge");
+    // OF-S2-5-F1: the "Has Workflows" mark sits right after the title and never shrinks: the title takes the ellipsis.
+    const ownerMark = splitOwnerMark(title.rest) !== null;
     const hasBadge = badgeRuns.length > 0;
     const ctxRuns = Array.isArray(row.ctxRuns) ? row.ctxRuns : [];
     const hasCtx = ctxRuns.length > 0;
@@ -5340,8 +5566,9 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
     const hasDetail = showInlineDetail && row.active && detailRuns.length > 0;
 
     return React.createElement(React.Fragment, null,
-        React.createElement("div", { className: "ps-session-row-line" },
-            React.createElement("div", { className: "ps-session-row-title" },
+        // UX2D-F11: a row with a Workflow's state chip keeps its title's start (the chip gives way first).
+        React.createElement("div", { className: `ps-session-row-line${row.chrome?.workflowState?.label ? " has-workflow-state" : ""}` },
+            React.createElement("div", { className: `ps-session-row-title${ownerMark ? " has-owner-mark" : ""}` },
                 mark(title.statusColor),
                 React.createElement(OwnerAvatar, { badge: row.ownerBadge }),
                 React.createElement(SessionCanvasMark, { mark: row.canvasMark }),
@@ -5350,8 +5577,9 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
                 // inline flow inside the wrapper. Flexing the runs directly
                 // collapses the whitespace BETWEEN them and silently narrows
                 // the title (measured: 225.8px → 210.8px).
-                React.createElement("span", { className: "ps-session-row-title__text" },
-                    React.createElement(Runs, { runs: title.rest, theme }))),
+                React.createElement(TitleTextWithOwnerMark, { runs: title.rest, theme, textClassName: "ps-session-row-title__text",
+                    restClassName: "ps-session-row-title__rest" })),
+            React.createElement(WorkflowStateChip, { state: row.chrome?.workflowState }),
             hasBadge
                 ? React.createElement("div", { className: "ps-session-row-badge" },
                     React.createElement(Runs, { runs: badgeRuns, theme }))
@@ -5539,6 +5767,14 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // three sessions stopped for three different reasons all read
         // "waiting".
         budgetPaused: state.budget?.paused,
+        // Workflow Simplified (S2, S4): the selected Workflow row takes the highlight, and a Workflow row reads its
+        // state from its read model. Same trap again: omit them and every row computes as if neither existed.
+        workflowRowId: state.sessions.workflowRowId ?? null,
+        workflowViews: state.ui.workflowViews,
+        // OF-S2-5: whether Workflows are shown and the chats' definitions read here. Same trap again: without them every
+        // row computed as if Workflows were off, so a package-made chat's badge and the "Has Workflows" mark never drew.
+        workflowsEnabled: state.ui.workflowsEnabled === true,
+        chatDefinitions: state.ui.chatDefinitions,
         // Agent display titles order a named agent session's title (the
         // person's title first). Same trap again: leave it out and every
         // "DeepWiki Code Explorer: <title>" row keeps the agent name first.
@@ -5548,7 +5784,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // props inside the subscription selector delays changes until the next
     // unrelated store notification (sometimes seconds later).
     const viewState = selection ? { ...controllerViewState,
-        activeSessionId: selection.sessionId, filterQuery: selection.query || "",
+        activeSessionId: selection.sessionId, workflowRowId: null, filterQuery: selection.query || "",
         selectedIds: EMPTY_PICKER_SELECTION, selectMode: false, focused: true,
         listDeselected: !selection.sessionId,
     } : controllerViewState;
@@ -5566,7 +5802,9 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             selectedIds: viewState.selectedIds,
             selectMode: viewState.selectMode,
             listDeselected: viewState.listDeselected,
+            workflowRowId: viewState.workflowRowId,
         },
+        ui: { workflowViews: viewState.workflowViews, workflowsEnabled: viewState.workflowsEnabled, chatDefinitions: viewState.chatDefinitions },
         auth: viewState.auth,
         connection: {
             mode: viewState.connectionMode,
@@ -5582,7 +5820,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         },
         budget: { paused: viewState.budgetPaused },
         agentTitles: viewState.agentTitles,
-    }), [viewState.activeSessionId, viewState.agentTitles, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.sortMode, viewState.sortSnapshot, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
+    }), [viewState.activeSessionId, viewState.workflowRowId, viewState.workflowViews, viewState.workflowsEnabled, viewState.chatDefinitions, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.sortMode, viewState.sortSnapshot, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat, viewState.agentTitles]);
     // Hold the previous rows when a poll produced identical output.
     const rows = useStableValue(computedRows);
     const searchScrollRef = React.useRef({ top: 0, left: 0, restore: false });
@@ -5640,8 +5878,12 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     const searchMatchCount = viewState.filterQuery
         ? rows.reduce((count, row) => count + (row.searchMatch ? 1 : 0), 0)
         : 0;
-    const activeSession = viewState.activeSessionId
-        ? viewState.sessionsById[viewState.activeSessionId] || null
+    // The session the list's buttons act on: the highlighted row, which is a selected Workflow row when there is one
+    // (Workflow Simplified, S9), else the active session.
+    const highlightedId = viewState.workflowRowId && viewState.sessionsById[viewState.workflowRowId]?.parentSessionId === viewState.activeSessionId
+        ? viewState.workflowRowId : viewState.activeSessionId;
+    const activeSession = highlightedId
+        ? viewState.sessionsById[highlightedId] || null
         : null;
     // The row carries the computed child badge; the raw session does not.
     const activeRow = viewState.activeSessionId
@@ -6150,7 +6392,12 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // (after an empty-space deselect) loadSession would short-circuit and
         // leave the list looking permanently deselected, so re-arm directly
         // rather than re-running selection and disturbing chat scroll memory.
-        if (row.sessionId === current.activeSessionId) {
+        if (row.chatOwner) {
+            // Workflow Simplified (S4): the session whose chat is on screen while one of its Workflow rows is selected.
+            // Clicking it selects the session itself: the Workflow row's highlight goes, the chat stays, and the right
+            // block stays as the person left it (owner feedback 2026-11-06, "can't select the parent session").
+            ctl.loadSession(row.sessionId).catch(() => {});
+        } else if (row.sessionId === current.activeSessionId) {
             ctl.dispatch({ type: "sessions/listReselect" });
         } else if (!row.active) {
             ctl.loadSession(row.sessionId).catch(() => {});
@@ -6177,7 +6424,11 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     const revealedRowKeyRef = React.useRef(null);
     const activeRowRevealKey = `${viewState.activeSessionId || ""}${viewState.focused ? 1 : 0}${viewState.modalOpen ? 1 : 0}`;
 
+    // Whether a ui.modal was open when the reveal last ran, to see one close.
+    const modalWasOpenRef = React.useRef(false);
     React.useEffect(() => {
+        const modalClosed = modalWasOpenRef.current && !viewState.modalOpen;
+        modalWasOpenRef.current = viewState.modalOpen;
         if (viewState.modalOpen || !viewState.focused || !viewState.activeSessionId) {
             // Disarm, so returning from a modal (or refocusing the pane) counts
             // as a fresh arming. Without this the ref still holds the key from
@@ -6217,7 +6468,10 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             || focused.tagName === "SELECT"
             || focused.isContentEditable
         ));
-        if (viewState.focused && focused !== activeButton && !isTypingTarget) {
+        // Nor from the control a closing dialog has just given it back to (ModalDialog, the confirm box): the dialog
+        // returns focus to what opened it just before this runs. A list modal leaves focus on the page, and the row
+        // takes it as before.
+        if (viewState.focused && focused !== activeButton && !isTypingTarget && !focusGivenBack(modalClosed)) {
             activeButton.focus({ preventScroll: true });
         }
     }, [activeRowRevealKey, viewState.activeSessionId, viewState.focused, viewState.modalOpen, viewState.sessionsFlat]);
@@ -6318,7 +6572,9 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                     ? (activeGroupCanDelete ? "Delete this empty group" : "This group cannot be deleted yet")
                     : activeSession?.isSystem
                         ? "Restart this system session (complete, terminate, or hard delete)"
-                        : "Terminate — mark completed, cancel, or delete this session",
+                        : activeSession?.sessionKind === "workflow"
+                            ? "Terminate — stop, cancel or delete this Workflow"
+                            : "Terminate — mark completed, cancel, or delete this session",
         }),
         actions);
 
@@ -6862,17 +7118,25 @@ function LifecycleGlyph() {
  * a deployment that isn't enforcing).
  */
 function useActiveSessionAccess(controller, activeSessionId, isGroup) {
-    const [state, setState] = React.useState({ access: null, loading: false });
+    // `sessionId`: the session the answer (or the failure) is for, so a session never shows another one's access.
+    const [state, setState] = React.useState({ access: null, loading: false, failed: false, sessionId: null });
     const reload = React.useCallback(() => {
         if (!activeSessionId || isGroup || typeof controller.transport.getSessionAccess !== "function") {
-            setState({ access: null, loading: false });
+            setState({ access: null, loading: false, failed: false, sessionId: null });
             return;
         }
         let cancelled = false;
-        setState((s) => ({ ...s, loading: true }));
-        controller.transport.getSessionAccess(activeSessionId)
-            .then((access) => { if (!cancelled) setState({ access, loading: false }); })
-            .catch(() => { if (!cancelled) setState({ access: null, loading: false }); });
+        const sessionId = activeSessionId;
+        // A retry after a failed read waits again ("checking"); a reload of an answered session keeps its answer meanwhile.
+        setState((s) => ({ ...s, loading: true, ...(s.sessionId === sessionId && s.failed ? { failed: false, sessionId: null } : {}) }));
+        controller.transport.getSessionAccess(sessionId)
+            .then((access) => {
+                // A refusal of people's input (a workflow agent state's subtree) is kept on the controller for this
+                // session, so its prompt, answer and steer paths refuse it too, whichever surface reads access here.
+                controller.recordWorkflowInputAccess?.(sessionId, access);
+                if (!cancelled) setState({ access, loading: false, failed: false, sessionId });
+            })
+            .catch(() => { if (!cancelled) setState({ access: null, loading: false, failed: true, sessionId }); });
         return () => { cancelled = true; };
     }, [controller, activeSessionId, isGroup]);
     // Deferred for the same reason the session fetch is: this fires on every
@@ -6888,7 +7152,9 @@ function useActiveSessionAccess(controller, activeSessionId, isGroup) {
             if (typeof cancelInFlight === "function") cancelInFlight();
         };
     }, [reload]);
-    return { access: state.access, loading: state.loading, reload };
+    // Only the answer for the session shown counts: `answered` is false until it arrives (or its read failed).
+    const answered = Boolean(activeSessionId) && state.sessionId === activeSessionId;
+    return { access: answered ? state.access : null, loading: state.loading, failed: answered && state.failed, answered, reload };
 }
 
 // Combined "Share & settings" modal opened from the session list toolbar:
@@ -7198,17 +7464,40 @@ function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix =
             error ? React.createElement("div", { className: "ps-share-error" }, error) : null));
 }
 
+/**
+ * Why a session in a workflow agent state's subtree has no composer (design 03 human-input denial), in the terminal's
+ * words (workflowInputNoteText): the reason the server reports first (review UI-17), then `To change this, message
+ * <the chat that owns the Workflow>.` when that chat is loaded (with no reason, `Read-only. To change this, message
+ * <that chat>.`), else the controlling agent's session by its short id. Text only.
+ */
+function workflowInputNote(access, byId = null) {
+    const controlling = access?.workflowInput?.controllingSessionId;
+    return workflowInputNoteText(access?.workflowInput?.reason, controlling, controlling ? byId?.[controlling]?.title ?? null : null);
+}
+
 function SessionComposer({ controller, onReadOnlyFocus = null, mobile = false, compact = false, autoFocus = !mobile }) {
     const modal = useControllerSelector(controller, state => state.ui.modal);
     const session = useControllerSelector(controller, state => state.sessions.byId[state.sessions.activeSessionId]);
-    const { access } = useActiveSessionAccess(controller, session?.sessionId, session?.isGroup);
-    const readOnly = session?.serviceKind || access?.canWrite === false;
+    const mayBeWorkflowStep = useControllerSelector(controller, state => workflowInputPolicyApplies(state, state.sessions.activeSessionId));
+    const accessRead = useActiveSessionAccess(controller, session?.sessionId, session?.isGroup);
+    const { access } = accessRead;
+    const isWorkflow = session?.sessionKind === "workflow";
+    // A session in a workflow agent state's subtree takes no prompts from people (design 03; the server refuses them too).
+    const workflowInputDenied = access?.canSendPrompt === false;
+    // A session that may be one waits for the server's word first (owner decision q18).
+    const inputWait = workflowInputWait(controller, mayBeWorkflowStep, accessRead);
+    const readOnly = session?.serviceKind || isWorkflow || access?.canWrite === false || workflowInputDenied || Boolean(inputWait);
     React.useLayoutEffect(() => { if (readOnly && !modal) onReadOnlyFocus?.(); }, [readOnly, modal, onReadOnlyFocus]);
-    if (!session || session.isGroup || modal) return null;
+    // A workflow session has no composer bar at all (flow-09): its screen names the workflow, and nobody types into it.
+    if (!session || session.isGroup || modal || isWorkflow) return null;
     return React.createElement("div", { className: "ps-chat-composer" }, readOnly
-        ? React.createElement("div", { className: "ps-composer-readonly" }, session.serviceKind
-            ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
-            : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
+        ? (inputWait && !session.serviceKind && !workflowInputDenied
+            ? React.createElement(WorkflowInputWait, { wait: inputWait, onRetry: () => accessRead.reload() })
+            : React.createElement("div", { className: "ps-composer-readonly" }, session.serviceKind
+                ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
+                : workflowInputDenied
+                    ? workflowInputNote(access, controller.getState().sessions.byId)
+                    : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`))
         : React.createElement(PromptComposer, { controller, mobile, compact, autoFocus, active: true }));
 }
 
@@ -7381,7 +7670,39 @@ function ChatReadingControl({ reading, onChange }) {
             : null);
 }
 
-function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null, activityInHeader = false, readingColumn = false }) {
+/**
+ * Whether a Workflow is shown in the middle instead of a chat (its session is not loaded, so the Workflow itself is the
+ * active session). That screen has no zen or full screen: there is no chat to make a rail of. The Workflow tab in the
+ * right block has both, exactly as the canvas does (owner, 2026-11-06T06:28Z; replaces batch 6 f-02 and spec L1's "no
+ * Zen or Full screen").
+ */
+function activeSessionIsWorkflow(state) {
+    return activeSessionIsWorkflowSession(state);
+}
+
+/**
+ * Whether the active session itself is a workflow (its session is not loaded, so it shows in the middle). The Workflow
+ * tab beside an ordinary chat is not (review UI-6): that chat's canvas stays mounted, parked, with its page state.
+ */
+export function activeSessionIsWorkflowSession(state) {
+    return state?.sessions?.byId?.[state?.sessions?.activeSessionId]?.sessionKind === "workflow";
+}
+
+/**
+ * The middle column (Workflow Simplified, 06): always a chat. A Workflow row selects the chat of the session that owns it
+ * (its Workflow shows in the right block's Workflow tab), so the active session is a workflow only when that session is
+ * not loaded; the Workflow tab then shows it here. A Master of Agents panel that holds a Workflow shows the same Workflow
+ * tab (spec 18: one screen for a Workflow everywhere; the old workflow screen, with its Notices and Publish review, is
+ * no longer mounted).
+ */
+function ChatPane(props) {
+    const workflow = useControllerSelector(props.controller, state => workflowsShown(state)
+        && state.sessions.byId[state.sessions.activeSessionId]?.sessionKind === "workflow");
+    if (!workflow) return React.createElement(ChatTranscriptPane, props);
+    return React.createElement(WorkflowTab, { controller: props.controller, mobile: Boolean(props.mobile) });
+}
+
+function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null, activityInHeader = false, readingColumn = false, workflowLog = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     // Only the main desktop chat opts in. Master of Agents panels, zen, and
@@ -7400,6 +7721,12 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         return {
             activeSessionId,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
+            // A workflow's step log shows the selected run's entries (UI-8), from the selection's own read (R2-UI-3): its
+            // kind, run and error as plain values, so the shallow comparison sees a change.
+            ...(() => {
+                const scope = workflowLog && activeSessionId ? workflowStepLogScope(state.ui.workflowViews?.[activeSessionId]) : { kind: "all" };
+                return { logScope: scope.kind, logRunId: scope.kind === "run" ? scope.runId : null, logError: scope.kind === "failed" ? scope.error : null };
+            })(),
             // A shared empty array, not a literal: a fresh [] per call failed
             // the shallow-equal check on every dispatch and re-rendered the
             // whole pane, transcript included, on every keystroke.
@@ -7412,6 +7739,15 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
             sessionsById: state.sessions.byId,
             sessionsFlat: state.sessions.flat,
             inspectorTab: state.ui.inspectorTab,
+            // The session's recorded input policy: its question card says whether people may answer (T116).
+            activeInputPolicy: activeSessionId ? state.ui.workflowInputPolicies?.[activeSessionId] || null : null,
+            // Review SF-D5: stored workflow test notices show only while the server says test mode is on.
+            workflowTestMode: state.ui.workflowTestMode === true,
+            // OF-S2-5: the chat's title says when it has grown Workflows (Workflows shown, and its definitions read here).
+            workflowsEnabled: state.ui.workflowsEnabled === true,
+            activeChatDefinitions: activeSessionId ? state.ui.chatDefinitions?.[activeSessionId] ?? null : null,
+            // Whether it may be in a workflow agent state's subtree: its composer then waits for the server (q18).
+            activeMayBeWorkflowStep: activeSessionId ? workflowInputPolicyApplies(state, activeSessionId) : false,
             activeSessionIsGroup: Boolean(activeSessionId && state.sessions.byId[activeSessionId]?.isGroup),
             activeSessionStatus: activeSessionId ? String(state.sessions.byId[activeSessionId]?.status || "").toLowerCase() : "",
             focused: state.ui.focusRegion === "chat",
@@ -7423,6 +7759,12 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
             contentWidth,
         };
     }, shallowEqualObject);
+    const logHistory = React.useMemo(
+        () => (workflowLog
+            ? workflowStepLogHistory(viewState.activeHistory, { kind: viewState.logScope, runId: viewState.logRunId, error: viewState.logError })
+            : viewState.activeHistory),
+        [workflowLog, viewState.activeHistory, viewState.logScope, viewState.logRunId, viewState.logError],
+    );
     const selectorState = React.useMemo(() => ({
         branding: viewState.branding,
         agentTitles: viewState.agentTitles,
@@ -7434,8 +7776,8 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
             flat: viewState.sessionsFlat,
         },
         history: {
-            bySessionId: viewState.activeSessionId && viewState.activeHistory
-                ? new Map([[viewState.activeSessionId, viewState.activeHistory]])
+            bySessionId: viewState.activeSessionId && logHistory
+                ? new Map([[viewState.activeSessionId, logHistory]])
                 : new Map(),
         },
         outbox: {
@@ -7445,11 +7787,21 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         },
         ui: {
             inspectorTab: viewState.inspectorTab,
+            workflowTestMode: viewState.workflowTestMode,
+            workflowsEnabled: viewState.workflowsEnabled,
+            ...(viewState.activeSessionId && viewState.activeChatDefinitions
+                ? { chatDefinitions: { [viewState.activeSessionId]: viewState.activeChatDefinitions } } : {}),
+            ...(viewState.activeSessionId && viewState.activeInputPolicy
+                ? { workflowInputPolicies: { [viewState.activeSessionId]: viewState.activeInputPolicy } } : {}),
         },
     }), [
-        viewState.activeHistory,
+        logHistory,
+        viewState.workflowsEnabled,
+        viewState.activeChatDefinitions,
         viewState.activeSessionId,
         viewState.activeOutbox,
+        viewState.activeInputPolicy,
+        viewState.workflowTestMode,
         viewState.agentTitles,
         viewState.authPrincipal,
         viewState.branding,
@@ -7467,7 +7819,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         () => selectChatPaneChrome(selectorState, { width: contentWidth }),
         [selectorState, contentWidth],
     );
-    const animatedDots = useAnimatedDots(Boolean(chrome.animateTitleRight));
+    const animatedDots = useAnimatedDots(!workflowLog && Boolean(chrome.animateTitleRight));
     const titleRight = React.useMemo(
         () => appendAnimatedDotsToRuns(chrome.titleRight, chrome.animateTitleRight ? animatedDots : ""),
         [animatedDots, chrome.animateTitleRight, chrome.titleRight],
@@ -7481,9 +7833,14 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         viewState.activeHistory?.hasOlderEvents
         && Number(viewState.activeHistory?.loadedEventCount || 0) >= AUTO_HISTORY_EVENT_SOFT_CAP,
     );
-    const lines = React.useMemo(
+    const transcriptLines = React.useMemo(
         () => selectChatLines(selectorState, contentWidth, { tableMode: "sentinel" }),
         [selectorState, contentWidth],
+    );
+    // A workflow's step log says plainly that it is empty instead of showing the splash art (batch 5, g-06).
+    const lines = React.useMemo(
+        () => workflowLog ? workflowStepLogLines(transcriptLines, logHistory) : transcriptLines,
+        [workflowLog, transcriptLines, logHistory],
     );
     const spinnerFrame = useSpinnerFrame(viewState.activeSessionStatus === "running");
     const liveActivityLines = React.useMemo(
@@ -7493,7 +7850,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     // The live-activity line is pinned in the bottom-sticky strip (with the
     // outbox overlay), NOT appended to the transcript — it must stay put while
     // chat content scrolls, and it drops the instant the turn ends.
-    const pinnedActivityLines = liveActivityLines;
+    const pinnedActivityLines = workflowLog ? EMPTY_ARRAY : liveActivityLines;
     const outbox = React.useMemo(
         () => selectOutboxOverlayBlocks(selectorState, contentWidth, { tableMode: "sentinel" }),
         [selectorState, contentWidth],
@@ -7505,22 +7862,33 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     // gets an explanatory notice instead of the composer. The visibility chip
     // and Share affordance now live in the session list "Modify" modal and the
     // selected-session details, keeping the composer chrome minimal (mobile).
-    const { access } = useActiveSessionAccess(
+    const accessRead = useActiveSessionAccess(
         controller, viewState.activeSessionId, viewState.activeSessionIsGroup,
     );
+    const { access } = accessRead;
     const navigationError = useControllerSelector(controller, selectNavigationError, shallowEqualObject);
     const composerBase = showComposer && !viewState.activeSessionIsGroup;
     // Service sessions (⚗ tree-scoped machinery, e.g. the regen distiller) are
     // read-only BY KIND: their transcript is the trace of runtime machinery,
     // never a conversation surface — no prompt for anyone, owner included.
     const activeIsService = Boolean(viewState.sessionsById?.[viewState.activeSessionId]?.serviceKind);
-    const readOnly = activeIsService || (Boolean(access) && access.canWrite === false);
+    const activeIsWorkflow = viewState.sessionsById?.[viewState.activeSessionId]?.sessionKind === "workflow";
+    const workflowInputDenied = Boolean(access) && access.canSendPrompt === false;
+    // A session that may be in a workflow agent state's subtree waits for the server's word first (owner decision q18).
+    const inputWait = activeIsService || activeIsWorkflow ? null : workflowInputWait(controller, viewState.activeMayBeWorkflowStep, accessRead);
+    const readOnly = activeIsService || activeIsWorkflow || (Boolean(access) && access.canWrite === false) || workflowInputDenied || Boolean(inputWait);
     const composer = composerBase
-        ? React.createElement("div", { className: "ps-chat-composer" },
+        ? React.createElement("div", { className: `ps-chat-composer${activeIsWorkflow ? " is-workflow" : ""}` },
             readOnly
-                ? React.createElement("div", { className: "ps-composer-readonly" },
+                ? inputWait && !workflowInputDenied
+                    ? React.createElement(WorkflowInputWait, { wait: inputWait, onRetry: () => accessRead.reload() })
+                    : React.createElement("div", { className: "ps-composer-readonly" },
                     activeIsService
                         ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
+                        : activeIsWorkflow
+                        ? WORKFLOW_COMPOSER_NOTE
+                        : workflowInputDenied
+                        ? workflowInputNote(access, viewState.sessionsById)
                         : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
                 : React.createElement(PromptComposer, { controller, mobile, active: true }))
         : null;
@@ -7552,8 +7920,9 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
 
     return React.createElement(ScrollLinesPanel, {
         controller,
-        title: mobile ? compactTitleRuns(chrome.title, 28) : chrome.title,
-        titleRight: mobile && titleRight ? compactTitleRuns(titleRight, 18) : titleRight,
+        // The step log sits in the side pane's Step log panel, which has its own title (batch 6, r-3): no second header.
+        title: workflowLog ? [] : mobile ? compactTitleRuns(chrome.title, 28) : chrome.title,
+        titleRight: workflowLog ? null : mobile && titleRight ? compactTitleRuns(titleRight, 18) : titleRight,
         // Chat/Summary toggling lives on the top toolbar so the pane chrome
         // stays clean. The toolbar button is disabled for group sessions.
         actions: mobile && onEnterZen ? React.createElement(IconButton, { className: "ps-mini-button", icon: React.createElement(ExpandGlyph), label: "Enter mobile zen", onClick: onEnterZen }) : null,
@@ -7566,7 +7935,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         scrollTailKey: activityInHeader ? outbox.revision : "",
         bottomStickyTop: activityInHeader ? null : outboxStrip,
         bottomStickyLines: activityInHeader ? EMPTY_ARRAY : pinnedActivityLines,
-        reserveBottomSticky: !activityInHeader,
+        reserveBottomSticky: !activityInHeader && !workflowLog,
         scrollOffset: viewState.scroll,
         scrollMode: viewState.followBottom ? "bottom" : "top",
         stickyBottom: true,
@@ -9048,7 +9417,7 @@ const CANVAS_SNAPSHOT_SETTLE_MS = 160;
 // files). The choice is a pane setting like the others: it roams with the
 // profile (desktopPanes.sideTab), saved from a desktop.
 function useSidePaneMode(controller) {
-    const mode = useControllerSelector(controller, (state) => (state.ui.sidePaneTab === "workspace" ? "workspace" : "canvas"));
+    const mode = useControllerSelector(controller, shownSidePaneTab);
     const choose = React.useCallback((next) => controller?.dispatch({ type: "ui/sidePaneTab", tab: next }), [controller]);
     return [mode, choose];
 }
@@ -9075,7 +9444,15 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     const view = useControllerSelector(controller, selectCanvasView, shallowEqualObject);
     const [paneMode, setPaneMode] = useSidePaneMode(controller);
     const workspaceTab = portalWorkspaceFiles;
-    const onCanvas = !workspaceTab || paneMode === "canvas";
+    // Workflow Simplified (L1): the right block shows the canvas, the Workspace or the Workflow tab, one at a time. The
+    // Workflow tab carries its own header (L4); the toolbar's Canvas and Workflow buttons switch between them.
+    const onWorkflow = paneMode === WORKFLOW_SIDE_TAB;
+    // A Workflow that is the active session itself (its session is not loaded) shows in the middle; the engine's canvas of
+    // its run is not shown beside it (as the old workflow screen did not).
+    // Only a workflow that is the active session replaces the canvas frame; the Workflow tab parks it (UI-6).
+    const activeWorkflow = useControllerSelector(controller, activeSessionIsWorkflowSession);
+    const isWorkflow = onWorkflow;
+    const onCanvas = !onWorkflow && (!workspaceTab || paneMode === "canvas");
     const zoom = useControllerSelector(controller, (state) => Number(state.files.htmlZoom) || 1);
     const setZoom = React.useCallback((next) => {
         controller.dispatch({ type: "files/htmlZoom", zoom: next });
@@ -9142,7 +9519,7 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     //
     // With a Workspace tab the strip always renders: it holds the Canvas |
     // Workspace switch, the only way to reach the Workspace on a phone.
-    const showRevStrip = mobile && (workspaceTab || view.exists || maximized);
+    const showRevStrip = mobile && !onWorkflow && (workspaceTab || view.exists || maximized);
     const landscape = useMediaQuery(PHONE_LANDSCAPE_MEDIA_QUERY);
     const foldable = mobile && maximized && landscape;
     const [pillOpen, setPillOpen] = React.useState(false);
@@ -9164,7 +9541,42 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
         return () => { clearTimeout(timer); pillTouch.current = 0; };
     }, [foldable, pillOpen, shareOpen]);
     const folded = foldable && !pillOpen;
-    const header = mobile
+    // Zen and full screen, one set for the canvas and the Workflow tab (owner, 2026-11-06T06:28Z: "exact same behavior as
+    // the canvas"). Both use the same stored flags, so switching between the canvas and the Workflow tab keeps the mode.
+    // Zen: sessions step away, chat becomes a rail, this block is the workbench.
+    const zenButton = () => React.createElement("button", {
+        type: "button",
+        className: `ps-artifact-pane-btn${zenOn ? " is-active" : ""}`,
+        onClick: () => controller.dispatch({ type: "ui/canvasZen" }),
+        title: zenOn ? "Leave zen — bring back sessions and panels" : "Zen — chat rail + canvas only",
+        "aria-label": zenOn ? "Leave zen mode" : "Zen mode",
+    }, React.createElement(ZenGlyph));
+    // Full screen. No ✕ beside it: the toolbar's Canvas (or Workflow) button is the way out. While full screen the
+    // controls are promoted into the toolbar, so the way back never disappears with the pane that drew it.
+    const fullScreenButton = () => React.createElement("button", {
+        type: "button",
+        className: "ps-artifact-pane-btn",
+        onClick: () => controller.dispatch({ type: "ui/canvasMaximized", on: true }),
+        title: "Full screen — hide chat and sessions",
+        "aria-label": "Full screen canvas",
+    }, React.createElement(MaximizeGlyph));
+    // The phone's maximize/restore toggle (MobileCanvasLayer's own state, shared by the canvas and the Workflow tab).
+    const phoneMaximizeButton = () => (onToggleMaximized ? React.createElement("button", {
+        type: "button",
+        className: "ps-canvas-max-btn",
+        onClick: onToggleMaximized,
+        title: maximized ? "Back to the inset canvas" : "Maximize — cover the whole screen",
+        "aria-label": maximized ? "Restore canvas" : "Maximize canvas",
+    }, React.createElement(maximized ? RestoreGlyph : MaximizeGlyph)) : null);
+    // The Workflow tab draws its own header; these go at its right end. Full screen on a desktop also puts the canvas's
+    // controls in the toolbar's left slot. Owner, 2026-11-06T19:40Z (F7): there, beside his name, two faint glyphs read as
+    // no way out at all; so in full screen the tab's header keeps one, framed, where Full screen was pressed.
+    const workflowModeButtons = !onWorkflow ? null
+        : mobile ? phoneMaximizeButton()
+        : maximized ? React.createElement(WorkflowToolButton, { label: "Exit full screen", glyph: "exit-full-screen", "data-action": "exit-full-screen",
+            title: workflowTabButtonTip("exit-full-screen"), onClick: () => controller.dispatch({ type: "ui/canvasMaximized", on: false }) })
+        : React.createElement(React.Fragment, null, zenButton(), fullScreenButton());
+    const header = onWorkflow && (mobile || !maximized) ? null : mobile
         ? (showRevStrip && folded
             ? React.createElement("header", { className: "ps-artifact-pane-bar is-rev-strip is-folded" },
                 React.createElement("button", {
@@ -9182,9 +9594,9 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
             },
                 React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode, compact: true }),
                 React.createElement("span", { className: "ps-artifact-pane-type", title: onCanvas ? (view.note || undefined) : undefined },
-                    onCanvas ? (view.exists ? `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}` : "") : "Workspace"),
-                onCanvas ? React.createElement(CanvasSlotControls, { controller, view, compact: true }) : null,
-                onCanvas && view.exists
+                    onCanvas ? (isWorkflow ? "Details" : view.exists ? `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}` : "") : "Workspace"),
+                onCanvas && !isWorkflow ? React.createElement(CanvasSlotControls, { controller, view, compact: true }) : null,
+                onCanvas && view.exists && !isWorkflow
                     ? React.createElement("button", {
                         type: "button",
                         className: "ps-canvas-max-btn",
@@ -9193,23 +9605,15 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                         "aria-label": "Share canvas",
                     }, React.createElement(CanvasLinkGlyph))
                     : null,
-                onToggleMaximized
-                    ? React.createElement("button", {
-                        type: "button",
-                        className: "ps-canvas-max-btn",
-                        onClick: onToggleMaximized,
-                        title: maximized ? "Back to the inset canvas" : "Maximize — cover the whole screen",
-                        "aria-label": maximized ? "Restore canvas" : "Maximize canvas",
-                    }, React.createElement(maximized ? RestoreGlyph : MaximizeGlyph))
-                    : null)
+                phoneMaximizeButton())
             : null)
         : (maximized ? (toolbarSlot ? createPortal(React.createElement(React.Fragment, null,
             React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode, compact: true }),
-            onCanvas && view.exists
-                ? React.createElement("span", { className: "ps-toolbar-canvas-rev" }, `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
+            onCanvas && (view.exists || isWorkflow)
+                ? React.createElement("span", { className: "ps-toolbar-canvas-rev" }, isWorkflow ? "Details" : `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
                 : null,
-            onCanvas ? React.createElement(CanvasSlotControls, { controller, view, compact: true }) : null,
-            onCanvas && view.exists ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
+            onCanvas && !isWorkflow ? React.createElement(CanvasSlotControls, { controller, view, compact: true }) : null,
+            onCanvas && view.exists && !isWorkflow ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
             React.createElement("button", {
                 type: "button",
                 className: `ps-artifact-pane-btn${zenOn ? " is-active" : ""}`,
@@ -9234,14 +9638,14 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
         : React.createElement("header", { className: "ps-artifact-pane-bar" },
             React.createElement("span", { className: "ps-artifact-pane-heading" },
                 React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode }),
-                onCanvas && view.exists
+                onCanvas && (view.exists || isWorkflow)
                     ? React.createElement("span", { className: "ps-artifact-pane-type", title: view.note || undefined },
-                        `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
+                        isWorkflow ? "Details" : `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
                     : null,
-                onCanvas ? React.createElement(CanvasSlotControls, { controller, view }) : null),
+                onCanvas && !isWorkflow ? React.createElement(CanvasSlotControls, { controller, view }) : null),
             React.createElement("span", { className: "ps-artifact-pane-actions" },
-                onCanvas && view.exists ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
-                onCanvas && view.exists
+                onCanvas && view.exists && !isWorkflow ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
+                onCanvas && view.exists && !isWorkflow
                     ? React.createElement("button", {
                         type: "button",
                         className: "ps-artifact-pane-btn",
@@ -9250,30 +9654,11 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                         "aria-label": "Share canvas",
                     }, React.createElement(CanvasLinkGlyph))
                     : null,
-                // Zen: sessions step away, chat becomes a rail, the canvas is
-                // the workbench. The mode for "the work happens on the canvas,
-                // chat is for steering".
-                React.createElement("button", {
-                    type: "button",
-                    className: `ps-artifact-pane-btn${zenOn ? " is-active" : ""}`,
-                    onClick: () => controller.dispatch({ type: "ui/canvasZen" }),
-                    title: zenOn ? "Leave zen — bring back sessions and panels" : "Zen — chat rail + canvas only",
-                    "aria-label": zenOn ? "Leave zen mode" : "Zen mode",
-                }, React.createElement(ZenGlyph)),
-                // Full screen. No ✕ beside it: the toolbar's Canvas button is
-                // the way out, and a second close control in a pane that also
-                // has a toggle is one affordance too many.
-                //
-                // While full screen this whole bar is hidden and the rev and
-                // the way back are promoted into the portal header, so the
-                // control never disappears with the pane that drew it.
-                React.createElement("button", {
-                    type: "button",
-                    className: "ps-artifact-pane-btn",
-                    onClick: () => controller.dispatch({ type: "ui/canvasMaximized", on: true }),
-                    title: "Full screen — hide chat and sessions",
-                    "aria-label": "Full screen canvas",
-                }, React.createElement(MaximizeGlyph)))));
+                // Zen: the mode for "the work happens on the canvas, chat is
+                // for steering". Full screen hides this whole bar and promotes
+                // the rev and the way back into the portal header.
+                zenButton(),
+                fullScreenButton())));
 
     return React.createElement("section", {
         className: "ps-artifact-pane ps-canvas-pane",
@@ -9286,8 +9671,13 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     // side (not hidden: a canvas frame must never load hidden, see the iOS
     // note on .ps-canvas-pane .ps-html-preview-frame).
     React.createElement("div", { className: "ps-artifact-pane-body ps-side-pane-body" },
-        React.createElement("div", { className: `ps-side-pane-layer${onCanvas ? "" : " is-parked"}`, inert: !onCanvas },
-            view.exists
+        // A parked layer is inert and hidden from assistive technology too: it is not on screen (moved out of a box that
+        // clips it), so nothing may read it as shown.
+        React.createElement("div", { className: `ps-side-pane-layer${onCanvas ? "" : " is-parked"}`, inert: !onCanvas,
+            ...(onCanvas ? {} : { "aria-hidden": "true" }) },
+            activeWorkflow
+                ? React.createElement("div", { className: "ps-canvas-blank" }, React.createElement("p", null, "This Workflow is shown in the middle."))
+                : view.exists
                 ? React.createElement(CanvasFrame, {
                     key: `slot:${view.slot}`,
                     controller,
@@ -9306,8 +9696,17 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                     React.createElement("p", null,
                         "Ask the agent to draw — a dashboard, a chart, a diagram — or it will draw when it has something worth showing."))),
         workspaceTab
-            ? React.createElement("div", { className: `ps-side-pane-layer${onCanvas ? " is-parked" : ""}`, inert: onCanvas },
-                React.createElement(WorkspacePane, { key: view.sessionId || "none", controller, sessionId: view.sessionId, visible: visible && !onCanvas }))
+            ? React.createElement("div", { className: `ps-side-pane-layer${onCanvas || onWorkflow ? " is-parked" : ""}`, inert: onCanvas || onWorkflow,
+                ...(onCanvas || onWorkflow ? { "aria-hidden": "true" } : {}) },
+                React.createElement(WorkspacePane, { key: view.sessionId || "none", controller, sessionId: view.sessionId, visible: visible && !onCanvas && !onWorkflow }))
+            : null,
+        // The Workflow tab (06): mounted only while the right block shows it (a hidden block is parked, not unmounted, so a
+        // tab left mounted would keep reading its Workflows); its state lives in the store.
+        onWorkflow && visible
+            ? React.createElement("div", { className: "ps-side-pane-layer ps-wf-layer" },
+                React.createElement(WorkflowTab, { controller, mobile, modeButtons: workflowModeButtons,
+                    // F8: the graph fits again when the display mode changes its size (owner, 2026-11-06T19:40Z).
+                    displayMode: maximized ? "full" : !mobile && zenOn ? "zen" : "normal" }))
             : null),
         shareOpen && view.exists
             ? React.createElement(CanvasShareDialog, {
@@ -10557,7 +10956,11 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         return result?.accepted || 0;
     }, [controller, canAttachImages]);
 
+    // Whether a ui.modal was open when the effect below last ran, to see one close.
+    const modalWasOpenRef = React.useRef(false);
     React.useEffect(() => {
+        const modalClosed = modalWasOpenRef.current && !promptState.modalOpen;
+        modalWasOpenRef.current = promptState.modalOpen;
         const inputNode = inputRef.current;
         if (!active || promptState.modalOpen || !promptState.focused || !inputNode) return;
         if (document.activeElement !== inputNode) {
@@ -10565,6 +10968,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             // Programmatic focus pops the on-screen keyboard on touch devices;
             // there, focus only ever comes from the user's own tap.
             if (mobile) return;
+            // A closing dialog has just given focus back to the control that
+            // opened it (ModalDialog, the confirm box): leave it there.
+            if (focusGivenBack(modalClosed)) return;
             try {
                 inputNode.focus({ preventScroll: true });
             } catch {
@@ -11075,12 +11481,48 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, pr
     tooltipNode);
 }
 
+/**
+ * OF-S2-4 (C): while the Workflow panel is not on screen, the Workflow tab's chat's definitions are read in the background,
+ * so a definition made, a revision saved or a test run lights the Workflow button's dot: on arriving at the chat, when the
+ * chat's status or its Workflows' statuses change (chatLifecycleStamp, review F3: never for a mere row update; at most one
+ * read every 5 s), and every WORKFLOW_LIFECYCLE_READ_MS. Never while the page is hidden; once when it is shown again. The
+ * panel, when shown, reads them itself.
+ */
+function useWorkflowLifecycleReads(controller, active) {
+    const ownerId = useControllerSelector(controller, (s) => selectWorkflowTabContext(s).ownerId);
+    const stamp = useControllerSelector(controller, (s) => (ownerId ? chatLifecycleStamp(s.sessions.byId, ownerId) : ""));
+    const lastReadRef = React.useRef({ ownerId: null, at: 0 });
+    const read = React.useCallback(() => {
+        if (!ownerId || typeof controller.ensureChatWorkflowDefinitions !== "function") return;
+        if (typeof document !== "undefined" && document.hidden) return;
+        lastReadRef.current = { ownerId, at: Date.now() };
+        Promise.resolve(controller.ensureChatWorkflowDefinitions(ownerId, { force: true })).catch(() => {});
+    }, [controller, ownerId]);
+    React.useEffect(() => {
+        if (!active || !ownerId) return undefined;
+        // OF-S2-4d: arriving at a chat reads it at once (its panel may open on arrival); its own changes at most every 5 s.
+        const last = lastReadRef.current;
+        const timer = setTimeout(read, last.ownerId === ownerId ? Math.max(0, 5_000 - (Date.now() - last.at)) : 0);
+        return () => clearTimeout(timer);
+    }, [active, ownerId, stamp, read]);
+    React.useEffect(() => {
+        if (!active || !ownerId) return undefined;
+        const timer = setInterval(read, WORKFLOW_LIFECYCLE_READ_MS);
+        const shown = () => { if (!document.hidden) read(); };
+        document.addEventListener("visibilitychange", shown);
+        return () => {
+            clearInterval(timer);
+            document.removeEventListener("visibilitychange", shown);
+        };
+    }, [active, ownerId, read]);
+}
+
 // The narrowest the toolbar's left flank gets: room for the full-screen
 // canvas controls (pane tabs, slot picker, zoom, zen, restore) at their
 // smallest, so they never overlap the session controls.
 const TOOLBAR_LEFT_FLANK_MIN_PX = 360;
 
-function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", mobileDiagnosticsPane = "inspector", onSelectMobilePane = null, mobileSessionsOpen = false, onToggleMobileSessions = null }) {
+function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvasPaneOpen = false, onToggleCanvasPane = null, onToggleWorkflowPane = null, mobilePane = "workspace", mobileDiagnosticsPane = "inspector", onSelectMobilePane = null, mobileSessionsOpen = false, onToggleMobileSessions = null }) {
     const [headerSlot, setHeaderSlot] = React.useState(null);
     React.useEffect(() => {
         if (typeof document === "undefined") return;
@@ -11160,11 +11602,22 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
         && Object.values(state.sessions?.byId || {}).some((session) => session?.pendingQuestion?.question)));
     const canvasView = useControllerSelector(controller, selectCanvasView, shallowEqualObject);
     const diagnosticsOpen = useControllerSelector(controller, (s) => s?.ui?.diagnosticsOpen === true);
-    const canvasMaximized = useControllerSelector(controller, (s) => s?.ui?.canvasMaximized === true);
+    // A Workflow shown in the middle has no full screen: the stored flag reads as off while one is (the Workflow tab has it).
+    const canvasMaximized = useControllerSelector(controller, (s) => s?.ui?.canvasMaximized === true && !activeSessionIsWorkflow(s));
     // The artifact reader takes over the right side; while it is up, the
     // surface on screen is NOT the canvas, so the canvas toggle must not
     // read as active (its next press still shows the canvas).
     const artifactReaderOpen = useControllerSelector(controller, selectArtifactPaneShown);
+    // Workflow Simplified (L1, L2): the right block shows the Workflow tab instead of the canvas. Owner, 2026-11-06T14:35Z
+    // (F4): the Workflow button carries the canvas's dot, not a count: a Workflow needing the person (waiting for input, or
+    // failed) changed since the Workflow panel last showed it; showing the panel clears it.
+    // Stage 2.0: no Workflow button, tab or pane while Workflows are off.
+    const workflowsOn = useControllerSelector(controller, workflowsShown);
+    const workflowSide = useControllerSelector(controller, (s) => shownSidePaneTab(s) === WORKFLOW_SIDE_TAB);
+    const workflowTabOpen = workflowSide && (mobile ? canvasPaneOpen : canvasView.mode === "canvas" && !artifactReaderOpen);
+    // OF-S2-4 (C): the dot is every lifecycle change of the chat's definitions and Workflows (workflow-lifecycle.js).
+    const workflowAttention = useControllerSelector(controller, (s) => workflowLifecycleNeedsAttention(s, selectWorkflowTabContext(s).ownerId)) && !workflowTabOpen;
+    useWorkflowLifecycleReads(controller, workflowsOn && !workflowTabOpen);
 
     // Icon-first toolbar: the glyph is the affordance, the label rides a
     // tooltip (desktop hover via title; mobile long-press via IconButton).
@@ -11210,10 +11663,15 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
         {
             key: "canvas",
             icon: React.createElement(CanvasGlyph),
-            label: (mobile ? canvasPaneOpen : (canvasView.mode === "canvas" && !artifactReaderOpen))
+            label: (mobile ? canvasPaneOpen && !workflowSide : (canvasView.mode === "canvas" && !artifactReaderOpen && !workflowSide))
                 ? "Hide the canvas"
                 : "Show canvas",
             onClick: () => {
+                // The Workflow tab and the canvas share the right block (L1): from the Workflow tab, Canvas shows the canvas.
+                if (workflowSide) {
+                    controller.dispatch({ type: "ui/sidePaneTab", tab: "canvas" });
+                    if (workflowTabOpen) return;
+                }
                 if (mobile) {
                     if (onToggleCanvasPane) onToggleCanvasPane();
                     return;
@@ -11227,7 +11685,7 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
                     manual: true,
                 });
             },
-            active: mobile ? canvasPaneOpen : (canvasView.mode === "canvas" && !artifactReaderOpen),
+            active: mobile ? canvasPaneOpen && !workflowSide : (canvasView.mode === "canvas" && !artifactReaderOpen && !workflowSide),
             badge: mobile
                 ? (canvasView.exists
                     && (canvasView.latestRev > (canvasView.lastViewedRev || 0)
@@ -11238,6 +11696,27 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
             // (loaded), green + yellow (loaded with unseen changes).
             loadedDot: canvasView.exists,
         },
+        // The Workflow tab (L1), between Canvas and Diagnostics, on every session (L2). It and the canvas switch each
+        // other off; its dot is the canvas's (owner F4), and its name says so. None while Workflows are off (stage 2.0).
+        ...(workflowsOn ? [{
+            key: "workflow",
+            icon: React.createElement(WorkflowGlyph, { decorative: true }),
+            label: workflowTabOpen ? "Hide the Workflow tab" : workflowAttention ? "Workflow — needs attention" : "Workflow",
+            onClick: () => {
+                if (mobile) {
+                    if (onToggleWorkflowPane) onToggleWorkflowPane();
+                    return;
+                }
+                if (workflowTabOpen) {
+                    controller.dispatch({ type: "ui/canvasOpen", open: false, sessionId: canvasView.sessionId });
+                    return;
+                }
+                controller.dispatch({ type: "ui/sidePaneTab", tab: WORKFLOW_SIDE_TAB });
+                if (canvasView.mode !== "canvas") controller.dispatch({ type: "ui/canvasOpen", open: true, sessionId: canvasView.sessionId });
+            },
+            active: workflowTabOpen,
+            badge: workflowAttention,
+        }] : []),
         // Providers & Budgets. Both device classes: what a turn costs, and
         // what stopped a session, are answers a person needs wherever they
         // are — and unlike the admin console the surface reflows to a phone.
@@ -11369,16 +11848,19 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
     const mode = moa?.active ? "moa" : adminVisible ? "admin" : (budgetOpen ? "budget" : "workspace");
     const ACTIONS = ["new", "filter"];
     const HISTORY = ["back", "forward"];
-    const PANELS = ["canvas", "diagnostics"];
+    // Workflow Simplified (L1): the Workflow button sits between Canvas and Diagnostics.
+    const PANELS = ["canvas", "workflow", "diagnostics"];
     const MODES = ["workspace", "moa", "budget", "admin"];
 
     // While the canvas is full screen, ANY other button first drops full
     // screen and then does its own job. Pressing Filter and watching nothing
     // happen behind a canvas — or watching a panel open where you cannot see
-    // it — is the confusing half of every full-screen mode. The Canvas toggle
-    // is exempt: it already means "put the canvas away", and closing drops
-    // the flag in the reducer.
-    const withRestore = (def) => (HISTORY.includes(def.key) || (!canvasMaximized || def.key === "canvas") && !(moa?.active && ["workspace", "budget", "admin"].includes(def.key)) ? def : {
+    // it — is the confusing half of every full-screen mode. The Canvas and
+    // Workflow toggles are exempt: each either switches the full-screen block
+    // between the canvas and the Workflow tab (the mode stays, owner
+    // 2026-11-06T06:28Z) or puts it away, and closing drops the flag in the
+    // reducer.
+    const withRestore = (def) => (HISTORY.includes(def.key) || (!canvasMaximized || def.key === "canvas" || def.key === "workflow") && !(moa?.active && ["workspace", "budget", "admin"].includes(def.key)) ? def : {
         ...def,
         onClick: (...args) => {
             controller.dispatch({ type: "ui/canvasMaximized", on: false });
@@ -11719,6 +12201,10 @@ function SessionColumnResizeHandle({ controller, portalSessionColumnAdjust = 0 }
  * toggled back on". The adjust is reset at the same time, so re-opening from
  * the toolbar comes back at the even split rather than at the sliver that
  * closed it.
+ *
+ * Every drag and key press starts from the widths on screen (of-03, see
+ * measureRightBlock). The keyboard never closes a column: it stops at the
+ * narrowest width a drag would keep, so the focused seam stays on screen.
  */
 function CanvasDiagnosticsResizeHandle({ controller, canvasPaneAdjust = 0, diagnosticsPaneAdjust = 0 }) {
     const dragStateRef = React.useRef(null);
@@ -11784,10 +12270,12 @@ function CanvasDiagnosticsResizeHandle({ controller, canvasPaneAdjust = 0, diagn
             if (event.button !== 0) return;
             event.preventDefault();
             capturePointerForDrag(event);
+            const shown = measureRightBlock(event.currentTarget);
+            adoptShownRightWidths(controller, shown);
             dragStateRef.current = {
                 startX: event.clientX,
-                startCanvas: Number(canvasPaneAdjust) || 0,
-                startDiag: Number(diagnosticsPaneAdjust) || 0,
+                startCanvas: shown?.canvasAdjust ?? (Number(canvasPaneAdjust) || 0),
+                startDiag: shown?.diagnosticsAdjust ?? (Number(diagnosticsPaneAdjust) || 0),
             };
             setDragging(true);
             document.body.classList.add("is-resizing-pane-x");
@@ -11799,8 +12287,14 @@ function CanvasDiagnosticsResizeHandle({ controller, canvasPaneAdjust = 0, diagn
         onKeyDown: (event) => {
             if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
             event.preventDefault();
-            const dx = event.key === "ArrowRight" ? 24 : -24;
-            commit((Number(canvasPaneAdjust) || 0) + dx, (Number(diagnosticsPaneAdjust) || 0) - dx);
+            const shown = measureRightBlock(event.currentTarget);
+            adoptShownRightWidths(controller, shown);
+            const dx = event.key === "ArrowRight" ? PORTAL_COLUMN_KEY_STEP_PX : -PORTAL_COLUMN_KEY_STEP_PX;
+            const ca = (shown?.canvasAdjust ?? (Number(canvasPaneAdjust) || 0)) + dx;
+            const da = (shown?.diagnosticsAdjust ?? (Number(diagnosticsPaneAdjust) || 0)) - dx;
+            const w = widths(ca, da);
+            if (w.canvas < PORTAL_COLUMN_SNAP_CLOSED_PX || w.diag < PORTAL_COLUMN_SNAP_CLOSED_PX) return;
+            commit(ca, da);
         },
     },
     React.createElement("span", { className: "ps-column-resizer-handle", "aria-hidden": "true" },
@@ -11809,8 +12303,11 @@ function CanvasDiagnosticsResizeHandle({ controller, canvasPaneAdjust = 0, diagn
         React.createElement("span", { className: "ps-column-resizer-dot" })));
 }
 
-/** The zen seam: drags the chat rail, remembered per session. */
-function ZenRailResizeHandle({ controller, sessionId, railPx = 380 }) {
+/**
+ * The zen seam: drags the chat rail, remembered per session. Double-click
+ * puts the rail back at its default width (of-03).
+ */
+function ZenRailResizeHandle({ controller, sessionId, railPx = PORTAL_ZEN_RAIL_DEFAULT_PX }) {
     const dragStateRef = React.useRef(null);
     const [dragging, setDragging] = React.useState(false);
     React.useEffect(() => {
@@ -11837,7 +12334,7 @@ function ZenRailResizeHandle({ controller, sessionId, railPx = 380 }) {
     return React.createElement("button", {
         type: "button",
         className: `ps-column-resizer${dragging ? " is-dragging" : ""}`,
-        title: "Drag to resize chat against the canvas (remembered for this session)",
+        title: "Drag to resize chat against the canvas (remembered for this session). Double-click to reset.",
         "aria-label": "Resize the zen chat rail",
         onPointerDown: (event) => {
             if (event.button !== 0) return;
@@ -11847,10 +12344,12 @@ function ZenRailResizeHandle({ controller, sessionId, railPx = 380 }) {
             setDragging(true);
             document.body.classList.add("is-resizing-pane-x");
         },
+        onDoubleClick: () => controller.dispatch({ type: "canvas/zenRail", sessionId, px: PORTAL_ZEN_RAIL_DEFAULT_PX }),
         onKeyDown: (event) => {
             if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
             event.preventDefault();
-            controller.dispatch({ type: "canvas/zenRail", sessionId, px: railPx + (event.key === "ArrowRight" ? 24 : -24) });
+            controller.dispatch({ type: "canvas/zenRail", sessionId,
+                px: railPx + (event.key === "ArrowRight" ? PORTAL_COLUMN_KEY_STEP_PX : -PORTAL_COLUMN_KEY_STEP_PX) });
         },
     },
     React.createElement("span", { className: "ps-column-resizer-handle", "aria-hidden": "true" },
@@ -11863,6 +12362,14 @@ function ZenRailResizeHandle({ controller, sessionId, railPx = 380 }) {
  * The seam between chat and the right block. Chat flexes, so this drags the
  * width of the column beside it — canvas when open, else diagnostics. The
  * other column never moves: growing chat shrinks only its neighbour.
+ *
+ * Every drag and key press starts from the widths on screen and stores them
+ * for both columns first (of-03, see measureRightBlock), so the seam moves
+ * at once and moves itself, never the seam between canvas and diagnostics.
+ * It grows the block until chat reaches its floor; a drag that leaves the
+ * column narrower than the snap width closes it on release; the keyboard
+ * stops at the snap width instead, so the focused seam stays on screen.
+ * Double-click resets.
  */
 function ChatRightResizeHandle({ controller, target, adjust = 0 }) {
     const dragStateRef = React.useRef(null);
@@ -11870,6 +12377,14 @@ function ChatRightResizeHandle({ controller, target, adjust = 0 }) {
     const actionType = target === "canvas" ? "ui/canvasPaneAdjust" : "ui/diagnosticsPaneAdjust";
     const key = target === "canvas" ? "canvasPaneAdjust" : "diagnosticsPaneAdjust";
     const base = target === "canvas" ? PORTAL_CANVAS_COL_DEFAULT_PX : PORTAL_DIAG_COL_DEFAULT_PX;
+
+    // Where the seam is and how far the block may still grow, from the screen.
+    const startFrom = (element) => {
+        const shown = measureRightBlock(element);
+        adoptShownRightWidths(controller, shown);
+        const startAdjust = (target === "canvas" ? shown?.canvasAdjust : shown?.diagnosticsAdjust) ?? (Number(adjust) || 0);
+        return { startAdjust, maxAdjust: startAdjust + (shown ? shown.chatSpare : Number.POSITIVE_INFINITY) };
+    };
 
     const commit = (next) => {
         if (base + next < PORTAL_COLUMN_SNAP_CLOSED_PX) {
@@ -11926,14 +12441,8 @@ function ChatRightResizeHandle({ controller, target, adjust = 0 }) {
             // the chat slot (the main grid's last column), the same element
             // the grid template protects with its own minimum. The session
             // list never gives way to the right block; see the grid template.
-            const chatSlot = document.querySelector(".ps-workspace-main-grid > .ps-workspace-pane-slot:last-child");
-            const chatWidth = chatSlot ? chatSlot.getBoundingClientRect().width : Number.POSITIVE_INFINITY;
-            const startAdjust = Number(adjust) || 0;
-            dragStateRef.current = {
-                startX: event.clientX,
-                startAdjust,
-                maxAdjust: startAdjust + Math.max(0, chatWidth - PORTAL_MIN_CHAT_COLUMN_PX),
-            };
+            const { startAdjust, maxAdjust } = startFrom(event.currentTarget);
+            dragStateRef.current = { startX: event.clientX, startAdjust, maxAdjust };
             setDragging(true);
             document.body.classList.add("is-resizing-pane-x");
         },
@@ -11941,7 +12450,11 @@ function ChatRightResizeHandle({ controller, target, adjust = 0 }) {
         onKeyDown: (event) => {
             if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
             event.preventDefault();
-            commit((Number(adjust) || 0) - (event.key === "ArrowRight" ? 24 : -24));
+            const { startAdjust, maxAdjust } = startFrom(event.currentTarget);
+            const next = event.key === "ArrowLeft"
+                ? Math.min(startAdjust + PORTAL_COLUMN_KEY_STEP_PX, Math.max(startAdjust, maxAdjust))
+                : Math.max(startAdjust - PORTAL_COLUMN_KEY_STEP_PX, PORTAL_COLUMN_SNAP_CLOSED_PX - base);
+            if (next !== startAdjust) controller.dispatch({ type: actionType, [key]: next });
         },
     },
     React.createElement("span", { className: "ps-column-resizer-handle", "aria-hidden": "true" },
@@ -12018,10 +12531,13 @@ function DiagnosticsSplitResizeHandle({ controller, splitAdjust = 0 }) {
             const columnHeight = Math.max(0, col?.getBoundingClientRect?.().height || 0);
             const dividerHeight = Math.max(0, event.currentTarget.getBoundingClientRect().height || 0);
             const { minAdjust, maxAdjust } = getDiagnosticsSplitAdjustBounds(columnHeight, dividerHeight);
+            // One key moves the seam a fixed step, as on every other seam (F-07). It used to move by the divider's own
+            // height, which was the 18px gutter and is now the 1px hairline (--ps-resizer-track).
+            const start = clampNumber(Number(splitAdjust) || 0, minAdjust, maxAdjust);
             controller.dispatch({
                 type: "ui/diagnosticsSplitAdjust",
                 diagnosticsSplitAdjust: clampNumber(
-                    (Number(splitAdjust) || 0) + (event.key === "ArrowDown" ? dividerHeight : -dividerHeight),
+                    start + (event.key === "ArrowDown" ? PORTAL_COLUMN_KEY_STEP_PX : -PORTAL_COLUMN_KEY_STEP_PX),
                     minAdjust,
                     maxAdjust,
                 ),
@@ -13961,9 +14477,11 @@ function ProviderBudgetView({ controller }) {
         sheetEl);
 }
 
-function ModalLayer({ controller }) {
+export function ModalLayer({ controller }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const touchScale = useControllerSelector(controller, (state) => Boolean(state.ui.touchScale));
+    // The confirm box's title and message ids, for its dialog name and description (ModalDialog).
+    const confirmDialogId = React.useId();
     const theme = getTheme(themeId);
     const modalState = useControllerSelector(controller, (state) => ({
         rawModal: state.ui.modal,
@@ -14186,19 +14704,21 @@ function ModalLayer({ controller }) {
 
     if (modal.type === "confirm" && modalState.confirm) {
         const isAlert = Boolean(modal.alert);
-        const isDestructive = !isAlert && (modal.action === "deleteSession" || modal.action === "removeSystemSession");
+        const isDestructive = !isAlert && (modal.action === "deleteSession" || modal.action === "removeSystemSession"
+            || (modal.action === "workflowRunCommand" && modal.workflowRunCommand?.operation === "cancel"));
         // The regenerate confirm carries distillation inputs: a mode select and
         // an optional distilling-instructions textarea, bound to modal.extras.
         const isRegen = modal.action === "regenerateSession";
         const extras = modal.extras || {};
+        const titleId = `${confirmDialogId}-title`, messageId = `${confirmDialogId}-message`;
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
-            React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
+            React.createElement(ModalDialog, { className: "ps-modal is-narrow", titleId, messageId },
                 React.createElement("div", { className: "ps-modal-header" },
-                    React.createElement("div", { className: "ps-modal-title" }, modalState.confirm.title),
+                    React.createElement("div", { className: "ps-modal-title", id: titleId }, modalState.confirm.title),
                     React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
                 ),
                 React.createElement("div", { className: "ps-modal-body", style: { padding: "16px 20px" } },
-                    React.createElement("p", { style: { color: "#94a3b8", margin: 0 } }, modalState.confirm.message),
+                    React.createElement("p", { id: messageId, style: { color: "#94a3b8", margin: 0 } }, modalState.confirm.message),
                 ),
                 isRegen
                     ? React.createElement("div", { className: "ps-modal-body", style: { padding: "0 20px 12px", display: "flex", flexDirection: "column", gap: 10 } },
@@ -14465,6 +14985,32 @@ function ModalLayer({ controller }) {
                         onClick: () => controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {}),
                     }, modalState.sessionWorkspace.confirmLabel)),
             ));
+    }
+    // Workflow Simplified (S9, O7): a Workflow row's Terminate menu: let started nodes finish, cancel now, or delete.
+    if (modal.type === "terminatePicker" && modal.workflow) {
+        const pick = (action) => () => {
+            controller.pickTerminateAction(action).catch(() => {});
+        };
+        const ended = Boolean(modal.workflow.ended);
+        const item = (action, label, note, disabled = false, className = "ps-modal-button") => React.createElement("button", {
+            type: "button", className, disabled, "data-action": action,
+            style: { width: "100%", justifyContent: "space-between", display: "flex", gap: 8 },
+            onClick: pick(action),
+        }, React.createElement("span", null, label), note ? React.createElement("span", { style: { color: "#94a3b8" } }, note) : null);
+        // Review UI-14: a real modal dialog (ModalDialog): it takes focus and gives it back to its opener, Tab stays among
+        // its choices and Enter or Space presses one; Escape closes it (the portal's modal keys), as the Stop dialog does.
+        const titleId = `${confirmDialogId}-wf-terminate`;
+        return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
+            React.createElement(ModalDialog, { className: "ps-modal is-narrow", titleId },
+                React.createElement("div", { className: "ps-modal-header" },
+                    React.createElement("div", { className: "ps-modal-title", id: titleId }, modal.title || "Workflow"),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕")),
+                React.createElement("div", { className: "ps-modal-body", style: { padding: "10px 16px 16px", display: "flex", flexDirection: "column", gap: 8 } },
+                    item("stop", "Let running nodes finish", ended ? "it has ended" : "Stop…", ended),
+                    item("cancel", "Cancel now", ended ? "it has ended" : "running nodes are interrupted", ended),
+                    item("delete", "Delete", ended ? null : "after it ends", !ended, "ps-modal-button is-danger")),
+                React.createElement("div", { className: "ps-modal-footer" },
+                    React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, ended ? "Close" : "Keep running"))));
     }
     if (modal.type === "terminatePicker") {
         const isBulk = Number(modal.bulkCount) > 1;
@@ -15053,8 +15599,9 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
             if (!mobile && event.key === "Escape") {
                 // In full screen or zen, Escape steps down a level (their own
                 // handler); taking it here left the person stuck there.
-                const ui = controller.getState().ui;
-                if (ui.canvasOpen && (ui.canvasZen || ui.canvasMaximized)) return;
+                const root = controller.getState();
+                const ui = root.ui;
+                if (ui.canvasOpen && (ui.canvasZen || ui.canvasMaximized) && !activeSessionIsWorkflow(root)) return;
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.FOCUS_SESSIONS).catch(() => {});
             }
@@ -16619,6 +17166,8 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
         mode,
         branding,
         docs,
+        // Stage 2.0: no Workflow surface until the server's bootstrap says Workflows are on.
+        workflowsEnabled: false,
     }));
     // The browser owns the splash surface. The terminal notice is a later change.
     store.dispatch({ type: "motd/patch", patch: { portalEnabled: true } });
@@ -16720,7 +17269,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         // identity across renders (a fresh array would break memoization).
         // Conversion to a sorted array happens inside `normalizeProfileSettings`.
         collapsedSessionIds: rootState.sessions.collapsedIds,
-        activeSessionId: rootState.sessions.activeSessionId || null,
+        activeSessionId: workflowHighlightedSessionId(rootState.sessions) || null,
         revealedCreatedSessionId: rootState.ui.revealedCreatedSessionId || null,
         promptRows: getStatePromptRows(rootState),
         rightPaneMode: rootState.ui.rightPaneMode || "panes",
@@ -16729,11 +17278,16 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         diagnosticsOpen: rootState.ui.diagnosticsOpen === true,
         canvasMaximized: rootState.ui.canvasMaximized === true,
         canvasZen: rootState.ui.canvasZen === true,
-        sidePaneTab: rootState.ui.sidePaneTab === "workspace" ? "workspace" : "canvas",
+        sidePaneTab: normalizeSidePaneTab(rootState.ui.sidePaneTab),
         // Live reference — reducer updates replace the object, so
         // shallow-equal sees changes and the save effect fires.
         canvasPrefs: rootState.canvas?.prefs,
         activeSessionIsGroup: Boolean(rootState.sessions.activeSessionId && rootState.sessions.byId[rootState.sessions.activeSessionId]?.isGroup),
+        activeSessionIsWorkflow: activeSessionIsWorkflow(rootState),
+        // Live reference, saved with the profile (batch 6, f-03).
+        workflowLayouts: rootState.ui.workflowLayouts,
+        workflowPanelHeights: rootState.ui.workflowPanelHeights,
+        workflowPanelWidths: rootState.ui.workflowPanelWidths,
         paneAdjust: rootState.ui.layout?.paneAdjust ?? 0,
         sessionPaneAdjust: rootState.ui.layout?.sessionPaneAdjust ?? 0,
         portalSessionColumnAdjust: rootState.ui.layout?.portalSessionColumnAdjust ?? 0,
@@ -16950,6 +17504,35 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         if (mobileCanvasOpen) { closeMobileCanvas(); return; }
         openMobileCanvas();
     }, [mobileCanvasOpen, closeMobileCanvas, openMobileCanvas]);
+    // Workflow Simplified (12): the Workflow pane replaces the chat, as the canvas does. The canvas layer shows it while the
+    // side pane is on its Workflow tab; the Workflow button opens it there, or closes it when it shows.
+    const toggleMobileWorkflow = React.useCallback(() => {
+        const onWorkflowTab = shownSidePaneTab(controller.getState()) === WORKFLOW_SIDE_TAB;
+        if (mobileCanvasOpen && onWorkflowTab) { closeMobileCanvas(); return; }
+        controller.dispatch({ type: "ui/sidePaneTab", tab: WORKFLOW_SIDE_TAB });
+        if (!mobileCanvasOpen) openMobileCanvas();
+    }, [controller, mobileCanvasOpen, closeMobileCanvas, openMobileCanvas]);
+    // A Workflow row picked from the session list brings the Workflow pane up (S4).
+    const workflowOpenSeq = useControllerSelector(controller, (s) => Number(s?.ui?.workflowOpenSeq) || 0);
+    const workflowOpenSeqRef = React.useRef(workflowOpenSeq);
+    React.useEffect(() => {
+        if (workflowOpenSeq === workflowOpenSeqRef.current) return;
+        workflowOpenSeqRef.current = workflowOpenSeq;
+        if (mobile && !state.adminVisible) openMobileCanvas();
+    }, [workflowOpenSeq, mobile, state.adminVisible, openMobileCanvas]);
+    // OF-S2-4d, review F7: a Workflow panel that opens by itself shows on the phone without the hand-opening path's effects:
+    // it does not withdraw the chat's canvas opt-out, and it never closes Budget or the admin console (it waits behind them).
+    const workflowAutoOpenSeq = useControllerSelector(controller, (s) => Number(s?.ui?.workflowAutoOpenSeq) || 0);
+    const budgetOpen = useControllerSelector(controller, (s) => Boolean(s?.ui?.budgetOpen));
+    const workflowAutoOpenSeqRef = React.useRef(workflowAutoOpenSeq);
+    React.useEffect(() => {
+        if (workflowAutoOpenSeq === workflowAutoOpenSeqRef.current) return;
+        workflowAutoOpenSeqRef.current = workflowAutoOpenSeq;
+        if (!mobile || state.adminVisible || budgetOpen) return;
+        if (mobilePane !== "canvas") paneBeforeCanvasRef.current = mobilePane;
+        setMobilePane("canvas");
+        setMobileCanvasEverOpened(true);
+    }, [workflowAutoOpenSeq, mobile, state.adminVisible, budgetOpen, mobilePane]);
 
     // gridViewport used to be PUBLISHED here via controller.setViewport — a
     // second writer to ui.layout that derived columns from the hard-coded
@@ -17136,7 +17719,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 });
         }, 400);
         return undefined;
-    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.chatReading, state.themeSound, state.themeSoundMobile, state.codeFont]);
+    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.chatReading, state.themeSound, state.themeSoundMobile, state.codeFont, state.workflowLayouts, state.workflowPanelHeights, state.workflowPanelWidths]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);
@@ -17289,8 +17872,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         && !filesFullscreenActive
         && !artifactPaneActive
         // Zen is chat + canvas only; diagnostics keeps its stored toggle and
-        // returns when zen ends.
-        && !(state.canvasZen && state.canvasOpen);
+        // returns when zen ends. A Workflow shown in the middle has no zen.
+        && !(state.canvasZen && state.canvasOpen && !state.activeSessionIsWorkflow);
     // Whether the right side of the workspace exists at all. Both columns off
     // is the default: sessions and chat, nothing else. An absent column takes
     // no width and grows no resizer — off means gone, not collapsed.
@@ -17299,12 +17882,19 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // In the STORE, not local state: the header owns the way out (the rev
     // strip is promoted up there while full screen), and every other toolbar
     // button has to be able to drop it before doing its own job.
-    const canvasMaximized = state.canvasMaximized && canvasModeActive;
+    //
+    // A Workflow shown in the middle (its session is the active one) has
+    // neither full screen nor zen: while one is, both read as off and it shows
+    // in the normal layout. The stored flags are untouched, so a chat brings
+    // them back as the person left them. The Workflow tab in the right block
+    // has both, as the canvas does, on the same flags: switching between the
+    // two keeps the mode.
+    const canvasMaximized = state.canvasMaximized && canvasModeActive && !state.activeSessionIsWorkflow;
     // Zen: chat rail + canvas workbench. Diagnostics steps aside but keeps
     // its stored toggle; the session list hides entirely.
-    const zenActive = state.canvasZen && canvasModeActive && !artifactPaneActive;
+    const zenActive = state.canvasZen && canvasModeActive && !artifactPaneActive && !state.activeSessionIsWorkflow;
     const zenRailPx = Math.max(260, Math.min(720,
-        Number(state.canvasPrefs?.[state.activeSessionId]?.zenRailPx) || 380));
+        Number(state.canvasPrefs?.[state.activeSessionId]?.zenRailPx) || PORTAL_ZEN_RAIL_DEFAULT_PX));
     // Escape steps down one rung: full screen -> zen -> normal workspace.
     React.useEffect(() => {
         if (suspended || (!canvasMaximized && !zenActive)) return undefined;
@@ -17388,6 +17978,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     const desktopWorkspace = React.createElement("div", {
         ref: workspaceGridRef,
         className: `ps-workspace-grid${rightSideActive ? "" : " is-right-hidden"}`,
+        // What the right block's cap keeps beside it (the grid template below), for the seams' room (measureRightBlock).
+        "data-right-reserve": rightSideActive && !zenActive && !artifactPaneActive ? String(sessionColumnReservePx) : undefined,
         style: {
             // With both optional columns off there is no right side and no
             // resizer for one: chat takes the whole width. Leaving a 0fr track
@@ -17622,6 +18214,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
             mobile,
             canvasPaneOpen: mobileCanvasOpen,
             onToggleCanvasPane: toggleMobileCanvas,
+            onToggleWorkflowPane: toggleMobileWorkflow,
             mobilePane,
             mobileDiagnosticsPane: lastDiagnosticsPaneRef.current,
             mobileSessionsOpen: mobileSessionsOpen && mobilePane === "workspace" && !state.budgetOpen && !state.adminVisible,

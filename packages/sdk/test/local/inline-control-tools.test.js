@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { ModelProviderRegistry } from "../../src/model-providers.ts";
-import { ManagedSession } from "../../src/managed-session.ts";
-import { collectContractViolations, isFailureToolCompletion } from "../../src/session-proxy.ts";
+import { ManagedSession, TURN_INACTIVITY_ERROR_MARKER } from "../../src/managed-session.ts";
+import { LiveTurnControl } from "../../src/turn-control.ts";
+import { collectContractViolations, isFailureToolCompletion, SYSTEM_ONLY_TURN_PROMPT } from "../../src/session-proxy.ts";
+import { WORKFLOW_ASK_USER_REFUSAL } from "../../src/workflow/v2/input-policy.ts";
+import {
+    answerAsksParent, publishedScheduleActive, turnAskedForAnswer, turnScheduleEffect, workflowAgentReminderText,
+} from "../../src/workflow/v2/agent-reminder.ts";
 
 class FakeCopilotSession {
     registeredTools = [];
@@ -55,6 +60,8 @@ class FakeCopilotSession {
                 assistantContent: this.assistantContent,
             };
         queueMicrotask(async () => {
+            // A run that starts only after send() resolved (as the CLI's, which accepts the prompt first): `delayMs`.
+            if (scriptedSend.delayMs) await new Promise((resolve) => setTimeout(resolve, scriptedSend.delayMs));
             for (const call of scriptedSend.toolCalls ?? []) {
                 if (this.aborted) break;
                 const tool = this.registeredTools.find((candidate) => candidate.name === call.name);
@@ -460,6 +467,79 @@ describe("inline control tool execution", () => {
         expect(result.type).toBe("completed");
         expect(result.content).toBe("Spawned one and continuing.");
     });
+    it("spawn_workflow runs inline, keeps the turn going and passes the tool call id", async () => {
+        const fakeSession = new FakeCopilotSession();
+        const yaml = "apiVersion: pilotswarm.dev/v1alpha1\nkind: Workflow\n";
+        fakeSession.scriptedToolCalls = [
+            { name: "spawn_workflow", id: "call-wf", args: { yaml, inputs: { n: 1 } } },
+            { name: "spawn_workflow", id: "call-empty", args: { yaml: "  " } },
+            { name: "spawn_workflow", id: "call-list", args: { yaml, inputs: [1] } },
+        ];
+        fakeSession.assistantContent = "Started the workflow.";
+        const results = [];
+        fakeSession.on("tool.execution_complete", (event) => results.push(event.data.result));
+        const controlToolBridge = {
+            spawnAgent: vi.fn(),
+            spawnWorkflow: vi.fn(async () => "[SYSTEM: started workflow session wf-1]"),
+            messageAgent: vi.fn(),
+        };
+        const managed = new ManagedSession("inline-spawn-workflow", fakeSession, {});
+        const result = await managed.runTurn("run my workflow", { controlToolBridge });
+
+        const live = fakeSession.registeredTools.find((tool) => tool.name === "spawn_workflow");
+        const stub = ManagedSession.subAgentToolDefs().find((tool) => tool.name === "spawn_workflow");
+        expect(live?.parameters).toEqual(stub?.parameters);
+        expect(live?.description).toBe(stub?.description);
+        expect(controlToolBridge.spawnWorkflow).toHaveBeenCalledTimes(1);
+        expect(controlToolBridge.spawnWorkflow).toHaveBeenCalledWith({ yaml, inputs: { n: 1 } }, { toolCallId: "call-wf" });
+        expect(results).toEqual([
+            "[SYSTEM: started workflow session wf-1]",
+            "Error: yaml is required.",
+            "Error: inputs must be a JSON object.",
+        ]);
+        expect(result.type).toBe("completed");
+        expect(result.content).toBe("Started the workflow.");
+    });
+
+    it("spawn_workflow without the bridge method refuses instead of hanging", async () => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [{ name: "spawn_workflow", args: { yaml: "kind: Workflow" } }];
+        const results = [];
+        fakeSession.on("tool.execution_complete", (event) => results.push(event.data.result));
+        const managed = new ManagedSession("inline-spawn-workflow-missing", fakeSession, {});
+        await managed.runTurn("run it", { controlToolBridge: { spawnAgent: vi.fn(), messageAgent: vi.fn() } });
+        expect(results).toEqual(["Error: spawn_workflow is not available in this session."]);
+    });
+
+    it("cron then spawn_workflow: the schedule is set and every wake-up can start a run", async () => {
+        const yaml = "apiVersion: pilotswarm.dev/v1alpha1\nkind: Workflow\n";
+        const controlToolBridge = {
+            spawnAgent: vi.fn(),
+            messageAgent: vi.fn(),
+            spawnWorkflow: vi.fn(async (_args, call) => `[SYSTEM: started workflow session for ${call.toolCallId}]`),
+        };
+
+        // The turn that sets it up: start the first run now, then schedule.
+        const setupSession = new FakeCopilotSession();
+        setupSession.scriptedToolCalls = [
+            { name: "spawn_workflow", id: "call-first", args: { yaml } },
+            { name: "cron", id: "call-cron", args: { seconds: 3600, reason: "run the nightly workflow" } },
+        ];
+        setupSession.assistantContent = "Started the first run; it repeats every hour.";
+        const setup = await new ManagedSession("cron-workflow", setupSession, {}).runTurn("Every hour, run this workflow", { controlToolBridge });
+        // cron does not end the turn: the schedule rides the result as a queued action.
+        expect(setup.type).toBe("completed");
+        expect(setup.queuedActions).toContainEqual(expect.objectContaining({ type: "cron", action: "set", intervalSeconds: 3600 }));
+
+        // A cron wake-up: the agent starts the next run and ends its turn.
+        const wakeSession = new FakeCopilotSession();
+        wakeSession.scriptedToolCalls = [{ name: "spawn_workflow", id: "call-wake", args: { yaml } }];
+        wakeSession.assistantContent = "Started this hour's run.";
+        const wake = await new ManagedSession("cron-workflow", wakeSession, {}).runTurn("[cron wake-up]", { controlToolBridge, cycleOrigin: "cron" });
+        expect(wake.type).toBe("completed");
+        expect(controlToolBridge.spawnWorkflow.mock.calls.map(([, call]) => call.toolCallId)).toEqual(["call-first", "call-wake"]);
+    });
+
     it("keeps sub-agent stub schemas aligned with live schemas", () => {
         const spawnTool = ManagedSession.subAgentToolDefs().find((tool) => tool.name === "spawn_agent");
         const completeTool = ManagedSession.subAgentToolDefs().find((tool) => tool.name === "complete_agent");
@@ -1062,6 +1142,61 @@ describe("inline control tool execution", () => {
         expect(fakeSession.aborted).toBe(false);
     });
 
+    it("intercepts every framework tool of a session under a real-agent workflow test, but complete_workflow_node and ask_user", async () => {
+        // Workflow v2 real-agent test runs (design 05 agent mode real; INACTIVE): the bridge's workflowTestToolCall answers the calls.
+        const fakeSession = new FakeCopilotSession();
+        const regularToolHandler = vi.fn(async () => "live result");
+        const calls = [];
+        const workflowTestToolCall = vi.fn(async (tool, args) => {
+            calls.push([tool, args]);
+            if (tool === "read_logs") throw new Error("not_found: no logs");
+            return tool === "wait" ? "waited" : { state: "green" };
+        });
+        const completeWorkflowNode = vi.fn(async () => JSON.stringify({ ok: true }));
+        const spawnAgent = vi.fn(async () => "spawned");
+        fakeSession.scriptedToolCalls = [
+            { name: "regular_tool", args: { buildId: 1 } },
+            { name: "wait", args: { seconds: 60, reason: "cool off" } },
+            { name: "spawn_agent", args: { task: "help me" } },
+            { name: "read_logs", args: { buildId: 1 } },
+            { name: "ask_user", args: { question: "May I?" } },
+            { name: "complete_workflow_node", args: { outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-1" } },
+        ];
+        const tool = name => ({ name, description: "test tool", parameters: { type: "object", properties: {} }, handler: regularToolHandler });
+        const managed = new ManagedSession("workflow-test-agent", fakeSession, { tools: [tool("regular_tool"), tool("read_logs")] });
+        expect(managed.workflowTestSessionActive()).toBe(false);
+
+        const result = await managed.runTurn("run the state", {
+            controlToolBridge: { workflowTestToolCall, workflowAgentSubtree: true, completeWorkflowNode, spawnAgent },
+        });
+
+        // No framework tool ran, and no call ended the turn (a wait is answered, not waited); the state's own completion and
+        // ask_user's refusal are as in a live run.
+        expect(result.type).toBe("completed");
+        expect(regularToolHandler).not.toHaveBeenCalled();
+        expect(spawnAgent).not.toHaveBeenCalled();
+        expect(calls).toEqual([
+            ["regular_tool", { buildId: 1 }], ["wait", { seconds: 60, reason: "cool off" }], ["spawn_agent", { task: "help me" }], ["read_logs", { buildId: 1 }],
+        ]);
+        expect(completeWorkflowNode).toHaveBeenCalledTimes(1);
+        const handlerResult = name => fakeSession.registeredTools.find(candidate => candidate.name === name);
+        expect(await handlerResult("regular_tool").handler({ buildId: 1 }, { toolCallId: "again" })).toBe(JSON.stringify({ state: "green" }));
+        expect(await handlerResult("wait").handler({ seconds: 1 }, { toolCallId: "again" })).toBe("waited");
+        expect(await handlerResult("read_logs").handler({ buildId: 1 }, { toolCallId: "again" }))
+            .toMatchObject({ resultType: "failure", textResultForLlm: "Tool failed: not_found: no logs" });
+        expect(await handlerResult("ask_user").handler({ question: "May I?" }, { toolCallId: "again" })).toBe(WORKFLOW_ASK_USER_REFUSAL);
+        // From then on the session refuses MCP tools (its permission handler reads this).
+        expect(managed.workflowTestSessionActive()).toBe(true);
+
+        // A turn without the test's bridge runs its tools.
+        const plain = new FakeCopilotSession();
+        plain.scriptedToolCalls = [{ name: "regular_tool", args: { buildId: 2 } }];
+        const live = new ManagedSession("workflow-live-agent", plain, { tools: [tool("regular_tool")] });
+        expect((await live.runTurn("run the state", { controlToolBridge: { workflowAgentSubtree: true } })).type).toBe("completed");
+        expect(regularToolHandler).toHaveBeenCalledTimes(1);
+        expect(live.workflowTestSessionActive()).toBe(false);
+    });
+
     it("converts thrown user tool errors into failure tool results instead of surfacing SDK tool errors", async () => {
         const fakeSession = new FakeCopilotSession();
         const failingToolHandler = vi.fn(async () => {
@@ -1147,6 +1282,112 @@ describe("inline control tool execution", () => {
         expect(result.events.some(event => event.eventType === "session.error")).toBe(true);
     });
 
+    // F-C3: the runTurn activity sets quietEmptyAnswer only on a root session's system-only turn (a child digest, a wake;
+    // isQuietSystemOnlyTurn, test/local/empty-system-turn.test.js). Without it, the cases above stay errors.
+    describe("F-C3: a root session's system-only turn that the model answers with nothing (quietEmptyAnswer)", () => {
+        const EMPTY = { message: "No response was returned. Send your message again to retry.", errorType: "query" };
+        const quietTurn = async (fakeSession, config = {}) => {
+            const onEvent = vi.fn();
+            const trace = vi.fn();
+            const managed = new ManagedSession("quiet-system-turn", fakeSession, config);
+            const result = await managed.runTurn(SYSTEM_ONLY_TURN_PROMPT, { onEvent, trace, bootstrap: true, quietEmptyAnswer: true });
+            const recorded = onEvent.mock.calls.map(([event]) => event?.eventType);
+            return { result, recorded, trace };
+        };
+
+        it("is a completed turn with no content: no error, no chat warning, one activity line and a trace", async () => {
+            const fakeSession = new FakeCopilotSession();
+            fakeSession.assistantContent = null;
+            fakeSession.scriptedEvents = [{ type: "session.error", data: EMPTY }];
+            const { result, recorded, trace } = await quietTurn(fakeSession);
+            expect(result).toMatchObject({ type: "completed", content: "" });
+            expect(result.events.some(event => event.eventType === "session.error")).toBe(false);
+            expect(recorded).not.toContain("session.error");
+            expect(recorded).toContain("session.empty_answer");
+            expect(result.events.find(event => event.eventType === "session.empty_answer").data)
+                .toMatchObject({ cliMessage: EMPTY.message, text: expect.stringContaining("ended without an answer") });
+            expect(trace.mock.calls.some(([line]) => /answered a system-only turn with nothing/.test(line))).toBe(true);
+        });
+
+        it("any other error of the same turn is still an error, recorded as before", async () => {
+            const fakeSession = new FakeCopilotSession();
+            fakeSession.assistantContent = null;
+            fakeSession.scriptedEvents = [{ type: "session.error", data: { message: "Rate limit exceeded. Try again later.", errorType: "query" } }];
+            const { result, recorded } = await quietTurn(fakeSession);
+            expect(result.type).toBe("error");
+            expect(result.message).toContain("Rate limit exceeded");
+            expect(recorded).toContain("session.error");
+            expect(recorded).not.toContain("session.empty_answer");
+        });
+
+        it("a turn that made a tool call before the empty answer is still an error, its error recorded", async () => {
+            const handler = vi.fn(async () => "done");
+            const fakeSession = new FakeCopilotSession();
+            fakeSession.scriptedToolCalls = [{ name: "regular_tool", args: { value: 1 } }];
+            fakeSession.assistantContent = null;
+            fakeSession.scriptedEvents = [{ type: "session.error", data: EMPTY }];
+            const { result, recorded } = await quietTurn(fakeSession, {
+                tools: [{ name: "regular_tool", description: "test tool", parameters: { type: "object", properties: {} }, handler }],
+            });
+            expect(handler).toHaveBeenCalledTimes(1);
+            expect(result.type).toBe("error");
+            expect(result.message).toContain("No response was returned");
+            expect(result.events.some(event => event.eventType === "session.error")).toBe(true);
+            expect(recorded).toContain("session.error");
+            expect(recorded).not.toContain("session.empty_answer");
+        });
+
+        // Review Q1 of the owner batch: text that was streamed and then cut off by the empty-answer error is not an empty answer.
+        it("streamed answer text with no final message, then the empty-answer error, is an error as before", async () => {
+            const fakeSession = new FakeCopilotSession();
+            fakeSession.scriptedSends = [{ assistantDeltas: ["The child finished: "], assistantContent: null,
+                events: [{ type: "session.error", data: EMPTY }] }];
+            const { result, recorded } = await quietTurn(fakeSession);
+            expect(result.type).toBe("error");
+            expect(result.message).toContain("No response was returned");
+            expect(result.events.some(event => event.eventType === "session.error")).toBe(true);
+            expect(recorded).toContain("session.error");
+            expect(recorded).not.toContain("session.empty_answer");
+        });
+
+        it("an empty streamed delta is not answer text: the turn is still quiet", async () => {
+            const fakeSession = new FakeCopilotSession();
+            fakeSession.scriptedSends = [{ assistantDeltas: [""], assistantContent: null, events: [{ type: "session.error", data: EMPTY }] }];
+            const { result, recorded } = await quietTurn(fakeSession);
+            expect(result).toMatchObject({ type: "completed", content: "" });
+            expect(recorded).not.toContain("session.error");
+        });
+
+        it("an answer with content keeps its content; the error is recorded as before", async () => {
+            const fakeSession = new FakeCopilotSession();
+            fakeSession.assistantContent = "Noted.";
+            fakeSession.scriptedEvents = [{ type: "session.error", data: EMPTY }];
+            const { result, recorded } = await quietTurn(fakeSession);
+            expect(result).toMatchObject({ type: "completed", content: "Noted." });
+            expect(recorded).toContain("session.error");
+            expect(recorded).not.toContain("session.empty_answer");
+        });
+
+        // Owner "No response" dump (2026-11-06): a root session's turn that answers only workflow notices that need no answer
+        // (isQuietWorkflowNoticeTurn, test/local/workflow-notice-empty-answer.test.js) is quiet the same way; its line says so.
+        it("a workflow notice that needs no answer, answered with nothing, is completed and its activity line names it", async () => {
+            const fakeSession = new FakeCopilotSession();
+            fakeSession.assistantContent = null;
+            fakeSession.scriptedEvents = [{ type: "session.error", data: EMPTY }];
+            const onEvent = vi.fn();
+            const trace = vi.fn();
+            const managed = new ManagedSession("quiet-notice-turn", fakeSession, {});
+            const result = await managed.runTurn("[WORKFLOW_UPDATE from=wf-1 workflow=monitor@1.0.0 run=run-1 type=message state=send]\nNo change.",
+                { onEvent, trace, quietEmptyAnswer: true, quietEmptyAnswerKind: "workflow_notice" });
+            const recorded = onEvent.mock.calls.map(([event]) => event?.eventType);
+            expect(result).toMatchObject({ type: "completed", content: "" });
+            expect(recorded).not.toContain("session.error");
+            expect(result.events.find(event => event.eventType === "session.empty_answer").data).toEqual({ kind: "workflow_notice",
+                text: "The model answered a workflow notice that needs no answer with nothing; the turn ended without an answer.", cliMessage: EMPTY.message });
+            expect(trace.mock.calls.some(([line]) => /answered a workflow notice that needs no answer with nothing/.test(line))).toBe(true);
+        });
+    });
+
     it("does not capture empty assistant messages at wait_for_agents boundaries", async () => {
         const fakeSession = new FakeCopilotSession();
         fakeSession.scriptedToolCalls = [
@@ -1214,5 +1455,442 @@ describe("inline control tool execution", () => {
             { role: "assistant", content: "nope", refusal: "I cannot help with that" },
             { role: "user", content: "bye" },
         ]);
+    });
+});
+
+// Owner decision Q2 (workflow/v2/agent-reminder.ts): a workflow agent state's own child whose turn would end with nothing
+// pending is reminded once, inside the turn, through runCorrection, after the activity's gate (TurnOptions.stepReminder)
+// checked the step and recorded the reminder.
+describe("Q2: the step reminder inside an agent state's child turn", () => {
+    const TEXT = workflowAgentReminderText("review");
+    const COMPLETE = { name: "complete_workflow_node", args: { outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-1" } };
+    const REMIND = { remind: true, n: 1, max: 3, stateId: "review" };
+
+    /**
+     * A step child's turn on the fake CLI: the model's sends, the gate's answer (an answer, an error it throws, or a function
+     * of the check's input and the session that returns the answer), the session config.
+     */
+    function stepChild(sends, { gate = REMIND, config = { workflowAgentChild: true }, tools = [] } = {}) {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedSends = sends;
+        const checks = [];
+        let managed = null;
+        const stepReminder = { check: vi.fn(async input => {
+            checks.push(input);
+            if (gate instanceof Error) throw gate;
+            return typeof gate === "function" ? await gate(input, managed) : gate;
+        }) };
+        const completeWorkflowNode = vi.fn(async () => JSON.stringify({ ok: true }));
+        const sendSessionMessage = vi.fn(async () => "sent");
+        managed = new ManagedSession("step-child", fakeSession, { ...config, tools });
+        const events = [];
+        const traces = [];
+        const run = (opts = {}) => managed.runTurn("Review the change.", {
+            stepReminder, onEvent: event => events.push(event), trace: line => traces.push(line),
+            controlToolBridge: { completeWorkflowNode, sendSessionMessage, resolveWaitForAgents: async ids => ids },
+            ...opts,
+        });
+        return { fakeSession, managed, checks, completeWorkflowNode, sendSessionMessage, events, traces, run };
+    }
+    const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+    /** A gate that answers `answer` after `ms`. */
+    const slowGate = (ms, answer) => async () => { await pause(ms); return answer; };
+    const INVOKE_AS_TEXT = '<invoke name="complete_workflow_node">\n<parameter name="outcome">accepted</parameter>\n</invoke>';
+    const reminded = result => (result.events ?? []).filter(event => event.eventType === "runtime.workflow_step_reminded");
+
+    it("reads what is pending: a question in the turn's calls or its answer, the turn's schedule actions, the published schedule", () => {
+        const call = (eventType, args) => ({ eventType, data: { toolName: "send_session_message", arguments: args } });
+        expect(turnAskedForAnswer([call("tool.execution_start", { session_id: "p", subject: "q", body: "b", expects_response: true })])).toBe(true);
+        expect(turnAskedForAnswer([call("tool.execution_complete", { session_id: "p", subject: "q", body: "b" })])).toBe(false);
+        expect(turnAskedForAnswer(undefined)).toBe(false);
+        expect(answerAsksParent("  question for parent: which base?")).toBe(true);
+        expect(answerAsksParent("It seems fine. QUESTION FOR PARENT: none")).toBe(false);
+        expect(answerAsksParent(undefined)).toBe(false);
+        const set = { type: "cron", action: "set", intervalSeconds: 60, reason: "check" };
+        const cancelAt = [{ type: "cron_at", action: "cancel" }, { type: "cron", action: "cancel" }];
+        expect(turnScheduleEffect(undefined)).toBeNull();
+        expect(turnScheduleEffect([{ type: "set_workspace_extra", extra: {} }])).toBeNull();
+        expect(turnScheduleEffect([set, ...cancelAt])).toBe("cancel");
+        expect(turnScheduleEffect([...cancelAt, { type: "cron_at", action: "set", schedule: {} }])).toBe("set");
+        expect(publishedScheduleActive({ status: "Running", customStatus: JSON.stringify({ status: "running", cronActive: true }) })).toBe(true);
+        expect(publishedScheduleActive({ status: "Running", customStatus: { cronActive: true } })).toBe(true);
+        expect(publishedScheduleActive({ status: "Running", customStatus: JSON.stringify({ status: "running", cronActive: false }) })).toBe(false);
+        expect(publishedScheduleActive({ status: "Running", customStatus: "not json" })).toBe(false);
+        expect(publishedScheduleActive(null)).toBe(false);
+    });
+
+    it("a prose end gets exactly one reminder in the same turn, with the soft text and a runtime event; the turn completes", async () => {
+        expect(TEXT).toBe("Reminder from the workflow: step 'review' is still open. If you have finished, call complete_workflow_node now "
+            + "with your outcome and output. If you are still working, continue.");
+        const h = stepChild([{ assistantContent: "I looked at it; it seems fine." }, { toolCalls: [COMPLETE], assistantContent: "STATE_COMPLETED" }]);
+        const result = await h.run();
+        expect(result).toMatchObject({ type: "completed", content: "STATE_COMPLETED" });
+        expect(h.fakeSession.sentPrompts).toEqual(["Review the change.", TEXT]);
+        expect(h.checks).toEqual([{ scheduleCancelled: false }]);
+        expect(h.completeWorkflowNode).toHaveBeenCalledTimes(1);
+        const event = { eventType: "runtime.workflow_step_reminded", data: { stateId: "review", n: 1, max: 3, sessionId: "step-child" } };
+        expect(reminded(result)).toEqual([event]);
+        expect(h.events.filter(item => item.eventType === "runtime.workflow_step_reminded")).toEqual([event]);
+    });
+
+    it("a model that still answers in prose after the reminder gets no second one this turn; the turn completes", async () => {
+        const h = stepChild([{ assistantContent: "It seems fine." }, { assistantContent: "Still fine, I think." }]);
+        const result = await h.run();
+        expect(result).toMatchObject({ type: "completed", content: "Still fine, I think." });
+        expect(h.fakeSession.sentPrompts).toEqual(["Review the change.", TEXT]);
+        expect(h.checks).toHaveLength(1);
+        expect(reminded(result)).toHaveLength(1);
+    });
+
+    it("a turn that called complete_workflow_node gets none, and the gate is not asked", async () => {
+        const h = stepChild([{ toolCalls: [COMPLETE], assistantContent: "Done." }]);
+        const result = await h.run();
+        expect(result).toMatchObject({ type: "completed", content: "Done." });
+        expect(h.fakeSession.sentPrompts).toEqual(["Review the change."]);
+        expect(h.checks).toEqual([]);
+        expect(reminded(result)).toEqual([]);
+    });
+
+    it.each([
+        // Longer than the session's wait threshold (30 s), which ManagedSession waits out inside the turn.
+        ["wait", { name: "wait", args: { seconds: 120, reason: "build running" } }, "wait"],
+        ["ask_user", { name: "ask_user", args: { question: "May I merge?" } }, "input_required"],
+        ["wait_for_agents", { name: "wait_for_agents", args: { agent_ids: ["helper-1"] } }, "wait_for_agents"],
+        ["cron", { name: "cron", args: { seconds: 60, reason: "check the build" } }, "completed"],
+        ["cron_at", { name: "cron_at", args: { minute: 0, hour: 9, tz: "UTC", reason: "check every morning" } }, "completed"],
+    ])("a turn that ends on %s, or queues a schedule, gets none", async (_label, call, type) => {
+        const h = stepChild([{ toolCalls: [call], assistantContent: "Waiting for it." }]);
+        const result = await h.run();
+        expect(result.type).toBe(type);
+        expect(h.fakeSession.sentPrompts).toEqual(["Review the change."]);
+        expect(h.checks).toEqual([]);
+        expect(reminded(result)).toEqual([]);
+    });
+
+    it("a turn that cancels its schedule tells the gate, which decides on the session's status without it", async () => {
+        const h = stepChild([{ toolCalls: [{ name: "cron", args: { action: "cancel" } }], assistantContent: "No more checks." },
+            { assistantContent: "Still thinking." }]);
+        const result = await h.run();
+        expect(h.checks).toEqual([{ scheduleCancelled: true }]);
+        expect(reminded(result)).toHaveLength(1);
+    });
+
+    it("a1: a turn that called send_session_message with expects_response=true gets none; a one-way message does not count", async () => {
+        const ask = { name: "send_session_message", args: { session_id: "parent-1", subject: "Which base?", body: "main or dev?", expects_response: true } };
+        const asked = stepChild([{ toolCalls: [ask], assistantContent: "I asked my parent." }]);
+        const result = await asked.run();
+        expect(result.type).toBe("completed");
+        expect(asked.sendSessionMessage).toHaveBeenCalledTimes(1);
+        expect(asked.checks).toEqual([]);
+        expect(asked.fakeSession.sentPrompts).toEqual(["Review the change."]);
+        const told = stepChild([{ toolCalls: [{ name: "send_session_message", args: { session_id: "parent-1", subject: "FYI", body: "started" } }],
+            assistantContent: "I told my parent." }, { assistantContent: "Still working." }]);
+        expect(reminded(await told.run())).toHaveLength(1);
+    });
+
+    it("an answer that asks the parent a question (QUESTION FOR PARENT:) gets none", async () => {
+        const h = stepChild([{ assistantContent: "QUESTION FOR PARENT: which base should I use?" }]);
+        const result = await h.run();
+        expect(result).toMatchObject({ type: "completed", content: "QUESTION FOR PARENT: which base should I use?" });
+        expect(h.checks).toEqual([]);
+        expect(h.fakeSession.sentPrompts).toHaveLength(1);
+    });
+
+    it("a gate that refuses (step closed, deadline passed, sub-agents at work, reminders spent, a schedule) or fails sends nothing; the turn completes", async () => {
+        for (const reason of ["decided", "expired", "sub_agents", "spent", "schedule"]) {
+            const h = stepChild([{ assistantContent: "It seems fine." }], { gate: { remind: false, reason } });
+            const result = await h.run();
+            expect(result, reason).toMatchObject({ type: "completed", content: "It seems fine." });
+            expect(h.checks, reason).toHaveLength(1);
+            expect(h.fakeSession.sentPrompts, reason).toEqual(["Review the change."]);
+            expect(reminded(result), reason).toEqual([]);
+            expect(h.traces.join("\n"), reason).toContain(`no step reminder: ${reason}`);
+        }
+        const failing = stepChild([{ assistantContent: "It seems fine." }], { gate: new Error("store unavailable") });
+        const result = await failing.run();
+        expect(result).toMatchObject({ type: "completed", content: "It seems fine." });
+        expect(failing.fakeSession.sentPrompts).toEqual(["Review the change."]);
+        expect(failing.traces.join("\n")).toContain("store unavailable");
+    });
+
+    // Adversarial review R2-RT-3: a failed gate's trace and a failed completion's answer go through the workflow sanitizer.
+    it("R2-RT-3: a failed gate is traced, and a failed completion answered, with no secret of the error", async () => {
+        const CANARY = "canary-r2rt3-5d1e";
+        const failing = stepChild([{ assistantContent: "It seems fine." }],
+            { gate: new Error(`connect postgres://svc:${CANARY}@db.invalid/wf failed; token=${CANARY}`) });
+        await failing.run();
+        const trace = failing.traces.join("\n");
+        expect(trace).toContain("the step reminder's check failed; no reminder: connect <url> failed;");
+        expect(trace).not.toContain(CANARY);
+        const h = stepChild([{ toolCalls: [COMPLETE], assistantContent: "Done." }]);
+        h.completeWorkflowNode.mockImplementation(async () => { throw new Error(`store at https://u:${CANARY}@x.invalid refused; secret=${CANARY}`); });
+        const results = [];
+        h.fakeSession.on("tool.execution_complete", payload => {
+            if (payload.data?.toolName === "complete_workflow_node") results.push(payload.data.result);
+        });
+        await h.run();
+        expect(results).toHaveLength(1);
+        expect(results[0]).not.toContain(CANARY);
+        expect(JSON.parse(results[0])).toMatchObject({ ok: false, error: { code: "WORKFLOW_ERROR" } });
+    });
+
+    // Re-check S-SF-F3: a failed respond_session_request bridge is answered through the same sanitizer.
+    it("S-SF-F3: a failed respond_session_request is answered with no secret of the error", async () => {
+        const CANARY = "canary-sff3-9b2c";
+        const respond = { name: "respond_session_request", args: { request_id: "r-1", response: { ok: true }, operation_id: "op-1" } };
+        const h = stepChild([{ toolCalls: [respond], assistantContent: "Answered." }], { config: {} });
+        const results = [];
+        h.fakeSession.on("tool.execution_complete", payload => {
+            if (payload.data?.toolName === "respond_session_request") results.push(payload.data.result);
+        });
+        await h.run({ controlToolBridge: { resolveWaitForAgents: async ids => ids,
+            respondSessionRequest: async () => { throw new Error(`host postgres://svc:${CANARY}@db.invalid/x refused; token=${CANARY}`); } } });
+        expect(results).toHaveLength(1);
+        expect(results[0]).not.toContain(CANARY);
+        expect(JSON.parse(results[0])).toMatchObject({ ok: false, error: { code: "WORKFLOW_ERROR" } });
+    });
+
+    it("a session that is not an agent state's own child, or a turn without the gate, gets none", async () => {
+        const other = stepChild([{ assistantContent: "It seems fine." }], { config: {} });
+        expect(reminded(await other.run())).toEqual([]);
+        expect(other.checks).toEqual([]);
+        expect(other.fakeSession.sentPrompts).toHaveLength(1);
+        const ungated = stepChild([{ assistantContent: "It seems fine." }]);
+        expect(reminded(await ungated.run({ stepReminder: undefined }))).toEqual([]);
+        expect(ungated.fakeSession.sentPrompts).toHaveLength(1);
+    });
+
+    // Review D1: every 1.0.83 workflow turn runs with a turn-control binding, and the run's session.idle closes its send
+    // gate; the reminder's correction opens it again, as the other corrections do.
+    it("D1: with the turn's real turn-control binding, a prose end is still reminded", async () => {
+        const h = stepChild([{ assistantContent: "It seems fine." }, { toolCalls: [COMPLETE], assistantContent: "STATE_COMPLETED" }]);
+        const live = new LiveTurnControl({ sessionId: "step-child", turn: 0, start: 0,
+            abort: async reason => { h.managed.requestStop(reason); h.managed.abort(); } });
+        const result = await h.run({ turnIndex: 0, turnControl: live });
+        expect(result).toMatchObject({ type: "completed", content: "STATE_COMPLETED" });
+        expect(h.fakeSession.sentPrompts).toEqual(["Review the change.", TEXT]);
+        expect(h.checks).toEqual([{ scheduleCancelled: false }]);
+        expect(reminded(result)).toHaveLength(1);
+        expect(h.completeWorkflowNode).toHaveBeenCalledTimes(1);
+    });
+
+    it("a steer held after the run settled, or a held Stop, is pending: no reminder", async () => {
+        // A binding whose controls arrive once the first prompt was sent (after it, the run settles with the gate closed).
+        const binding = (fakeSession, held) => ({
+            attach() {}, gateOpened() {}, detach() {},
+            heldStop: () => (fakeSession.sentPrompts.length > 0 ? held.stop ?? null : null),
+            hasHeldControls: () => fakeSession.sentPrompts.length > 0 && held.controls === true,
+        });
+        const steered = stepChild([{ assistantContent: "It seems fine." }, { assistantContent: "never sent" }]);
+        const result = await steered.run({ turnControl: binding(steered.fakeSession, { controls: true }) });
+        expect(result).toMatchObject({ type: "completed", content: "It seems fine." });
+        expect(steered.checks).toEqual([]);
+        expect(steered.fakeSession.sentPrompts).toEqual(["Review the change."]);
+        const stopped = stepChild([{ assistantContent: "It seems fine." }, { assistantContent: "never sent" }]);
+        await stopped.run({ turnControl: binding(stopped.fakeSession, { stop: "Stopped by user" }) });
+        expect(stopped.checks).toEqual([]);
+        expect(stopped.fakeSession.sentPrompts).toEqual(["Review the change."]);
+    });
+
+    // Review D2: the gate is raced with the turn's guards and its Stop; its late answer is ignored, and nothing is sent.
+    it.each([["remind", REMIND], ["refuse", { remind: false, reason: "decided" }]])(
+        "D2: a gate still deciding when the turn times out (%s, late) ends the turn timed out at once, and nothing is sent", async (_label, answer) => {
+            const h = stepChild([{ assistantContent: "It seems fine." }, { assistantContent: "never sent" }],
+                { gate: slowGate(800, answer), config: { workflowAgentChild: true, turnTimeoutMs: 200 } });
+            const startedAt = Date.now();
+            const result = await h.run();
+            expect(Date.now() - startedAt).toBeLessThan(700);
+            expect(result).toMatchObject({ type: "error", message: "Copilot was taking too long to process and was killed." });
+            await pause(900);
+            expect(h.fakeSession.sentPrompts).toEqual(["Review the change."]);
+            expect(h.events.filter(event => event.eventType === "runtime.workflow_step_reminded")).toEqual([]);
+        });
+
+    it.each([["remind", REMIND], ["refuse", { remind: false, reason: "decided" }]])(
+        "D2: a gate still deciding when the inactivity watchdog fires (%s, late) ends the turn as lost, and nothing is sent", async (_label, answer) => {
+            const h = stepChild([{ assistantContent: "It seems fine." }, { assistantContent: "never sent" }],
+                { gate: slowGate(900, answer), config: { workflowAgentChild: true, turnTimeoutMs: 0, turnInactivityTimeoutMs: 200 } });
+            const startedAt = Date.now();
+            const result = await h.run();
+            expect(Date.now() - startedAt).toBeLessThan(800);
+            expect(result.type).toBe("error");
+            expect(result.message).toContain(TURN_INACTIVITY_ERROR_MARKER);
+            await pause(1_000);
+            expect(h.fakeSession.sentPrompts).toEqual(["Review the change."]);
+            expect(h.events.filter(event => event.eventType === "runtime.workflow_step_reminded")).toEqual([]);
+        });
+
+    it.each([["remind", REMIND], ["refuse", { remind: false, reason: "decided" }]])(
+        "D2: a Stop while the gate is still deciding (%s, late) ends the turn stopped at once, and nothing is sent", async (_label, answer) => {
+            const h = stepChild([{ assistantContent: "It seems fine." }, { assistantContent: "never sent" }], { gate: slowGate(800, answer) });
+            const startedAt = Date.now();
+            const turn = h.run();
+            await pause(100);
+            h.managed.requestStop("Stopped by user");
+            const result = await turn;
+            expect(Date.now() - startedAt).toBeLessThan(700);
+            expect(result).toMatchObject({ type: "stopped", reason: "Stopped by user" });
+            await pause(900);
+            expect(h.fakeSession.sentPrompts).toEqual(["Review the change."]);
+            expect(h.events.filter(event => event.eventType === "runtime.workflow_step_reminded")).toEqual([]);
+        });
+
+    it("a Stop that arrives as the gate answers yes sends nothing and records no reminder event in the turn", async () => {
+        const h = stepChild([{ assistantContent: "It seems fine." }, { assistantContent: "never sent" }],
+            { gate: async (_input, managed) => { managed.requestStop("Stopped by user"); return REMIND; } });
+        const result = await h.run();
+        expect(result).toMatchObject({ type: "stopped", reason: "Stopped by user" });
+        expect(h.checks).toHaveLength(1);
+        expect(h.fakeSession.sentPrompts).toEqual(["Review the change."]);
+        expect(h.events.filter(event => event.eventType === "runtime.workflow_step_reminded")).toEqual([]);
+    });
+
+    // Review E1: a Steer that turn control accepts while the gate is asked is pending work: the reminder is not sent, and
+    // the Steer stays held for the turn's normal end (turn end labels it).
+    it("E1: a Steer accepted while the gate decides goes first: the gate's yes sends nothing, and the Steer stays held", async () => {
+        let live = null;
+        const h = stepChild([{ assistantContent: "It seems fine." }, { assistantContent: "never sent" }], {
+            gate: async () => {
+                live.enqueue([{ seq: 1, kind: "steer", text: "Also check the tests.", createdAt: new Date().toISOString() }]);
+                await pause(50);
+                return REMIND;
+            },
+        });
+        live = new LiveTurnControl({ sessionId: "step-child", turn: 0, start: 0,
+            abort: async reason => { h.managed.requestStop(reason); h.managed.abort(); } });
+        const result = await h.run({ turnIndex: 0, turnControl: live });
+        expect(result).toMatchObject({ type: "completed", content: "It seems fine." });
+        expect(h.checks).toHaveLength(1);
+        // Neither the reminder nor the Steer was sent in this turn; the Steer waits for the turn's end.
+        expect(h.fakeSession.sentPrompts).toEqual(["Review the change."]);
+        expect(h.events.filter(event => event.eventType === "runtime.workflow_step_reminded")).toEqual([]);
+        expect(reminded(result)).toEqual([]);
+        expect(live.hasHeldControls()).toBe(true);
+        expect(h.traces.join("\n")).toContain("the turn has pending work now");
+    });
+
+    // Review E2: no observer runs between the last check and the send. The reminder's event is published once the SDK
+    // accepted the prompt, before the send gate opens, so a Stop its observer asks for keeps the gate closed and nothing
+    // more is sent.
+    it("E2: the reminder's event is published after the SDK accepted the prompt; a Stop from its observer keeps the gate closed", async () => {
+        // Each run starts only after its send() resolved, as the CLI's run does once it accepted the prompt (delayMs): so the
+        // first send opens the gate, and the reminder's send opens it again unless a Stop closed it.
+        const reminderTurn = async ({ stopOnEvent }) => {
+            const h = stepChild([{ delayMs: 20, assistantContent: "It seems fine." }, { delayMs: 20, assistantContent: "Still fine." },
+                { assistantContent: "never sent" }]);
+            const live = new LiveTurnControl({ sessionId: "step-child", turn: 0, start: 0,
+                abort: async reason => { h.managed.requestStop(reason); h.managed.abort(); } });
+            let opened = 0;
+            const binding = {
+                attach: port => live.attach(port), heldStop: () => live.heldStop(), hasHeldControls: () => live.hasHeldControls(),
+                gateOpened: () => { opened += 1; live.gateOpened(); }, detach: () => live.detach(),
+            };
+            let promptsAtEvent = null;
+            let openedAtEvent = null;
+            const result = await h.run({
+                turnIndex: 0, turnControl: binding,
+                onEvent: event => {
+                    h.events.push(event);
+                    if (event.eventType !== "runtime.workflow_step_reminded") return;
+                    promptsAtEvent = h.fakeSession.sentPrompts.length;
+                    openedAtEvent = opened;
+                    if (stopOnEvent) h.managed.requestStop("Stopped by user");
+                },
+            });
+            return { h, result, opened, promptsAtEvent, openedAtEvent };
+        };
+        // Without a Stop: the first send opened the gate once; the event comes after the SDK accepted the reminder and
+        // before the gate opens for the reminder's run, which it then does.
+        const plain = await reminderTurn({ stopOnEvent: false });
+        expect(plain.promptsAtEvent).toBe(2);
+        expect(plain.openedAtEvent).toBe(1);
+        expect(plain.opened).toBe(2);
+        expect(plain.result).toMatchObject({ type: "completed", content: "Still fine." });
+        // A Stop from the event's observer: nothing more is sent, the gate stays closed, and the turn is stopped.
+        const stopped = await reminderTurn({ stopOnEvent: true });
+        expect(stopped.promptsAtEvent).toBe(2);
+        expect(stopped.openedAtEvent).toBe(1);
+        expect(stopped.h.fakeSession.sentPrompts).toEqual(["Review the change.", TEXT]);
+        expect(stopped.opened).toBe(1);
+        expect(stopped.result).toMatchObject({ type: "stopped", reason: "Stopped by user" });
+    });
+
+    // Review D3: a turn with an error is not a quiet prose end; the error stands.
+    it.each([
+        ["the CLI's empty-answer error", { message: "No response was returned. Send your message again to retry.", errorType: "query" }],
+        ["a provider error", { message: "Provider returned 500", errorType: "provider" }],
+    ])("D3: %s, then idle, never asks the gate and sends nothing", async (_label, error) => {
+        const h = stepChild([{ assistantContent: null, events: [{ type: "session.error", data: error }] }, { assistantContent: "Recovered." }]);
+        const result = await h.run();
+        expect(result.type).toBe("error");
+        expect(result.message).toContain(error.message);
+        expect(h.checks).toEqual([]);
+        expect(h.fakeSession.sentPrompts).toEqual(["Review the change."]);
+    });
+
+    // Review D4: the reminder's answer gets the same tool-call check as the first answer, within one budget per turn.
+    it("D4: a tool call the reminder's answer writes as text is corrected, and the real call completes the step", async () => {
+        const h = stepChild([
+            { assistantContent: "It seems fine." },
+            { assistantContent: INVOKE_AS_TEXT },
+            { toolCalls: [COMPLETE], assistantContent: "STATE_COMPLETED" },
+        ]);
+        const result = await h.run();
+        expect(result).toMatchObject({ type: "completed", content: "STATE_COMPLETED" });
+        expect(h.fakeSession.sentPrompts).toHaveLength(3);
+        expect(h.fakeSession.sentPrompts[1]).toBe(TEXT);
+        expect(h.fakeSession.sentPrompts[2]).toContain("Come to your senses");
+        expect(h.completeWorkflowNode).toHaveBeenCalledTimes(1);
+        expect(result.events.map(event => event.eventType).filter(type => type.startsWith("runtime.")))
+            .toEqual(["runtime.workflow_step_reminded", "runtime.tool_call_as_text"]);
+    });
+
+    it("D4: a reminder's answer that keeps writing the tool call as text ends the turn with an error, never completed", async () => {
+        const h = stepChild([
+            { assistantContent: "It seems fine." },
+            { assistantContent: INVOKE_AS_TEXT },
+            { assistantContent: INVOKE_AS_TEXT },
+            { assistantContent: INVOKE_AS_TEXT },
+        ]);
+        const result = await h.run();
+        expect(result.type).toBe("error");
+        expect(result.message).toContain("Tool-call protocol error");
+        expect(h.fakeSession.sentPrompts).toHaveLength(4);
+        expect(h.completeWorkflowNode).not.toHaveBeenCalled();
+        // One reminder in the turn, whatever follows it.
+        expect(h.checks).toHaveLength(1);
+        expect(reminded(result)).toHaveLength(1);
+    });
+
+    it("what the reminder's run does ends the turn as it would any run: a wait, or a cron with its answer", async () => {
+        // A wait longer than the session's wait threshold (30 s) ends the turn; a shorter one is waited out inside it.
+        const waited = stepChild([{ assistantContent: "It seems fine." }, { toolCalls: [{ name: "wait", args: { seconds: 120, reason: "build running" } }],
+            assistantContent: "Waiting for the build." }]);
+        const result = await waited.run();
+        expect(result.type).toBe("wait");
+        expect(waited.fakeSession.sentPrompts).toEqual(["Review the change.", TEXT]);
+        const scheduled = stepChild([{ assistantContent: "It seems fine." }, { toolCalls: [{ name: "cron", args: { seconds: 60, reason: "check the build" } }],
+            assistantContent: "I will check every minute." }]);
+        const later = await scheduled.run();
+        expect(later).toMatchObject({ type: "completed", content: "I will check every minute." });
+        expect(later.queuedActions).toEqual([expect.objectContaining({ type: "cron", action: "set", intervalSeconds: 60 })]);
+        expect(scheduled.checks).toHaveLength(1);
+    });
+
+    it("the reminder comes after the required-tool correction, never before it", async () => {
+        const catalog = vi.fn(async () => ({ commands: 71 }));
+        const tools = [{ name: "package_catalog", parameters: { type: "object", properties: {} }, handler: catalog }];
+        const h = stepChild([
+            { assistantContent: "The catalog has 71 commands." },
+            { toolCalls: [{ name: "package_catalog", args: {} }], assistantContent: "Catalog verified." },
+            { assistantContent: "Still checking the review." },
+        ], { tools });
+        const result = await h.run({ requiredTool: "package_catalog" });
+        expect(result).toMatchObject({ type: "completed", content: "Still checking the review." });
+        expect(h.fakeSession.sentPrompts).toHaveLength(3);
+        expect(h.fakeSession.sentPrompts[1]).toContain("Required-tool contract violation");
+        expect(h.fakeSession.sentPrompts[2]).toBe(TEXT);
+        expect(result.events.map(event => event.eventType).filter(type => type.startsWith("runtime.")))
+            .toEqual(["runtime.required_tool_not_invoked", "runtime.workflow_step_reminded"]);
     });
 });

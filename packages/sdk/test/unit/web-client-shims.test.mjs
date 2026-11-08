@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 
 import { WebPilotSwarmManagementClient } from "../../dist/web/web-management-client.js";
 import { createManagementOps } from "../../dist/web/generated-op-methods.js";
-import { WEB_MODE_UNSUPPORTED } from "../../api/src/protocol.js";
+import { buildOperationRequest, WEB_MODE_UNSUPPORTED } from "../../api/src/protocol.js";
 
 function clientWithFakeApi() {
     const client = Object.create(WebPilotSwarmManagementClient.prototype);
@@ -41,6 +41,12 @@ const USER = { provider: "entra", subject: "u1" };
  * them at request time, so the shape here is what the shim itself emits.
  */
 const SHIM_CASES = [
+    // — workflow v2: a person's command (the server stamps the actor; options are not sent) —
+    { call: (c) => c.updateWorkflow("wf-1", { operation: "pause", operation_id: "p-1" }, { principal: USER }), op: "updateWorkflow",
+        params: { sessionId: "wf-1", command: { operation: "pause", operation_id: "p-1" } } },
+    // — the session the command comes from is passed on (review SF-2) —
+    { call: (c) => c.updateWorkflow("wf-1", { operation: "publish", operation_id: "p-2" }, { principal: USER, originatingSessionId: "node-chat" }),
+        op: "updateWorkflow", params: { sessionId: "wf-1", command: { operation: "publish", operation_id: "p-2" }, originatingSessionId: "node-chat" } },
     // — facts —
     { call: (c) => c.readFacts({ keyPattern: "k*", scope: "shared" }), op: "readFacts", params: { keyPattern: "k*", scope: "shared" } },
     { call: (c) => c.storeFact({ key: "k", value: 1 }), op: "storeFact", params: { input: { key: "k", value: 1 } } },
@@ -73,7 +79,34 @@ const SHIM_CASES = [
     { call: (c) => c.listSessionShares("s1"), op: "listSessionShares", params: { sessionId: "s1" } },
     { call: (c) => c.listKnownUsers({ limit: 10 }), op: "listKnownUsers", params: { limit: 10 } },
     { call: (c) => c.listAuthzAudit({ limit: 5, sessionId: "s1" }), op: "listAuthzAudit", params: { limit: 5, sessionId: "s1" } },
+    // — workflow v2 read: its options are the operation's declared parameters, passed to the request builder, which leaves
+    //   out an absent or null one (review api-01); so these rows check the HTTP request it builds (WIRE_CHECKED). Only an
+    //   absent run is left out; an empty one is sent for the server to refuse —
+    { call: (c) => c.readWorkflow("s1"), op: "readWorkflow", params: { sessionId: "s1" } },
+    { call: (c) => c.readWorkflow("s1", { runId: null }), op: "readWorkflow", params: { sessionId: "s1" } },
+    { call: (c) => c.readWorkflow("s1", { runId: "run-1" }), op: "readWorkflow", params: { sessionId: "s1", runId: "run-1" } },
+    { call: (c) => c.readWorkflow("s1", { runId: "" }), op: "readWorkflow", params: { sessionId: "s1", runId: "" } },
+    // The session id is the argument's, whatever the options say.
+    { call: (c) => c.readWorkflow("s1", { sessionId: "other", runId: "run-1" }), op: "readWorkflow", params: { sessionId: "s1", runId: "run-1" } },
+    // A section's next page and one execution's whole value: only the options given are sent.
+    { call: (c) => c.readWorkflow("s1", { runId: "run-1", cursor: { v: 1, section: "inbox" }, limit: 5 }), op: "readWorkflow",
+        params: { sessionId: "s1", runId: "run-1", cursor: { v: 1, section: "inbox" }, limit: 5 } },
+    { call: (c) => c.readWorkflow("s1", { executionId: "nx-1", cursor: null, limit: undefined }), op: "readWorkflow", params: { sessionId: "s1", executionId: "nx-1" } },
+    // The agent versions publishing would lock (owner decision q1).
+    { call: (c) => c.readWorkflow("s1", { agentVersions: true }), op: "readWorkflow", params: { sessionId: "s1", agentVersions: true } },
+    // One definition revision's YAML (owner decision q4).
+    { call: (c) => c.readWorkflow("s1", { definitionRevision: 3 }), op: "readWorkflow", params: { sessionId: "s1", definitionRevision: 3 } },
+    { call: (c) => c.readWorkflow("s1", { stepInput: { state: "review" } }), op: "readWorkflow", params: { sessionId: "s1", stepInput: { state: "review" } } },
 ];
+
+/** Operations whose shim passes its options to the request builder as they are: checked by the request it builds. */
+const WIRE_CHECKED = new Set(["readWorkflow"]);
+
+/** An operation's HTTP request as ApiClient.call builds it from rpc-shaped params (buildOperationRequest): the wire itself. */
+function wireRequest(op, params) {
+    const { method, path, query, body } = buildOperationRequest(op, params);
+    return { method, path, query: Object.fromEntries(query), body };
+}
 
 test("every shim maps its positional arguments onto the right wire call", async () => {
     for (const { call, op, params } of SHIM_CASES) {
@@ -81,8 +114,36 @@ test("every shim maps its positional arguments onto the right wire call", async 
         await call(client);
         assert.equal(calls.length, 1, `${op}: expected exactly one wire call`);
         assert.equal(calls[0].name, op, `expected op ${op}, got ${calls[0].name}`);
-        assert.deepEqual(calls[0].params, params, `${op}: wrong wire params`);
+        if (WIRE_CHECKED.has(op)) assert.deepEqual(wireRequest(op, calls[0].params), wireRequest(op, params), `${op}: wrong wire request`);
+        else assert.deepEqual(calls[0].params, params, `${op}: wrong wire params`);
     }
+    // The built request itself: path, and only the options given, null and undefined left out.
+    assert.deepEqual(wireRequest("readWorkflow", { sessionId: "s1", executionId: "nx-1", cursor: null, limit: undefined, runId: null }),
+        { method: "GET", path: "/api/v1/sessions/s1/workflow", query: { executionId: "nx-1" }, body: null });
+});
+
+test("getWorkflowCapabilities reads the server's bootstrap advertisement, null from a server that has none, and rejects one that is not an object", async () => {
+    const workflows = { schema: 1, v2: { read: true, commands: { available: false } } };
+    for (const [bootstrap, expected] of [
+        [{ ok: true, workflows }, workflows],
+        [{ ok: true }, null],
+        [{ ok: true, workflows: null }, null],
+    ]) {
+        const { client, calls } = clientWithFakeApi();
+        client._api.getBootstrap = async () => bootstrap;
+        assert.deepEqual(await client.getWorkflowCapabilities(), expected);
+        assert.deepEqual(calls, [], "no operation call: the bootstrap is the source");
+    }
+    // A malformed advertisement, or a bootstrap that cannot be read, is not an older server.
+    for (const [bootstrap, kind] of [[{ ok: true, workflows: ["v2"] }, "a list"], [{ ok: true, workflows: "v2" }, "a string"], [{ ok: true, workflows: 2 }, "a number"]]) {
+        const { client } = clientWithFakeApi();
+        client._api.getBootstrap = async () => bootstrap;
+        await assert.rejects(client.getWorkflowCapabilities(),
+            (error) => error.code === "WORKFLOW_CAPABILITIES_MALFORMED" && error.message.includes(`advertises workflows as ${kind}`), kind);
+    }
+    const { client } = clientWithFakeApi();
+    client._api.getBootstrap = async () => { throw Object.assign(new Error("HTTP 503"), { status: 503 }); };
+    await assert.rejects(client.getWorkflowCapabilities(), (error) => error.status === 503);
 });
 
 test("placeSessionsInGroup accepts both calling conventions", async () => {

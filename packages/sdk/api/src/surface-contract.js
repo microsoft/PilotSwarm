@@ -7,6 +7,7 @@
  */
 export const NON_MANAGEMENT_OPERATION_OWNERS = Object.freeze({
     createSession: { owner: "PilotSwarmClient", file: "packages/sdk/src/client.ts", className: "PilotSwarmClient", method: "createSession", reason: "session creation handle" },
+    createWorkflowChat: { owner: "NodeSdkTransport", file: "packages/app/tui/src/node-sdk-transport.js", className: "NodeSdkTransport", method: "createWorkflowChat", reason: "package Workflow chat creation: a session, its attached definition and its first message" },
     createSessionForAgent: { owner: "PilotSwarmClient", file: "packages/sdk/src/client.ts", className: "PilotSwarmClient", method: "createSessionForAgent", reason: "agent-bound session creation handle" },
     sendSessionEvent: { owner: "PilotSwarmSession", file: "packages/sdk/src/client.ts", className: "PilotSwarmSession", method: "sendEvent", reason: "session event write" },
 

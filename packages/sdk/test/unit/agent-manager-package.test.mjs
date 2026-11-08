@@ -111,3 +111,48 @@ test("the package ships a CHANGELOG with an entry for its current version", () =
         `CHANGELOG.md has no entry for ${manifest.version}`,
     );
 });
+
+// Agent Smith 1.4.2 smoke on TEST: two tests of a valid revision failed with TEST_UNANSWERED at an ask (request) node, because
+// the fixtures were shaped as an agent node's; it then showed a publish plan anyway. 1.4.3 (OF-S2-6 follow-up): the prompt
+// and the repair loop give each step kind's fixture shape, and a failed test is never followed by a publish plan.
+test("the prompt gives each step kind's test fixture shape and never follows a failed test with a publish plan", () => {
+    const skill = fs.readFileSync(path.join(pkgDir, "skills/agent-repair-loop/SKILL.md"), "utf8");
+    for (const text of [prompt, skill]) {
+        assert.match(text, /\{ outcome(: <[^>]+>)?, output/, "an agent node's fixture");
+        assert.match(text, /\{ response: <[^>]*response[^>]*> \}/, "an ask (request) node's fixture");
+        assert.match(text, /\{ decline: \{ reason/, "an ask node's decline");
+        assert.match(text, /failed test is never followed\s+by a publish plan/i);
+        assert.match(text, /same failure twice/i);
+    }
+    assert.match(prompt, /operation: "request", state: "review", response: \{ kind: "success",\s+value: \{ response: \{ approved: true \} \} \}/);
+    // Still tested before publish (1.4.1) and kept simple (1.4.2).
+    assert.match(prompt, /A Workflow Definition is tested before it is published/);
+    assert.match(prompt, /Keep a Workflow simple/);
+});
+
+// OF-S2-7 (1.4.4): a definition never names a model; a card's model hints are kinds of model, never a provider or model name.
+test("the prompt: agent nodes use the starting chat's model; a card's modelHints are kinds, keyed by node id, never a model's name", () => {
+    assert.match(prompt, /a definition never names a model: every agent node uses the model of the\s+chat that starts it/);
+    assert.match(prompt, /`modelHints` entry for it, keyed by the node's id/);
+    assert.match(prompt, /A hint is a kind, never a provider or model name/);
+    // 1.4.5 (review OF7-R5): structured hints, an example, and the note's limit.
+    assert.match(prompt, /`strength` \(fast, balanced,\s+strong\), `reasoning` \(low, medium, high, xhigh, max\), `context` \(default,\s+long_context\)/);
+    assert.match(prompt, /review: \{ strength: strong, reasoning: high, context: long_context \}/);
+    assert.match(prompt, /at most 120 characters/);
+});
+
+// 1.4.6 (owner 2026-11-08T00:35Z): the router pattern, in the prompt and the repair loop; 1.4.7: named branches first.
+test("the prompt and the repair loop teach named branches, then the router pattern for branches from a list: one Workflow, never several", () => {
+    const skill = fs.readFileSync(path.join(pkgDir, "skills/agent-repair-loop/SKILL.md"), "utf8");
+    for (const text of [prompt, skill]) {
+        assert.match(text, /one\s+Workflow, never several/i);
+        assert.match(text, /router script/);
+        // 1.4.7: named branches first; the router pattern is the older form, for branches that come from a list.
+        assert.match(text, /a parallel state with\s+named `branches`/);
+        assert.match(text, /joined as\s+`\{ <name>: output \}`|`joined` gives\s+`\{ <name>: output \}`/);
+        assert.match(text, /When the branches come from a list/);
+        // The patterns and their examples live in the on-demand workflow-patterns skill.
+        assert.match(text, /`workflow-patterns`\s+skill/);
+    }
+    assert.match(prompt, /forEach: \[\{ lane: quick \}, \{ lane: careful \}\]/);
+});

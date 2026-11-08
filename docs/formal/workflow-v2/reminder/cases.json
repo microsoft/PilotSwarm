@@ -1,0 +1,321 @@
+[
+ {
+  "id": "rem.safety",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-safety",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "rem.safety.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "Inv_OneSendPerAttempt",
+   "Inv_OneRecordPerTurn",
+   "Inv_RecordsCap",
+   "Inv_SendsBounded",
+   "Inv_SendHasRecord",
+   "Inv_NoSendWhileWorkPending",
+   "Inv_EventAfterAccept",
+   "Inv_NoRecordAfterDecided"
+  ],
+  "expected": "PASS",
+  "note": "Two turns and one activity re-run; Stop, interrupt, steer, held controls, queued message, guard, schedule, sub-agent, deadline, send failure at any point.",
+  "batch": "r1"
+ },
+ {
+  "id": "rem.retry-safety",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-safety",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "rem.retry-safety.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "Inv_OneSendPerAttempt",
+   "Inv_OneRecordPerTurn",
+   "Inv_RecordsCap",
+   "Inv_SendsBounded",
+   "Inv_SendHasRecord",
+   "Inv_NoSendWhileWorkPending",
+   "Inv_EventAfterAccept",
+   "Inv_NoRecordAfterDecided"
+  ],
+  "expected": "PASS",
+  "note": "Two activity re-runs of a turn.",
+  "batch": "r1"
+ },
+ {
+  "id": "rem.cap",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-safety",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "rem.cap.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "Inv_OneSendPerAttempt",
+   "Inv_OneRecordPerTurn",
+   "Inv_RecordsCap",
+   "Inv_SendsBounded",
+   "Inv_SendHasRecord",
+   "Inv_NoSendWhileWorkPending",
+   "Inv_EventAfterAccept",
+   "Inv_NoRecordAfterDecided"
+  ],
+  "expected": "PASS",
+  "note": "Four quiet turns: at most 3 reminders are recorded for the step.",
+  "batch": "r1"
+ },
+ {
+  "id": "rem.live",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-live",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "rem.live.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "Inv_OneSendPerAttempt",
+   "Inv_OneRecordPerTurn",
+   "Inv_RecordsCap",
+   "Inv_SendsBounded",
+   "Inv_SendHasRecord",
+   "Inv_NoSendWhileWorkPending",
+   "Inv_EventAfterAccept",
+   "Inv_NoRecordAfterDecided",
+   "Prop_StalledReminded",
+   "Prop_StepEnds",
+   "Prop_StopTakesEffect"
+  ],
+  "expected": "PASS",
+  "note": "A stalled step is reminded or decided; the step ends; Stop always ends the turn.",
+  "batch": "r1"
+ },
+ {
+  "id": "rem.store-hang-live",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-live",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "rem.store-hang-live.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "Prop_StopTakesEffect"
+  ],
+  "expected": "PASS",
+  "note": "The gate's store call may never answer: the race with Stop still ends the turn.",
+  "batch": "r1"
+ },
+ {
+  "id": "wit.rem-reminded",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-witness",
+  "mode": "witness",
+  "spec": "Spec",
+  "config": "wit.rem-reminded.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "W_NoReminder"
+  ],
+  "expected": "safety",
+  "note": "A reminder is sent.",
+  "batch": "r1"
+ },
+ {
+  "id": "wit.rem-three",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-witness",
+  "mode": "witness",
+  "spec": "Spec",
+  "config": "wit.rem-three.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "W_NotThree"
+  ],
+  "expected": "safety",
+  "note": "Three reminders are recorded.",
+  "batch": "r1"
+ },
+ {
+  "id": "wit.rem-recorded-not-sent",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-witness",
+  "mode": "witness",
+  "spec": "Spec",
+  "config": "wit.rem-recorded-not-sent.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "W_RecordedAlwaysSent"
+  ],
+  "expected": "safety",
+  "note": "Design: a recorded reminder that a Stop (or pending work) keeps from being sent still counts toward the 3.",
+  "batch": "r1"
+ },
+ {
+  "id": "wit.rem-send-after-decided",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-witness",
+  "mode": "witness",
+  "spec": "Spec",
+  "config": "wit.rem-send-after-decided.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "W_NoSendAfterDecided"
+  ],
+  "expected": "safety",
+  "note": "Design limit: the step expires between the store's record and the send; the child gets a reminder for a decided step.",
+  "batch": "r1"
+ },
+ {
+  "id": "wit.rem-queued-message",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-witness",
+  "mode": "witness",
+  "spec": "Spec",
+  "config": "wit.rem-queued-message.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "W_NoQueuedSend"
+  ],
+  "expected": "safety",
+  "note": "Documented limit: a message queued for the child is not seen; the reminder is still sent.",
+  "batch": "r1"
+ },
+ {
+  "id": "wit.rem-two-sends-one-turn",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-witness",
+  "mode": "witness",
+  "spec": "Spec",
+  "config": "wit.rem-two-sends-one-turn.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "W_OneSendPerTurn"
+  ],
+  "expected": "safety",
+  "note": "Design: an activity re-run of the same turn reminds again under its recorded number.",
+  "batch": "r1"
+ },
+ {
+  "id": "fault.rem-no-recheck",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-fault",
+  "mode": "fault",
+  "spec": "Spec",
+  "config": "fault.rem-no-recheck.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "Inv_NoSendWhileWorkPending"
+  ],
+  "expected": "safety",
+  "note": "Without the re-check after the gate (review E1), a steer that arrived while the gate decided is overtaken.",
+  "batch": "r1"
+ },
+ {
+  "id": "fault.rem-event-before-send",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-fault",
+  "mode": "fault",
+  "spec": "Spec",
+  "config": "fault.rem-event-before-send.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "Inv_EventAfterAccept"
+  ],
+  "expected": "safety",
+  "note": "The runtime event published before the SDK accepted the prompt (before review E2).",
+  "batch": "r1"
+ },
+ {
+  "id": "fault.rem-no-cap",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-fault",
+  "mode": "fault",
+  "spec": "Spec",
+  "config": "fault.rem-no-cap.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "Inv_RecordsCap"
+  ],
+  "expected": "safety",
+  "note": "The store does not count the step's reminders.",
+  "batch": "r1"
+ },
+ {
+  "id": "fault.rem-no-step-check",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-fault",
+  "mode": "fault",
+  "spec": "Spec",
+  "config": "fault.rem-no-step-check.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "Inv_NoRecordAfterDecided"
+  ],
+  "expected": "safety",
+  "note": "The store does not check the step is open and in time.",
+  "batch": "r1"
+ },
+ {
+  "id": "fault.rem-turn-reuse",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-fault",
+  "mode": "fault",
+  "spec": "Spec",
+  "config": "fault.rem-turn-reuse.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "Inv_SendsBounded"
+  ],
+  "expected": "safety",
+  "note": "Every turn has the same index: the repeat path reminds without counting.",
+  "batch": "r1"
+ },
+ {
+  "id": "fault.rem-gate-not-raced",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-fault",
+  "mode": "fault",
+  "spec": "LiveSpec",
+  "config": "fault.rem-gate-not-raced.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "Prop_StopTakesEffect"
+  ],
+  "expected": "liveness",
+  "note": "The gate is not raced with Stop (before review D2): a store call that never answers blocks Stop.",
+  "batch": "r1"
+ },
+ {
+  "id": "cmp.rem-send-hang",
+  "module": "WorkflowV2Reminder",
+  "group": "rem-compare",
+  "mode": "comparison",
+  "spec": "LiveSpec",
+  "config": "cmp.rem-send-hang.cfg",
+  "head": "8d568890",
+  "properties": [
+   "TypeOK",
+   "Prop_StopTakesEffect"
+  ],
+  "expected": "liveness",
+  "note": "Assumption: send() of the reminder prompt is not raced with Stop; a CLI that never accepts or refuses holds Stop.",
+  "batch": "r1"
+ }
+]

@@ -1,0 +1,338 @@
+[
+ {
+  "id": "rc-as-auth-unlocked-loss",
+  "module": "WorkflowV2RequestCodeAuth",
+  "config": "rc-as-auth-unlocked-loss.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Assumption removed (A-OWN): expected VIOLATION of Refines when the responder loses authority while a response transaction is open. The audit found no source path for this at 8021c75e."
+ },
+ {
+  "id": "rc-cand-elapse-refines",
+  "module": "WorkflowV2RequestCode",
+  "config": "rc-cand-elapse-refines.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Candidate C1: expected VIOLATION of Refines at the CElapse step: its node result has no image in the intent model."
+ },
+ {
+  "id": "rc-cand-elapse-store-api",
+  "module": "WorkflowV2RequestCode",
+  "config": "rc-cand-elapse-store-api.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Candidate C1: expected VIOLATION of Inv_C_StatusMapped. The generic elapseWait, called on a request node (no runtime caller at 8021c75e), stores a result that requestStatusOf rejects."
+ },
+ {
+  "id": "rc-hd-refines-auth-source",
+  "module": "WorkflowV2RequestCodeAuth",
+  "config": "rc-hd-refines-auth-source.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS of the refinement obligation with only the authority changes the source can make at 8021c75e (CODE-AUTH-AUDIT.md)."
+ },
+ {
+  "id": "rc-hd-refines-limit",
+  "module": "WorkflowV2RequestCode",
+  "config": "rc-hd-refines-limit.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS. As rc-hd-refines with the binding limit 1."
+ },
+ {
+  "id": "rc-hd-refines",
+  "module": "WorkflowV2RequestCode",
+  "config": "rc-hd-refines.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS. Code model at 8021c75e (runtime callers only) refines WorkflowV2RequestSpec (safety), and the store's status mapping never throws."
+ },
+ {
+  "id": "rc57-as-rollback",
+  "module": "WorkflowV2RequestCode57",
+  "config": "rc57-as-rollback.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module WorkflowV2RequestCode57 (57fbb0d6 store kernel, an already-entered request, A-OWN as in checkpoint 2), clock may step back. Expected PASS: no decision after an expired binding, status mapped, and the refinement obligation to WorkflowV2RequestSpec57 with rollback."
+ },
+ {
+  "id": "rc57-hd-monotone",
+  "module": "WorkflowV2RequestCode57",
+  "config": "rc57-hd-monotone.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module WorkflowV2RequestCode57 under A-CLK. Expected PASS, as rc57-as-rollback without clock rollback."
+ },
+ {
+  "id": "rc8021-as-rollback",
+  "module": "MCWorkflowV2RequestCode8021Clock",
+  "config": "rc8021-as-rollback.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module MCWorkflowV2RequestCode8021Clock (checkpoint 2 code at 8021c75e, unchanged, plus clock rollback). Expected VIOLATION of Inv_C_NoDecisionAfterExpiry: the code-level form of the checkpoint 1b counterexample."
+ },
+ {
+  "id": "rs-as-clock-backward",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-as-clock-backward.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Expected VIOLATION of Inv_NoDecisionAfterExpiry: without the monotone store clock (A-CLK) a response is decided after another operation was told REQUEST_EXPIRED."
+ },
+ {
+  "id": "rs-df-abandon-twice",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-df-abandon-twice.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Expected VIOLATION of Inv_OneAbandonEvent (deliberate fault abandon_twice)."
+ },
+ {
+  "id": "rs-df-bind-on-deleted",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-df-bind-on-deleted.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Expected VIOLATION of Prop_DeletedRequesterReadOnly (deliberate fault bind_on_deleted)."
+ },
+ {
+  "id": "rs-df-no-lock",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-df-no-lock.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Expected VIOLATION of Prop_EarlyDecisionWins (deliberate fault no_lock)."
+ },
+ {
+  "id": "rs-df-no-token",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-df-no-token.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Expected VIOLATION of Prop_SettledWakeFinal (deliberate fault no_token)."
+ },
+ {
+  "id": "rs-df-replay-first",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-df-replay-first.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Expected VIOLATION of Inv_NoLeak (deliberate fault replay_first)."
+ },
+ {
+  "id": "rs-df-second-reading",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-df-second-reading.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Expected VIOLATION of Prop_EarlyDecisionWins (deliberate fault second_reading)."
+ },
+ {
+  "id": "rs-df-wake-separate",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-df-wake-separate.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Expected VIOLATION of Inv_WakeWithRecord (deliberate fault wake_separate)."
+ },
+ {
+  "id": "rs-hd-liveness-small",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-hd-liveness-small.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS. Liveness under LiveSpec with one operation, two result identities, one dispatcher and attempt cap 1."
+ },
+ {
+  "id": "rs-hd-liveness",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-hd-liveness.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS. Liveness under the stated fairness assumptions (A-SCHED, A-RESUME, A-BACKSTOP)."
+ },
+ {
+  "id": "rs-hd-safety-decide",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-hd-safety-decide.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS. Smaller bounds for the decision, binding and authority races: two operations, two result identities (response X, decline), one dispatcher, attempt cap 1. Same properties as rs-hd-safety; stale wake holders are not covered here."
+ },
+ {
+  "id": "rs-hd-safety-limit",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-hd-safety-limit.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS. Same properties with the binding limit reached (limit 1, two operations)."
+ },
+ {
+  "id": "rs-hd-safety-wake",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-hd-safety-wake.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS. Smaller bounds for the wake races: one operation, two result identities, two dispatchers (stale holders), attempt cap 2. Same properties as rs-hd-safety; the binding limit and second operations are not covered here."
+ },
+ {
+  "id": "rs-hd-safety",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-hd-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Expected PASS. All safety invariants and action properties of the intent model."
+ },
+ {
+  "id": "rs-pv-decision",
+  "module": "MCWorkflowV2RequestSpecView",
+  "config": "rs-pv-decision.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Exact reduction for the 13 decision properties at the rs-hd-safety bounds: Workers = {} (as rs-px-decision) plus VIEW SafetyView (MCWorkflowV2RequestSpecView.tla). TypeOK is checked on the explored representative states only. Run on MCWorkflowV2RequestSpecView.tla. Expected PASS."
+ },
+ {
+  "id": "rs-px-decision-limit",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-px-decision-limit.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "As rs-px-decision at the rs-hd-safety-limit bounds (MaxBindings = 1). Expected PASS."
+ },
+ {
+  "id": "rs-px-decision",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-px-decision.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Partition, exact for the 13 decision properties at the rs-hd-safety bounds: the decision actions never read a wake variable, so with Workers = {} their reachable projection is unchanged (RESULTS-CP1B-R1-INTERPRETATION.md). Expected PASS."
+ },
+ {
+  "id": "rs-px-live-decide",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-px-live-decide.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Partition, exact for Live_Decides and Live_Collected at the rs-hd-liveness bounds: neither property nor its fairness involves a wake variable, and wake fairness can always be met alongside, so Workers = {} keeps the fair projections. Expected PASS."
+ },
+ {
+  "id": "rs-px-live-wake",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-px-live-wake.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Same bounds as rs-hd-liveness, Live_WakeSettles alone (one property instead of three). Expected PASS."
+ },
+ {
+  "id": "rs-px-wake",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-px-wake.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Partition, sound (an over-approximation of the wake projection) for the 3 wake properties: one operation, one value, no purge add behaviours the wake can see and remove none (RESULTS-CP1B-R1-INTERPRETATION.md). Two dispatchers and attempt cap 2 as rs-hd-safety. Expected PASS."
+ },
+ {
+  "id": "rs-wit-abandoned-after-enqueue",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-wit-abandoned-after-enqueue.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_AbandonedAfterEnqueue (the situation is reachable). Finding F3."
+ },
+ {
+  "id": "rs-wit-closed-after-delete",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-wit-closed-after-delete.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_ClosedAfterResponseThenDelete (the situation is reachable). Finding F2."
+ },
+ {
+  "id": "rs-wit-delivery-failed-after-deadline",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-wit-delivery-failed-after-deadline.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_DeliveryFailedAfterDeadline (the situation is reachable). Finding F4."
+ },
+ {
+  "id": "rs-wit-stale-holder",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-wit-stale-holder.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_StaleHolder (the situation is reachable). A reclaimed lease holder still acts."
+ },
+ {
+  "id": "rs-wit-straddle-deadline",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-wit-straddle-deadline.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_StraddleDeadline (the situation is reachable). T061: a reading before the deadline, commit after it."
+ },
+ {
+  "id": "rs-wit-timed-out-while-paused",
+  "module": "WorkflowV2RequestSpec",
+  "config": "rs-wit-timed-out-while-paused.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_TimedOutWhilePaused (the situation is reachable). Finding F5."
+ },
+ {
+  "id": "rs57-as-rollback-original-eligibility",
+  "module": "WorkflowV2RequestSpec57",
+  "config": "rs57-as-rollback-original-eligibility.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module WorkflowV2RequestSpec57. Durable expiry with the clock allowed to step back. Expected VIOLATION of the ORIGINAL Prop_EarlyDecisionWins: an early reading taken after an observed expiry is now refused. This is the eligibility refinement, stated by Prop_EarlyDecisionWinsEligible; it is not a weakening under A-CLK (rs57-hd-monotone-equiv-small)."
+ },
+ {
+  "id": "rs57-df-no-durable-expiry",
+  "module": "WorkflowV2RequestSpec57",
+  "config": "rs57-df-no-durable-expiry.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module WorkflowV2RequestSpec57. Reproduces the checkpoint 1b counterexample with the 8021c75e rule (Fault no_durable_expiry) and the clock allowed to step back, at the checkpoint 1b bounds. Expected VIOLATION of Inv_NoDecisionAfterExpiry (about 7 states)."
+ },
+ {
+  "id": "rs57-hd-monotone-equiv-small",
+  "module": "WorkflowV2RequestSpec57",
+  "config": "rs57-hd-monotone-equiv-small.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module WorkflowV2RequestSpec57, A-CLK. SMALLER BOUND ONLY. Expected PASS: Inv_ExpiryImpliesLate, and both the original and the refined early-decision properties (same antecedent under A-CLK)."
+ },
+ {
+  "id": "rs57-hd-rollback-small",
+  "module": "WorkflowV2RequestSpec57",
+  "config": "rs57-hd-rollback-small.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module WorkflowV2RequestSpec57. SMALLER BOUND ONLY (one value, no dispatchers, attempt cap 1, no purge); not equivalent to the checkpoint 1b bounds. Expected PASS with rollback."
+ },
+ {
+  "id": "rs57-wit-late-commit-rollback",
+  "module": "WorkflowV2RequestSpec57",
+  "config": "rs57-wit-late-commit-rollback.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module WorkflowV2RequestSpec57, clock may step back. Witness: EXPECTED VIOLATION of Prop_NoLateCommitDecision (the late-commit decision stays reachable with rollback)."
+ },
+ {
+  "id": "rs57-wit-late-commit",
+  "module": "WorkflowV2RequestSpec57",
+  "config": "rs57-wit-late-commit.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module WorkflowV2RequestSpec57, A-CLK. Witness: EXPECTED VIOLATION of Prop_NoLateCommitDecision. An eligible reading before the deadline whose commit comes after it still decides (T061) under durable expiry."
+ },
+ {
+  "id": "rs57-wit-unobserved-late",
+  "module": "MCWorkflowV2RequestSpec57Late",
+  "config": "rs57-wit-unobserved-late.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module MCWorkflowV2RequestSpec57Late (witness wrapper). EXPECTED VIOLATION of Prop_NoDecisionFromLateReading with rollback: a deadline passage that no operation observed, then taken back by the clock, does not stop a later decision (residual of durable expiry)."
+ }
+]

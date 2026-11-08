@@ -49,6 +49,65 @@ export const UI_COMMANDS = {
     SHRINK_FOCUSED_PANE: "shrinkFocusedPane",
     OPEN_ARTIFACT_PICKER: "openArtifactPicker",
     OPEN_HELP: "openHelp",
+    // Workflow sessions (TUI): the workflow view (states, details, an agent state's child chats; read-only but for the run controls).
+    OPEN_WORKFLOW_VIEW: "openWorkflowView",
+    WORKFLOW_VIEW_PREV_RUN: "workflowViewPrevRun",
+    WORKFLOW_VIEW_NEXT_RUN: "workflowViewNextRun",
+    WORKFLOW_VIEW_DETAILS_UP: "workflowViewDetailsUp",
+    WORKFLOW_VIEW_DETAILS_DOWN: "workflowViewDetailsDown",
+    // A person's run controls for the run the workflow view shows (INACTIVE: only a deployment that takes them offers any),
+    // and dismissing the notice about the last one.
+    WORKFLOW_VIEW_PAUSE_RUN: "workflowViewPauseRun",
+    WORKFLOW_VIEW_RESUME_RUN: "workflowViewResumeRun",
+    WORKFLOW_VIEW_STOP_RUN: "workflowViewStopRun",
+    WORKFLOW_VIEW_CANCEL_RUN: "workflowViewCancelRun",
+    WORKFLOW_VIEW_DISMISS_NOTICE: "workflowViewDismissNotice",
+    // The shown run's variables (INACTIVE likewise): open the variables form, and remove the variable it names; open the
+    // several-variables form, and send what it names as one update.
+    WORKFLOW_VIEW_EDIT_VARIABLES: "workflowViewEditVariables",
+    WORKFLOW_VARIABLE_REMOVE: "workflowVariableRemove",
+    WORKFLOW_VIEW_UPDATE_VARIABLES: "workflowViewUpdateVariables",
+    WORKFLOW_VARIABLE_BATCH_SEND: "workflowVariableBatchSend",
+    // R2-UI-1: a variables form whose edit is behind the revision shown keeps the edit (ctrl-k) or loads the new values (ctrl-l).
+    WORKFLOW_VARIABLE_KEEP: "workflowVariableKeep",
+    WORKFLOW_VARIABLE_RELOAD: "workflowVariableReload",
+    // The draft's YAML (INACTIVE likewise): open the draft editor, save the edit, discard it, keep it on a newer revision.
+    WORKFLOW_VIEW_EDIT_DRAFT: "workflowViewEditDraft",
+    WORKFLOW_DRAFT_SAVE: "workflowDraftSave",
+    WORKFLOW_DRAFT_DISCARD: "workflowDraftDiscard",
+    WORKFLOW_DRAFT_KEEP: "workflowDraftKeep",
+    // The definition's publication (INACTIVE likewise): open its review, then publish only, publish and start (or start a
+    // published definition's live run), each after the confirm dialog, or review a workflow that changed meanwhile again.
+    WORKFLOW_VIEW_PUBLICATION_REVIEW: "workflowViewPublicationReview",
+    WORKFLOW_PUBLICATION_PUBLISH: "workflowPublicationPublish",
+    WORKFLOW_PUBLICATION_RUN: "workflowPublicationRun",
+    WORKFLOW_PUBLICATION_RELOAD: "workflowPublicationReload",
+    // A test of the definition's current revision (INACTIVE likewise): open its review, start it after the confirm dialog,
+    // switch its agent states between mocked and real, or review a workflow that changed meanwhile again.
+    WORKFLOW_VIEW_TEST_REVIEW: "workflowViewTestReview",
+    WORKFLOW_TEST_START: "workflowTestStart",
+    WORKFLOW_TEST_AGENTS: "workflowTestAgents",
+    WORKFLOW_TEST_RELOAD: "workflowTestReload",
+    // The shown test run's answers and virtual clock (INACTIVE likewise): open the answer form and send its answer, open the
+    // clock form and advance it.
+    WORKFLOW_VIEW_TEST_ANSWER: "workflowViewTestAnswer",
+    WORKFLOW_TEST_ANSWER_SEND: "workflowTestAnswerSend",
+    // Send the answer drafted in the form to the workflow's parent agent instead (owner decision q12).
+    WORKFLOW_TEST_ANSWER_ASK_PARENT: "workflowTestAnswerAskParent",
+    WORKFLOW_VIEW_TEST_CLOCK: "workflowViewTestClock",
+    WORKFLOW_TEST_CLOCK_ADVANCE: "workflowTestClockAdvance",
+    // One visit's own result in the workflow view: the selected state's older or newer visit (the latest by default).
+    WORKFLOW_VIEW_OLDER_EXECUTION: "workflowViewOlderExecution",
+    WORKFLOW_VIEW_NEWER_EXECUTION: "workflowViewNewerExecution",
+    // The shown run's older history (the next, older page of each section), and the whole value of the visit shown.
+    WORKFLOW_VIEW_OLDER_HISTORY: "workflowViewOlderHistory",
+    WORKFLOW_VIEW_WHOLE_VALUE: "workflowViewWholeValue",
+    // The variables the shown visit applied, compared with the run's accepted ones (mock M15).
+    WORKFLOW_VIEW_INSPECT_VARIABLES: "workflowViewInspectVariables",
+    // Two versions of the draft compared as formatted YAML (owner decision q4): open or close, and an older or newer first version.
+    WORKFLOW_VIEW_COMPARE_VERSIONS: "workflowViewCompareVersions",
+    WORKFLOW_VIEW_COMPARE_OLDER: "workflowViewCompareOlder",
+    WORKFLOW_VIEW_COMPARE_NEWER: "workflowViewCompareNewer",
     SEQUENCE_SELECT_PREV: "sequenceSelectPrev",
     SEQUENCE_SELECT_NEXT: "sequenceSelectNext",
     TOGGLE_SEQUENCE_TURN: "toggleSequenceTurn",

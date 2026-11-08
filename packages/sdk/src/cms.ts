@@ -1,4 +1,5 @@
 import { normalizeCapabilityState, type CapabilityState } from "./capability-catalog.js";
+import { childBudgetCountSql, childBudgetWords } from "./child-budget.js";
 /**
  * Session Catalog (CMS) — provider-based session metadata store.
  *
@@ -11,13 +12,15 @@ import { normalizeCapabilityState, type CapabilityState } from "./capability-cat
 
 import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
+import { mergeProfileReceipts, profileReceiptOmittedSessions } from "./profile-receipts.js";
 import { ProviderStore } from "./provider-store.js";
 import { FeatureStore } from "./feature-store.js";
 import { MotdStore } from "./motd-store.js";
-import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndResult, type TurnControl, type TurnStartRecord } from "./types.js";
+import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndOptions, type TurnEndResult, type TurnControl, type TurnStartRecord } from "./types.js";
 import type { MessageSender } from "./message-sender.js";
 import { TurnControlUnavailableError } from "./turn-control-contract.js";
 import type { TurnControlListenClient } from "./turn-control.js";
+import { WorkflowStore, insertStopNotForTurn, workflowVisitOfStopRequestId } from "./workflow/v2/store.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -114,6 +117,7 @@ export interface HourlyTokenBucketRow {
 /** A row in the sessions table. */
 export interface SessionRow {
     sessionId: string;
+    sessionKind: import("./types.js").SessionKind;
     orchestrationId: string | null;
     title: string | null;
     titleLocked: boolean;
@@ -160,6 +164,11 @@ export interface SessionRow {
     serviceKind: string | null;
     /** The session this service session serves (regen: the regenerating session). */
     serviceOf: string | null;
+    /**
+     * Workflow Simplified stage 2.3 (P2): the `<package>/<name>` of the package Workflow Definition this chat was made for
+     * from the new-session picker (a coordinating chat), shown with the Workflow badge; null otherwise.
+     */
+    workflowRef?: string | null;
     /** Agent definition ID (e.g. "sweeper"). Links session to its agent config. */
     agentId: string | null;
     /** Splash banner (terminal markup) from the agent definition. */
@@ -995,6 +1004,8 @@ export interface SessionCatalog {
     upsertSessionCanvas?(sessionId: string, slot: number, name: string | null, latestRev: number, sizeBytes: number | null): Promise<void>;
     getSessionCanvases?(sessionId: string): Promise<Array<{ slot: number; name: string; latestRev: number; sizeBytes: number | null; updatedAt: string }>>;
     listSessionCanvasesFor?(sessionIds: string[]): Promise<Map<string, Array<{ slot: number; name: string; latestRev: number; sizeBytes: number | null }>>>;
+    /** OF-S2-5: which of these sessions own a live Workflow Definition (migration 0107); optional like the canvas read. */
+    listWorkflowDefinitionOwnersFor?(sessionIds: string[]): Promise<Set<string>>;
 
     /**
      * The canvas data plane (migration 0047): one UNLOGGED last-value row per
@@ -1152,8 +1163,12 @@ export interface SessionCatalog {
 
     // ── Writes (called from client, before duroxide calls) ───
 
-    /** Insert a new session. No-op if session already exists. */
+    /**
+     * Insert a new session. No-op if the session already exists; a workflow
+     * session's row (creation config, kind, owner) is never changed.
+     */
     createSession(sessionId: string, opts?: {
+        sessionKind?: import("./types.js").SessionKind;
         model?: string;
         reasoningEffort?: string;
         contextTier?: string | null;
@@ -1172,7 +1187,11 @@ export interface SessionCatalog {
         serviceOf?: string | null;
         /** Durable creation config (migration 0072); see getSessionCreationConfig. */
         creationConfig?: Record<string, unknown> | null;
+        /** S2RT-F3: a sub-agent counted toward its parent's budget of running children, checked in this creation's transaction. */
+        childBudget?: { max: number } | null;
     }): Promise<void>;
+    /** S2RT-F3: the parent's running children as the shared budget counts them (child-budget.ts). */
+    countBudgetChildren?(parentSessionId: string, excluding?: string): Promise<number>;
 
     /**
      * The session's durable creation config (migration 0072), or null.
@@ -1180,6 +1199,28 @@ export interface SessionCatalog {
      * in-memory map plus the worker-side bound-agent backfill.
      */
     getSessionCreationConfig?(sessionId: string): Promise<Record<string, unknown> | null>;
+
+    /** Workflow v2 persistence on the same database and schema (migration 0089). Optional for other stores. */
+    workflowStore?(): import("./workflow/v2/store.js").WorkflowStore;
+
+    /**
+     * Create a workflow v2 session row only if no row with this id exists
+     * (live, deleted, or being created concurrently). On `created: false`
+     * nothing was changed. Kind, lineage, creation config and owner are
+     * written in the same transaction as the claim (migration 0089).
+     */
+    createWorkflowSessionV2?(sessionId: string, opts: {
+        parentSessionId: string | null;
+        owner: SessionOwnerInfo | null;
+        creationConfig: Record<string, unknown>;
+        /**
+         * Run inside the claim's transaction once the row is claimed, before it commits (SEMVER_REUSED: the version
+         * check under its lock). A throw rolls the claim back, so a refused request binds no row and no key.
+         */
+        afterClaim?: (client: import("pg").PoolClient) => Promise<void>;
+        /** Stage 2.2: the session is a service of another (service_kind, service_of), written in the claim's transaction. */
+        service?: { kind: string; of: string | null } | null;
+    }): Promise<{ created: boolean }>;
 
     /** Stamp a session as a service session post-create (migration 0037). */
     markSessionService(sessionId: string, serviceKind: string, serviceOf: string | null): Promise<void>;
@@ -1218,7 +1259,7 @@ export interface SessionCatalog {
      * or stopped unless `kind` is error. An error leaves them open for retry.
      * Redelivery passes the same carried seqs; closing is idempotent.
      */
-    turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[]): Promise<TurnEndResult>;
+    turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[], options?: TurnEndOptions): Promise<TurnEndResult>;
     /** Queued messages replaced by the turn's delivered converted steers (the latest started turn when omitted). */
     turnReplaced(sessionId: string, turn?: number): Promise<string[]>;
     /**
@@ -1729,9 +1770,122 @@ export class PgSessionCatalog implements SessionCatalog {
         this.initialized = true;
     }
 
+    private _workflowStore: WorkflowStore | null = null;
+
+    workflowStore(): WorkflowStore {
+        this._workflowStore ??= new WorkflowStore(this.pool, this.sql.schema, { noticeLockPool: () => this.workflowNoticeLockPool() });
+        return this._workflowStore;
+    }
+
+    /** The workflow run notice lock's own small pool (E3-R2), made at its first use with this pool's connection settings. */
+    private noticeLockPool: Promise<any> | null = null;
+    /** Set by close (E3b verification, B-L2): no lock pool is made, and no lock connection is borrowed, after it. */
+    private closing = false;
+
+    private workflowNoticeLockPool(): Promise<any> {
+        if (this.closing) return Promise.reject(new Error("The session catalog is closed."));
+        const settings = this.listenConfig;
+        if (!settings) return Promise.resolve(this.pool);
+        this.noticeLockPool ??= (async () => {
+            const { default: pg } = await import("pg");
+            // A close that began while pg was loading: no pool is made.
+            if (this.closing) throw new Error("The session catalog is closed.");
+            const configured = Number.parseInt(process.env.PILOTSWARM_WORKER_CONCURRENCY ?? "", 10);
+            const concurrency = Number.isFinite(configured) && configured > 0 ? configured : 2;
+            const pool = new pg.Pool({
+                application_name: "pilotswarm-workflow-notice-lock",
+                ...settings,
+                max: concurrency + 1,
+                idleTimeoutMillis: 5_000,
+                connectionTimeoutMillis: 10_000,
+            });
+            pool.on("error", (err: Error) => {
+                console.error("[cms] workflow notice lock pool idle client error (non-fatal):", err.message);
+            });
+            return pool;
+        })();
+        return this.noticeLockPool;
+    }
+
+    /**
+     * S2RT-F3: the chat's running children as the shared budget counts them (child-budget.ts), outside any transaction: a
+     * quick answer before a creation, which checks again under its lock. `excluding`: a child not to count.
+     */
+    async countBudgetChildren(parentSessionId: string, excluding = ""): Promise<number> {
+        const { rows } = await this.pool.query(childBudgetCountSql(`"${this.sql.schema}"`), [parentSessionId, excluding]);
+        return Number(rows[0]?.n ?? 0);
+    }
+
+    /**
+     * S2RT-F3: in a creation's transaction, lock the parent's row exclusively, then refuse the creation when the parent's
+     * budget is full (an existing row is a retry: its slot is already its own). Throws an Error with code CHILD_LIMIT.
+     */
+    async requireChildBudgetLocked(client: import("pg").PoolClient, parentSessionId: string, childSessionId: string, max: number): Promise<void> {
+        await client.query(`SELECT 1 FROM "${this.sql.schema}".sessions WHERE session_id = $1 FOR NO KEY UPDATE`, [parentSessionId]);
+        const existing = await client.query(`SELECT 1 FROM "${this.sql.schema}".sessions WHERE session_id = $1`, [childSessionId]);
+        if (existing.rows[0]) return;
+        const { rows } = await client.query(childBudgetCountSql(`"${this.sql.schema}"`), [parentSessionId, childSessionId]);
+        const count = Number(rows[0]?.n ?? 0);
+        if (count >= max) {
+            throw Object.assign(new Error(childBudgetWords(count, max)), { code: "CHILD_LIMIT", details: { running: count, max } });
+        }
+    }
+
+    async createWorkflowSessionV2(sessionId: string, opts: {
+        parentSessionId: string | null;
+        owner: SessionOwnerInfo | null;
+        creationConfig: Record<string, unknown>;
+        afterClaim?: (client: import("pg").PoolClient) => Promise<void>;
+        service?: { kind: string; of: string | null } | null;
+    }): Promise<{ created: boolean }> {
+        const client = await this.pool.connect();
+        let released = false;
+        try {
+            // Review SDK3-F2: the version check after the claim (afterClaim) takes its lock, then reads what an earlier
+            // holder committed: that needs a new snapshot per statement, whatever the connection's default isolation.
+            await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+            const { rows } = await client.query(
+                `SELECT "${this.sql.schema}".cms_create_workflow_session_v2($1, $2, $3::jsonb) AS created`,
+                [sessionId, opts.parentSessionId, JSON.stringify(opts.creationConfig)],
+            );
+            if (rows[0]?.created !== true) {
+                await client.query("ROLLBACK");
+                return { created: false };
+            }
+            // A throw here is caught below: the claim is rolled back.
+            if (opts.afterClaim) await opts.afterClaim(client);
+            // Stage 2.2: an agent's test bench is a service session from its first commit, so no list ever shows it.
+            if (opts.service?.kind) {
+                await client.query(`UPDATE "${this.sql.schema}".sessions SET service_kind = $2, service_of = $3 WHERE session_id = $1`,
+                    [sessionId, opts.service.kind, opts.service.of ?? null]);
+            }
+            if (opts.owner?.provider && opts.owner?.subject) {
+                await client.query(
+                    `SELECT ${this.sql.fn.setSessionOwner}($1, $2, $3, $4, $5)`,
+                    [sessionId, opts.owner.provider, opts.owner.subject, opts.owner.email ?? null, opts.owner.displayName ?? null],
+                );
+            } else if (opts.parentSessionId) {
+                await client.query(`SELECT ${this.sql.fn.inheritSessionOwner}($1, $2)`, [sessionId, opts.parentSessionId]);
+            }
+            await client.query("COMMIT");
+            return { created: true };
+        } catch (err) {
+            try {
+                await client.query("ROLLBACK");
+            } catch (rollbackError) {
+                released = true;
+                client.release(rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError)));
+            }
+            throw err;
+        } finally {
+            if (!released) client.release();
+        }
+    }
+
     // ── Writes ───────────────────────────────────────────────
 
     async createSession(sessionId: string, opts?: {
+        sessionKind?: import("./types.js").SessionKind;
         model?: string;
         reasoningEffort?: string;
         contextTier?: string | null;
@@ -1755,6 +1909,13 @@ export class PgSessionCatalog implements SessionCatalog {
          * through the shared getSession row (viewers must not see it).
          */
         creationConfig?: Record<string, unknown> | null;
+        /**
+         * Stage 2 review S2RT-F3: a sub-agent that counts toward its parent's budget of running children (spawn_agent). The
+         * parent's row is locked exclusively and the budget counted (child-budget.ts) in this creation's transaction; a
+         * full budget refuses the creation (code CHILD_LIMIT) and makes nothing. A row that already exists (a retry) is not
+         * counted again.
+         */
+        childBudget?: { max: number } | null;
     }): Promise<void> {
         const explicitGroupId = typeof opts?.groupId === "string" && opts.groupId.trim()
             ? opts.groupId.trim()
@@ -1770,6 +1931,9 @@ export class PgSessionCatalog implements SessionCatalog {
         const client = await this.pool.connect();
         try {
             await client.query("BEGIN");
+            if (opts?.childBudget && opts.parentSessionId && !opts.isSystem) {
+                await this.requireChildBudgetLocked(client, opts.parentSessionId, sessionId, opts.childBudget.max);
+            }
             if (validateProviderModel) {
                 await client.query(
                     `SELECT "${this.sql.schema}".cms_provider_assert_session_model($1,$2,$3,$4)`,
@@ -1794,6 +1958,21 @@ export class PgSessionCatalog implements SessionCatalog {
                 );
             }
 
+            if (await this.supportsCreationConfig()) {
+                // The create procedure locks even a conflicting row. Keep a workflow's
+                // first grant/input immutable across concurrent creates and retries.
+                // The caller learns the row is not its own by reading it back
+                // (PilotSwarmClient.createSession refuses a workflow session's id).
+                const { rows } = await client.query(
+                    `SELECT creation_config FROM "${this.sql.schema}".sessions WHERE session_id = $1 FOR UPDATE`,
+                    [sessionId],
+                );
+                if (rows[0]?.creation_config?.workflowAdmission || rows[0]?.creation_config?.workflowV2) {
+                    await client.query("ROLLBACK");
+                    return;
+                }
+            }
+
             // Creation config rides the same transaction as a raw UPDATE, like
             // the service columns below — the create proc's signature stays
             // untouched, and a pre-0072 database simply skips the write (the
@@ -1811,6 +1990,13 @@ export class PgSessionCatalog implements SessionCatalog {
                 await client.query(
                     `UPDATE "${this.sql.schema}".sessions SET service_kind = $2, service_of = $3 WHERE session_id = $1`,
                     [sessionId, opts.serviceKind, opts.serviceOf ?? null],
+                );
+            }
+
+            if (opts?.sessionKind === "workflow") {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".sessions SET session_kind = 'workflow' WHERE session_id = $1`,
+                    [sessionId],
                 );
             }
 
@@ -2007,19 +2193,62 @@ export class PgSessionCatalog implements SessionCatalog {
         return rows.map((row: any) => ({ sessionId: row.session_id, turn: Number(row.turn), controls: toTurnControls(row.controls) }));
     }
 
-    /** Closes controls after the save and records carried-steer disposition idempotently. */
-    async turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[]): Promise<TurnEndResult> {
-        const { rows } = await this.turnControlQuery(
-            "turnEnd",
-            `SELECT ${this.sql.fn.turnEnd}($1, $2, $3, $4, $5::bigint[]) AS r`,
-            [sessionId, turn, cursor, kind, carried],
-        );
+    /**
+     * Closes controls after the save and records carried-steer disposition idempotently. With a visit fence (a continued
+     * workflow chat's turn; review RT-D2), one transaction: the session row's lock first (the lock cms_turn_end and
+     * cms_turn_control_add take, in the same order), then each open Stop of the turn that names another visit gets its
+     * too_late outcome (the classifier and insert live admission uses), then cms_turn_end. A Stop added after the live
+     * reader retired is classified under the same lock as the result is decided, so another visit's Stop never makes this
+     * turn stopped.
+     */
+    async turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[], options: TurnEndOptions = {}): Promise<TurnEndResult> {
+        const values = [sessionId, turn, cursor, kind, carried];
+        const end = `SELECT ${this.sql.fn.turnEnd}($1, $2, $3, $4, $5::bigint[]) AS r`;
+        const rows = options.visitFence
+            ? await this.turnEndFenced(sessionId, turn, options.visitFence.visit, end, values)
+            : (await this.turnControlQuery("turnEnd", end, values)).rows;
         const r = rows[0]?.r ?? {};
         return {
             stopped: r.stopped === true,
             late: Array.isArray(r.late) ? r.late.map((l: any) => ({ seq: Number(l.seq), text: String(l.text ?? "") })) : [],
             replaced: toStringList(r.replaced),
         };
+    }
+
+    /** turnEnd with a visit fence: the classification and the end in one transaction under the session row's lock. */
+    private async turnEndFenced(sessionId: string, turn: number, visit: string | null, end: string, values: unknown[]): Promise<any[]> {
+        const s = `"${this.sql.schema}"`;
+        const client = await this.pool.connect();
+        let released = false;
+        try {
+            await client.query("BEGIN");
+            await client.query(`SELECT 1 FROM ${s}.sessions WHERE session_id = $1 FOR UPDATE`, [sessionId]);
+            const { rows: stops } = await client.query(
+                `SELECT c.seq, e.data->>'requestId' AS request_id
+                   FROM ${s}.cms_turn_open_controls($1, $2) c
+                   JOIN ${s}.session_events e ON e.session_id = $1 AND e.seq = c.seq
+                  WHERE c.kind = 'stop'
+                  ORDER BY c.seq`, [sessionId, turn]);
+            for (const stop of stops) {
+                const target = workflowVisitOfStopRequestId(stop.request_id ?? null);
+                if (target === null || target === visit) continue;
+                await insertStopNotForTurn(client, `${s}.session_events`, sessionId, Number(stop.seq), turn);
+            }
+            const { rows } = await client.query(end, values);
+            await client.query("COMMIT");
+            return rows;
+        } catch (err) {
+            try {
+                await client.query("ROLLBACK");
+            } catch (rollbackError) {
+                released = true;
+                client.release(rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError)));
+            }
+            if (isUndefinedFunctionError(err)) throw new TurnControlUnavailableError("turnEnd");
+            throw err;
+        } finally {
+            if (!released) client.release();
+        }
     }
 
     /** Queued messages replaced by the turn's delivered converted steers (the latest started turn when omitted). */
@@ -2074,7 +2303,7 @@ export class PgSessionCatalog implements SessionCatalog {
         // Service columns join the raw table (same reasoning as getSession —
         // never widen a shared proc's RETURNS TABLE).
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
+            `SELECT g.*, s.session_kind, s.service_kind, s.service_of, s.workflow_ref, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessions}($1, $2) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [placement?.provider ?? null, placement?.subject ?? null],
@@ -2092,7 +2321,7 @@ export class PgSessionCatalog implements SessionCatalog {
         placement?: { provider: string; subject: string } | null;
     }): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
+            `SELECT g.*, s.session_kind, s.service_kind, s.service_of, s.workflow_ref, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessionsPage}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [
@@ -2116,7 +2345,7 @@ export class PgSessionCatalog implements SessionCatalog {
         placement?: { provider: string; subject: string } | null,
     ): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
+            `SELECT g.*, s.session_kind, s.service_kind, s.service_of, s.workflow_ref, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessionsVisible}($1, $2, $3, $4, $5) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [viewer.provider, viewer.subject, viewer.systemVisible ?? true, placement?.provider ?? null, placement?.subject ?? null],
@@ -2143,8 +2372,8 @@ export class PgSessionCatalog implements SessionCatalog {
         // proc's RETURNS TABLE — a proc-shape change breaks re-application of
         // the earlier migration that CREATE-OR-REPLACEs it with the old shape.
         const { rows } = await this.pool.query(
-                `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.service_kind, s.service_of,
-                    s.context_tier, s.model_resolution_source, s.turn_high
+                `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.session_kind, s.service_kind, s.service_of,
+                    s.workflow_ref, s.context_tier, s.model_resolution_source, s.turn_high
                FROM ${this.sql.fn.getSession}($1, $2, $3) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [sessionId, placement?.provider ?? null, placement?.subject ?? null],
@@ -2383,7 +2612,9 @@ export class PgSessionCatalog implements SessionCatalog {
 
     async listGroupSessions(groupId: string, placement?: { provider: string; subject: string } | null): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.listGroupSessions}($1, $2, $3)`,
+            `SELECT g.*, s.session_kind
+               FROM ${this.sql.fn.listGroupSessions}($1, $2, $3) g
+               JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [groupId, placement?.provider ?? null, placement?.subject ?? null],
         );
         return rows.map(rowToSessionRow);
@@ -2509,6 +2740,23 @@ export class PgSessionCatalog implements SessionCatalog {
             out.set(r.session_id, list);
         }
         return out;
+    }
+
+    /**
+     * OF-S2-5: which of MANY sessions own a live Workflow Definition, in one query on the owner index (migration 0107) —
+     * the sessions-list flag. A deleted definition does not count; empty ids short-circuit. A database without 0107
+     * throws here (undefined table), and the list leaves the flag out.
+     */
+    async listWorkflowDefinitionOwnersFor(sessionIds: string[]): Promise<Set<string>> {
+        const ids = [...new Set((sessionIds || []).map((x) => String(x || "").trim()).filter(Boolean))];
+        if (ids.length === 0) return new Set();
+        const { rows } = await this.pool.query(
+            `SELECT DISTINCT owner_session_id
+             FROM "${this.sql.schema}".workflow_chat_definitions
+             WHERE owner_session_id = ANY($1) AND deleted_at IS NULL`,
+            [ids],
+        );
+        return new Set(rows.map((r: any) => String(r.owner_session_id)));
     }
 
     /** All drawn canvases for one session, ordered by slot. */
@@ -3358,16 +3606,47 @@ export class PgSessionCatalog implements SessionCatalog {
             throw new Error("setUserProfileSettings: provider and subject are required");
         }
         const safeSettings = settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
-        await this.pool.query(
-            `SELECT ${this.sql.fn.setUserProfileSettings}($1, $2, $3, $4, $5::jsonb)`,
-            [
-                provider,
-                subject,
-                principal.email ?? null,
-                principal.displayName ?? null,
-                JSON.stringify(safeSettings),
-            ],
-        );
+        // FU-20 (review UI2-F2): the stored document's "seen" receipts are merged into the written one by MAX, under a lock on
+        // the person's row, so a second device's older whole-profile save cannot undo what this person has already seen.
+        const s = `"${this.sql.schema}"`;
+        const client = await this.pool.connect();
+        let released = false;
+        try {
+            // READ COMMITTED whatever the connection's default: after waiting for the lock, the read sees the other save.
+            await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+            const { rows } = await client.query(
+                `SELECT profile_settings FROM ${s}.users WHERE provider = $1 AND subject = $2 FOR UPDATE`, [provider, subject]);
+            const stored = rows[0]?.profile_settings ?? null;
+            const omitted = profileReceiptOmittedSessions(stored, safeSettings);
+            const live = new Set<string>();
+            if (omitted.length) {
+                const found = await client.query(
+                    `SELECT session_id FROM ${s}.sessions WHERE session_id = ANY($1::text[]) AND deleted_at IS NULL`, [omitted]);
+                for (const row of found.rows) live.add(String(row.session_id));
+            }
+            const merged = mergeProfileReceipts(stored, safeSettings, id => live.has(id));
+            await client.query(
+                `SELECT ${this.sql.fn.setUserProfileSettings}($1, $2, $3, $4, $5::jsonb)`,
+                [
+                    provider,
+                    subject,
+                    principal.email ?? null,
+                    principal.displayName ?? null,
+                    JSON.stringify(merged),
+                ],
+            );
+            await client.query("COMMIT");
+        } catch (err) {
+            try {
+                await client.query("ROLLBACK");
+            } catch (rollbackError) {
+                released = true;
+                client.release(rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError)));
+            }
+            throw err;
+        } finally {
+            if (!released) client.release();
+        }
         const profile = await this.getUserProfile(principal);
         if (!profile) {
             throw new Error("setUserProfileSettings: failed to read back the user profile after write");
@@ -4005,6 +4284,14 @@ export class PgSessionCatalog implements SessionCatalog {
     }
 
     async close(): Promise<void> {
+        // The flag first, then the snapshot: a lock pool still being made sees the flag and makes none.
+        this.closing = true;
+        const pendingLockPool = this.noticeLockPool;
+        this.noticeLockPool = null;
+        if (pendingLockPool) {
+            const lockPool = await pendingLockPool.catch(() => null);
+            if (lockPool && lockPool !== this.pool) await lockPool.end();
+        }
         if (this.pool) {
             await this.pool.end();
             this.pool = null;
@@ -4042,6 +4329,7 @@ function rowToSessionRow(row: any): SessionRow {
         : null;
     return {
         sessionId: row.session_id,
+        sessionKind: row.session_kind === "workflow" ? "workflow" : "agent",
         orchestrationId: row.orchestration_id ?? null,
         title: row.title ?? null,
         titleLocked: row.title_locked ?? false,
@@ -4067,6 +4355,7 @@ function rowToSessionRow(row: any): SessionRow {
         isSystem: row.is_system ?? false,
         serviceKind: row.service_kind ?? null,
         serviceOf: row.service_of ?? null,
+        workflowRef: row.workflow_ref ?? null,
         agentId: row.agent_id ?? null,
         splash: row.splash ?? null,
         splashMobile: row.splash_mobile ?? null,

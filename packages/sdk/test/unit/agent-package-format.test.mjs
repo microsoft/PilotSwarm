@@ -372,12 +372,96 @@ test("agent skip reasons are named honestly", async () => {
         "---", "name: empty", "description: no body", "schemaVersion: 1", "version: 1.0.0", "---", "",
     ].join("\n"));
     fs.writeFileSync(path.join(dir, "agents", "future.agent.md"), [
-        "---", "name: future", "description: future", "schemaVersion: 5", "version: 1.0.0", "---", "", "Body.",
+        "---", "name: future", "description: future", "schemaVersion: 6", "version: 1.0.0", "---", "", "Body.",
     ].join("\n"));
     const result = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
     assert.deepEqual(errorCodes(result), ["empty_agent_body", "unsupported_agent_schema_version"]);
     assert.match(result.errors.find((e) => e.code === "empty_agent_body").message, /cannot be blank/);
-    assert.match(result.errors.find((e) => e.code === "unsupported_agent_schema_version").message, /use 1, 2, 3, or 4/);
+    assert.match(result.errors.find((e) => e.code === "unsupported_agent_schema_version").message, /use 1, 2, 3, 4, or 5/);
+});
+
+// ─── workflow interfaces (schemaVersion 5; workflow/v2/package-interface.ts) ───
+
+const REVIEW_RESULT = { type: "object", required: ["verdict"], properties: { verdict: { type: "string" } }, additionalProperties: false };
+
+/** A schemaVersion-`version` agent that declares a workflow interface (`lines` replace its interface lines). */
+function writeInterfaceAgent(dir, name, { version = 5, lines = null, agentsDir = path.join(dir, "agents") } = {}) {
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, `${name}.agent.md`), [
+        "---", `name: ${name}`, "description: Reviews a change", `schemaVersion: ${version}`, "version: 1.0.0",
+        ...(lines ?? ["workflowInterface:", "  name: review_change", "  version: \"1\"",
+            "  outputSchema: ./contracts/review-result.schema.json", "  outcomes: [accepted, changes_required]"]),
+        "---", "", "You review changes.",
+    ].join("\n"));
+}
+
+function writeContract(dir, relative = "contracts/review-result.schema.json", schema = REVIEW_RESULT) {
+    fs.mkdirSync(path.dirname(path.join(dir, relative)), { recursive: true });
+    fs.writeFileSync(path.join(dir, relative), JSON.stringify(schema));
+}
+
+test("a schemaVersion 5 agent exports its workflow interface in the manifest; other agents' manifest entries are unchanged", async () => {
+    const dir = writeValidPackage(tmpdir());
+    writeContract(dir);
+    writeInterfaceAgent(dir, "reviewer");
+    const result = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.deepEqual(result.errors, []);
+    const reviewer = result.manifest.agents.find((a) => a.name === "reviewer");
+    assert.deepEqual({ ...reviewer.workflowInterface, digest: null }, {
+        name: "review_change", version: "1", inputSchema: null, outputSchema: REVIEW_RESULT, outcomes: ["accepted", "changes_required"], digest: null,
+    });
+    assert.match(reviewer.workflowInterface.digest, /^[0-9a-f]{64}$/);
+    // The manifest is stored as JSON: the export survives it.
+    assert.deepEqual(JSON.parse(JSON.stringify(result.manifest)).agents.find((a) => a.name === "reviewer").workflowInterface, reviewer.workflowInterface);
+    const triager = result.manifest.agents.find((a) => a.name === "triager");
+    assert.equal("workflowInterface" in triager, false);
+});
+
+test("a workflow interface needs schemaVersion 5, schema files inside the package and a well-formed declaration", async () => {
+    const older = writeValidPackage(tmpdir());
+    writeContract(older);
+    writeInterfaceAgent(older, "reviewer", { version: 4 });
+    const v4 = await validateAgentPackageDir(older, { skipSyntaxCheck: true });
+    assert.deepEqual(errorCodes(v4), ["workflow_interface_requires_schema_v5"]);
+    assert.match(v4.errors[0].message, /^agents\/reviewer\.agent\.md: workflowInterface requires schemaVersion 5/);
+
+    const outside = writeValidPackage(tmpdir());
+    writeInterfaceAgent(outside, "reviewer", { lines: ["workflowInterface:", "  name: review_change", "  version: \"1\"",
+        "  outputSchema: ../review-result.schema.json", "  outcomes: [accepted]"] });
+    const escaped = await validateAgentPackageDir(outside, { skipSyntaxCheck: true });
+    assert.deepEqual(errorCodes(escaped), ["workflow_interface_schema"]);
+    assert.match(escaped.errors[0].message, /^agents\/reviewer\.agent\.md: workflowInterface\.outputSchema '\.\.\/review-result\.schema\.json': must be a file inside the package/);
+    assert.equal(escaped.manifest, undefined);
+
+    const badOutcomes = writeValidPackage(tmpdir());
+    writeContract(badOutcomes);
+    writeInterfaceAgent(badOutcomes, "reviewer", { lines: ["workflowInterface:", "  name: review_change", "  version: \"1\"",
+        "  outputSchema: ./contracts/review-result.schema.json", "  outcomes: [accepted, timed_out]"] });
+    const outcomes = await validateAgentPackageDir(badOutcomes, { skipSyntaxCheck: true });
+    assert.deepEqual(errorCodes(outcomes), ["invalid_workflow_interface"]);
+    assert.match(outcomes.errors[0].message, /workflowInterface\.outcomes must list/);
+
+    const malformed = writeValidPackage(tmpdir());
+    writeInterfaceAgent(malformed, "reviewer", { lines: ["workflowInterface:", "  name: review_change", "     - stray"] });
+    const parse = await validateAgentPackageDir(malformed, { skipSyntaxCheck: true });
+    assert.deepEqual(errorCodes(parse), ["invalid_agent"]);
+    assert.match(parse.errors[0].message, /failed to parse \(check frontmatter and schemaVersion\): Malformed workflowInterface entry: - stray/);
+});
+
+test("manifest layout: an interface's schema files ship only when the layout includes them", async () => {
+    const dir = writeManifestLayoutPackage(tmpdir());
+    writeContract(dir);
+    writeInterfaceAgent(dir, "triager", { agentsDir: path.join(dir, "src", "prompts") });
+    const missing = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.deepEqual(errorCodes(missing), ["workflow_interface_schema"]);
+    assert.match(missing.errors[0].message, /'\.\/contracts\/review-result\.schema\.json': is not in the package/);
+
+    const pj = JSON.parse(fs.readFileSync(path.join(dir, "plugin.json"), "utf8"));
+    pj.include = [...pj.include, "contracts/review-result.schema.json"];
+    fs.writeFileSync(path.join(dir, "plugin.json"), JSON.stringify(pj));
+    const included = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.equal(included.ok, true, JSON.stringify(included.errors));
+    assert.deepEqual(included.manifest.agents[0].workflowInterface.outputSchema, REVIEW_RESULT);
 });
 
 test("session-policy.json is forbidden in packages", async () => {

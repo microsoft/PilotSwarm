@@ -109,3 +109,46 @@ test("Stop and Steer forward every option, including the request id, unchanged",
     assert.equal(calls[1].url, `https://portal.example.com${API_PREFIX}/management/sessions/s1/stop-turn`);
     assert.deepEqual(JSON.parse(calls[1].options.body), { options: { requestId: "r-2", reason: "enough", timeoutMs: 5000 } });
 });
+
+test("readWorkflow reads GET /sessions/:sessionId/workflow; only an absent run is left out of the query", async () => {
+    const view = { workflowId: "s1", run: null };
+    const { transport, calls } = createTransport({ responses: [
+        jsonResponse({ ok: true, result: view }),
+        jsonResponse({ ok: true, result: view }),
+        jsonResponse({ ok: true, result: view }),
+        jsonResponse({ ok: false, error: { code: "INVALID_REQUEST", message: "runId must be a run id of 1 to 256 characters." } }, { status: 400 }),
+        jsonResponse({ ok: false, error: { code: "WORKFLOW_NOT_FOUND", message: "This session is not a version 2 workflow." } }, { status: 404 }),
+    ] });
+    assert.deepEqual(await transport.readWorkflow("s1"), view);
+    assert.deepEqual(await transport.readWorkflow("s1", { runId: null }), view);
+    assert.deepEqual(await transport.readWorkflow("s1", { runId: "run-1" }), view);
+    // An explicit empty run is sent, so the server validates it (400) instead of reading the live run.
+    await assert.rejects(transport.readWorkflow("s1", { runId: "" }), (error) => error.code === "INVALID_REQUEST" && error.status === 400);
+    await assert.rejects(transport.readWorkflow("agent-1"), (error) => error.code === "WORKFLOW_NOT_FOUND" && error.status === 404);
+    assert.equal(calls[0].url, `https://portal.example.com${API_PREFIX}/sessions/s1/workflow`);
+    assert.equal(calls[0].options.method, "GET");
+    assert.equal(calls[0].options.body, undefined);
+    assert.equal(calls[1].url, `https://portal.example.com${API_PREFIX}/sessions/s1/workflow`);
+    assert.equal(calls[2].url, `https://portal.example.com${API_PREFIX}/sessions/s1/workflow?runId=run-1`);
+    assert.equal(calls[3].url, `https://portal.example.com${API_PREFIX}/sessions/s1/workflow?runId=`);
+    assert.equal(calls[4].url, `https://portal.example.com${API_PREFIX}/sessions/agent-1/workflow`);
+});
+
+test("readWorkflow sends a section's cursor, an execution id and a limit only when given; the read's refusals keep their codes", async () => {
+    const page = { workflowId: "s1", runId: "R", section: "inbox", order: "newest_first", limit: 5, items: [], nextCursor: null };
+    const { transport, calls } = createTransport({ responses: [
+        jsonResponse({ ok: true, result: page }),
+        jsonResponse({ ok: false, error: { code: "EXECUTION_NOT_FOUND", message: "Execution nx-9 is not a node execution of run R." } }, { status: 404 }),
+        jsonResponse({ ok: false, error: { code: "WORKFLOW_CURSOR_INVALID", message: "This cursor is for another workflow." } }, { status: 400 }),
+    ] });
+    const cursor = { v: 1, workflowId: "s1", runId: "R", section: "inbox", order: "newest_first", after: { seq: "3" } };
+    assert.deepEqual(await transport.readWorkflow("s1", { runId: "R", cursor, limit: 5, executionId: null }), page);
+    await assert.rejects(transport.readWorkflow("s1", { executionId: "nx-9" }), (error) => error.code === "EXECUTION_NOT_FOUND" && error.status === 404);
+    await assert.rejects(transport.readWorkflow("s1", { cursor: { ...cursor, workflowId: "other" } }),
+        (error) => error.code === "WORKFLOW_CURSOR_INVALID" && error.status === 400);
+    const first = new URL(calls[0].url);
+    assert.equal(first.pathname, `${API_PREFIX}/sessions/s1/workflow`);
+    assert.deepEqual([first.searchParams.get("runId"), JSON.parse(first.searchParams.get("cursor")), first.searchParams.get("limit"), first.searchParams.has("executionId")],
+        ["R", cursor, "5", false]);
+    assert.equal(new URL(calls[1].url).search, "?executionId=nx-9");
+});

@@ -80,8 +80,10 @@ function mockWeb() {
     return { ops };
 }
 
-function makeCtx({ enhanced = false, graph = false, admin = false, web = false } = {}) {
+function makeCtx({ enhanced = false, graph = false, admin = false, web = false, workflows = true } = {}) {
     return {
+        // Stage 2.0: Workflows on (the test environment); `workflows: false` is a deployment's default.
+        workflows,
         client: {},
         mgmt: baseMgmt(),
         facts: { async readFacts() { return { count: 0, facts: [] }; } },
@@ -131,6 +133,8 @@ const ALWAYS_TOOLS = [
     "set_session_visibility", "grant_session_share", "revoke_session_share",
     "list_session_shares", "list_known_users",
 ];
+// Workflow v2: the read, while Workflows are on (stage 2.0); a person's commands, update_workflow, only with the test-only option.
+const WORKFLOW_TOOLS = ["read_workflow"];
 
 function expectAll(names, tools, present, label) {
     const misses = tools.filter((t) => names.has(t) !== present);
@@ -142,20 +146,32 @@ async function main() {
     {
         const names = await listToolNames(makeCtx());
         expectAll(names, ALWAYS_TOOLS, true, "bare ctx: unconditional tools present");
+        expectAll(names, WORKFLOW_TOOLS, true, "bare ctx, Workflows on: read_workflow present");
         expectAll(names, [...ENHANCED_TOOLS, ...EMBEDDER_ADMIN], false, "bare ctx: no enhanced-facts tools");
         expectAll(names, [...GRAPH_TOOLS, ...GRAPH_ADMIN], false, "bare ctx: no graph tools");
         expectAll(names, WEB_TOOLS, false, "bare ctx: no web-only tools");
         expectAll(names, ADMIN_TOOLS, false, "bare ctx: no admin tools");
+        expectAll(names, ["update_workflow"], false, "bare ctx: no workflow commands (test-only option)");
     }
 
     // 2. Fully-loaded admin web ctx: everything present.
     {
         const names = await listToolNames(makeCtx({ enhanced: true, graph: true, admin: true, web: true }));
         expectAll(names, ALWAYS_TOOLS, true, "full ctx: unconditional tools present");
+        expectAll(names, WORKFLOW_TOOLS, true, "full ctx, Workflows on: read_workflow present");
         expectAll(names, [...ENHANCED_TOOLS, ...EMBEDDER_ADMIN], true, "full ctx: enhanced-facts tools present");
         expectAll(names, [...GRAPH_TOOLS, ...GRAPH_ADMIN], true, "full ctx: graph tools present");
         expectAll(names, WEB_TOOLS, true, "full ctx: web-only tools present");
         expectAll(names, ADMIN_TOOLS, true, "full ctx: admin tools present");
+    }
+
+    // 2b. Stage 2.0, Workflows off (a deployment's default): no workflow tool, whatever else is on.
+    {
+        const names = await listToolNames(makeCtx({ enhanced: true, graph: true, admin: true, web: true, workflows: false }));
+        expectAll(names, ALWAYS_TOOLS, true, "Workflows off: unconditional tools present");
+        expectAll(names, [...WORKFLOW_TOOLS, "update_workflow"], false, "Workflows off: no workflow tool");
+        const commands = await listToolNames({ ...makeCtx({ workflows: false }), workflowCommands: true });
+        expectAll(commands, [...WORKFLOW_TOOLS, "update_workflow"], false, "Workflows off: no workflow tool even with the test-only option");
     }
 
     // 3. Non-admin with providers: read tools present, [admin] subset absent.

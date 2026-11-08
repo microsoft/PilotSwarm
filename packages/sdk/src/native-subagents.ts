@@ -125,8 +125,43 @@ synchronous; do not create durable sessions, schedule work, or detach commands. 
 agent's policy for whether the user must explicitly request durable delegation.`;
 }
 
-export function nativeSubagentDefinitions(model: string, access?: NativeTaskAccess): CustomAgentConfig[] {
-    return [
+/**
+ * Stage 2 review S2RT-F1: the tools a native worker may use in the subtree of a Workflow agent state that limits its tools
+ * (FU-17): the state's list, as the agent sees each name (an MCP tool also as `server/tool` or `server-tool`), never the
+ * state chat's own complete_workflow_node. null when no state limits it.
+ */
+export class NativeWorkflowToolLimit {
+    private readonly names: Set<string>;
+    constructor(limit: readonly string[]) {
+        this.names = new Set(limit.filter(name => name !== "complete_workflow_node"));
+    }
+    /** Whether a worker may use `tool` (a CLI tool's name, an MCP tool as `server/tool` or `server-tool`). */
+    allows(tool: string): boolean {
+        if (this.names.has(tool)) return true;
+        const slash = tool.indexOf("/");
+        return slash > 0 && (this.names.has(tool.slice(slash + 1)) || this.names.has(tool.replace("/", "-")));
+    }
+    /** `tools` without the ones the limit does not allow. */
+    filter(tools: readonly string[]): string[] {
+        return tools.filter(tool => this.allows(tool));
+    }
+    /** MCP server grants with only the tools the limit allows (a server left with none is dropped). */
+    filterMcp(servers: Record<string, any> | undefined): Record<string, any> {
+        const out: Record<string, any> = {};
+        for (const [server, config] of Object.entries(servers ?? {})) {
+            const tools = Array.isArray(config?.tools) ? config.tools.filter((tool: string) => tool !== "*" && this.allows(`${server}/${tool}`)) : [];
+            if (tools.length) out[server] = { ...config, tools };
+        }
+        return out;
+    }
+}
+
+export function nativeWorkflowToolLimit(limit: readonly string[] | null | undefined): NativeWorkflowToolLimit | undefined {
+    return Array.isArray(limit) ? new NativeWorkflowToolLimit(limit) : undefined;
+}
+
+export function nativeSubagentDefinitions(model: string, access?: NativeTaskAccess, limit?: NativeWorkflowToolLimit): CustomAgentConfig[] {
+    return limitNativeAgents([
         { name: "swarm-explore", description: "Explore the local workspace and return concise source-backed findings.",
             prompt: "Investigate the delegated question in the local workspace. Return concise findings with file references. Do not edit files. If you need user input or durable tools, report that to the parent. Complete the assigned investigation and return.", },
         { name: "swarm-task", description: "Run local tests, builds, and commands; summarize success and include failure details.",
@@ -138,7 +173,20 @@ export function nativeSubagentDefinitions(model: string, access?: NativeTaskAcce
                 : "Perform bounded local work with explicitly granted external tools and report results.",
             prompt: (agent.name === "swarm-explore"
                 ? "Investigate the delegated question using local files or allowlisted external sources. Return concise findings with source references. Do not edit files."
-                : agent.prompt) + " You may also use the explicitly listed external tools, under the parent's existing permissions. Repository-cache paths are remote; use the supplied repository tools. Return findings to the parent; do not create sessions, schedule work or launch detached processes." } : {}), infer: true }));
+                : agent.prompt) + " You may also use the explicitly listed external tools, under the parent's existing permissions. Repository-cache paths are remote; use the supplied repository tools. Return findings to the parent; do not create sessions, schedule work or launch detached processes." } : {}), infer: true })), limit);
+}
+
+/**
+ * S2RT-F1: native worker definitions (the swarm workers and adopted repository agents) inside a Workflow agent state's tool
+ * limit: their tools and MCP grants are cut to the limit. Unchanged without a limit.
+ */
+export function limitNativeAgents(agents: CustomAgentConfig[], limit?: NativeWorkflowToolLimit): CustomAgentConfig[] {
+    if (!limit) return agents;
+    return agents.map(agent => ({
+        ...agent,
+        tools: limit.filter(agent.tools ?? NATIVE_SUBAGENT_TOOLS),
+        ...((agent as { mcpServers?: Record<string, any> }).mcpServers ? { mcpServers: limit.filterMcp((agent as { mcpServers?: Record<string, any> }).mcpServers) } : {}),
+    }));
 }
 
 /** Session workspaces: the adopted repo agents of one session (workspace-repo-agents.ts RepoAgentAccess). */
@@ -148,10 +196,15 @@ export interface NativeRepoAgents {
 }
 
 /** Native execution remains in the CLI. Compose policy around the native tool. */
-export function nativeSubagentHooks(model: string, hooks?: SessionHooks, canAdmit: () => boolean = () => true, access?: NativeTaskAccess, repoAgents?: NativeRepoAgents): SessionHooks {
+export function nativeSubagentHooks(model: string, hooks?: SessionHooks, canAdmit: () => boolean = () => true, access?: NativeTaskAccess, repoAgents?: NativeRepoAgents,
+    limit?: NativeWorkflowToolLimit): SessionHooks {
     return {
         ...hooks,
         onPreMcpToolCall: async (input, invocation) => {
+            // S2RT-F1: a worker in a Workflow agent state's subtree uses only the state's tools.
+            if (input.sessionId !== invocation.sessionId && limit && !limit.allows(`${input.serverName}/${input.toolName}`)) {
+                throw new Error("This Workflow step limits its tools; a native task cannot use this MCP tool.");
+            }
             if (input.sessionId !== invocation.sessionId && !access?.allows(input.sessionId, `${input.serverName}/${input.toolName}`)) {
                 throw new Error("Native task MCP tool is not allowlisted");
             }
@@ -162,6 +215,10 @@ export function nativeSubagentHooks(model: string, hooks?: SessionHooks, canAdmi
             if (previous?.permissionDecision === "deny") return previous;
             const deny = (reason: string) => ({ ...previous, permissionDecision: "deny" as const, permissionDecisionReason: reason });
             const isChild = Boolean(input.sessionId && input.sessionId !== invocation.sessionId);
+            // S2RT-F1: a worker in a Workflow agent state's subtree uses only the state's tools, whatever it was declared.
+            if (isChild && limit && !limit.allows(input.toolName)) {
+                return deny(`This Workflow step limits its tools; a native task cannot use ${input.toolName}. Return this request to your PilotSwarm parent.`);
+            }
             if (isChild && !childTools.has(input.toolName) && !access?.allowsHook(input.sessionId, input.toolName)
                 && !repoAgents?.allowsHook(input.sessionId, input.toolName)) {
                 return deny("Native workers can use only local CLI tools. Return this request to your PilotSwarm parent.");

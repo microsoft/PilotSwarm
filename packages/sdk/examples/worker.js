@@ -27,6 +27,9 @@
  *   PS_MODEL_PROVIDERS_PATH         — Explicit model provider config path
  *   POD_NAME                        — K8s pod name (default: hostname)
  *   PLUGIN_DIRS                     — Comma-separated plugin directories (default: /app/plugin)
+ *   PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT — Test-only: exactly "isolated-test-only" serves Workflow V2 controller
+ *                                     1.9.0 and session orchestration 1.0.83 (testOptions.workflowRequests); any
+ *                                     other value is off. Every worker of the environment must run the same switch.
  *   PILOTSWARM_EXTENSION_MODULES    — Comma-separated modules; each exports register(worker), called
  *                                     before start (for example a session workspace provider)
  *
@@ -37,7 +40,10 @@
 
 import os from "node:os";
 import fs from "node:fs";
-import { PilotSwarmWorker, horizonConfigFromEnv, loadExtensionModules, parseExtensionModules } from "pilotswarm-sdk";
+import {
+    PilotSwarmWorker, horizonConfigFromEnv, loadExtensionModules, parseExtensionModules, workerOptionsForWorkflowV2TestEnvironment,
+    workflowV2TestEnvironmentNotice, workflowsNotice,
+} from "pilotswarm-sdk";
 
 // Sentinel value written to KV by the bicep-deploy `seed-secrets` step
 // for optional secrets that the user didn't provide. CSI Secret Store
@@ -92,7 +98,13 @@ if (process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH) {
 // Set explicitly to override the plugin default, or leave undefined to use it.
 const SYSTEM_MESSAGE = undefined;
 
-const worker = new PilotSwarmWorker({
+// Workflow V2 test environment (test-only; off unless PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT=isolated-test-only): the
+// worker options exactly as below when off; testOptions.workflowRequests when on.
+const workflowV2TestNotice = workflowV2TestEnvironmentNotice(process.env);
+if (workflowV2TestNotice) console.log(`[worker] ${workflowV2TestNotice}`);
+// Workflows (stage 2.0): off unless PILOTSWARM_WORKFLOWS=on (or the test environment switch above).
+console.log(`[worker] ${workflowsNotice(process.env)}`);
+const worker = new PilotSwarmWorker(workerOptionsForWorkflowV2TestEnvironment({
     store: process.env.DATABASE_URL,
     githubToken: process.env.GITHUB_TOKEN,
     logLevel,
@@ -134,7 +146,7 @@ const worker = new PilotSwarmWorker({
                 })(),
             },
         }),
-});
+}, process.env));
 
 // Extension modules (for example a session workspace provider) register
 // before start, so the first turn already sees them.
@@ -166,7 +178,10 @@ if (mcpNames.length > 0) {
 // Graceful drain (lifecycle protocol §3.8): stop fetching, let in-flight
 // turns finish and commit within the drain budget, release warm sessions,
 // then exit. PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS sets the budget (60s
-// default); the pod's terminationGracePeriodSeconds must exceed it.
+// default); PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS (15s default) bounds the
+// release and closes after it, so the process exits by budget + grace even
+// when the database does not answer. The pod's terminationGracePeriodSeconds
+// (90s) must exceed both together.
 async function shutdown(signal) {
     console.log(`[worker] ${signal} received, draining...`);
     await worker.gracefulShutdown();

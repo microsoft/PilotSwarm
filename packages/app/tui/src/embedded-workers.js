@@ -4,7 +4,11 @@ import { createRequire } from "node:module";
 import { PilotSwarmWorker, horizonConfigFromEnv, loadExtensionModules, parseExtensionModules } from "pilotswarm-sdk";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
 
-export async function startEmbeddedWorkers({ count, store }) {
+/**
+ * Start `count` workers in this process. `testOptions` (test-only: the Workflow V2 test environment switch) is passed to
+ * each worker as it is; absent, each worker is created exactly as before.
+ */
+export async function startEmbeddedWorkers({ count, store, testOptions }) {
     const workers = [];
     if (!count || count <= 0) return workers;
 
@@ -56,6 +60,7 @@ export async function startEmbeddedWorkers({ count, store }) {
                 // unless HORIZON_DATABASE_URL is set, so default deployments are
                 // unaffected (plain PgFactStore).
                 ...horizonConfigFromEnv(),
+                ...(testOptions ? { testOptions } : {}),
             });
 
             const workerTools = typeof workerModuleConfig.createTools === "function"
