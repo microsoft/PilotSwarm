@@ -10,7 +10,6 @@ import {
     isEnhancedFactStore,
     horizonConfigFromEnv,
     workflowV2TestEnvironmentFromEnv,
-    workflowsEnabledFromEnv,
     workflowScriptsOptionFromEnv,
     loadModelProviders,
     ModelProviderRegistry,
@@ -93,11 +92,6 @@ interface ServerContextBase {
      */
     workflowCommands?: boolean;
     /**
-     * Workflows on (stage 2.0): read_workflow and update_workflow are registered only then. From CreateContextOptions.workflows,
-     * else this process's PILOTSWARM_WORKFLOWS=on (or the Workflow V2 test environment switch). Off: no workflow tool.
-     */
-    workflows: boolean;
-    /**
      * Workflow test mode (spec 16): whether update_workflow names the test operations. Absent: this process's flag
      * PILOTSWARM_WORKFLOW_TEST_MODE, off unless it is exactly `on`. A command is decided again where it runs.
      */
@@ -171,8 +165,6 @@ export interface CreateContextOptions {
      * In web mode the deployment starts them.
      */
     sessionStartVersion?: string | null;
-    /** Workflows on (stage 2.0); absent, this process's PILOTSWARM_WORKFLOWS decides (off unless `on`). */
-    workflows?: boolean;
 }
 
 /**
@@ -399,7 +391,6 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         role: ctxRole,
         authz: ctxAuthz,
         ...(opts.workflowCommands ? { workflowCommands: true } : {}),
-        workflows: typeof opts.workflows === "boolean" ? opts.workflows : workflowsEnabledFromEnv(),
         // The session this server acts for, when it was started for one (review SF-2).
         ...(originatingSessionIdFromEnv() ? { originatingSessionId: originatingSessionIdFromEnv()! } : {}),
         webMode: Boolean(opts.apiUrl),

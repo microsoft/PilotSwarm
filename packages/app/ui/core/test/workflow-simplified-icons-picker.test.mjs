@@ -85,7 +85,7 @@ const modelOf = (workflowId, runId, status, extra = {}) => ({
     ...extra,
 });
 function mountTab() {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     const at = Date.now();
     store.dispatch({ type: "sessions/loaded", sessions: [
         { sessionId: "owner", title: "Release triage agent", createdAt: at - 60_000, updatedAt: at },

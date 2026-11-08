@@ -31,10 +31,6 @@ import { WORKFLOW_V2_CONTROLLER_VERSION, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION 
 import { PilotSwarmManagementClient } from "../../dist/management-client.js";
 import * as sdk from "../../dist/index.js";
 
-// Stage 2.0: Workflows are off unless PILOTSWARM_WORKFLOWS=on. These tests describe the workflow surface with them on; the
-// switch itself is tested in workflows-switch.test.mjs.
-process.env.PILOTSWARM_WORKFLOWS = "on";
-
 const PERSON = { kind: "user", provider: "test", subject: "alice" };
 const ROOT = { childSessionId: "C", nodeExecutionId: "nx-1", workflowSessionId: "W1", controllingSessionId: "P", distance: 1 };
 
@@ -119,9 +115,8 @@ test("advertises the workflow support the host was configured with: a person's c
     assert.equal(Object.hasOwn(off, "legacyCreate"), false);
     assert.equal(off.v2.apiVersion, "pilotswarm.dev/v2-draft");
     assert.deepEqual(workflowCapabilities({ read: true, commands: undefined }), off);
-    // Stage 2.0: Workflows off, the answer says only that; on (or unsaid, as before), as above.
-    assert.deepEqual(workflowCapabilities({ enabled: false, read: true, commands: { requests: true } }), { schema: WORKFLOW_CAPABILITIES_SCHEMA, enabled: false });
-    assert.deepEqual(workflowCapabilities({ enabled: true, read: true, commands: null }), off);
+    // Workflows are always on (owner 2026-11-08T08:03Z): `enabled` is always true, kept for an older client.
+    assert.equal(workflowCapabilities({ read: false, commands: { requests: true } }).enabled, true);
     // Without a workflow store, reads are not advertised.
     assert.equal(workflowCapabilities({ read: false, commands: null }).v2.read, false);
     // On: the production controller and the operations every host takes; the 1.9.0 host's adds stop and, with workflow test

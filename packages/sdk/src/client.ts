@@ -30,7 +30,6 @@ import { resolveEffectiveSpawnOwner } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
 import { assertWorkflowHumanInputAllowed } from "./workflow/v2/input-policy.js";
-import { workflowsEnabledFromEnv } from "./workflow/workflows-switch.js";
 import type { FactStore } from "./facts-store.js";
 import { resolveStorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
@@ -1215,12 +1214,8 @@ export class PilotSwarmClient {
         return this._catalog;
     }
 
-    /**
-     * @internal The workflow store, when this catalog has one (the workflow human-input policy reads lineage from it); null
-     * while Workflows are off on this deployment (stage 2.0: PILOTSWARM_WORKFLOWS), so a person's input costs no lookup.
-     */
+    /** @internal The workflow store, when this catalog has one (the workflow human-input policy reads lineage from it). */
     _workflowStoreOrNull(): import("./workflow/v2/store.js").WorkflowStore | null {
-        if (!workflowsEnabledFromEnv()) return null;
         return typeof this._catalog?.workflowStore === "function" ? this._catalog.workflowStore() : null;
     }
 

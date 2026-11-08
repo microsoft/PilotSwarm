@@ -48,7 +48,7 @@ async function shot(page, name) {
 }
 
 let stub;
-test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 1, workflows: true }); });
+test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 1 }); });
 test.afterAll(async () => { await new Promise((resolve) => stub.server.close(resolve)); });
 
 const workflowTab = (page) => page.locator(".ps-wf-tab").filter({ visible: true }).first();

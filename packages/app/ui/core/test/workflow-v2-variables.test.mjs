@@ -140,7 +140,7 @@ async function until(check, label) {
 }
 
 function seeded(answer) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "web" }));
+    const store = createStore(appReducer, createInitialState({ mode: "web" }));
     const updates = [];
     const reads = [];
     const model = { ...readModel({ run: { status: "running", kv: KV, kvRevision: 3 } }), personCommands: commands() };
@@ -221,7 +221,7 @@ test("a changed map is refused and read again; an unanswered update is sent agai
 });
 
 function mount(view) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view });

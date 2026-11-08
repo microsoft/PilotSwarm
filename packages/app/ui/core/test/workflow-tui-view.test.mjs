@@ -58,7 +58,7 @@ function harness({ events = [STARTED], model = MODEL, transport: extra = {} } = 
         getSessionEventsBefore: async (...args) => { calls.push(["getSessionEventsBefore", ...args]); return []; },
         ...extra,
     }, { get: (target, name) => (name in target ? target[name] : typeof name === "string" ? record(name) : undefined) });
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [
         { sessionId: "wf", title: "Workflow: review-flow", status: "running", sessionKind: "workflow" },

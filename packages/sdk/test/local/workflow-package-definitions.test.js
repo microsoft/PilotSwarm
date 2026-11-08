@@ -261,7 +261,7 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
         const { h, host, chat, release, publish, releaseFiles, artifactStore } = await harness();
         const env = getEnv();
         const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
-            factsSchema: env.factsSchema, workflows: true, workflowCommands: { requests: true }, artifactStore });
+            factsSchema: env.factsSchema, workflowCommands: { requests: true }, artifactStore });
         await mgmt.start();
         const ref = `${release}/release-watch`;
         const offered = async () => (await mgmt.listChatWorkflowDefinitions(chat))[0].packageUpdate ?? null;
@@ -443,7 +443,7 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
         const { h, release, tag, publish, releaseFiles, artifactStore } = await harness();
         const env = getEnv();
         const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
-            factsSchema: env.factsSchema, workflows: true, workflowCommands: { requests: true }, artifactStore });
+            factsSchema: env.factsSchema, workflowCommands: { requests: true }, artifactStore });
         await mgmt.start();
         try {
             const catalog = (await mgmt.listCreatableWorkflows(VIEWER)).filter(item => item.ref.endsWith(tag) || item.package.endsWith(tag));
@@ -499,7 +499,7 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
         const { h, release, publish, releaseFiles, artifactStore } = await harness();
         const env = getEnv();
         const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
-            factsSchema: env.factsSchema, workflows: true, workflowCommands: { requests: true }, artifactStore });
+            factsSchema: env.factsSchema, workflowCommands: { requests: true }, artifactStore });
         await mgmt.start();
         const ref = `${release}/release-watch`;
         const coordinate = (chat, prepared) => mgmt.attachChatWorkflowPackage(chat, { ref, operationId: `coordinate-${chat}`, coordinating: true,

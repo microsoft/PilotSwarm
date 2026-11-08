@@ -92,7 +92,7 @@ test("the Node panel names the branches: its Branches section, a blocked join, t
 test("the TUI's node details count branches and list them by name", async () => {
     const shown = model();
     const transport = { getSessionEventsBefore: async () => [], readWorkflow: async () => shown };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: views", status: "completed", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
@@ -291,7 +291,7 @@ test("NB-R7 in the terminal: detail lines say branch for a named fork's rows, th
         ]),
     ] });
     const transport = { getSessionEventsBefore: async () => [], readWorkflow: async () => shown };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: views", status: "completed", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });

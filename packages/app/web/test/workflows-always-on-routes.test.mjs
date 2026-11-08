@@ -1,24 +1,23 @@
 /**
- * Workflows can be switched off (Workflow Simplified stage 2.0): the portal's side, over the real router and runtime.
- * - Off (PILOTSWARM_WORKFLOWS unset, the default): the bootstrap's `workflows` is `{ schema, enabled: false }` and nothing
- *   else; a workflow's read and a person's command answer 404 WORKFLOWS_DISABLED through the real management client
- *   methods, before any workflow is read. POST /sessions/workflow, the legacy create, is no route (stage 2.5): 404
- *   NOT_FOUND, and nothing is read or written.
- * - On (PILOTSWARM_WORKFLOWS=on, or the Workflow V2 test environment switch): `enabled: true` with the version 2 fields.
+ * Workflows are always on (owner 2026-11-08T08:03Z): the portal's side, over the real router and runtime.
+ * - With no setting, and with the retired PILOTSWARM_WORKFLOWS=off still set: the bootstrap's `workflows` says
+ *   `enabled: true` with the version 2 fields, a workflow's read reaches the store, and a person's command gets the
+ *   deployment's own answer, never WORKFLOWS_DISABLED.
+ * - POST /sessions/workflow, the legacy create, is no route (stage 2.5): 404 NOT_FOUND, and nothing is created.
  *
- * Run: node --test web/test/workflows-switch-routes.test.mjs
+ * Run: node --test web/test/workflows-always-on-routes.test.mjs
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import express from "express";
 import { NodeSdkTransport } from "pilotswarm/host";
-import { PilotSwarmManagementClient, WORKFLOWS_DISABLED_TEXT } from "pilotswarm-sdk";
+import { PilotSwarmManagementClient } from "pilotswarm-sdk";
 
 import { createApiRouter } from "../api/router.js";
 import { PortalRuntime } from "../runtime.js";
 
-/** Runs `fn` with the Workflows setting (and the test environment switch) as given, then puts them back. */
+/** Runs `fn` with the retired Workflows setting (and the test environment switch) as given, then puts them back. */
 async function withEnv(values, fn) {
     const keys = ["PILOTSWARM_WORKFLOWS", "PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT"];
     const before = Object.fromEntries(keys.map(key => [key, process.env[key]]));
@@ -84,49 +83,30 @@ async function harness() {
     return { mgmt, counts, call, close: () => new Promise((resolve) => server.close(resolve)) };
 }
 
-test("off by default: the bootstrap says only that Workflows are off; reads and commands are 404 WORKFLOWS_DISABLED; the legacy create is no route", async () => {
-    await withEnv({}, async () => {
-        const h = await harness();
-        try {
-            const boot = await h.call("/bootstrap");
-            assert.equal(boot.status, 200);
-            assert.deepEqual(boot.body.workflows, { schema: 1, enabled: false });
-            const refused = (answer, what) => {
-                assert.equal(answer.status, 404, what);
-                assert.equal(answer.body.ok, false, what);
-                assert.equal(answer.body.error.code, "WORKFLOWS_DISABLED", what);
-                assert.equal(answer.body.error.message, WORKFLOWS_DISABLED_TEXT, what);
-                assert.match(answer.body.error.message, /PILOTSWARM_WORKFLOWS=on/, what);
-            };
-            refused(await h.call("/sessions/wf1/workflow"), "read");
-            refused(await h.call("/sessions/wf1/workflow?runId=run-1"), "read of a run");
-            refused(await h.call("/sessions/wf1/workflow/commands", { method: "POST", body: JSON.stringify({ command: { operation: "pause", operation_id: "op-1" } }) }),
-                "command");
-            // Stage 2.5 (PR 235 8055fcd8): the legacy create is gone; it is an unknown route, off or on.
-            const legacy = await h.call("/sessions/workflow", { method: "POST", body: JSON.stringify({ yaml: "apiVersion: pilotswarm.dev/v1alpha1\n" }) });
-            assert.equal(legacy.status, 404);
-            assert.equal(legacy.body.error.code, "NOT_FOUND");
-            assert.deepEqual(h.counts, { reads: 0, created: 0 }, "nothing was read or created");
-        } finally {
-            await h.close();
-        }
-    });
-});
-
-test("on (PILOTSWARM_WORKFLOWS=on, or the test environment switch): the bootstrap says enabled with the version 2 fields, and a read reaches the store", async () => {
-    for (const env of [{ PILOTSWARM_WORKFLOWS: "on" }, { PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: "isolated-test-only" }]) {
+for (const [label, env] of [["no setting", {}], ["the retired PILOTSWARM_WORKFLOWS=off", { PILOTSWARM_WORKFLOWS: "off" }]]) {
+    test(`always on (${label}): the bootstrap says enabled with the version 2 fields; a read reaches the store; a command is never WORKFLOWS_DISABLED; the legacy create is no route`, async () => {
         await withEnv(env, async () => {
             const h = await harness();
             try {
                 const boot = await h.call("/bootstrap");
-                assert.equal(boot.body.workflows.enabled, true, JSON.stringify(env));
-                assert.equal(boot.body.workflows.v2.read, true, JSON.stringify(env));
+                assert.equal(boot.status, 200);
+                assert.equal(boot.body.workflows.enabled, true);
+                assert.equal(boot.body.workflows.v2.read, true);
                 const read = await h.call("/sessions/wf1/workflow");
-                assert.notEqual(read.body?.error?.code, "WORKFLOWS_DISABLED", JSON.stringify(env));
+                assert.notEqual(read.body?.error?.code, "WORKFLOWS_DISABLED");
                 assert.ok(h.counts.reads > 0, "the read reached the catalog");
+                const command = await h.call("/sessions/wf1/workflow/commands", { method: "POST",
+                    body: JSON.stringify({ command: { operation: "pause", operation_id: "op-1" } }) });
+                assert.equal(command.body.ok, false, "this deployment takes no command from a person");
+                assert.equal(command.body.error.code, "WORKFLOW_COMMANDS_UNAVAILABLE");
+                // Stage 2.5 (PR 235 8055fcd8): the legacy create is gone; it is an unknown route.
+                const legacy = await h.call("/sessions/workflow", { method: "POST", body: JSON.stringify({ yaml: "apiVersion: pilotswarm.dev/v1alpha1\n" }) });
+                assert.equal(legacy.status, 404);
+                assert.equal(legacy.body.error.code, "NOT_FOUND");
+                assert.equal(h.counts.created, 0, "nothing was created");
             } finally {
                 await h.close();
             }
         });
-    }
-});
+    });
+}

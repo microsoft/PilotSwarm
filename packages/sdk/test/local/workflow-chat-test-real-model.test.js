@@ -76,11 +76,11 @@ describe("An agent's test of a revision, on request (stage 2.2), on a real model
         try {
             // Stage 2.5: a test runs only on a workflow request turn (chat-test.ts requires host.requests), so the chat starts
             // at the session version that has them, as a person's new chat does on TEST; a chat at the latest version has none.
-            const worker = workerOptionsForWorkflowV2TestEnvironment({ workflowScripts: { enabled: true }, workflows: { enabled: true }, logLevel: "warning" }, ON);
+            const worker = workerOptionsForWorkflowV2TestEnvironment({ workflowScripts: { enabled: true }, logLevel: "warning" }, ON);
             await withClient(env, { worker }, async (client) => {
                 client._startSessionsAt(workflowV2TestEnvironmentFromEnv(ON).sessionStartVersion);
                 mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
-                    factsSchema: env.factsSchema, workflows: true });
+                    factsSchema: env.factsSchema });
                 await mgmt.start();
                 const catalog = client._catalog;
                 const chatStore = catalog.workflowStore().chat;

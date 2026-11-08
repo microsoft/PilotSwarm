@@ -21,7 +21,7 @@ const SESSIONS = [
 const rowOf = (state, id) => selectSessionRows(state).find(row => row.sessionId === id);
 
 test("selecting the session after its Workflow row selects the session alone; its Workflow tab and right block stay", () => {
-    let state = appReducer(createInitialState({ workflowsEnabled: true, mode: "api" }), { type: "sessions/loaded", sessions: SESSIONS });
+    let state = appReducer(createInitialState({ mode: "api" }), { type: "sessions/loaded", sessions: SESSIONS });
     state = appReducer(state, { type: "sessions/expand", sessionId: OWNER });
     state = appReducer(state, { type: "sessions/selected", sessionId: "wf-1" });
     assert.equal(state.sessions.activeSessionId, OWNER);

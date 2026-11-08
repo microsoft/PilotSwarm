@@ -23,8 +23,6 @@ import { chatDefinitionFailure } from "../../ui/core/src/workflow-chat-definitio
 import { createApiRouter } from "../api/router.js";
 import { PortalRuntime } from "../runtime.js";
 
-process.env.PILOTSWARM_WORKFLOWS = "on";
-
 const SENTINEL = "sentinel-s21b-4c1e";
 const owner = { provider: "dev", subject: "alice" };
 

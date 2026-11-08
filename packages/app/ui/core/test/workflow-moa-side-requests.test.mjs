@@ -68,7 +68,7 @@ test("E2-T9: a clean panel buffer hands over nothing, so the workspace keeps its
     const { appReducer, createInitialState } = await import("../src/index.js");
     const base = { sessionId: "wf-1", revision: 2, yaml: "a: 1\n" };
     const own = { sessionId: "wf-1", base, text: "a: own\n" };
-    let state = appReducer(createInitialState({ workflowsEnabled: true }), { type: "sessions/loaded", sessions: [{ sessionId: "wf-1", sessionKind: "workflow", title: "W" }] });
+    let state = appReducer(createInitialState(), { type: "sessions/loaded", sessions: [{ sessionId: "wf-1", sessionKind: "workflow", title: "W" }] });
     state = appReducer(state, { type: "ui/workflowView", sessionId: "wf-1", view: { draftEdit: own, draftDirty: true } });
     const open = (buffer, saved = null) => {
         const draft = workflowDraftHandoff({ sessionId: "wf-1", buffer, saved });
@@ -85,7 +85,7 @@ test("E2-T9: a clean panel buffer hands over nothing, so the workspace keeps its
 // Adversarial review R2-UI-2: the workspace last showed a test run of the workflow; a dashboard panel that never chose a
 // run (the live run) opens its step details there. The workspace must show the live run, not keep its test run.
 test("R2-UI-2: a panel on the live run opens the live run in a workspace that showed a test run; a chosen run is kept", () => {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: review", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: "test-run-7", mainTab: "yaml", sidePanel: "calls" } });
     assert.equal(store.getState().ui.workflowViews.wf.selectedRunId, "test-run-7");

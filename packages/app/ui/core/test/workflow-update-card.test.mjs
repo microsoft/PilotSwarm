@@ -39,7 +39,7 @@ const EVENTS = [
 ];
 
 function chatState(history, { testMode = false } = {}) {
-    let state = createInitialState({ workflowsEnabled: true });
+    let state = createInitialState();
     state = appReducer(state, { type: "sessions/loaded", sessions: [{ sessionId: "parent-1", title: "Parent", status: "idle" }] });
     state = appReducer(state, { type: "sessions/selected", sessionId: "parent-1" });
     state = appReducer(state, { type: "history/set", sessionId: "parent-1", history });

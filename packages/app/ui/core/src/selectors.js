@@ -39,7 +39,7 @@ import {
 import { canonicalSystemTitle } from "./system-titles.js";
 import { isWorkflowSession, WORKFLOW_SESSION_GLYPH } from "./workflow-sessions.js";
 import { isWorkflowChild, sessionGrowsWorkflows, WORKFLOW_OWNER_MARK_TITLE, workflowHighlightedSessionId, workflowNodeChatTitle, workflowRowTitle, workflowStateOf,
-    workflowsShown } from "./workflow-owner.js";
+} from "./workflow-owner.js";
 import { selectWorkflowInputNote } from "./workflow-tui.js";
 import { matchesSessionError } from "./session-warning.js";
 import { normalizeQuestionForDisplay } from "./question-display.js";
@@ -1120,8 +1120,7 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
             // Workflow sessions run a workflow graph, not a conversation: the
             // chain mark tells them apart from agent sessions at a glance.
             prefixRuns.push({ text: `${WORKFLOW_SESSION_GLYPH} `, color: "magenta", bold: true, role: "sessionKind" });
-        } else if (typeof session?.workflowRef === "string" && session.workflowRef && workflowsShown(state)) {
-            // Review S2UI-F9: only while Workflows are shown (on, and the bootstrap said so): off, it is an ordinary chat row.
+        } else if (typeof session?.workflowRef === "string" && session.workflowRef) {
             // Stage 2.3 (P2): a chat made from the new-session picker for a package's Workflow Definition wears the
             // Workflow badge too, in the chat's colour: it is a conversation that runs that Workflow.
             prefixRuns.push({ text: `${WORKFLOW_SESSION_GLYPH} `, color: "cyan", bold: true, role: "sessionKind", workflowRef: session.workflowRef });
@@ -9982,16 +9981,14 @@ const KEYBINDING_HELP = [
 ];
 
 /** The help lines about the Workflow pane and its view: left out while Workflows are off (stage 2.0). */
-const WORKFLOW_HELP_LINE = /^(Workflow pane|workflow view:)/;
 
-export function buildHelpModalRows({ workflows = true } = {}) {
+export function buildHelpModalRows() {
     const rows = [];
     const keysWidth = 18;
     for (const group of KEYBINDING_HELP) {
         if (rows.length > 0) rows.push([{ text: "", color: "gray" }]);
         rows.push([{ text: group.section, color: "cyan", bold: true }]);
         for (const [keys, desc, opts] of group.bindings) {
-            if (!workflows && WORKFLOW_HELP_LINE.test(String(desc))) continue;
             const dim = Boolean(opts?.dim);
             rows.push([
                 { text: "  " + String(keys).padEnd(keysWidth), color: dim ? "gray" : "yellow" },
@@ -10007,7 +10004,7 @@ export function buildHelpModalRows({ workflows = true } = {}) {
 export function selectHelpModal(state, maxWidth = 88) {
     const modal = state.ui?.modal;
     if (!modal || modal.type !== "help") return null;
-    const rows = buildHelpModalRows({ workflows: workflowsShown(state) });
+    const rows = buildHelpModalRows();
     const selectedRowIndex = Math.max(0, Math.min(Number(modal.selectedIndex) || 0, rows.length - 1));
     return {
         title: "Keybindings — ? or Esc to close",

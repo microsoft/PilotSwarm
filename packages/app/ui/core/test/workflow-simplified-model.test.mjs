@@ -38,7 +38,7 @@ const SESSIONS = [
 const byIdOf = sessions => Object.fromEntries(sessions.map(session => [session.sessionId, session]));
 
 function loaded(sessions = SESSIONS) {
-    let state = appReducer(createInitialState({ workflowsEnabled: true, mode: "local" }), { type: "ui/sessionViewDevice", device: "desktop" });
+    let state = appReducer(createInitialState({ mode: "local" }), { type: "ui/sessionViewDevice", device: "desktop" });
     state = appReducer(state, { type: "sessions/loaded", sessions });
     return state;
 }
@@ -179,7 +179,7 @@ test("selecting a Workflow row selects its session's chat and opens the Workflow
 });
 
 test("a link to a Workflow opens its session's chat with the Workflow shown (S8)", () => {
-    let state = appReducer(createInitialState({ workflowsEnabled: true, mode: "local" }), { type: "sessions/navigationIntent", sessionId: "wf-2" });
+    let state = appReducer(createInitialState({ mode: "local" }), { type: "sessions/navigationIntent", sessionId: "wf-2" });
     state = appReducer(state, { type: "sessions/loaded", sessions: SESSIONS });
     assert.equal(state.sessions.activeSessionId, OWNER);
     assert.equal(state.sessions.workflowRowId, "wf-2");
@@ -200,7 +200,7 @@ test("a link to a Workflow opens its session's chat with the Workflow shown (S8)
     assert.equal(chosen.sessions.workflowRowId, null);
     assert.equal(selectWorkflowTabContext(chosen).workflowId, "wf-2");
     // A link to an ordinary session does not open the Workflow tab.
-    let plain = appReducer(createInitialState({ workflowsEnabled: true, mode: "local" }), { type: "sessions/navigationIntent", sessionId: "other" });
+    let plain = appReducer(createInitialState({ mode: "local" }), { type: "sessions/navigationIntent", sessionId: "other" });
     plain = appReducer(plain, { type: "sessions/loaded", sessions: SESSIONS });
     assert.equal(plain.sessions.activeSessionId, "other");
     assert.notEqual(plain.ui.sidePaneTab, WORKFLOW_SIDE_TAB);

@@ -45,7 +45,7 @@ const MODEL = readModel({ graph: { revision: 1, initial: "review", states }, rev
 function harness() {
     const calls = [];
     const transport = { readWorkflow: async (...args) => { calls.push(["readWorkflow", ...args]); return MODEL; } };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: review-once", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
@@ -157,7 +157,7 @@ test("the shared Ink app draws the variables form: the variables, the revision a
         personCommands: { operations: ["set_vars", "pause", "resume", "stop", "cancel"], restriction: null, run: { runId: "run-1", stop: true } } };
     const calls = [];
     const transport = { readWorkflow: async (...args) => { calls.push(["readWorkflow", ...args]); return withVars; } };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: review-once", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
@@ -208,7 +208,7 @@ test("the shared Ink app draws the several-variables form: what Enter sends, the
         personCommands: { operations: ["set_vars", "pause", "resume", "stop", "cancel"], restriction: null, run: { runId: "run-1", stop: true } } };
     const calls = [];
     const transport = { readWorkflow: async (...args) => { calls.push(["readWorkflow", ...args]); return withVars; } };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: review-once", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
@@ -271,7 +271,7 @@ test("the shared Ink app draws the draft editor: the revision, the YAML with lin
         draft: { revision: 2, definitionHash: "hash-2", yaml } } };
     const calls = [];
     const transport = { readWorkflow: async (...args) => { calls.push(["readWorkflow", ...args]); return withDraft; } };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: review-once", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
@@ -326,7 +326,7 @@ test("the shared Ink app draws the Start form: what starts, its key, and the run
         restriction: null, run: null } };
     const calls = [];
     const transport = { readWorkflow: async (...args) => { calls.push(["readWorkflow", ...args]); return draft; } };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: review-once", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
@@ -389,7 +389,7 @@ test("the shared Ink app draws the test review: the test notice, what is tested,
         "test", "test_respond", "test_advance"], restriction: null, run: null } };
     const calls = [];
     const transport = { readWorkflow: async (...args) => { calls.push(["readWorkflow", ...args]); return draft; } };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: review-once", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
@@ -470,7 +470,7 @@ test("the shared Ink app draws a test run's answer form and its virtual clock", 
         "test", "test_respond", "test_advance"], restriction: null, run: null } };
     const calls = [];
     const transport = { readWorkflow: async (...args) => { calls.push(["readWorkflow", ...args]); return shown; } };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: review-once", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });

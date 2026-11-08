@@ -28,9 +28,6 @@ import { ApiClient, HttpApiTransport } from "pilotswarm-sdk/api";
 import { createApiRouter } from "../api/router.js";
 import { PortalRuntime } from "../runtime.js";
 
-// Stage 2.0: Workflows are off unless PILOTSWARM_WORKFLOWS=on; these tests describe the workflow routes with them on (the
-// switch's own route tests are workflows-switch-routes.test.mjs).
-process.env.PILOTSWARM_WORKFLOWS = "on";
 
 test("readWorkflow is one GET session:read operation: the session in the path, an optional run, cursor, execution and limit in the query", async () => {
     const { OPERATIONS } = await import("../../../sdk/api/src/protocol.js");

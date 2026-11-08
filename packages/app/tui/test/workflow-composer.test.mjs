@@ -8,7 +8,7 @@ import { UiPlatformProvider } from "../../ui/react/src/platform.js";
 
 function harness(sessionKind) {
     const calls = [];
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport: {
         sendMessage: async (...args) => { calls.push(args); },
     } });

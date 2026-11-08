@@ -40,39 +40,38 @@ export function childBudgetWords(count: number, max: number = WORKFLOW_CHILD_BUD
 }
 
 /**
- * spawn_agent's admission (S2RT-F3; coordinator decision: the switch is the boundary). With Workflows on (`workflowsOn`):
- * the shared budget, counted first (`countBudgetChildren`) and counted again atomically when the child is made (the
- * creation's `childBudget`). With Workflows off: exactly the admission before stage 2, its count of the direct sub-agents
- * that are running (`directChildren`) and no lock at the creation.
+ * spawn_agent's admission (S2RT-F3): the shared budget, counted first (`countBudgetChildren`) and counted again atomically
+ * when the child is made (the creation's `childBudget`). Workflows are always on (owner 2026-11-08T08:03Z), so the budget is
+ * always shared. A host without the catalog's count (`countBudgetChildren` absent) counts the direct sub-agents that are
+ * running (`directChildren`), as before stage 2.
  */
 export interface SpawnAgentAdmission {
     /** The children counted against the budget now. */
     count: number;
     /** The refusal's words when `count` reached `max`, else null. */
     refusal: string | null;
-    /** The creation's options: the atomic budget with Workflows on; none with them off. */
+    /** The creation's options: the atomic budget (none for a system agent). */
     creation: { childBudget?: { max: number } };
 }
 
 export async function spawnAgentAdmission(input: {
-    workflowsOn: boolean;
     parentSessionId: string;
     max: number;
     isSystem?: boolean;
     countBudgetChildren?: ((parentSessionId: string) => Promise<number>) | null;
     directChildren: () => Promise<ReadonlyArray<{ isSystem?: boolean; status?: string }>>;
 }): Promise<SpawnAgentAdmission> {
-    const budgeted = input.workflowsOn && typeof input.countBudgetChildren === "function";
+    const budgeted = typeof input.countBudgetChildren === "function";
     const count = budgeted
         ? await input.countBudgetChildren!(input.parentSessionId)
         : (await input.directChildren()).filter(child => !child.isSystem).filter(child => child.status === "running").length;
     const refusal = count < input.max ? null : budgeted
         ? `[SYSTEM: spawn_agent failed — you already have ${count} running sub-agents and Workflows (max ${input.max}). Wait for some to complete before spawning more.]`
         : `[SYSTEM: spawn_agent failed — you already have ${count} running sub-agents (max ${input.max}). Wait for some to complete before spawning more.]`;
-    return { count, refusal, creation: spawnAgentCreationBudget(input.workflowsOn, input.isSystem === true, input.max) };
+    return { count, refusal, creation: spawnAgentCreationBudget(input.isSystem === true, input.max) };
 }
 
-/** The creation's budget option for a sub-agent: the atomic budget only with Workflows on, and never for a system agent. */
-export function spawnAgentCreationBudget(workflowsOn: boolean, isSystem: boolean, max: number): { childBudget?: { max: number } } {
-    return workflowsOn && !isSystem ? { childBudget: { max } } : {};
+/** The creation's budget option for a sub-agent: the atomic budget, never for a system agent. */
+export function spawnAgentCreationBudget(isSystem: boolean, max: number): { childBudget?: { max: number } } {
+    return isSystem ? {} : { childBudget: { max } };
 }

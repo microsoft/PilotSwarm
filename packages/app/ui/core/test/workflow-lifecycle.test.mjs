@@ -21,7 +21,7 @@ const loaded = items => ({ items, at: NOW, error: null, unsupported: false });
 
 const OWNER = "owner";
 function storeWith(rows = []) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "ui/sessionViewDevice", device: "desktop" });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: OWNER, title: "Release triage", updatedAt: iso(NOW - 3_600_000) }, ...rows] });
     store.dispatch({ type: "sessions/selected", sessionId: OWNER });
@@ -150,8 +150,8 @@ test("C: a Workflow read before keeps its model while the panel is closed; its r
 
 // OF-S2-4d (owner, 19:45Z): the panel opens once per chat, the first time it has a lifecycle change the person has not
 // seen: at once in the chat, else on arrival (a switch or a page load); never on unknown state.
-function arrivalStore({ profile = true, lastViewed = 0, workflowsEnabled = true } = {}) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled, mode: "api" }));
+function arrivalStore({ profile = true, lastViewed = 0 } = {}) {
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "ui/sessionViewDevice", device: "desktop" });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: OWNER, title: "Release triage", updatedAt: iso(NOW - 3_600_000) },
         { sessionId: "other", title: "Another chat", updatedAt: iso(NOW - 3_600_000) }] });
@@ -190,7 +190,7 @@ test("OF-S2-4d: arriving at a never-seen chat with a definition opens the panel 
     assert.equal(isOpen(again), false, "once per page, whatever the receipt");
 });
 
-test("OF-S2-4d: never after a receipt, before the profile read, after a failed read, for a chat with nothing, or with Workflows off", () => {
+test("OF-S2-4d: never after a receipt, before the profile read, after a failed read, or for a chat with nothing", () => {
     const arrive = (store, patch = OLD_DEF()) => {
         store.dispatch({ type: "sessions/selected", sessionId: OWNER });
         store.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch });
@@ -213,7 +213,6 @@ test("OF-S2-4d: never after a receipt, before the profile read, after a failed r
     failed.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch: { ...OLD_DEF(), error: null } });
     assert.equal(isOpen(failed), true, "a read that succeeds again decides");
     assert.equal(arrive(arrivalStore(), loaded([])), false, "a chat with no definition and no Workflow");
-    assert.equal(arrive(arrivalStore({ workflowsEnabled: false })), false, "Workflows off");
     // Full screen or zen stay as they are: zen on the canvas, the Workflow panel takes the column and zen stays.
     const zen = arrivalStore();
     zen.dispatch({ type: "sessions/selected", sessionId: OWNER });
@@ -330,7 +329,7 @@ test("review F8: a Workflow waiting for an answer is dated when it was first see
     }
 });
 
-test("review F9: switching chats, an agent node's chat, Workflows off and a reload of a canceling Workflow light and open nothing", () => {
+test("review F9: switching chats, an agent node's chat and a reload of a canceling Workflow light and open nothing; a fresh chat opens with no opt-in", () => {
     const real = Date.now;
     Date.now = () => NOW;
     try {
@@ -349,11 +348,11 @@ test("review F9: switching chats, an agent node's chat, Workflows off and a relo
         store.dispatch({ type: "sessions/selected", sessionId: "node-chat" });
         assert.equal(dot(store), false, "an agent node's chat");
         assert.equal(Number(ui(store).workflowAutoOpenSeq) || 0, autoSeq, "nothing opens by itself (the chat's panel was on screen)");
-        // Workflows off: never opens, even for a never-seen chat with a definition.
-        const off = arrivalStore({ workflowsEnabled: false });
-        off.dispatch({ type: "sessions/selected", sessionId: OWNER });
-        off.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch: OLD_DEF() });
-        assert.equal(isOpen(off), false, "Workflows off");
+        // Workflows are always on: a never-seen chat with a definition opens with no opt-in.
+        const fresh = arrivalStore();
+        fresh.dispatch({ type: "sessions/selected", sessionId: OWNER });
+        fresh.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch: OLD_DEF() });
+        assert.equal(isOpen(fresh), true, "always on");
     } finally {
         Date.now = real;
     }

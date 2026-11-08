@@ -197,7 +197,7 @@ describe("a definition belongs to the chat (stage 2.1)", () => {
         const { h, host, chat } = await harness();
         const env = getEnv();
         const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
-            factsSchema: env.factsSchema, workflows: true, workflowCommands: { requests: true } });
+            factsSchema: env.factsSchema, workflowCommands: { requests: true } });
         await mgmt.start();
         try {
             const id = (await save(host, chat, WITH_INPUTS, null)).receipt.definitionId;
@@ -450,7 +450,7 @@ states:
         const ADMIN = { provider: "test", subject: "an-admin" };
         const CAROL = { provider: "test", subject: "carol" };
         const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
-            factsSchema: env.factsSchema, workflows: true, workflowCommands: { requests: true, testMode: true } });
+            factsSchema: env.factsSchema, workflowCommands: { requests: true, testMode: true } });
         await mgmt.start();
         // The catalog check, recorded: who it is asked for, and test:gone is not in the catalog.
         const checked = [];

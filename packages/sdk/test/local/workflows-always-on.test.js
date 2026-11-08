@@ -1,32 +1,31 @@
 /**
- * Workflows can be switched off (Workflow Simplified stage 2.0; spec "switch", decision D1), on PostgreSQL. Unit side:
- * test/unit/workflows-switch.test.mjs.
+ * Workflows are always on (owner decision 2026-11-08T08:03Z; the stage 2.0 switch PILOTSWARM_WORKFLOWS is gone), on
+ * PostgreSQL. Unit side: test/unit/workflows-always-on.test.mjs.
  *
- * - The management client with Workflows off: a person's input to a session in a Workflow agent node's subtree (which
- *   Workflows on refuse, 403 WORKFLOW_HUMAN_INPUT_DENIED) is not looked up, so it is not refused by that policy, and
- *   getWorkflowInputPolicy reports it as any session; a v2 workflow's read and a person's command answer 404
- *   WORKFLOWS_DISABLED; the bootstrap's answer is `enabled: false`. The same client with Workflows on keeps every refusal.
- * - The client with Workflows off (PILOTSWARM_WORKFLOWS unset): a person's prompt costs no lookup either.
- * - A real 1.0.83 turn of a worker whose session manager has Workflows off: the turn's bridge says so
- *   (workflowsDisabled) and spawn_workflow, update_workflow, read_workflow and send_workflow_input answer WORKFLOWS_DISABLED,
- *   writing nothing; with Workflows on the same calls reach the workflow code.
+ * - A management client made with no Workflow option, with PILOTSWARM_WORKFLOWS unset or set to the retired `off`: a
+ *   person's input to a session in a Workflow agent node's subtree is refused (403 WORKFLOW_HUMAN_INPUT_DENIED), the access
+ *   check reads the lineage, a v2 workflow's read works, and the bootstrap's answer is `enabled: true`.
+ * - The client, likewise: a person's prompt to that session is refused, the setting unset or `off`.
+ * - A real 1.0.83 turn of a worker whose session manager was made with no Workflow setting: the turn's bridge has no
+ *   switch, and spawn_workflow, update_workflow, read_workflow and send_workflow_input reach the workflow code.
+ * - With script nodes off, a definition with one is refused in words naming PILOTSWARM_WORKFLOW_SCRIPTS; one without is
+ *   saved.
  * The model is scripted; no portal process runs here.
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
-import { createManagementClient, PilotSwarmClient, PilotSwarmManagementClient } from "../helpers/local-workers.js";
+import { createManagementClient, PilotSwarmClient } from "../helpers/local-workers.js";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { WORKFLOW_HUMAN_INPUT_DENIED } from "../../src/workflow/v2/input-policy.ts";
 import { WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
-import { WORKFLOWS_DISABLED, WORKFLOWS_DISABLED_TEXT } from "../../src/workflow/workflows-switch.ts";
 import { openWorkflowStore } from "../helpers/workflow-v2-request-fixture.js";
 import { intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-v2-intake-native-fixture.js";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
-const ACTOR = { kind: "system", name: "workflows-switch-test" };
+const ACTOR = { kind: "system", name: "workflows-always-on-test" };
 
 const AGENT_YAML = `
 apiVersion: pilotswarm.dev/v2-draft
@@ -85,14 +84,11 @@ async function withWorkflowsEnv(value, fn) {
     }
 }
 
-describe("Workflows switched off (stage 2.0): the management client and the client", () => {
-    it("off: no Workflow lookup on input or the access check, reads and commands refused WORKFLOWS_DISABLED; on: every refusal as before", { timeout: TIMEOUT }, async () => {
+describe("Workflows always on: the management client and the client", () => {
+    it("with no Workflow setting or the retired PILOTSWARM_WORKFLOWS=off: the lineage is read, a person's input refused, reads work", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const h = await openWorkflowStore(env);
-        const off = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
-            factsSchema: env.factsSchema, workflows: false });
-        await off.start();
-        const on = await createManagementClient(env);
+        const on = await withWorkflowsEnv("off", () => createManagementClient(env));
         const client = new PilotSwarmClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema });
         await client.start();
         try {
@@ -104,46 +100,27 @@ describe("Workflows switched off (stage 2.0): the management client and the clie
             await h.catalog.createSession(C, { parentSessionId: W, owner });
             const person = { kind: "user", provider: owner.provider, subject: owner.subject, display: "Owner", relation: "owner" };
 
-            // On (the suite's PILOTSWARM_WORKFLOWS=on): the agent node's chat is refused to a person.
-            expect((await caught(() => on.sendMessage(C, "do something else", { sender: person })))?.code).toBe(WORKFLOW_HUMAN_INPUT_DENIED);
-            expect(await on.getWorkflowInputPolicy(C)).toMatchObject({ canSendPrompt: false, workflowSessionId: W });
-            expect((await on.readWorkflow(W)).definition).toBeTruthy();
-            expect((await on.getWorkflowCapabilities()).enabled).toBe(true);
-
-            // Off: nothing is looked up, so the same input is not refused by that policy (it may fail for other reasons here:
-            // no orchestration runs), and the policy reads as any session's.
-            expect((await caught(() => off.sendMessage(C, "do something else", { sender: person })))?.code ?? null).not.toBe(WORKFLOW_HUMAN_INPUT_DENIED);
-            expect(await off.getWorkflowInputPolicy(C)).toEqual(await off.getWorkflowInputPolicy(P));
-            expect((await off.getWorkflowInputPolicy(C)).canSendPrompt).toBe(true);
-            for (const call of [() => off.readWorkflow(W), () => off.readWorkflow(W, { runId: "run-1" }),
-                () => off.updateWorkflow(W, { operation: "pause", operation_id: "op-1" })]) {
-                const error = await caught(call);
-                expect(error?.code, error?.message).toBe(WORKFLOWS_DISABLED);
-                expect(error?.status).toBe(404);
-                expect(error?.message).toBe(WORKFLOWS_DISABLED_TEXT);
+            for (const retired of [undefined, "off"]) {
+                await withWorkflowsEnv(retired, async () => {
+                    // The agent node's chat is refused to a person; the access check reads its lineage; the read works.
+                    expect((await caught(() => on.sendMessage(C, "do something else", { sender: person })))?.code).toBe(WORKFLOW_HUMAN_INPUT_DENIED);
+                    expect(await on.getWorkflowInputPolicy(C)).toMatchObject({ canSendPrompt: false, workflowSessionId: W });
+                    expect((await on.readWorkflow(W)).definition).toBeTruthy();
+                    expect((await on.getWorkflowCapabilities()).enabled).toBe(true);
+                    // The client: a person's prompt to the agent node's chat is refused too.
+                    const session = await client.resumeSession(C);
+                    expect((await caught(() => session.send("hello")))?.code).toBe(WORKFLOW_HUMAN_INPUT_DENIED);
+                });
             }
-            expect(await off.getWorkflowCapabilities()).toEqual({ schema: 1, enabled: false });
-            // The workflow's run was not changed by the refused command.
-            expect((await h.store.readDefinition(W))?.state).toBe("published");
-
-            // The client: a person's prompt to the agent node's chat with the setting unset is not looked up either.
-            const session = await client.resumeSession(C);
-            await withWorkflowsEnv(undefined, async () => {
-                expect((await caught(() => session.send("hello")))?.code ?? null).not.toBe(WORKFLOW_HUMAN_INPUT_DENIED);
-            });
-            await withWorkflowsEnv("on", async () => {
-                expect((await caught(() => session.send("hello")))?.code).toBe(WORKFLOW_HUMAN_INPUT_DENIED);
-            });
         } finally {
             await client.stop();
             await on.stop();
-            await off.stop();
             await h.stop();
         }
     });
 });
 
-describe("Workflows switched off (stage 2.0): a real 1.0.83 turn (runTurnV5)", () => {
+describe("Workflows always on: a real 1.0.83 turn (runTurnV5)", () => {
     const V2_YAML = `
 apiVersion: pilotswarm.dev/v2-draft
 kind: Workflow
@@ -152,15 +129,15 @@ initial: done
 states:
   done: { type: terminal, outcome: succeeded }
 `;
-    for (const enabled of [false, true]) {
-        it(`with the session manager's Workflows ${enabled ? "on" : "off"}, the turn's workflow tools ${enabled ? "reach the workflow code" : "answer WORKFLOWS_DISABLED and write nothing"}`, { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
+    {
+        it("with a session manager made with no Workflow setting, the turn's workflow tools reach the workflow code", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
             const env = getEnv();
             const seen = [];
             // Each call's answer, or the words of what it threw (so the turn always finishes and the test reads why).
             const answer = async (call) => { try { return await call(); } catch (error) { return `threw: ${error?.message ?? error}`; } };
             const script = async (_call, _prompt, opts) => {
                 const bridge = opts.controlToolBridge;
-                const entry = { disabled: bridge?.workflowsDisabled === true };
+                const entry = { switched: Object.hasOwn(bridge ?? {}, "workflowsDisabled") };
                 seen.push(entry);
                 entry.spawn = await answer(() => bridge.spawnWorkflow({ yaml: V2_YAML }, { toolCallId: "call-spawn" }));
                 entry.update = await answer(() => bridge.updateWorkflow({ workflow_id: randomUUID(), operation: "pause", operation_id: "op-1" }));
@@ -169,37 +146,20 @@ states:
                 entry.finished = true;
                 return { type: "completed", content: "done", events: [] };
             };
-            await intakeNativeCase(env, `workflows ${enabled ? "on" : "off"} turn`, script,
-                { testOptions: { workflowRequests: true }, managerExtras: { workflowsEnabled: enabled, workflowScriptsEnabled: true } }, async h => {
+            await intakeNativeCase(env, "workflows always on turn", script,
+                { testOptions: { workflowRequests: true }, managerExtras: { workflowScriptsEnabled: true } }, async h => {
                     await h.start();
                     await h.until(({ history }) => history.some(event => event.kind === "QueueSubscribed"), "the session waits for its messages");
                     await h.say("probe the workflow tools", "cm-switch-1");
                     await h.until(() => seen[0]?.finished === true, "the turn calls each workflow tool");
-                    const refusal = JSON.stringify({ ok: false, error: { code: WORKFLOWS_DISABLED, message: WORKFLOWS_DISABLED_TEXT } });
-                    if (!enabled) {
-                        expect(seen[0]).toEqual({ disabled: true, finished: true,
-                            spawn: `[SYSTEM: spawn_workflow refused — ${WORKFLOWS_DISABLED_TEXT} (${WORKFLOWS_DISABLED})]`,
-                            update: refusal, read: refusal, send: refusal });
-                        // Nothing was created under the session. The intake fixture made one Workflow child of its own before the
-                        // turn (h.workflowSessionId, "Workflow: intake activity tests", created right after the chat, for its
-                        // activity tests): it is not the turn's, so it is left out by id (d52e5ed2 run: it was the one row seen).
-                        expect(h.workflowSessionId).toEqual(expect.any(String));
-                        const { rows } = await h.catalog.pool.query(
-                            `SELECT count(*)::int AS n FROM "${env.cmsSchema}".sessions WHERE parent_session_id = $1 AND session_id <> $2`,
-                            [h.sessionId, h.workflowSessionId]);
-                        expect(rows[0].n).toBe(0);
-                        // Nor any definition of the chat's (stage 2.1).
-                        expect(await h.store.chat.listDefinitions(h.sessionId, { includeDeleted: true })).toEqual([]);
-                    } else {
-                        expect(seen[0].disabled).toBe(false);
-                        for (const field of ["spawn", "update", "read", "send"]) expect(seen[0][field], field).not.toContain(WORKFLOWS_DISABLED);
-                    }
+                    expect(seen[0].switched, "the bridge has no Workflows switch").toBe(false);
+                    for (const field of ["spawn", "update", "read", "send"]) expect(seen[0][field], field).not.toContain("WORKFLOWS_DISABLED");
                 });
         });
     }
 });
 
-describe("One switch (stage 2.0, coordinator 03:02Z): Workflows on, scripts off, on a real 1.0.83 turn", () => {
+describe("Workflows always on, scripts off, on a real 1.0.83 turn", () => {
     const SCRIPT_YAML = `
 apiVersion: pilotswarm.dev/v2-draft
 kind: Workflow
@@ -223,7 +183,7 @@ states:
         const seen = [];
         const script = async (_call, _prompt, opts) => {
             const bridge = opts.controlToolBridge;
-            const entry = { disabled: bridge?.workflowsDisabled === true };
+            const entry = { switched: Object.hasOwn(bridge ?? {}, "workflowsDisabled") };
             seen.push(entry);
             entry.draft = await bridge.spawnWorkflow({ yaml: SCRIPT_YAML, key: "scripted-draft" }, { toolCallId: "call-1" });
             entry.started = await bridge.spawnWorkflow({ yaml: SCRIPT_YAML, key: "scripted-start", state: "published", start: true, inputs: {} }, { toolCallId: "call-2" });
@@ -235,7 +195,7 @@ states:
         // a script node can be stored; the refused ones never reach it (the gate decides from the YAML first; the e02ec6f8
         // run answered WORKFLOW_ERROR because this case had no host and the gate came after it).
         await intakeNativeCase(env, "workflows on, scripts off", script,
-            { testOptions: { workflowRequests: true }, inlineClient: true, managerExtras: { workflowsEnabled: true, workflowScriptsEnabled: false } }, async h => {
+            { testOptions: { workflowRequests: true }, inlineClient: true, managerExtras: { workflowScriptsEnabled: false } }, async h => {
                 // The Workflow children under the chat other than the intake fixture's own (h.workflowSessionId, "Workflow: intake
                 // activity tests", which the fixture makes right after the chat, before any turn, for its activity tests): it is
                 // not the turn's, so it is left out by id, as in the first case above. Each row's id and title show in a failure.
@@ -250,7 +210,7 @@ states:
                 await h.until(({ history }) => history.some(event => event.kind === "QueueSubscribed"), "the session waits for its messages");
                 await h.say("probe the scripts gate", "cm-scripts-1");
                 await h.until(() => seen[0]?.finished === true, "the turn calls spawn_workflow three times");
-                expect(seen[0].disabled).toBe(false);
+                expect(seen[0].switched).toBe(false);
                 for (const [field, when] of [["draft", "saved"], ["started", "started"]]) {
                     const answer = JSON.parse(seen[0][field]);
                     expect(answer.ok, seen[0][field]).toBe(false);

@@ -28,7 +28,7 @@ test("heights are whole pixels in range per device class; the default and the ro
 });
 
 test("the reducer keeps one height per device class; null forgets it; a profile read brings them back", () => {
-    let state = createInitialState({ workflowsEnabled: true, mode: "api" });
+    let state = createInitialState({ mode: "api" });
     assert.deepEqual(state.ui.workflowPanelHeights, {});
     state = appReducer(state, { type: "ui/workflowPanelHeight", device: "desktop", height: 360 });
     state = appReducer(state, { type: "ui/workflowPanelHeight", device: "phone", height: 300 });

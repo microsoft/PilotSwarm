@@ -35,7 +35,7 @@ const row = (sessionId, status, index) => ({ sessionId, sessionKind: "workflow",
     createdAt: T0 + (index + 1) * 60_000, updatedAt: T0 + (index + 1) * 60_000 + 1_000 });
 
 function harness() {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "chat", title: "HN watcher", createdAt: T0, updatedAt: T0 },
         row("wf-a", "cancelled", 0), row("wf-b", "pending", 1)] });
     read(store, "wf-a", modelOf("wf-a", "1.0.0", { status: "cancelled" }));

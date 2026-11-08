@@ -70,7 +70,7 @@ function viewHarness({ legacy = false } = {}) {
     // Every other call is recorded, so a test can say that nothing changed anything. A legacy transport has only its own.
     const transport = legacy ? methods : new Proxy(methods, { get: (target, name) => (name in target ? target[name] : typeof name === "string"
         ? async (...args) => { calls.push([name, ...args]); return null; } : undefined) });
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: review-once", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
@@ -175,7 +175,7 @@ function inputHarness({ policies = { c1: DENIED, g1: DENIED, o1: ALLOWED }, apiM
                     workflowInput: { reason: policy.reason, workflowSessionId: policy.workflowSessionId, controllingSessionId: policy.controllingSessionId } };
         } }
         : { ...base, getWorkflowInputPolicy: async (sessionId) => { calls.push(["getWorkflowInputPolicy", sessionId]); return answer(sessionId); } };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: TREE });
     return { controller, store, calls };

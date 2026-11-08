@@ -146,11 +146,11 @@ describe("A package's Workflow Definitions (stage 2.3), on a real model", () => 
             } finally {
                 await registryCatalog.close();
             }
-            const worker = { testOptions: { workflowRequests: true }, workflows: { enabled: true }, workflowScripts: { enabled: true }, logLevel: "warning",
+            const worker = { testOptions: { workflowRequests: true }, workflowScripts: { enabled: true }, logLevel: "warning",
                 agentPackages: { cacheDir: join(env.baseDir, `package-definitions-${tag}`), refreshIntervalMs: 0 } };
             await withClient(env, { worker }, async (client) => {
                 mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
-                    factsSchema: env.factsSchema, workflows: true, artifactStore });
+                    factsSchema: env.factsSchema, artifactStore });
                 await mgmt.start();
                 const catalog = client._catalog;
                 const chatStore = catalog.workflowStore().chat;

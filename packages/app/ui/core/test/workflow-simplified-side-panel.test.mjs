@@ -43,7 +43,7 @@ test("widths are whole pixels in range; the default, the minimum and the room th
 });
 
 test("the reducer keeps the width; null forgets it; a profile read brings it back and leaves it when absent", () => {
-    let state = createInitialState({ workflowsEnabled: true, mode: "api" });
+    let state = createInitialState({ mode: "api" });
     assert.deepEqual(state.ui.workflowPanelWidths, {});
     state = appReducer(state, { type: "ui/workflowPanelWidth", width: 480 });
     assert.deepEqual(state.ui.workflowPanelWidths, { desktop: 480 });
@@ -71,7 +71,7 @@ const controllerWith = (state) => ({ getState: () => state, subscribe: () => () 
 const render = element => renderToStaticMarkup(element);
 
 test("beside the graph: the panel follows it in a split; closed, a strip of stacked tabs; normal mode is as before", () => {
-    const state = appReducer(createInitialState({ workflowsEnabled: true, mode: "api" }), { type: "ui/workflowPanelWidth", width: 460 });
+    const state = appReducer(createInitialState({ mode: "api" }), { type: "ui/workflowPanelWidth", width: 460 });
     const controller = controllerWith(state);
     const panels = ["node", "log", "variables"];
     const graph = React.createElement("div", { className: "ps-wf-main" }, "graph");

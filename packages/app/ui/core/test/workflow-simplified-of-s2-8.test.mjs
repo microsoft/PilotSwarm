@@ -42,7 +42,7 @@ const LOCKED = {
 };
 
 const controllerWith = (tab = {}) => {
-    let state = createInitialState({ workflowsEnabled: true, mode: "api" });
+    let state = createInitialState({ mode: "api" });
     state = appReducer(state, { type: "ui/workflowTab", ownerId: OWNER, patch: tab });
     return { getState: () => state, subscribe: () => () => {}, dispatch: () => {}, setPrompt() {} };
 };

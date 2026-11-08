@@ -402,7 +402,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Stage 2.3: make a chat for a package's Workflow Definition (ref, <package>/<name>): a session (model: default the deployment's) with the definition attached and locked at the package's version, instructions to coordinate it from its interface card, and a first message that asks the chat to greet the person and ask for the inputs it needs. 404 PACKAGE_WORKFLOW_NOT_FOUND for a definition the caller cannot use; 404 WORKFLOWS_DISABLED while Workflows are off.
+     * Stage 2.3: make a chat for a package's Workflow Definition (ref, <package>/<name>): a session (model: default the deployment's) with the definition attached and locked at the package's version, instructions to coordinate it from its interface card, and a first message that asks the chat to greet the person and ask for the inputs it needs. 404 PACKAGE_WORKFLOW_NOT_FOUND for a definition the caller cannot use.
      * @remarks `POST /sessions/for-workflow` — access: `session:create`
      */
     createWorkflowChat(params: {
@@ -1158,7 +1158,7 @@ export interface ManagementOps {
     listCreatableAgents(params?: Record<string, never>): Promise<any>;
 
     /**
-     * Stage 2.3: the package Workflow Definitions the caller can make a chat for (the new-session picker's Workflows group): each with its reference (<package>/<name>), package, version, its card's words (description, when to use it, inputs, how it ends, what it asks) and its suggested model. 404 WORKFLOWS_DISABLED while Workflows are off.
+     * Stage 2.3: the package Workflow Definitions the caller can make a chat for (the new-session picker's Workflows group): each with its reference (<package>/<name>), package, version, its card's words (description, when to use it, inputs, how it ends, what it asks) and its suggested model.
      * @remarks `GET /workflow-definitions/catalog` — access: `authed`
      */
     listCreatableWorkflows(params?: Record<string, never>): Promise<any>;

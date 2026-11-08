@@ -177,13 +177,13 @@ export function workflowLifecycleNeedsAttention(state, ownerId) {
 /**
  * B and d: whether the Workflow panel opens for the chat `ownerId` (the Workflow tab's, selectWorkflowTabContext) now:
  * never on unknown state (the profile read, which holds the receipt, and a successful read of the chat's definitions list
- * must both have happened; a read that failed decides nothing), never with Workflows off, never for a chat with no
+ * must both have happened; a read that failed decides nothing), never for a chat with no
  * definition and no Workflow, never once the chat's panel was on screen (its receipt) or after it opened by itself in
  * this page. No time is compared (review F1).
  */
 export function workflowArrivalAutoOpen(state, ownerId) {
     const ui = state?.ui;
-    if (!ownerId || ui?.workflowsEnabled !== true || ui?.sessionViewsLoaded !== true || ui?.workflowAutoOpened?.[ownerId]) return false;
+    if (!ownerId || ui?.sessionViewsLoaded !== true || ui?.workflowAutoOpened?.[ownerId]) return false;
     const byId = state?.sessions?.byId;
     const owner = byId?.[ownerId];
     if (!isRecord(owner) || owner.isGroup || isWorkflowChild(owner)) return false;

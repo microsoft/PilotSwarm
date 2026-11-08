@@ -28,7 +28,7 @@ const WATCH = {
 const DIGEST = { ref: "ops-kit/incident-digest", name: "incident-digest", package: "ops-kit", semver: "0.4.1", scope: "shared", mine: false,
     description: "Collects the day's incidents.", inputs: [], outcomes: { done: "Written." }, asks: {}, effects: "None.", model: null };
 
-function makeController({ workflowsEnabled = true, workflows = [WATCH, DIGEST], agents = [{ name: "alpha", title: "Alpha" }], overrides = {} } = {}) {
+function makeController({ workflows = [WATCH, DIGEST], agents = [{ name: "alpha", title: "Alpha" }], overrides = {} } = {}) {
     const calls = { listCreatableWorkflows: 0, createWorkflowChat: [], copy: [], update: [], list: 0 };
     const transport = {
         listSessions: async () => [],
@@ -47,12 +47,12 @@ function makeController({ workflowsEnabled = true, workflows = [WATCH, DIGEST], 
         listChatWorkflowDefinitions: async () => { calls.list += 1; return []; },
         ...overrides,
     };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled }));
+    const store = createStore(appReducer, createInitialState());
     const controller = new PilotSwarmUiController({ store, transport });
     return { controller, store, calls };
 }
 
-test("P1: with Workflows on the picker lists the packages' definitions after the agents, under headings; off, it never asks", async () => {
+test("P1: the picker lists the packages' definitions after the agents, under headings, with no opt-in", async () => {
     const { controller, store, calls } = makeController();
     await controller.openSessionAgentPicker();
     const modal = store.getState().ui.modal;
@@ -67,11 +67,6 @@ test("P1: with Workflows on the picker lists the packages' definitions after the
     const watchRow = view.rows[5].map(run => run.text).join("");
     assert.ok(watchRow.includes(`${WORKFLOW_SESSION_GLYPH} release-watch`) && watchRow.includes("Release Tools 1.2.0"), watchRow);
 
-    const off = makeController({ workflowsEnabled: false });
-    await off.controller.openSessionAgentPicker();
-    assert.equal(off.calls.listCreatableWorkflows, 0);
-    assert.ok(!off.store.getState().ui.modal.items.some(item => item.kind === "workflow"));
-    assert.ok(!selectSessionAgentPickerModal(off.store.getState()).rowItemIndexes.includes(-1), "no headings without Workflows");
     // A list that cannot be read leaves the agents as they are.
     const failing = makeController({ overrides: { listCreatableWorkflows: async () => { throw new Error("down"); } } });
     await failing.controller.openSessionAgentPicker();
@@ -167,21 +162,17 @@ test("P2: a chat made for a package's Workflow wears the Workflow badge in the s
     assert.equal(kindRun(rows.find(row => row.sessionId === "chat-2")), undefined);
 });
 
-// Review S2UI-F9: with Workflows off (and before the bootstrap says on: the client starts off), a coordinating chat is an
-// ordinary chat row: no Workflow badge, no tooltip.
-test("S2UI-F9: Workflows off, or before the bootstrap, the coordinating chat's row has no Workflow badge", () => {
-    // Off, and the client's first state before any bootstrap (createInitialState starts with Workflows off).
-    for (const store of [makeController({ workflowsEnabled: false }).store, createStore(appReducer, createInitialState())]) {
-        const workflowsEnabled = store.getState().ui.workflowsEnabled;
-        store.dispatch({ type: "sessions/loaded", sessions: [
-            { sessionId: "chat-wf-1", title: "release-watch · release-tools", status: "idle", workflowRef: "release-tools/release-watch" },
-        ] });
-        const [row] = selectSessionRows(store.getState());
-        const runs = row.titleRuns || row.runs || [];
-        assert.equal(runs.find(run => run?.role === "sessionKind"), undefined, String(workflowsEnabled));
-        assert.equal(runs.some(run => run?.workflowRef), false);
-        assert.equal(row.sessionId, "chat-wf-1", "the chat row itself stays");
-    }
+// Workflows are always on (owner 2026-11-08T08:03Z; this replaces review S2UI-F9's off case): the client's first state,
+// before any bootstrap, already shows a coordinating chat's Workflow badge.
+test("always on: before any bootstrap, the coordinating chat's row wears its Workflow badge", () => {
+    const store = createStore(appReducer, createInitialState());
+    store.dispatch({ type: "sessions/loaded", sessions: [
+        { sessionId: "chat-wf-1", title: "release-watch · release-tools", status: "idle", workflowRef: "release-tools/release-watch" },
+    ] });
+    const [row] = selectSessionRows(store.getState());
+    const runs = row.titleRuns || row.runs || [];
+    assert.equal(runs.find(run => run?.role === "sessionKind")?.workflowRef, "release-tools/release-watch");
+    assert.equal(row.sessionId, "chat-wf-1");
 });
 
 const LOCKED = {

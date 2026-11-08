@@ -21,7 +21,7 @@ function harness() {
                 : { canSendPrompt: true, canAnswer: true, canSteer: true, reason: null, workflowSessionId: null, controllingSessionId: null };
         },
     };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [
         { sessionId: "r1", title: "Root", status: "idle" },
@@ -84,7 +84,7 @@ const OPEN = { canSendPrompt: true, canAnswer: true, canSteer: true, reason: nul
 function policyHarness(policyFor) {
     const asked = [];
     const transport = { getWorkflowInputPolicy: async (sessionId) => { asked.push(sessionId); return policyFor(sessionId); } };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [
         { sessionId: "r1", title: "Root", status: "idle" },

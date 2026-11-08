@@ -17,7 +17,7 @@ const run = (runId, mode = "live", status = "running", extra = {}) => ({ runId, 
 const MODEL = readModel({ runs: [run("run-live"), run("run-test-1", "test", "completed", { outcome: "succeeded" }), run("run-old", "live", "failed", { outcome: "failed" }), run("run-test-2", "test", "cancelled")] });
 
 function seed({ view = {}, events = [], kind = "workflow" } = {}) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     const calls = [];
     const transport = { listSessions: async () => [], subscribeSession: () => () => {}, getSessionEventsBefore: async () => [],
         respond: async () => MODEL };

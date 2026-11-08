@@ -101,7 +101,7 @@ test("UI-D8: Start another keeps known inputs for an open, additionalProperties 
     // Through the controller: the chat is asked with the original object.
     const sent = [];
     const transport = { sendMessage: async (sessionId, prompt, options) => { sent.push({ sessionId, prompt, options }); return { ok: true }; } };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [
         { sessionId: "owner", title: "Owner", status: "idle" },

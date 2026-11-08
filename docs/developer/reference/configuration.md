@@ -380,7 +380,6 @@ new PilotSwarmWorker({
     workerNodeId: "pod-1",   // identifier for this worker (default: hostname)
     turnTimeoutMs: 1_200_000, // explicit override; 0 disables the cap
     workflowScripts: { enabled: false }, // run workflow script states (env PILOTSWARM_WORKFLOW_SCRIPTS=1)
-    workflows: { enabled: false },       // Workflows on this worker (env PILOTSWARM_WORKFLOWS=on); off by default
 
     // Blob storage for session dehydration
     blobConnectionString: string,   // Azure Storage connection string
@@ -893,12 +892,14 @@ desired state rather than maintain a second long-lived configuration source.
 
 ## Workflow scripts
 
-Off by default: a workflow's script states run as processes on the worker.
-See [Workflow sessions](../building/workflow-sessions.md).
+Workflows are always on, on the portal, every worker and the MCP server; they
+need no setting. Script nodes are off by default: a workflow's script states
+run as processes on the worker. See
+[Workflow sessions](../building/workflow-sessions.md).
 
 | Variable | Default | Effect |
 |---|---|---|
-| `PILOTSWARM_WORKFLOWS` | off | Exactly `on` turns Workflows on, on the portal, every worker and the MCP server. Off: no workflow tools, guidance, screens, routes or MCP tools; calls answer `WORKFLOWS_DISABLED`. `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT=isolated-test-only` implies on. A worker's `workflows.enabled` option wins. It alone gives the tools and screens. |
+| `PILOTSWARM_WORKFLOWS` | retired | Workflows are always on. A deployment that still sets it, to any value, is ignored with one startup warning on each worker, the portal and the MCP server: "PILOTSWARM_WORKFLOWS is ignored: Workflows are always on. Remove it from the deployment's settings." |
 | `PILOTSWARM_WORKFLOW_SCRIPTS` | off | `1` runs workflow script states on this worker. The `workflowScripts.enabled` option wins. Off, a definition with a script node is refused at save and Start (`WORKFLOW_SCRIPTS_DISABLED`). Set on the portal and the MCP server too, so a person's save or Start is checked there. |
 | `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` | off | Test-only, for an isolated test environment. Exactly `isolated-test-only` (no other spelling, no spaces) makes the headless worker and the portal's embedded workers serve Workflow V2 controller 1.9.0 and session orchestration 1.0.83 (`testOptions.workflowRequests`), and the portal and the MCP server take a person's workflow commands (`workflowCommands: { requests: true }`). The portal's and the MCP server's direct-mode clients also start new sessions at 1.0.83, and so does a sub-agent a chat spawns, so a person's chat (or an agent it delegates to) can create workflows with agent, parallel and request steps; a session started before keeps its version (1.0.82 sessions still refuse those steps). Any other value is off and changes nothing. Every worker that shares the database must run the same image with the same value. Not an activation. |
 | `PILOTSWARM_WORKFLOW_PYTHON` | `python3` | The Python program for `runtime: python`. |

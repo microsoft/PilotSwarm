@@ -17,7 +17,7 @@ const rows = [
 ];
 
 test("a stored Workflow row applied before the catalog selects its session's chat with the row once the catalog answers", () => {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "ui/sessionViewDevice", device: "desktop" });
     // The profile first: the Workflow row was the selection, the owner's view had the canvas column in zen.
     store.dispatch({ type: "profileSettings/apply", settings: { activeSessionId: "wf-1",
@@ -35,21 +35,21 @@ test("a stored Workflow row applied before the catalog selects its session's cha
 });
 
 test("a Workflow whose session is not loaded stays the active session; a link still resolving maps itself", () => {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [rows[1]] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf-1" });
     assert.equal(store.getState().sessions.activeSessionId, "wf-1", "its session is not loaded");
     store.dispatch({ type: "sessions/loaded", sessions: rows });
     assert.deepEqual([store.getState().sessions.activeSessionId, store.getState().sessions.workflowRowId], ["owner", "wf-1"], "loaded later: its chat");
     // A link (navigation intent) to the Workflow keeps its own mapping (S8).
-    const linked = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const linked = createStore(appReducer, createInitialState({ mode: "api" }));
     linked.dispatch({ type: "sessions/navigationIntent", sessionId: "wf-1" });
     linked.dispatch({ type: "sessions/loaded", sessions: rows });
     assert.deepEqual([linked.getState().sessions.activeSessionId, linked.getState().sessions.workflowRowId], ["owner", "wf-1"]);
 });
 
 test("the mapping runs only when the sessions slice changes: streamed history leaves the slice as it was", () => {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: rows });
     store.dispatch({ type: "sessions/selected", sessionId: "owner" });
     const before = store.getState();

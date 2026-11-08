@@ -34,7 +34,7 @@ describe("a person's save note reaches the chat's next turn once (E2-4, F3)", ()
             return { type: "completed", content: "noted", events: [] };
         };
         await intakeNativeCase(getEnv(), "save note turn", script, { testOptions: { workflowRequests: true },
-            managerExtras: { workflowsEnabled: true, workflowScriptsEnabled: true } }, async h => {
+            managerExtras: { workflowScriptsEnabled: true } }, async h => {
             const host = { catalog: h.catalog, store: h.store, duroxideClient: { startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "Running" }),
                 enqueueEvent: async () => {} } };
             await h.start();
@@ -64,7 +64,7 @@ describe("a person's save note reaches the chat's next turn once (E2-4, F3)", ()
             return { type: "completed", content: "noted", events: [] };
         };
         await intakeNativeCase(getEnv(), "end notice first turn", script, { testOptions: { workflowRequests: true },
-            managerExtras: { workflowsEnabled: true, workflowScriptsEnabled: true } }, async h => {
+            managerExtras: { workflowScriptsEnabled: true } }, async h => {
             const delivery = await workflowParentNotifier(h.client)(h.sessionId, "ended", { kind: "system", display: "workflow" }, "ds2-id");
             expect(delivery).toEqual({ delivered: false, notStarted: true });
             const notice = workflowV2ParentNotification({ sessionId: "wf-ds2", runId: "run-ds2-0001", name: "hn-top-watch", version: "1.0.0",

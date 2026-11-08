@@ -81,7 +81,7 @@ import {
 import { findArtifactEntry } from "./state.js";
 import {
     selectWorkflowTabContext, workflowActiveChildIds, workflowAttentionChildIds, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowHighlightedSessionId, workflowNumberOf, workflowOwnerId,
-    workflowPaneTarget, workflowRowTitle, workflowSelectionTarget, workflowStartAnotherText, workflowStateOf, workflowsShown,
+    workflowPaneTarget, workflowRowTitle, workflowSelectionTarget, workflowStartAnotherText, workflowStateOf,
 } from "./workflow-owner.js";
 import { chatDefinitionFailure, chatDefinitionReadKey } from "./workflow-chat-definitions.js";
 import { getTheme, listThemes } from "./themes/index.js";
@@ -2744,19 +2744,14 @@ export class PilotSwarmUiController {
      */
     async readWorkflowTestMode() {
         let on = false;
-        // Stage 2.0: whether Workflows are on (its `enabled: true`), kept as state.ui.workflowsEnabled; a missing, older or
-        // failed answer is off, so the portal and the terminal UI show no Workflow surface.
-        let enabled = false;
+        // Workflows are always on (owner 2026-11-08T08:03Z): the capabilities' `enabled` is not read.
         try {
             const capabilities = typeof this.transport.getWorkflowCapabilities === "function"
                 ? await this.transport.getWorkflowCapabilities() : null;
-            enabled = capabilities?.enabled === true;
-            on = enabled && capabilities?.v2?.testMode === true;
+            on = capabilities?.v2?.testMode === true;
         } catch {
             on = false;
-            enabled = false;
         }
-        this.dispatch({ type: "ui/workflowsEnabled", on: enabled });
         this.dispatch({ type: "ui/workflowTestMode", on });
     }
 
@@ -6655,8 +6650,6 @@ export class PilotSwarmUiController {
      */
     refreshWorkflowAttention() {
         const state = this.getState();
-        // Stage 2.0: no Workflow reads while Workflows are off.
-        if (state.ui.workflowsEnabled !== true) return;
         const ownerId = selectWorkflowTabContext(state).ownerId;
         if (!ownerId) return;
         this.ensureWorkflowChildModels(ownerId, workflowAttentionChildIds(state.sessions.byId, ownerId, state.ui.workflowViews));
@@ -9755,10 +9748,10 @@ export class PilotSwarmUiController {
             });
             return;
         }
-        // Stage 2.3 (P1): with Workflows on, the packages' Workflow Definitions join the picker. Best effort: a list that
-        // cannot be read leaves the agents as they are.
+        // Stage 2.3 (P1): the packages' Workflow Definitions join the picker. Best effort: a list that cannot be read leaves
+        // the agents as they are.
         let workflowItems = [];
-        if (this.getState().ui.workflowsEnabled === true && typeof this.transport.listCreatableWorkflows === "function") {
+        if (typeof this.transport.listCreatableWorkflows === "function") {
             try {
                 workflowItems = workflowPickerItems(await this.transport.listCreatableWorkflows());
             } catch {
@@ -15062,8 +15055,6 @@ export class PilotSwarmUiController {
                 this.openHelpModal();
                 return;
             case UI_COMMANDS.OPEN_WORKFLOW_VIEW:
-                // Stage 2.0: no Workflow pane while Workflows are off.
-                if (!workflowsShown(this.getState())) return;
                 this.openWorkflowViewModal();
                 return;
             case UI_COMMANDS.WORKFLOW_VIEW_PREV_RUN:

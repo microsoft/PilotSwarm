@@ -28,9 +28,6 @@ import { ApiClient, HttpApiTransport } from "pilotswarm-sdk/api";
 
 import { createApiRouter } from "../api/router.js";
 
-// Stage 2.0: Workflows are off unless PILOTSWARM_WORKFLOWS=on; these tests describe the workflow routes with them on (the
-// switch's own route tests are workflows-switch-routes.test.mjs).
-process.env.PILOTSWARM_WORKFLOWS = "on";
 import { PortalRuntime, portalRuntimeOptions } from "../runtime.js";
 
 const EVERY_HOST = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel"];

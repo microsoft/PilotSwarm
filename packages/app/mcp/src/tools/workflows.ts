@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { workflowTestModeFromEnv, workflowsEnabledFromEnv } from "pilotswarm-sdk";
+import { workflowTestModeFromEnv } from "pilotswarm-sdk";
 import { sessionIdShape } from "../session-id.js";
 import type { ServerContext } from "../context.js";
 import { jsonResult, errorResult, withToolErrors, type ToolResult } from "../util/respond.js";
@@ -8,9 +8,9 @@ import { jsonResult, errorResult, withToolErrors, type ToolResult } from "../uti
 /**
  * Workflow v2 over MCP (design 04 REST/SDK/MCP mapping; R01, R26):
  *
- * Both are registered only while Workflows are on (stage 2.0: PILOTSWARM_WORKFLOWS=on, or the test environment switch).
+ * Workflows are always on (owner 2026-11-08T08:03Z):
  *
- *   read_workflow     the workflow read (registered whenever Workflows are on): the view of a workflow session, a section's next page
+ *   read_workflow     the workflow read (always registered): the view of a workflow session, a section's next page
  *                     (cursor) or one node execution's whole output or error (execution_id)
  *   update_workflow   the update_workflow tool's command, sent to one workflow session (INACTIVE: registered only when
  *                     the server is created with the test-only option workflowCommands, so it is absent everywhere else)
@@ -21,8 +21,6 @@ import { jsonResult, errorResult, withToolErrors, type ToolResult } from "../uti
  * actor; a workflow in a workflow agent state's subtree takes only pause, stop and cancel.
  */
 export function registerWorkflowTools(server: McpServer, ctx: ServerContext): void {
-    // Stage 2.0: with Workflows off (PILOTSWARM_WORKFLOWS) no workflow tool is registered.
-    if (!(ctx.workflows ?? workflowsEnabledFromEnv())) return;
     // Workflow test mode is hidden unless this process's deployment flag is on (spec 16): off, neither tool names it, and the
     // read shows no test run (review SF-5).
     const testMode = ctx.workflowTestMode ?? workflowTestModeFromEnv();

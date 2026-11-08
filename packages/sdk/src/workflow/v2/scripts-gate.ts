@@ -1,6 +1,6 @@
 /**
- * Script nodes are gated on their own (Workflow Simplified stage 2.0, coordinator 03:02Z: one switch). PILOTSWARM_WORKFLOWS
- * alone gives the workflow tools and screens; PILOTSWARM_WORKFLOW_SCRIPTS only decides whether script nodes run. A host that
+ * Script nodes are gated on their own (Workflow Simplified stage 2.0, coordinator 03:02Z). Workflows are always on (owner
+ * 2026-11-08T08:03Z); PILOTSWARM_WORKFLOW_SCRIPTS only decides whether script nodes run. A host that
  * knows its workers run no scripts (`scripts: false`) refuses a definition with a script node when it is saved and when it
  * is started, in words that name the setting, before anything is written. A host that does not know (`scripts` absent: a
  * portal or MCP server whose own process does not set the variable) does not refuse; such a run fails at its first script
@@ -10,6 +10,19 @@ import { compileWorkflowV2, type WorkflowIR } from "./compiler.js";
 import { WorkflowStoreError } from "./store.js";
 
 export const WORKFLOW_SCRIPTS_DISABLED = "WORKFLOW_SCRIPTS_DISABLED";
+
+/**
+ * A management client's `workflowScripts` option from this process's PILOTSWARM_WORKFLOW_SCRIPTS (stage 2.0):
+ * `{ workflowScripts: true }` for 1, true or yes (as a worker reads it), `{ workflowScripts: false }` for any other value that
+ * is set, and `{}` when the variable is unset or empty (not known here: a person's save or Start is not refused for script
+ * nodes; such a run fails at its first script node). Pure.
+ */
+export function workflowScriptsOptionFromEnv(env: Record<string, string | undefined> = process.env): { workflowScripts?: boolean } {
+    const raw = env.PILOTSWARM_WORKFLOW_SCRIPTS;
+    if (raw === undefined || raw.trim() === "") return {};
+    const flag = raw.trim().toLowerCase();
+    return { workflowScripts: flag === "1" || flag === "true" || flag === "yes" };
+}
 
 /** The ids of a definition's script nodes (parallel bodies included: their members are nodes of the IR), in IR order. */
 export function workflowV2ScriptNodes(ir: Pick<WorkflowIR, "nodes"> | null | undefined): string[] {

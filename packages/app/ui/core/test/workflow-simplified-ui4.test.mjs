@@ -39,7 +39,7 @@ const modelOf = (workflowId, semver, { hash = `h-${semver}`, status = "completed
 const T0 = Date.parse("2026-11-06T23:30:00.000Z");
 /** `children`: [id, status, model or null, createdAt (default: a minute apart; null: none)] in creation order. */
 function harness(children) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [
         { sessionId: "chat", title: "HN watcher", createdAt: T0, updatedAt: T0 },
         ...children.map(([sessionId, status, , createdAt], index) => {

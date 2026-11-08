@@ -99,7 +99,7 @@ test("the controller reads older history from the page again after a gap, for ex
         return { workflowId: "wf", runId: RUN, section: "executions", order: "newest_first", limit: 3,
             items: [exec(7), exec(8), exec(9)], nextCursor: cursor("after-e7") };
     } };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: poller", status: "running", sessionKind: "workflow" }] });
     const run = runOf({ page: [exec(10), exec(11), exec(12)], next: cursor("after-e10") });

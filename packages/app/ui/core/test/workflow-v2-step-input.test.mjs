@@ -88,7 +88,7 @@ test("the change's summary says what saving does, and a draft that would have er
 });
 
 function seeded({ fail = null } = {}) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "web" }));
+    const store = createStore(appReducer, createInitialState({ mode: "web" }));
     const reads = [];
     const updates = [];
     const transport = {
@@ -280,7 +280,7 @@ test("the draft tools offer step inputs only for a workflow with agent steps", (
     const modelOf = graph => ({ ...readModel({ definition: draft, revision: { revision: 2, definitionHash: "hash-2" }, noRun: true, graph }),
         personCommands: { operations: ["replace_definition"], restriction: null, run: null, draft: { revision: 2, definitionHash: "hash-2", yaml: YAML } } });
     const mount = model => {
-        const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+        const store = createStore(appReducer, createInitialState({ mode: "api" }));
         store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
         store.dispatch({ type: "sessions/selected", sessionId: "wf" });
         store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: model, readModelRunId: null, sidePanel: "draft" } });

@@ -99,29 +99,29 @@ test("SF-D5: the Workflow Log never lists a test run's events, also when its wor
     assert.deepEqual(workflowLogEvents(null, { runId: null, runs: offRuns }), []);
 });
 
-// Review SF-D5: the controller keeps the server's word on test mode (its bootstrap's workflows.v2.testMode). Stage 2.0: and
-// on Workflows themselves (workflows.enabled); test mode is never on while Workflows are off.
+// Review SF-D5: the controller keeps the server's word on test mode (its bootstrap's workflows.v2.testMode). Workflows are
+// always on (owner 2026-11-08T08:03Z), so the answer's `enabled` is not read and keeps no switch in the state.
 test("SF-D5: the controller reads the server's test mode at start; a missing, older or failed answer is off", async () => {
     const answers = [
-        [{ enabled: true, v2: { testMode: true } }, true, true],
-        [{ enabled: true, v2: { read: true } }, false, true],
-        [{ enabled: true, v2: { testMode: "true" } }, false, true],
-        [{ v2: { testMode: true } }, false, false],
-        [{ enabled: false }, false, false],
-        [{ enabled: "true", v2: { testMode: true } }, false, false],
-        [null, false, false],
-        [new Error("WORKFLOW_CAPABILITIES_MALFORMED"), false, false],
-        [undefined, false, false],
+        [{ enabled: true, v2: { testMode: true } }, true],
+        [{ enabled: true, v2: { read: true } }, false],
+        [{ enabled: true, v2: { testMode: "true" } }, false],
+        [{ v2: { testMode: true } }, true],
+        [{ enabled: false }, false],
+        [{ enabled: false, v2: { testMode: true } }, true],
+        [null, false],
+        [new Error("WORKFLOW_CAPABILITIES_MALFORMED"), false],
+        [undefined, false],
     ];
-    for (const [answer, on, enabled] of answers) {
+    for (const [answer, on] of answers) {
         const transport = answer === undefined ? {} : {
             async getWorkflowCapabilities() { if (answer instanceof Error) throw answer; return answer; },
         };
-        const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local", workflowsEnabled: !enabled }));
+        const store = createStore(appReducer, createInitialState({ mode: "local" }));
         const controller = new PilotSwarmUiController({ store, transport });
         if (on === false) store.dispatch({ type: "ui/workflowTestMode", on: true });
         await controller.readWorkflowTestMode();
         assert.equal(store.getState().ui.workflowTestMode, on, JSON.stringify(answer ?? "no getter"));
-        assert.equal(store.getState().ui.workflowsEnabled, enabled, JSON.stringify(answer ?? "no getter"));
+        assert.equal("workflowsEnabled" in store.getState().ui, false, JSON.stringify(answer ?? "no getter"));
     }
 });

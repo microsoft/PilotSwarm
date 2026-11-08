@@ -23,9 +23,9 @@ import { registerCapabilityTools } from "../../dist/src/tools/capabilities.js";
 import { registerCapabilityResources } from "../../dist/src/resources/capabilities.js";
 import { workflowContextOptionsFromEnv } from "../../dist/src/context.js";
 
-// Stage 2.0: Workflows are off unless PILOTSWARM_WORKFLOWS=on; this file describes the tools with them on (a context without
-// `workflows` reads the setting), and checks them off at the end of section 1.
-process.env.PILOTSWARM_WORKFLOWS = "on";
+// Workflows are always on (owner 2026-11-08T08:03Z): read_workflow is always registered, PILOTSWARM_WORKFLOWS (retired)
+// changes nothing.
+process.env.PILOTSWARM_WORKFLOWS = "off";
 
 const SID = "a7f23cda-5cfd-4f0e-aff1-d6b0400b8da5";
 
@@ -39,9 +39,9 @@ function toolsWith(ctx) {
 // 1. Absent unless the context enables it.
 assert.equal(toolsWith({ mgmt: {} }).has("update_workflow"), false, "absent by default");
 assert.equal(toolsWith({ mgmt: {}, workflowCommands: false }).has("update_workflow"), false, "absent when off");
-// Stage 2.0: with Workflows off, neither tool, whatever the test-only option says.
-assert.deepEqual([...toolsWith({ mgmt: {}, workflows: false, workflowCommands: true }).keys()], [], "no workflow tool while Workflows are off");
-assert.deepEqual([...toolsWith({ mgmt: {}, workflows: true }).keys()], ["read_workflow"], "the read while Workflows are on");
+// Always the read, whatever the retired PILOTSWARM_WORKFLOWS says; the command only with the test-only option.
+assert.deepEqual([...toolsWith({ mgmt: {} }).keys()], ["read_workflow"], "the read, always");
+assert.deepEqual([...toolsWith({ mgmt: {}, workflowCommands: true }).keys()].sort(), ["read_workflow", "update_workflow"], "and the command with the option");
 
 // 2. The command goes to the management client as it is; the receipt is the answer.
 {

@@ -15,7 +15,7 @@ import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-wor
 import { readModel, done } from "./workflow-v2-fixtures.mjs";
 
 function mount(view, { sideOpen = false } = {}) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModelRunId: null, ...view } });

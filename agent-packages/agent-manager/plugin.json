@@ -1,6 +1,6 @@
 {
   "name": "agent-manager",
-  "version": "1.4.8",
+  "version": "1.4.9",
   "title": "Agent Smith",
   "description": "Agent Smith authors and maintains packages of reusable skills, tools, MCP integrations, and authored agent workflows.",
   "agents": [

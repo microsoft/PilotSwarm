@@ -131,19 +131,17 @@ for (const entrypoint of ["packages/sdk/examples/worker.js", "packages/app/tui/s
         test(`${entrypoint} forwards Blob flag ${String(flag)} independently of database auth`, () => {
             const sdkUrl = new URL("../../dist/index.js", import.meta.url).href;
             const switchUrl = new URL("../../dist/workflow/v2/test-environment.js", import.meta.url).href;
-            const workflowsUrl = new URL("../../dist/workflow/workflows-switch.js", import.meta.url).href;
             const entryUrl = new URL(entrypoint, new URL("../../../../", import.meta.url)).href;
             const script = `
                 import { mock } from "node:test";
                 import { workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentNotice } from ${JSON.stringify(switchUrl)};
-                import { workflowsNotice } from ${JSON.stringify(workflowsUrl)};
                 mock.module(${JSON.stringify(sdkUrl)}, { namedExports: {
                     horizonConfigFromEnv: () => ({}),
                     // Both entry points load extension modules before start.
                     loadExtensionModules: async () => [],
                     parseExtensionModules: () => [],
                     // The worker entry applies the Workflow V2 test environment switch (the real functions).
-                    workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentNotice, workflowsNotice,
+                    workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentNotice,
                     PilotSwarmWorker: class {
                         constructor(options) { this.options = options; }
                         async start() {
@@ -192,16 +190,14 @@ for (const [entrypoint, switchValue, embeddedTestOptions, expected] of [
     test(`${entrypoint} with the Workflow V2 test environment switch ${JSON.stringify(switchValue)} and test options ${JSON.stringify(embeddedTestOptions)}`, () => {
         const sdkUrl = new URL("../../dist/index.js", import.meta.url).href;
         const switchUrl = new URL("../../dist/workflow/v2/test-environment.js", import.meta.url).href;
-        const workflowsUrl = new URL("../../dist/workflow/workflows-switch.js", import.meta.url).href;
         const entryUrl = new URL(entrypoint, new URL("../../../../", import.meta.url)).href;
         const embedded = embeddedTestOptions ? `, testOptions: ${JSON.stringify(embeddedTestOptions)}` : "";
         const script = `
             import { mock } from "node:test";
             import { workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentNotice } from ${JSON.stringify(switchUrl)};
-            import { workflowsNotice } from ${JSON.stringify(workflowsUrl)};
             mock.module(${JSON.stringify(sdkUrl)}, { namedExports: {
                 horizonConfigFromEnv: () => ({}), loadExtensionModules: async () => [], parseExtensionModules: () => [],
-                workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentNotice, workflowsNotice,
+                workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentNotice,
                 PilotSwarmWorker: class {
                     constructor(options) { this.options = options; }
                     async start() {

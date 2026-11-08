@@ -42,7 +42,7 @@ function harness() {
             return () => { entry.closed = true; };
         },
     }, { get: (target, name) => (name in target ? target[name] : typeof name === "string" ? async () => null : undefined) });
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: ROWS });
     for (const id of ["wf1", "wf2"]) store.dispatch({ type: "ui/workflowView", sessionId: id, view: { readModel: MODEL, readModelRunId: null } });

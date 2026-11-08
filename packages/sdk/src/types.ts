@@ -357,11 +357,6 @@ export interface TurnOptions {
          * their descriptions say so; every other turn's are unchanged.
          */
         workflowMilestone?: boolean;
-        /**
-         * Workflow Simplified stage 2.0: Workflows are off on this worker (PILOTSWARM_WORKFLOWS), so every workflow tool call
-         * is answered WORKFLOWS_DISABLED before anything else is checked.
-         */
-        workflowsDisabled?: boolean;
         /** Stage 2.1: workflow_definition (list, read, save, start) for this chat's own definitions; JSON. */
         workflowDefinition?(args: Record<string, unknown>, call?: { toolCallId?: string }): Promise<string>;
         spawnAgent(args: {
@@ -1505,14 +1500,6 @@ export interface PilotSwarmWorkerOptions {
     workflowScripts?: {
         enabled?: boolean;
         executables?: Partial<Record<"node" | "python" | "powershell", string>>;
-    };
-    /**
-     * Workflows on this worker (Workflow Simplified stage 2.0): `enabled` says it; absent, the deployment setting
-     * PILOTSWARM_WORKFLOWS=on (or PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT=isolated-test-only) decides; otherwise off. Off: the
-     * workflow tools are not declared and a call answers WORKFLOWS_DISABLED (workflow/workflows-switch.ts).
-     */
-    workflows?: {
-        enabled?: boolean;
     };
     /**
      * @internal Test-only switches (INACTIVE): no deployment sets them by default. The SDK itself reads no

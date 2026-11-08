@@ -56,17 +56,16 @@ test("the workflow skills load from their own plugin directory, which no worker 
     assert.match(testModeSkills()[0].prompt, /Hidden \(Workflow Simplified, spec 16\)/);
 });
 
-test("the base names the authoring skill only with workflows enabled and only on a worker that loaded it from its directory", () => {
+test("the base names the authoring skill on a worker that loaded it from its directory, scripts on or off (Workflows are always on)", () => {
     const loaded = skills();
     const elsewhere = loaded.map(skill => ({ ...skill, dir: path.join(PLUGINS, "elsewhere", skill.name) }));
     assert.equal(workflowAuthoringSkillLoaded(loaded), true);
     assert.equal(workflowAuthoringSkillLoaded(elsewhere), false);
     assert.equal(workflowAuthoringSkillLoaded(undefined), false);
     // A workflow request turn (workflowMilestoneTurn), the one turn that can test a revision, is taught testing (stage 2.5).
-    const prompt = (workerSkills, enabled, version, requestTurn = true) => {
+    const prompt = (workerSkills, scripts, version, requestTurn = true) => {
         const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "Legacy base.", ...(workerSkills ? { skills: workerSkills } : {}) });
-        manager.workflowScriptsEnabled = enabled;
-        manager.workflowsEnabled = enabled;
+        manager.workflowScriptsEnabled = scripts;
         return JSON.stringify(manager._buildSystemMessage("session", { baseAgentPolicy: { version, fingerprint: "test", revision: null },
             ...(requestTurn ? { workflowMilestoneTurn: true } : {}) }));
     };
@@ -74,7 +73,8 @@ test("the base names the authoring skill only with workflows enabled and only on
         const on = prompt(loaded, true, version);
         assert.equal(on.split(WORKFLOW_AUTHORING_POINTER).length - 1, 1, version);
         assert.ok(on.indexOf("## Workflow Sessions") < on.indexOf(WORKFLOW_AUTHORING_POINTER), version);
-        assert.ok(!prompt(loaded, false, version).includes(WORKFLOW_AUTHORING_POINTER), version);
+        // Workflows are always on (owner 2026-11-08T08:03Z): with scripts off the pointer is still given.
+        assert.equal(prompt(loaded, false, version).split(WORKFLOW_AUTHORING_POINTER).length - 1, 1, version);
         // Every other worker's prompt is as before: the guidance alone.
         for (const workerSkills of [undefined, [], elsewhere]) {
             const before = prompt(workerSkills, true, version);

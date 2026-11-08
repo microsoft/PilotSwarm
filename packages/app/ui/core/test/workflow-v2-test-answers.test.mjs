@@ -143,7 +143,7 @@ async function until(check, label) {
 }
 
 test("an answer and an advance are sent for the shown test run, and the workflow is read again", async () => {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "web" }));
+    const store = createStore(appReducer, createInitialState({ mode: "web" }));
     const updates = [];
     const reads = [];
     const transport = {
@@ -177,7 +177,7 @@ test("an answer and an advance are sent for the shown test run, and the workflow
 });
 
 function mount(view) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: RUN, readModelRunId: RUN, sidePanel: "calls", ...view } });
@@ -278,7 +278,7 @@ test("q12: the message to the parent agent names the workflow, the test run, the
 
 function asking({ parent = "parent-1", sendMessage } = {}) {
     const sent = [];
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch", parentSessionId: parent }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: RUN, readModelRunId: RUN, readModel: testModel() } });
@@ -311,7 +311,7 @@ test("q12: the controller sends the question to the parent's chat as an ordinary
 
 test("q12: a held call that waits offers 'Ask the parent agent', and the answer form sends its answer there instead; only with a parent", () => {
     const withParent = view => {
-        const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+        const store = createStore(appReducer, createInitialState({ mode: "api" }));
         store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch", parentSessionId: "parent-1" }] });
         store.dispatch({ type: "sessions/selected", sessionId: "wf" });
         store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: RUN, readModelRunId: RUN, sidePanel: "calls", ...view } });

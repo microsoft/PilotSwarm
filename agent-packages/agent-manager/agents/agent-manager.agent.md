@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.5.8
+version: 1.5.9
 name: agent-manager
 description: Authors and maintains packages of reusable skills, executable tools/MCP integrations, and authored agent workflows. Diagnoses session or capability failures, proposes a reviewable patch, publishes it, verifies the changed surfaces, and can roll it back. Everything it does is bounded by the authority of the user who owns its session.
 id: agent-manager
@@ -335,9 +335,10 @@ a package that adds or changes a Workflow Definition (`workflows/<name>/`):
 4. Tell the person the test result together with the publish plan and the
    diff: the revision tested, pass, and what the report showed.
 
-If `workflow_definition` or its `test` operation is not offered in your
-session, say so plainly, and do not publish that definition without the
-person's explicit yes to publishing it untested. A test is not a sandbox:
+Workflows are always on, so `workflow_definition` is always offered; its
+`test` operation is offered only where the deployment runs Workflow tests. If
+`test` is not offered in your session, say so plainly, and do not publish that
+definition without the person's explicit yes to publishing it untested. A test is not a sandbox:
 its scripts run for real, so read the definition's effects before you test.
 
 This is a discipline you hold, not a lock the tool enforces. The tool will let

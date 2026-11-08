@@ -1,6 +1,5 @@
 /**
- * One switch (Workflow Simplified stage 2.0, coordinator 03:02Z): PILOTSWARM_WORKFLOWS alone gives the workflow tools and
- * screens; PILOTSWARM_WORKFLOW_SCRIPTS decides only whether script nodes run. A host whose workers run no scripts
+ * Workflows are always on (owner 2026-11-08T08:03Z); PILOTSWARM_WORKFLOW_SCRIPTS decides only whether script nodes run. A host whose workers run no scripts
  * (`scripts: false`) refuses a definition with a script node at save and at Start, in words naming the setting, before
  * anything is written; a host that does not know (`scripts` absent) does not refuse. A definition without script nodes is
  * not affected. The database side is test/local/workflow-v2-scripts-gate.test.js.
@@ -10,11 +9,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    WORKFLOW_SCRIPTS_DISABLED, requireWorkflowScripts, requireWorkflowScriptsInYaml, workflowScriptsDisabledText, workflowV2ScriptNodes,
+    WORKFLOW_SCRIPTS_DISABLED, requireWorkflowScripts, requireWorkflowScriptsInYaml, workflowScriptsDisabledText, workflowScriptsOptionFromEnv,
+    workflowV2ScriptNodes,
 } from "../../dist/workflow/v2/scripts-gate.js";
 import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
 import { createWorkflowV2, updateWorkflowV2 } from "../../dist/workflow/v2/service.js";
-import { workflowScriptsOptionFromEnv } from "../../dist/workflow/workflows-switch.js";
 import { spawnWorkflowFromTool } from "../../dist/workflow/spawn.js";
 import { workflowDefinitionFromTool } from "../../dist/workflow/v2/definition-tool.js";
 import { startChatWorkflowDefinition } from "../../dist/workflow/v2/chat-definitions.js";
@@ -238,7 +237,7 @@ test("stage 2.4: Start keeps spawn_agent's depth limit and its budget of 50 runn
     assert.match(String((await start({ nestingLevel: 1 }))?.message), /was used$/);
 });
 
-// The e02ec6f8 run (workflows-switch.test.js:244): on a turn whose workflow host could not be made (no inline client), a
+// The e02ec6f8 run (then workflows-switch.test.js:244, now workflows-always-on.test.js): on a turn whose workflow host could not be made (no inline client), a
 // script-node spawn with scripts off answered WORKFLOW_ERROR ("No storeUrl"), because the gate came after the host. The gate
 // now decides from the YAML alone, on the worker's setting, before the host is made.
 test("e02ec6f8: the scripts gate decides from the YAML alone, before the host is made, on the worker's setting", async () => {

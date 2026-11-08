@@ -15,7 +15,7 @@ const SESSIONS = [
     { sessionId: "wf-1", sessionKind: "workflow", title: "Workflow: dad-joke", status: "running", parentSessionId: OWNER, createdAt: 2, updatedAt: 2 },
     { sessionId: "other", title: "Other", status: "idle", createdAt: 3, updatedAt: 3 },
 ];
-const loaded = () => appReducer(createInitialState({ workflowsEnabled: true, mode: "api" }), { type: "sessions/loaded", sessions: SESSIONS });
+const loaded = () => appReducer(createInitialState({ mode: "api" }), { type: "sessions/loaded", sessions: SESSIONS });
 
 test("a saved Workflow selection selects its chat with the Workflow row", () => {
     const state = appReducer(loaded(), { type: "profileSettings/apply", settings: { activeSessionId: "wf-1" } });

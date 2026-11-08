@@ -189,7 +189,7 @@ test("a new workflow at the cap evicts the least recently changed", () => {
 });
 
 test("reducer: ui/workflowLayout records a move and leaves the other settings alone", () => {
-    const start = createInitialState({ workflowsEnabled: true, mode: "web" });
+    const start = createInitialState({ mode: "web" });
     const state = appReducer(start, { type: "ui/workflowLayout", key: "session:a", steps: { one: [12.6, 3] }, at: 100 });
     assert.deepEqual(state.ui.workflowLayouts, { "session:a": { at: 100, steps: { one: [13, 3] } } });
     for (const key of Object.keys(start.ui)) {
@@ -200,7 +200,7 @@ test("reducer: ui/workflowLayout records a move and leaves the other settings al
 });
 
 test("reducer: Reset layout forgets the workflow; a Reset with nothing stored is a no-op", () => {
-    let state = createInitialState({ workflowsEnabled: true, mode: "web" });
+    let state = createInitialState({ mode: "web" });
     assert.equal(appReducer(state, { type: "ui/workflowLayout", key: "session:a", steps: null, at: 1 }), state);
     state = appReducer(state, { type: "ui/workflowLayout", key: "session:a", steps: { one: [1, 2] }, at: 1 });
     state = appReducer(state, { type: "ui/workflowLayout", key: "session:b", steps: { one: [3, 4] }, at: 2 });
@@ -214,7 +214,7 @@ test("reducer: Reset layout forgets the workflow; a Reset with nothing stored is
 });
 
 test("reducer: a profile read applies the stored places, bounded; an absent or bad key keeps the local places", () => {
-    let state = createInitialState({ workflowsEnabled: true, mode: "web" });
+    let state = createInitialState({ mode: "web" });
     state = appReducer(state, { type: "ui/workflowLayout", key: "session:local", steps: { one: [1, 1] }, at: 1 });
     const local = state.ui.workflowLayouts;
 

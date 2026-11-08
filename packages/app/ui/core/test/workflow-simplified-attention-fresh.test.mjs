@@ -32,7 +32,7 @@ function harness() {
     const reads = [];
     let answer = RUNNING;
     const transport = { async readWorkflow(sessionId, options) { reads.push({ sessionId, options }); return answer; } };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: OWNER, title: "Release triage agent", updatedAt: 1 }, row("running", T1)] });
     store.dispatch({ type: "sessions/selected", sessionId: OWNER });

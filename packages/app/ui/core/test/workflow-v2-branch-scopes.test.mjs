@@ -310,7 +310,7 @@ async function tuiWholeValue(model, events) {
                 result: { kind: "output", bytes: 2, whole: true, value: {} } } };
         },
     };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: fan-loop", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });

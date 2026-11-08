@@ -23,22 +23,16 @@ import { WORKFLOW_RUN_STATE_WORDS } from "./workflow-words.js";
 /** The side pane's Workflow tab (L1): it shares the right block with the canvas, one at a time. */
 export const WORKFLOW_SIDE_TAB = "workflow";
 
-/** Stage 2.0: whether the Workflow surface is shown: the server said Workflows are on (state.ui.workflowsEnabled). */
-export function workflowsShown(state) {
-    return state?.ui?.workflowsEnabled === true;
-}
-
 /** OF-S2-5: the words of the mark beside a session's title when it has grown Workflows (its tooltip and accessible name). */
 export const WORKFLOW_OWNER_MARK_TITLE = "Has Workflows";
 
 /**
  * OF-S2-5 (owner, 2026-11-07T20:58Z: "workflow icon next to the session title if the session has grown a workflow"):
- * whether session `sessionId` has grown Workflows, any session or sub-agent alike, only while Workflows are shown: the
- * server's list row says it owns a live Workflow Definition (`hasWorkflowDefinitions`), or its definitions read here hold
+ * whether session `sessionId` has grown Workflows, any session or sub-agent alike: the server's list row says it owns a live Workflow Definition (`hasWorkflowDefinitions`), or its definitions read here hold
  * a live one, or it has Workflow children loaded. A group, a Workflow itself and an unknown session have not. Pure.
  */
 export function sessionGrowsWorkflows(state, sessionId) {
-    if (!workflowsShown(state) || typeof sessionId !== "string" || !sessionId) return false;
+    if (typeof sessionId !== "string" || !sessionId) return false;
     const byId = state?.sessions?.byId;
     const session = isRecord(byId) && Object.hasOwn(byId, sessionId) ? byId[sessionId] : null;
     if (!isRecord(session) || session.isGroup || isWorkflowChild(session)) return false;
@@ -48,10 +42,10 @@ export function sessionGrowsWorkflows(state, sessionId) {
     return workflowChildrenOf(byId, sessionId).length > 0;
 }
 
-/** The side pane's tab as shown: the stored one ("canvas", "workspace" or "workflow"), and "canvas" for "workflow" while Workflows are off. */
+/** The side pane's tab as shown: the stored one ("canvas", "workspace" or "workflow"). */
 export function shownSidePaneTab(state) {
     const tab = state?.ui?.sidePaneTab;
-    if (tab === WORKFLOW_SIDE_TAB) return workflowsShown(state) ? WORKFLOW_SIDE_TAB : "canvas";
+    if (tab === WORKFLOW_SIDE_TAB) return WORKFLOW_SIDE_TAB;
     return tab === "workspace" ? "workspace" : "canvas";
 }
 

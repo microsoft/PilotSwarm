@@ -45,7 +45,7 @@ test("the tool limit in words, from the graph; the Node details say it only for 
 
 test("the TUI's node details say the tool limit as the portal does", async () => {
     const transport = { getSessionEventsBefore: async () => [], readWorkflow: async () => model };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: limited", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });

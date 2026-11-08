@@ -15,7 +15,7 @@ const row = (sessionId, status, updatedAt) => ({ sessionId, sessionKind: "workfl
     createdAt: updatedAt - 1_000, updatedAt });
 
 test("the dot follows what needs the person, newer than what the Workflow panel last showed", () => {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "owner", title: "Release triage agent", updatedAt: 1 },
         row("wf-1", "running", 1_000), row("wf-2", "failed", 2_000)] });
     const state = () => store.getState();
@@ -47,7 +47,7 @@ test("the receipt lives in the canvas prefs: it is stored, read back and merged 
     assert.deepEqual(normalizeStoredCanvasPrefs({ owner: { lastViewedRev: 2, lastViewedWorkflowAt: 1234.7 } }),
         { owner: { optedOut: false, lastViewedRev: 2, lastViewedDataRev: 0, lastViewedWorkflowAt: 1234 } });
     assert.deepEqual(normalizeStoredCanvasPrefs({ owner: { lastViewedWorkflowAt: -1 } }), { owner: { optedOut: false, lastViewedRev: 0, lastViewedDataRev: 0 } });
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "owner", title: "x", updatedAt: 1 }] });
     store.dispatch({ type: "canvas/viewed", sessionId: "owner", workflowAt: 5_000 });
     // A profile read snapshotted before this window's receipt never regresses it; a newer one from another device wins.

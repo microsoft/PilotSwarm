@@ -14,7 +14,7 @@ import { SYSTEM_OWNER_KEY, ownerKeyForOwner, selectSessionRows } from "./selecto
 import { systemSessionSortOrder } from "./system-titles.js";
 import { createMotdState, createMotdAdminState, canReadMotd, motdPrincipal } from "./motd.js";
 import {
-    isWorkflowChild, normalizeWorkflowPanelHeights, normalizeWorkflowPanelWidths, selectWorkflowTabContext, WORKFLOW_SIDE_TAB, workflowAncestorOf, workflowDefinitionName, workflowNodeStateOfChat, workflowOwnerId,
+    normalizeWorkflowPanelHeights, normalizeWorkflowPanelWidths, selectWorkflowTabContext, WORKFLOW_SIDE_TAB, workflowAncestorOf, workflowDefinitionName, workflowNodeStateOfChat, workflowOwnerId,
     workflowSelectionTarget,
 } from "./workflow-owner.js";
 import {
@@ -896,8 +896,7 @@ function workflowLifecycleStep(prev, next) {
     if (next === prev) return next;
     const sessionsChanged = next.sessions.byId !== prev.sessions.byId || next.sessions.activeSessionId !== prev.sessions.activeSessionId;
     const definitionsChanged = next.ui.chatDefinitions !== prev.ui.chatDefinitions;
-    const profileChanged = next.ui.sessionViewsLoaded !== prev.ui.sessionViewsLoaded || next.canvas?.prefs !== prev.canvas?.prefs
-        || next.ui.workflowsEnabled !== prev.ui.workflowsEnabled;
+    const profileChanged = next.ui.sessionViewsLoaded !== prev.ui.sessionViewsLoaded || next.canvas?.prefs !== prev.canvas?.prefs;
     if (!sessionsChanged && !definitionsChanged && !profileChanged && next.ui.workflowViews === prev.ui.workflowViews) return next;
     const ownerId = selectWorkflowTabContext(next).ownerId;
     if (!ownerId) return next;
@@ -1947,10 +1946,7 @@ function baseReducer(state, action) {
             for (const groupRow of (state.sessions.groupRows || [])) {
                 byId[groupRow.sessionId] = state.sessions.byId[groupRow.sessionId] || groupRow;
             }
-            // Stage 2.0: with Workflows off the client keeps no workflow session (no row, no Workflow tab, no read).
-            const keepWorkflows = state.ui.workflowsEnabled !== false;
             for (const session of action.sessions) {
-                if (!keepWorkflows && isWorkflowChild(session)) continue;
                 // Stage 2.2: an agent's test bench is never a row (the server leaves it out of its lists too).
                 if (isWorkflowTestBench(session)) continue;
                 const previous = state.sessions.byId[session.sessionId];
@@ -2156,8 +2152,6 @@ function baseReducer(state, action) {
             const previousSession = state.sessions.byId[action.session.sessionId];
             const mergedSession = retainSessionWarnings(previousSession, mergeDefinedSessionFields(previousSession, action.session),
                 state.history.bySessionId.get(action.session.sessionId)?.events);
-            // Stage 2.0: with Workflows off the client keeps no workflow session.
-            if (state.ui.workflowsEnabled === false && isWorkflowChild(mergedSession)) return state;
             // Stage 2.2: an agent's test bench is never a row.
             if (isWorkflowTestBench(mergedSession)) return state;
             // A single session going running/idle changes its ANCESTORS' counts
@@ -3848,12 +3842,6 @@ function baseReducer(state, action) {
                 ...state.ui.workflowViews,
                 [sessionId]: { ...previous, ...action.view },
             } } };
-        }
-
-        // Stage 2.0: the server's word on Workflows (bootstrap `workflows.enabled`); anything but true is off.
-        case "ui/workflowsEnabled": {
-            const on = action.on === true;
-            return state.ui.workflowsEnabled === on ? state : { ...state, ui: { ...state.ui, workflowsEnabled: on } };
         }
 
         // Review SF-D5: the server's word on workflow test mode (bootstrap); anything but true is off.

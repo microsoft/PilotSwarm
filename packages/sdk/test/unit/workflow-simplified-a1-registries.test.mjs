@@ -47,7 +47,6 @@ function managerFixture(t) {
     const configs = [];
     const manager = new SessionManager(undefined, null, { baseMcpServers: { pilotswarm: { type: "http", url: "http://127.0.0.1:9/mcp", tools: ["*"] } } }, home);
     manager.workflowScriptsEnabled = true;
-    manager.workflowsEnabled = true;
     manager.setFactStore({
         readFacts: async () => ({ count: 0, facts: [] }),
         storeFact: async () => ({ stored: true }),

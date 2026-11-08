@@ -101,7 +101,7 @@ test("the question to the parent agent says what is asked, with the run, step, v
 
 function seeded({ parent = "parent-1" } = {}) {
     const sent = [];
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-v2", status: "running", sessionKind: "workflow",
         parentSessionId: parent }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });

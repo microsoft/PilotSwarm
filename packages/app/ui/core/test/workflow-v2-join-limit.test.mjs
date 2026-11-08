@@ -300,7 +300,7 @@ test("the activity list says why branches were cancelled", () => {
 });
 
 test("the TUI's join line says the rule, its state and the time limit; its details say the rule in words", () => {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-v2", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel([]) });

@@ -38,7 +38,7 @@ const modelOf = (workflowId, semver, { hash = `h-${semver}`, status = "completed
 const T0 = Date.parse("2026-11-06T23:30:00.000Z");
 /** `children`: [id, status, model or null] in creation order. */
 function harness(children, transport = {}) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [
         { sessionId: "chat", title: "HN watcher", createdAt: T0, updatedAt: T0 },
         ...children.map(([sessionId, status], index) => ({ sessionId, sessionKind: "workflow", title: `Workflow: ${NAME}`, status, parentSessionId: "chat",
@@ -137,7 +137,7 @@ test("UI3-F2: a failed read keeps a Failed row authoritative and the dot on; it 
     const reads = [];
     const running = { ...modelOf("wf-1", "1.0.0", { status: "running" }) };
     const transport = { async readWorkflow(sessionId) { reads.push(sessionId); if (fail) throw new Error("503 Service Unavailable"); return modelOf("wf-1", "1.0.0", { status: "failed" }); } };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     const controller = new PilotSwarmUiController({ store, transport });
     const row = (status, updatedAt) => ({ sessionId: "wf-1", sessionKind: "workflow", title: `Workflow: ${NAME}`, status, parentSessionId: "chat", createdAt: T0, updatedAt });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "chat", title: "HN watcher", updatedAt: 1 }, row("running", T1)] });
@@ -193,7 +193,7 @@ test("UI3-F6: a watch that starts again reads every missed page, and past its bo
         },
         subscribeSession() { return () => {}; },
     };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true }));
+    const store = createStore(appReducer, createInitialState());
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "chat", title: "Chat" },
         { sessionId: WF, title: "Workflow: w", status: "running", sessionKind: "workflow", parentSessionId: "chat" }] });

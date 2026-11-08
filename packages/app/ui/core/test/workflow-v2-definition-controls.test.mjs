@@ -144,7 +144,7 @@ async function until(check, label) {
 }
 
 function seeded(answer) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "web" }));
+    const store = createStore(appReducer, createInitialState({ mode: "web" }));
     const updates = [];
     const reads = [];
     const transport = {
@@ -207,7 +207,7 @@ test("a stale publish is refused, reported and read again; an unanswered one is 
 });
 
 function mount(view) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view });
@@ -339,7 +339,7 @@ test("the controller reads the agent versions for the review once per revision, 
     const calls = [];
     let fail = true;
     const answer = { workflowId: SID, revision: 2, definitionHash: HASH_2, resolves: true, locked: false, agents: [], problem: null };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport: { readWorkflow: async (sessionId, options) => {
         calls.push([sessionId, options]);
         if (fail) throw new Error("Gateway timeout");

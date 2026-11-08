@@ -27,7 +27,7 @@ const newerInvalid = () => readModel({ noRun: true, definition: { currentRevisio
 
 /** The workflow session wf, and its parent agent's session in `parentStatus` (none when null). */
 function mount(model, parentStatus) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     const sessions = [{ sessionId: "wf", sessionKind: "workflow", title: "Review", parentSessionId: parentStatus ? "agent-1" : null }];
     if (parentStatus) sessions.push({ sessionId: "agent-1", title: "Author", status: parentStatus });
     store.dispatch({ type: "sessions/loaded", sessions });

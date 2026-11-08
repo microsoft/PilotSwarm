@@ -247,9 +247,8 @@ running) and its active Workflows (a live run admitted, running or paused, or
 a Start claimed and not admitted yet) share one budget of 50 (`CHILD_LIMIT`,
 429). `spawn_agent` and Start count it with the same rule, under an exclusive
 lock on the chat, in the transaction that makes the child, so two at the same
-moment cannot both take the 50th place. This holds only while Workflows are
-on: with `PILOTSWARM_WORKFLOWS` off, `spawn_agent` admits a sub-agent exactly
-as before stage 2 (its running sub-agents counted, no lock).
+moment cannot both take the 50th place. Workflows are always on, so this
+budget always applies (a system agent's `spawn_agent` is not budgeted).
 
 **Models of agent nodes (OF-S2-7).** A definition never names a model,
 reasoning effort or context tier (a `model` key stays `WORKFLOW_FIELD_UNKNOWN`),
@@ -534,7 +533,7 @@ workflow, a link) instead of its cron.
 
 A package can ship Workflow Definitions as top-level entries
 (`workflows/<name>/workflow.yaml` with its interface card `card.md`; see
-`docs/building-agent-packages.md`). With Workflows on:
+`docs/building-agent-packages.md`):
 
 - **The new-session picker** lists them under **Workflows**, after the agents,
   each with its package and version; the details show its card (what it does,
@@ -866,56 +865,47 @@ worker's activity slot stays held until that task ends, or at most for a
 
 ## Running workflows (operators)
 
-### Workflows on or off
+### Workflows are always on
 
-Workflows are **off** by default. One deployment setting turns them on:
+Workflows need no setting (owner decision, 2026-11-08): every worker, the
+portal, the MCP server and the terminal UI have them.
 
-| Setting | Effect |
-|---|---|
-| `PILOTSWARM_WORKFLOWS=on` (exactly `on`) on the portal, every worker and the MCP server, or `new PilotSwarmWorker({ workflows: { enabled: true } })` | Workflows exist. `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT=isolated-test-only` implies it, so a test environment needs no change. |
+- Every eligible agent is declared `workflow_definition`, `spawn_workflow`,
+  `update_workflow`, `read_workflow` and `send_workflow_input`, and its base
+  instructions carry the Workflow guidance. The exceptions are unchanged: the
+  tuner gets no workflow tool; a session inside a Workflow gets no definition
+  tools (`workflow_definition`, `spawn_workflow`, `update_workflow`); an agent
+  node's chat also gets `complete_workflow_node` and its node's tool limit.
+- The portal and the terminal UI always show the Workflow button, tab, pane,
+  `w` key and Workflow rows.
+- MCP always registers `read_workflow`; `update_workflow` still needs the
+  test-only option below.
+- The bootstrap's `workflows` keeps its `enabled` field and always says
+  `true`, so an older portal or client keeps working; today's clients do not
+  read it.
 
-Off:
+`PILOTSWARM_WORKFLOWS` is retired. A deployment that still sets it, to any
+value (`off` included), is ignored with one startup warning on each worker,
+the portal and the MCP server: "PILOTSWARM_WORKFLOWS is ignored: Workflows are
+always on. Remove it from the deployment's settings."
 
-- Agents are not declared `spawn_workflow`, `update_workflow`, `read_workflow`
-  or `send_workflow_input`, and a call answers `WORKFLOWS_DISABLED`. The base
-  instructions carry no Workflow guidance.
-- The portal and the terminal UI show no Workflow button, tab, pane, `w` key or
-  Workflow rows. The portal reads the setting from the server's bootstrap
-  (`workflows.enabled`), never from its own build.
-- A workflow's read and a person's command (Web API, MCP's direct mode)
-  answer `404 WORKFLOWS_DISABLED`. (There is no `POST /api/v1/sessions/workflow`
-  since stage 2.5: it refused every call, because a Workflow needs a parent
-  agent.)
-  MCP registers no workflow tool. The bootstrap's `workflows` is
-  `{ "schema": 1, "enabled": false }`.
-- A person's prompt, answer, steer and event, the access check, and a cancel,
-  done or delete make no Workflow lookup.
+The four tools, the guidance and the screens are there whether or not the
+workers run scripts. `PILOTSWARM_WORKFLOW_SCRIPTS` (below) decides only whether
+script nodes run; it is off unless set to `1`. Where they do not run, a
+definition with a script node is refused when it is saved and when it is
+started (`WORKFLOW_SCRIPTS_DISABLED`, naming the setting), and the agent's
+guidance says so. A person's save or Start through the portal or MCP is
+refused the same way when that process sets `PILOTSWARM_WORKFLOW_SCRIPTS`;
+when it does not set it, such a run fails at its first script node, with the
+setting named.
 
-Still running when off: the database migrations and their trigger (a schema
-must not differ by setting), the Workflow orchestrations' registrations (an
-older instance still replays), and the runtime changes that are not about
-Workflows.
-
-One switch: on, the four tools, the guidance and the screens are there whether
-or not the workers run scripts. `PILOTSWARM_WORKFLOW_SCRIPTS` (below) decides
-only whether script nodes run. Where they do not, a definition with a script
-node is refused when it is saved and when it is started
-(`WORKFLOW_SCRIPTS_DISABLED`, naming the setting), and the agent's guidance says
-so. A person's save or Start through the portal or MCP is refused the same way
-when that process sets `PILOTSWARM_WORKFLOW_SCRIPTS`; when it does not set it,
-such a run fails at its first script node, with the setting named.
-
-Fail closed: the portal and the terminal UI start with Workflows off and show
-them only when the server's bootstrap says `workflows.enabled: true`. With no
-answer (an older server, a failed read) they stay off.
-
-`cron` and `cron_at` (stage 2.5, PR 235 `4b0ac3ca`): where Workflows are on and
-the workers run scripts, `cron` says it wakes the agent only for work that
+`cron` and `cron_at` (stage 2.5, PR 235 `4b0ac3ca`): where the workers run
+scripts, `cron` says it wakes the agent only for work that
 needs its judgment, and that a check a script can do belongs in one Workflow
 (saved with `workflow_definition` and started once) that loops through a wait
 state; where clock waits run (controller 1.9.0), `cron_at` says the same, with
-a wait state's `at`. Every rule of their default wording is kept. Off, or with
-scripts off, both keep main's wording.
+a wait state's `at`. Every rule of their default wording is kept. With scripts
+off, both keep main's wording.
 
 ### Test mode (hidden)
 

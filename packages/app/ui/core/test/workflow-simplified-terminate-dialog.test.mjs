@@ -13,7 +13,7 @@ import { PilotSwarmUiController, appReducer, createInitialState, createStore } f
 import { ModalLayer } from "../../react/src/web-app.js";
 
 test("the Workflow row's Terminate choices render in a modal dialog named by its title", () => {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     const controller = new PilotSwarmUiController({ store, transport: {} });
     store.dispatch({ type: "ui/modal", modal: { type: "terminatePicker", title: "check-items #2", sessionId: "wf-2", workflow: { ended: false } } });
     const html = renderToStaticMarkup(React.createElement(ModalLayer, { controller }));

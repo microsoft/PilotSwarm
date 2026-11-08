@@ -14,7 +14,7 @@ import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
 import { startedData, legacyStartedData, started, completed, runtimeError, row, done, readModel } from "./workflow-v2-fixtures.mjs";
 
 function mount({ view = {}, events = [] } = {}) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     if (events.length) store.dispatch({ type: "history/set", sessionId: "wf", history: { events } });

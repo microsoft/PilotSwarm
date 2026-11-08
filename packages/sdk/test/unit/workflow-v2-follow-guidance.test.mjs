@@ -98,16 +98,14 @@ test("the base guidance says how to follow a run and how to read messages from w
     assert.ok(!text.includes("[SYSTEM: A child workflow ended"));
 });
 
-test("the base prompt contains 'Messages from workflow children' once, and only when workflows are enabled", () => {
+test("the base prompt contains 'Messages from workflow children' once, always (Workflows are always on)", () => {
     const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "Legacy base." });
     for (const version of ["v1", "v2"]) {
         const config = { baseAgentPolicy: { version, fingerprint: "test", revision: null } };
-        manager.workflowsEnabled = true;
-        manager.workflowScriptsEnabled = true;
-        const on = JSON.stringify(manager._buildSystemMessage("session", config));
-        assert.equal(count(on, "Messages from workflow children"), 1, version);
-        manager.workflowsEnabled = false;
-        const off = JSON.stringify(manager._buildSystemMessage("session", config));
-        assert.equal(count(off, "Messages from workflow children"), 0, version);
+        for (const scripts of [true, false]) {
+            manager.workflowScriptsEnabled = scripts;
+            const prompt = JSON.stringify(manager._buildSystemMessage("session", config));
+            assert.equal(count(prompt, "Messages from workflow children"), 1, `${version} scripts ${scripts}`);
+        }
     }
 });

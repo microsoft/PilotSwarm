@@ -246,7 +246,6 @@ test("base guidance: with test mode off, neither the guidance nor the authoring 
     const prompt = () => {
         const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "Legacy base." });
         manager.workflowScriptsEnabled = true;
-        manager.workflowsEnabled = true;
         return JSON.stringify(manager._buildSystemMessage("session", { baseAgentPolicy: { version: "v2", fingerprint: "test", revision: null } }));
     };
     assert.ok(prompt().includes("## Workflow Sessions"));

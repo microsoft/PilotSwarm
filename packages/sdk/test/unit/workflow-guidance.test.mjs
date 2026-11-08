@@ -26,20 +26,19 @@ test("workflow guidance: keep a Workflow simple, an agent node for the hard part
     assert.ok(!block.includes("expressed in JavaScript and YAML"), "decisions are not invited into JavaScript and YAML");
 });
 
-test("both base policies receive workflow guidance only when the worker enables workflows", () => {
+test("both base policies always receive the workflow guidance, scripts on or off (Workflows are always on)", () => {
+    // A session manager as a worker makes it, with no Workflow setting: the guidance is there.
     const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "Legacy base." });
     for (const version of ["v1", "v2"]) {
         const config = { baseAgentPolicy: { version, fingerprint: "test", revision: null } };
-        // Stage 2.0 (one switch): Workflows off, no guidance, whatever scripts say.
-        manager.workflowsEnabled = false;
-        manager.workflowScriptsEnabled = true;
-        assert.ok(!JSON.stringify(manager._buildSystemMessage("session", config)).includes("## Workflow Sessions"));
-        manager.workflowsEnabled = true;
-        const prompt = JSON.stringify(manager._buildSystemMessage("session", config));
-        assert.equal(prompt.split("## Workflow Sessions").length - 1, 1);
-        assert.ok(prompt.includes("context.input"));
-        assert.ok(prompt.includes("type: wait"));
-        assert.ok(!prompt.includes("transition.delaySeconds"));
+        for (const scripts of [false, true]) {
+            manager.workflowScriptsEnabled = scripts;
+            const prompt = JSON.stringify(manager._buildSystemMessage("session", config));
+            assert.equal(prompt.split("## Workflow Sessions").length - 1, 1, `${version} scripts ${scripts}`);
+            assert.ok(prompt.includes("type: wait"));
+            assert.ok(!prompt.includes("transition.delaySeconds"));
+            if (scripts) assert.ok(prompt.includes("context.input"));
+        }
     }
 });
 

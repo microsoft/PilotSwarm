@@ -391,12 +391,7 @@ export const BUDGET_PERIODS = Object.freeze(["day", "week", "month"]);
 export const BUDGET_SERIES_RANGES = Object.freeze([14, 30, 90]);
 export const BUDGET_SERIES_DAYS = 14;
 
-/**
- * `workflowsEnabled` (stage 2.0): whether the Workflow surface starts on. Off by default, for every host (fail closed): the
- * portal and the terminal UI take the server's word at start (PilotSwarmUiController.readWorkflowTestMode: its bootstrap's
- * `workflows.enabled`), before the session list loads, and with no answer Workflows stay off. Tests opt in (true).
- */
-export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, desktopPanes: storedDesktopPanes = null, canvasPrefs = null, workflowsEnabled = false } = {}) {
+export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, desktopPanes: storedDesktopPanes = null, canvasPrefs = null } = {}) {
     const desktopPanes = normalizeStoredDesktopPanes(
         storedDesktopPanes,
         normalizeStoredRightPaneMode(rightPaneMode),
@@ -479,9 +474,6 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Review SF-D5: whether the server says workflow test mode is on (its bootstrap's workflows.v2.testMode); only
             // then does a chat show a stored "Workflow · test waiting" card. Off until the server says so.
             workflowTestMode: false,
-            // Stage 2.0: whether Workflows are on (the server's workflow capabilities' `enabled: true`). Off: the client keeps no
-            // workflow session (no rows, no reads) and shows no Workflow button, tab or pane.
-            workflowsEnabled: workflowsEnabled === true,
             // That read in flight ("checking") or failed ("failed"), per session; absent otherwise (owner decision q18).
             workflowInputChecks: {},
             // Per-session desktop views (see normalizeStoredSessionViews).

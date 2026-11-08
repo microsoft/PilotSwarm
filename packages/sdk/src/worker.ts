@@ -1,6 +1,6 @@
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
 import { isWorkflowTestBench } from "./workflow/v2/test-bench.js";
-import { resolveWorkflowsEnabled } from "./workflow/workflows-switch.js";
+import { warnRetiredWorkflowsSetting } from "./workflow/retired-workflows-setting.js";
 import { AGENT_HANDOFF_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
@@ -1023,8 +1023,8 @@ export class PilotSwarmWorker {
         // are off fails with a clear message instead of waiting.
         const workflowScriptSettings = resolveWorkflowScriptSettings(this.config.workflowScripts);
         this.sessionManager.workflowScriptsEnabled = workflowScriptSettings.enabled;
-        // Workflow Simplified stage 2.0: Workflows are off unless this worker's option or the deployment setting turns them on.
-        this.sessionManager.workflowsEnabled = resolveWorkflowsEnabled(this.config.workflows?.enabled);
+        // Workflows are always on (owner 2026-11-08T08:03Z): a deployment that still sets PILOTSWARM_WORKFLOWS is warned once.
+        warnRetiredWorkflowsSetting();
         const workflowClient = new Client(this._provider);
         const resolveWorkflowToolBinding = async (sessionId: string) => {
             if (!this._catalog?.getSessionCreationConfig) throw new Error("Workflow tool-policy storage is unavailable.");

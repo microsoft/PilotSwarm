@@ -42,7 +42,7 @@ import os from "node:os";
 import fs from "node:fs";
 import {
     PilotSwarmWorker, horizonConfigFromEnv, loadExtensionModules, parseExtensionModules, workerOptionsForWorkflowV2TestEnvironment,
-    workflowV2TestEnvironmentNotice, workflowsNotice,
+    workflowV2TestEnvironmentNotice,
 } from "pilotswarm-sdk";
 
 // Sentinel value written to KV by the bicep-deploy `seed-secrets` step
@@ -102,8 +102,7 @@ const SYSTEM_MESSAGE = undefined;
 // worker options exactly as below when off; testOptions.workflowRequests when on.
 const workflowV2TestNotice = workflowV2TestEnvironmentNotice(process.env);
 if (workflowV2TestNotice) console.log(`[worker] ${workflowV2TestNotice}`);
-// Workflows (stage 2.0): off unless PILOTSWARM_WORKFLOWS=on (or the test environment switch above).
-console.log(`[worker] ${workflowsNotice(process.env)}`);
+// Workflows are always on; the worker warns once if the retired PILOTSWARM_WORKFLOWS is still set.
 const worker = new PilotSwarmWorker(workerOptionsForWorkflowV2TestEnvironment({
     store: process.env.DATABASE_URL,
     githubToken: process.env.GITHUB_TOKEN,

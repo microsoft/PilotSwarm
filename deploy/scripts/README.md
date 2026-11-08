@@ -518,8 +518,9 @@ way on every PilotSwarm workload of that environment:
 - It is not an activation: production defaults, the latest session
   orchestration version (1.0.82) and the orchestration registry do not
   change; sessions started at the latest version run as before.
-- It implies `PILOTSWARM_WORKFLOWS=on` (Workflows are off by default
-  elsewhere), so the test environment needs no other setting for them.
+- Workflows themselves are always on, everywhere; they need no setting.
+  `PILOTSWARM_WORKFLOWS` is retired: a deployment that still sets it is
+  ignored with one startup warning, so remove it from the environment.
 - Script states still need `PILOTSWARM_WORKFLOW_SCRIPTS=1` on the workers
   (unchanged). The workflow-authoring skills are not loaded by this switch.
 - See `docs/proposals/workflow-v2-milestone.md` for what the milestone

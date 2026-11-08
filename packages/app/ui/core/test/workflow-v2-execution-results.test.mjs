@@ -115,7 +115,7 @@ function harness(initial, { selectedRunId = null, read = async () => initial } =
         getSessionEventsBefore: async () => [],
         readWorkflow: async (...args) => { calls.push(args); return read(...args); },
     };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-v2", status: "running", sessionKind: "workflow" },
         { sessionId: "chat", title: "An ordinary chat", status: "idle" }] });

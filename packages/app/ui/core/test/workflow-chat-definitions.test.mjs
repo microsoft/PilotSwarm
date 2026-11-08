@@ -185,7 +185,7 @@ test("the list is asked again when the chat's row or one of its Workflows change
 });
 
 test("the reducer keeps each chat's list and its revision reads, at most CHAT_DEFINITION_READS_MAX per chat, the oldest going first", () => {
-    let state = createInitialState({ workflowsEnabled: true, mode: "api" });
+    let state = createInitialState({ mode: "api" });
     state = appReducer(state, { type: "ui/chatDefinitions", ownerId: OWNER, patch: { items: LIST, at: 1, error: null } });
     assert.equal(state.ui.chatDefinitions[OWNER].items, LIST);
     const same = appReducer(state, { type: "ui/chatDefinitions", ownerId: OWNER, patch: { items: LIST } });
@@ -204,7 +204,7 @@ test("the reducer keeps each chat's list and its revision reads, at most CHAT_DE
 });
 
 test("selecting a Workflow row forgets the revision chosen in the tab, so the Definition view shows the revision that Workflow runs", () => {
-    let state = createInitialState({ workflowsEnabled: true, mode: "api" });
+    let state = createInitialState({ mode: "api" });
     state = appReducer(state, { type: "sessions/loaded", sessions: [{ sessionId: OWNER, title: "chat", updatedAt: 1 },
         { sessionId: "wf-b", sessionKind: "workflow", parentSessionId: OWNER, title: "Workflow: hn-top-watch", updatedAt: 2, status: "running" }] });
     state = appReducer(state, { type: "sessions/selected", sessionId: OWNER });
@@ -217,7 +217,7 @@ test("selecting a Workflow row forgets the revision chosen in the tab, so the De
 });
 
 function harness({ transport = {} } = {}) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: OWNER, title: "chat", updatedAt: 1 }] });
     store.dispatch({ type: "sessions/selected", sessionId: OWNER });
@@ -389,7 +389,7 @@ test("stage 2.2: a test bench is never a row nor a Workflow, whichever way it ar
         status: "running", updatedAt: 3 };
     assert.equal(isWorkflowTestBench(bench), true);
     assert.equal(isWorkflowTestBench({ ...bench, serviceKind: null }), false);
-    let state = createInitialState({ workflowsEnabled: true, mode: "api" });
+    let state = createInitialState({ mode: "api" });
     state = appReducer(state, { type: "sessions/loaded", sessions: [{ sessionId: OWNER, title: "chat", updatedAt: 1 }, bench] });
     assert.equal(state.sessions.byId["bench-1"], undefined);
     state = appReducer(state, { type: "sessions/merged", session: bench });
@@ -441,7 +441,7 @@ test("S2UI-F1: after a save, the text typed while it waited stays, unsaved, base
 
 // Review S2UI-F2: the reads on screen (the revision shown and Compare's two) are never evicted, whatever else is read.
 test("S2UI-F2: the revision on screen and Compare's two reads stay in the cache past the limit; others go oldest first", () => {
-    let state = createInitialState({ workflowsEnabled: true, mode: "api" });
+    let state = createInitialState({ mode: "api" });
     const read = (revision, at) => appReducer(state, { type: "ui/chatDefinitionRead", ownerId: OWNER, key: chatDefinitionReadKey("def-hn", revision),
         entry: { phase: "ready", value: { revision: { revision } }, error: null, at } });
     state = read(30, 1);

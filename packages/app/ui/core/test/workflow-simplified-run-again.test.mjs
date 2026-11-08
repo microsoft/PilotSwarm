@@ -70,7 +70,7 @@ test("an instruction-like definition name, version, id or input stays quoted dat
 
 test("Start another… sends one message to the session's chat, keeps the person's draft and says what it asked", async () => {
     const sent = [];
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     const controller = new PilotSwarmUiController({ store, transport: {
         sendMessage: async (...args) => { sent.push(args); },
         getSessionEvents: async () => [],

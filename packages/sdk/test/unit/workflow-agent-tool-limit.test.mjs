@@ -122,7 +122,6 @@ function managerFixture(t) {
     const configs = [];
     const manager = new SessionManager(undefined, null, {}, home);
     manager.workflowScriptsEnabled = true;
-    manager.workflowsEnabled = true;
     manager.setFactStore({
         readFacts: async () => ({ count: 0, facts: [] }),
         storeFact: async () => ({ stored: true }),

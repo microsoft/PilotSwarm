@@ -23,7 +23,7 @@ const SESSIONS = [
 const apply = (state, settings) => appReducer(state, { type: "profileSettings/apply", settings });
 
 test("a profile read keeps the Workflow tab while a Workflow row is selected, even when the profile says canvas", () => {
-    let state = appReducer(createInitialState({ workflowsEnabled: true, mode: "api" }), { type: "sessions/loaded", sessions: SESSIONS });
+    let state = appReducer(createInitialState({ mode: "api" }), { type: "sessions/loaded", sessions: SESSIONS });
     state = appReducer(state, { type: "sessions/selected", sessionId: "wf-1" });
     assert.equal(state.sessions.activeSessionId, OWNER);
     assert.equal(state.sessions.workflowRowId, "wf-1");
@@ -35,21 +35,21 @@ test("a profile read keeps the Workflow tab while a Workflow row is selected, ev
 });
 
 test("before this tab chose a side tab (hydration), the profile's side tab applies as stored, the Workflow tab included", () => {
-    let state = appReducer(createInitialState({ workflowsEnabled: true, mode: "api" }), { type: "sessions/loaded", sessions: SESSIONS });
+    let state = appReducer(createInitialState({ mode: "api" }), { type: "sessions/loaded", sessions: SESSIONS });
     state = appReducer(state, { type: "sessions/selected", sessionId: OWNER });
     assert.equal(state.sessions.workflowRowId, null);
     state = apply(state, { desktopPanes: { canvasOpen: true, diagnosticsOpen: false, zen: false, sideTab: WORKFLOW_SIDE_TAB } });
     assert.equal(state.ui.sidePaneTab, WORKFLOW_SIDE_TAB);
     state = apply(state, { desktopPanes: { canvasOpen: true, diagnosticsOpen: false, zen: false, sideTab: "canvas" } });
     assert.equal(state.ui.sidePaneTab, "canvas");
-    assert.equal(createInitialState({ workflowsEnabled: true, desktopPanes: { canvasOpen: true, sideTab: WORKFLOW_SIDE_TAB } }).ui.sidePaneTab, WORKFLOW_SIDE_TAB);
+    assert.equal(createInitialState({ desktopPanes: { canvasOpen: true, sideTab: WORKFLOW_SIDE_TAB } }).ui.sidePaneTab, WORKFLOW_SIDE_TAB);
 });
 
 // Review UI-7: the protection does not depend on the selected row. Once this tab chose the Workflow tab (the person's
 // toggle, or a Workflow opened), a profile read keeps it: after the parent row is selected, and while a definition is shown
 // with no Workflow row at all.
 test("once this tab chose the Workflow tab, a profile read keeps it whatever row is selected", () => {
-    let state = appReducer(createInitialState({ workflowsEnabled: true, mode: "api" }), { type: "sessions/loaded", sessions: SESSIONS });
+    let state = appReducer(createInitialState({ mode: "api" }), { type: "sessions/loaded", sessions: SESSIONS });
     state = appReducer(state, { type: "sessions/selected", sessionId: "wf-1" });
     state = appReducer(state, { type: "sessions/selected", sessionId: OWNER });
     assert.equal(state.sessions.workflowRowId, null, "the parent row is selected");
@@ -59,7 +59,7 @@ test("once this tab chose the Workflow tab, a profile read keeps it whatever row
     assert.equal(state.ui.sidePaneTab, WORKFLOW_SIDE_TAB, "the Workflow tab stays");
 
     // A definition opened from the toolbar (no Workflow row): the person's toggle is kept too.
-    let shown = appReducer(createInitialState({ workflowsEnabled: true, mode: "api" }), { type: "sessions/loaded", sessions: SESSIONS });
+    let shown = appReducer(createInitialState({ mode: "api" }), { type: "sessions/loaded", sessions: SESSIONS });
     shown = appReducer(shown, { type: "sessions/selected", sessionId: OWNER });
     shown = appReducer(shown, { type: "ui/sidePaneTab", tab: WORKFLOW_SIDE_TAB });
     shown = apply(shown, { desktopPanes: { canvasOpen: true, diagnosticsOpen: false, zen: false, sideTab: "canvas" } });

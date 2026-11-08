@@ -31,7 +31,6 @@ import { WORKFLOW_TOOL_POLICY, captureWorkflowTools, isWorkflowControlTool, work
 import { createWorkflowToolExecutor, type WorkflowToolExecutor } from "./workflow/tool-executor.js";
 import { workflowAuthoringPointer, workflowAuthoringSkillLoaded, workflowAwareSchedulingTool, workflowSessionGuidance } from "./workflow/guidance.js";
 import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
-import { WORKFLOW_AGENT_TOOL_NAMES } from "./workflow/workflows-switch.js";
 import { WORKFLOW_V2_AGENT_COMPLETION_TOOL } from "./workflow/v2/compiler.js";
 import { workflowDefinitionMcpPermission, workflowDefinitionMcpToolFilters } from "./workflow/v2/input-policy.js";
 import { createGraphTools } from "./graph-tools.js";
@@ -1065,16 +1064,6 @@ export class SessionManager {
     artifactStore: import("./session-store.js").ArtifactStore | null = null;
     /** Whether this worker runs workflow scripts; set by the worker at start. */
     workflowScriptsEnabled = false;
-    /** Whether Workflows are on for this worker (PILOTSWARM_WORKFLOWS; stage 2.0); set by the worker at start. Off by default. */
-    workflowsEnabled = false;
-
-    /**
-     * Whether the four workflow tools and their guidance are offered: Workflows on (one switch, coordinator 03:02Z). Script
-     * nodes are gated apart: a definition with one is refused at save and Start where this worker runs no scripts.
-     */
-    get workflowToolsOffered(): boolean {
-        return this.workflowsEnabled;
-    }
 
     /** Store full config (with tools/hooks) for a session. Called by PilotSwarmClient. */
     setConfig(sessionId: string, config: ManagedSessionConfig): void {
@@ -2416,10 +2405,10 @@ export class SessionManager {
             agentIdentity: effectiveSerializableConfig.agentIdentity,
             ...(workspaceTools ? { workspaceTools: true } : {}),
         }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name))
-            // Stage 2.5 (PR 235 4b0ac3ca): where Workflows and their scripts run, cron (and, where clock waits run, cron_at)
-            // are for wake-ups that need the agent's judgment; a check a script can do belongs in a Workflow's wait loop. With
-            // Workflows off every description is main's.
-            .map((tool: any) => (this.workflowToolsOffered && this.workflowScriptsEnabled && !isTunerSession
+            // Stage 2.5 (PR 235 4b0ac3ca): where Workflow scripts run, cron (and, where clock waits run, cron_at) are for
+            // wake-ups that need the agent's judgment; a check a script can do belongs in a Workflow's wait loop. Where scripts
+            // do not run every description is main's.
+            .map((tool: any) => (this.workflowScriptsEnabled && !isTunerSession
                 ? workflowAwareSchedulingTool(tool, { clockWaits: config.workflowMilestoneTurn === true }) : tool));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
         // Workflow v2 (INACTIVE): a turn of a worker that runs controller 1.9.0 is declared the milestone's workflow tools and
@@ -2431,10 +2420,9 @@ export class SessionManager {
             ...(config.workflowAgentChild === true ? { workflowAgentChild: true } : {}),
             ...(config.workflowInsideWorkflow === true ? { workflowInsideWorkflow: true } : {}),
         })
-            .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name))
-            // Declared only where Workflows are on (PILOTSWARM_WORKFLOWS, stage 2.0); elsewhere every call would be refused, so
-            // the model is not shown them. Script nodes are refused at save and Start where this worker runs no scripts.
-            .filter((tool: any) => !WORKFLOW_AGENT_TOOL_NAMES.includes(tool.name) || this.workflowToolsOffered);
+            // Workflows are always on (owner 2026-11-08T08:03Z): every other session is declared the workflow tools. Script nodes
+            // are refused at save and Start where this worker runs no scripts.
+            .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name));
         const factTools = this._createSessionFactTools({
             agentIdentity: effectiveSerializableConfig.agentIdentity,
             isCrawler: effectiveSerializableConfig.isCrawler === true || effectiveSerializableConfig.isHarvester === true,
@@ -4866,14 +4854,13 @@ export class SessionManager {
         // The authoring skill's pointer (R24) only on a worker that loaded that skill (INACTIVE: none does yet). Neither mentions
         // testing unless workflow test mode is on (spec 16).
         const testMode = workflowTestModeFromEnv();
-        const frameworkBase = this.workflowToolsOffered
-            // Stage 2.4: a turn that runs controller 1.9.0 is told of clock waits, which only it runs.
-            // Stage 2.5: and only such a turn can test a revision (chat-test.ts requires host.requests); elsewhere it is told it cannot.
-            ? [base, workflowSessionGuidance(testMode, { scripts: this.workflowScriptsEnabled, clockWaits: config.workflowMilestoneTurn === true,
-                tests: config.workflowMilestoneTurn === true }),
-                workflowAuthoringSkillLoaded(this.workerDefaults.skills) ? workflowAuthoringPointer(testMode) : null]
-                .filter(Boolean).join("\n\n")
-            : base;
+        // Workflows are always on (owner 2026-11-08T08:03Z): every session's framework base carries the Workflow guidance.
+        // Stage 2.4: a turn that runs controller 1.9.0 is told of clock waits, which only it runs.
+        // Stage 2.5: and only such a turn can test a revision (chat-test.ts requires host.requests); elsewhere it is told it cannot.
+        const frameworkBase = [base, workflowSessionGuidance(testMode, { scripts: this.workflowScriptsEnabled, clockWaits: config.workflowMilestoneTurn === true,
+            tests: config.workflowMilestoneTurn === true }),
+            workflowAuthoringSkillLoaded(this.workerDefaults.skills) ? workflowAuthoringPointer(testMode) : null]
+            .filter(Boolean).join("\n\n");
         const boundAgentName = config.boundAgentName;
         const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);
         const knowledgeToolInstructions = this._buildKnowledgeToolInstructionsSection(sessionId, config.agentIdentity);

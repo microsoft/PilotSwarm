@@ -65,8 +65,8 @@ const WORKFLOW_EVENTS = [
 ];
 
 let stub;
-// Stage 2.0: the stub's bootstrap says Workflows are on, as the test environment does (off is the default).
-test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 1, workflows: true }); });
+// The stub's bootstrap says Workflows are on, as every server does: they are always on.
+test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 1 }); });
 test.afterAll(async () => { await new Promise((resolve) => stub.server.close(resolve)); });
 
 /** The Workflow tab (the right block's, a phone's Workflow pane, or, for a Workflow whose session is not loaded, the middle). */

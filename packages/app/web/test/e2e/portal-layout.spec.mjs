@@ -18,8 +18,8 @@ let stub;
 let base;
 
 test.beforeAll(async () => {
-    // Stage 2.0: Workflows on (the toolbar count below includes the Workflow button); off is the default.
-    stub = await startStubServer(0, { workflows: true });
+    // Workflows are always on: the toolbar count below includes the Workflow button.
+    stub = await startStubServer(0);
     base = `http://127.0.0.1:${stub.port}`;
 });
 

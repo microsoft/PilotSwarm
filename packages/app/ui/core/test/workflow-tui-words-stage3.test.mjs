@@ -25,7 +25,7 @@ const AGENT_STATES = [
 
 /** The TUI's view of the workflow session wf over `model`, with `sessions` loaded besides it; `node` selected. */
 function view(model, { sessions = [], node = "poll", events = [] } = {}) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-v2", status: "running", sessionKind: "workflow", parentSessionId: "chat" },
         { sessionId: "chat", title: "Release chat", status: "idle" }, ...sessions] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
@@ -117,7 +117,7 @@ test("the step log's table counts visits, never steps or runs; a preview too lon
     assert.ok(!/\bruns?\b/.test(progress.workflowNotice.summary), progress.workflowNotice.summary);
 
     const whole = readModel({ nodeExecutions: [done("poll", 1, "changed", { outputPreview: "{\"a\":1" })] });
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-v2", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: whole, readModelRunId: null,

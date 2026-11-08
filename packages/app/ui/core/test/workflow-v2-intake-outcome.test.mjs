@@ -21,7 +21,7 @@ const model = (outbox, nodeExecutions = [done("notify", 1, "sent")], options = {
 const exec = (view, id = "notify") => view.nodes.find(item => item.id === id);
 
 function panel(readModelValue) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf",

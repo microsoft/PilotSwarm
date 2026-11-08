@@ -64,8 +64,8 @@ export const WORKFLOW_CAPABILITIES_SCHEMA = 1;
  * configured with and changes nothing: no controller or orchestration version
  * is served or activated by it, and the server decides every read and command
  * again.
- * - enabled (stage 2.0): whether Workflows are on (PILOTSWARM_WORKFLOWS; workflow/workflows-switch.ts). False: the answer is
- *   `{ schema, enabled: false }` and nothing else, and a client shows no Workflow button, tab, pane or rows.
+ * - enabled: always true. Workflows are always on (owner 2026-11-08T08:03Z); the field stays for an older client, which
+ *   showed no Workflow surface when it was false.
  * - v2.apiVersion: the workflow document version this build compiles.
  * - v2.read: readWorkflow (GET /sessions/{id}/workflow) reads version 2
  *   workflows; false where the host has no workflow store (each read is then
@@ -88,9 +88,7 @@ export const WORKFLOW_CAPABILITIES_SCHEMA = 1;
  *   offers no test control and shows no test run. `v2.testMode: true` says it
  *   is on (absent when off), with or without commands (review SF-D5).
  */
-export function workflowCapabilities(options: { enabled?: boolean; read: boolean; commands: { requests?: boolean; testMode?: boolean } | null | undefined }): { [key: string]: JsonValue } {
-    // Stage 2.0: with Workflows off the deployment says only that (`enabled: false`); a client shows no Workflow surface.
-    if (options.enabled === false) return { schema: WORKFLOW_CAPABILITIES_SCHEMA, enabled: false };
+export function workflowCapabilities(options: { read: boolean; commands: { requests?: boolean; testMode?: boolean } | null | undefined }): { [key: string]: JsonValue } {
     const commands = options.commands ?? null;
     const requests = commands?.requests === true;
     return {

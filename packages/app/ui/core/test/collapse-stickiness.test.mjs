@@ -24,7 +24,7 @@ const GROUP = { sessionId: "group:g1", groupId: "g1", isGroup: true, title: "G1"
 const collapsed = (state) => [...state.sessions.collapsedIds].sort();
 
 test("a parent's collapse survives being applied BEFORE its children load", () => {
-    let state = createInitialState({ workflowsEnabled: true, mode: "web" });
+    let state = createInitialState({ mode: "web" });
     // Only the parent is loaded — no children yet, so it is not "collapsible".
     state = appReducer(state, { type: "sessions/loaded", sessions: [PARENT] });
     state = appReducer(state, {
@@ -41,7 +41,7 @@ test("a parent's collapse survives being applied BEFORE its children load", () =
 });
 
 test("a folder's collapse survives a listing that does not include it", () => {
-    let state = createInitialState({ workflowsEnabled: true, mode: "web" });
+    let state = createInitialState({ mode: "web" });
     state = appReducer(state, { type: "sessions/loaded", sessions: [GROUP, PARENT] });
     state = appReducer(state, {
         type: "profileSettings/apply",
@@ -61,7 +61,7 @@ test("a folder's collapse survives a listing that does not include it", () => {
 test("the row you are looking at is never hidden inside a collapsed ancestor", () => {
     // The answer to "what if something disappears under you": whatever else
     // is collapsed, the active session's ancestors are force-expanded.
-    let state = createInitialState({ workflowsEnabled: true, mode: "web" });
+    let state = createInitialState({ mode: "web" });
     state = appReducer(state, { type: "sessions/loaded", sessions: [PARENT, CHILD] });
     state = appReducer(state, {
         type: "profileSettings/apply",
@@ -74,7 +74,7 @@ test("the row you are looking at is never hidden inside a collapsed ancestor", (
 });
 
 test("collapse state round-trips through profile settings", () => {
-    let state = createInitialState({ workflowsEnabled: true, mode: "web" });
+    let state = createInitialState({ mode: "web" });
     state = appReducer(state, { type: "sessions/loaded", sessions: [GROUP, PARENT, CHILD] });
     state = appReducer(state, {
         type: "profileSettings/apply",
@@ -87,7 +87,7 @@ test("a folder left EXPANDED comes back expanded, not re-collapsed", () => {
     // The reported failure, in reducer form: on a fresh load byId is empty, so
     // every folder looks "not seen before" and the default-collapse rule fired
     // over the profile that had just been restored.
-    let state = createInitialState({ workflowsEnabled: true, mode: "web" });
+    let state = createInitialState({ mode: "web" });
     // Profile says: only some OTHER folder is collapsed — g1 is expanded.
     state = appReducer(state, {
         type: "profileSettings/apply",
@@ -107,7 +107,7 @@ test("a folder left EXPANDED comes back expanded, not re-collapsed", () => {
 test("with no stored preference, a newly seen folder still starts collapsed", () => {
     // The original behaviour must survive for first-time users: folders should
     // not spill their members into the list before anyone has an opinion.
-    let state = createInitialState({ workflowsEnabled: true, mode: "web" });
+    let state = createInitialState({ mode: "web" });
     state = appReducer(state, { type: "sessions/loaded", sessions: [GROUP, PARENT, CHILD] });
     assert.ok(state.sessions.collapsedIds.has("group:g1"), "first-seen folder should default to collapsed");
     assert.ok(state.sessions.collapsedIds.has("parent"), "first-seen parent should default to collapsed");
@@ -116,7 +116,7 @@ test("with no stored preference, a newly seen folder still starts collapsed", ()
 test("a folder created WHILE the app is open still starts collapsed", () => {
     // The baseline exists here, so the folder is genuinely new and the
     // default must still apply even for a user with explicit preferences.
-    let state = createInitialState({ workflowsEnabled: true, mode: "web" });
+    let state = createInitialState({ mode: "web" });
     state = appReducer(state, { type: "sessions/loaded", sessions: [PARENT] });
     state = appReducer(state, {
         type: "profileSettings/apply",
@@ -140,7 +140,7 @@ const visibleIds = state => state.sessions.flat.map(entry => entry.sessionId);
 test("a FIRST child of the session you are looking at shows at once; a background row's still starts collapsed (flow-02)", () => {
     // With no stored preference (the defaults) and with one: the chat being looked at starts a workflow, another chat a sub-agent.
     for (const stored of [null, [], ["other"]]) {
-        let state = createInitialState({ workflowsEnabled: true, mode: "web" });
+        let state = createInitialState({ mode: "web" });
         if (stored) state = appReducer(state, { type: "profileSettings/apply", settings: { collapsedSessionIds: stored } });
         state = appReducer(state, { type: "sessions/loaded", sessions: [PARENT, OTHER] });
         state = appReducer(state, { type: "sessions/selected", sessionId: "parent" });
@@ -156,14 +156,14 @@ test("a FIRST child of the session you are looking at shows at once; a backgroun
 });
 
 test("a session that already had children keeps the person's choice when another child arrives", () => {
-    let state = createInitialState({ workflowsEnabled: true, mode: "web" });
+    let state = createInitialState({ mode: "web" });
     state = appReducer(state, { type: "sessions/loaded", sessions: [PARENT, CHILD] });
     state = appReducer(state, { type: "sessions/selected", sessionId: "parent" });
     state = appReducer(state, { type: "sessions/collapse", sessionId: "parent" });
     state = appReducer(state, { type: "sessions/loaded", sessions: [PARENT, CHILD, { ...CHILD, sessionId: "kid-2", createdAt: 300, updatedAt: 300 }] });
     assert.ok(collapsed(state).includes("parent"));
     // The first listing after a load has no baseline: nothing is opened or closed, whatever is being looked at.
-    let fresh = createInitialState({ workflowsEnabled: true, mode: "web" });
+    let fresh = createInitialState({ mode: "web" });
     fresh = appReducer(fresh, { type: "profileSettings/apply", settings: { collapsedSessionIds: ["parent"], activeSessionId: "parent" } });
     fresh = appReducer(fresh, { type: "sessions/loaded", sessions: [PARENT, CHILD] });
     assert.deepEqual(collapsed(fresh), ["parent"]);
@@ -184,7 +184,7 @@ test("a session that already had children keeps the person's choice when another
 function loadCycle(storedCollapsed, { groupsFirst = false } = {}) {
     const SESSIONS = [GROUP, PARENT, CHILD];
     const GROUPS = [{ sessionId: "group:g1", groupId: "g1", isGroup: true, title: "G1" }];
-    let state = createInitialState({ workflowsEnabled: true, mode: "web" });
+    let state = createInitialState({ mode: "web" });
     // The portal restores the profile and loads listings; the relative order
     // is a race in practice, so both orders must converge to the same place.
     if (groupsFirst) {

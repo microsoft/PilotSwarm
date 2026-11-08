@@ -84,12 +84,9 @@ export {
 export {
     WORKFLOW_TEST_MODE_ENABLED, WORKFLOW_TEST_MODE_OPERATIONS, WORKFLOW_TEST_MODE_VARIABLE, workflowTestModeFromEnv, workflowTestModeNotice,
 } from "./workflow/v2/test-mode-switch.js";
-// Workflows can be switched off (Workflow Simplified stage 2.0): PILOTSWARM_WORKFLOWS=on, off by default.
-export {
-    WORKFLOWS_DISABLED, WORKFLOWS_DISABLED_TEXT, WORKFLOWS_ENABLED_VALUE, WORKFLOWS_VARIABLE, WORKFLOW_AGENT_TOOL_NAMES, resolveWorkflowsEnabled,
-    workflowsDisabledError, workflowsDisabledRefusal, workflowsEnabledFromEnv, workflowsNotice, workflowScriptsOptionFromEnv,
-} from "./workflow/workflows-switch.js";
-export { WORKFLOW_SCRIPTS_DISABLED, workflowV2ScriptNodes, workflowScriptsDisabledText } from "./workflow/v2/scripts-gate.js";
+// Workflows are always on (owner 2026-11-08T08:03Z); the retired PILOTSWARM_WORKFLOWS setting is ignored with one warning.
+export { RETIRED_WORKFLOWS_VARIABLE, RETIRED_WORKFLOWS_WARNING, warnRetiredWorkflowsSetting } from "./workflow/retired-workflows-setting.js";
+export { WORKFLOW_SCRIPTS_DISABLED, workflowScriptsOptionFromEnv, workflowV2ScriptNodes, workflowScriptsDisabledText } from "./workflow/v2/scripts-gate.js";
 // Workflow v2: the view of a person who may read a workflow but not change it (adversarial review R2-SF-2).
 export { workflowV2ReaderView } from "./workflow/v2/tools.js";
 export type { HorizonEnvConfig } from "./horizon-env.js";

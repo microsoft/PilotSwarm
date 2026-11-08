@@ -17,7 +17,7 @@ const rows = [
 ];
 
 function shownIn(mode) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "ui/sessionViewDevice", device: "desktop" });
     store.dispatch({ type: "profileSettings/apply", settings: { sessionViews: {} } });
     store.dispatch({ type: "sessions/loaded", sessions: rows });

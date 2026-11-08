@@ -29,7 +29,7 @@ function harness() {
         cancelSession: record("cancelSession"), completeSession: record("completeSession"), deleteSession: record("deleteSession"),
         readWorkflow: async () => null, getSessionEvents: async () => [], getSessionEventsBefore: async () => [],
     };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: SESSIONS });
     store.dispatch({ type: "sessions/expand", sessionId: OWNER });
@@ -98,7 +98,7 @@ function terminalHarness({ status = "running", updateWorkflow = null } = {}) {
             : record("updateWorkflow"),
         readWorkflow: async () => null, getSessionEvents: async () => [], getSessionEventsBefore: async () => [],
     };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport, terminal: true });
     store.dispatch({ type: "sessions/loaded", sessions: [SESSIONS[0], workflow("wf-1", 1), workflow("wf-2", 2, status)] });
     store.dispatch({ type: "sessions/expand", sessionId: OWNER });

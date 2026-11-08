@@ -37,7 +37,7 @@ function harness() {
             return () => { subscription.open = false; };
         },
     };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true }));
+    const store = createStore(appReducer, createInitialState());
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [
         { sessionId: OWNER, title: "Chat", status: "idle" },

@@ -37,8 +37,8 @@ test.describe("desktop", () => {
     let stub;
     let base;
     test.beforeAll(async () => {
-        // Stage 2.0: Workflows on (the Workflow button is checked below); off is the default.
-        stub = await startStubServer(0, { sessionCount: 3, admin: true, workflows: true });
+        // Workflows are always on: the Workflow button is checked below.
+        stub = await startStubServer(0, { sessionCount: 3, admin: true });
         base = `http://127.0.0.1:${stub.port}`;
     });
     test.afterAll(async () => { await new Promise((resolve) => stub.server.close(resolve)); });

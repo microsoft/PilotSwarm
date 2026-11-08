@@ -112,7 +112,7 @@ function harness(view) {
         getSessionEventsBefore: async () => [],
         readWorkflow: async (...args) => { calls.push(["readWorkflow", ...args]); return view.readModel; },
     };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: review-flow", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });

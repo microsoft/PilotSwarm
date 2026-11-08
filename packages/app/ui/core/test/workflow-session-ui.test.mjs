@@ -118,7 +118,7 @@ function makeController(transportOverrides = {}) {
         },
         ...transportOverrides,
     };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true }));
+    const store = createStore(appReducer, createInitialState());
     const controller = new PilotSwarmUiController({ store, transport });
     return { controller, store, calls, transport };
 }

@@ -94,7 +94,7 @@ async function until(check, label) {
 }
 
 function seeded(answer) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "web" }));
+    const store = createStore(appReducer, createInitialState({ mode: "web" }));
     const updates = [];
     const reads = [];
     const transport = {
@@ -146,7 +146,7 @@ test("a save sends replace_definition at the revision the edit started from; a c
 });
 
 function mount(view) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view });
@@ -271,7 +271,7 @@ test("two versions compare line by line: removals before additions, line numbers
 test("the controller reads each definition revision once, again after a failure, and keeps it by revision", async () => {
     const calls = [];
     let fail = true;
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport: { readWorkflow: async (sessionId, options) => {
         calls.push([sessionId, options]);
         if (fail) throw new Error("Gateway timeout");

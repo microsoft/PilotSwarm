@@ -86,7 +86,6 @@ import { keepWorkflowBaseInstructions, sdkSystemPromptEchoContent, workflowBaseI
 import { publishedScheduleActive } from "./workflow/v2/agent-reminder.js";
 import { createWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
 import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
-import { workflowsDisabledRefusal } from "./workflow/workflows-switch.js";
 import { workflowDefinitionFromTool } from "./workflow/v2/definition-tool.js";
 import { createPackageWorkflowSource, manifestAgentWorkflows } from "./workflow/v2/chat-packages.js";
 import { requireWorkflowScriptsInYaml } from "./workflow/v2/scripts-gate.js";
@@ -1825,7 +1824,7 @@ export function registerActivities(
         const readChatNotesOnce = async (): Promise<{ ids: number[]; text: string }> => {
             if (chatNotes.read !== null) return chatNotes.read;
             chatNotes.read = { ids: [], text: "" };
-            if (sessionManager.workflowsEnabled === false || !catalog?.workflowStore) return chatNotes.read;
+            if (!catalog?.workflowStore) return chatNotes.read;
             try {
                 const notes = await catalog.workflowStore().chat.pendingNotes(input.sessionId);
                 if (notes.length) chatNotes.read = { ids: notes.map(note => note.noteId), text: notes.map(note => `[SYSTEM: ${note.text}]`).join("\n") };
@@ -3114,12 +3113,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
              * this session. Runs inline in the runTurn activity and does not
              * end the turn. See workflow/spawn.ts for the id rule.
              */
-            // Workflow Simplified stage 2.0: with Workflows off on this worker (SessionManager.workflowsEnabled, false unless the
-            // worker turns them on), every workflow tool call is refused first.
-            ...(sessionManager.workflowsEnabled === false ? { workflowsDisabled: true } : {}),
-            spawnWorkflow: async (args: SpawnWorkflowToolArgs, call?: { toolCallId?: string }) => sessionManager.workflowsEnabled === false
-                ? workflowsDisabledRefusal("spawn_workflow", { line: true })
-                : spawnWorkflowFromTool(args, call, {
+            spawnWorkflow: async (args: SpawnWorkflowToolArgs, call?: { toolCallId?: string }) => spawnWorkflowFromTool(args, call, {
                 parentSessionId: input.sessionId,
                 nestingLevel: input.nestingLevel ?? 0,
                 enabled: () => sessionManager.workflowScriptsEnabled,
@@ -3139,7 +3133,6 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
              * never as a failed tool call.
              */
             updateWorkflow: async (args: Record<string, unknown>) => {
-                if (sessionManager.workflowsEnabled === false) return workflowsDisabledRefusal("update_workflow");
                 // A1: refused inside a Workflow, before anything else is read.
                 try { if (await definitionToolsRefused()) return workflowDefinitionToolsRefusal("update_workflow"); } catch (error) { return workflowToolErrorPayload(error); }
                 let host: WorkflowToolHost;
@@ -3148,10 +3141,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             },
             /**
              * Stage 2.1: workflow_definition, this chat's own definitions (definition-tool.ts). The calling session is the chat;
-             * refused while Workflows are off (2.0) and inside a Workflow (A1, by the stored lineage).
+             * refused inside a Workflow (A1, by the stored lineage).
              */
             workflowDefinition: async (args: Record<string, unknown>, call?: { toolCallId?: string }) => {
-                if (sessionManager.workflowsEnabled === false) return workflowsDisabledRefusal("workflow_definition");
                 try { if (await definitionToolsRefused()) return workflowDefinitionToolsRefusal("workflow_definition"); } catch (error) { return workflowToolErrorPayload(error); }
                 // A save's scripts gate from its YAML alone, before the host is made (e02ec6f8 run); a start's is decided on the
                 // stored revision it starts, before its binding is captured (chat-definitions.ts).
@@ -3170,14 +3162,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 });
             },
             readWorkflow: async (args: Record<string, unknown>) => {
-                if (sessionManager.workflowsEnabled === false) return workflowsDisabledRefusal("read_workflow");
                 let host: WorkflowToolHost;
                 try { host = await workflowV2Host(); } catch (error) { return workflowToolErrorPayload(error); }
                 return readWorkflowFromTool(args, { callerSessionId: input.sessionId, host });
             },
             /** send_workflow_input: the calling session is the host-stamped sender. */
             sendWorkflowInput: async (args: Record<string, unknown>) => {
-                if (sessionManager.workflowsEnabled === false) return workflowsDisabledRefusal("send_workflow_input");
                 let host: WorkflowToolHost;
                 try { host = await workflowV2Host(); } catch (error) { return workflowToolErrorPayload(error); }
                 return sendWorkflowInputFromTool(args, { callerSessionId: input.sessionId, host });
@@ -3391,11 +3381,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         return spawnNestingRefusal(childNestingLevel - 1, maxNestingLevel, workflowDefinitionToolsRefused(workflowLineage));
                     }
 
-                    // S2RT-F3: with Workflows on, the shared budget's own count (sub-agents pending or running, and active
-                    // Workflows), as Start counts it; the creation below counts it again under the chat's lock. With Workflows
-                    // off, the admission before stage 2 exactly (child-budget.ts, spawnAgentAdmission).
-                    const workflowsOn = sessionManager.workflowsEnabled !== false;
-                    const admission = await spawnAgentAdmission({ workflowsOn, parentSessionId: input.sessionId, max: MAX_SUB_AGENTS,
+                    // S2RT-F3: the shared budget's own count (sub-agents pending or running, and active Workflows), as Start
+                    // counts it; the creation below counts it again under the chat's lock (child-budget.ts, spawnAgentAdmission).
+                    const admission = await spawnAgentAdmission({ parentSessionId: input.sessionId, max: MAX_SUB_AGENTS,
                         countBudgetChildren: catalog?.countBudgetChildren ? id => catalog.countBudgetChildren!(id) : null,
                         directChildren: loadDirectChildSessions });
                     if (admission.refusal) return admission.refusal;
@@ -3586,8 +3574,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         ...(childSessionIdForWorkspace ? { sessionId: childSessionIdForWorkspace } : {}),
                         parentSessionId: input.sessionId,
                         nestingLevel: childNestingLevel,
-                        // S2RT-F3: with Workflows on, the budget is counted again, atomically with the creation (child-budget.ts).
-                        ...spawnAgentCreationBudget(workflowsOn, agentIsSystem, MAX_SUB_AGENTS),
+                        // S2RT-F3: the budget is counted again, atomically with the creation (child-budget.ts).
+                        ...spawnAgentCreationBudget(agentIsSystem, MAX_SUB_AGENTS),
                         ...childModelCreationOptions(childConfig),
                         ...(childConfig.workspace ? { workspace: childConfig.workspace } : {}),
                         systemMessage: childConfig.systemMessage,
@@ -6476,9 +6464,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 sessionId: childSessionId,
                 parentSessionId: input.parentSessionId,
                 nestingLevel: input.nestingLevel,
-                // S2RT-F3: with Workflows on, a sub-agent counts toward its parent's budget, checked atomically with its
-                // creation (child-budget.ts); with them off, its creation is as before stage 2.
-                ...spawnAgentCreationBudget(sessionManager.workflowsEnabled !== false, input.isSystem === true, WORKFLOW_CHILD_BUDGET_MAX),
+                // S2RT-F3: a sub-agent counts toward its parent's budget, checked atomically with its creation (child-budget.ts).
+                ...spawnAgentCreationBudget(input.isSystem === true, WORKFLOW_CHILD_BUDGET_MAX),
                 ...childModelCreationOptions(input.config),
                 ...(input.config.workspace ? { workspace: input.config.workspace } : {}),
                 systemMessage: input.config.systemMessage,
@@ -6610,8 +6597,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
      * be sent; false when the caller queues the command.
      */
     const operatorCommandApplied = async (sdkClient: any, targetSessionId: string, command: unknown): Promise<boolean> => {
-        // Stage 2.0: with Workflows off on this worker, a lifecycle command makes no Workflow lookup; it goes as for any session.
-        if (sessionManager.workflowsEnabled === false || !catalog?.workflowStore) return false;
+        if (!catalog?.workflowStore) return false;
         const facts = factStore ?? null;
         const applied = await applyOperatorCommandToWorkflowV2({
             store: catalog.workflowStore(),
@@ -6632,14 +6618,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
      */
     /** Stage 2.1 (R4): the words that refuse completing `targetSessionId` while one of its Workflows is active, or null. */
     const chatCompletionRefusalText = async (targetSessionId: string): Promise<string | null> => {
-        if (sessionManager.workflowsEnabled === false || !catalog?.workflowStore) return null;
+        if (!catalog?.workflowStore) return null;
         const refusal = await chatCompletionRefusal({ store: catalog.workflowStore() }, targetSessionId);
         return refusal ? refusal.message : null;
     };
 
     const workflowChildCommandApplied = async (activityCtx: any, targetSessionId: string, command: unknown): Promise<boolean> => {
-        // Stage 2.0: as above, no Workflow lookup while Workflows are off on this worker.
-        if (sessionManager.workflowsEnabled === false || !catalog?.workflowStore) return false;
+        if (!catalog?.workflowStore) return false;
         const facts = factStore ?? null;
         const applied = await applySessionCommandToWorkflowV2({
             store: catalog.workflowStore(),

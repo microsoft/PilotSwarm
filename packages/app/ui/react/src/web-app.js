@@ -11,7 +11,7 @@ import { NativeTaskCard } from "./native-task-card.js";
 import { WorkflowTab } from "./workflow-tab.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 import {
-    normalizeWorkflowPanelHeights, normalizeWorkflowPanelWidths, WORKFLOW_SIDE_TAB, selectWorkflowTabContext, workflowHighlightedSessionId, shownSidePaneTab, workflowsShown,
+    normalizeWorkflowPanelHeights, normalizeWorkflowPanelWidths, WORKFLOW_SIDE_TAB, selectWorkflowTabContext, workflowHighlightedSessionId, shownSidePaneTab,
     workflowTabButtonTip,
 } from "../../core/src/workflow-owner.js";
 import { WORKFLOW_LIFECYCLE_READ_MS, chatLifecycleStamp, workflowLifecycleNeedsAttention } from "../../core/src/workflow-lifecycle.js";
@@ -5771,9 +5771,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // state from its read model. Same trap again: omit them and every row computes as if neither existed.
         workflowRowId: state.sessions.workflowRowId ?? null,
         workflowViews: state.ui.workflowViews,
-        // OF-S2-5: whether Workflows are shown and the chats' definitions read here. Same trap again: without them every
-        // row computed as if Workflows were off, so a package-made chat's badge and the "Has Workflows" mark never drew.
-        workflowsEnabled: state.ui.workflowsEnabled === true,
+        // OF-S2-5: the chats' definitions read here. Same trap again: without them the "Has Workflows" mark never drew.
         chatDefinitions: state.ui.chatDefinitions,
         // Agent display titles order a named agent session's title (the
         // person's title first). Same trap again: leave it out and every
@@ -5804,7 +5802,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             listDeselected: viewState.listDeselected,
             workflowRowId: viewState.workflowRowId,
         },
-        ui: { workflowViews: viewState.workflowViews, workflowsEnabled: viewState.workflowsEnabled, chatDefinitions: viewState.chatDefinitions },
+        ui: { workflowViews: viewState.workflowViews, chatDefinitions: viewState.chatDefinitions },
         auth: viewState.auth,
         connection: {
             mode: viewState.connectionMode,
@@ -5820,7 +5818,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         },
         budget: { paused: viewState.budgetPaused },
         agentTitles: viewState.agentTitles,
-    }), [viewState.activeSessionId, viewState.workflowRowId, viewState.workflowViews, viewState.workflowsEnabled, viewState.chatDefinitions, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.sortMode, viewState.sortSnapshot, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat, viewState.agentTitles]);
+    }), [viewState.activeSessionId, viewState.workflowRowId, viewState.workflowViews, viewState.chatDefinitions, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.sortMode, viewState.sortSnapshot, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat, viewState.agentTitles]);
     // Hold the previous rows when a poll produced identical output.
     const rows = useStableValue(computedRows);
     const searchScrollRef = React.useRef({ top: 0, left: 0, restore: false });
@@ -7696,8 +7694,7 @@ export function activeSessionIsWorkflowSession(state) {
  * no longer mounted).
  */
 function ChatPane(props) {
-    const workflow = useControllerSelector(props.controller, state => workflowsShown(state)
-        && state.sessions.byId[state.sessions.activeSessionId]?.sessionKind === "workflow");
+    const workflow = useControllerSelector(props.controller, state => state.sessions.byId[state.sessions.activeSessionId]?.sessionKind === "workflow");
     if (!workflow) return React.createElement(ChatTranscriptPane, props);
     return React.createElement(WorkflowTab, { controller: props.controller, mobile: Boolean(props.mobile) });
 }
@@ -7743,8 +7740,7 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
             activeInputPolicy: activeSessionId ? state.ui.workflowInputPolicies?.[activeSessionId] || null : null,
             // Review SF-D5: stored workflow test notices show only while the server says test mode is on.
             workflowTestMode: state.ui.workflowTestMode === true,
-            // OF-S2-5: the chat's title says when it has grown Workflows (Workflows shown, and its definitions read here).
-            workflowsEnabled: state.ui.workflowsEnabled === true,
+            // OF-S2-5: the chat's title says when it has grown Workflows (its definitions read here).
             activeChatDefinitions: activeSessionId ? state.ui.chatDefinitions?.[activeSessionId] ?? null : null,
             // Whether it may be in a workflow agent state's subtree: its composer then waits for the server (q18).
             activeMayBeWorkflowStep: activeSessionId ? workflowInputPolicyApplies(state, activeSessionId) : false,
@@ -7788,7 +7784,6 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
         ui: {
             inspectorTab: viewState.inspectorTab,
             workflowTestMode: viewState.workflowTestMode,
-            workflowsEnabled: viewState.workflowsEnabled,
             ...(viewState.activeSessionId && viewState.activeChatDefinitions
                 ? { chatDefinitions: { [viewState.activeSessionId]: viewState.activeChatDefinitions } } : {}),
             ...(viewState.activeSessionId && viewState.activeInputPolicy
@@ -7796,7 +7791,6 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
         },
     }), [
         logHistory,
-        viewState.workflowsEnabled,
         viewState.activeChatDefinitions,
         viewState.activeSessionId,
         viewState.activeOutbox,
@@ -11611,13 +11605,11 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
     // Workflow Simplified (L1, L2): the right block shows the Workflow tab instead of the canvas. Owner, 2026-11-06T14:35Z
     // (F4): the Workflow button carries the canvas's dot, not a count: a Workflow needing the person (waiting for input, or
     // failed) changed since the Workflow panel last showed it; showing the panel clears it.
-    // Stage 2.0: no Workflow button, tab or pane while Workflows are off.
-    const workflowsOn = useControllerSelector(controller, workflowsShown);
     const workflowSide = useControllerSelector(controller, (s) => shownSidePaneTab(s) === WORKFLOW_SIDE_TAB);
     const workflowTabOpen = workflowSide && (mobile ? canvasPaneOpen : canvasView.mode === "canvas" && !artifactReaderOpen);
     // OF-S2-4 (C): the dot is every lifecycle change of the chat's definitions and Workflows (workflow-lifecycle.js).
     const workflowAttention = useControllerSelector(controller, (s) => workflowLifecycleNeedsAttention(s, selectWorkflowTabContext(s).ownerId)) && !workflowTabOpen;
-    useWorkflowLifecycleReads(controller, workflowsOn && !workflowTabOpen);
+    useWorkflowLifecycleReads(controller, !workflowTabOpen);
 
     // Icon-first toolbar: the glyph is the affordance, the label rides a
     // tooltip (desktop hover via title; mobile long-press via IconButton).
@@ -11697,8 +11689,8 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
             loadedDot: canvasView.exists,
         },
         // The Workflow tab (L1), between Canvas and Diagnostics, on every session (L2). It and the canvas switch each
-        // other off; its dot is the canvas's (owner F4), and its name says so. None while Workflows are off (stage 2.0).
-        ...(workflowsOn ? [{
+        // other off; its dot is the canvas's (owner F4), and its name says so. Workflows are always on.
+        {
             key: "workflow",
             icon: React.createElement(WorkflowGlyph, { decorative: true }),
             label: workflowTabOpen ? "Hide the Workflow tab" : workflowAttention ? "Workflow — needs attention" : "Workflow",
@@ -11716,7 +11708,7 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
             },
             active: workflowTabOpen,
             badge: workflowAttention,
-        }] : []),
+        },
         // Providers & Budgets. Both device classes: what a turn costs, and
         // what stopped a session, are answers a person needs wherever they
         // are — and unlike the admin console the surface reflows to a phone.
@@ -17166,8 +17158,6 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
         mode,
         branding,
         docs,
-        // Stage 2.0: no Workflow surface until the server's bootstrap says Workflows are on.
-        workflowsEnabled: false,
     }));
     // The browser owns the splash surface. The terminal notice is a later change.
     store.dispatch({ type: "motd/patch", patch: { portalEnabled: true } });

@@ -316,9 +316,6 @@ const SessionList = React.memo(function SessionList({ controller, maxRows, width
         // Who am I signed in as (null on identity-less/local deployments);
         // admins are prefixed with "(*)".
         identityLabel: formatSignedInIdentityLabel(state.auth),
-        // OF-S2-5: rows say when a session has grown Workflows (and a package-made chat wears its badge) only while
-        // Workflows are shown; without this slice every row computed as if they were off.
-        workflowsEnabled: state.ui.workflowsEnabled === true,
     }), shallowEqualObject);
     const titleRightRuns = React.useMemo(
         () => buildSessionTitleRightRuns(rssTitleRuns, versionLabel, sessionView.identityLabel),
@@ -328,9 +325,9 @@ const SessionList = React.memo(function SessionList({ controller, maxRows, width
         sessions: sessionView.sessions,
         connection: { mode: sessionView.mode },
         branding: { title: sessionView.brandingTitle },
-        ui: { workflowsEnabled: sessionView.workflowsEnabled },
+        ui: {},
         agentTitles: sessionView.agentTitles,
-    }), [sessionView.agentTitles, sessionView.brandingTitle, sessionView.mode, sessionView.sessions, sessionView.workflowsEnabled]);
+    }), [sessionView.agentTitles, sessionView.brandingTitle, sessionView.mode, sessionView.sessions]);
     const rows = React.useMemo(
         () => selectVisibleSessionRows(selectorState, maxRows),
         [selectorState, maxRows],
@@ -371,8 +368,6 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             activeInputPolicy: activeSessionId ? state.ui.workflowInputPolicies?.[activeSessionId] || null : null,
             // Review SF-D5: stored workflow test notices show only while the server says test mode is on.
             workflowTestMode: state.ui.workflowTestMode === true,
-            // OF-S2-5: the chat's title says when it has grown Workflows (from its row's flag).
-            workflowsEnabled: state.ui.workflowsEnabled === true,
             // Viewer identity — so the transcript can say "You" for the viewer's
             // own messages (and tag the owner) in shared sessions.
             authPrincipal: state.auth?.principal || null,
@@ -401,7 +396,6 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             },
             ui: {
                 workflowTestMode: chatView.workflowTestMode,
-                workflowsEnabled: chatView.workflowsEnabled,
                 ...(chatView.activeSessionId && chatView.activeInputPolicy
                     ? { workflowInputPolicies: { [chatView.activeSessionId]: chatView.activeInputPolicy } } : {}),
             },
@@ -429,7 +423,6 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
         chatView.activeOutbox,
         chatView.activeInputPolicy,
         chatView.workflowTestMode,
-        chatView.workflowsEnabled,
         chatView.authPrincipal,
         chatView.branding,
         chatView.agentTitles,

@@ -150,7 +150,7 @@ async function until(check, label) {
 }
 
 function seeded({ answer, model = { ...readModel({ run: { status: "running" } }), personCommands: commands() }, withUpdate = true } = {}) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "web" }));
+    const store = createStore(appReducer, createInitialState({ mode: "web" }));
     const updates = [];
     const reads = [];
     const transport = {
@@ -275,7 +275,7 @@ test("one command at a time per workflow; nothing is sent for an unknown control
 });
 
 function mount(view) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view });

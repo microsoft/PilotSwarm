@@ -87,7 +87,7 @@ test("the Node panel and the node's tooltip: chosen at start for a node its run 
 async function tuiDetails(nodeId) {
     const shown = model({ agentModels: CHOSEN });
     const transport = { getSessionEventsBefore: async () => [], readWorkflow: async () => shown };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [
         { sessionId: "chat", title: "Triage chat", status: "idle", model: "azure:chat-model", reasoningEffort: "medium" },

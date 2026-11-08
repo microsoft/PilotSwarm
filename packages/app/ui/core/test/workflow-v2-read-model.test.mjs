@@ -71,7 +71,7 @@ async function settled() {
 }
 
 function seeded({ lastSeq = 7, sessionKind = "workflow", updatedAt = 1 } = {}) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "web" }));
+    const store = createStore(appReducer, createInitialState({ mode: "web" }));
     const calls = [];
     const transport = {
         listSessions: async () => [],
@@ -321,7 +321,7 @@ test("READ-WIRE-02: a failure keeps the model shown, is reported bounded for its
 
 test("READ-WIRE-02: the side pane shows the selected run's read failure, with a Retry, and never another run's", () => {
     const render = view => {
-        const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+        const store = createStore(appReducer, createInitialState({ mode: "api" }));
         store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: SID, sessionKind: "workflow", title: "Watch" }] });
         store.dispatch({ type: "sessions/selected", sessionId: SID });
         store.dispatch({ type: "ui/workflowView", sessionId: SID, view });
@@ -361,7 +361,7 @@ const inRun = (runId, event) => ({ ...event, data: { ...event.data, runId,
 
 /** The workflow pane rendered on the server from a workflow view and a loaded history (effects do not run). */
 function renderPane(view, events = []) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: SID, sessionKind: "workflow", title: "Watch" }] });
     store.dispatch({ type: "sessions/selected", sessionId: SID });
     if (events.length) store.dispatch({ type: "history/set", sessionId: SID, history: { chat: [], activity: [], events, lastSeq: events.length } });

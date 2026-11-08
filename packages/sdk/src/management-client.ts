@@ -171,7 +171,6 @@ import type { ArtifactStore } from "./session-store.js";
 import { readWorkflowV2, workflowV2ExclusiveRead } from "./workflow/v2/tools.js";
 import { WORKFLOW_READ_STATUS } from "./workflow/v2/read-pages.js";
 import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/v2/human-commands.js";
-import { resolveWorkflowsEnabled, workflowsDisabledError } from "./workflow/workflows-switch.js";
 import {
     attachChatPackageWorkflow, chatCompletionRefusal, copyChatPackageWorkflow, deleteChatWorkflowDefinition, findPackageWorkflow, listChatWorkflowDefinitions,
     packageWorkflowFacts,
@@ -884,13 +883,6 @@ export interface PilotSwarmManagementClientOptions {
      */
     workflowCommands?: { requests?: boolean; testMode?: boolean } | null;
     /**
-     * Workflows on this deployment (Workflow Simplified stage 2.0): `true` or `false` says it; absent, the deployment setting
-     * PILOTSWARM_WORKFLOWS=on (or PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT=isolated-test-only) decides; otherwise off. Off:
-     * readWorkflow and updateWorkflow answer WORKFLOWS_DISABLED (404), the capabilities say `enabled: false`, and the
-     * Workflow lookups on a person's input, the access check and a cancel, done or delete are skipped.
-     */
-    workflows?: boolean | null;
-    /**
      * Whether the deployment's workers run workflow script nodes (PILOTSWARM_WORKFLOW_SCRIPTS), as far as this client knows:
      * false refuses a person's save or Start of a definition with a script node, in words naming the setting
      * (scripts-gate.ts); absent, not known, and such a run fails at its first script node instead. The portal and the MCP
@@ -900,15 +892,6 @@ export interface PilotSwarmManagementClientOptions {
 }
 
 // ─── Management Client ──────────────────────────────────────────
-
-/**
- * Whether Workflows are on for a management client with these options (stage 2.0): its `workflows` option, else the
- * deployment setting (PILOTSWARM_WORKFLOWS). A function of the options, not a method, so a host that lends this client's
- * methods to an object of its own (as the portal's tests do) gets the same answer.
- */
-function workflowsOnFor(config: PilotSwarmManagementClientOptions | null | undefined): boolean {
-    return resolveWorkflowsEnabled(config?.workflows ?? null);
-}
 
 function normalizeShareSlot(slot: unknown): number {
     const n = Math.floor(Number(slot));
@@ -2037,7 +2020,6 @@ export class PilotSwarmManagementClient {
     private async _readWorkflow(sessionId: string, options: WorkflowReadOptions)
         : Promise<Record<string, unknown>> {
         this._ensureStarted();
-        if (!workflowsOnFor(this.config)) throw workflowsDisabledError();
         const failure = (code: string, status: number, message: string): Error => Object.assign(new Error(message), { code, status });
         const runId = options?.runId ?? null;
         if (runId !== null && (typeof runId !== "string" || !runId.trim() || runId.length > 256)) {
@@ -2113,7 +2095,6 @@ export class PilotSwarmManagementClient {
         this._ensureStarted();
         const failure = (code: string, status: number, message: string, details?: unknown): Error =>
             Object.assign(new Error(message), { code, status, ...(details !== undefined ? { details } : {}) });
-        if (!workflowsOnFor(this.config)) throw workflowsDisabledError();
         const enabled = this.config.workflowCommands;
         if (!enabled) {
             throw Object.assign(failure("WORKFLOW_COMMANDS_UNAVAILABLE", 501, "This deployment does not take workflow commands from people yet; "
@@ -2170,7 +2151,6 @@ export class PilotSwarmManagementClient {
     /** The chat row a person's definition call is for: a live session that is not a Workflow. */
     private async _chatForDefinitions(chatSessionId: string): Promise<WorkflowV2Host> {
         this._ensureStarted();
-        if (!workflowsOnFor(this.config)) throw workflowsDisabledError();
         const failure = (code: string, status: number, message: string): Error => Object.assign(new Error(message), { code, status, expose: true });
         const session = await this._catalog!.getSession(chatSessionId);
         if (!session || session.deletedAt) throw failure("NOT_FOUND", 404, "Session not found.");
@@ -2363,7 +2343,6 @@ export class PilotSwarmManagementClient {
      */
     async listCreatableWorkflows(viewer: { provider?: string | null; subject?: string | null } | null): Promise<Record<string, unknown>[]> {
         this._ensureStarted();
-        if (!workflowsOnFor(this.config)) throw workflowsDisabledError();
         const source = this._packageWorkflows();
         if (!source) return [];
         try {
@@ -2396,7 +2375,6 @@ export class PilotSwarmManagementClient {
     async prepareWorkflowChat(ref: string, viewer: { provider?: string | null; subject?: string | null } | null)
         : Promise<{ ref: string; title: string; systemMessage: string; kickoff: string; model: string | null; semver: string; packageId: string; sha256: string }> {
         this._ensureStarted();
-        if (!workflowsOnFor(this.config)) throw workflowsDisabledError();
         try {
             const source = this._packageWorkflows();
             const entry = await findPackageWorkflow({ packageWorkflows: source ?? undefined }, ref, PilotSwarmManagementClient._viewerOf(viewer));
@@ -2487,7 +2465,6 @@ export class PilotSwarmManagementClient {
 
     async getWorkflowCapabilities(): Promise<Record<string, unknown> | null> {
         return workflowCapabilities({
-            enabled: workflowsOnFor(this.config),
             read: typeof this._catalog?.workflowStore === "function",
             commands: this.config?.workflowCommands ?? null,
         });
@@ -3867,9 +3844,7 @@ export class PilotSwarmManagementClient {
     // runtime has already gated session read for door 1.
 
     /** The workflow store, when this catalog has one (the workflow human-input policy reads lineage from it). */
-    /** The workflow store for the per-request Workflow lookups; null while Workflows are off (stage 2.0: they are skipped). */
     private _workflowStoreOrNull(): import("./workflow/v2/store.js").WorkflowStore | null {
-        if (!workflowsOnFor(this.config)) return null;
         const catalog = this._catalog as any;
         return typeof catalog?.workflowStore === "function" ? catalog.workflowStore() : null;
     }

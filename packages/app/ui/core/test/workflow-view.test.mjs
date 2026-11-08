@@ -198,7 +198,7 @@ test("parallel transitions share a labelled edge rather than drawing overlapping
 });
 
 function harness(getSessionEventsBefore) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [
         { sessionId: "wf", sessionKind: "workflow" }, { sessionId: "other", sessionKind: "workflow" },
         { sessionId: "agent", sessionKind: "agent" },

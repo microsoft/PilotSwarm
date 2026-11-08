@@ -27,7 +27,6 @@ import {
     readWorkflowToolSpec, SEND_WORKFLOW_INPUT_TOOL_SPEC, updateWorkflowToolSpec, workflowToolErrorPayload,
 } from "./workflow/v2/tools.js";
 import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
-import { workflowsDisabledRefusal } from "./workflow/workflows-switch.js";
 import { WORKFLOW_DEFINITION_TOOL, workflowDefinitionToolSpec } from "./workflow/v2/definition-tool.js";
 import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC, workflowRespondFailure } from "./workflow/v2/request-service.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC, workflowCompletionFailure } from "./workflow/v2/agent-node-service.js";
@@ -3255,13 +3254,10 @@ export class ManagedSession {
         // A1 (Workflow Simplified, spec 14): a session inside a Workflow is declared no definition tools; a stale declaration
         // still gets an answer here, the refusal in words, before the bridge (which refuses them too).
         const insideWorkflow = this.config.workflowInsideWorkflow === true;
-        // Stage 2.0: Workflows off on this worker; a stale declaration is answered WORKFLOWS_DISABLED before anything else.
-        const workflowsOff = controlBridge?.workflowsDisabled === true;
         const spawnWorkflowTool = defineTool("spawn_workflow", {
             ...(workflowMilestone ? SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC : SPAWN_WORKFLOW_TOOL_SPEC),
             handler: async (args: SpawnWorkflowToolArgs, invocation?: { toolCallId?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_workflow");
-                if (workflowsOff) return workflowsDisabledRefusal("spawn_workflow", { line: true });
                 if (insideWorkflow) return workflowDefinitionToolsRefusal("spawn_workflow");
                 if (typeof args?.yaml !== "string" || !args.yaml.trim()) return "Error: yaml is required.";
                 if (args.inputs !== undefined && (args.inputs === null || typeof args.inputs !== "object" || Array.isArray(args.inputs))) {
@@ -3277,7 +3273,6 @@ export class ManagedSession {
             ...updateWorkflowToolSpec(workflowSpecs),
             handler: async (args: Record<string, unknown>) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("update_workflow");
-                if (workflowsOff) return workflowsDisabledRefusal("update_workflow");
                 if (insideWorkflow) return workflowDefinitionToolsRefusal("update_workflow");
                 if (!controlBridge?.updateWorkflow) return "Error: update_workflow is not available in this session.";
                 // A failure the bridge did not answer is still answered with its code and reason (batch 7, n-3).
@@ -3288,20 +3283,18 @@ export class ManagedSession {
             ...readWorkflowToolSpec(workflowSpecs),
             handler: async (args: Record<string, unknown>) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("read_workflow");
-                if (workflowsOff) return workflowsDisabledRefusal("read_workflow");
                 if (!controlBridge?.readWorkflow) return "Error: read_workflow is not available in this session.";
                 // A failure the bridge did not answer is still answered with its code and reason (batch 7, n-3).
                 try { return await controlBridge.readWorkflow(args ?? {}); } catch (error) { return workflowToolErrorPayload(error); }
             },
         });
         // Stage 2.1: the chat's Workflow Definitions (definition-tool.ts): list, read, save and start. Refused inside a Workflow
-        // (A1) and while Workflows are off (2.0), as the other definition tools are.
+        // (A1), as the other definition tools are.
         // Stage 2.5: the test operation is declared only on a workflow request turn, the one turn that can run a test.
         const workflowDefinitionTool = defineTool(WORKFLOW_DEFINITION_TOOL, {
             ...workflowDefinitionToolSpec({ tests: this.config.workflowMilestoneTurn === true }),
             handler: async (args: Record<string, unknown>, invocation?: { toolCallId?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(WORKFLOW_DEFINITION_TOOL);
-                if (workflowsOff) return workflowsDisabledRefusal(WORKFLOW_DEFINITION_TOOL);
                 if (insideWorkflow) return workflowDefinitionToolsRefusal(WORKFLOW_DEFINITION_TOOL);
                 if (!controlBridge?.workflowDefinition) return "Error: workflow_definition is not available in this session.";
                 try { return await controlBridge.workflowDefinition(args ?? {}, { toolCallId: invocation?.toolCallId }); } catch (error) { return workflowToolErrorPayload(error); }
@@ -3311,7 +3304,6 @@ export class ManagedSession {
             ...SEND_WORKFLOW_INPUT_TOOL_SPEC,
             handler: async (args: Record<string, unknown>) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("send_workflow_input");
-                if (workflowsOff) return workflowsDisabledRefusal("send_workflow_input");
                 if (!controlBridge?.sendWorkflowInput) return "Error: send_workflow_input is not available in this session.";
                 // A failure the bridge did not answer is still answered with its code and reason (batch 7, n-3).
                 try { return await controlBridge.sendWorkflowInput(args ?? {}); } catch (error) { return workflowToolErrorPayload(error); }

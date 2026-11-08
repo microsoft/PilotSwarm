@@ -1,5 +1,14 @@
 # Changelog — agent-manager
 
+## 1.4.9
+
+### Changed
+
+- Workflows are always on (owner 2026-11-08T08:03Z): `workflow_definition` is
+  always offered. The fallback for an untested publish now names only its
+  `test` operation, which is offered only where the deployment runs Workflow
+  tests.
+
 ## 1.4.8
 
 ### Changed

@@ -236,7 +236,7 @@ test("an agent step lists the sessions its chat started, each openable read-only
 });
 
 test("the TUI says why the run and the visit shown ended, lists that visit's activity and the sessions under an agent chat", () => {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-v2", status: "cancelled", sessionKind: "workflow" },
         { sessionId: "parent-1234567890", title: "Release chat", status: "idle" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });

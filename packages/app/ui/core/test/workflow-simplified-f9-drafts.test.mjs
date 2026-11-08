@@ -43,7 +43,7 @@ const draft = (workflowId, semver) => ({
 const T0 = Date.parse("2026-11-06T19:20:05.000Z");
 // His shape (the executor's read-only dump): #1 1dca4137 and #2 1b81f092 (1.0.0, running), the draft 3d25e4fe (1.1.0).
 function harness({ more = [], second = "1.0.0" } = {}) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     const row = (sessionId, status, createdAt) => ({ sessionId, sessionKind: "workflow", title: `Workflow: ${NAME}`, status, parentSessionId: "chat",
         createdAt, updatedAt: createdAt + 1_000 });
     store.dispatch({ type: "sessions/loaded", sessions: [

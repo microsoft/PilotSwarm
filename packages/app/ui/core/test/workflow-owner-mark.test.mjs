@@ -2,7 +2,7 @@
  * OF-S2-5 (owner, 2026-11-07T20:58Z: "The subagent sessions did grow workflows but the icon doesn't show it. Need to
  * workflow icon next to the session title if the session has grown a workflow."): a session, a sub-agent too, that has
  * grown Workflows wears the Workflow mark beside its title, in its list row at every depth and in the chat's title, with
- * the words "Has Workflows"; only while Workflows are shown. It grows them by the server's row flag (it owns a live
+ * the words "Has Workflows" (Workflows are always on, so no switch hides it). It grows them by the server's row flag (it owns a live
  * Workflow Definition), by its definitions read here, or by its Workflow children. The mark is gray and after the title,
  * where a Workflow row's own mark is magenta and before it.
  *
@@ -16,8 +16,8 @@ const ROOT = { sessionId: "root-1", title: "Planner", status: "idle", createdAt:
 const sub = (sessionId, extra = {}) => ({ sessionId, title: `Helper ${sessionId}`, status: "idle", createdAt: 2, updatedAt: 9, parentSessionId: "root-1", ...extra });
 const WORKFLOW = { sessionId: "wf-1", title: "Workflow: poll", sessionKind: "workflow", status: "running", createdAt: 3, updatedAt: 8, parentSessionId: "sub-children" };
 
-function loaded({ on = true, sessions = [], definitions = null } = {}) {
-    let state = createInitialState({ workflowsEnabled: on });
+function loaded({ sessions = [], definitions = null } = {}) {
+    let state = createInitialState();
     state = appReducer(state, { type: "sessions/loaded", sessions: [ROOT, ...sessions] });
     // The sub-agent rows show (a parent's children start collapsed).
     for (const id of ["root-1", "sub-children"]) state = appReducer(state, { type: "sessions/expand", sessionId: id });
@@ -36,10 +36,10 @@ const CASES = {
     deletedOnly: sub("sub-deleted"),
 };
 
-const everything = (on = true) => loaded({ on, sessions: [...Object.values(CASES), WORKFLOW],
+const everything = () => loaded({ sessions: [...Object.values(CASES), WORKFLOW],
     definitions: { ownerId: "sub-loaded", items: [{ definitionId: "d1", name: "watch", deletedAt: null }] } });
 
-test("sessionGrowsWorkflows: the row flag, a live definition read here, or a Workflow child; never with Workflows off", () => {
+test("sessionGrowsWorkflows: the row flag, a live definition read here, or a Workflow child, with no opt-in", () => {
     const state = everything();
     assert.equal(sessionGrowsWorkflows(state, "sub-flag"), true);
     assert.equal(sessionGrowsWorkflows(state, "sub-children"), true);
@@ -50,8 +50,6 @@ test("sessionGrowsWorkflows: the row flag, a live definition read here, or a Wor
     assert.equal(sessionGrowsWorkflows(state, "missing"), false);
     const deleted = loaded({ sessions: [CASES.deletedOnly], definitions: { ownerId: "sub-deleted", items: [{ definitionId: "d2", name: "old", deletedAt: "2026-11-07T20:00:00Z" }] } });
     assert.equal(sessionGrowsWorkflows(deleted, "sub-deleted"), false, "a deleted definition does not count");
-    const off = everything(false);
-    for (const id of ["sub-flag", "sub-children", "sub-loaded"]) assert.equal(sessionGrowsWorkflows(off, id), false, id);
 });
 
 test("list rows: a sub-agent with definitions or with Workflow children wears the mark after its title; neither, none", () => {
@@ -79,12 +77,7 @@ test("list rows: a Workflow row keeps its own magenta mark before its title and 
     assert.equal(kind?.color, "magenta");
 });
 
-test("list rows with Workflows off: no mark anywhere", () => {
-    const state = everything(false);
-    for (const row of selectSessionRows(state)) assert.equal(markOf(row?.titleRuns).length, 0, row?.sessionId);
-});
-
-test("chat title: the sub-agent's chat says it has grown Workflows; neither, or Workflows off, does not", () => {
+test("chat title: the sub-agent's chat says it has grown Workflows; neither does not", () => {
     for (const id of ["sub-flag", "sub-children", "sub-loaded"]) {
         const chrome = selectChatPaneChrome({ ...everything(), sessions: { ...everything().sessions, activeSessionId: id } });
         const mark = markOf(chrome.title);
@@ -93,8 +86,6 @@ test("chat title: the sub-agent's chat says it has grown Workflows; neither, or 
     }
     const neither = everything();
     assert.equal(markOf(selectChatPaneChrome({ ...neither, sessions: { ...neither.sessions, activeSessionId: "sub-neither" } }).title).length, 0);
-    const off = everything(false);
-    assert.equal(markOf(selectChatPaneChrome({ ...off, sessions: { ...off.sessions, activeSessionId: "sub-flag" } }).title).length, 0);
 });
 
 test("the row flag is kept when a later list says false: a definition deleted since reads false, not the old true", () => {

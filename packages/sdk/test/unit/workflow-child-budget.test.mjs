@@ -75,36 +75,25 @@ test("a Start's claim under a deleted or ended chat is refused under the chat's 
     }
 });
 
-// Coordinator decision on S2RT-F3: the switch is the boundary. With Workflows off, spawn_agent's admission is exactly the
-// one before stage 2: the running direct sub-agents counted, no budget count and no lock at the creation.
-test("spawn_agent with Workflows off: the count before stage 2 (running sub-agents), its words, and no lock at the creation", async () => {
-    const calls = [];
-    const children = [{ status: "running" }, { status: "running", isSystem: true }, { status: "pending" }, { status: "completed" }];
-    const off = await spawnAgentAdmission({ workflowsOn: false, parentSessionId: "chat", max: 2,
-        countBudgetChildren: async id => { calls.push(id); return 99; }, directChildren: async () => children });
-    assert.deepEqual(off, { count: 1, refusal: null, creation: {} });
-    assert.deepEqual(calls, [], "the shared budget is not counted");
-    const full = await spawnAgentAdmission({ workflowsOn: false, parentSessionId: "chat", max: 1,
-        countBudgetChildren: async () => 0, directChildren: async () => children });
-    assert.equal(full.refusal, "[SYSTEM: spawn_agent failed — you already have 1 running sub-agents (max 1). Wait for some to complete before spawning more.]");
-    assert.deepEqual(full.creation, {});
-    assert.deepEqual(spawnAgentCreationBudget(false, false, 50), {});
-});
-
-test("spawn_agent with Workflows on: the shared budget's count, and the creation counts it again under the chat's lock", async () => {
-    const on = await spawnAgentAdmission({ workflowsOn: true, parentSessionId: "chat", max: WORKFLOW_CHILD_BUDGET_MAX,
+// Workflows are always on (owner 2026-11-08T08:03Z): spawn_agent's admission is always the shared budget, the coordinator's
+// S2RT-F3 boundary (Workflows off: the admission before stage 2) is gone.
+test("spawn_agent: the shared budget's count, and the creation counts it again under the chat's lock", async () => {
+    const on = await spawnAgentAdmission({ parentSessionId: "chat", max: WORKFLOW_CHILD_BUDGET_MAX,
         countBudgetChildren: async () => 50, directChildren: async () => { throw new Error("not read"); } });
     assert.equal(on.count, 50);
     assert.match(on.refusal, /50 running sub-agents and Workflows \(max 50\)/);
     assert.deepEqual(on.creation, { childBudget: { max: WORKFLOW_CHILD_BUDGET_MAX } });
-    // A system agent is never counted at its creation; a catalog without the count falls back to the running sub-agents.
-    assert.deepEqual(spawnAgentCreationBudget(true, true, 50), {});
-    const plain = await spawnAgentAdmission({ workflowsOn: true, parentSessionId: "chat", max: 50, directChildren: async () => [{ status: "running" }] });
+    // A system agent is never counted at its creation.
+    assert.deepEqual(spawnAgentCreationBudget(true, 50), {});
+    assert.deepEqual(spawnAgentCreationBudget(false, 50), { childBudget: { max: 50 } });
+    // A catalog without the count falls back to the running sub-agents (system ones not counted), in the words before stage 2.
+    const children = [{ status: "running" }, { status: "running", isSystem: true }, { status: "pending" }, { status: "completed" }];
+    const plain = await spawnAgentAdmission({ parentSessionId: "chat", max: 1, directChildren: async () => children });
     assert.equal(plain.count, 1);
-    // Both spawn paths take the switch.
+    assert.equal(plain.refusal, "[SYSTEM: spawn_agent failed — you already have 1 running sub-agents (max 1). Wait for some to complete before spawning more.]");
+    // Both spawn paths pass the budget.
     const proxy = readFileSync(fileURLToPath(new URL("../../src/session-proxy.ts", import.meta.url)), "utf8");
-    assert.match(proxy, /const workflowsOn = sessionManager\.workflowsEnabled !== false;/);
-    assert.match(proxy, /\.\.\.spawnAgentCreationBudget\(workflowsOn, agentIsSystem, MAX_SUB_AGENTS\)/);
-    assert.match(proxy, /\.\.\.spawnAgentCreationBudget\(sessionManager\.workflowsEnabled !== false, input\.isSystem === true, WORKFLOW_CHILD_BUDGET_MAX\)/);
-    assert.ok(!/childBudget: \{ max: (MAX_SUB_AGENTS|WORKFLOW_CHILD_BUDGET_MAX) \}/.test(proxy), "no spawn path passes the budget without the switch");
+    assert.match(proxy, /\.\.\.spawnAgentCreationBudget\(agentIsSystem, MAX_SUB_AGENTS\)/);
+    assert.match(proxy, /\.\.\.spawnAgentCreationBudget\(input\.isSystem === true, WORKFLOW_CHILD_BUDGET_MAX\)/);
+    assert.ok(!/workflowsEnabled|workflowsOn/.test(proxy), "no spawn path reads a Workflows switch");
 });

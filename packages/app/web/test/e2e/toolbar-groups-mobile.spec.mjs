@@ -12,7 +12,7 @@ let stub;
 let base;
 
 test.beforeAll(async () => {
-    stub = await startStubServer(0, { sessionCount: 3, admin: true, workflows: true });
+    stub = await startStubServer(0, { sessionCount: 3, admin: true });
     base = `http://127.0.0.1:${stub.port}`;
 });
 

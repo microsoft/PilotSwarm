@@ -42,7 +42,7 @@ function harness(initial, { answer = null } = {}) {
         readWorkflow: async (...args) => { calls.push(["readWorkflow", ...args]); return current; },
         updateWorkflow: async (...args) => { calls.push(["updateWorkflow", ...args]); return answer ? answer(...args) : { ok: true }; },
     };
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "local" }));
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: review-flow", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });

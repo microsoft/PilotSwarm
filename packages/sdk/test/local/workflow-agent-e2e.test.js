@@ -269,25 +269,32 @@ states:
         });
     });
 
-    // Stage 2.0 (one switch, coordinator 03:02Z): the workflow tools are offered exactly when Workflows are on
-    // (PILOTSWARM_WORKFLOWS, here the worker's `workflows.enabled`). Script workflows off no longer hides them: a definition
-    // with a script node is refused at save and Start instead (scripts-gate.ts; workflows-switch.test.js).
-    for (const [label, worker, offered] of [
-        ["Workflows on and script workflows off still shows the workflow tools", { workflowScripts: { enabled: false }, workflows: { enabled: true } }, true],
-        ["Workflows off shows none of the workflow tools", { workflowScripts: { enabled: true }, workflows: { enabled: false } }, false],
+    // Workflows are always on (owner 2026-11-08T08:03Z): a worker started without any Workflow setting offers the workflow
+    // tools, script workflows on or off (a definition with a script node is refused at save and Start where they are off;
+    // scripts-gate.ts), and a deployment that still sets the retired PILOTSWARM_WORKFLOWS=off is ignored.
+    for (const [label, worker, retired] of [
+        ["no Workflow setting and script workflows off", { workflowScripts: { enabled: false } }, undefined],
+        ["the retired PILOTSWARM_WORKFLOWS=off and script workflows on", { workflowScripts: { enabled: true } }, "off"],
     ]) {
-        it(`a worker with ${label} to the model`, { timeout: TIMEOUT }, async () => {
+        it(`a worker with ${label} shows the workflow tools to the model`, { timeout: TIMEOUT }, async () => {
             const env = getEnv();
-            await withScriptedModel(env, { respond: () => ({ content: "ok" }), worker }, async ({ client, model, qualifiedModel }) => {
-                const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
-                await session.sendAndWait("list your tools", TIMEOUT);
-                const names = model.sessionRequests("list your tools")[0].body.tools.map((tool) => tool?.function?.name);
-                expect(names).toContain("spawn_agent");
-                for (const name of ["workflow_definition", "spawn_workflow", "update_workflow", "read_workflow", "send_workflow_input"]) {
-                    if (offered) expect(names, name).toContain(name);
-                    else expect(names, name).not.toContain(name);
-                }
-            });
+            const before = process.env.PILOTSWARM_WORKFLOWS;
+            if (retired === undefined) delete process.env.PILOTSWARM_WORKFLOWS;
+            else process.env.PILOTSWARM_WORKFLOWS = retired;
+            try {
+                await withScriptedModel(env, { respond: () => ({ content: "ok" }), worker }, async ({ client, model, qualifiedModel }) => {
+                    const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
+                    await session.sendAndWait("list your tools", TIMEOUT);
+                    const names = model.sessionRequests("list your tools")[0].body.tools.map((tool) => tool?.function?.name);
+                    expect(names).toContain("spawn_agent");
+                    for (const name of ["workflow_definition", "spawn_workflow", "update_workflow", "read_workflow", "send_workflow_input"]) {
+                        expect(names, name).toContain(name);
+                    }
+                });
+            } finally {
+                if (before === undefined) delete process.env.PILOTSWARM_WORKFLOWS;
+                else process.env.PILOTSWARM_WORKFLOWS = before;
+            }
         });
     }
 });

@@ -40,7 +40,7 @@ const T0 = Date.parse("2026-11-06T23:30:00.000Z");
 const KEY = version => `${version}\u001fh-${version}`;
 // His shape: #1 1.0.0 (Canceled) and #2 1.1.0 (Completed), both children of the chat.
 function harness({ more = [] } = {}) {
-    const store = createStore(appReducer, createInitialState({ workflowsEnabled: true, mode: "api" }));
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
     const row = (sessionId, status, createdAt) => ({ sessionId, sessionKind: "workflow", title: `Workflow: ${NAME}`, status, parentSessionId: "chat",
         createdAt, updatedAt: createdAt + 1_000 });
     store.dispatch({ type: "sessions/loaded", sessions: [
