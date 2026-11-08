@@ -1883,8 +1883,8 @@ export class PilotSwarmWorker {
         this._loadPluginDir(systemDir, "system");
         // The Workflow authoring skills (workflow-authoring, workflow-reference, workflow-patterns), for every session: the
         // guidance and Agent Smith point to them. workflow-testing only where test mode is on (spec 16).
-        this._loadSdkSkillDir(WORKFLOW_V2_SKILLS_DIR);
-        if (workflowTestModeFromEnv()) this._loadSdkSkillDir(WORKFLOW_V2_TEST_MODE_SKILLS_DIR);
+        this._loadSdkSkillDir(WORKFLOW_V2_SKILLS_DIR, "PilotSwarm Workflow skills");
+        if (workflowTestModeFromEnv()) this._loadSdkSkillDir(WORKFLOW_V2_TEST_MODE_SKILLS_DIR, "PilotSwarm Workflow test-mode skills");
 
         // ── Tier 2: SDK management plugins (opt-out) ─────────────────
         if (!(this.config as any).disableManagementAgents) {
@@ -2434,13 +2434,20 @@ export class PilotSwarmWorker {
      * Load agents, skills, MCP config, and session policy from a single plugin directory.
      */
     /** An SDK-bundled skill directory (its skills, nothing else), loaded as the system tier's skills are. */
-    private _loadSdkSkillDir(skillsDir: string): void {
+    private _loadSdkSkillDir(skillsDir: string, sourceName: string): void {
         if (!fs.existsSync(skillsDir)) return;
         this._loadedSkillDirs.push(skillsDir);
+        // A Base V2 session's load_skill, skills index and search_capabilities read only capability sources, so an
+        // SDK skill directory is one too, like a plugin directory's skills.
+        const source: CapabilitySource = { id: `static:${capabilityHash(skillsDir).slice(0, 20)}`, name: sourceName,
+            source: "static", scope: "shared", revision: "", artifacts: [], tools: new Map(), mcpServers: {} };
         for (const skill of loadSkillsSync(skillsDir)) {
+            source.artifacts.push({ kind: "skill", name: skill.name, description: skill.description, body: skill.prompt, tools: skill.toolNames });
             this._loadedSkills.set(skill.name, skill);
             this._loadedSkillsAll.push(skill);
         }
+        source.revision = capabilityHash({ artifacts: source.artifacts, mcp: source.mcpServers });
+        this._capabilitySources.push(source);
     }
 
     private _loadPluginDir(absDir: string, layer: "system" | "management" | "app"): void {

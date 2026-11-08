@@ -30,7 +30,8 @@ or the system (prompts of the same kind still merge).
 Workflow engine with controller 1.9.0: agent, parallel and request states,
 clock waits, revision tests, named branches, per-node models and a person's
 Workflow commands, on every deployment. Every Workflow run starts at
-controller 1.9.0. The Workflow authoring skills load on every worker. See
+controller 1.9.0. The Workflow authoring skills load on every worker, and
+every chat can load them with `load_skill`, Base V2 chats included. See
 `docs/developer/building/workflow-sessions.md`.
 
 **Script states run by default.** `PILOTSWARM_WORKFLOW_SCRIPTS` is now an
