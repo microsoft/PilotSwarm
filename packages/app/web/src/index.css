@@ -12426,15 +12426,21 @@ textarea.ps-link-input {
   background: var(--w95-face);
 }
 /* OF-S2-8: the YAML box and the code boxes are text wells (white, inset), as the pickers are: highlighted code on the teal
-   they took from the page background read 1.9:1 to 4.4:1. */
+   they took from the page background read 1.9:1 to 4.4:1. Final review FUI-F2: every code box of the tab (a result, a
+   whole value, the variables), and the older detail pane's, not only the script's and samples'. */
 :root[data-ps-theme="win95"] .ps-wf-tab .ps-workflow-yaml,
-:root[data-ps-theme="win95"] .ps-wf-tab .ps-wf-more-body > pre.ps-wf-code {
+:root[data-ps-theme="win95"] .ps-wf-tab pre.ps-wf-code,
+:root[data-ps-theme="win95"] .ps-workflow-detail-content pre.ps-wf-code {
   background: #ffffff;
   color: var(--w95-dark);
   border: 2px solid;
   border-color: var(--w95-shadow) var(--w95-light) var(--w95-light) var(--w95-shadow);
   border-radius: 0;
 }
+/* Final review FUI-F2: an inline value (the variables table) sits in a white well too, and an error result stays the
+   danger colour in its well. */
+:root[data-ps-theme="win95"] .ps-wf-tab code.ps-wf-code-inline { background: #ffffff; color: var(--w95-dark); padding: 0 2px; }
+:root[data-ps-theme="win95"] .ps-wf-tab .ps-wf-result.is-error pre.ps-wf-code { color: var(--ps-wf-danger-text, var(--ps-danger)); }
 /* Its pickers and fields are win95's text wells (white, inset), as the composer is: black on the teal they took from the
    page background read 4.4:1 (the 5482bae3 win95 screenshot: "#2 of 2"). */
 :root[data-ps-theme="win95"] .ps-wf-tab .ps-workflow-input {
@@ -13041,7 +13047,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-bar-text { color: var(--ps-muted); min-width: 0; overflow-wrap: anywhere; }
 /* Stage 2.2: a revision's last agent test beside the revision picker. */
 .ps-wf-last-test.is-passed { color: var(--ps-success, var(--ps-muted)); }
-.ps-wf-last-test.is-failed { color: var(--ps-danger); }
+.ps-wf-last-test.is-failed { color: var(--ps-wf-danger-text, var(--ps-danger)); }
 .ps-wf-bar-actions { display: inline-flex; gap: 6px; margin-left: auto; }
 .ps-wf-line { margin: 0; padding: 6px 10px; border-bottom: 1px solid var(--ps-border); overflow-wrap: anywhere; }
 .ps-wf-line.is-error {
@@ -13057,8 +13063,9 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-unstarted-list { margin: 0; padding: 4px 10px 6px 28px; border-bottom: 1px solid var(--ps-border); overflow-wrap: anywhere;
   max-height: min(14em, 35vh); overflow-y: auto; overscroll-behavior: contain; }
 .ps-wf-unstarted-list > li { padding: 2px 0; }
-/* Review UI3-F8: on a phone the draft actions (Show it, Start…, the way to the newest) are 44 px targets themselves. */
-@media (max-width: 600px) {
+/* Review UI3-F8: on a phone the draft actions (Show it, Start…, the way to the newest) are 44 px targets themselves.
+   Final review FUI-F1: a phone held sideways too (the merged phone query). */
+@media (max-width: 600px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-wf-unstarted .ps-link-button,
   .ps-wf-bar .ps-link-button[data-action="show-newest"] {
     display: inline-flex; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; padding: 0 8px;
@@ -13170,7 +13177,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-list-row.is-action:focus-within { background: var(--ps-highlight-background); }
 .ps-wf-list-number { font-weight: 700; }
 .ps-wf-list-state { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
-.ps-wf-list-reason { color: var(--ps-danger); font-size: 0.9em; overflow-wrap: anywhere; }
+.ps-wf-list-reason { color: var(--ps-wf-danger-text, var(--ps-danger)); font-size: 0.9em; overflow-wrap: anywhere; }
 .ps-wf-list-version { min-width: 0; overflow-wrap: anywhere; }
 
 /* The bottom panel (L5): closed is one strip of panel tabs; open, it has ONE height (set inline from the person's
@@ -13269,7 +13276,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
   border: 1px solid var(--ps-border);
   border-radius: 4px;
 }
-.ps-wf-result.is-error pre { color: var(--ps-danger); }
+.ps-wf-result.is-error pre { color: var(--ps-wf-danger-text, var(--ps-danger)); }
 .ps-wf-told summary { cursor: pointer; color: var(--ps-muted); }
 .ps-wf-told[open] summary { margin-bottom: 4px; }
 .ps-wf-agent { display: grid; gap: 6px; justify-items: start; }
@@ -13293,7 +13300,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-alog-row[data-kind="result"] { border-left-color: var(--ps-success); background: var(--ps-highlight-background); }
 .ps-wf-alog-row[data-kind="workflow"] { border-left-color: var(--ps-muted); color: var(--ps-muted); }
 .ps-wf-alog-row[data-level="warning"] { color: var(--ps-warning); }
-.ps-wf-alog-row[data-level="error"] { color: var(--ps-danger); }
+.ps-wf-alog-row[data-level="error"] { color: var(--ps-wf-danger-text, var(--ps-danger)); }
 .ps-wf-alog-head { display: flex; gap: 8px; align-items: baseline; font-size: 0.8em; }
 .ps-wf-alog-label { font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
 .ps-wf-alog-head time { color: var(--ps-muted); }
@@ -13303,7 +13310,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-alog-row pre { margin: 4px 0 0; max-height: 14em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.9em; }
 .ps-wf-log { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .ps-wf-log li { display: grid; grid-template-columns: auto 1fr; gap: 8px; overflow-wrap: anywhere; }
-.ps-wf-log li[data-level="error"] { color: var(--ps-danger); }
+.ps-wf-log li[data-level="error"] { color: var(--ps-wf-danger-text, var(--ps-danger)); }
 .ps-wf-log li[data-level="warning"] { color: var(--ps-warning); }
 .ps-wf-log time { color: var(--ps-muted); white-space: nowrap; }
 /* Stage 2.4 (FU-26): the replay under a Workflow's graph, and the Log line of the visit it shows. */
@@ -13325,7 +13332,8 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
   outline: 1px solid color-mix(in srgb, var(--ps-accent) 45%, transparent);
 }
 .ps-wf-log .ps-link-button[data-action="replay-visit"] { text-align: left; overflow-wrap: anywhere; }
-@media (max-width: 600px) {
+/* Final review FUI-F1: the phone query, a phone held sideways included. */
+@media (max-width: 600px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-wf-replay-range { min-height: 44px; }
   .ps-wf-log .ps-link-button[data-action="replay-visit"] { min-height: 44px; }
   /* Review S2UI-F8: the replay's buttons (Step back, Play, Step on, Back to now, Load older visits) and a package
@@ -13444,8 +13452,9 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-tab.is-phone .ps-wf-tab-modes .ps-canvas-max-btn { min-width: 44px; height: 44px; }
 .ps-wf-tab.is-phone .ps-workflow-graph-controls .ps-mini-button.ps-workflow-tool-button { min-width: 44px; min-height: 44px; }
 /* UX2D-F4: a Workflow dialog is portalled out of the tab, so its phone sizes are its own: every button (Start, Cancel,
-   Delete, Keep it, Stop, Keep running), its Close and a link such as Add are 44 px targets. */
-@media (max-width: 600px) {
+   Delete, Keep it, Stop, Keep running), its Close and a link such as Add are 44 px targets. Final review FUI-F1: on a
+   phone held sideways too. */
+@media (max-width: 600px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-wf-dialog button,
   .ps-wf-dialog .ps-link-button { min-height: 44px; min-width: 44px; }
   .ps-wf-dialog .ps-link-button { display: inline-flex; align-items: center; justify-content: center; }

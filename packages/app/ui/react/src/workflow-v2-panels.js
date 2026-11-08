@@ -332,9 +332,10 @@ function ParallelSections({ selected, current, nodes, select, openSession }) {
 /**
  * Which branch a branch step's details show (owner batch 7, H2): a choice per branch that reached the step in the shown
  * visit of its parallel step; by default the first where it runs, else the one that ended last. `onBranch(index)` chooses.
+ * Its label is "Branch" for a step of a named branch (IR 11; final review FUI-F3), "Item" for a For each's.
  */
-function BranchPicker({ branches, chosen, onBranch = null }) {
-    return h("label", { className: "ps-workflow-field ps-workflow-branch-picker" }, h("span", null, "Item"),
+function BranchPicker({ branches, chosen, onBranch = null, named = false }) {
+    return h("label", { className: "ps-workflow-field ps-workflow-branch-picker" }, h("span", null, named ? "Branch" : "Item"),
         h("select", { className: "ps-workflow-input", value: String(chosen.index), "data-field": "branch", disabled: !onBranch,
             onChange: event => onBranch?.(Number(event.target.value)) },
         branches.choices.map(choice => h("option", { key: choice.index, value: String(choice.index) }, choice.label))));
@@ -555,7 +556,7 @@ export function WorkflowV2NodeSummary({ selected, nodes, select, openSession = n
     const known = id => nodes.some(node => node.id === id);
     return h("div", { className: "ps-wf-summary" },
         summary.what ? h("p", { className: "ps-wf-what", "data-node-what": "true" }, summary.what) : null,
-        branch ? h(BranchPicker, { branches: selected.branches, chosen: branch, onBranch }) : null,
+        branch ? h(BranchPicker, { branches: selected.branches, chosen: branch, onBranch, named: Boolean(selected.branchName) }) : null,
         h("div", { className: "ps-wf-facts" },
             fact("Now", summary.now, { "data-fact": "now" }),
             fact("Visits", summary.runs, { "data-fact": "runs", title: summary.runsTitle }),
@@ -620,7 +621,7 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
             chosen ? property("All branches", selected.stateLabel) : null,
             // Why the latest visit ended (owner decision q14; mock M14 "Inspect cancellation").
             workflowV2VisitEnding(current) ? property("Why it ended", workflowV2VisitEnding(current).text) : null,
-            branch ? h(BranchPicker, { branches: selected.branches, chosen: branch, onBranch }) : null,
+            branch ? h(BranchPicker, { branches: selected.branches, chosen: branch, onBranch, named: Boolean(selected.branchName) }) : null,
             kindProperties(selected, current).map(([label, value]) => property(label, value)),
             description.map((line, i) => h("p", { key: i }, line)),
             selected.type === "terminal" ? h("p", null, selected.summary || (selected.parallel ? "The branch ends at this step." : "The workflow ends at this step.")) : null,

@@ -88,17 +88,25 @@ async function routeChat(page, { reader = false, tested = false, emptyList = fal
     // Review S2UI-F4: a chat whose list is empty (its Workflows are stage 1 children 0107 did not import).
     // OF-S2-4: a test may give the list itself (`state.list`) and count its reads (`state.listReads`).
     const listed = () => (state.list ? state.list() : emptyList ? [] : [view(alpha), view(hn)]);
+    // Final review FUI-F2: a Workflow listed failed has its poll visit ended in a runtime error, and its run says so.
+    const FAILED_ERROR = JSON.stringify({ code: "execution_failed", message: "the feed did not answer" });
     const modelOf = (row) => {
         const live = state.hn.workflows.find((item) => item.workflowSessionId === row.sessionId);
-        const status = live?.runStatus === "completed" ? "completed" : "running";
+        const status = live?.runStatus === "completed" ? "completed" : live?.runStatus === "failed" ? "failed" : "running";
+        const failed = status === "failed";
         return {
             workflowId: row.sessionId,
             definition: { state: "published", semver: "1.0.0", currentRevision: 1, publishedRevision: 1, publishedDefinitionHash: `h-${row.sessionId}` },
             revision: { revision: 1, definitionHash: `h-${row.sessionId}`, valid: true, irSha256: "ir", name: "hn-top-watch", diagnostics: [] },
             graph: { revision: 1, initial: "poll", states: STATES, inputsSchema: INPUTS },
             runs: [{ runId: `run-${row.sessionId}`, mode: "live", status, revision: 1, outcome: status === "completed" ? "succeeded" : null }],
-            run: { runId: `run-${row.sessionId}`, mode: "live", status, outcome: status === "completed" ? "succeeded" : null, terminalState: null, output: null,
-                error: null, kvRevision: 1, kv: "{}", inputs: { topic: "rust" }, nodeExecutions: [], inbox: [], outbox: [] },
+            run: { runId: `run-${row.sessionId}`, mode: "live", status, outcome: status === "completed" ? "succeeded" : null, terminalState: failed ? "poll" : null,
+                output: null, error: failed ? JSON.stringify({ code: "execution_failed",
+                    message: "State 'poll' ended with runtime error 'execution_failed' and has no route for it.", details: { nodeExecutionId: "nx-poll-1" } }) : null,
+                kvRevision: 1, kv: "{}", inputs: { topic: "rust" },
+                nodeExecutions: failed ? [{ nodeExecutionId: "nx-poll-1", stateId: "poll", ordinal: 1, state: "completed", outcome: "execution_failed",
+                    resultKind: "runtime_error", errorPreview: FAILED_ERROR, winner: "effect", attempts: 0, kvRevision: 1 }] : [],
+                inbox: [], outbox: [] },
         };
     };
     await page.routeWebSocket("**/api/v1/ws", () => {});
@@ -205,7 +213,8 @@ async function routeChat(page, { reader = false, tested = false, emptyList = fal
                 }
                 return answer(modelOf(row));
             }
-            if (pathname.includes(`/sessions/${row.sessionId}/events`)) return answer([]);
+            // FUI-F2: a test may give a Workflow's events (its Whole Workflow Log).
+            if (pathname.includes(`/sessions/${row.sessionId}/events`)) return answer(state.events?.[row.sessionId] ?? []);
             if (pathname.endsWith(`/sessions/${row.sessionId}`)) return answer({ ...row, events: [], messages: [] });
         }
         return route.fallback();
@@ -774,6 +783,54 @@ test("S2UI-F8: at 390 px the locked definition's Make a copy and Use it for the 
 
 
 
+// Final review FUI-F1: on a phone held sideways (844 x 390, a touch screen) a chat's definition keeps its 44 px targets as at
+// 390 px: the Start dialog's controls (portalled out of the tab), the Delete… at the end of the line under the pickers, and a
+// package definition's Make a copy and Use it for the next Workflow.
+// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "FUI-F1" (from packages/app/web, after build).
+test.describe("FUI-F1: a chat's definition on a phone held sideways (844 x 390, touch)", () => {
+    test.use({ hasTouch: true, isMobile: true });
+    const target = async (locator, label) => {
+        const box = await locator.boundingBox();
+        expect(box, label).not.toBeNull();
+        expect(box.width, `${label}: width`).toBeGreaterThanOrEqual(44 - 0.01);
+        expect(box.height, `${label}: height`).toBeGreaterThanOrEqual(44 - 0.01);
+    };
+
+    test("FUI-F1 sideways: the Start dialog's controls and Delete… are 44 px targets", async ({ page }) => {
+        await page.setViewportSize({ width: 844, height: 390 });
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        await routeChat(page);
+        const main = await openTab(page);
+        await main.getByRole("combobox", { name: "Revision", exact: true }).selectOption("2");
+        await target(main.locator('[data-field="revision-info"] [data-action="delete"]'), "Delete…");
+        await main.locator('.ps-wf-head-actions [data-action="start"]').click();
+        const start = page.getByRole("dialog", { name: "Start hn-top-watch", exact: true });
+        await expect(start).toBeVisible();
+        await target(start.locator('[data-action="start-revision"]'), "Start #");
+        await target(start.getByRole("button", { name: "Cancel", exact: true }), "Cancel");
+        await target(start.getByRole("button", { name: "Close", exact: true }), "Close");
+        await target(start.getByRole("button", { name: "Add", exact: true }), "Add");
+        await shot(page, "fui-f1-start-dialog-sideways");
+        await start.getByRole("button", { name: "Cancel", exact: true }).click();
+        expect(errors).toEqual([]);
+    });
+
+    test("FUI-F1 sideways: a locked definition's Make a copy and Use it for the next Workflow are 44 px targets", async ({ page }) => {
+        await page.setViewportSize({ width: 844, height: 390 });
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        const state = await routePackages(page);
+        state.made = true;
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${COORD_ID}`);
+        const main = await showPanel(page);
+        const banner = main.locator('[data-chat-definition="locked"]');
+        await expect(banner.locator('[data-field="package"]')).toHaveText("from release-tools 1.2.0 · locked");
+        for (const action of ["copy", "use-newer"]) await target(banner.locator(`[data-action="${action}"]`), action);
+        expect(errors).toEqual([]);
+    });
+});
+
 // UX2D-F6: a revision saved from another page (the chat's row and its Workflows do not change) was not known here until
 // Save was refused or the page reloaded. The list is read again when the page is shown again or the window takes focus,
 // so the editor says a newer revision was saved before the person saves.
@@ -825,8 +882,11 @@ test("UX2D-F3, F4, F5: at 390 px the panel tabs, Compare pickers, dialog buttons
     };
     await target(main.locator(".ps-wf-tab-head").getByRole("button", { name: "Maximize canvas", exact: true }), "Maximize");
     await main.getByRole("combobox", { name: "Revision", exact: true }).selectOption("2");
-    await expect(main.getByRole("group", { name: "Workflow graph" })).toBeVisible();
+    // The graph shows a still picture first and loads React Flow after it; its controls come with React Flow (DEV run of
+    // b1652e70: counted before it loaded, none were there).
+    await expect(main.getByRole("group", { name: "Workflow graph" })).toHaveAttribute("data-renderer", "flow");
     const controls = main.getByRole("group", { name: "Graph view" }).getByRole("button");
+    await expect(controls.first()).toBeVisible();
     expect(await controls.count()).toBeGreaterThan(2);
     for (const button of await controls.all()) await target(button, `graph control ${await button.getAttribute("aria-label")}`);
     const tabs = main.getByRole("tablist", { name: "Workflow panel" }).getByRole("tab");
@@ -1167,13 +1227,18 @@ const viewerContrast = (page) => page.evaluate(() => {
         const fg = over({ ...colour, a: colour.a * opacity }, ground);
         out.push({ what, text: (element.textContent || element.getAttribute("class") || "").trim().slice(0, 24), ratio: Math.round(ratio(fg, ground) * 100) / 100, min });
     };
+    // Final review FUI-F2: the danger words (a failed last test, a failed Workflow's reason in the list, an error result, a
+    // Log's error line and an agent Log's) and every code box's highlighted code (a result's, a whole value's, the variables').
     const TEXT = [".ps-wf-picker-label", ".ps-wf-picker-face-text", '[data-field="revision-info"] > .ps-wf-info-text > span', ".ps-workflow-node-name",
         ".ps-workflow-node-meta", ".ps-workflow-node-start > span", ".ps-wf-what", ".ps-wf-fact span", ".ps-wf-fact strong", ".ps-wf-more > summary",
         ".ps-wf-sample-note", ".ps-wf-code span[class^='ps-code-']", ".ps-workflow-yaml-paint span[class^='ps-code-']", ".ps-wf-panel-tabs button",
-        ".ps-wf-line.is-error", ".ps-wf-bar-text"];
+        ".ps-wf-line.is-error", ".ps-wf-bar-text", ".ps-wf-last-test.is-failed", ".ps-wf-list-reason", ".ps-wf-result.is-error pre",
+        '.ps-wf-alog-row[data-level="error"]', '.ps-wf-log li[data-level="error"]', ".ps-wf-code-inline span[class^='ps-code-']"];
     for (const element of tab.querySelectorAll(TEXT.join(", "))) {
         if (!visible(element) || !(element.textContent || "").trim()) continue;
+        const before = out.length;
         measure("text", element, parse(getComputedStyle(element).color), behind(element), 4.5);
+        if (out.length > before) out.at(-1).selector = TEXT.find(selector => element.matches(selector)) ?? null;
     }
     for (const text of tab.querySelectorAll(".ps-workflow-edge-label text")) {
         const rect = text.parentElement.querySelector("rect");
@@ -1248,6 +1313,67 @@ for (const theme of listThemes()) {
         expect(yaml.filter(item => item.what === "text").length, `${theme.id}: the YAML's colours were measured`).toBeGreaterThan(5);
         const low = all.filter(item => item.ratio < item.min);
         expect(low, `${theme.id}: under the target`).toEqual([]);
+        expect(errors).toEqual([]);
+    });
+}
+
+// Final review FUI-F2: in every theme the danger words read 4.5:1 or more on what they are drawn on (gruvbox-dark and ms-dos
+// read 2.5:1 to 2.7:1 with the theme's own danger colour), and in win95 a failed step's error result sits in a white well as
+// the other code boxes do. Measured as drawn (viewerContrast): a failed last test under the pickers, a failed Workflow's
+// reason in the Workflows list, its failed step's error result in the Node panel, and its Log's error line.
+// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "FUI-F2 contrast" (from packages/app/web, after build).
+for (const theme of listThemes()) {
+    test(`FUI-F2 contrast: a failed Workflow's danger words and error result read 4.5:1 or more, ${theme.id}`, async ({ page }) => {
+        await page.setViewportSize({ width: 1440, height: 900 });
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        const state = await routeChat(page, { tested: true });
+        state.hn.revisions[1].lastTest.verdict = "failed";
+        state.hn.workflows[0].runStatus = "failed";
+        state.rows[0].status = "failed";
+        const at = seconds => new Date(now - 200_000 + seconds * 1_000).toISOString();
+        state.events = { [W1]: [
+            { sessionId: W1, seq: 1, eventType: "workflow.started", createdAt: at(0), data: { runId: `run-${W1}`, mode: "live", revision: 1,
+                definitionHash: `h-${W1}`, irSha256: "ir", name: "hn-top-watch", version: "1.0.0", initial: "poll", states: STATES } },
+            { sessionId: W1, seq: 2, eventType: "workflow.state_started", createdAt: at(1), data: { runId: `run-${W1}`, nodeExecutionId: "nx-poll-1",
+                stateId: "poll", scopeId: "root", ordinal: 1, type: "script", step: 1, kvRevision: 1 } },
+            { sessionId: W1, seq: 3, eventType: "workflow.failed", createdAt: at(4), data: { runId: `run-${W1}`, stateId: "poll", outcome: null,
+                error: { code: "execution_failed", message: "the feed did not answer" } } },
+        ] };
+        await page.route("**/me/profile", (route) => route.fulfill({ json: { ok: true, result: { isAdmin: false, profileSettings: { themeId: theme.id } } } }));
+        const main = await openTab(page);
+        await expect(page.locator("html")).toHaveAttribute("data-ps-theme", theme.id);
+        await main.getByRole("combobox", { name: "Revision", exact: true }).selectOption("2");
+        await expect(main.locator('[data-last-test="failed"]')).toBeVisible();
+        await page.mouse.move(2, 400);
+        const definition = await viewerContrast(page);
+        // The Workflows list: #1 failed, its reason under its state.
+        await viewSwitch(main, "Workflows").click();
+        const list = main.getByRole("table", { name: "Workflows of hn-top-watch" });
+        await expect(list.locator(`[data-session-id="${W1}"] .ps-wf-list-reason`)).toBeVisible();
+        const listed = await viewerContrast(page);
+        // #1: its failed step's error result, then its Log.
+        await list.getByRole("button", { name: "Open hn-top-watch #1", exact: true }).click();
+        await expect(main.locator(`.ps-wf-body[data-session-id="${W1}"]`)).toBeVisible();
+        await main.getByRole("group", { name: "Workflow graph" }).getByRole("button", { name: "Inspect poll", exact: true }).click();
+        await expect(main.locator(".ps-wf-result.is-error pre")).toBeVisible();
+        await page.mouse.move(2, 400);
+        const result = await viewerContrast(page);
+        if (SHOTS) await main.screenshot({ path: path.join(SHOTS, `fui-f2-result-${theme.id}.png`) });
+        await main.getByRole("tablist", { name: "Workflow panel" }).getByRole("tab", { name: "Log", exact: true }).click();
+        await expect(main.locator('.ps-wf-log li[data-level="error"]').first()).toBeVisible();
+        const log = await viewerContrast(page);
+        if (SHOTS) await main.screenshot({ path: path.join(SHOTS, `fui-f2-log-${theme.id}.png`) });
+        const all = [...definition, ...listed, ...result, ...log];
+        for (const selector of [".ps-wf-last-test.is-failed", ".ps-wf-list-reason", ".ps-wf-result.is-error pre", '.ps-wf-log li[data-level="error"]']) {
+            expect(all.some(item => item.selector === selector), `${theme.id}: measured ${selector}`).toBe(true);
+        }
+        const low = all.filter(item => item.ratio < item.min);
+        expect(low, `${theme.id}: under the target`).toEqual([]);
+        if (theme.id === "win95") {
+            const well = await main.locator(".ps-wf-result.is-error pre").evaluate(element => getComputedStyle(element).backgroundColor);
+            expect(well, "win95: the error result is a white well").toBe("rgb(255, 255, 255)");
+        }
         expect(errors).toEqual([]);
     });
 }

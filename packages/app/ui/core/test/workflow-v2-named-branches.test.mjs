@@ -80,6 +80,13 @@ test("the Node panel names the branches: its Branches section, a blocked join, t
     assert.ok(careful.description.includes("Branch careful of views."), careful.description.join(" | "));
     assert.deepEqual(careful.branches.choices.map(choice => choice.label), ["Branch careful · ✕ crashed"]);
     assert.equal(careful.where["nx-careful-work"].label, "branch careful");
+    // Final review FUI-F3: its picker is labelled Branch; a For each's step keeps Item.
+    const picker = renderToStaticMarkup(React.createElement(WorkflowV2NodeSummary, { selected: careful, nodes: projection.nodes, select: () => {} }));
+    assert.match(picker, /<span>Branch<\/span><select[^>]*data-field="branch"/);
+    assert.ok(!/<span>Item<\/span>/.test(picker), picker);
+    const { branchName: _branchName, ...item } = careful;
+    const forEach = renderToStaticMarkup(React.createElement(WorkflowV2NodeSummary, { selected: item, nodes: projection.nodes, select: () => {} }));
+    assert.match(forEach, /<span>Item<\/span><select[^>]*data-field="branch"/);
 });
 
 test("the TUI's node details count branches and list them by name", async () => {

@@ -3389,6 +3389,94 @@ test("FU-26 replay: a running Workflow has no replay; on a phone a finished one'
     expect(errors).toEqual([]);
 });
 
+// Final review FUI-F1: on a phone held sideways (844 x 390, a touch screen) the Workflow tab shows maximized over the page,
+// and the Workflow's touch targets keep 44 px there too, as at 390 px: a Workflow dialog's controls (portalled out of the
+// tab), a finished Workflow's replay controls, and the drafts' Show it and Start…. Before, those rules applied only to
+// widths of 600 px or less. The tab's own header stays unfolded in this layout (intended).
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "FUI-F1" (from packages/app/web, after build).
+test.describe("FUI-F1: a phone held sideways (844 x 390, touch)", () => {
+    test.use({ hasTouch: true, isMobile: true });
+    const SIDEWAYS = { width: 844, height: 390 };
+    const target = async (locator, label) => {
+        const box = await locator.boundingBox();
+        expect(box, label).not.toBeNull();
+        expect(box.width, `${label}: width`).toBeGreaterThanOrEqual(44 - 0.01);
+        expect(box.height, `${label}: height`).toBeGreaterThanOrEqual(44 - 0.01);
+    };
+    /** The Workflow tab on a phone held sideways: it opens by itself, else by the Workflow button. */
+    const sidewaysTab = async (page) => {
+        const tab = workflowTab(page);
+        await tab.waitFor({ state: "visible", timeout: 10_000 }).catch(() => showWorkflowPane(page));
+        await expect(tab).toBeVisible();
+        return tab;
+    };
+
+    test("FUI-F1 sideways: the Stop… dialog's buttons and its Close are 44 px targets", async ({ page }) => {
+        await page.setViewportSize(SIDEWAYS);
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        await routeV2(page, { onCommand: (route, command) => accept(route, command, { status: "stopping" }) });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        const main = await sidewaysTab(page);
+        await main.locator(".ps-wf-bar").first().getByRole("button", { name: "Stop…", exact: true }).click();
+        const dialog = page.getByRole("dialog", { name: "Stop watch-v2 #1", exact: true });
+        await expect(dialog).toBeVisible();
+        const buttons = dialog.getByRole("button");
+        expect(await buttons.count()).toBeGreaterThanOrEqual(2);
+        for (const button of await buttons.all()) await target(button, `Stop dialog ${await button.getAttribute("aria-label") ?? await button.textContent()}`);
+        await target(dialog.locator(".ps-modal-close"), "Close");
+        await shot(page, "fui-f1-stop-dialog-sideways");
+        await dialog.getByRole("button", { name: "Keep running", exact: true }).first().click();
+        expect(errors).toEqual([]);
+    });
+
+    test("FUI-F1 sideways: a finished Workflow's replay slider and buttons are 44 px targets", async ({ page }) => {
+        await page.setViewportSize(SIDEWAYS);
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        const { events, model } = replayFixture();
+        await routeApi(page, { workflowEvents: events, workflowState: { title: "Workflow: watch-v2", status: "completed" },
+            onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: model } }) });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        const main = await sidewaysTab(page);
+        const replay = main.getByRole("group", { name: "Replay" });
+        await expect(replay).toBeVisible();
+        expect((await replay.getByRole("slider", { name: "Replay position" }).boundingBox()).height).toBeGreaterThanOrEqual(44 - 0.01);
+        for (const name of ["Step back", "Play the replay", "Step on"]) await target(replay.getByRole("button", { name, exact: true }), name);
+        await replay.getByRole("button", { name: "Step back", exact: true }).click();
+        await target(replay.getByRole("button", { name: "Back to now", exact: true }), "Back to now");
+        await shot(page, "fui-f1-replay-sideways");
+        expect(errors).toEqual([]);
+    });
+
+    test("FUI-F1 sideways: the drafts' Show it and Start… are 44 px targets", async ({ page }) => {
+        await page.setViewportSize(SIDEWAYS);
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        const draftIds = Array.from({ length: 3 }, (_, index) => `d${String(index + 1).padStart(7, "0")}-2222-3333-4444-555555555555`);
+        const draftOf = (workflowId, semver) => ({ ...V2_READ_MODEL, workflowId, definition: { state: "draft", semver, currentRevision: 1, publishedRevision: null },
+            revision: { ...V2_READ_MODEL.revision, definitionHash: `hash-${workflowId}`, irSha256: `ir-${semver}` }, runs: [], run: null });
+        const models = { ...OWNED_MODELS };
+        draftIds.forEach((id, index) => { models[id] = draftOf(id, `2.${index}.0`); });
+        const { rows } = await routeOwned(page, { models });
+        rows.splice(0, rows.length, { ...OWNED_ROWS[0], status: "running" }, { ...OWNED_ROWS[1], status: "failed" },
+            ...draftIds.map((sessionId, index) => ({ sessionId, title: "Workflow: watch-v2", status: "pending", sessionKind: "workflow", parentSessionId: AGENT_ID,
+                createdAt: now - 20_000 + index * 100, updatedAt: now - 20_000 + index * 100 })));
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+        const main = await sidewaysTab(page);
+        await viewSwitch(main, "Workflows").click();
+        await expect(main.locator(".ps-wf-unstarted")).toContainText("Not started: 3 drafts");
+        const links = main.locator(".ps-wf-unstarted .ps-link-button");
+        expect(await links.count()).toBeGreaterThan(0);
+        for (const link of await links.all()) {
+            await link.scrollIntoViewIfNeeded();
+            await target(link, `draft action ${await link.textContent()}`);
+        }
+        await shot(page, "fui-f1-drafts-sideways");
+        expect(errors).toEqual([]);
+    });
+});
+
 // Review S2UI-F5: replaying a visit that ran in a branch shows THAT visit in Node details: the picker shows its branch and
 // Open the agent chat opens its own chat, although another branch of the same step was running at that moment.
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "S2UI-F5" (from packages/app/web, after build).
