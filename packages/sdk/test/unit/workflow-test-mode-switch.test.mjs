@@ -233,9 +233,10 @@ test("a person's commands (Web API, MCP): with test mode off a test operation an
 });
 
 test("base guidance: with test mode off, neither the guidance nor the authoring pointer mentions testing", async () => {
-    assert.equal(workflowSessionGuidance(true), WORKFLOW_SESSION_GUIDANCE);
+    // The full engine's text (a request turn); the default engine's is in workflow-guidance-engine.test.mjs (AOS-F1).
+    assert.equal(workflowSessionGuidance(true, { fullEngine: true }), WORKFLOW_SESSION_GUIDANCE);
     assert.equal(workflowAuthoringPointer(true), WORKFLOW_AUTHORING_POINTER);
-    const guidance = workflowSessionGuidance(false);
+    const guidance = workflowSessionGuidance(false, { fullEngine: true });
     assert.ok(!guidance.includes("test_waiting") && !guidance.includes("test_respond"));
     assert.ok(guidance.includes("- `request`: answer it once with `respond_session_request`"));
     assert.ok(guidance.includes("\n\nA person's \"Ask the parent agent\" note"));
@@ -243,14 +244,19 @@ test("base guidance: with test mode off, neither the guidance nor the authoring 
     assert.ok(!/\btest/i.test(workflowAuthoringPointer(false)));
     assert.ok(workflowAuthoringPointer(false).includes("load the `workflow-authoring` skill"));
 
-    const prompt = () => {
+    const prompt = (requestTurn = false) => {
         const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "Legacy base." });
         manager.workflowScriptsEnabled = true;
-        return JSON.stringify(manager._buildSystemMessage("session", { baseAgentPolicy: { version: "v2", fingerprint: "test", revision: null } }));
+        return JSON.stringify(manager._buildSystemMessage("session", { baseAgentPolicy: { version: "v2", fingerprint: "test", revision: null },
+            ...(requestTurn ? { workflowMilestoneTurn: true } : {}) }));
     };
     assert.ok(prompt().includes("## Workflow Sessions"));
-    assert.ok(!prompt().includes("test_waiting"), "off by default");
-    await withFlag("on", () => { assert.ok(prompt().includes("test_waiting")); });
+    assert.ok(!prompt().includes("test_waiting") && !prompt(true).includes("test_waiting"), "off by default");
+    // On, a request turn (the full engine, where test runs exist) is told of a held call; a default session never gets one (AOS-F1).
+    await withFlag("on", () => {
+        assert.ok(prompt(true).includes("test_waiting"));
+        assert.ok(!prompt().includes("test_waiting"));
+    });
 });
 
 // Review SF-5: with test mode off, a test run kept from while it was on is not a run of the workflow to any server read

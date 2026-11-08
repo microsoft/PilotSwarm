@@ -9980,8 +9980,6 @@ const KEYBINDING_HELP = [
     ] },
 ];
 
-/** The help lines about the Workflow pane and its view: left out while Workflows are off (stage 2.0). */
-
 export function buildHelpModalRows() {
     const rows = [];
     const keysWidth = 18;

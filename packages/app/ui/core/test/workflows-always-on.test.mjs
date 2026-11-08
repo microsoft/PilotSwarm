@@ -6,6 +6,7 @@
 // Run: node --test packages/app/ui/core/test/workflows-always-on.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import * as core from "../src/index.js";
 import { readModel } from "./workflow-v2-fixtures.mjs";
 
@@ -43,6 +44,14 @@ test("no switch: the state has no Workflows flag, the module no longer exports o
     const before = store.getState();
     store.dispatch({ type: "ui/workflowsEnabled", on: false });
     assert.equal(store.getState(), before, "the old action is unknown, so the state is the same object");
+});
+
+// Review AOU-F1 (always-on review, low): no comment in the shared model still says Workflows can be off.
+test("no source comment says Workflows are off", () => {
+    for (const name of ["selectors.js", "state.js", "reducer.js", "controller.js", "workflow-owner.js", "workflow-lifecycle.js"]) {
+        const text = readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
+        assert.doesNotMatch(text, /Workflows are off|while Workflows are off/i, name);
+    }
 });
 
 test("Workflow rows are kept with no opt-in; a later update of one lands", () => {

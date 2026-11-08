@@ -304,7 +304,7 @@ test("spawn_workflow is idempotent per key, and per tool call without one", asyn
     assert.match(again, /found the existing workflow session .* state running\)\. Nothing new was started/);
 });
 
-test("spawn_workflow refuses when workflows are off or the YAML is wrong, without creating anything", async () => {
+test("spawn_workflow refuses when Workflow scripts are off or the YAML is wrong, without creating anything", async () => {
     const off = spawnDeps({ enabled: () => false });
     assert.match(await spawnWorkflowFromTool({ yaml: yaml() }, {}, off.deps), /refused — Workflow scripts are disabled on this worker/);
     assert.equal(off.created.length, 0);

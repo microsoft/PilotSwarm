@@ -248,7 +248,9 @@ a Start claimed and not admitted yet) share one budget of 50 (`CHILD_LIMIT`,
 429). `spawn_agent` and Start count it with the same rule, under an exclusive
 lock on the chat, in the transaction that makes the child, so two at the same
 moment cannot both take the 50th place. Workflows are always on, so this
-budget always applies (a system agent's `spawn_agent` is not budgeted).
+budget always applies. System children are not counted, and a system child is
+created without the atomic budget; a calling system agent is not exempt: its
+`spawn_agent` is still refused once its counted children reach 50.
 
 **Models of agent nodes (OF-S2-7).** A definition never names a model,
 reasoning effort or context tier (a `model` key stays `WORKFLOW_FIELD_UNKNOWN`),
@@ -876,6 +878,12 @@ portal, the MCP server and the terminal UI have them.
   tuner gets no workflow tool; a session inside a Workflow gets no definition
   tools (`workflow_definition`, `spawn_workflow`, `update_workflow`); an agent
   node's chat also gets `complete_workflow_node` and its node's tool limit.
+- The guidance teaches only what the session's engine runs. A turn on the full
+  engine (`PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT=isolated-test-only`, below)
+  is taught agent, parallel and request states, clock waits and revision tests.
+  Every other session, so every default deployment, is taught script, wait,
+  messaging (receive and send) and terminal states only: its engine refuses
+  the others when a definition is saved.
 - The portal and the terminal UI always show the Workflow button, tab, pane,
   `w` key and Workflow rows.
 - MCP always registers `read_workflow`; `update_workflow` still needs the
@@ -889,7 +897,7 @@ value (`off` included), is ignored with one startup warning on each worker,
 the portal and the MCP server: "PILOTSWARM_WORKFLOWS is ignored: Workflows are
 always on. Remove it from the deployment's settings."
 
-The four tools, the guidance and the screens are there whether or not the
+The five tools, the guidance and the screens are there whether or not the
 workers run scripts. `PILOTSWARM_WORKFLOW_SCRIPTS` (below) decides only whether
 script nodes run; it is off unless set to `1`. Where they do not run, a
 definition with a script node is refused when it is saved and when it is

@@ -50,7 +50,7 @@ export interface SpawnAgentAdmission {
     count: number;
     /** The refusal's words when `count` reached `max`, else null. */
     refusal: string | null;
-    /** The creation's options: the atomic budget (none for a system agent). */
+    /** The creation's options: the atomic budget (none when the child is a system agent; the caller is counted either way). */
     creation: { childBudget?: { max: number } };
 }
 
@@ -71,7 +71,7 @@ export async function spawnAgentAdmission(input: {
     return { count, refusal, creation: spawnAgentCreationBudget(input.isSystem === true, input.max) };
 }
 
-/** The creation's budget option for a sub-agent: the atomic budget, never for a system agent. */
+/** The creation's budget option for a sub-agent: the atomic budget, never when the child is a system agent. */
 export function spawnAgentCreationBudget(isSystem: boolean, max: number): { childBudget?: { max: number } } {
     return isSystem ? {} : { childBudget: { max } };
 }

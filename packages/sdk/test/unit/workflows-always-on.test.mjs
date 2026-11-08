@@ -178,6 +178,16 @@ test("agents: no handler, bridge, lifecycle helper or spawn path reads a Workflo
     assert.equal(fs.existsSync(new URL("workflow/workflows-switch.ts", SRC)), false);
 });
 
+// Review AOS-F2 and AOU-F2 (always-on review, low): the operator text counts five tools, and exempts system children from
+// the budget, never a calling system agent (child-budget.ts: the count leaves out system children; admission still refuses).
+test("docs: the five Workflow tools, and the budget exempts system children only", () => {
+    const doc = fs.readFileSync(new URL("../../../../docs/developer/building/workflow-sessions.md", import.meta.url), "utf8");
+    assert.ok(!/The four tools/.test(doc));
+    assert.match(doc, /The five tools, the guidance and the screens are there whether or not the\s+workers run scripts\./);
+    assert.ok(!/a system agent's `spawn_agent` is not budgeted/.test(doc));
+    assert.match(doc, /System children are not counted[\s\S]{0,120}a calling system agent is not exempt/);
+});
+
 /** A management client made without start(); `catalog` is what it reads. */
 function managementClient(config, catalog) {
     return Object.assign(Object.create(PilotSwarmManagementClient.prototype), { config, _catalog: catalog, _started: true });
