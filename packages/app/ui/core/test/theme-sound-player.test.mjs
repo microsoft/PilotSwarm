@@ -220,6 +220,46 @@ test("action cues sound only for a theme that has them, while its sound is on", 
     player.dispose();
 });
 
+test("the accent is one quiet short sweep, limited to the dawn sound and once per 30 seconds", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    const audio = fakeAudio();
+    const player = createThemeSoundPlayer({ win: audio.win });
+    player.update({ sound: dawn, enabled: true, volume: 0.4 });
+    assert.equal(player.cue("accent"), true);
+    const note = audio.stats.oscs.at(-1);
+    assert.equal(note.type, "triangle");
+    assert.equal(note.end, 0.305);
+    assert.equal(player.cue("accent"), false);
+    audio.stats.ctx.state = "suspended";
+    advance(t, 30_000);
+    assert.equal(player.cue("accent"), false, "no sound before browser audio unlock");
+    audio.stats.ctx.state = "running";
+    assert.equal(player.cue("accent"), true);
+    player.update({ sound: { ...fire, cues: true }, enabled: true, volume: 0.4 });
+    assert.equal(player.cue("accent"), false, "a different theme never gets the dot cue");
+    player.dispose();
+});
+
+test("muting, zero volume and hidden tabs silence and cut the accent cue", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    for (const change of [
+        player => player.update({ sound: dawn, enabled: false, volume: 0.4 }),
+        player => player.update({ sound: dawn, enabled: true, volume: 0 }),
+        (_player, audio) => { audio.win.document.hidden = true; },
+    ]) {
+        const audio = fakeAudio();
+        const player = createThemeSoundPlayer({ win: audio.win });
+        player.update({ sound: dawn, enabled: true, volume: 0.4 });
+        assert.equal(player.cue("accent"), true);
+        const note = audio.stats.oscs.at(-1);
+        change(player, audio);
+        advance(t, 400);
+        assert.equal(player.cue("accent"), false);
+        assert.equal(note.cut, true);
+        player.dispose();
+    }
+});
+
 // Cue buses are every gain wired to the limiter after the ambient's master.
 const cueBusesOf = (audio) => audio.stats.gains.filter((g) => g.to.has(audio.stats.limiter)).slice(1);
 const cueBusOf = (audio) => cueBusesOf(audio).at(-1);

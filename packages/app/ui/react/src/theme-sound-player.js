@@ -282,7 +282,23 @@ function startDawn(ctx, output, cache) {
 // send: two rising notes. done: one low, warm chime.
 function playCue(ctx, output, name, wet, track = null) {
     const at = ctx.currentTime + 0.005;
-    if (name === "tick") {
+    if (name === "accent") {
+        const osc = ctx.createOscillator();
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(660, at);
+        osc.frequency.exponentialRampToValueAtTime(1320, at + 0.18);
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.0001, at);
+        gain.gain.linearRampToValueAtTime(0.025, at + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.28);
+        osc.connect(gain);
+        gain.connect(output);
+        const entry = { osc, gain };
+        track?.add(entry);
+        osc.onended = () => { track?.delete(entry); gain.disconnect(); };
+        osc.start(at);
+        osc.stop(at + 0.3);
+    } else if (name === "tick") {
         bell(ctx, output, at, 2300 + Math.random() * 500, 0.07, 0.07, 2.4, track);
     } else if (name === "send") {
         bell(ctx, output, at, 880, 0.09, 0.45, 2.76, track);
@@ -509,6 +525,7 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
         cue(name) {
             const gap = THEME_SOUND_CUES[name];
             if (gap === undefined || !enabled || !sound?.cues || !doc || doc.hidden) return false;
+            if (name === "accent" && sound.id !== "dawn") return false;
             if (!ctx || ctx.state !== "running") return false;
             const now = Date.now();
             if (now - (lastCue[name] ?? -Infinity) < gap) return false;

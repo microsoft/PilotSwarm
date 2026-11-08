@@ -3,7 +3,7 @@ import { CompactViewNavigation } from "./navigation/CompactViewNavigation.jsx";
 import { useMoa, MoaWorkspace, MobileZen } from "./moa/MoaWorkspace.jsx";
 import React from "react";
 import { createPortal } from "react-dom";
-import { createWebPilotSwarmController, PilotSwarmWebApp, CogGlyph, setPortalLinkOrigins, setPortalWorkspaceFiles } from "pilotswarm/ui-react";
+import { createWebPilotSwarmController, PilotSwarmWebApp, CogGlyph, setPortalLinkOrigins, setPortalWorkspaceFiles, themeSoundPlayer } from "pilotswarm/ui-react";
 import { jsonMergePatch } from "pilotswarm-sdk/api";
 import { getTheme, matchesMobileViewport } from "pilotswarm/ui-core";
 import { selectSessionFilterExceptionNotice, selectStatusBar } from "pilotswarm/ui-core";
@@ -480,7 +480,10 @@ function PortalHeaderAccent({ controller }) {
         const element = ref.current;
         const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
         const accent = createHeaderAccent({
-            start: () => { element.dataset.active = "true"; },
+            start: () => {
+                element.dataset.active = "true";
+                themeSoundPlayer().cue("accent");
+            },
             stop: () => { element.dataset.active = "false"; },
         });
         const sync = () => {
