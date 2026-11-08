@@ -1320,7 +1320,10 @@ export class PortalRuntime {
                     sender: this._buildSender(authContext, gate.snapshot, { isAdmin }),
                 });
             case "sendSessionEvent":
-                return this.transport.sendSessionEvent(safeParams.sessionId, safeParams.eventName, safeParams.data);
+                // F-FU9-2: server-stamped as for sendMessage; a sender inside the event's data is dropped (client.ts sendEvent).
+                return this.transport.sendSessionEvent(safeParams.sessionId, safeParams.eventName, safeParams.data, {
+                    sender: this._buildSender(authContext, gate.snapshot, { isAdmin }),
+                });
 
             // ── Session sharing (security model) ────────────────────────
             case "getSessionAccess": {

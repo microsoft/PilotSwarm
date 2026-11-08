@@ -1720,7 +1720,12 @@ export class PilotSwarmSession {
         };
     }
 
-    async sendEvent(eventName: string, data: unknown): Promise<void> {
+    /**
+     * Enqueue a custom event on this session's message queue. F-FU9-2: the event's own `sender` is never trusted (a
+     * client could label a person's prompt as an agent's or the runtime's and so merge it with one, FU-9): it is
+     * dropped, and `opts.sender`, which the API edge stamps from the validated caller as for sendMessage, is used.
+     */
+    async sendEvent(eventName: string, data: unknown, opts?: { sender?: MessageSender }): Promise<void> {
         // Durable workflow intake (design workflow-durable-intake.md section 3): `workflowIntake` is reserved on a
         // session's message queue, where only a workflow's delivery puts it on a copy. This is the generic event
         // ingress every transport reaches; it refuses the field (defense in depth: the recipient's claim verifies every
@@ -1731,8 +1736,19 @@ export class PilotSwarmSession {
             && Object.hasOwn(value, "workflowIntake");
         const refusal = () => Object.assign(new Error("A session event cannot carry the reserved field workflowIntake."), { code: "INVALID_REQUEST", status: 400 });
         if (reserved(data)) throw refusal();
-        const serialized = JSON.stringify(data);
+        let serialized = JSON.stringify(data);
         if (serialized !== undefined && reserved(JSON.parse(serialized))) throw refusal();
+        if (serialized !== undefined) {
+            const parsed = JSON.parse(serialized);
+            if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+                const sender = normalizeMessageSender(opts?.sender);
+                if (Object.hasOwn(parsed, "sender") || sender) {
+                    delete parsed.sender;
+                    if (sender) parsed.sender = sender;
+                    serialized = JSON.stringify(parsed);
+                }
+            }
+        }
         // A person's custom event cannot feed a workflow agent state's subtree either (design 03, R13). A client that
         // offers no workflow store (no lineage to read) has no agent states: the policy's own rule for a null store.
         await assertWorkflowHumanInputAllowed(this.client._workflowStoreOrNull?.() ?? null, this.sessionId, "event");

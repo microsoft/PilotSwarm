@@ -1051,7 +1051,9 @@ function* stashBudgetRefusedPrompt(
     // a LATER turn that carries its own note — so it is dropped here, and the
     // guards below see the bare prompt exactly as ≤1.0.70 did.
     const bare = splitSystemContextBlock(typeof sourcePrompt === "string" ? sourcePrompt : "").prompt;
-    const prompt = bare.trim();
+    // FU-9: a provider wake can merge with another non-person prompt (never with a person's words). Its own paragraph is
+    // machinery and is dropped; the other prompt's words are kept, as when it arrived alone.
+    const prompt = bare.split("\n\n").filter((part) => part.trim() !== PROVIDER_BUDGET_WAKE_PROMPT).join("\n\n").trim();
     if (!prompt) return;
     if (/^\[SYSTEM:/i.test(prompt)) return;
     if (prompt === PROVIDER_BUDGET_WAKE_PROMPT) return;

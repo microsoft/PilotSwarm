@@ -13,6 +13,10 @@ import { createRuntime, runLoop } from "../../src/orchestration/runtime.ts";
 import { appendToFifo, decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "../../src/orchestration/queue.ts";
 import * as lifecycle from "../../src/orchestration/lifecycle.ts";
 import * as agents from "../../src/orchestration/agents.ts";
+import { sendInternalSessionMessage, resetSessionMessageRateLimitsForTests } from "../../src/session-messages.ts";
+import { PilotSwarmSession } from "../../src/client.ts";
+import { PROVIDER_BUDGET_WAKE_PROMPT } from "../../src/provider-budgets.ts";
+import { wakeProviderPausedSessions } from "../../src/provider-wake.ts";
 import { CHILD_UPDATE_BATCH_MS, FIFO_BUCKET_COUNT, MAX_BUCKET_BYTES, MAX_FIFO_ITEM_BYTES, NON_BLOCKING_TIMER_MS } from "../../src/orchestration/state.ts";
 
 // The real runtime fails the whole orchestration on a KV value above this many
@@ -367,6 +371,56 @@ describe("FU-9: a person's words and a non-person prompt run as two turns", () =
         const digest = turns.filter(t => t.includes("RESULT-A") || t.includes("RESULT-B"));
         expect(digest).toHaveLength(1);
         expect(digest[0]).toMatch(/RESULT-A[\s\S]*RESULT-B|RESULT-B[\s\S]*RESULT-A/);
+    });
+
+    // F-FU9-1: the runtime's own enqueue sites stamp their sender, so their real payloads stay apart from a person's words.
+    const enqueuedBy = async (send) => {
+        const enqueued = [];
+        await send({ enqueueEvent: async (_instance, _queue, payload) => { enqueued.push(JSON.parse(payload)); }, getStatus: async () => ({ status: "Running" }) });
+        return enqueued;
+    };
+
+    it("F-FU9-1: a queued person's prompt then a send_session_message prompt (its real payload) give two turns", async () => {
+        resetSessionMessageRateLimitsForTests();
+        const [message] = await enqueuedBy(client => sendInternalSessionMessage({
+            catalog: { getSession: async id => ({ sessionId: id, title: id === "peer" ? "Peer chat" : "This chat", state: "running" }) },
+            duroxideClient: client,
+        }, { fromSessionId: "peer", toSessionId: "this", subject: "ping", body: "SESSION-MESSAGE-BODY" }));
+        const h = harness();
+        h.messages.push({ prompt: "PERSON-1", clientMessageIds: ["c-1"] }, message);
+        h.results.push({ type: "completed", content: "turn 1" }, { type: "completed", content: "turn 2" });
+        while (h.turns.length < 2 && h.step()) { /* one turn per pass */ }
+        const turns = h.turns.map(t => String(t[0]));
+        expect(turns).toHaveLength(2);
+        expect(turns[0]).toContain("PERSON-1");
+        expect(turns[0]).not.toContain("SESSION-MESSAGE-BODY");
+        expect(turns[1]).toContain("SESSION-MESSAGE-BODY");
+    });
+
+    it("F-FU9-2: an event that claims the runtime's sender is the person's: it does not merge with an agent update", async () => {
+        const [event] = await enqueuedBy(async client => {
+            const session = Object.assign(Object.create(PilotSwarmSession.prototype), {
+                sessionId: "this", client: { _workflowStoreOrNull: () => null, _getDuroxideClient: () => client } });
+            await session.sendEvent("nudge", { prompt: "CLAIMED-SYSTEM", sender: { kind: "system", display: "workflow message" } });
+        });
+        expect(event.sender).toBeUndefined();
+        const turns = drainAndRun(harness(), [prompt("CLAIMED-SYSTEM", event.sender ? { sender: event.sender } : {}),
+            prompt("AGENT-UPDATE", { sender: AGENT })], 2);
+        expect(turns).toHaveLength(2);
+        expect(turns[0]).toContain("CLAIMED-SYSTEM");
+        expect(turns[0]).not.toContain("AGENT-UPDATE");
+        expect(turns[1]).toContain("AGENT-UPDATE");
+    });
+
+    it("a provider wake merged with an agent's prompt: when the budget still refuses, the agent's words are stashed and the wake is not", async () => {
+        const [wake] = await enqueuedBy(client => wakeProviderPausedSessions({ providers: { pausedFor: async () => ["this"] } }, client, "azure-openai"));
+        expect(wake).toEqual({ prompt: PROVIDER_BUDGET_WAKE_PROMPT, sender: { kind: "system", display: "provider budget" } });
+        const h = harness();
+        appendToFifo(h.runtime, [prompt(wake.prompt, { sender: wake.sender }), prompt("AGENT-WORDS for the paused chat", { sender: AGENT })]);
+        h.results.push({ type: "wait", seconds: 30, reason: "budget", budget: true });
+        h.step();
+        expect(h.turns).toHaveLength(1);
+        expect(h.runtime.state.budgetStash?.map(entry => entry.prompt)).toEqual(["AGENT-WORDS for the paused chat"]);
     });
 });
 

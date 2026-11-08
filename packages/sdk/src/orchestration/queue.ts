@@ -1545,7 +1545,9 @@ function* processAnswer(runtime: DurableSessionRuntime, answerItem: any): Genera
 
 /**
  * FU-9: whether a queued prompt is a person's words: its sender is not an agent or the runtime (kind `agent` or
- * `system`, which the runtime always stamps); a person's sender, or none (a client that names no sender), is a person's.
+ * `system`). Every prompt the runtime enqueues itself carries one of these (message-sender.ts agentSender and
+ * systemSender; test/unit/fu9-sender-stamps.test.mjs checks every enqueue site), and a client's custom event cannot
+ * claim one (client.ts sendEvent). A person's sender, or none (a client that names no sender), is a person's.
  */
 function isPersonPrompt(item: any): boolean {
     const kind = normalizeMessageSender(item?.sender)?.kind;

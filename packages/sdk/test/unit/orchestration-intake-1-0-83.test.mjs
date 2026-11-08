@@ -230,6 +230,12 @@ const TURN_CHANGED_82 = [
     "    let turnSystemPrompt = state.pendingSystemPrompt;",
     "    state.pendingSystemPrompt = undefined;",
     "    if (prompt && state.runtimeModelNotice) {",
+    // FU-9 follow-on (F-FU9 item 3b): the budget stash drops a merged provider wake's own paragraph (TURN_FU9_ADDED).
+    "    const prompt = bare.trim();",
+];
+/** FU-9 follow-on (F-FU9 item 3b): a provider wake merged with another non-person prompt is not stashed; that prompt is. */
+const TURN_FU9_ADDED = [
+    '    const prompt = bare.split("\\n\\n").filter((part) => part.trim() !== PROVIDER_BUDGET_WAKE_PROMPT).join("\\n\\n").trim();',
 ];
 
 /**
@@ -390,7 +396,7 @@ test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change 
     const turn82 = read("orchestration_1_0_82/turn.ts");
     const turn83 = read("orchestration/turn.ts");
     assert.deepEqual(linesOnly(turn82, turn83).sort(), [...TURN_CHANGED_82].sort());
-    assertIntakeOnlyAdditions("turn.ts", linesOnly(turn83, turn82));
+    assertIntakeOnlyAdditions("turn.ts", linesOnly(turn83, turn82), TURN_FU9_ADDED);
     // Its new imports are the intake modules and the capability routing only (and node:crypto for the text hash).
     const frozen = new Set(tsFiles("orchestration_1_0_82").flatMap(name => importsOf(read(`orchestration_1_0_82/${name}`))));
     const added = new Set(tsFiles("orchestration").flatMap(name => importsOf(read(`orchestration/${name}`))).filter(s => !frozen.has(s)));

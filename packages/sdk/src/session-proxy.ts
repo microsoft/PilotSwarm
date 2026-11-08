@@ -1,4 +1,5 @@
 import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, registerWorkflowIntakeTurnActivity, routeTurnControlActivity, routeWorkflowRequestActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { agentSender, sessionIdOfInstance } from "./message-sender.js";
 import { spawnAgentAdmission, spawnAgentCreationBudget, WORKFLOW_CHILD_BUDGET_MAX } from "./child-budget.js";
 import { sessionTitleChangedForRecord } from "./session-title.js";
 import nodeCrypto from "node:crypto";
@@ -3019,10 +3020,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }
 
                     const sdkClient = await getInlineClient();
+                    // FU-9: an agent's words, from this session, never merged with a person's.
                     await (sdkClient as any)._getDuroxideClient().enqueueEvent(
                         `session-${targetId}`,
                         "messages",
-                        JSON.stringify({ prompt: message }),
+                        JSON.stringify({ prompt: message, sender: agentSender(input.sessionId, `agent ${input.sessionId.slice(0, 8)}`) }),
                     );
                     return `[SYSTEM: delivered to ${targetId} as a user message. `
                         + `It runs on its own schedule — read_session_info / read_agent_events to see what it did.]`;
@@ -3790,10 +3792,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             child.orchId,
                             "messages",
                             // A workflow state's session is told who wrote (the controlling parent agent); an own sub-agent's
-                            // message stays as it always was.
-                            JSON.stringify(descendant
-                                ? { prompt: args.message, sender: { kind: "agent", sessionId: input.sessionId, display: "controlling parent agent" } }
-                                : { prompt: args.message }),
+                            // message is its parent agent's (FU-9: never merged with a person's words).
+                            JSON.stringify({ prompt: args.message,
+                                sender: agentSender(input.sessionId, descendant ? "controlling parent agent" : "parent agent") }),
                         );
                     };
                     if (args.deliver === "now") {
@@ -6557,12 +6558,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     `Session ${input.sessionId.slice(0, 8)} is a completed terminal orchestration and cannot accept new messages.`,
                 );
             }
-            // Enqueue directly to the orchestration's event queue
+            // Enqueue directly to the orchestration's event queue. FU-9: the calling orchestration is an agent session
+            // (a parent's message_agent, a child's failure report), so its prompt is an agent's, never a person's.
             const orchestrationId = `session-${input.sessionId}`;
+            const sender = agentSender(sessionIdOfInstance(activityCtx?.instanceId),
+                input.message.startsWith("[CHILD_UPDATE") ? "sub-agent" : "parent agent");
             await (sdkClient as any).duroxideClient.enqueueEvent(
                 orchestrationId,
                 "messages",
-                JSON.stringify({ prompt: input.message }),
+                JSON.stringify({ prompt: input.message, sender }),
             );
             activityCtx.traceInfo(`[sendToSession] enqueued to ${orchestrationId}`);
         } finally {

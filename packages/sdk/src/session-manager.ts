@@ -1,4 +1,5 @@
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
+import { systemSender } from "./message-sender.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import type { McpAllowlistAgent } from "./mcp-loader.js";
 import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
@@ -4297,7 +4298,8 @@ export class SessionManager {
                         await this._duroxideClient.enqueueEvent(
                             `session-${factsManager.sessionId}`,
                             "messages",
-                            JSON.stringify({ prompt: `[FACTS_INTAKE ${JSON.stringify(payload)}]` }),
+                            // FU-9: the runtime's wake, never merged with a person's words.
+                            JSON.stringify({ prompt: `[FACTS_INTAKE ${JSON.stringify(payload)}]`, sender: systemSender("facts intake") }),
                         );
                     } catch {
                         // Best-effort wake-up; the 6h maintenance pass is the fallback.
