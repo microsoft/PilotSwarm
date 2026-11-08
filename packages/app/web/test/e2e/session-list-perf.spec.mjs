@@ -80,17 +80,25 @@ test("moving through the session list does not fetch per keypress", async ({ pag
 
 // Workflows are always on (3b70e2c5): a chat's Workflow Definitions are read for the chat the selection lands on, not
 // per keypress, both by the background read (Workflow tab closed) and by the open Workflow tab.
+// The right block is a per-session view: a session never opened shows none, so the Workflow tab stays open through the
+// moves only where every session's stored view has it open (be5bc210 DEV: opened on the first chat, it closed on the next).
+const stubSessionId = (i) => `1111111${i}-2222-3333-4444-55555555555${i}`;
+const OPEN_VIEW = { at: 1, canvasOpen: true, diagnosticsOpen: false, zen: false, layout: {} };
 for (const tabOpen of [false, true]) {
     test(`moving through the session list reads the landing chat's Workflow Definitions only, Workflow tab ${tabOpen ? "open" : "closed"}`, async ({ page }) => {
+        if (tabOpen) {
+            const settings = {
+                desktopPanes: { canvasOpen: true, diagnosticsOpen: false, zen: false, sideTab: "workflow" },
+                sessionViews: Object.fromEntries(Array.from({ length: FLEET }, (_, i) => [stubSessionId(i), { desktop: OPEN_VIEW }])),
+            };
+            await page.route("**/api/v1/me/profile", (route) => route.fulfill({ json: { ok: true, result: { isAdmin: false, profileSettings: settings } } }));
+        }
         await page.goto(base, { waitUntil: "networkidle" });
         await page.waitForSelector(".ps-session-list-button", { timeout: 20_000 });
-        if (tabOpen) {
-            await page.getByRole("button", { name: /^Workflow( —|$)/ }).click();
-            await expect(page.locator(".ps-wf-tab")).toBeVisible();
-        }
         await page.waitForTimeout(600);
         await page.locator(".ps-session-list-button").first().click();
         await page.waitForTimeout(400);
+        if (tabOpen) await expect(page.locator(".ps-wf-tab")).toBeVisible();
         const before = await page.locator(".ps-session-list-button.is-selected").getAttribute("data-session-id");
 
         const calls = [];
