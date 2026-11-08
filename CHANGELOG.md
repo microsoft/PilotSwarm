@@ -40,9 +40,21 @@ warning. To turn scripts off, set `PILOTSWARM_WORKFLOW_SCRIPTS=0` on every
 worker, the portal and the MCP server. A script runs on the worker's Node
 with the permission model: it reads and writes only its own folder, starts
 no child process and gets a clean environment. The permission model does not
-limit the network: a script can reach cluster services, the instance
-metadata address and the internet. Block egress with a network policy where
-that matters.
+limit the network: a script can reach cluster services and the internet.
+
+**Worker egress policy.** Both worker templates now ship a NetworkPolicy,
+`copilot-runtime-worker-egress`, that denies worker pods the instance
+metadata address `169.254.169.254` and keeps all other egress (DNS, the
+cluster, Postgres, Blob, Key Vault, model endpoints, the internet). Workflow
+scripts, agent shells and tools share the worker pod's network, and that
+address would give any of them the node's managed identity token. The
+workers do not need it: GitOps workers use workload identity, and
+`deploy/k8s` workers use the keys in their Secret. It is in the GitOps worker
+base and in `deploy/k8s/worker-network-policy.yaml`, which
+`scripts/deploy-aks.sh` applies. A deployment that does not use these
+templates, or whose cluster has no network policy engine, must block worker
+pods from `169.254.169.254` itself (for example, with the AKS IMDS
+restriction) or set `PILOTSWARM_WORKFLOW_SCRIPTS=0`.
 
 **Retired settings.** `PILOTSWARM_WORKFLOWS` and
 `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` are ignored, with one startup

@@ -1168,9 +1168,14 @@ Isolation, in this version:
   access; it is **not** a hostile-code or network sandbox.
 - Network: on the worker's Node (24.x) the permission model does not limit
   the network. A script can reach whatever the worker pod can: the cluster's
-  services, the internet, and the node's instance metadata address
-  (169.254.169.254). Limit that with the cluster's network policy (for
-  example, deny the worker pods egress to 169.254.169.254) where it matters.
+  services and the internet. The shipped worker templates (the GitOps worker
+  base and `deploy/k8s/worker-network-policy.yaml`) carry a NetworkPolicy that
+  denies the worker pods the instance metadata address (169.254.169.254),
+  which would otherwise hand out the node's managed identity token, and keep
+  all other egress. A deployment that does not use these templates, or whose
+  cluster has no network policy engine, must block that address itself (for
+  example, with the AKS IMDS restriction) or turn scripts off with
+  `PILOTSWARM_WORKFLOW_SCRIPTS=0`.
 - Such a script runs on the worker's own Node (`process.execPath`), and only
   when that Node is in the SDK's engines range, `^24.22.1 || >=26.12.1`.
   Outside it, the state fails with `execution_failed` before its script

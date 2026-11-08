@@ -506,6 +506,18 @@ deployment. Script states run by default; `PILOTSWARM_WORKFLOW_SCRIPTS=0` on
 every worker (and the portal and the MCP server) turns them off. Workflow test
 mode still needs `PILOTSWARM_WORKFLOW_TEST_MODE=on`.
 
+A script runs on the worker's Node, and Node's permission model does not limit
+the network: a script, like an agent shell, reaches what the worker pod
+reaches. The worker base therefore ships `network-policy.yaml`
+(`copilot-runtime-worker-egress`): worker pods keep all egress (DNS, the
+cluster, Postgres, Blob, Key Vault, model endpoints, the internet) except the
+instance metadata address `169.254.169.254`, which would hand out the node's
+managed identity token. The worker does not need it: it authenticates with
+workload identity. A deployment that does not use these templates, or whose
+cluster has no network policy engine, must block worker pods from
+`169.254.169.254` itself (for example, with the AKS IMDS restriction) or set
+`PILOTSWARM_WORKFLOW_SCRIPTS=0`.
+
 Two settings are retired. A deployment that still sets one, to any value, is
 ignored with one startup warning on each worker, the portal and the MCP server;
 remove it from the environment:

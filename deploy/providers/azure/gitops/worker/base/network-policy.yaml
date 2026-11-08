@@ -1,0 +1,49 @@
+# Worker egress: everything except the instance metadata address.
+#
+# Workflow scripts, agent shells and tools run inside the worker pod and share
+# its network. Node's permission model does not limit the network, so without
+# this policy any of them can ask 169.254.169.254 for the node's managed
+# identity token. The worker itself never needs that address: it authenticates
+# with workload identity (the pod label and the service account's client id),
+# which reads its federated token from a file.
+#
+# All other egress stays as it was: DNS, every pod and service in the cluster,
+# Postgres, Blob, Key Vault, the model endpoints and the internet. The pod and
+# namespace selectors are there because some CNIs (Cilium among them) do not
+# match pod addresses with an ipBlock. Ingress is not restricted.
+#
+# A cluster without a network policy engine ignores this object. Keep the
+# copy in deploy/k8s/worker-network-policy.yaml the same.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: copilot-runtime-worker-egress
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: worker
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: pilotswarm
+      app.kubernetes.io/component: worker
+  policyTypes:
+    - Egress
+  egress:
+    # DNS, to any resolver (cluster DNS, node-local caches, Azure DNS).
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Every pod in this namespace and in every other namespace.
+    - to:
+        - podSelector: {}
+        - namespaceSelector: {}
+    # Every other address, except the instance metadata address.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32
+        - ipBlock:
+            cidr: ::/0

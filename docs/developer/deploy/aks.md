@@ -773,7 +773,19 @@ containers:
 
 ```bash
 kubectl apply -f deploy/k8s/worker-deployment.yaml
+kubectl apply -f deploy/k8s/worker-network-policy.yaml
 ```
+
+The second file is the worker egress policy: worker pods reach everything
+they reached before (DNS, the cluster, Postgres, Blob, model endpoints, the
+internet) except the instance metadata address `169.254.169.254`. Workflow
+scripts, agent shells and tools share the worker pod's network, and the
+metadata address would give any of them the node's managed identity token.
+These workers authenticate with the keys in `copilot-runtime-secrets` and do
+not need it. A cluster without a network policy engine ignores the policy;
+there, block the address another way (for example, the AKS IMDS restriction)
+or set `PILOTSWARM_WORKFLOW_SCRIPTS=0`. `scripts/deploy-aks.sh` applies both
+files.
 
 ### Verify
 

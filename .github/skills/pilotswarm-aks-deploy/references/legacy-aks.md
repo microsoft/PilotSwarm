@@ -55,6 +55,7 @@ az acr show --name "$ACR_NAME" --query id -o tsv   # /subscriptions/<id>/resourc
   ```
 - Remote reset script: `scripts/reset-db-aks.sh` (wraps `scripts/db-reset.js`) — **never part of a deploy**; see the `pilotswarm-aks-reset` skill and the NO RESETS rule below.
 - Worker manifest: `deploy/k8s/worker-deployment.yaml`
+- Worker egress policy (denies the instance metadata address): `deploy/k8s/worker-network-policy.yaml`
 - Portal manifest: `deploy/k8s/portal-deployment.yaml`
 - Portal ingress: `deploy/k8s/portal-ingress.yaml`
 - Worker Dockerfile: `deploy/Dockerfile.worker`
