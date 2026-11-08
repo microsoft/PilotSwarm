@@ -5,6 +5,9 @@
 share that queue, in order. An idle wait is counted; at `WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION` (50) the controller
 continues as new. A TLC pass is a bounded check, not a proof.
 
+In this line every new run starts at controller 1.9.0; 1.8.0 stays registered but no run reaches it. The
+1.8.0 cases are kept as a record; the 1.9.0 cases bind the live controller.
+
 ## Status
 
 | Item | Value |

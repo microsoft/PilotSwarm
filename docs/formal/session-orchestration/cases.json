@@ -2452,5 +2452,892 @@
   "rows": "H05",
   "note": "The close cuts a legacy dehydrate in flight; the local copy stays.",
   "batch": "ws2"
+ },
+ {
+  "id": "vh.safety",
+  "module": "VersionHandoff",
+  "config": "vh.safety.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost",
+   "Inv_ModelOnce",
+   "Inv_NoFailure"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "91def26a: a thrown-turn retry, a queued prompt with the digest in its text, an unread prompt and set_model, a cron schedule: nothing lost, one model call, the 1.0.82 history replays.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "vh.live",
+  "module": "VersionHandoff",
+  "config": "vh.live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost",
+   "Inv_ModelOnce",
+   "Inv_NoFailure"
+  ],
+  "properties": [
+   "Prop_AllProcessed"
+  ],
+  "deadlock": true,
+  "note": "91def26a: everything is processed on 1.0.83.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "vh.plain",
+  "module": "VersionHandoff",
+  "config": "vh.plain.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost",
+   "Inv_ModelOnce",
+   "Inv_NoFailure"
+  ],
+  "properties": [
+   "Prop_AllProcessed"
+  ],
+  "deadlock": true,
+  "note": "91def26a: a plain pending prompt.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "vh.returned-error",
+  "module": "VersionHandoff",
+  "config": "vh.returned-error.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost",
+   "Inv_ModelOnce",
+   "Inv_NoFailure"
+  ],
+  "properties": [
+   "Prop_AllProcessed"
+  ],
+  "deadlock": true,
+  "note": "91def26a: a returned error's retry stays the pending prompt and runs once.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "vh.lossy",
+  "module": "VersionHandoff",
+  "config": "vh.lossy.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost",
+   "Inv_ModelOnce",
+   "Inv_NoFailure"
+  ],
+  "properties": [
+   "Prop_AllProcessed"
+  ],
+  "deadlock": true,
+  "note": "91def26a: a lossy hand-off with its rehydration notice.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "vh.older-floor",
+  "module": "VersionHandoff",
+  "config": "vh.older-floor.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost",
+   "Inv_ModelOnce",
+   "Inv_NoFailure"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "91def26a: an input from 1.0.47-1.0.81 (no source version) also converts the thrown retry.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "vh.no-digest-in-fifo",
+  "module": "VersionHandoff",
+  "config": "vh.no-digest-in-fifo.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost",
+   "Inv_ModelOnce",
+   "Inv_NoFailure"
+  ],
+  "properties": [
+   "Prop_AllProcessed"
+  ],
+  "deadlock": true,
+  "note": "91def26a: the digest is a carried input field; two unread prompts and set_model.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "fault.vh-registry-unfrozen",
+  "module": "VersionHandoff",
+  "config": "fault.vh-registry-unfrozen.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoFailure"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "the 1.0.82 entry follows LATEST, so 1.0.82 is unregistered and its in-flight history cannot replay.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "fault.vh-source-stamp-1083",
+  "module": "VersionHandoff",
+  "config": "fault.vh-source-stamp-1083.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_ModelOnce"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "the 1.0.82 handler stamps 1.0.83, the thrown key is dropped, the model runs again.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "fault.vh-drop-cron",
+  "module": "VersionHandoff",
+  "config": "fault.vh-drop-cron.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "The cron schedule is not carried.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "fault.vh-drop-digest",
+  "module": "VersionHandoff",
+  "config": "fault.vh-drop-digest.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "The pending child digest is not carried.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "fault.vh-drop-notice",
+  "module": "VersionHandoff",
+  "config": "fault.vh-drop-notice.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "The rehydration notice is not carried.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "fault.vh-drop-fifo",
+  "module": "VersionHandoff",
+  "config": "fault.vh-drop-fifo.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "The queued prompt (KV FIFO) is not kept.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "vh.carry-cap",
+  "module": "VersionHandoff",
+  "config": "vh.carry-cap.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Duroxide carries at most 100 unread messages (Cap here); the rest are dropped with a warning. Unchanged, version independent.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "vh.legacy-late-cancel",
+  "module": "VersionHandoff",
+  "config": "vh.legacy-late-cancel.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "a 1.0.82-queued prompt has no give-back markers; cancelled at dispatch on 1.0.83 it gives the digest back to no one, as on 1.0.82.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "vh.82-sweep-set-model",
+  "module": "VersionHandoff",
+  "config": "vh.82-sweep-set-model.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Known 1.0.82 issue at the hand-off: a set_model in 1.0.82's pre-dispatch sweep continues as new without the popped prompt.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "wit.vh-adopted",
+  "module": "VersionHandoff",
+  "config": "wit.vh-adopted.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoAdoption"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "The converted retry adopts the thrown attempt's saved turn.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "wit.vh-set-model",
+  "module": "VersionHandoff",
+  "config": "wit.vh-set-model.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoSetModel"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "The carried set_model is applied on 1.0.83.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "wit.vh-cron",
+  "module": "VersionHandoff",
+  "config": "wit.vh-cron.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoCronFired"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "The carried cron schedule fires on 1.0.83.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "fr.safety",
+  "module": "ForcedRefresh",
+  "config": "fr.safety.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "91def26a: a forced continue-as-new (enable_workflows, use_package, agent load, failed model switch) keeps the FIFO, the pending prompt, the child digest, the rehydration notice, an armed timer, an owed retry, the arrival flag and a due intake write; twice in a row too.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "fr.live",
+  "module": "ForcedRefresh",
+  "config": "fr.live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NothingLost"
+  ],
+  "properties": [
+   "Prop_AllHandled"
+  ],
+  "deadlock": true,
+  "note": "91def26a: everything kept is handled after it, the due intake write included.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "fault.fr-drop-intake",
+  "module": "ForcedRefresh",
+  "config": "fault.fr-drop-intake.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "A forced continue-as-new that did not carry the intake state would lose its due write.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "fault.fr-drop-retry",
+  "module": "ForcedRefresh",
+  "config": "fault.fr-drop-retry.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "One that did not carry the owed retry.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "fault.fr-drop-digest",
+  "module": "ForcedRefresh",
+  "config": "fault.fr-drop-digest.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NothingLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "One that did not carry the child digest.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "wit.fr-forced-while-due",
+  "module": "ForcedRefresh",
+  "config": "wit.fr-forced-while-due.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoForcedWhileDue"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A forced continue-as-new while an intake write is due (reachable: question 3).",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "dw.safety",
+  "module": "DigestWindow",
+  "config": "dw.safety.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OnceInOrder",
+   "Inv_WindowNotExtended"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "91def26a: a given-back digest is delivered once, never after a newer entry, and no later than its entry's arrival plus the batch window (at once if that passed).",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "dw.live",
+  "module": "DigestWindow",
+  "config": "dw.live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OnceInOrder",
+   "Inv_WindowNotExtended"
+  ],
+  "properties": [
+   "Prop_PendingDelivered"
+  ],
+  "deadlock": true,
+  "note": "91def26a: the restored digest is delivered.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "fault.dw-fresh-window",
+  "module": "DigestWindow",
+  "config": "fault.dw-fresh-window.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_WindowNotExtended"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "A give-back that restarts the window would delay the digest beyond its batch window.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "wit.dw-window-turn",
+  "module": "DigestWindow",
+  "config": "wit.dw-window-turn.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoWindowTurn"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A given-back digest is delivered by its own window turn (the fifo-queue-drain case).",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "wit.dw-due-at-once",
+  "module": "DigestWindow",
+  "config": "wit.dw-due-at-once.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoDueAtOnce"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A digest given back after its window passed is due at once.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "id.latest-1083",
+  "module": "IntakeDrain",
+  "config": "id.latest-1083.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoCanWhileDue",
+   "Inv_OneCallPerWake",
+   "Inv_ArrivalKept",
+   "Inv_HistoryBounded",
+   "Inv_NoDowngrade",
+   "Inv_RoutedToIntakeWorker",
+   "Inv_NoExecutionFailure"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "91def26a: 1.0.83 is the latest version; its continue-as-new targets itself and passes assertIntakeContinueAsNewTarget; the N02 limit is closed.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "id.latest-1083-live",
+  "module": "IntakeDrain",
+  "config": "id.latest-1083-live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoCanWhileDue",
+   "Inv_OneCallPerWake",
+   "Inv_ArrivalKept",
+   "Inv_HistoryBounded",
+   "Inv_NoDowngrade",
+   "Inv_RoutedToIntakeWorker",
+   "Inv_NoExecutionFailure"
+  ],
+  "properties": [
+   "Prop_WriteMade",
+   "Prop_ArrivalTurns"
+  ],
+  "deadlock": true,
+  "note": "91def26a: due writes are made and arrivals turn.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "ref.id-e76a6133-refused",
+  "module": "IntakeDrain",
+  "config": "ref.id-e76a6133-refused.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoExecutionFailure"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "e76a6133 (latest 1.0.82): the refused continue-as-new failed the execution (the closed N02 limit).",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "rd.recreate",
+  "module": "RollingDeploy",
+  "config": "rd.recreate.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoPoison",
+   "Inv_NoAbandon"
+  ],
+  "properties": [
+   "Prop_TurnRuns"
+  ],
+  "deadlock": true,
+  "note": "The release's deploy: every worker stopped, upgraded and started; new workers register 1.0.83, the turns and the tag before any session reaches 1.0.83: no abandon, no poison, the turn runs.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "rd.one-phase",
+  "module": "RollingDeploy",
+  "config": "rd.one-phase.cfg",
+  "mode": "impl",
+  "meaning": "finding",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoPoison"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Release-note warning: a rolling deploy that flips latest per worker: an old worker fetches the 1.0.83 item, abandons it with backoff and poisons it past the attempt limit (10 in duroxide, about 5 minutes).",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "mr.safety",
+  "module": "MergeRule",
+  "config": "mr.safety.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoMixedPersonMerge",
+   "Inv_NoLossNoDup",
+   "Inv_PromptOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "4ffbf909 (the merge rule with its sender fix): agents and the runtime write prompts with and without a stamping path, clients try to set a sender: a person's prompt never shares a turn with a non-person prompt; nothing lost, duplicated or reordered.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "mr.live",
+  "module": "MergeRule",
+  "config": "mr.live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoMixedPersonMerge",
+   "Inv_NoLossNoDup",
+   "Inv_PromptOrder"
+  ],
+  "properties": [
+   "Prop_AllDelivered"
+  ],
+  "deadlock": true,
+  "note": "4ffbf909: every item reaches the model.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "mr.stamped-send-session-message",
+  "module": "MergeRule",
+  "config": "mr.stamped-send-session-message.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoMixedPersonMerge",
+   "Inv_NoLossNoDup",
+   "Inv_PromptOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "4ffbf909 (stamping fixed): send_session_message, reply_session_message, message_agent, message_agent_session, sendToSession and the provider and facts wakes stamp agent or system.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "mr.client-sender-stripped",
+  "module": "MergeRule",
+  "config": "mr.client-sender-stripped.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoMixedPersonMerge",
+   "Inv_NoLossNoDup",
+   "Inv_PromptOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "4ffbf909 (client sender fixed): client.ts sendEvent drops a client-set sender; the event counts as a person's.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "mr.legacy-runtime-header",
+  "module": "MergeRule",
+  "config": "mr.legacy-runtime-header.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoMixedPersonMerge",
+   "Inv_NoLossNoDup",
+   "Inv_PromptOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "4ffbf909 (fb467403): a runtime prompt queued on 1.0.82 without a sender is told apart by its header and never merges with a person's words.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "mr.legacy-parent-plain",
+  "module": "MergeRule",
+  "config": "mr.legacy-parent-plain.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoMixedPersonMerge"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Known limit: a parent agent's plain message queued on 1.0.82 without a sender still counts as a person's; only prompts queued before the upgrade.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "mr.barrier",
+  "module": "MergeRule",
+  "config": "mr.barrier.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoMixedPersonMerge",
+   "Inv_NoLossNoDup",
+   "Inv_PromptOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "4ffbf909 (merge barrier): a senderless prompt with a runtime header, a 1.0.82 runtime prompt or a person's text that quotes a header, merges with nothing; a person's words never share a turn with another's prompt.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "mr.barrier-live",
+  "module": "MergeRule",
+  "config": "mr.barrier-live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoMixedPersonMerge",
+   "Inv_NoLossNoDup",
+   "Inv_PromptOrder"
+  ],
+  "properties": [
+   "Prop_AllDelivered"
+  ],
+  "deadlock": true,
+  "note": "4ffbf909: every item reaches the model.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "ref.mr-91def26a-quoted-header",
+  "module": "MergeRule",
+  "config": "ref.mr-91def26a-quoted-header.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoMixedPersonMerge"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "91def26a (header means not a person's): a direct SDK caller's senderless text starting with [SESSION_MESSAGE merges with an agent prompt.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "wit.mr-unknown-alone",
+  "module": "MergeRule",
+  "config": "wit.mr-unknown-alone.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoUnknownTurn"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A senderless headered prompt runs a turn alone.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "ref.mr-2422c33e-legacy-header",
+  "module": "MergeRule",
+  "config": "ref.mr-2422c33e-legacy-header.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoMixedPersonMerge"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "2422c33e: a 1.0.82-queued runtime prompt (no sender) counts as a person's and merges with a person's words.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "ref.mr-c9b23671-unstamped",
+  "module": "MergeRule",
+  "config": "ref.mr-c9b23671-unstamped.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoMixedPersonMerge"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "c9b23671: an agent's prompt with no sender merges with a person's words.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "ref.mr-c9b23671-forged",
+  "module": "MergeRule",
+  "config": "ref.mr-c9b23671-forged.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoMixedPersonMerge"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "c9b23671: a client-set system sender batches a person's words with agent updates.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "ref.mr-before-fu9",
+  "module": "MergeRule",
+  "config": "ref.mr-before-fu9.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoMixedPersonMerge"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "0b031b03 (before the merge rule): a person's prompt merged with a sub-agent update.",
+  "batch": "latest-1083"
+ },
+ {
+  "id": "wit.mr-batched",
+  "module": "MergeRule",
+  "config": "wit.mr-batched.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoBatch"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Sub-agent or Workflow updates still batch.",
+  "batch": "latest-1083"
  }
 ]

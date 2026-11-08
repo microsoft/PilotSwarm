@@ -6,7 +6,14 @@ the turn loop and its queue, the commit of a turn across retries, the timers
 delivery of child updates, and the identity of delivered prompts. A TLC pass is
 a bounded check, not a proof. A FAIL is a model counterexample.
 
-## Status: bound to orchestration 1.0.82, which is unchanged on main
+## Status: 1.0.83 is the latest version (this line); 1.0.82 is frozen
+
+In this line orchestration 1.0.83 becomes the latest version on every worker: its code moved from
+`orchestration_1_0_83/` to `orchestration/`, and 1.0.82 is frozen in `orchestration_1_0_82/` (the same code as
+`orchestration/` before, except the version literal). Live 1.0.82 sessions move to 1.0.83 at their next
+continue-as-new. Models and batches below name the paths of the commit they were bound to; the latest-1.0.83 batch
+(section 4) maps every earlier 1.0.83 binding to the new paths by byte identity.
+
 
 | Item | Value |
 |---|---|
@@ -18,6 +25,7 @@ a bounded check, not a proof. A FAIL is a model counterexample.
 | Batch so3 (2026-11-08, `e76a6133`) | 35 cases of `OwnedRetry`, `IntakeDrain`, `WorkerShutdown` and the late-cancel fix: 36 of 36 as expected in the run (with `rn.late-cancel` again), two design limits, no new code finding |
 | Batch ws2 (2026-11-08, `bb162ed8`) | `WorkerShutdown` with steps started after the deadline and overlapping (final review): 11 of 11 as expected; the overlap breaks no invariant |
 | Re-run on v0.8.10 (2026-11-08, `8aaf5435`, `packages/sdk/src` identical to `bb162ed8`) | so2 16 of 16, so3 36 of 36, so5b 48 of 48 as expected (and fork-join fj3 91 of 91) |
+| Latest-1.0.83 batch (2026-11-08, `5d8eaa46` to `4ffbf909`) | 50 cases of `VersionHandoff`, `RollingDeploy`, `DigestWindow`, `MergeRule`, `ForcedRefresh` and `IntakeDrain` with 1.0.83 as the latest version: every case as expected across seven runs (TLC 2.19, two workers, an isolated machine); no new code finding open |
 | Batches so4b, so5, so5b (2026-11-08) | The late-cancel give-back fixes in 1.0.83 (`CarriedGiveBack`): so4b found three gaps, so5 and so5b check their fixes; so5b, 48 cases at `bb162ed8` (`packages/sdk/src` identical at `8aaf5435` on v0.8.10): 48 of 48 as expected |
 
 1.0.82 is the version sessions run. The models therefore describe the current
@@ -53,8 +61,13 @@ by `RehydrationNotice` and `SnapshotWarmDrop`, bound to `e76a6133`
 | `RehydrationNotice.tla` | The rehydration notice of a lossy hand-off: taken by a `shouldRehydrate` timer or an interrupting prompt, given back when its prompt is not queued in the same drain pass, carried across continue-as-new; a compact timer item keeps `shouldRehydrate`; in 1.0.83 a given-up hydration records an intake attempt and sends nothing | 11 (including 2 cases for the late-cancel fix) |
 | `SnapshotWarmDrop.tla` | One turn's snapshot step: after a model run aborted following an unsettled turn-control failure, the warm session is dropped before the snapshot commit; a failed drop fails the attempt, which saves nothing and is retried | 7 |
 | `OwnedRetry.tla` | 1.0.83: a failed turn's retry is owned apart from the pending prompt; it runs before any other turn, alone reuses the thrown attempt's key and is carried by every continue-as-new; a lossy hand-off's retry is fresh (no key); while it is owed an armed wait is released and an agent wait is kept, its poll queued after the retry | 12 (including 4 faults and 1 comparison) |
-| `IntakeDrain.tla` | 1.0.83: no continue-as-new while an intake write is due; one intake call per wake; the arrival flag is carried; a refused continue-as-new at the history cap fails the execution; no continue-as-new to an older version; 1.0.83 turns only on workers with the intake routing | 12 (including 5 faults and 1 comparison) |
+| `IntakeDrain.tla` | 1.0.83: no continue-as-new while an intake write is due; one intake call per wake; the arrival flag is carried; a refused continue-as-new at the history cap fails the execution; no continue-as-new to an older version; 1.0.83 turns only on workers with the intake routing | 15 (including 5 faults, 1 comparison; 3 with 1.0.83 as the latest version) |
 | `CarriedGiveBack.tla` | 1.0.83: a queued prompt that took the child digest and the rehydration notice carries them as markers; a cancel that drops it at dispatch, or in the same drain pass, gives them back: child entries merged by observation time and rank, nothing a later queued prompt carries, the notice only once; a `set_model` in the pre-dispatch sweep keeps the prompt queued | 33 (including 5 faults, 10 references to earlier code, 3 design limits) |
+| `VersionHandoff.tla` | A live 1.0.82 session continues as new into 1.0.83: the KV FIFO prompt (no give-back markers), the pending prompt (plain, a returned error's retry, a thrown turn's retry with its key, a lossy hand-off with its notice), unread queue messages (prompts and a `set_model`; duroxide carries at most 100), the child digest, the notice and the cron schedule; an in-flight 1.0.82 history replays on its recorded version | 19 (including 6 faults, 3 design limits) |
+| `RollingDeploy.tla` | A deploy that makes 1.0.83 the latest: duroxide has no version routing, so an old worker abandons a 1.0.83 item with backoff and fails it past 10 attempts; a stop-upgrade-start (recreate) deploy never reaches that | 2 |
+| `DigestWindow.tla` | The child-update batch window with the late give-back: a given-back digest is delivered once, never after a newer entry, and no later than its entry's arrival plus the window; the digest's own turn runs only after queued prompts | 5 (including 1 fault) |
+| `MergeRule.tla` | decide's prompt batching with the rule that a person's words never share a turn with an agent's or the runtime's prompt, decided by the sender (every runtime enqueue stamps one; a client cannot set one); a prompt with no sender that starts with a runtime header (a runtime prompt queued on 1.0.82, or a person's words quoting one) is of unknown author and merges with nothing | 15 (including 5 references to earlier code, 1 design limit) |
+| `ForcedRefresh.tla` | A turn that ends with a forced continue-as-new (turning Workflows on in a chat, `use_package`, loading or unloading an agent, a failed model switch) keeps everything the session holds, an intake write that is due included | 6 (including 3 faults) |
 | `WorkerShutdown.tla` | Every worker: graceful shutdown under one deadline (drain, workspace release, release sweep, close). As written, each step is started even after the deadline, with a zero budget, and only its wait is abandoned, so later steps can overlap a still-running one and the close can cut a legacy upload; the sweep deletes only marked (committed) sessions' local copies and dehydrates unmarked legacy ones | 11 (including 2 faults, 1 comparison and 4 witnesses) |
 
 ## 2. The code these models are bound to
@@ -99,7 +112,7 @@ Bound to `bb162ed8` (`CORRESPONDENCE-bb162ed8-so5b.md`):
 
 ## 3. Case taxonomy and expected results
 
-`cases.tsv` lists all 125 cases with their module; `cases.json` gives each case
+`cases.tsv` lists all 175 cases with their module; `cases.json` gives each case
 its `mode`, expected result, `meaning`, constants, invariants and properties.
 `expected` is `PASS`, or `safety` or `liveness` when a violation is expected.
 
@@ -222,6 +235,46 @@ so5b (48 cases at `bb162ed8`, with the controller idle-wake model in `../workflo
 expected. Known limits, accepted: a marker dropped because the item would be too large cannot be given back; and when
 an older queued prompt carries a rehydration notice, the pass's newer notice is kept back (the older notice is already
 in that prompt's text, so the model is told once and nothing is lost).
+
+### Latest-1.0.83 batch (2026-11-08)
+
+Bound to `5d8eaa46` (handoff, rolling deploy, digest window, intake), `4ffbf909` (merge rule) and `91def26a`
+(forced refresh); `CORRESPONDENCE-latest-1083.md` maps each model to code and gives the byte-identity of
+every earlier binding at `91def26a`.
+
+Runs, each case once, all as expected, no PARTIAL, no VOID:
+
+| Run | Head | Cases | What it showed |
+|---|---|---|---|
+| design | none (before the code) | 26 | The hand-off and deploy models behave as designed. |
+| interim | `5d8eaa46` | 29, and 202 earlier cases re-run | The hand-off keeps everything; the version checks above hold; with 1.0.83 latest its continue-as-new targets itself (the earlier limit that a 1.0.83 session failed at its first continue-as-new is closed); a stop-upgrade-start deploy passes and a rolling flip can fail a session. Two digest-window cases failed on a model error (the digest's own turn may not run before queued prompts); corrected and re-run. |
+| digest window | `0b031b03` (comment-only change) | 5 | A given-back digest is delivered once, in order, within its window. |
+| merge rule | `c9b23671` | 7 | The merge rule held only for prompts that carry a sender; two code findings: several agent and runtime prompts carried none, and a client event could set one. |
+| merge rule, fixed | `2422c33e` | 8 | With every runtime prompt stamped and client senders dropped, a person's words never share a turn with another prompt. |
+| final | `91def26a` | 17 | The forced continue-as-new keeps everything, an intake write that is due included; a prompt queued on 1.0.82 without a sender is told apart by its runtime header. |
+| merge barrier | `4ffbf909` | 15 | With the barrier, a person's words never share a turn with another's prompt, also when they quote a runtime header or when runtime prompts queued on 1.0.82 are drained; at `91def26a` such quoted text merged with an agent's prompt (`ref.mr-91def26a-quoted-header`). |
+
+Code findings from this batch, all fixed in 1.0.83: the registry entry for 1.0.82 had to point at the frozen code and
+stamp its own version (checked before binding); agent and runtime prompts with no sender; a client-set sender; a
+person's text with no sender that quotes a runtime header was taken for runtime traffic and could merge with an agent's
+prompt (now of unknown author, a merge barrier).
+
+Known limits, accepted:
+
+- A rolling deploy that flips the latest version worker by worker can fail a session: an old worker that fetches a
+  1.0.83 item backs off and, past 10 attempts (about 5 minutes), fails it. Deploy by stopping every worker, upgrading,
+  then starting them (`rd.one-phase`, `rd.recreate`).
+- A prompt queued on 1.0.82 and cancelled at its dispatch on 1.0.83 has no give-back markers, so what it took is not
+  given back, as on 1.0.82 (`vh.legacy-late-cancel`).
+- Duroxide carries at most 100 unread queue messages across a continue-as-new (`vh.carry-cap`).
+- 1.0.82's `set_model` in the pre-dispatch sweep can still drop the prompt it popped, until that session moves to
+  1.0.83 (`vh.82-sweep-set-model`).
+- A parent agent's plain message queued on 1.0.82 without a sender still counts as a person's
+  (`mr.legacy-parent-plain`).
+- A forced continue-as-new can happen while an intake write is due; the carried intake state keeps the write, which
+  the next execution makes (`wit.fr-forced-while-due`, `fr.live`). The rule that no continue-as-new happens while a
+  write is due holds for the idle continue-as-new only.
+- A given-back digest that holds only a newer entry waits out that entry's batch window (`dw.*`).
 
 ## 5. How to run
 

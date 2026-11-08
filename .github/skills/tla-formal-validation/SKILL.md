@@ -31,6 +31,13 @@ A new orchestration version always needs this skill (see the "New orchestration 
 step in `.github/copilot-instructions.md`). Pure UI, docs, prompts and logging changes that
 touch no durable step do not.
 
+A change of the latest version also needs it: model the hand-off from the previous latest
+(what its continue-as-new input carries, what the new version reads, the KV it shares,
+unread queue messages, and a history in flight that must still replay on its own version),
+and how the deploy reaches it (duroxide does not route by version, so a worker without the
+new version fails its items after repeated attempts). `VersionHandoff` and `RollingDeploy`
+in `docs/formal/session-orchestration/` are the pattern.
+
 ## The method
 
 Work in this order. Each step names what it produces.
