@@ -66,8 +66,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
 test("cyan accent: no early pass or immediate repeat, and reduced motion cancels it", async ({ page }) => {
     await page.addInitScript(() => { Math.random = () => 0; });
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await openTheme(page, { width: 1440, height: 900 });
     await page.clock.install();
+    await openTheme(page, { width: 1440, height: 900 });
     const accent = page.locator(".portal-header-accent");
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await expect(accent).toBeVisible();
