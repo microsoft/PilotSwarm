@@ -191,7 +191,7 @@ describe("sessions without a workspace (C2)", () => {
         const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
         const { DURABLE_SESSION_ORCHESTRATION_REGISTRY } = await import("../../src/orchestration-registry.ts");
         const { durableSessionOrchestration_1_0_80: frozen180 } = await import("../../src/orchestration_1_0_80/index.ts");
-        expect(DURABLE_SESSION_LATEST_VERSION).toBe("1.0.82");
+        expect(DURABLE_SESSION_LATEST_VERSION).toBe("1.0.81");
         expect(frozen180.name).toBe("durableSessionOrchestration_1_0_80");
         expect(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find((e) => e.version === "1.0.80")?.handler).toBe(frozen180);
         expect(await loadHandler("1.0.80")).toBe(frozen180);

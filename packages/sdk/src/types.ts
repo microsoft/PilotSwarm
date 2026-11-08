@@ -1166,17 +1166,6 @@ export interface OrchestrationInput {
             observedAtMs: number;
         }>;
     };
-    /**
-     * 1.0.82: child updates whose status lookup was put off because user work
-     * was queued (the lookup would have delayed it). Settled from the listing
-     * of children taken after the next turn. One entry per child, latest
-     * update type.
-     */
-    deferredChildProbes?: Array<{
-        sessionId: string;
-        updateType: string;
-        expectingReport?: boolean;
-    }>;
     /** Graceful shutdown state carried across continueAsNew while child sessions drain. */
     pendingShutdown?: {
         mode: "done" | "cancel" | "delete";

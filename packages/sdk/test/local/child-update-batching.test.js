@@ -687,9 +687,7 @@ describe("orchestration child update batching", () => {
 
         const result = await harness.runUntilRunTurn();
 
-        // 1.0.82 (issue 192, R10): after a message arrives, one 10 ms sweep
-        // collects any other queued message before the turn starts.
-        expect(result.state.nowMs).toBe(10_010);
+        expect(result.state.nowMs).toBe(10_000);
         expect(result.runTurnCall.prompt.startsWith("Stop checking every outlet and just tell me the top two stories.")).toBe(true);
         expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates arrived during the last 30 seconds");
         expect(result.runTurnCall.systemPrompt).toContain("Waiting on reporter");

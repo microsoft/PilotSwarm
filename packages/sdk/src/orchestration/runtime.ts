@@ -8,7 +8,7 @@ import { advanceRegenPipeline,
     readCounter,
     versionedContinueAsNew,
 } from "./lifecycle.js";
-import { decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "./queue.js";
+import { decide, drain } from "./queue.js";
 import {
     HISTORY_SIZE_CHECK_INTERVAL_ITERATIONS,
     MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES,
@@ -277,22 +277,14 @@ export function* runLoop(runtime: DurableSessionRuntime): Generator<any, string,
         // the FIFO for the reborn session; queued control cmds were just
         // handled by drain (cancel_regen pre-empts between stages).
         if (state.regen) {
-            // 1.0.82: a regeneration stage bypasses decide; settle a timer
-            // released in this pass first, so a failed or cancelled pipeline
-            // leaves it armed and a flip captures it.
-            settleQueuedWorkAfterDecide(runtime, turnsStarted(runtime));
             const flipped = yield* advanceRegenPipeline(runtime);
             if (flipped) return "";
             if (state.orchestrationResult !== null) return state.orchestrationResult;
             continue;
         }
 
-        const turnsBeforeDecide = turnsStarted(runtime);
         const didWork = yield* decide(runtime);
         if (state.orchestrationResult !== null) return state.orchestrationResult;
-        // 1.0.82 (issue 192): a timer released for queued work is armed again
-        // when no turn was attempted; stale hold-window items go when one was.
-        settleQueuedWorkAfterDecide(runtime, turnsBeforeDecide);
 
         if (didWork) continue;
         if (state.activeTimer) continue;        // drain will race the timer next iteration

@@ -34,7 +34,6 @@ export interface ActiveTimer {
 export type ShutdownMode = NonNullable<OrchestrationInput["pendingShutdown"]>["mode"];
 export type PendingShutdownState = NonNullable<OrchestrationInput["pendingShutdown"]>;
 export type PendingChildDigest = NonNullable<OrchestrationInput["pendingChildDigest"]>;
-export type DeferredChildProbe = NonNullable<OrchestrationInput["deferredChildProbes"]>[number];
 export type PendingInputQuestion = NonNullable<OrchestrationInput["pendingInputQuestion"]>;
 export type CronSchedule = NonNullable<OrchestrationInput["cronSchedule"]>;
 export type CronAtSchedule = NonNullable<OrchestrationInput["cronAtSchedule"]>;
@@ -180,8 +179,6 @@ export interface DurableSessionState {
     /** Test only: the retry schedule in milliseconds, replacing WORKSPACE_RETRY_SCHEDULE_SECONDS. */
     workspaceRetryScheduleMs?: number[];
     pendingChildDigest: PendingChildDigest | null;
-    /** 1.0.82: child status lookups put off behind queued user work (see OrchestrationInput). */
-    deferredChildProbes: DeferredChildProbe[];
     pendingShutdown: PendingShutdownState | null;
 
     lastResponseVersion: number;
@@ -249,20 +246,6 @@ export interface DurableSessionOptions {
 }
 
 /** Single object passed through every orchestration helper. */
-/**
- * 1.0.82: a timer that drain released for queued work, with what it changed,
- * so that it can be armed again when no turn runs (a cancelled prompt, a stale
- * timer item). See settleQueuedWorkAfterDecide in queue.ts.
- */
-export interface ReleasedTimerRecord {
-    timer: ActiveTimer;
-    priorInterruptedWait: InterruptedWaitTimer | null;
-    priorInterruptedCron: InterruptedCronTimer | null;
-    savedInterruptedWait?: InterruptedWaitTimer;
-    savedInterruptedCron?: InterruptedCronTimer;
-    waitingForAgentIds: string[] | null;
-}
-
 export interface DurableSessionRuntime {
     ctx: any;
     input: OrchestrationInput;
@@ -272,19 +255,6 @@ export interface DurableSessionRuntime {
     session: any;
     state: DurableSessionState;
     options: DurableSessionOptions;
-    /**
-     * 1.0.82: set by drain when it releases a timer for queued work, settled
-     * after decide (and before a regeneration stage) by
-     * settleQueuedWorkAfterDecide. Lives within one execution; continue-as-new
-     * never carries it.
-     */
-    releasedForQueuedWork?: ReleasedTimerRecord;
-    /**
-     * 1.0.82: how many turns processPrompt has started in this execution,
-     * whatever their outcome (completed, gate-refused, error, thrown). The
-     * settlement uses it to tell "a turn was attempted" from "no turn ran".
-     */
-    turnsStarted?: number;
 }
 
 // ─── Constants ──────────────────────────────────────────────
@@ -421,15 +391,6 @@ export const REPEAT_SUMMARIZE_DELAY = 300_000;
 
 export const FIFO_BUCKET_COUNT = 20;
 export const MAX_BUCKET_BYTES = 14 * 1024;
-/**
- * 1.0.82 (issue 192, defect E): the largest item the FIFO stores, in UTF-8
- * bytes of its bucket value. The runtime fails the whole orchestration on a
- * KV value above duroxide's MAX_KV_VALUE_BYTES (64 KiB), and an item larger
- * than MAX_BUCKET_BYTES is stored in a bucket of its own. An item above this
- * cap is not stored; it is reported like an overflow (R8). Kept below the
- * runtime limit with room to spare; a test checks the two against each other.
- */
-export const MAX_FIFO_ITEM_BYTES = 60 * 1024;
 export const MAX_DRAIN_PER_TURN = 50;
 export const MAX_PREDISPATCH_SWEEP = 50;
 export const MAX_ITERATIONS_PER_EXECUTION = 10;
@@ -565,11 +526,6 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
             ? [...input.workspaceRetryScheduleMs]
             : undefined,
         pendingChildDigest: clonePendingChildDigest(input.pendingChildDigest),
-        deferredChildProbes: Array.isArray(input.deferredChildProbes)
-            ? input.deferredChildProbes
-                .filter((entry) => entry && typeof entry.sessionId === "string" && typeof entry.updateType === "string")
-                .map((entry) => ({ ...entry }))
-            : [],
         pendingShutdown: clonePendingShutdown(input.pendingShutdown),
 
         lastResponseVersion: 0,

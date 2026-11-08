@@ -438,11 +438,7 @@ describe("orchestration warm resume durability", () => {
         expect(statuses.at(-1)).toMatchObject({ status: "error", authFailure: true });
 
         const afterPrompt = blockedDrain.next({ prompt: "retry after fixing my key" });
-        // 1.0.82 (issue 192, R10): after collecting a message, drain sweeps
-        // for 10 ms for more before it stops.
-        expect(afterPrompt.value).toMatchObject({ effect: "race", right: { effect: "scheduleTimer", ms: 10 } });
-        const afterSweep = blockedDrain.next({ index: 1 });
-        expect(afterSweep.done).toBe(true);
+        expect(afterPrompt.done).toBe(true);
         expect(runtime.state.blockedError).toBeUndefined();
         expect(JSON.parse(values.get("fifo.0"))).toEqual([
             { kind: "prompt", prompt: "retry after fixing my key", bootstrap: false },
