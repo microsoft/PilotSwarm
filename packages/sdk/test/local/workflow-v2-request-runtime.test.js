@@ -465,6 +465,9 @@ describe("workflow v2 request runtime: controller 1.9.0 (inactive, test-only reg
             const ask = (await h.store.listNodeExecutions(runId)).find(node => node.nodeId === "ask");
             expect(ask).toMatchObject({ outcome: "unsupported_contract", resultKind: "runtime_error", winner: "delivery" });
             expect(ask.error.details).toMatchObject({ capability: "respond_tool", sessionId: parent });
+            // A chat still on the previous version is told what to do instead.
+            expect(ask.error.message).toBe(`Session ${parent} cannot answer a request yet. This chat still runs the previous version `
+                + "and moves to the new one after its next turn: send it a message, then start the Workflow again.");
             expect(await inbox(h, parent)).toEqual([]);
         } finally {
             await h.stop();

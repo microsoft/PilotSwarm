@@ -2358,20 +2358,38 @@ export const WORKFLOW_INTAKE_MIN_RECIPIENT_VERSION = "1.0.83";
 /** A version of three decimal components, each without a leading zero and at most nine digits (a safe integer). */
 const INTAKE_VERSION_PATTERN = /^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$/;
 
+/** The three numbers of a version; null unless the whole value is the match (nothing before or after it, a line terminator included). */
+function intakeVersionNumbers(value: string): number[] | null {
+    const match = INTAKE_VERSION_PATTERN.exec(value);
+    return match && match.index === 0 && match[0] === value ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+}
+
 /** Whether an observed session orchestration version has the durable intake; a missing, malformed or oversized one has not (fail closed). */
 export function intakeCapableVersion(version: string | null | undefined): boolean {
-    // The whole value must be the match: nothing before or after it, a line terminator included.
-    const numbers = (value: string) => {
-        const match = INTAKE_VERSION_PATTERN.exec(value);
-        return match && match.index === 0 && match[0] === value ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
-    };
-    const observed = typeof version === "string" ? numbers(version) : null;
-    const minimum = numbers(WORKFLOW_INTAKE_MIN_RECIPIENT_VERSION)!;
+    const observed = typeof version === "string" ? intakeVersionNumbers(version) : null;
+    const minimum = intakeVersionNumbers(WORKFLOW_INTAKE_MIN_RECIPIENT_VERSION)!;
     if (observed === null) return false;
     for (let index = 0; index < 3; index += 1) {
         if (observed[index] !== minimum[index]) return observed[index] > minimum[index];
     }
     return true;
+}
+
+/** What a person reads when a request's responder still runs a session orchestration before the intake version. */
+export const WORKFLOW_PREVIOUS_VERSION_RESPONDER_WORDS = "This chat still runs the previous version and moves to the new one after its next "
+    + "turn: send it a message, then start the Workflow again.";
+
+/**
+ * Why a live responder cannot answer a request: one observed at a well-formed version before the intake version (a chat
+ * still on the previous session orchestration) is told what to do instead; any other (no version read, or no response tool)
+ * gets the requirement.
+ */
+export function unsupportedResponderMessage(responder: string, version: string | null | undefined): string {
+    if (typeof version === "string" && intakeVersionNumbers(version) !== null && !intakeCapableVersion(version)) {
+        return `Session ${responder} cannot answer a request yet. ${WORKFLOW_PREVIOUS_VERSION_RESPONDER_WORDS}`;
+    }
+    return `Session ${responder} cannot answer a request: it needs the ${RESPOND_SESSION_REQUEST_TOOL} tool and a session orchestration `
+        + `at ${WORKFLOW_INTAKE_MIN_RECIPIENT_VERSION} or later.`;
 }
 
 /** The intake envelope of a durable exchange's copies (design section 3): the message's immutable fields and their hash. */
@@ -5629,14 +5647,15 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         }
         const status = await queue.status(responder);
         const ended = ENDED_SESSION_STATUSES.includes(status);
-        const capable = ended ? true : intakeCapableVersion(await queue.version?.(responder) ?? null)
+        const version = ended ? null : await queue.version?.(responder) ?? null;
+        const capable = ended ? true : intakeCapableVersion(version)
             && (deps.respondToolAvailable ? await deps.respondToolAvailable(responder) : true);
         const begun = await store.beginRequestDelivery(input.nodeExecutionId, {
             refused: refusals.refused,
             ended: ended ? refusals.at(endedRecipientResult(responder, status)) : null,
-            unsupported: capable ? null : refusals.at(runtimeError("unsupported_contract", `Session ${responder} cannot answer a request: `
-                + `it needs the ${RESPOND_SESSION_REQUEST_TOOL} tool and a session orchestration at ${WORKFLOW_INTAKE_MIN_RECIPIENT_VERSION} or later.`,
-            { capability: "respond_tool", sessionId: responder })),
+            // A chat still on the previous version is told what to do instead (it moves to the new one after its next turn).
+            unsupported: capable ? null : refusals.at(runtimeError("unsupported_contract", unsupportedResponderMessage(responder, version),
+                { capability: "respond_tool", sessionId: responder })),
         });
         if (begun.kind !== "deliver") return { kind: begun.kind, outcome: begun.node.outcome };
         const run = await runOf(message.runId);
