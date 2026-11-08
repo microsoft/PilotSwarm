@@ -218,8 +218,8 @@ mean every package needs an agent.
     runs an agent. When the branches come from a list (data), the older router
     pattern does it: a parallel state over a literal list of lanes
     (`forEach: [{ lane: quick }, { lane: careful }]`) with a router script
-    first in the body. Load the `workflow-patterns` skill for both and their
-    examples.
+    first in the body. The `workflow-patterns` skill has both, with
+    examples: call load_skill with name workflow-patterns.
   An agent names the definitions its chat may start in its front matter:
   `workflows: [<name>, <package>/<name>]` (a bare name is this package's).
   An agent that names definitions cannot be an agent step's agent. Publishing
@@ -303,8 +303,11 @@ a package that adds or changes a Workflow Definition (`workflows/<name>/`):
 1. Save that exact YAML into your own chat with `workflow_definition`
    `save` (the same `metadata.name`; to change one already there, give its
    `definition_id` and `expected_revision`).
-2. Run `workflow_definition` `test` on the revision that save returned, with
-   `fixtures` that answer its tool calls, agent steps, sends and requests. The
+2. Test every outcome as its own scenario: one `workflow_definition` `test`
+   run per expected end, on the revision that save returned, each with
+   `expect` naming the terminal state id or outcome it should reach (without
+   `expect`, a pass means the run ended succeeded). Give `fixtures` that
+   answer its tool calls, agent steps, sends, requests and receives. The
    person asking you to publish is the person asking for this test: the
    tool's "only when the user asks" rule is met. Each fixture's `response`
    is `{ kind: "success" | "error" | "cancel", value }`; the success `value`
@@ -317,13 +320,30 @@ a package that adds or changes a Workflow Definition (`workflows/<name>/`):
    - an ask (request) node (`operation: "request"`, `state`):
      `{ response: <matches the contract's response schema> }`, or
      `{ decline: { reason: "<why>" } }`;
+   - a receive state (`operation: "receive"`, `state`, optional `visit`, no
+     `arguments`): the message it receives;
    - an error answer is `{ kind: "error", value: { code, message } }` with a
      runtime error code; a cancel is `{ kind: "cancel" }`.
    For example, an ask node `review` whose contract answers `{ approved }`:
    `{ operation: "request", state: "review", response: { kind: "success",
    value: { response: { approved: true } } } }`.
-3. Read the report: the path taken, each step's outcome, the first error.
-   Publish only when it passes. When it fails, fix the YAML (or its card or
+   For exact shapes, call load_skill with name workflow-tools. Fixture rules:
+   - Answer with realistic example values.
+   - Loops and polling: give per-visit fixtures. `visit: <n>` answers the
+     n-th time the run reaches that state, so later visits can answer
+     differently.
+   - `arguments`: an agent state's are its input only; a tool call's are the
+     call's arguments. A fixture without `arguments` answers any call of that
+     state or tool, after the exact ones.
+   - A fixture can answer a script's tool call even when your chat lacks that
+     tool; the report lists those calls. The published package must still be
+     granted those tools at run time, or the real run fails.
+3. Read the report of every run, not only pass or fail: the path (each step
+   shows the route it was entered by, its branch or For each item, and its
+   input), any unanswered call (the report gives the exact fixture to add),
+   and the tool calls that need the tool at run time. A run passes only when
+   it ended at its expected end with nothing unanswered or refused. Publish
+   only when every run passes. When one fails, fix the YAML (or its card or
    fixtures), save again, and test that new revision. Never publish a
    definition whose last test failed or did not finish.
    - **A failed test is never followed by a publish plan.** Quote the report's
@@ -332,8 +352,9 @@ a package that adds or changes a Workflow Definition (`workflows/<name>/`):
      present a plan as ready while the last test failed.
    - **The same failure twice: stop.** Show the person the report and the
      fixtures you sent, and ask how to go on. Do not keep retrying.
-4. Tell the person the test result together with the publish plan and the
-   diff: the revision tested, pass, and what the report showed.
+4. Tell the person the test results together with the publish plan and the
+   diff: the revision tested, each expected end and its result, what the
+   reports showed, and the tools the package needs at run time.
 
 Workflows are always on with the full engine, so `workflow_definition` and
 its `test` operation are offered in every current session. If `test` is not
@@ -485,7 +506,8 @@ The order matters. Each step exists because skipping it has burned someone.
 
    For a Workflow Definition, test it first (see NOTHING SHIPS UNREVIEWED:
    save its exact YAML in your chat, `workflow_definition` `test` that
-   revision, publish only on a pass). Then publish to your own copy. Ask the person
+   revision once per expected end, publish only when every run passes). Then
+   publish to your own copy. Ask the person
    to start it once from the new-session picker in a disposable chat; watch
    that chat with `read_session_info` and `read_agent_events`: it must ask for
    the card's inputs, start the Workflow, and end the way the card says. Only

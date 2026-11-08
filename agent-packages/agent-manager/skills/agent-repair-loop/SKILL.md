@@ -96,22 +96,55 @@ small graph whose agent node has its own state id, joined as
 pattern (a router script first in a For each body over a literal list of
 lanes) does it. The `workflow-patterns` skill has both, with examples.
 
-Test it before you publish the package that adds or changes it: save that exact YAML in your
-own chat (`workflow_definition` `save`), run `workflow_definition` `test` on
-the revision the save returned, read the report, and publish only on a pass.
-On a fail, fix, save and test again. A fixture answers one step: a tool call's
-success value is what the tool returns; an agent node's is `{ outcome, output }`;
-an ask (request) node's is `{ response: <the contract's response> }` or
-`{ decline: { reason } }`; a send's is any value. A failed test is never followed
-by a publish plan: quote the report's failure (its code and message), fix, and
-test again; the same failure twice, stop and show the person the report and the
-fixtures. The person's request to publish is their request for this test. Tell
-them the passing result with the publish plan. If the test
-operation is not offered in your session (every current session has it; a
-chat of an earlier release may not, until it continues), say so and do not
-publish without the person's explicit yes. Then have it started once from the new-session
-picker in a disposable chat before the shared publish, and check that the chat
-asks for the card's inputs and that the Workflow ends as the card says.
+Test it before you publish the package that adds or changes it. The
+person's request to publish is their request for this test. For exact
+shapes, call load_skill with name workflow-tools.
+
+1. Save that exact YAML in your own chat (`workflow_definition` `save`).
+2. List its expected ends: each terminal state, or each outcome the card
+   says it can end with. Plan one `workflow_definition` `test` run per end,
+   on the revision the save returned. Give each run `expect`, naming the
+   terminal state id or outcome it should reach. Without `expect`, a pass
+   means only that the run ended succeeded.
+3. Write each run's `fixtures`, with realistic example values. A fixture
+   answers one step: a tool call's success value is what the tool returns;
+   an agent node's is `{ outcome, output }`; an ask (request) node's is
+   `{ response: <the contract's response> }` or `{ decline: { reason } }`; a
+   send's is any value. A receive state takes a receive fixture
+   (`operation: receive`, its `state`, optionally a `visit`) whose value is
+   the message.
+   - Loops and polling: give per-visit fixtures. `visit: <n>` answers the
+     n-th time the run reaches that state, so a poll can answer "pending" on
+     its first visits and "done" on a later one.
+   - Arguments: an agent state's fixture arguments are the state's input
+     only; a tool call's are the call's arguments. A fixture without
+     arguments answers any call of that state or tool, after the exact ones.
+   - Tool permission: a fixture can answer a script's tool call even when
+     your chat lacks that tool, and the report lists those calls. The
+     published package must still be granted those tools at run time, or the
+     real run fails.
+4. Run each test and read its whole report, not only pass or fail:
+   - the path: each step shows the route it was entered by, its branch or
+     For each item, and its input. Check that the run took the route you
+     meant;
+   - unanswered calls: the report gives the exact fixture to add;
+   - tool calls that need the tool at run time: check that the package
+     grants each one.
+   A run passes only when it ended at its expected end with nothing
+   unanswered or refused.
+5. Publish only when every run passes. A failed test is never followed
+   by a publish plan: quote the report's failure (its code and message),
+   fix, save and test again; the same failure twice, stop and show the
+   person the report and the fixtures.
+6. Tell the person each expected end and its passing run, and the tools the
+   package needs at run time, with the publish plan.
+
+If the test operation is not offered in your session (every current session
+has it; a chat of an earlier release may not, until it continues), say so
+and do not publish without the person's explicit yes. Then have it started
+once from the new-session picker in a disposable chat before the shared
+publish, and check that the chat asks for the card's inputs and that the
+Workflow ends as the card says.
 
 **The named-entry-point check is mandatory when you were spawned by the agent
 you are editing.** In that arrangement you are the child and the thing you are about

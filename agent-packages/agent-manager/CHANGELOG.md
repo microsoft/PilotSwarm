@@ -1,5 +1,16 @@
 # Changelog — agent-manager
 
+## 1.4.11
+
+### Changed
+
+- Before publishing a Workflow Definition, test every expected end as its own
+  run with `expect`, and read each report's path, unanswered calls and the
+  tools it needs at run time. Per-visit and receive fixtures cover loops,
+  polling and receive states; the repair loop has the full procedure.
+- Every instruction to load a Workflow skill says to call load_skill with its
+  name.
+
 ## 1.4.10
 
 ### Changed
