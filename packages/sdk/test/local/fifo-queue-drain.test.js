@@ -436,6 +436,56 @@ describe("FU-9: a person's words and a non-person prompt run as two turns", () =
         expect(turns[1]).toContain("AGENT-UPDATE");
     });
 
+    // Review RLR-F2 residual (ruling: three classes). A stamped sender decides. A senderless prompt that starts with a
+    // runtime header is unknown (a runtime prompt queued on 1.0.82 and a person's words that quote a header look the
+    // same): it never shares a turn with anything, in either order. A senderless prompt without a header is a person's.
+    const QUOTED = "[SESSION_MESSAGE from=example subject=quoted]\nThe person's words";
+    const LEGACY = "[WORKFLOW_UPDATE from=wf-1 workflow=w@1.0.0 run=r type=ended]\nLEGACY-RUNTIME";
+    // Each marker in its own turn, in order, delivered once; nothing left queued. Runs passes while prompts are queued,
+    // so a merge shows as too few turns.
+    const apart = (items, markers) => {
+        const h = harness();
+        appendToFifo(h.runtime, items);
+        for (const _ of markers) h.results.push({ type: "completed", content: "done" });
+        for (let pass = 0; pass < 10 && h.fifo().length > 0; pass++) h.step();
+        const turns = h.turns.map(t => String(t[0]));
+        expect(turns).toHaveLength(markers.length);
+        markers.forEach((marker, i) => {
+            expect(turns[i]).toContain(marker);
+            expect(turns.join("\n").split(marker)).toHaveLength(2);
+        });
+        expect(h.fifo()).toEqual([]);
+    };
+
+    it("RLR-F2: a person's quoted header sent as an event claiming the runtime (sender stripped) and an agent's or the runtime's prompt: two turns, either order", async () => {
+        const [event] = await enqueuedBy(async client => {
+            const session = Object.assign(Object.create(PilotSwarmSession.prototype), {
+                sessionId: "this", client: { _workflowStoreOrNull: () => null, _getDuroxideClient: () => client } });
+            await session.sendEvent("nudge", { prompt: QUOTED, sender: { kind: "system" } });
+        });
+        expect(event).toEqual({ prompt: QUOTED });
+        for (const [label, sender] of [["AGENT-UPDATE", AGENT], ["WORKFLOW-MESSAGE", WORKFLOW]]) {
+            apart([prompt(event.prompt), prompt(label, { sender })], ["The person's words", label]);
+            apart([prompt(label, { sender }), prompt(event.prompt)], [label, "The person's words"]);
+        }
+    });
+
+    it("RLR-F2: an unstamped prompt with a runtime header and a stamped person's prompt: two turns, either order", () => {
+        apart([prompt(QUOTED), prompt("PERSON-1", { sender: PERSON })], ["The person's words", "PERSON-1"]);
+        apart([prompt("PERSON-1", { sender: PERSON }), prompt(QUOTED)], ["PERSON-1", "The person's words"]);
+    });
+
+    it("RLR-F2: two unstamped prompts with a runtime header: two turns, either order", () => {
+        apart([prompt(QUOTED), prompt(LEGACY)], ["The person's words", "LEGACY-RUNTIME"]);
+        apart([prompt(LEGACY), prompt(QUOTED)], ["LEGACY-RUNTIME", "The person's words"]);
+    });
+
+    it("RLR-F2 known limit: a parent agent's plain message queued on 1.0.82 (no sender, no header) counts as a person's and merges with one", () => {
+        const turns = drainAndRun(harness(), [prompt("PARENT-PLAIN please also check the logs"), prompt("PERSON-WORDS")], 1);
+        expect(turns).toHaveLength(1);
+        expect(turns[0]).toMatch(/PARENT-PLAIN[\s\S]*PERSON-WORDS/);
+    });
+
     it("a provider wake merged with an agent's prompt: when the budget still refuses, the agent's words are stashed and the wake is not", async () => {
         const [wake] = await enqueuedBy(client => wakeProviderPausedSessions({ providers: { pausedFor: async () => ["this"] } }, client, "azure-openai"));
         expect(wake).toEqual({ prompt: PROVIDER_BUDGET_WAKE_PROMPT, sender: { kind: "system", display: "provider budget" } });

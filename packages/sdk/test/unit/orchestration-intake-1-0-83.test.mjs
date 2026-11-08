@@ -173,17 +173,20 @@ const QUEUE_CHANGED_82 = [
     "            || Boolean(peek.bootstrap) !== Boolean(first.bootstrap)) {",
     'import { messageSenderKey } from "../message-sender.js";',
 ];
-/** FU-9 (1.0.83, option b): a person's words never merge with a non-person prompt (queue.ts isPersonPrompt). */
+/**
+ * FU-9 (1.0.83, option b): a person's words never merge with a non-person prompt (queue.ts promptAuthorClass). Review
+ * RLR-F2 (ruling: three classes): a stamped sender decides; a senderless prompt with a runtime header is unknown and
+ * merges with nothing; a senderless prompt without one is a person's.
+ */
 const QUEUE_FU9_ADDED = [
     'import { messageSenderKey, normalizeMessageSender } from "../message-sender.js";',
-    // Review RLR-F2: a prompt queued on 1.0.82 has no sender; a runtime header marks it as not a person's.
     "const RUNTIME_PROMPT_HEADER = /^\\[(?:SYSTEM:|SESSION_MESSAGE(?:_RESPONSE)?\\b|WORKFLOW_UPDATE\\b|CHILD_UPDATE\\b|FACTS_INTAKE\\b)/;",
-    "function isPersonPrompt(item: any): boolean {",
+    'function promptAuthorClass(item: any): "person" | "non-person" | "unknown" {',
     "    const sender = normalizeMessageSender(item?.sender);",
-    '    if (sender) return sender.kind !== "agent" && sender.kind !== "system";',
-    '    return !(typeof item?.prompt === "string" && RUNTIME_PROMPT_HEADER.test(item.prompt));',
+    '    if (sender) return sender.kind !== "agent" && sender.kind !== "system" ? "person" : "non-person";',
+    '    return typeof item?.prompt === "string" && RUNTIME_PROMPT_HEADER.test(item.prompt) ? "unknown" : "person";',
     "            || Boolean(peek.bootstrap) !== Boolean(first.bootstrap)",
-    "            || isPersonPrompt(peek) !== isPersonPrompt(first)) {",
+    '            || promptAuthorClass(peek) === "unknown" || promptAuthorClass(peek) !== promptAuthorClass(first)) {',
 ];
 
 /**

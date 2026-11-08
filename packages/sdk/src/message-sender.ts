@@ -69,7 +69,7 @@ export function normalizeMessageSender(sender: unknown): MessageSender | undefin
 
 /**
  * FU-9 (1.0.83): the sender every prompt the runtime itself enqueues carries, so it is never taken for a person's words
- * (the orchestration never merges a person's prompt with an agent's or the runtime's, queue.ts isPersonPrompt). An
+ * (the orchestration never merges a person's prompt with an agent's or the runtime's, queue.ts promptAuthorClass). An
  * agent session's prompt names that session (`sessionId`, when known) and a short display.
  */
 export function agentSender(sessionId: string | null | undefined, display: string): MessageSender {

@@ -1550,16 +1550,18 @@ function* processAnswer(runtime: DurableSessionRuntime, answerItem: any): Genera
 const RUNTIME_PROMPT_HEADER = /^\[(?:SYSTEM:|SESSION_MESSAGE(?:_RESPONSE)?\b|WORKFLOW_UPDATE\b|CHILD_UPDATE\b|FACTS_INTAKE\b)/;
 
 /**
- * FU-9: whether a queued prompt is a person's words: its sender is not an agent or the runtime (kind `agent` or
- * `system`). Every prompt the runtime enqueues itself carries one of these (message-sender.ts agentSender and
- * systemSender; test/unit/fu9-sender-stamps.test.mjs checks every enqueue site), and a client's custom event cannot
- * claim one (client.ts sendEvent). A person's sender is a person's. A prompt with none (a client that names no sender,
- * or a prompt queued on 1.0.82) is a person's unless it starts with a runtime header (RUNTIME_PROMPT_HEADER).
+ * FU-9: whose words a queued prompt is, for the merge. A stamped sender decides: kind `agent` or `system` is not a
+ * person's, any other is. Every prompt the runtime enqueues itself carries one of these (message-sender.ts agentSender
+ * and systemSender; test/unit/fu9-sender-stamps.test.mjs checks every enqueue site), and a client's custom event cannot
+ * claim one (client.ts sendEvent). A prompt with none (a client that names no sender, or a prompt queued on 1.0.82) that
+ * starts with a runtime header (RUNTIME_PROMPT_HEADER) is unknown: a runtime prompt queued on 1.0.82 and a person's words
+ * that quote a header look the same (review RLR-F2). Without a header it is a person's (known limit: a parent agent's
+ * plain message queued on 1.0.82 counts as a person's).
  */
-function isPersonPrompt(item: any): boolean {
+function promptAuthorClass(item: any): "person" | "non-person" | "unknown" {
     const sender = normalizeMessageSender(item?.sender);
-    if (sender) return sender.kind !== "agent" && sender.kind !== "system";
-    return !(typeof item?.prompt === "string" && RUNTIME_PROMPT_HEADER.test(item.prompt));
+    if (sender) return sender.kind !== "agent" && sender.kind !== "system" ? "person" : "non-person";
+    return typeof item?.prompt === "string" && RUNTIME_PROMPT_HEADER.test(item.prompt) ? "unknown" : "person";
 }
 
 /**
@@ -1580,10 +1582,11 @@ function isPersonPrompt(item: any): boolean {
  *
  * FU-9 (1.0.83, option b): never merge a person's words with a non-person
  * prompt either (an agent's or the runtime's: a workflow message, another
- * session's message). The merge stops where exactly one of the two is a
- * person's (isPersonPrompt), so they run as two turns, in order. Two persons'
- * prompts still merge, and so do two non-person prompts; child updates are
- * batched apart (the child digest) and are not prompts here.
+ * session's message). The merge stops unless both are of the same known class
+ * (promptAuthorClass), so they run as two turns, in order; an unknown prompt
+ * merges with nothing. Two persons' prompts still merge, and so do two
+ * non-person prompts; child updates are batched apart (the child digest) and
+ * are not prompts here.
  *
  * Before 1.0.82 the merge popped the FIFO head to peek and put a non-mergeable
  * item back at the head. A timer item at the head therefore stopped every
@@ -1618,7 +1621,7 @@ function* collectMergeablePrompts(
         }
         if (first.carriedSteersWake === true || peek.carriedSteersWake === true
             || Boolean(peek.bootstrap) !== Boolean(first.bootstrap)
-            || isPersonPrompt(peek) !== isPersonPrompt(first)) {
+            || promptAuthorClass(peek) === "unknown" || promptAuthorClass(peek) !== promptAuthorClass(first)) {
             break;
         }
         removed.add(`${bucket}:${index}`);

@@ -1,6 +1,7 @@
 /**
  * FU-9 (1.0.83, option b) keeps a person's words and a non-person prompt in separate turns (orchestration/queue.ts
- * isPersonPrompt). A prompt with no sender counts as a person's, so every prompt the runtime enqueues itself must carry
+ * promptAuthorClass). A prompt with no sender counts as a person's unless it starts with a runtime header (then it never
+ * merges at all), so every prompt the runtime enqueues itself must carry
  * an agent's or the runtime's sender (formal finding F-FU9-1), and a client's custom event must not be able to claim one
  * (F-FU9-2).
  *
