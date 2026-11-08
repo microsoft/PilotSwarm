@@ -1776,7 +1776,7 @@
   "module": "RehydrationNotice",
   "config": "impl.rn-late-give-back-83.cfg",
   "mode": "impl",
-  "meaning": "proposed-fix",
+  "meaning": "confirmed",
   "spec": "Spec",
   "expected": "PASS",
   "invariants": [
@@ -1789,16 +1789,15 @@
   ],
   "properties": [],
   "deadlock": true,
-  "rows": "late-cancel",
-  "note": "1.0.83 fix: the dispatch cancel gives the notice back. Bind to the developer's fix head when written.",
-  "batch": "so3"
+  "note": "bb162ed8: the dispatch cancel gives the notice back.",
+  "batch": "so5b"
  },
  {
   "id": "impl.rn-late-give-back-83-live",
   "module": "RehydrationNotice",
   "config": "impl.rn-late-give-back-83-live.cfg",
   "mode": "impl",
-  "meaning": "proposed-fix",
+  "meaning": "confirmed",
   "spec": "LiveSpec",
   "expected": "PASS",
   "invariants": [
@@ -1814,8 +1813,610 @@
    "Prop_IntakeSettles"
   ],
   "deadlock": true,
-  "rows": "late-cancel",
-  "note": "As impl.rn-late-give-back-83: the notice still reaches the model.",
-  "batch": "so3"
+  "note": "bb162ed8: and it reaches the model.",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.safety",
+  "module": "CarriedGiveBack",
+  "config": "cg.safety.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_NewestNoticeKept",
+   "Inv_PromptNotLost",
+   "Inv_DigestOrder",
+   "Inv_NoticeOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8, one queued prompt: nothing lost, nothing twice, no stale order.",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.live",
+  "module": "CarriedGiveBack",
+  "config": "cg.live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_NewestNoticeKept",
+   "Inv_PromptNotLost",
+   "Inv_DigestOrder",
+   "Inv_NoticeOrder"
+  ],
+  "properties": [
+   "Prop_Settles",
+   "Prop_LifecycleDelivered",
+   "Prop_NoticeDelivered"
+  ],
+  "deadlock": true,
+  "note": "bb162ed8: the newest lifecycle update and notice reach the model.",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.two-prompts",
+  "module": "CarriedGiveBack",
+  "config": "cg.two-prompts.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_NewestNoticeKept",
+   "Inv_PromptNotLost"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8 (F1a): two queued prompts, two cancels: the newest lifecycle update is kept.",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.two-prompts-live",
+  "module": "CarriedGiveBack",
+  "config": "cg.two-prompts-live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_NewestNoticeKept",
+   "Inv_PromptNotLost"
+  ],
+  "properties": [
+   "Prop_Settles",
+   "Prop_LifecycleDelivered",
+   "Prop_NoticeDelivered"
+  ],
+  "deadlock": true,
+  "note": "bb162ed8: as cg.two-prompts, and it reaches the model.",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.two-prompts-digest-order",
+  "module": "CarriedGiveBack",
+  "config": "cg.two-prompts-digest-order.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "Inv_DigestOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8 (F1b): no child entry after a newer one of the same or higher rank.",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.two-prompts-notice-order",
+  "module": "CarriedGiveBack",
+  "config": "cg.two-prompts-notice-order.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "Inv_NoticeOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8 (F1b): no older notice after a newer one.",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.sweep-set-model",
+  "module": "CarriedGiveBack",
+  "config": "cg.sweep-set-model.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_NewestNoticeKept",
+   "Inv_PromptNotLost",
+   "Inv_DigestOrder",
+   "Inv_NoticeOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8 (F2): set_model in the sweep; the prompt stays queued and runs once.",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.sweep-set-model-digest",
+  "module": "CarriedGiveBack",
+  "config": "cg.sweep-set-model-digest.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "Inv_LifecycleKept"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8 (F2): what the prompt carried is kept.",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.sweep-set-model-live",
+  "module": "CarriedGiveBack",
+  "config": "cg.sweep-set-model-live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_NewestNoticeKept",
+   "Inv_PromptNotLost",
+   "Inv_DigestOrder",
+   "Inv_NoticeOrder"
+  ],
+  "properties": [
+   "Prop_Settles",
+   "Prop_LifecycleDelivered",
+   "Prop_NoticeDelivered"
+  ],
+  "deadlock": true,
+  "note": "bb162ed8 (F2): and it reaches the model.",
+  "batch": "so5b"
+ },
+ {
+  "id": "ref.cg-67fe212c-two-prompts",
+  "module": "CarriedGiveBack",
+  "config": "ref.cg-67fe212c-two-prompts.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_LifecycleKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "67fe212c: the second cancel keeps the restored older entry (so4b F1a).",
+  "batch": "so5b"
+ },
+ {
+  "id": "ref.cg-67fe212c-digest-order",
+  "module": "CarriedGiveBack",
+  "config": "ref.cg-67fe212c-digest-order.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_DigestOrder"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "67fe212c: an older entry after a newer one (so4b F1b).",
+  "batch": "so5b"
+ },
+ {
+  "id": "ref.cg-67fe212c-notice-order",
+  "module": "CarriedGiveBack",
+  "config": "ref.cg-67fe212c-notice-order.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoticeOrder"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "67fe212c: an older notice after a newer one (so4b F1b).",
+  "batch": "so5b"
+ },
+ {
+  "id": "ref.cg-67fe212c-sweep",
+  "module": "CarriedGiveBack",
+  "config": "ref.cg-67fe212c-sweep.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_PromptNotLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "67fe212c and main 1.0.82: set_model in the sweep loses the popped prompt (so4b F2).",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.old-code",
+  "module": "CarriedGiveBack",
+  "config": "cg.old-code.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_LifecycleKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "0424a3f8: a dispatch cancel loses the child digest.",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.old-code-notice",
+  "module": "CarriedGiveBack",
+  "config": "cg.old-code-notice.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NewestNoticeKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "0424a3f8: a dispatch cancel loses the notice.",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.old-code-live",
+  "module": "CarriedGiveBack",
+  "config": "cg.old-code-live.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "LiveSpec",
+  "expected": "liveness",
+  "invariants": [],
+  "properties": [
+   "Prop_LifecycleDelivered"
+  ],
+  "deadlock": false,
+  "note": "0424a3f8: the lost update never reaches the model.",
+  "batch": "so5b"
+ },
+ {
+  "id": "fault.cg-skip-any",
+  "module": "CarriedGiveBack",
+  "config": "fault.cg-skip-any.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_LifecycleKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "F1b without the rank guard: a carried lifecycle update is skipped for a later progress note.",
+  "batch": "so5b"
+ },
+ {
+  "id": "fault.cg-merge-prefer-pending",
+  "module": "CarriedGiveBack",
+  "config": "fault.cg-merge-prefer-pending.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_LifecycleKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "The restore lets pending progress replace a carried lifecycle update.",
+  "batch": "so5b"
+ },
+ {
+  "id": "fault.cg-overwrite-notice",
+  "module": "CarriedGiveBack",
+  "config": "fault.cg-overwrite-notice.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NewestNoticeKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "The give-back overwrites a newer pending notice.",
+  "batch": "so5b"
+ },
+ {
+  "id": "fault.cg-can-drops-markers",
+  "module": "CarriedGiveBack",
+  "config": "fault.cg-can-drops-markers.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_LifecycleKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Continue-as-new strips the markers.",
+  "batch": "so5b"
+ },
+ {
+  "id": "fault.cg-give-back-on-dispatch",
+  "module": "CarriedGiveBack",
+  "config": "fault.cg-give-back-on-dispatch.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_DeliveredOnce"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "A prompt that ran also gives back: delivered twice.",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.marker-size",
+  "module": "CarriedGiveBack",
+  "config": "cg.marker-size.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_LifecycleKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Markers dropped for size: a later cancel loses the digest (stated limit).",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.marker-size-notice",
+  "module": "CarriedGiveBack",
+  "config": "cg.marker-size-notice.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NewestNoticeKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Both markers dropped for size: a later cancel loses the notice (stated limit).",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.same-pass",
+  "module": "CarriedGiveBack",
+  "config": "cg.same-pass.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_NewestNoticeKept",
+   "Inv_PromptNotLost"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8: drain's same-pass give-back loses nothing and keeps the newest notice.",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.same-pass-order",
+  "module": "CarriedGiveBack",
+  "config": "cg.same-pass-order.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_NewestNoticeKept",
+   "Inv_PromptNotLost",
+   "Inv_DigestOrder",
+   "Inv_NoticeOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8 (b8aa360f): the same-pass give-back leaves to a later stash prompt what it carries; no stale order.",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.same-pass-queued",
+  "module": "CarriedGiveBack",
+  "config": "cg.same-pass-queued.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_LifecycleKept",
+   "Inv_DeliveredOnce",
+   "Inv_PromptNotLost",
+   "Inv_DigestOrder",
+   "Inv_NoticeOrder"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "bb162ed8: a prompt queued in an earlier pass ahead of the pass's stash: it carries only older entries, so it counts only for the notice.",
+  "batch": "so5b"
+ },
+ {
+  "id": "cg.same-pass-queued-newest-notice",
+  "module": "CarriedGiveBack",
+  "config": "cg.same-pass-queued-newest-notice.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NewestNoticeKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Known limit (accepted): when an older queued prompt carries a rehydration notice, the pass's newer notice is kept back; the older notice is already embedded in that queued prompt's text, so the model is told once and nothing is lost.",
+  "batch": "so5b"
+ },
+ {
+  "id": "ref.cg-3eebc211-same-pass",
+  "module": "CarriedGiveBack",
+  "config": "ref.cg-3eebc211-same-pass.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NewestNoticeKept"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "3eebc211 (so5): the same-pass give-back restores the older notice, so the newer one is not given back later.",
+  "batch": "so5b"
+ },
+ {
+  "id": "ref.cg-3eebc211-same-pass-order",
+  "module": "CarriedGiveBack",
+  "config": "ref.cg-3eebc211-same-pass-order.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_DigestOrder"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "3eebc211 (so5): an older entry is restored behind a newer one taken later in the pass.",
+  "batch": "so5b"
+ },
+ {
+  "id": "wit.cg-digest-given-back",
+  "module": "CarriedGiveBack",
+  "config": "wit.cg-digest-given-back.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoDigestGiveBack"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A dropped prompt gives its digest back.",
+  "batch": "so5b"
+ },
+ {
+  "id": "wit.cg-notice-given-back",
+  "module": "CarriedGiveBack",
+  "config": "wit.cg-notice-given-back.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoNoticeGiveBack"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A dropped prompt gives its notice back.",
+  "batch": "so5b"
+ },
+ {
+  "id": "wit.cg-merged",
+  "module": "CarriedGiveBack",
+  "config": "wit.cg-merged.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoMerge"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A given-back entry merges with a pending one.",
+  "batch": "so5b"
+ },
+ {
+  "id": "wit.cg-skipped",
+  "module": "CarriedGiveBack",
+  "config": "wit.cg-skipped.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoSkip"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "F1b skips an entry a later queued prompt carries.",
+  "batch": "so5b"
+ },
+ {
+  "id": "wit.cg-requeued",
+  "module": "CarriedGiveBack",
+  "config": "wit.cg-requeued.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoRequeue"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "F2: set_model in the sweep with the prompt still queued.",
+  "batch": "so5b"
  }
 ]

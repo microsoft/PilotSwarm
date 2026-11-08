@@ -16,6 +16,7 @@ a bounded check, not a proof. A FAIL is a model counterexample.
 | Result | 38 cases: 21 PASS, 17 FAIL, 0 VOID, 0 not run |
 | Batch so2 (2026-11-08, `e76a6133`) | 16 cases of `RehydrationNotice` and `SnapshotWarmDrop`: 16 of 16 as expected, one code finding (`rn.late-cancel`) |
 | Batch so3 (2026-11-08, `e76a6133`) | 35 cases of `OwnedRetry`, `IntakeDrain`, `WorkerShutdown` and the late-cancel fix: 36 of 36 as expected in the run (with `rn.late-cancel` again), two design limits, no new code finding |
+| Batches so4b, so5, so5b (2026-11-08) | The late-cancel give-back fixes in 1.0.83 (`CarriedGiveBack`): so4b found three gaps, so5 and so5b check their fixes; so5b, 48 cases at `bb162ed8` (`packages/sdk/src` identical at `8aaf5435` on v0.8.10): 48 of 48 as expected |
 
 1.0.82 is the version sessions run. The models therefore describe the current
 1.0.82 code, at the line numbers of `198ad79a`. Version 1.0.83
@@ -27,7 +28,9 @@ owned retry, the intake write as a drain deadline, the carried arrival flag,
 the refused continue-as-new at the history cap, the continue-as-new target and
 the turn routing) are modelled here by `OwnedRetry` and `IntakeDrain`, and the
 worker's graceful shutdown under one deadline (every worker) by
-`WorkerShutdown`, all bound to `e76a6133` (`CORRESPONDENCE-e76a6133-so3.md`). The hydration-adjacent changes of this line
+`WorkerShutdown`, all bound to `e76a6133` (`CORRESPONDENCE-e76a6133-so3.md`). The late-cancel give-back added to
+1.0.83 afterwards (the rehydration notice and the carried child digest of a queued prompt dropped by a cancel) is
+modelled by `CarriedGiveBack`, bound to `bb162ed8` (`CORRESPONDENCE-bb162ed8-so5b.md`). The hydration-adjacent changes of this line
 (a given-up hydration records an intake attempt in 1.0.83; the warm session is
 dropped before the snapshot commit after an unsettled aborted run) are modelled
 by `RehydrationNotice` and `SnapshotWarmDrop`, bound to `e76a6133`
@@ -49,6 +52,7 @@ by `RehydrationNotice` and `SnapshotWarmDrop`, bound to `e76a6133`
 | `SnapshotWarmDrop.tla` | One turn's snapshot step: after a model run aborted following an unsettled turn-control failure, the warm session is dropped before the snapshot commit; a failed drop fails the attempt, which saves nothing and is retried | 7 |
 | `OwnedRetry.tla` | 1.0.83: a failed turn's retry is owned apart from the pending prompt; it runs before any other turn, alone reuses the thrown attempt's key and is carried by every continue-as-new; a lossy hand-off's retry is fresh (no key); while it is owed an armed wait is released and an agent wait is kept, its poll queued after the retry | 12 (including 4 faults and 1 comparison) |
 | `IntakeDrain.tla` | 1.0.83: no continue-as-new while an intake write is due; one intake call per wake; the arrival flag is carried; a refused continue-as-new at the history cap fails the execution; no continue-as-new to an older version; 1.0.83 turns only on workers with the intake routing | 12 (including 5 faults and 1 comparison) |
+| `CarriedGiveBack.tla` | 1.0.83: a queued prompt that took the child digest and the rehydration notice carries them as markers; a cancel that drops it at dispatch, or in the same drain pass, gives them back: child entries merged by observation time and rank, nothing a later queued prompt carries, the notice only once; a `set_model` in the pre-dispatch sweep keeps the prompt queued | 33 (including 5 faults, 10 references to earlier code, 3 design limits) |
 | `WorkerShutdown.tla` | Every worker: graceful shutdown under one deadline (drain, workspace release, release sweep, stop); a hung step is abandoned; the sweep deletes only marked (committed) sessions' local copies and dehydrates unmarked legacy ones | 9 (including 2 faults and 1 comparison) |
 
 ## 2. The code these models are bound to
@@ -85,9 +89,15 @@ N02, N04-N07 and N10):
 | `IntakeDrain` | `orchestration_1_0_83/queue.ts` 482-520, 797-812; `runtime.ts` 253-278, 303; `lifecycle.ts` 724-776; `intake-state.ts` 534-545; `intake-wiring.ts` 326, 584; `state.ts` 804; `orchestration-version.ts` 15, 33; `activity-routing.ts` 10-22, 93-128; `session-proxy.ts` 5778 |
 | `WorkerShutdown` | `worker.ts` 1307-1404 (`gracefulShutdown`: workspace release 1374, release sweep 1394, stop 1403) |
 
+Bound to `bb162ed8` (`CORRESPONDENCE-bb162ed8-so5b.md`):
+
+| Module | Code (`orchestration_1_0_83/`) |
+|---|---|
+| `CarriedGiveBack` | `queue.ts`: `markCarriedWork` 456 (called at 1346), `giveBackCarriedWork` 413 (same pass), `observedChronology` 485, `giveBackDroppedPromptWork` 506 (decide-merge 1589-1590, decide-fifo 1703-1705), `peekNextDispatchFifoItem` 259 and the sweep before the pop (1685-1690); `lifecycle.ts` `restorePendingChildDigest` 486-512 |
+
 ## 3. Case taxonomy and expected results
 
-`cases.tsv` lists all 89 cases with their module; `cases.json` gives each case
+`cases.tsv` lists all 123 cases with their module; `cases.json` gives each case
 its `mode`, expected result, `meaning`, constants, invariants and properties.
 `expected` is `PASS`, or `safety` or `liveness` when a violation is expected.
 
@@ -112,6 +122,10 @@ The 35 cases of batch so3 add two modes: `design-limit` cases for 1.0.83 and the
 proposed late-cancel fix in 1.0.83 and are to be bound to the fix's commit once it is written. Comparisons model
 1.0.82 (`comparison.or-1-0-82`, `comparison.id-1-0-82-swallow`) and the shutdown before its deadline
 (`comparison.ws-no-deadline`). `cases.json` gives each so3 case the inventory rows it covers.
+
+The 34 `CarriedGiveBack` cases and the two `impl.rn-late-give-back-83` cases come from batch so5b. `impl` cases are
+bound to `bb162ed8`; `ref.*` cases model earlier code (`67fe212c`, `3eebc211`) and must fail; `cg.old-code*` model the
+code before any give-back; design limits are the markers dropped for size and the accepted older-notice case.
 
 ## 4. Results
 
@@ -175,7 +189,31 @@ expected (13 PASS, 23 expected violations), no PARTIAL, no VOID. All four module
   the deadline Kubernetes killed a hung shutdown at 90 s and the same session could be lost. Keep the default
   deadline below the pod's grace period.
 - `impl.rn-late-give-back-83` and `-live` pass: the proposed late-cancel fix in 1.0.83 (give the notice back at the
-  dispatch cancels) keeps the notice and still delivers it. They model the fix, not written code.
+  dispatch cancels) keeps the notice and still delivers it. They model the fix, not written code; batch so5b binds
+  them to `bb162ed8`.
+
+### Batches so4b, so5 and so5b (2026-11-08, the late-cancel give-back in 1.0.83)
+
+so4b (25 cases at `67fe212c`, the first give-back): 23 of 25 as expected; the 2 mismatches and 4 predictions were
+code findings, all fixed in 1.0.83 in place:
+
+- Two cancels lost a child's newest update: the second give-back counted the restored, older pending entry as newer
+  (`restorePendingChildDigest` was called with no chronology). Fixed by ordering by `observedAtMs`.
+- After one cancel, an older child entry or an older rehydration notice could reach the model after a newer one that a
+  later queued prompt carried. Fixed by not giving back what a later queued prompt carries (for a child entry, only
+  when the later one ranks at least as high, so a finish is never dropped for a later progress note).
+- A `set_model` command in the pre-dispatch sweep continued as new while `decide` held the popped prompt, so the prompt
+  and what it carried were lost. Main's 1.0.82 has the same shape (`orchestration/queue.ts` 1431, 1438; `lifecycle.ts`
+  820) and keeps it as a known issue until the next live version. Fixed in 1.0.83 by sweeping before the pop.
+
+so5 (33 cases at `3eebc211`): 32 of 33 as expected; the mismatch was the same-pass give-back restoring an older notice,
+which blocked the newer one. Fixed in `b8aa360f` (the same-pass give-back leaves to a later stash prompt what it
+carries).
+
+so5b (48 cases at `bb162ed8`, with the controller idle-wake model in `../workflow-v2/idle-wake/`): 48 of 48 as
+expected. Known limits, accepted: a marker dropped because the item would be too large cannot be given back; and when
+an older queued prompt carries a rehydration notice, the pass's newer notice is kept back (the older notice is already
+in that prompt's text, so the model is told once and nothing is lost).
 
 ## 5. How to run
 
