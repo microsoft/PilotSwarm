@@ -135,11 +135,17 @@ export class NativeWorkflowToolLimit {
     constructor(limit: readonly string[]) {
         this.names = new Set(limit.filter(name => name !== "complete_workflow_node"));
     }
-    /** Whether a worker may use `tool` (a CLI tool's name, an MCP tool as `server/tool` or `server-tool`). */
+    /**
+     * Whether a worker may use `tool`: a CLI or PilotSwarm tool by its exact name, an MCP tool as `server/tool` (its
+     * declaration and MCP call) or `server-tool` (its hook name). A listed `server/tool` and `server-tool` name the same
+     * MCP tool. A bare listed name never allows an MCP tool of that name on any server (final review FSS-F1), and the hook
+     * form of a listed `server/tool` is allowed (FRT-F1), as NativeTaskAccess.allowsHook matches it.
+     */
     allows(tool: string): boolean {
         if (this.names.has(tool)) return true;
-        const slash = tool.indexOf("/");
-        return slash > 0 && (this.names.has(tool.slice(slash + 1)) || this.names.has(tool.replace("/", "-")));
+        if (tool.includes("/")) return this.names.has(tool.replace("/", "-"));
+        for (const name of this.names) if (name.includes("/") && name.replace("/", "-") === tool) return true;
+        return false;
     }
     /** `tools` without the ones the limit does not allow. */
     filter(tools: readonly string[]): string[] {

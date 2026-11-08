@@ -143,3 +143,57 @@ test("a fast draining report leaves no timer scheduled", async (t) => {
     assert.ok(scheduled.includes(5_000), "the report's own 5 s cap (the deadline is later)");
     assert.equal(live.size, 0, "every step's timer was cleared");
 });
+
+// Final review FRT-F2 (formal correspondence, worker shutdown; current behaviour, no code change): after a runtime drain
+// held past the shared deadline, the later steps are still started, each with no time left. A step whose work is quick
+// still finishes (the sweep, the closes); a step whose work is still pending is left behind: only the wait for it is
+// abandoned, not its work, which goes on after the shutdown returned, overlapping the steps that follow it.
+test("FRT-F2: after a drain past the deadline the release, the sweep and the closes still start; a pending release goes on behind them", async (t) => {
+    const { PilotSwarmWorker } = await import("../../dist/worker.js");
+    const errors = [];
+    t.mock.method(console, "error", (line) => errors.push(String(line)));
+    t.mock.method(console, "warn", () => {});
+    const calls = [];
+    let releaseWork;
+    const releaseHeld = new Promise((resolve) => { releaseWork = resolve; });
+    const worker = {
+        config: { workerNodeId: "frt-f2-fixture" }, _stopProviderPolling() {}, _agentPackagesCacheDir: null, _agentPackagesTimer: null,
+        _evictionTimer: null, _runtimeStartup: null,
+        runtime: { shutdown: async () => { calls.push("drain started"); await hang(); } },
+        sessionStore: {},
+        sessionManager: {
+            releaseIdleWorkspaces: async () => { calls.push("release started"); const released = await releaseHeld; calls.push("release finished"); return released; },
+            sweepIdleSessions: async () => { calls.push("sweep started"); calls.push("sweep finished"); return 0; },
+        },
+        stop: async () => { calls.push("stop started"); calls.push("stop finished"); },
+    };
+    let deadline;
+    const startedAt = {};
+    for (const key of ["releaseIdleWorkspaces", "sweepIdleSessions"]) {
+        const work = worker.sessionManager[key];
+        worker.sessionManager[key] = (...args) => { startedAt[key] = Date.now(); return work(...args); };
+    }
+    const stopWork = worker.stop;
+    worker.stop = () => { startedAt.stop = Date.now(); return stopWork(); };
+    await withEnv({ PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS: "100", PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS: "100" }, async () => {
+        deadline = Date.now() + 200;
+        await PilotSwarmWorker.prototype.gracefulShutdown.call(worker);
+    });
+    // The drain was cut at the deadline; every later step was still started after it, with no time left.
+    assert.equal(worker.runtime, null);
+    for (const step of ["releaseIdleWorkspaces", "sweepIdleSessions", "stop"]) {
+        assert.ok(startedAt[step] >= deadline - 5, `${step} started ${deadline - startedAt[step]} ms before the deadline`);
+    }
+    assert.equal(errors.filter((line) => line.includes("shutdown: the runtime drain did not finish by the drain deadline")).length, 1);
+    // The release was abandoned (its wait), the sweep and the closes started while it was still pending, and finished.
+    assert.deepEqual(calls, ["drain started", "release started", "sweep started", "sweep finished", "stop started", "stop finished"]);
+    assert.equal(errors.filter((line) => line.includes("shutdown: the workspace release did not finish by the drain deadline")).length, 1);
+    for (const step of ["the release sweep", "closing the worker"]) {
+        assert.equal(errors.filter((line) => line.includes(`shutdown: ${step} did not finish`)).length, 0, step);
+    }
+    // Its work was not cancelled: once its call returns, after the shutdown returned, it goes on to its end.
+    releaseWork(2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(calls.slice(-1), ["release finished"]);
+    assert.ok(errors.some((line) => line.includes("drain released 2 workspace session(s)")), "the abandoned release's work completed");
+});
