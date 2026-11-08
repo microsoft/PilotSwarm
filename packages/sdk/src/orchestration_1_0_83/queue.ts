@@ -14,6 +14,7 @@ import {
 } from "./agents.js";
 import {
     bufferChildUpdate,
+    childUpdateRank,
     drainLeadingQueuedScheduleActions,
     flushPendingChildDigestIntoPrompt,
     handleCommand,
@@ -251,6 +252,28 @@ function popNextDispatchFifoItem(runtime: DurableSessionRuntime): { item: any; b
     return head ? { item: head, before: 0 } : null;
 }
 
+/**
+ * 1.0.83 (formal finding so4b F2): the item popNextDispatchFifoItem would
+ * pop next, read without removing it.
+ */
+function peekNextDispatchFifoItem(runtime: DurableSessionRuntime): any | null {
+    let head: any = null;
+    for (let i = 0; i < FIFO_BUCKET_COUNT; i++) {
+        const items = readFifoBucket(runtime.ctx, i);
+        const interactive = items.find(isInteractiveFifoItem);
+        if (interactive) return interactive;
+        head ??= items[0] ?? null;
+    }
+    return head;
+}
+
+/** Every queued item, in order. */
+function queuedFifoItems(runtime: DurableSessionRuntime): any[] {
+    const items: any[] = [];
+    for (let i = 0; i < FIFO_BUCKET_COUNT; i++) items.push(...readFifoBucket(runtime.ctx, i));
+    return items;
+}
+
 /** Timer items of one kind are interchangeable: one fire runs the schedule once. */
 function timerItemKind(item: any): string | null {
     if (item?.kind !== "timer" || !item.timer) return null;
@@ -428,23 +451,47 @@ function carriedChildDigestOf(value: unknown): PendingChildDigest | null {
 }
 
 /**
+ * 1.0.83 (formal finding so4b F1a): when a child update was observed
+ * (bufferChildUpdate sets observedAtMs on every entry). An entry without a
+ * time counts as older than every timed one; between two such entries the
+ * pending one counts as newer, as before.
+ */
+function observedChronology(entry: PendingChildDigest["updates"][number]): number {
+    return typeof entry?.observedAtMs === "number" && Number.isFinite(entry.observedAtMs) ? entry.observedAtMs : 0;
+}
+
+/**
  * 1.0.83 (late cancel): a queued prompt that a cancel drops at dispatch never
  * ran, so the owed work it carries (markCarriedWork) is given back, under the
  * rule giveBackCarriedWork applies to a prompt that was never queued: the
  * rehydration notice only while none is pending (never a second copy), and
- * the child digest merged with the pending one, whose updates arrived after
- * the prompt took it and so count as newer.
+ * the child digest merged with the pending one by when each update was
+ * observed (so4b F1a). `later` are the items queued after the dropped one
+ * (so4b F1b): a prompt among them that carries the notice delivers it, so it
+ * is not given back; and a child's entry is not given back when a prompt
+ * among them carries a later entry for that child of the same or a higher
+ * rank (a lifecycle update is never dropped for a later progress note). A
+ * prompt whose marker was dropped for its size shows nothing, so the work is
+ * given back.
  */
-function giveBackDroppedPromptWork(runtime: DurableSessionRuntime, item: any, where: string): void {
+function giveBackDroppedPromptWork(runtime: DurableSessionRuntime, item: any, where: string, later: readonly any[]): void {
     const { ctx, state } = runtime;
+    const laterPrompts = later.filter((other) => other?.kind === "prompt");
+    const laterEntries = laterPrompts.flatMap((other) => carriedChildDigestOf(other.carriedChildDigest)?.updates ?? []);
     const digest = carriedChildDigestOf(item?.carriedChildDigest);
     if (digest) {
-        restorePendingChildDigest(runtime, digest);
-        ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the child digest it carried (${digest.updates.length} update(s))`);
+        const kept = digest.updates.filter((entry) => !laterEntries.some((next) =>
+            next.sessionId === entry.sessionId && childUpdateRank(next.updateType) >= childUpdateRank(entry.updateType)));
+        if (kept.length > 0) restorePendingChildDigest(runtime, { ...digest, updates: kept }, observedChronology);
+        ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the child digest it carried (${kept.length} update(s); ${digest.updates.length - kept.length} a later queued prompt carries)`);
     }
     if (typeof item?.carriedRehydrationMessage === "string" && state.pendingRehydrationMessage === undefined) {
-        state.pendingRehydrationMessage = item.carriedRehydrationMessage;
-        ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the rehydration notice it carried`);
+        if (laterPrompts.some((other) => typeof other.carriedRehydrationMessage === "string")) {
+            ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel left its rehydration notice to a later queued prompt that carries one`);
+        } else {
+            state.pendingRehydrationMessage = item.carriedRehydrationMessage;
+            ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the rehydration notice it carried`);
+        }
     }
 }
 
@@ -1510,7 +1557,7 @@ function* collectMergeablePrompts(
             ctx.traceInfo(`[decide] dropping merged FIFO prompt cancelled by tombstone (ids=${peekIds.join(",")})`);
             removed.add(`${bucket}:${index}`);
             yield* dropCancelledPrompt(runtime, peekIds, "decide-merge");
-            giveBackDroppedPromptWork(runtime, peek, "decide-merge");
+            giveBackDroppedPromptWork(runtime, peek, "decide-merge", flat.slice(k + 1).map((entry) => entry.item));
             continue;
         }
         if (first.carriedSteersWake === true || peek.carriedSteersWake === true
@@ -1600,20 +1647,27 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
     }
 
     // Priority 3: FIFO — next item in arrival order, with prompt batching.
+    // 1.0.83 (formal finding so4b F2): the pre-dispatch sweep runs while the
+    // prompt is still queued, and the prompt is taken after it. A command the
+    // sweep handles that continues as new (set_model) leaves the prompt in the
+    // FIFO, which is KV, so the next execution runs it, once. Before, the
+    // prompt was taken first and that continue-as-new lost it.
+    const next = peekNextDispatchFifoItem(runtime);
+    if (next?.kind === "prompt" && Array.isArray(next.clientMessageIds) && next.clientMessageIds.length > 0) {
+        yield* sweepMessagesBeforePromptDispatch(runtime);
+        if (state.orchestrationResult !== null) return true;
+    }
     const picked = popNextDispatchFifoItem(runtime);
     if (picked) {
         const item = picked.item;
         switch (item.kind) {
             case "prompt": {
                 const ids: string[] = Array.isArray(item.clientMessageIds) ? item.clientMessageIds : [];
-                if (ids.length > 0) {
-                    yield* sweepMessagesBeforePromptDispatch(runtime);
-                    if (state.orchestrationResult !== null) return true;
-                }
                 if (promptIdsIntersectCancellation(runtime, ids)) {
                     ctx.traceInfo(`[decide] dropping FIFO prompt cancelled by tombstone (ids=${ids.join(",")})`);
                     yield* dropCancelledPrompt(runtime, ids, "decide-fifo");
-                    giveBackDroppedPromptWork(runtime, item, "decide-fifo");
+                    // Every queued prompt is behind it: it was the first prompt or answer.
+                    giveBackDroppedPromptWork(runtime, item, "decide-fifo", queuedFifoItems(runtime));
                     return true;
                 }
 

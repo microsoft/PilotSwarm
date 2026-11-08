@@ -10,8 +10,19 @@
  * gives them back under giveBackCarriedWork's rule: the notice only while none is pending, the digest merged with the
  * pending one. The next turn carries each exactly once.
  *
+ * so4b (formal finding so4b, decision 2026-11-08T04:15Z; fixed in 1.0.83 in place):
+ * - F1a: a late give-back merges the digest by when each update was observed: with two prompts cancelled late, the
+ *   pending digest no longer keeps the older entry over the newer one (a child's "completed" over its later "failed").
+ * - F1b: a late give-back leaves to a prompt queued after the dropped one what it carries: a child's entry when that
+ *   prompt carries a later entry for the child of the same or a higher rank (never a lifecycle update for a later
+ *   progress note), and the notice when that prompt carries one.
+ * - F2: the pre-dispatch sweep runs while the prompt is still queued, so a set_model it handles (a continue-as-new)
+ *   carries the prompt in the FIFO, and the next execution runs it on the new model, once.
+ *
  * Drives the real 1.0.83 drain/decide generators and run loop against a fake durable context (as fifo-queue-drain does
  * for 1.0.82): a Map for KV, a message list for the durable queue, and a clock that moves only when a timer wins.
+ * Messages in `sweepMessages` arrive at the first pre-dispatch sweep's read (after drain's pass ended); `onTurn` runs
+ * while a turn runs (messages it pushes arrive during the turn).
  *
  * Run: npx vitest run test/local/fifo-late-cancel-1-0-83.test.js
  */
@@ -19,8 +30,8 @@ import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
 import { createRuntime, runLoop } from "../../src/orchestration_1_0_83/runtime.ts";
 import { appendToFifo, drain } from "../../src/orchestration_1_0_83/queue.ts";
-import { continueInput } from "../../src/orchestration_1_0_83/lifecycle.ts";
-import { FIFO_BUCKET_COUNT, MAX_FIFO_ITEM_BYTES } from "../../src/orchestration_1_0_83/state.ts";
+import { bufferChildUpdate, continueInput } from "../../src/orchestration_1_0_83/lifecycle.ts";
+import { FIFO_BUCKET_COUNT, MAX_FIFO_ITEM_BYTES, PREDISPATCH_CANCEL_SWEEP_MS } from "../../src/orchestration_1_0_83/state.ts";
 
 const { MAX_KV_VALUE_BYTES } = createRequire(import.meta.url)("duroxide");
 
@@ -33,11 +44,14 @@ const NOTE = "REHYDRATED-NOTE: the previous worker lost the live session";
 const START_MS = 1_750_000_000_000;
 
 /** `kv`: the KV of an earlier execution, which a continue-as-new keeps (the FIFO is KV). */
-function harness(overrides = {}, { kv = new Map() } = {}) {
+function harness(overrides = {}, { kv = new Map(), onTurn = null } = {}) {
     const calls = [];
     const turns = [];
+    const turnModels = [];
     const results = [];
     const messages = [];
+    const sweepMessages = [];
+    let runtimeRef = null;
     const clock = { now: START_MS };
     let guid = 0;
     const ctx = {
@@ -74,6 +88,7 @@ function harness(overrides = {}, { kv = new Map() } = {}) {
             case "race":
                 if (effect.left?.effect === "session.runTurn") return { index: 0, value: resolve(effect.left) };
                 if (effect.left?.effect === "dequeue") {
+                    if (effect.right?.ms === PREDISPATCH_CANCEL_SWEEP_MS && sweepMessages.length) messages.push(...sweepMessages.splice(0));
                     if (messages.length) return { index: 0, value: JSON.stringify(messages.shift()) };
                     if (!fireTimers && effect.right.ms >= 1000) throw new Error("parked");
                     clock.now += effect.right.ms;
@@ -82,6 +97,8 @@ function harness(overrides = {}, { kv = new Map() } = {}) {
                 throw new Error(`unexpected race: ${JSON.stringify(effect)}`);
             case "session.runTurn": {
                 turns.push(effect.args);
+                turnModels.push(runtimeRef?.state.config.model);
+                onTurn?.(turns.length);
                 return results.shift() ?? { type: "completed", content: "ok" };
             }
             case "manager.listChildSessions": return JSON.stringify([]);
@@ -107,6 +124,7 @@ function harness(overrides = {}, { kv = new Map() } = {}) {
     const runtime = drive(createRuntime(ctx, {
         sessionId: "late-cancel-fixture", config: {}, iteration: 4, isSystem: true, blobEnabled: false, ...overrides,
     }, { currentVersion: "1.0.83", latestVersion: "1.0.83" }));
+    runtimeRef = runtime;
     const fifo = () => {
         const out = [];
         for (let i = 0; i < FIFO_BUCKET_COUNT; i++) {
@@ -141,7 +159,7 @@ function harness(overrides = {}, { kv = new Map() } = {}) {
         }
         throw new Error("run loop did not stop");
     };
-    return { runtime, kv, clock, calls, turns, results, messages, drive, fifo, arm, run };
+    return { runtime, kv, clock, calls, turns, turnModels, results, messages, sweepMessages, drive, fifo, arm, run };
 }
 
 const count = (text, mark) => text.split(mark).length - 1;
@@ -290,5 +308,102 @@ describe("1.0.83: a queued prompt cancelled at dispatch gives back the notice an
         expect(item.carriedChildDigest).toBeUndefined();
         expect(item.carriedRehydrationMessage).toBe(NOTE);
         expect(Buffer.byteLength(JSON.stringify([item]), "utf8")).toBeLessThanOrEqual(MAX_FIFO_ITEM_BYTES);
+    });
+});
+
+/** A child update as the drain buffers it, observed `atMs` after the start. */
+const childUpdate = (h, updateType, content, atMs) =>
+    bufferChildUpdate(h.runtime, { sessionId: "child-x", updateType, content }, START_MS + atMs);
+const delivered = h => h.turns.map(turnText).join("\n");
+
+describe("so4b: a late give-back keeps a child's newest update and leaves to a later queued prompt what it carries", () => {
+    it("F1a: completed, then failed, each taken by a queued prompt, both cancelled: the next digest says failed", () => {
+        const h = afterHandoff();
+        childUpdate(h, "completed", "X-COMPLETED", 1);
+        queuePrompt(h, "pA");
+        childUpdate(h, "failed", "X-FAILED", 2);
+        queuePrompt(h, "pB");
+        expect(h.fifo().map(item => item.carriedChildDigest?.updates.map(u => u.content))).toEqual([["X-COMPLETED"], ["X-FAILED"]]);
+        h.messages.push({ cancelPending: ["pA", "pB"] });
+        h.run();
+        expect(h.fifo()).toEqual([]);
+        expect(h.runtime.state.pendingChildDigest?.updates.map(u => [u.sessionId, u.updateType])).toEqual([["child-x", "failed"]]);
+        h.run({ turnCount: 1, fireTimers: true });
+        expect(count(delivered(h), "X-FAILED")).toBe(1);
+        expect(delivered(h)).not.toContain("X-COMPLETED");
+    });
+
+    it("F1b digest: progress taken by A, completed taken by B, A cancelled, B runs: no later progress entry for that child", () => {
+        const h = afterHandoff();
+        childUpdate(h, "progress", "X-PROGRESS", 1);
+        queuePrompt(h, "pA");
+        childUpdate(h, "completed", "X-COMPLETED", 2);
+        queuePrompt(h, "pB");
+        h.messages.push({ cancelPending: ["pA"] });
+        h.run({ turnCount: 1 });
+        expect(h.turns).toHaveLength(1);
+        expect(turnText(h.turns[0])).toContain("pB please");
+        expect(count(delivered(h), "X-COMPLETED")).toBe(1);
+        // A's older progress note is not given back to come after B's completed.
+        expect(h.runtime.state.pendingChildDigest?.updates.some(u => u.sessionId === "child-x") ?? false).toBe(false);
+        h.run({ turnCount: 2, fireTimers: true });
+        expect(delivered(h)).not.toContain("X-PROGRESS");
+    });
+
+    it("F1b notice: two lossy hand-offs, notices taken by A and B, A cancelled, B runs: the notice is delivered once", () => {
+        // Each prompt took one hand-off's notice, as drain stores it (the text and the marker); none is pending, and the
+        // session still needs hydrating, so a pending notice would join the next turn.
+        const SECOND = `${NOTE} (second hand-off)`;
+        const h = harness({ needsHydration: true, blobEnabled: true });
+        appendToFifo(h.runtime, [
+            { kind: "prompt", prompt: `pA please\n\n[SYSTEM: ${NOTE}\n]`, bootstrap: false, clientMessageIds: ["pA"], carriedRehydrationMessage: NOTE },
+            { kind: "prompt", prompt: `pB please\n\n[SYSTEM: ${SECOND}\n]`, bootstrap: false, clientMessageIds: ["pB"], carriedRehydrationMessage: SECOND },
+        ]);
+        h.messages.push({ cancelPending: ["pA"] });
+        h.run({ turnCount: 1 });
+        expect(h.turns).toHaveLength(1);
+        expect(turnText(h.turns[0])).toContain("pB please");
+        expect(turnText(h.turns[0])).not.toContain("pA please");
+        expect(h.runtime.state.pendingRehydrationMessage).toBeUndefined();
+        h.run({ turnCount: 2, fireTimers: true });
+        expect(count(delivered(h), "REHYDRATED-NOTE")).toBe(1);
+    });
+
+    it("a carried lifecycle update is never dropped for a later progress note: completed taken by A, progress by B, A cancelled: completed still reaches the parent", () => {
+        const h = afterHandoff();
+        childUpdate(h, "completed", "X-COMPLETED", 1);
+        queuePrompt(h, "pA");
+        childUpdate(h, "progress", "X-PROGRESS", 2);
+        queuePrompt(h, "pB");
+        h.messages.push({ cancelPending: ["pA"] });
+        h.run({ turnCount: 2, fireTimers: true });
+        expect(turnText(h.turns[0])).toContain("pB please");
+        expect(count(delivered(h), "X-PROGRESS")).toBe(1);
+        expect(count(delivered(h), "X-COMPLETED")).toBe(1);
+    });
+});
+
+describe("so4b F2: a set_model the pre-dispatch sweep handles keeps the queued prompt", () => {
+    it("while a turn runs, prompt P (with a client message id) and then set_model arrive: P runs on the new model, once", () => {
+        const before = harness({ config: { model: "old-model" } }, { onTurn: () => {
+            // During the first turn: P is sent, then the model change, which arrives after drain's pass that queues P.
+            before.messages.push({ prompt: "P please", clientMessageIds: ["pP"] });
+            before.sweepMessages.push({ type: "cmd", cmd: "set_model", id: "set-1", args: { model: "new-model" } });
+        } });
+        before.messages.push({ prompt: "first please", clientMessageIds: ["p0"] });
+        const ended = before.run();
+        expect(before.turns).toHaveLength(1);
+        expect(ended.stopped).toBe("can");
+        expect(ended.input.config.model).toBe("new-model");
+        // P is still queued in the FIFO (KV), which the next execution reads.
+        expect(before.fifo().map(item => item.clientMessageIds)).toEqual([["pP"]]);
+        const after = harness(ended.input, { kv: before.kv });
+        after.run({ turnCount: 3, fireTimers: true });
+        const withP = after.turns.map(turnText).filter(text => text.includes("P please"));
+        expect(withP).toHaveLength(1);
+        expect(after.turnModels[after.turns.map(turnText).findIndex(text => text.includes("P please"))]).toBe("new-model");
+        // Not taken for a duplicate of its own client message id.
+        expect(after.calls.some(call => JSON.stringify(call).includes("session.message_duplicate_suppressed"))).toBe(false);
+        expect(after.fifo()).toEqual([]);
     });
 });

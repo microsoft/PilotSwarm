@@ -510,7 +510,7 @@ export function restorePendingChildDigest(
     };
 }
 
-function childUpdateRank(updateType: string): number {
+export function childUpdateRank(updateType: string): number {
     switch (updateType) {
         case "failed":
         case "cancelled":

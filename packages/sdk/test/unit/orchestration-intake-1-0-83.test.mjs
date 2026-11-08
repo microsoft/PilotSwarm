@@ -152,9 +152,16 @@ function linesOnly(a, b) {
     return out;
 }
 
-/** The lines of the frozen 1.0.82 queue.ts that 1.0.83 changes: one, so that a due intake write is raced, never blocked on. */
+/**
+ * The lines of the frozen 1.0.82 queue.ts that 1.0.83 changes: one, so that a due intake write is raced, never blocked on;
+ * and the pre-dispatch sweep of a popped prompt, which decide now runs before it takes the prompt (formal finding so4b F2).
+ */
 const QUEUE_CHANGED_82 = [
     "        !hasFifoItems(runtime)",
+    "                if (ids.length > 0) {",
+    "                    yield* sweepMessagesBeforePromptDispatch(runtime);",
+    "                    if (state.orchestrationResult !== null) return true;",
+    "                }",
 ];
 
 /**
@@ -238,18 +245,56 @@ const QUEUE_LATE_CANCEL_ADDED = [
     "    return typeof digest.startedAtMs === \"number\" && Array.isArray(digest.updates) && digest.updates.length > 0",
     "        && digest.updates.every(entry => entry && typeof entry === \"object\" && typeof entry.sessionId === \"string\")",
     "        ? digest : null;",
-    "function giveBackDroppedPromptWork(runtime: DurableSessionRuntime, item: any, where: string): void {",
     "    const digest = carriedChildDigestOf(item?.carriedChildDigest);",
     "    if (digest) {",
-    "        restorePendingChildDigest(runtime, digest);",
-    "        ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the child digest it carried (${digest.updates.length} update(s))`);",
     "    if (typeof item?.carriedRehydrationMessage === \"string\" && state.pendingRehydrationMessage === undefined) {",
-    "        state.pendingRehydrationMessage = item.carriedRehydrationMessage;",
-    "        ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the rehydration notice it carried`);",
     "                markCarriedWork(runtime, stashedPrompt, carriedByItem.get(stashedPrompt)!);",
-    "            giveBackDroppedPromptWork(runtime, peek, \"decide-merge\");",
-    "                    giveBackDroppedPromptWork(runtime, item, \"decide-fifo\");",
     "    const { ctx, state } = runtime;",
+];
+
+/**
+ * The lines 1.0.83 adds to queue.ts for formal finding so4b (decision 2026-11-08T04:15Z, fixed in 1.0.83 in place):
+ * - F1: the late give-back merges a digest by when each update was observed (observedChronology), and leaves to a prompt
+ *   queued after the dropped one a child's entry of the same or a lower rank, and the notice, when that prompt carries
+ *   them (giveBackDroppedPromptWork's `later`).
+ * - F2: decide runs the pre-dispatch sweep while the prompt is still queued (peekNextDispatchFifoItem), and takes it
+ *   after, so a continue-as-new in the sweep keeps it.
+ */
+const QUEUE_SO4B_ADDED = [
+    "    childUpdateRank,",
+    "function peekNextDispatchFifoItem(runtime: DurableSessionRuntime): any | null {",
+    "    let head: any = null;",
+    "    for (let i = 0; i < FIFO_BUCKET_COUNT; i++) {",
+    "        const items = readFifoBucket(runtime.ctx, i);",
+    "        const interactive = items.find(isInteractiveFifoItem);",
+    "        if (interactive) return interactive;",
+    "        head ??= items[0] ?? null;",
+    "    return head;",
+    "/** Every queued item, in order. */",
+    "function queuedFifoItems(runtime: DurableSessionRuntime): any[] {",
+    "    const items: any[] = [];",
+    "    for (let i = 0; i < FIFO_BUCKET_COUNT; i++) items.push(...readFifoBucket(runtime.ctx, i));",
+    "    return items;",
+    "function observedChronology(entry: PendingChildDigest[\"updates\"][number]): number {",
+    "    return typeof entry?.observedAtMs === \"number\" && Number.isFinite(entry.observedAtMs) ? entry.observedAtMs : 0;",
+    "function giveBackDroppedPromptWork(runtime: DurableSessionRuntime, item: any, where: string, later: readonly any[]): void {",
+    "    const laterPrompts = later.filter((other) => other?.kind === \"prompt\");",
+    "    const laterEntries = laterPrompts.flatMap((other) => carriedChildDigestOf(other.carriedChildDigest)?.updates ?? []);",
+    "        const kept = digest.updates.filter((entry) => !laterEntries.some((next) =>",
+    "            next.sessionId === entry.sessionId && childUpdateRank(next.updateType) >= childUpdateRank(entry.updateType)));",
+    "        if (kept.length > 0) restorePendingChildDigest(runtime, { ...digest, updates: kept }, observedChronology);",
+    "        ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the child digest it carried (${kept.length} update(s); ${digest.updates.length - kept.length} a later queued prompt carries)`);",
+    "        if (laterPrompts.some((other) => typeof other.carriedRehydrationMessage === \"string\")) {",
+    "            ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel left its rehydration notice to a later queued prompt that carries one`);",
+    "        } else {",
+    "            state.pendingRehydrationMessage = item.carriedRehydrationMessage;",
+    "            ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the rehydration notice it carried`);",
+    "            giveBackDroppedPromptWork(runtime, peek, \"decide-merge\", flat.slice(k + 1).map((entry) => entry.item));",
+    "    const next = peekNextDispatchFifoItem(runtime);",
+    "    if (next?.kind === \"prompt\" && Array.isArray(next.clientMessageIds) && next.clientMessageIds.length > 0) {",
+    "        yield* sweepMessagesBeforePromptDispatch(runtime);",
+    "        if (state.orchestrationResult !== null) return true;",
+    "                    giveBackDroppedPromptWork(runtime, item, \"decide-fifo\", queuedFifoItems(runtime));",
 ];
 
 /**
@@ -287,12 +332,13 @@ test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change 
     // queue.ts: only the intake's hooks (arrival in drain and the sweep, the tombstone latch first in both, the intake
     // deadline's own race and its wake, each turn's stimulus and decide's turn for the intake alone), the owed retry's
     // (drain's sweep while it is owed, its timer release and decide's dispatch of it first; review Q-W2-7) and the
-    // late-cancel give-back (QUEUE_LATE_CANCEL_ADDED). The one frozen line it changes is listed; every line it adds names
-    // the intake or the owed retry, is a comment or structure, or is one of the listed lines.
+    // late-cancel give-back (QUEUE_LATE_CANCEL_ADDED) and the so4b fixes (QUEUE_SO4B_ADDED). The frozen lines it changes
+    // are listed; every line it adds names the intake or the owed retry, is a comment or structure, or is one of the listed
+    // lines.
     const queue82 = read("orchestration_1_0_82/queue.ts");
     const queue83 = read("orchestration_1_0_83/queue.ts");
     assert.deepEqual(linesOnly(queue82, queue83).sort(), [...QUEUE_CHANGED_82].sort());
-    assertIntakeOnlyAdditions("queue.ts", linesOnly(queue83, queue82), [...QUEUE_ADDED_GENERIC, ...QUEUE_LATE_CANCEL_ADDED]);
+    assertIntakeOnlyAdditions("queue.ts", linesOnly(queue83, queue82), [...QUEUE_ADDED_GENERIC, ...QUEUE_LATE_CANCEL_ADDED, ...QUEUE_SO4B_ADDED]);
     // turn.ts: only the intake's hooks (each attempt's carry, its dispatch and outcome, each timer turn's stimulus), the
     // owed retry of a failed turn and the listed frozen lines; every line it adds names the intake or the owed retry or
     // is a comment or structure.
