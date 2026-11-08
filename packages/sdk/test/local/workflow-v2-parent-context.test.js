@@ -22,6 +22,7 @@ import { capabilityRef } from "../../src/capability-catalog.ts";
 import { workflowChildSessionId } from "../../src/workflow/spawn.ts";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { FIXTURE_PROVIDER, withScriptedModel } from "../helpers/scripted-workers.js";
+import { turnWorkflowsOn } from "../helpers/workflows-on.js";
 
 const owner = { provider: "test", subject: "parent-context-owner", email: null, displayName: null };
 const CODE = "WORKFLOW_PARENT_CONTEXT_UNAVAILABLE";
@@ -152,7 +153,6 @@ const TIMEOUT = 240_000;
 const CHAT_OWNER = { provider: "test", subject: "workflow-v2-parent-context-owner" };
 const SECOND_MODEL = "fixture-model-b";
 const SWITCH = "Switch to the second model, then create the draft workflow.";
-const KEY = "after-model-switch";
 const YAML = `
 apiVersion: pilotswarm.dev/v2-draft
 kind: Workflow
@@ -176,8 +176,9 @@ async function until(check, label, timeoutMs = 150_000) {
     throw new Error(`timed out waiting for ${label}: ${JSON.stringify(last)}`);
 }
 
-describe("spawn_workflow in the first turn after a model switch, on a real worker (of-01)", () => {
-    // Stage 2.1: spawn_workflow without start saves revision 1 of the chat's definition (no Workflow row).
+describe("a definition saved in the first turn after a model switch, on a real worker (of-01)", () => {
+    // Stage 2.1: a save makes revision 1 of the chat's definition (no Workflow row). spawn_workflow is no longer declared
+    // (owner 2026-11-08T16:55Z): workflow_definition carries the same parent context; the chat has Workflows on.
     it("is admitted: the chat's definition is saved and no refusal is recorded", { timeout: TIMEOUT }, async () => {
         let spawnCalled = false;
         const respond = (body, position) => {
@@ -185,7 +186,7 @@ describe("spawn_workflow in the first turn after a model switch, on a real worke
             if (body?.model === SECOND_MODEL) {
                 if (!spawnCalled) {
                     spawnCalled = true;
-                    return { tools: [{ name: "spawn_workflow", args: { yaml: YAML, key: KEY } }] };
+                    return { tools: [{ name: "workflow_definition", args: { operation: "save", name: "after-switch", yaml: YAML } }] };
                 }
                 return { content: "Created the draft." };
             }
@@ -197,6 +198,7 @@ describe("spawn_workflow in the first turn after a model switch, on a real worke
         await withScriptedModel(getEnv(), { respond, extraModels: [SECOND_MODEL], worker: { workflowScripts: { enabled: true } } },
             async ({ client, qualifiedModel }) => {
                 const chat = await client.createSession({ model: qualifiedModel, owner: CHAT_OWNER });
+                await turnWorkflowsOn(client._catalog, chat.sessionId);
                 await chat.send(SWITCH);
                 const store = client._catalog.workflowStore();
                 const saved = await until(async () => (await store.chat.listDefinitions(chat.sessionId))[0] ?? null, "the chat's definition");
@@ -204,7 +206,7 @@ describe("spawn_workflow in the first turn after a model switch, on a real worke
                 expect(spawnCalled).toBe(true);
                 const results = await client._catalog.getSessionEvents(chat.sessionId, 0, 500, ["tool.execution_complete"]);
                 expect(JSON.stringify(results)).not.toContain(CODE);
-                expect(JSON.stringify(results)).not.toContain("spawn_workflow failed");
+                expect(JSON.stringify(results)).not.toContain("workflow_definition failed");
             });
     });
 });

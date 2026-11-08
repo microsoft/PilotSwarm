@@ -349,6 +349,8 @@ export class PilotSwarmWorker {
      * agent packages. Empty for plugin dirs the deployment configured itself.
      */
     private _capabilitySources: CapabilitySource[] = [];
+    /** SDK skill directories whose skills are loadable but not indexed (the Workflow skills). */
+    private _unlistedSkillDirs: string[] = [];
     private _packageDirOwners = new Map<string, PackageDirProvenance>();
     /**
      * The workflow interfaces (agent schemaVersion 5; design 04 "Package-agent
@@ -2210,7 +2212,7 @@ export class PilotSwarmWorker {
         //                        (`_ownerSkillsIndexSection`).
         this._loadableSkills.length = 0;
         this._ownerScopedSkills.clear();
-        const seen = new Map<string, string>();
+        const seen = new Map<string, string | null>();
         const ownerSeen = new Map<string, Set<string>>();
         for (const skill of this._loadedSkillsAll) {
             if (!skill?.name) continue;
@@ -2234,11 +2236,17 @@ export class PilotSwarmWorker {
             }
             if (seen.has(skill.name)) continue;
             this._loadableSkills.push(skill);
+            // The Workflow skills are loadable but not indexed: the Workflow guidance names them where Workflows are on.
+            if (this._unlistedSkillDirs.some(dir => typeof skill.dir === "string" && path.resolve(path.dirname(skill.dir)) === dir)) {
+                seen.set(skill.name, null);
+                continue;
+            }
             const description = clipDescription(String(skill.description || "").replace(/\s+/g, " ").trim(), 240);
             seen.set(skill.name, description);
         }
-        if (!this._frameworkBasePrompt || seen.size === 0) return;
-        const lines = [...seen.entries()].sort(([a], [b]) => a.localeCompare(b))
+        const listed = [...seen.entries()].filter((entry): entry is [string, string] => entry[1] !== null);
+        if (!this._frameworkBasePrompt || listed.length === 0) return;
+        const lines = listed.sort(([a], [b]) => a.localeCompare(b))
             .map(([name, description]) => `- \`${name}\`${description ? ` — ${description}` : ""}`);
         this._frameworkBasePrompt += `\n\n## Skills available on demand\n\nCall \`load_skill(name)\` when a task matches one; the full instructions come back as the tool result. Load a skill once per session, before the work it covers.\n\n${lines.join("\n")}`;
     }
@@ -2437,10 +2445,12 @@ export class PilotSwarmWorker {
     private _loadSdkSkillDir(skillsDir: string, sourceName: string): void {
         if (!fs.existsSync(skillsDir)) return;
         this._loadedSkillDirs.push(skillsDir);
+        if (!this._unlistedSkillDirs.includes(path.resolve(skillsDir))) this._unlistedSkillDirs.push(path.resolve(skillsDir));
         // A Base V2 session's load_skill, skills index and search_capabilities read only capability sources, so an
         // SDK skill directory is one too, like a plugin directory's skills.
+        // Not listed in the skills index: the Workflow guidance names them where Workflows are on in a chat.
         const source: CapabilitySource = { id: `static:${capabilityHash(skillsDir).slice(0, 20)}`, name: sourceName,
-            source: "static", scope: "shared", revision: "", artifacts: [], tools: new Map(), mcpServers: {} };
+            source: "static", scope: "shared", revision: "", artifacts: [], tools: new Map(), mcpServers: {}, unlisted: true };
         for (const skill of loadSkillsSync(skillsDir)) {
             source.artifacts.push({ kind: "skill", name: skill.name, description: skill.description, body: skill.prompt, tools: skill.toolNames });
             this._loadedSkills.set(skill.name, skill);

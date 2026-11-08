@@ -1812,7 +1812,7 @@ export function registerActivities(
         // Stage 2.1 (E2-4, F3): a person's save of one of this chat's Workflow Definitions left a note; the chat reads the notes
         // at the start of its next turn's prompt (read once per attempt; a save never starts a turn), and they are consumed only
         // when that turn succeeds, so a turn that fails leaves them for its retry.
-        const chatNotes: { read: { ids: number[]; text: string } | null } = { read: null };
+        const chatNotes: { read: { ids: number[]; text: string } | null; failed?: boolean } = { read: null };
         const readChatNotesOnce = async (): Promise<{ ids: number[]; text: string }> => {
             if (chatNotes.read !== null) return chatNotes.read;
             chatNotes.read = { ids: [], text: "" };
@@ -1821,6 +1821,7 @@ export function registerActivities(
                 const notes = await catalog.workflowStore().chat.pendingNotes(input.sessionId);
                 if (notes.length) chatNotes.read = { ids: notes.map(note => note.noteId), text: notes.map(note => `[SYSTEM: ${note.text}]`).join("\n") };
             } catch (error: any) {
+                chatNotes.failed = true;
                 traceWarn(`[runTurn] could not read the Workflow Definition notes of ${input.sessionId}: ${error?.message ?? error}`);
             }
             return chatNotes.read;
@@ -2518,6 +2519,22 @@ export function registerActivities(
         if (workflowLineage?.agentRoot && catalog?.workflowStore) {
             const limit = await catalog.workflowStore().readAgentToolLimit(workflowLineage.agentRoot.nodeExecutionId);
             if (limit !== null) (runConfig as ManagedSessionConfig).workflowToolLimit = limit;
+        }
+        // Workflows on demand (owner 2026-11-08T16:55Z): on a 1.0.83 turn a chat has the Workflow tools and guidance only
+        // when they are on in it (session-manager decides from its saved flag and these). A Workflow's message or request, a
+        // person's saved definition (a pending note) or a coordinating chat turns them on for good; a trigger that cannot be
+        // read turns them on for this turn. Whether the chat owns a definition or a Workflow is read only while they are off.
+        if (workflowRequestTurn && catalog?.workflowStore) {
+            const store = catalog.workflowStore();
+            const notes = await readChatNotesOnce();
+            const stashed = Array.isArray((input as any).stashedPrompts) ? (input as any).stashedPrompts.map((item: any) => String(item?.prompt ?? item ?? "")) : [];
+            const updates = [effectivePrompt ?? "", ...stashed].some(text => /\[WORKFLOW_UPDATE\b/.test(text));
+            if (turnIntake !== null || updates || notes.text || catalogSessionRow?.workflowRef) {
+                (runConfig as ManagedSessionConfig).workflowContextTrigger = "lasting";
+            } else if (chatNotes.failed) {
+                (runConfig as ManagedSessionConfig).workflowContextTrigger = "turn";
+            }
+            (runConfig as ManagedSessionConfig).workflowContextOwnsCheck = () => store.chat.hasWorkflows(input.sessionId);
         }
         const workflowTestScope = workflowLineage?.agentRoot && catalog?.workflowStore
             ? await workflowTestAgentScope(catalog.workflowStore(), workflowLineage)

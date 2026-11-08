@@ -56,20 +56,25 @@ test("a Base V2 session on a default worker can load every Workflow skill", asyn
     assert.match(authoring.prompt, /workflow/i);
 });
 
-test("the V2 skills index and search_capabilities list them as static deployment skills", async (t) => {
+// Workflows on demand (owner 2026-11-08T16:55Z): the skills index does not list them (the Workflow guidance names them where
+// Workflows are on); search_capabilities and load_skill still find them.
+test("the skills indexes leave them out; search_capabilities finds them as static deployment skills", async (t) => {
     const worker = defaultWorker(t, false);
     const sources = worker._getCapabilitySources();
     const inventory = ownedAndStaticCapabilityInventory(sources, null);
     for (const name of WORKFLOW_SKILLS) {
-        const entry = inventory.find((item) => item.kind === "skill" && item.name === name);
-        assert.ok(entry, `${name} is in the V2 index`);
-        assert.equal(entry.ownership, "static");
+        assert.ok(!inventory.some((item) => item.kind === "skill" && item.name === name), `${name} is not in the V2 index`);
+        assert.ok(!worker._frameworkBasePrompt.includes(`\`${name}\``), `${name} is not in the V1 index`);
     }
+    assert.ok(inventory.some((item) => item.name === "canvas-apps"), "other skills stay in the V2 index");
+    assert.ok(worker._frameworkBasePrompt.includes("`canvas-apps`"), "other skills stay in the V1 index");
     const catalog = new CapabilityCatalog(() => worker._getCapabilitySources(), null);
     const found = await catalog.search(null, "s-v2", { query: "workflow authoring", kinds: ["skill"], sources: ["static"], limit: 10 });
-    const hits = found.capabilities;
-    assert.ok(hits.some((hit) => hit.name === "workflow-authoring"), "search finds workflow-authoring");
+    const hit = found.capabilities.find((item) => item.name === "workflow-authoring");
+    assert.ok(hit, "search finds workflow-authoring");
+    assert.equal(hit.ownership, "static");
 });
+
 
 test("with test mode on, workflow-testing is loadable too; a reload does not duplicate the source", async (t) => {
     const worker = defaultWorker(t, true);

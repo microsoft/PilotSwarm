@@ -15,6 +15,7 @@ import { describe, it, expect } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createManagementClient } from "../helpers/local-workers.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
+import { turnWorkflowsOn } from "../helpers/workflows-on.js";
 import { WORKFLOW_V2_ADMISSIONS_PER_EXECUTION } from "../../src/workflow/v2/runtime.ts";
 
 const TIMEOUT = 300_000;
@@ -123,6 +124,7 @@ describe("a synthetic V2 Workflow end to end (stage 2.4: PR 235's kitchen sink o
             const mgmt = await createManagementClient(env);
             try {
                 const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
+                await turnWorkflowsOn(client._catalog, chat.sessionId);
                 await chat.sendAndWait(PROMPT, TIMEOUT);
                 const last = model.sessionRequests(PROMPT).find((record) => record.position.step === 2 && record.position.lastUserText.includes(PROMPT));
                 expect(last, "the chat reached its last step").toBeTruthy();

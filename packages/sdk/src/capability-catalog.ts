@@ -15,6 +15,8 @@ export interface CapabilitySource {
     scope: "shared" | "user"; owner?: FeatureOwner | null; packageId?: string;
     artifacts: CapabilityArtifact[]; tools: Map<string, Tool<any>>;
     mcpServers: Record<string, any>;
+    /** Not listed in a session's skills index (search and load still find it): instructions that name it point to it. */
+    unlisted?: boolean;
 }
 export interface CapabilitySelection { sourceId: string; sourceRef?: string; tools: string[]; mcpServers: string[] }
 export interface CapabilityState {
@@ -22,6 +24,11 @@ export interface CapabilityState {
     requests?: Array<{ id: string; hash: string }>;
     /** Agents and skills this session loaded by path (load_agent, load_skill; section 4.12). */
     loads?: WorkspaceLoad[];
+    /**
+     * Workflows are on in this chat (owner 2026-11-08T16:55Z): its instructions carry the Workflow guidance and it is
+     * declared the Workflow tools. Set by enable_workflows or a lasting trigger; never cleared.
+     */
+    workflows?: true;
 }
 /**
  * One agent or skill file a session loaded by path. `path` is relative to
@@ -82,7 +89,15 @@ export function normalizeCapabilityState(value: unknown): CapabilityState {
         return { id: receipt.id, hash: receipt.hash };
     });
     const loads = normalizeLoads(state.loads);
-    return { revision: state.revision, selections, ...(requests ? { requests } : {}), ...(loads && loads.length > 0 ? { loads } : {}) };
+    if (state.workflows !== undefined && typeof state.workflows !== "boolean") throw new Error("Invalid durable workflows flag");
+    return { revision: state.revision, selections, ...(requests ? { requests } : {}), ...(loads && loads.length > 0 ? { loads } : {}),
+        ...(state.workflows === true ? { workflows: true as const } : {}) };
+}
+
+/** The next state with Workflows on (the revision advances by one; everything else is kept), or the same state when they are. */
+export function withWorkflowsOn(state: CapabilityState): CapabilityState {
+    if (state.workflows === true) return state;
+    return normalizeCapabilityState({ ...state, revision: state.revision + 1, workflows: true });
 }
 
 /**
@@ -199,7 +214,7 @@ export function ownedAndStaticCapabilityInventory(sources: CapabilitySource[], o
     const entries: Array<{ kind: "skill" | "agent"; name: string; description: string; package: string;
         ownership: "static" | "owned"; scope: "shared" | "user"; ref: string }> = [];
     for (const source of sources) {
-        if (!visibleCapabilitySource(source, owner)) continue;
+        if (source.unlisted === true || !visibleCapabilitySource(source, owner)) continue;
         const ownership = capabilityOwnership(source, owner);
         if (ownership === "other_shared") continue;
         for (const [index, artifact] of source.artifacts.entries()) {

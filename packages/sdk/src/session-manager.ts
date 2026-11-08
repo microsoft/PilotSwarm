@@ -1,4 +1,4 @@
-import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
+import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, withWorkflowsOn, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { systemSender } from "./message-sender.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import type { McpAllowlistAgent } from "./mcp-loader.js";
@@ -30,12 +30,13 @@ import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createScriptSessionTools } from "./workflow/session-tools.js";
 import { WORKFLOW_TOOL_POLICY, captureWorkflowTools, isWorkflowControlTool, workflowParentContextUnavailable, workflowToolPermission, type WorkflowToolBinding } from "./workflow/tool-policy.js";
 import { createWorkflowToolExecutor, type WorkflowToolExecutor } from "./workflow/tool-executor.js";
-import { workflowAwareSchedulingTool, workflowSessionGuidance } from "./workflow/guidance.js";
+import { WORKFLOW_CONTEXT_STUB, workflowAwareSchedulingTool, workflowSessionGuidance, type WorkflowContextMode } from "./workflow/guidance.js";
 import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
 import { WORKFLOW_V2_AGENT_COMPLETION_TOOL } from "./workflow/v2/compiler.js";
 import { workflowDefinitionMcpPermission, workflowDefinitionMcpToolFilters } from "./workflow/v2/input-policy.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
+import { holdsManagerBundle } from "./agent-manager-tools.js";
 import { createProviderTools, holdsProviderTools } from "./provider-tools.js";
 import { attachWorkloadIdentity } from "./wif-credentials.js";
 import { pinToolsNeverDefer } from "./tool-pinning.js";
@@ -2165,7 +2166,7 @@ export class SessionManager {
         // must not survive a clear.
         if (!effectiveSerializableConfig.workspace) delete config.workspace;
         for (const key of ["workspaceAttach", "workspaceToolsBlocked", "workspaceCleared", "workflowMilestoneTurn", "workflowAgentChild", "workflowInsideWorkflow",
-            "workflowToolLimit"] as const) {
+            "workflowToolLimit", "workflowContextTrigger", "workflowContextOwnsCheck"] as const) {
             if (!(effectiveSerializableConfig as ManagedSessionConfig)[key]) delete config[key];
         }
         // Section 4.11: with no record, a turn still attaches the deployment's
@@ -2377,6 +2378,23 @@ export class SessionManager {
         // whole purpose is to change agents — so the strip applies only to the
         // legacy id, and dies with it.
         const isTunerSession = effectiveSerializableConfig.agentIdentity === "agent-tuner";
+        // The chat's durable capability state: package selections, loads by path and its Workflows flag. Read once, before
+        // the declarations, which depend on the flag (Workflows on demand).
+        const readState = async (): Promise<CapabilityState> => this.sessionCatalog?.getSessionCapabilities
+            ? this.sessionCatalog.getSessionCapabilities(options?.workflowTools?.parentSessionId ?? sessionId) : { revision: 0, selections: [] };
+        // Preserve the no-catalog scheduling path: getOrCreate historically
+        // reaches the SDK resume call after one lock-acquisition microtask.
+        // Capability persistence exists only with a catalog, so do not add
+        // otherwise-useless async boundaries to standalone managers.
+        const desiredCapabilities = options?.workflowTools?.capabilities ?? (this.sessionCatalog?.getSessionCapabilities
+            ? await readState()
+            : { revision: 0, selections: [] });
+        const workflowContext = await this._workflowContextMode(sessionId, config, desiredCapabilities, {
+            restricted: isTunerSession || effectiveSerializableConfig.agentIdentity === "regen-distiller",
+            manager: holdsManagerBundle(effectiveSerializableConfig.agentIdentity),
+            workflowTools: Boolean(options?.workflowTools),
+        });
+        config.workflowContext = workflowContext;
         const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "use_package", "load_agent",
     "update_canvas"]);
         const userTools = config.tools ?? [];
@@ -2408,7 +2426,7 @@ export class SessionManager {
         }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name))
             // Where Workflow scripts run, cron and cron_at keep their default wording plus one sentence: a check a script can do
             // belongs in a Workflow's wait loop (owner 2026-11-08T16:55Z). Where scripts do not run every description is main's.
-            .map((tool: any) => (this.workflowScriptsEnabled && !isTunerSession ? workflowAwareSchedulingTool(tool) : tool));
+            .map((tool: any) => (this.workflowScriptsEnabled && !isTunerSession ? workflowAwareSchedulingTool(tool, workflowContext) : tool));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
         // Workflow v2: a turn of a worker that runs controller 1.9.0 is declared the milestone's workflow tools and
         // respond_session_request, and an agent state's own child complete_workflow_node, as the turn's handlers take them.
@@ -2418,6 +2436,7 @@ export class SessionManager {
             ...(config.workflowMilestoneTurn === true ? { workflowMilestone: true } : {}),
             ...(config.workflowAgentChild === true ? { workflowAgentChild: true } : {}),
             ...(config.workflowInsideWorkflow === true ? { workflowInsideWorkflow: true } : {}),
+            workflowContext,
         })
             // Workflows are always on (owner 2026-11-08T08:03Z): every other session is declared the workflow tools. Script nodes
             // are refused at save and Start where this worker runs no scripts.
@@ -2551,19 +2570,10 @@ export class SessionManager {
             packageId: boundAgentCopy.packageId,
             packageScope: boundAgentCopy.packageScope,
         } : null;
-        const readState = async (): Promise<CapabilityState> => this.sessionCatalog?.getSessionCapabilities
-            ? this.sessionCatalog.getSessionCapabilities(options?.workflowTools?.parentSessionId ?? sessionId) : { revision: 0, selections: [] };
         const getOwner = async () => this.sessionCatalog
             ? resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), sessionId)
             : null;
-        // Preserve the no-catalog scheduling path: getOrCreate historically
-        // reaches the SDK resume call after one lock-acquisition microtask.
-        // Capability persistence exists only with a catalog, so do not add
-        // otherwise-useless async boundaries to standalone managers.
         const capabilityOwner = this.sessionCatalog ? await getOwner() : null;
-        const desiredCapabilities = options?.workflowTools?.capabilities ?? (this.sessionCatalog?.getSessionCapabilities
-            ? await readState()
-            : { revision: 0, selections: [] });
         const attached = isServiceSession || isTunerSession ? { tools: [], mcpServers: {}, unavailable: [], fingerprint: "" }
             : bindCapabilities(getSources(), capabilityOwner, desiredCapabilities.selections, originalTools, originalMcp, capabilityAgent);
         const attachedTools = attached.tools.map(tool => {
@@ -2626,6 +2636,18 @@ export class SessionManager {
                     const state = await readState();
                     const next = withWorkspaceLoad(state, change);
                     if (await this.sessionCatalog.saveSessionCapabilities(sessionId, state.revision, next)) return { loads: next.loads ?? [] };
+                }
+                throw new Error("Capability revision conflict; try again");
+            },
+            // Workflows on demand: enable_workflows saves the chat's flag; the next turn declares the Workflow tools.
+            enableWorkflows: async () => {
+                if (isServiceSession || isTunerSession) throw new Error("Workflows are unavailable in this restricted session");
+                if (!this.sessionCatalog?.saveSessionCapabilities) throw new Error("Durable capability storage is unavailable");
+                for (let attempt = 0; attempt < 3; attempt += 1) {
+                    const state = await readState();
+                    const next = withWorkflowsOn(state);
+                    if (next === state) return { changed: false, revision: state.revision };
+                    if (await this.sessionCatalog.saveSessionCapabilities(sessionId, state.revision, next)) return { changed: true, revision: next.revision };
                 }
                 throw new Error("Capability revision conflict; try again");
             },
@@ -4775,6 +4797,47 @@ export class SessionManager {
         return `## Your own skills, available on demand\n\nPublished by you and visible only to your sessions. Call \`load_skill(name)\` when a task matches one; the full instructions come back as the tool result. Load a skill once per session, before the work it covers.\n\n${lines.join("\n")}`;
     }
 
+    /** Chats whose owns-check found no Workflow Definition and no Workflow on this worker: not read again (Workflows on demand). */
+    private readonly workflowContextOwnsNone = new Set<string>();
+
+    /**
+     * This turn's Workflow context (owner 2026-11-08T16:55Z: Workflows load per chat, only when needed).
+     *
+     * - `none`: the read-only tuner and service sessions (no stub, no tools).
+     * - `on`: a frozen 1.0.82 turn (until its continue-as-new); a session manager without durable capability storage (enable_workflows
+     *   could not save); a Workflow's own capture; the chat's saved flag; a session inside a Workflow; Agent Smith (it writes
+     *   Workflows); a trigger from the runTurn activity; a chat that owns a Workflow Definition or a Workflow (a chat from
+     *   before this release). A lasting trigger and an owned Workflow also save the flag (best effort: a failed save leaves it
+     *   on for this turn and tries again next turn).
+     * - `off`: every other chat.
+     */
+    private async _workflowContextMode(sessionId: string, config: ManagedSessionConfig, state: CapabilityState,
+        flags: { restricted: boolean; manager: boolean; workflowTools: boolean }): Promise<WorkflowContextMode> {
+        if (flags.restricted) return "none";
+        const catalog = this.sessionCatalog;
+        if (flags.workflowTools || config.workflowMilestoneTurn !== true || !catalog?.getSessionCapabilities || !catalog.saveSessionCapabilities) return "on";
+        if (state.workflows === true) return "on";
+        if (config.workflowInsideWorkflow === true || config.workflowAgentChild === true || flags.manager) return "on";
+        let lasting = config.workflowContextTrigger === "lasting";
+        if (config.workflowContextTrigger === "turn") return "on";
+        if (!lasting && config.workflowContextOwnsCheck && !this.workflowContextOwnsNone.has(sessionId)) {
+            try {
+                if (await config.workflowContextOwnsCheck()) lasting = true;
+                else this.workflowContextOwnsNone.add(sessionId);
+            } catch {
+                return "on";
+            }
+        }
+        if (!lasting) return "off";
+        try {
+            const next = withWorkflowsOn(state);
+            if (next !== state) await catalog.saveSessionCapabilities(sessionId, state.revision, next);
+        } catch (error: any) {
+            console.warn(`[session-manager] could not save Workflows on for session=${sessionId}: ${error?.message ?? error}`);
+        }
+        return "on";
+    }
+
     private async _baseV2CapabilityOwner(sessionId: string): Promise<{ provider: string; subject: string } | null> {
         try {
             const viewer = await this._resolveInspectViewer(sessionId);
@@ -4857,9 +4920,14 @@ export class SessionManager {
         // carries the Workflow guidance, trimmed to its rules; the details are in the Workflow skills (owner 16:55Z). A 1.0.83
         // turn (a workflow request turn) runs controller 1.9.0: it is told of clock waits and can test a revision
         // (chat-test.ts requires host.requests); a frozen 1.0.82 turn, until its continue-as-new, is told it cannot test.
+        // Workflows on demand (owner 16:55Z): while they are off in the chat, a short paragraph that names enable_workflows
+        // stands in the guidance's place; the read-only tuner and service sessions get neither.
         const requestTurn = config.workflowMilestoneTurn === true;
-        const frameworkBase = [base, workflowSessionGuidance(testMode, { scripts: this.workflowScriptsEnabled, clockWaits: requestTurn,
-            tests: requestTurn })].filter(Boolean).join("\n\n");
+        const workflowContext = config.workflowContext ?? "on";
+        const workflowText = workflowContext === "on"
+            ? workflowSessionGuidance(testMode, { scripts: this.workflowScriptsEnabled, clockWaits: requestTurn, tests: requestTurn })
+            : workflowContext === "off" ? WORKFLOW_CONTEXT_STUB : null;
+        const frameworkBase = [base, workflowText].filter(Boolean).join("\n\n");
         const boundAgentName = config.boundAgentName;
         const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);
         const knowledgeToolInstructions = this._buildKnowledgeToolInstructionsSection(sessionId, config.agentIdentity);

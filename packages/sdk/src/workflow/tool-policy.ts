@@ -76,7 +76,7 @@ const controls = new Set([
     "complete_agent", "cancel_agent", "delete_agent", "stop_agent_turn", "wait_for_agents",
     "send_message", "send_and_wait", "stop_session", "delete_session", "restart_session", "fork_session",
     "ask_user", "report_cycle", "task_complete", "set_session_model", "regenerate_context",
-    "regenerate_agent", "use_package", "load_agent", "set_session_workspace",
+    "regenerate_agent", "use_package", "enable_workflows", "load_agent", "set_session_workspace",
     "run_factory", "factories_manage", "execute_sampling", "mcp_sampling",
     "manage_system_session_model", "force_terminate_session", "cleanup_session", "prune_orchestrations",
     "manage_embedder", "context_health",

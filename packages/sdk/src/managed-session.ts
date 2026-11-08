@@ -27,6 +27,7 @@ import {
     readWorkflowToolSpec, SEND_WORKFLOW_INPUT_TOOL_SPEC, updateWorkflowToolSpec, workflowToolErrorPayload,
 } from "./workflow/v2/tools.js";
 import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
+import { ENABLE_WORKFLOWS_TOOL, ENABLE_WORKFLOWS_TOOL_SPEC, type WorkflowContextMode } from "./workflow/guidance.js";
 import { WORKFLOW_DEFINITION_TOOL, workflowDefinitionToolSpec } from "./workflow/v2/definition-tool.js";
 import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC, workflowRespondFailure } from "./workflow/v2/request-service.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC, workflowCompletionFailure } from "./workflow/v2/agent-node-service.js";
@@ -1316,7 +1317,8 @@ export class ManagedSession {
      * These are the LLM-visible tools for spawning and managing sub-agents.
      * Like wait/ask_user, handlers are stubs — real handlers set per-turn in runTurn().
      */
-    static subAgentToolDefs(opts?: { workspaceTools?: boolean; workflowMilestone?: boolean; workflowAgentChild?: boolean; workflowInsideWorkflow?: boolean }): Tool<any>[] {
+    static subAgentToolDefs(opts?: { workspaceTools?: boolean; workflowMilestone?: boolean; workflowAgentChild?: boolean; workflowInsideWorkflow?: boolean;
+        workflowContext?: WorkflowContextMode }): Tool<any>[] {
         const spawnAgentTool = defineTool("spawn_agent", {
             description: DURABLE_SPAWN_DESCRIPTION,
             parameters: {
@@ -1483,9 +1485,14 @@ export class ManagedSession {
         // tool stays. spawn_workflow is no longer declared (owner 2026-11-08T16:55Z, ruling 18:12Z): workflow_definition
         // replaces it; its turn handler stays, so a stale call is still answered.
         const definitionTools = opts?.workflowInsideWorkflow === true ? [] : [workflowDefinitionTool, updateWorkflowTool];
+        // Workflows on demand (owner 2026-11-08T16:55Z): while they are off in the chat it is declared enable_workflows
+        // instead of the Workflow tools (their handlers stay, so a stale call is still answered); `none` declares neither.
+        const context = opts?.workflowContext ?? "on";
+        const workflowTools = context === "on"
+            ? [...definitionTools, readWorkflowTool, sendWorkflowInputTool, ...respondSessionRequestTools, ...completeWorkflowNodeTools]
+            : context === "off" ? [defineTool(ENABLE_WORKFLOWS_TOOL, { ...ENABLE_WORKFLOWS_TOOL_SPEC, handler: async () => "stub" })] : [];
 
-        return [spawnAgentTool, ...definitionTools, readWorkflowTool, sendWorkflowInputTool, ...respondSessionRequestTools,
-            ...completeWorkflowNodeTools, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
+        return [spawnAgentTool, ...workflowTools, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
             ...ManagedSession._childManagementToolDefs()];
     }
 
@@ -3146,7 +3153,7 @@ export class ManagedSession {
         });
 
         const SYSTEM_TOOL_NAMES = new Set([
-    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "spawn_workflow", "update_workflow", "read_workflow", "send_workflow_input", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "stop_agent_turn", "delete_agent"]);
+    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "spawn_workflow", "update_workflow", "read_workflow", "send_workflow_input", "enable_workflows", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "stop_agent_turn", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -3298,6 +3305,34 @@ export class ManagedSession {
                 try { return await controlBridge.workflowDefinition(args ?? {}, { toolCallId: invocation?.toolCallId }); } catch (error) { return workflowToolErrorPayload(error); }
             },
         });
+        // Workflows on demand (owner 2026-11-08T16:55Z): enable_workflows saves the chat's flag and ends the turn; the next
+        // turn starts at once with the Workflow tools and guidance (the use_package path: forceContinuePrompt). Idempotent:
+        // a chat that already has them is told so and nothing changes. Refused while native tasks run, as use_package is: the
+        // refresh would cancel their shells.
+        const enableWorkflowsTool = defineTool(ENABLE_WORKFLOWS_TOOL, {
+            ...ENABLE_WORKFLOWS_TOOL_SPEC,
+            handler: async () => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(ENABLE_WORKFLOWS_TOOL);
+                if ((this.config.workflowContext ?? "on") === "on") {
+                    return "Workflows are already on in this chat: use workflow_definition. Nothing changed.";
+                }
+                const service = this.config.capabilityServices;
+                if (!service?.enableWorkflows) return "Error: Workflows cannot be turned on in this session.";
+                try {
+                    if (this.config.nativeSubagents === "sync") {
+                        const tasks = (await this.copilotSession.rpc.tasks.list()).tasks;
+                        if (tasks.some(task => task.type === "agent" && (task.status === "running" || task.status === "idle"))) {
+                            return "Error: finish native tasks before turning Workflows on.";
+                        }
+                    }
+                    await service.enableWorkflows();
+                    turnState.pendingActions.push({ type: "completed", content: "Workflows turned on in this chat.",
+                        forceContinuePrompt: "Workflows are now on in this chat: the Workflow tools and guidance are loaded. Continue the "
+                            + "user's task; do not call enable_workflows again." });
+                    return `${JSON.stringify({ workflows: "on" })}\n${acknowledgeTurnBoundary(ENABLE_WORKFLOWS_TOOL)}`;
+                } catch (error) { return failureToolResult(error); }
+            },
+        });
         const sendWorkflowInputTool = defineTool("send_workflow_input", {
             ...SEND_WORKFLOW_INPUT_TOOL_SPEC,
             handler: async (args: Record<string, unknown>) => {
@@ -3353,6 +3388,7 @@ export class ManagedSession {
                     updateWorkflowTool,
                     readWorkflowTool,
                     sendWorkflowInputTool,
+                    enableWorkflowsTool,
                     ...respondSessionRequestTools,
                     ...completeWorkflowNodeTools,
                     messageAgentTool,

@@ -869,6 +869,17 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
      */
     workflowInsideWorkflow?: boolean;
     /**
+     * Workflows on demand (owner 2026-11-08T16:55Z): a reason found by the runTurn activity to turn Workflows on in this
+     * chat for this turn: `lasting` (a Workflow message or request arrived, a person saved a definition, the chat
+     * coordinates a package's Workflow) also saves the chat's flag; `turn` (a trigger could not be read) does not.
+     * Runtime-only.
+     */
+    workflowContextTrigger?: "lasting" | "turn";
+    /** Workflows on demand: whether the chat owns a Workflow Definition or a Workflow (read only while they are off). Runtime-only. */
+    workflowContextOwnsCheck?: () => Promise<boolean>;
+    /** Workflows on demand: this turn's Workflow context, as the session manager decided it (on, off or none). Runtime-only. */
+    workflowContext?: import("./workflow/guidance.js").WorkflowContextMode;
+    /**
      * Workflow Simplified FU-17: this turn's session is in the subtree of an
      * agent state that limits its tools (`tools: none` or a list): the only
      * tools the session is offered (an agent state's own chat also keeps

@@ -36,17 +36,41 @@ export const WORKFLOW_CLOCK_WAIT_GUIDANCE = "A wait state can wait until a clock
     + "instead of `seconds` (add `day_of_week` or `day_of_month` for a weekly or monthly time).";
 
 /**
+ * A chat's Workflow context (owner 2026-11-08T16:55Z): `on`, the guidance and the Workflow tools; `off` (a chat's default on
+ * a 1.0.83 turn), WORKFLOW_CONTEXT_STUB and enable_workflows instead; `none` (the read-only tuner, a service session),
+ * neither.
+ */
+export type WorkflowContextMode = "on" | "off" | "none";
+
+/**
  * cron and cron_at keep their default wording plus one sentence (owner 2026-11-08T16:55Z), on a worker where Workflow
  * scripts run: a fixed check a script can do belongs in one Workflow's wait loop, which costs no model turns.
  */
 export const WORKFLOW_SCHEDULING_HINT = " For a fixed check a script can do, start one Workflow that loops through a wait state instead: "
     + "it costs no model turns.";
 
+/** The sentence while Workflows are off in the chat: the same advice, through enable_workflows. */
+export const WORKFLOW_SCHEDULING_HINT_OFF = " For a fixed check a script can do, a Workflow costs no model turns: call enable_workflows, "
+    + "then start one Workflow that loops through a wait state.";
+
 /** cron and cron_at as a worker that runs Workflow scripts declares them: the default wording and the hint. Other tools unchanged. */
-export function workflowAwareSchedulingTool<T extends { name?: string; description?: string }>(tool: T): T {
-    if (tool?.name !== "cron" && tool?.name !== "cron_at") return tool;
-    return { ...tool, description: `${tool.description ?? ""}${WORKFLOW_SCHEDULING_HINT}` };
+export function workflowAwareSchedulingTool<T extends { name?: string; description?: string }>(tool: T, mode: WorkflowContextMode = "on"): T {
+    if ((tool?.name !== "cron" && tool?.name !== "cron_at") || mode === "none") return tool;
+    return { ...tool, description: `${tool.description ?? ""}${mode === "off" ? WORKFLOW_SCHEDULING_HINT_OFF : WORKFLOW_SCHEDULING_HINT}` };
 }
+
+/** While Workflows are off in a chat, its instructions carry only this paragraph, in the guidance's place. */
+export const WORKFLOW_CONTEXT_STUB = `## Workflows
+
+Workflows are off in this chat. A Workflow runs a fixed procedure (steps, waits, repeated checks) without model turns, except at agent nodes that need judgment. When the user asks for a Workflow, or for a repeated check a script could do, call \`enable_workflows\`: this chat gets the Workflow tools and guidance, and your task continues.`;
+
+export const ENABLE_WORKFLOWS_TOOL = "enable_workflows";
+
+export const ENABLE_WORKFLOWS_TOOL_SPEC = {
+    description: "Turn Workflows on in this chat: it gets the Workflow tools and guidance from the next turn on, which starts at once "
+        + "and continues your task. Call it once, when the user asks for a Workflow or a repeated check a script could do.",
+    parameters: { type: "object", properties: {} },
+} as const;
 
 /**
  * The Workflow guidance for one chat with Workflows on:

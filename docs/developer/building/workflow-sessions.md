@@ -199,8 +199,9 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   opens the Start form for the revision shown (a definition being edited is
   saved and started in one step); publishing alone has no key.
 - **Inside a Workflow** (an agent node's chat and its sub-agents), sessions
-  get no definition tools: `spawn_workflow` and `update_workflow` are not
-  declared, and the server refuses them (`WORKFLOW_DEFINITION_TOOLS_REFUSED`).
+  get no definition tools: `workflow_definition` and `update_workflow` are not
+  declared, and the server refuses them and `spawn_workflow`
+  (`WORKFLOW_DEFINITION_TOOLS_REFUSED`).
   No other registry gives them either: such a session is offered no MCP
   server's `spawn_workflow` or `update_workflow` (for example the PilotSwarm
   MCP server's person-mode `update_workflow`), and a call of one is refused.
@@ -224,8 +225,9 @@ A chat owns named **Workflow Definitions**; each save is a new, immutable
 **revision** (1, 2, 3) that records who saved it (`by the chat`, `by <person>`,
 `imported`) and the revision it was based on. A Workflow runs the revision it
 started with; a later save never changes it. The chat changes and starts its
-definitions with its `workflow_definition` tool (`spawn_workflow` maps to save
-then start for one release; a repeat with the same `key` and YAML is answered
+definitions with its `workflow_definition` tool. `spawn_workflow` is no
+longer declared to a model; its handler stays one release for a stale call,
+mapped to save then start (a repeat with the same `key` and YAML is answered
 as before, and a corrected YAML under the same `key` saves the next revision
 and starts it). Migration 0107 makes each chat's stage 1
 Workflows, grouped by name, one definition whose revisions are every distinct
@@ -257,7 +259,7 @@ reasoning effort or context tier (a `model` key stays `WORKFLOW_FIELD_UNKNOWN`),
 so a definition is portable across deployments. Each agent node of a Workflow
 uses the model, reasoning effort and context tier of the chat that owns it,
 read at each spawn. Every start may instead map agent nodes to a model:
-`agent_models` on `workflow_definition start`, on `spawn_workflow` and on
+`agent_models` on `workflow_definition start` (and a stale `spawn_workflow`), on
 `update_workflow` `start` and `publish_and_start` (an agent's tool and a
 person's command), `agentModels` on `startChatWorkflowDefinition` and the
 management start API, and on a real-agent test:
@@ -575,10 +577,10 @@ A package can ship Workflow Definitions as top-level entries
 
 ## Example
 
-The base instructions explain when to prefer a finite workflow over repeated
-parent model turns, when an ordinary agent is needed, and how to choose
-completion notifications. This guidance applies only when `spawn_workflow` is
-available and never expands tool permissions or approval scope.
+Where Workflows are on in a chat, its instructions explain when to prefer a
+finite workflow over repeated parent model turns, when an ordinary agent is
+needed, and how to follow a run; the Workflow skills carry the details. The
+guidance never expands tool permissions or approval scope.
 
 Scripts read the previous state's result as `context.input` and initial
 parameters as `context.inputs`. A bare `input` variable is not defined. Each
@@ -717,16 +719,17 @@ JavaScript `Error`, a PowerShell error), so the script can catch it.
 
 ## Starting a workflow
 
-- **From an agent:** the `spawn_workflow(yaml, inputs?, notify_on_completion?, key?)`
-  tool starts the workflow as a **child** of the agent session and returns at
-  once. The agent receives the result as a system message when the workflow
-  ends. A user can describe the steps in words; the agent writes the YAML.
+- **From an agent:** `workflow_definition` `save` (the YAML) and `start`
+  (`inputs`, `notify_on_completion?`) make the Workflow a **child** of the
+  agent session; `start` returns at once. The agent receives the result as a
+  message when the Workflow ends. A user can describe the steps in words; the
+  agent writes the YAML. In a chat where Workflows are off, the agent first
+  calls `enable_workflows` (see [Workflows on demand](#workflows-on-demand-per-chat)).
 - **On a schedule:** ask an agent to repeat it ("every night at 2, run ...").
   The agent makes one Workflow that loops through a wait state (a wait's `at`
   where clock waits run), and starts it once; it does not set `cron` or
   `cron_at` to start a Workflow on each wake-up (each start would be another
-  Workflow). Pass `key` to make a `spawn_workflow` call idempotent (the same
-  key and YAML return the same Workflow).
+  Workflow).
 - **There is no top-level creation:** ask an agent to start the child. The
   Web API has no create route (stage 2.5 removed `POST /sessions/workflow`,
   which refused every call), and an SDK client's start without a parent fails
@@ -876,16 +879,19 @@ Workflow controller 1.9.0, so every Workflow can use agent, parallel and
 request states, clock waits and a run deadline, every chat can test a revision,
 and a person can send workflow commands.
 
-- Every eligible agent is declared `workflow_definition`, `spawn_workflow`,
-  `update_workflow`, `read_workflow` and `send_workflow_input`, and its base
-  instructions carry the Workflow guidance. The exceptions are unchanged: the
-  tuner gets no workflow tool; a session inside a Workflow gets no definition
-  tools (`workflow_definition`, `spawn_workflow`, `update_workflow`); an agent
-  node's chat also gets `complete_workflow_node` and its node's tool limit.
-- Every session's guidance teaches the full engine, and every worker loads
-  the Workflow authoring skills (`workflow-authoring`, `workflow-reference`,
-  `workflow-patterns`; `workflow-testing` with test mode), so the base points
-  to them.
+- Where Workflows are on in a chat (below), it is declared
+  `workflow_definition`, `update_workflow`, `read_workflow` and
+  `send_workflow_input` (and `respond_session_request` on a 1.0.83 turn), and
+  its base instructions carry the Workflow guidance. `spawn_workflow` is no
+  longer declared. The exceptions are unchanged: the tuner gets no workflow
+  tool; a session inside a Workflow gets no definition tools
+  (`workflow_definition`, `update_workflow`); an agent node's chat also gets
+  `complete_workflow_node` and its node's tool limit.
+- The guidance teaches the full engine in about 1,600 characters and names
+  the Workflow skills, which every worker loads: `workflow-authoring`,
+  `workflow-reference` (every field), `workflow-tools` (every tool argument)
+  and `workflow-patterns`; `workflow-testing` with test mode. `load_skill`
+  serves them to every chat; the skills index does not list them.
 - The portal and the terminal UI always show the Workflow button, tab, pane,
   `w` key and Workflow rows.
 - MCP always registers `read_workflow` and `update_workflow`; the portal and
@@ -926,6 +932,33 @@ needs its judgment, and that a check a script can do belongs in one Workflow
 state; where clock waits run (controller 1.9.0), `cron_at` says the same, with
 a wait state's `at`. Every rule of their default wording is kept. With scripts
 off, both keep main's wording.
+
+### Workflows on demand per chat
+
+A chat carries the Workflow tools and guidance only when Workflows are on in
+it (owner decision, 2026-11-08). They cost about 2,000 tokens; a chat that
+never uses a Workflow carries a 350-character paragraph and one tool,
+`enable_workflows`, instead. cron and cron_at keep their default wording plus
+one sentence: with Workflows on, a fixed check a script can do belongs in one
+Workflow's wait loop; with them off, call `enable_workflows` first.
+
+- **Turning them on.** The model calls `enable_workflows` when the user asks
+  for a Workflow or for a repeated check a script could do. The flag is saved
+  with the chat's capability state (revision-checked, never cleared). The
+  turn ends at once, and the next turn starts automatically with the Workflow
+  tools and guidance and continues the task: one extra model call and one
+  prompt-cache miss. A call where they are on changes nothing. It is refused
+  while native tasks run (as `use_package` is).
+- **On without asking.** A chat with a Workflow Definition or a Workflow
+  (for example one from an earlier release); a Workflow's message or request
+  that arrives; a person's saved definition; the coordinating chat of a
+  package's Workflow. Each saves the flag. Also on, without saving: a session
+  inside a Workflow, Agent Smith, a turn of a chat still on orchestration
+  1.0.82, and a turn where one of these could not be read.
+- **Never.** The read-only tuner and service sessions get neither the
+  paragraph nor `enable_workflows`.
+- A deployment without durable capability storage (no session catalog) has
+  them on in every chat.
 
 ### Test mode (hidden)
 

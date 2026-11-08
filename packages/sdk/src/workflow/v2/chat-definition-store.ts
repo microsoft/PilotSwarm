@@ -335,6 +335,17 @@ export class ChatDefinitionStore {
             [ownerSessionId, operationId, kind, requestSha256, canonicalJson(receipt)]);
     }
 
+    /**
+     * Whether the chat owns a Workflow Definition (deleted ones too) or a Workflow (a workflow child of any kind): Workflows on
+     * demand turn on in such a chat (one from before this release).
+     */
+    async hasWorkflows(ownerSessionId: string): Promise<boolean> {
+        const { rows } = await this.pool.query(
+            `SELECT EXISTS (SELECT 1 FROM ${this.t.definitions} WHERE owner_session_id = $1)
+                 OR EXISTS (SELECT 1 FROM ${this.t.wfDefinitions} WHERE parent_session_id = $1) AS has`, [ownerSessionId]);
+        return rows[0]?.has === true;
+    }
+
     /** The chat's definitions, oldest first; deleted ones only when asked. */
     async listDefinitions(ownerSessionId: string, options: { includeDeleted?: boolean } = {}): Promise<ChatDefinitionRow[]> {
         const { rows } = await this.pool.query(

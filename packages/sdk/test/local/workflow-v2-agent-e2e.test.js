@@ -8,6 +8,7 @@ import { describe, it, expect } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createManagementClient } from "../helpers/local-workers.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
+import { turnWorkflowsOn } from "../helpers/workflows-on.js";
 
 const TIMEOUT = 240_000;
 const OWNER = { provider: "test", subject: "workflow-v2-owner" };
@@ -53,8 +54,8 @@ async function until(check, label, timeoutMs = 150_000) {
 }
 
 describe("workflow v2 driven by an agent", () => {
-    // Stage 2.1: spawn_workflow (kept one release) saves revision 1 of the chat's definition; workflow_definition starts it, and
-    // reads it back with the Workflow it started.
+    // Stage 2.1: workflow_definition saves revision 1 of the chat's definition, starts it, and reads it back with the Workflow
+    // it started (a chat with Workflows on; on demand, owner 2026-11-08T16:55Z).
     it("saves without running, starts the saved revision, runs with delegated tools and wakes the parent once", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const respond = (_body, position) => {
@@ -67,7 +68,7 @@ describe("workflow v2 driven by an agent", () => {
             const previous = position.step >= 1 ? parse(position.toolResults[0]) : null;
             if (position.step >= 1 && !previous?.ok) return { content: `Stopping: unexpected tool result ${position.toolResults[0]}` };
             if (position.step === 0) {
-                return { tools: [{ name: "spawn_workflow", args: { yaml: YAML, key: "v2-e2e" } }] };
+                return { tools: [{ name: "workflow_definition", args: { operation: "save", name: "fact-pipeline", yaml: YAML } }] };
             }
             if (position.step === 1) {
                 return { tools: [{ name: "workflow_definition", args: { operation: "start", definition_id: previous.definitionId, inputs: { run: "first" } } }] };
@@ -81,6 +82,7 @@ describe("workflow v2 driven by an agent", () => {
             const mgmt = await createManagementClient(env);
             try {
                 const parent = await client.createSession({ model: qualifiedModel, owner: OWNER });
+                await turnWorkflowsOn(client._catalog, parent.sessionId);
                 await parent.sendAndWait(PROMPT, TIMEOUT);
 
                 const last = model.sessionRequests(PROMPT).find((record) => record.position.step === 3 && record.position.lastUserText.includes(PROMPT));

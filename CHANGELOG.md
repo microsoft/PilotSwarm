@@ -34,6 +34,18 @@ controller 1.9.0. The Workflow authoring skills load on every worker, and
 every chat can load them with `load_skill`, Base V2 chats included. See
 `docs/developer/building/workflow-sessions.md`.
 
+**Workflows load per chat, only when needed.** A chat carries the Workflow
+tools and guidance (about 2,000 tokens, trimmed from about 10,000) only when
+Workflows are on in it. Every other chat carries one short paragraph and the
+`enable_workflows` tool; when the user asks for a Workflow, the model calls
+it, and the next turn starts at once with the Workflow tools and continues
+the task (one extra model call and one prompt-cache miss). Workflows turn on
+by themselves in a chat that already has a Workflow Definition or a
+Workflow, when a Workflow's message or request arrives, for a person's saved
+definition and for Agent Smith. The details moved to the Workflow skills,
+including the new `workflow-tools` skill. `spawn_workflow` is no longer
+offered to a model; use `workflow_definition`.
+
 **Script states run by default.** `PILOTSWARM_WORKFLOW_SCRIPTS` is now an
 opt-out: unset, empty, `1`, `true` or `yes` keeps scripts on; `0`, `false`,
 `no` or `off` turns them off; any other value keeps them on, with one

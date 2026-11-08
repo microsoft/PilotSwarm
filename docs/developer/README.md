@@ -11,7 +11,7 @@ apps). Both paths share the same plugin model —
 
 - Agent authoring: [for SDK apps](./building/sdk-agents.md) · [for CLI apps](./building/cli-agents.md)
 - [Facts & graph from the SDK](./building/facts-and-graph.md)
-- [Workflow sessions](./building/workflow-sessions.md) — durable state machines (`kind: Workflow`) whose script states run Python, Node or PowerShell and call agent tools; `createWorkflowSession`, `spawn_workflow`
+- [Durable workflows](./building/workflow-sessions.md) — durable workflow support: a chat's Workflow Definitions (`kind: Workflow`) run scripts, waits, typed messages, agent and parallel steps without model turns; `workflow_definition`, Workflows on demand per chat
 - [Writing a workspace provider](./building/workspace-providers.md) — give sessions git clones, shared folders and a folder per person
 - [Builder agent templates](./building/builder-agents.md) — reusable Copilot agents that scaffold PilotSwarm apps
 - [Examples](./building/examples.md) — runnable samples, including the DevOps Command Center

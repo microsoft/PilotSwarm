@@ -22,6 +22,7 @@
 import { describe, it, expect } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
+import { turnWorkflowsOn } from "../helpers/workflows-on.js";
 import { workflowV2ParentNotification } from "../../src/workflow/v2/runtime.ts";
 import { workflowRuntimeSender } from "../../src/workflow/v2/parent-messages.ts";
 import { appendEventToHistory, buildHistoryModel } from "../../../app/ui/core/src/history.js";
@@ -95,15 +96,15 @@ async function chatWithEndedWorkflow(env, onNotification, then) {
         }
         if (position.lastUserText.includes(LATER)) return { content: "Yes." };
         if (!position.lastUserText.includes(PROMPT)) return { content: "ok" };
-        if (position.step === 0) {
-            return { tools: [{ name: "spawn_workflow", args: { yaml: YAML, key: "one-second", state: "published", start: true } }] };
-        }
+        if (position.step === 0) return { tools: [{ name: "workflow_definition", args: { operation: "save", name: "one-second", yaml: YAML } }] };
+        if (position.step === 1) return { tools: [{ name: "workflow_definition", args: { operation: "start", name: "one-second" } }] };
         return { content: "Started it." };
     };
-    // spawn_workflow is offered only where workflow scripts are on, as in the other workflow tests.
+    // The chat has Workflows on (on demand, owner 2026-11-08T16:55Z).
     const worker = { workflowScripts: { enabled: true } };
     await withScriptedModel(env, { respond, worker }, async ({ client, qualifiedModel }) => {
         const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
+        await turnWorkflowsOn(client._catalog, chat.sessionId);
         await chat.send(PROMPT);
         await until(async () => (await answersOf(client, chat.sessionId)).includes("Started it."), "the chat's answer to the person's prompt");
         const turns = await settledNotificationTurns(client, chat.sessionId);
