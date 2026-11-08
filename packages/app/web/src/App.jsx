@@ -483,10 +483,13 @@ function PortalHeaderAccent({ controller }) {
             start: () => { element.dataset.active = "true"; },
             stop: () => { element.dataset.active = "false"; },
         });
-        const sync = () => accent.setEnabled(
-            controller.getState().ui?.themeId === "horizon-dawn"
-                && !motion.matches && document.visibilityState === "visible",
-        );
+        const sync = () => {
+            const enabled = controller.getState().ui?.themeId === "horizon-dawn"
+                && !motion.matches && document.visibilityState === "visible";
+            const value = String(enabled);
+            if (element.dataset.enabled !== value) element.dataset.enabled = value;
+            accent.setEnabled(enabled);
+        };
         const unsubscribe = controller.subscribe(sync);
         motion.addEventListener("change", sync);
         document.addEventListener("visibilitychange", sync);
