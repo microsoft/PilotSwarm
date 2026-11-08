@@ -82,10 +82,12 @@ describe("web api e2e", () => {
         assertEqual(bootstrap.ok, true, "bootstrap ok");
         assert(Array.isArray(bootstrap.modelsByProvider), "bootstrap carries models");
         assertNotNull(bootstrap.auth, "bootstrap carries auth context");
-        // Workflow support (design 04, D11) as a deployment is configured: version 2 reads, a person's commands off.
+        // Durable workflow support as every deployment has it (owner 2026-11-08T15:30Z): reads, and a person's commands on
+        // the full engine (controller 1.9.0), with no setting.
         assertEqual(bootstrap.workflows?.v2?.read, true, "bootstrap advertises version 2 workflow reads");
-        assertEqual(bootstrap.workflows?.v2?.commands?.available, false, "a person's workflow commands are off by default");
-        assertEqual(bootstrap.workflows?.v2?.commands?.refusal?.code, "WORKFLOW_COMMANDS_UNAVAILABLE", "with the refusal every command gets");
+        assertEqual(bootstrap.workflows?.v2?.commands?.available, true, "a person's workflow commands are on by default");
+        assertEqual(bootstrap.workflows?.v2?.commands?.controllerVersion, "1.9.0", "on the full engine");
+        assert(bootstrap.workflows?.v2?.commands?.operations?.includes("stop"), "with the full engine's stop");
         assertEqual(JSON.stringify(await mgmt.getWorkflowCapabilities()), JSON.stringify(bootstrap.workflows),
             "the web management client reads the same advertisement");
     });

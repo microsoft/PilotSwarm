@@ -1998,7 +1998,10 @@ describe("J3 robust joins, part 8: reads and the portal's projection of real res
                 const fan = fanOf(direct);
                 const row = await base.store.readNodeExecution(run.fan);
                 // The same read through the management client and the parent's tool.
-                expect(await mgmt.readWorkflow(run.workflowSessionId), name).toEqual(direct);
+                // Every management client takes a person's commands (owner 2026-11-08T15:30Z): its read adds what a person may do.
+                const { personCommands, ...managed } = await mgmt.readWorkflow(run.workflowSessionId);
+                expect(managed, name).toEqual(direct);
+                expect(personCommands, name).toMatchObject({ restriction: null, run: { runId: run.runId } });
                 const tool = JSON.parse(await readWorkflowFromTool({ workflow_id: run.workflowSessionId }, { callerSessionId: run.parent, host: base.host }));
                 expect(tool.ok, name).toBe(true);
                 expect(fanOf(tool), name).toEqual(fan);

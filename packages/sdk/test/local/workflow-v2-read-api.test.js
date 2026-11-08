@@ -124,7 +124,11 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             // The live run by default, or the run named; the YAML is not included. These tests run with test mode on, so the
             // read lists test runs and says so (testMode, review UI-5), as the store's view does when asked to show them.
             const view = await mgmt.readWorkflow(workflowSessionId);
-            expect(view).toEqual(await readWorkflowV2View(store, workflowSessionId, { runId: null, hideTestRuns: false }));
+            // Every management client takes a person's commands (owner 2026-11-08T15:30Z): its read adds what a person may do.
+            const { personCommands, ...stored } = view;
+            expect(stored).toEqual(await readWorkflowV2View(store, workflowSessionId, { runId: null, hideTestRuns: false }));
+            expect(personCommands).toMatchObject({ operations: expect.arrayContaining(["pause", "resume", "cancel", "stop"]), restriction: null,
+                run: { runId, stop: false } });
             expect(view.testMode).toBe(true);
             expect(view).toMatchObject({ workflowId: workflowSessionId, definition: { state: "published", currentRevision: 1 },
                 revision: { revision: 1, valid: true }, run: { runId, mode: "live" } });

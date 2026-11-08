@@ -1,18 +1,18 @@
 /**
- * Workflow v2: a person's workflow command in direct mode (design 04
- * updateWorkflow; R13, R26, D11), on real PostgreSQL, INACTIVE: only a
- * management client created with the test-only option `workflowCommands`
- * takes one.
+ * Durable workflows: a person's workflow command in direct mode (design 04
+ * updateWorkflow; R13, R26, D11), on real PostgreSQL. Every management client
+ * takes one, on the full engine (owner 2026-11-08T15:30Z; review RLR-F1: any
+ * `workflowCommands` object starts runs at controller 1.9.0); only
+ * `workflowCommands: null` (a test) turns them off.
  *
- * - Without the option the command is refused (501
+ * - With them off the command is refused (501
  *   WORKFLOW_COMMANDS_UNAVAILABLE) and nothing changes.
  * - With it, a person drafts, publishes and starts a workflow, sets its KV,
  *   pauses, resumes and cancels its run, through the update_workflow tool's
  *   own implementation; the receipts are the tool's, and the recorded actor
  *   is the person (a command's own actor field is ignored).
  * - The command targets the session it is sent to; recover stays the
- *   agent's; a session that is missing or not a version 2 workflow is 404;
- *   stop is a milestone operation (refused without controller 1.9.0).
+ *   agent's; a session that is missing or not a version 2 workflow is 404.
  * - A workflow inside a workflow agent state's subtree takes only a person's
  *   brakes (pause, cancel): anything else is 403 WORKFLOW_HUMAN_INPUT_DENIED,
  *   naming its controlling agent; the workflow container above it takes every
@@ -31,7 +31,7 @@
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
-import { createManagementClient, PilotSwarmManagementClient } from "../helpers/local-workers.js";
+import { PilotSwarmManagementClient } from "../helpers/local-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { WORKFLOW_HUMAN_INPUT_DENIED } from "../../src/workflow/v2/input-policy.ts";
@@ -109,12 +109,14 @@ async function commandsClient(env, workflowCommands) {
 }
 
 describe("workflow v2: a person's workflow command (direct management client, inactive)", () => {
-    it("is refused without the test-only option, and with it drafts, publishes, starts and controls a run as the person", { timeout: TIMEOUT }, async () => {
+    it("is refused with commands off, and with them on drafts, publishes, starts and controls a run as the person", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
         await catalog.initialize();
-        const plain = await createManagementClient(env);
+        const plain = await commandsClient(env, null);
+        // RLR-F1: an explicit `requests: false` still takes commands on the full engine.
         const mgmt = await commandsClient(env, { requests: false });
+        expect(mgmt.config.workflowCommands.requests).toBe(true);
         try {
             const store = catalog.workflowStore();
             const parent = randomUUID();
@@ -123,9 +125,11 @@ describe("workflow v2: a person's workflow command (direct management client, in
             // Reading: only a client that takes a person's commands says which ones the workflow takes.
             expect(Object.hasOwn(await plain.readWorkflow(draft.workflowSessionId), "personCommands")).toBe(false);
             // A draft a person may change also comes with its current YAML, the text they edit.
-            expect((await mgmt.readWorkflow(draft.workflowSessionId)).personCommands).toEqual({
-                operations: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel"],
-                restriction: null, run: null, draft: { revision: 1, definitionHash: draft.definitionHash, yaml: YAML("person-draft") } });
+            const draftCommands = (await mgmt.readWorkflow(draft.workflowSessionId)).personCommands;
+            expect(draftCommands).toMatchObject({ restriction: null, run: null,
+                draft: { revision: 1, definitionHash: draft.definitionHash, yaml: YAML("person-draft") } });
+            expect(draftCommands.operations).toEqual(expect.arrayContaining(["replace_definition", "publish", "publish_and_start", "start", "set_vars",
+                "pause", "resume", "cancel", "stop"]));
 
             // Inactive: refused, and nothing changes.
             await refused(() => plain.updateWorkflow(draft.workflowSessionId, { operation: "publish", operation_id: "p-0", expected_revision: 1,
@@ -145,10 +149,10 @@ describe("workflow v2: a person's workflow command (direct management client, in
                 definition_hash: replaced.definitionHash, inputs: {} }, { principal: PERSON });
             expect(started).toMatchObject({ operation: "start", run: { mode: "live", revision: 2 } });
             const runId = started.run.runId;
-            // The shown run: this host stops no run gracefully (controller 1.8.0), so it offers no stop; a published
-            // definition has no draft to edit.
+            // The shown run: started at controller 1.9.0 on this host; a published definition has no draft to edit.
+            expect((await store.readRun(runId)).controllerVersion).toBe("1.9.0");
             const publishedCommands = (await mgmt.readWorkflow(draft.workflowSessionId)).personCommands;
-            expect(publishedCommands.run).toEqual({ runId, stop: false });
+            expect(publishedCommands.run).toMatchObject({ runId });
             expect(Object.hasOwn(publishedCommands, "draft")).toBe(false);
             // A repeat of an operation id returns its receipt.
             expect(await mgmt.updateWorkflow(draft.workflowSessionId, { operation: "start", operation_id: "start-1",
@@ -178,11 +182,10 @@ describe("workflow v2: a person's workflow command (direct management client, in
             expect(actors).toEqual([["workflow.vars_set", { kind: "user", ...PERSON }], ["workflow.paused", { kind: "user", ...PERSON }],
                 ["workflow.resumed", { kind: "user", ...PERSON }], ["workflow.vars_set", { kind: "system", name: "management-client" }]]);
 
-            // The command's target, recover, missing sessions and milestone operations.
+            // The command's target, recover and missing sessions.
             await refused(() => mgmt.updateWorkflow(draft.workflowSessionId, { workflow_id: randomUUID(), operation: "pause", operation_id: "x-1" }),
                 "WORKFLOW_COMMAND_INVALID", 400);
             await refused(() => mgmt.updateWorkflow(draft.workflowSessionId, { operation: "recover", operation_id: "x-2" }), "WORKFLOW_COMMAND_INVALID", 400);
-            await refused(() => mgmt.updateWorkflow(draft.workflowSessionId, { operation: "stop", operation_id: "x-3" }), "WORKFLOW_COMMAND_INVALID", 400);
             await refused(() => mgmt.updateWorkflow(draft.workflowSessionId, []), "WORKFLOW_COMMAND_INVALID", 400);
             await refused(() => mgmt.updateWorkflow(randomUUID(), { operation: "pause", operation_id: "x-5" }), "NOT_FOUND", 404);
             await refused(() => mgmt.updateWorkflow(parent, { operation: "pause", operation_id: "x-6" }), "WORKFLOW_NOT_FOUND", 404);

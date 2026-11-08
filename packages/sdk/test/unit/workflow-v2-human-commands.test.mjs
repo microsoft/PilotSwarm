@@ -156,6 +156,18 @@ test("the management client answers from its own configuration and catalog, befo
     const client = new PilotSwarmManagementClient({ store: "postgres://capabilities.invalid/none" });
     assert.deepEqual(client.config.workflowCommands, { requests: true });
     assert.equal(new PilotSwarmManagementClient({ store: "postgres://capabilities.invalid/none", workflowCommands: null }).config.workflowCommands, null);
+    // Review RLR-F1: an explicit object, partial or not, still takes commands on the full engine: every new run starts at
+    // controller 1.9.0, and its test mode is kept (absent, the deployment flag decides).
+    for (const [given, want] of [[{}, { requests: true }], [{ testMode: true }, { requests: true, testMode: true }],
+        [{ requests: false }, { requests: true }], [{ requests: false, testMode: false }, { requests: true, testMode: false }]]) {
+        const made = new PilotSwarmManagementClient({ store: "postgres://capabilities.invalid/none", workflowCommands: given });
+        assert.deepEqual(made.config.workflowCommands, want, JSON.stringify(given));
+        const capabilities = await as({ config: made.config, _catalog: store }).getWorkflowCapabilities();
+        assert.equal(capabilities.v2.commands.controllerVersion, "1.9.0", JSON.stringify(given));
+    }
+    const testing = new PilotSwarmManagementClient({ store: "postgres://capabilities.invalid/none", workflowCommands: { testMode: true } });
+    assert.ok((await as({ config: testing.config, _catalog: store }).getWorkflowCapabilities()).v2.commands.operations.includes("test"),
+        "its test mode is not dropped");
 });
 
 // The retired Workflow V2 test environment switch (owner decision 2026-11-08T15:30Z): the SDK no longer exports it, and its

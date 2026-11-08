@@ -868,8 +868,8 @@ export interface PilotSwarmManagementClientOptions {
     /** Artifact store used by direct-mode agent-package publish/read/delete operations. */
     artifactStore?: ArtifactStore | null;
     /**
-     * Workflow v2: a person's workflow commands (updateWorkflow and the chat definition operations). Unset (the default):
-     * `{ requests: true }`, as every worker runs controller 1.9.0: the commands take the milestone operations (stop, and
+     * Durable workflows: a person's workflow commands (updateWorkflow and the chat definition operations). Unset (the
+     * default) or any object: `requests` is always true (review RLR-F1), as every worker runs controller 1.9.0: the commands take the milestone operations (stop, and
      * with test mode the test operations) and start runs at 1.9.0, as the agents' tools do, and a publication pins its named
      * agents: package agents only, at the agent registry's exact revision (a deployment agent's name is refused
      * AGENT_UNAVAILABLE here). `null`: no person's commands (updateWorkflow answers WORKFLOW_COMMANDS_UNAVAILABLE, 501, and
@@ -930,8 +930,11 @@ export class PilotSwarmManagementClient {
             return new WebPilotSwarmManagementClient(options) as unknown as PilotSwarmManagementClient;
         }
         // Every deployment takes a person's workflow commands on the full engine (owner decision 2026-11-08T15:30Z); only an
-        // explicit `workflowCommands: null` (a test that needs them off) leaves them off.
-        this.config = options.workflowCommands === undefined ? { ...options, workflowCommands: { requests: true } } : options;
+        // explicit `workflowCommands: null` (a test that needs them off) leaves them off. An object, partial or not, keeps its
+        // test mode (absent: the deployment flag decides) and always starts new runs at controller 1.9.0 (review RLR-F1):
+        // a missing or false `requests` would start them at 1.8.0 and drop the test mode.
+        this.config = options.workflowCommands === null ? options
+            : { ...options, workflowCommands: { ...(options.workflowCommands ?? {}), requests: true } };
         this._artifactStore = options.artifactStore ?? null;
     }
 
