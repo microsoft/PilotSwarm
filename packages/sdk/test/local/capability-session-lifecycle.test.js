@@ -85,7 +85,7 @@ function restrictedWorker(dir, { allowedAgents, namespace = "fixture", name = "a
         { id: "fixture", type: "openai", baseUrl: "https://example.test/v1", apiKey: "synthetic", models: ["gpt-test"] },
     ] }));
     const worker = new PilotSwarmWorker({
-        pluginDirs: [base], sessionStateDir: join(dir, "sessions"), nativeSubagents: "off", modelProvidersPath,
+        pluginDirs: [base], sessionStateDir: join(dir, "sessions"), modelProvidersPath,
     });
     if (packageCopies) {
         const packages = [

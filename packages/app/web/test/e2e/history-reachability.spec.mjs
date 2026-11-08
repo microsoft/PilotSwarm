@@ -104,16 +104,31 @@ for (const gesture of ["wheel", "touch"]) test(`a delayed backward page advances
     await pull();
     await expect.poll(() => backwardRequests.length).toBe(1);
     for (let i = 0; i < 4; i++) await pull();
+    // The aggressive gesture keeps going while the page lands, as a real
+    // fast scroll or fling does: the browser fires its own events every few
+    // milliseconds, inside the app's 200 ms gesture gap. Driven from the test
+    // process, one step could take longer than that on a busy machine and so
+    // become a new, deliberate scroll. So the stream runs inside the page
+    // (wheel ticks, or a fling's scroll events after touchmove has stopped),
+    // and one real step is made while it runs.
+    await viewport.evaluate((node, kind) => {
+        window.__gestureStream = setInterval(() => {
+            if (kind === "wheel") node.dispatchEvent(new WheelEvent("wheel", { deltaY: -10000, bubbles: true, cancelable: true }));
+            else { node.scrollTop = 0; node.dispatchEvent(new Event("scroll")); }
+        }, 30);
+    }, gesture);
     releasePage();
     await expect(page.getByText("older message 692").first()).toBeAttached();
-    if (gesture === "wheel") await pull();
-    if (gesture === "touch") {
-        // A fling can emit scroll events even after touchmove has stopped.
-        await viewport.evaluate(node => { node.scrollTop = 0; node.dispatchEvent(new Event("scroll")); });
-    }
-    const anchorAfter = await anchor.boundingBox();
+    if (gesture === "wheel") await page.mouse.wheel(0, -10000);
+    else await viewport.evaluate(node => { node.scrollTop = 0; node.dispatchEvent(new Event("scroll")); });
+    await page.evaluate(() => clearInterval(window.__gestureStream));
+    // The older page is prepended and the reader re-anchored on the next
+    // frames; on a busy machine that lands after the gesture returns. Wait for
+    // it to settle (still within 1 px: a lost anchor moves by the whole page).
     // WebKit rounds scrollTop to whole pixels while text boxes are fractional.
-    expect(Math.abs(anchorAfter.y - anchorBefore.y - 16), "a page boundary advances only one 16px scroll row").toBeLessThan(1);
+    await expect.poll(async () => Math.abs((await anchor.boundingBox()).y - anchorBefore.y - 16),
+        { message: "a page boundary advances only one 16px scroll row" }).toBeLessThan(1);
+    const anchorAfter = await anchor.boundingBox();
     expect(backwardRequests).toHaveLength(1);
 
     // The page-boundary guard must release for a fresh intentional gesture.
@@ -130,8 +145,18 @@ for (const gesture of ["wheel", "touch"]) test(`a delayed backward page advances
     const resumedAnchorOffset = (await anchor.boundingBox()).y - (await viewport.boundingBox()).y;
 
     const savedTop = await viewport.evaluate((node) => node.scrollTop);
-    await page.locator(`.ps-session-list-button[data-session-id="11111111-2222-3333-4444-555555555551"]`).click();
-    await page.locator(`.ps-session-list-button[data-session-id="${sessionId}"]`).click();
+    // On a phone the list slides over the chat from the toolbar's list button,
+    // and picking a row closes it again.
+    const pick = async (id) => {
+        if (gesture === "touch") {
+            await page.getByRole("button", { name: "Sessions", exact: true }).click();
+            await expect(page.locator(".ps-mobile-session-slideover.is-open")).toBeVisible();
+        }
+        await page.locator(`.ps-session-list-button[data-session-id="${id}"]`).click();
+        if (gesture === "touch") await expect(page.locator(".ps-mobile-session-slideover.is-open")).toHaveCount(0);
+    };
+    await pick("11111111-2222-3333-4444-555555555551");
+    await pick(sessionId);
     await expect(page.getByText("VISIBLE_ANCHOR_702").first()).toBeAttached();
     await expect.poll(() => viewport.evaluate((node) => node.scrollTop)).toBeCloseTo(savedTop, 0);
     const anchorAfterRoundTrip = await page.getByText("VISIBLE_ANCHOR_702").first().boundingBox();

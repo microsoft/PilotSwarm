@@ -35,3 +35,22 @@ test("a real start failure is still reported as Azure CLI could not start", () =
   const log = failedLog("Failed to spawn az: spawnSync az ENOENT");
   assert.equal(classifyFailure(log), "Diagnostic: Azure CLI could not start.");
 });
+
+test("HorizonDB settings-group failures are named", () => {
+  assert.equal(
+    classifyFailure(failedLog("Error: HorizonDB extension parameter group did not become active within fifteen minutes.")),
+    "Diagnostic: HorizonDB settings group did not reach InSync in time.",
+  );
+  assert.equal(
+    classifyFailure(failedLog("Error: HorizonDB could not apply the extension parameter group (syncStatus FailedToApply).")),
+    "Diagnostic: HorizonDB could not apply the settings group.",
+  );
+  assert.equal(
+    classifyFailure(failedLog('{"code":"ClusterNotReady","message":"Cluster [x] is in state [Updating] and cannot accept the requested operation."}')),
+    "Diagnostic: HorizonDB cluster was busy with another operation.",
+  );
+  assert.equal(
+    classifyFailure(failedLog("Error: Cannot check whether the HorizonDB pool exists: ERROR: Forbidden")),
+    "Diagnostic: HorizonDB pool lookup failed.",
+  );
+});

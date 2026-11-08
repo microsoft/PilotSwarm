@@ -1,11 +1,15 @@
 import React from "react";
 import { useControllerSelector } from "pilotswarm/ui-react";
-import { activeMoaDashboard, normalizeMoa, moaLeaves, updateMoaDashboard } from "pilotswarm/ui-core";
+import { activeMoaDashboard, normalizeMoa, moaLeaves, selectArtifactPaneShown, sessionDisplayTitle, updateMoaDashboard } from "pilotswarm/ui-core";
 import { cleanView, createViewHistory, navigationShortcut, viewKey } from "./view-history.js";
 
 function capture(controller, moa) {
     const s = controller.getState(), dashboard = activeMoaDashboard(normalizeMoa(s.ui.moa));
-    const artifact = s.files.paneOpen ? s.files.selectedArtifactId : null;
+    // A desktop artifact opens in the right pane; a phone shows it full screen
+    // over everything, and that is a destination of its own too.
+    const paneShown = selectArtifactPaneShown(s);
+    const fullscreenShown = !paneShown && Boolean(s.files.fullscreen && s.files.selectedArtifactId);
+    const artifact = paneShown || fullscreenShown ? s.files.selectedArtifactId : null;
     const separator = artifact?.indexOf("/") ?? -1;
     return cleanView({
         mode: moa.active ? "moa" : s.admin.visible ? "admin" : s.ui.budgetOpen ? "budget" : "workspace",
@@ -14,14 +18,20 @@ function capture(controller, moa) {
         canvasMaximized: s.ui.canvasMaximized, canvasZen: s.ui.canvasZen, diagnosticsOpen: s.ui.diagnosticsOpen,
         artifactSessionId: separator >= 0 ? artifact.slice(0, separator) : null,
         artifactFilename: separator >= 0 ? artifact.slice(separator + 1) : null,
+        artifactFullscreen: fullscreenShown,
+        mobilePane: controller.mobileView?.get() || null,
     });
 }
+const PHONE_PANE_LABELS = { inspector: "Diagnostics", activity: "Activity", canvas: "Canvas" };
 function label(view, state) {
     if (!view) return "";
     if (view.mode === "moa") return normalizeMoa(state.ui.moa).dashboards.find(d => d.id === view.dashboardId)?.name || "Unavailable dashboard";
     if (view.mode === "admin") return "Settings";
     if (view.mode === "budget") return "Budget";
-    const title = state.sessions.byId[view.sessionId]?.title || "Session";
+    const session = state.sessions.byId[view.sessionId];
+    const title = (session && sessionDisplayTitle(session, state.agentTitles)) || "Session";
+    if (view.artifactFullscreen && view.artifactFilename) return `${title} · ${view.artifactFilename}`;
+    if (view.mobilePane && PHONE_PANE_LABELS[view.mobilePane]) return `${title} · ${PHONE_PANE_LABELS[view.mobilePane]}`;
     return view.artifactFilename ? `${title} · ${view.artifactFilename}` : view.canvasOpen ? `${title} · Canvas ${view.canvasSlot}` : title;
 }
 
@@ -45,13 +55,31 @@ export function useViewNavigation(controller, moa) {
         const key = `pilotswarm.view-history.v1:${scope}`;
         let saved; try { saved = sessionStorage.getItem(key); } catch {}
         const history = createViewHistory(saved);
-        history.visit(capture(controller, latest.current));
+        // A reload, or a link into the portal, lands in steps: first a
+        // workspace with no session (or the one the profile last saved),
+        // then the linked session, then its artifact or canvas. None of the
+        // steps is a place: recording one would push the saved history on.
+        // With a saved history, a deep link's view is recorded once it has
+        // landed; it refreshes the saved stop when it is the same place.
+        const first = capture(controller, latest.current);
+        const landing = history.current ? controller.deepLinkLanding : null;
+        let cancelled = false;
+        if (landing) {
+            // Two frames after landing: a phone shows its canvas pane from
+            // a render that follows the canvas flip.
+            landing.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))).then(() => {
+                if (cancelled || !data.current || data.current.history !== history) return;
+                history.visit(capture(controller, latest.current)); publish();
+            });
+        } else if (!history.current || first.mode !== "workspace" || first.sessionId) {
+            history.visit(first);
+        }
         data.current = { key, history }; publish();
-        return () => { generation.current++; data.current = null; };
+        return () => { cancelled = true; generation.current++; data.current = null; };
     }, [controller, scope, publish]);
 
     React.useEffect(() => {
-        if (!createdSessionId || !moa.desktop) return;
+        if (!createdSessionId) return;
         // Session creation is an explicit navigation whose completion can
         // arrive after the initiating click (and after leaving its dialog).
         const timer = setTimeout(() => {
@@ -59,7 +87,7 @@ export function useViewNavigation(controller, moa) {
             data.current.history.visit(capture(controller, latest.current)); publish();
         }, 0);
         return () => clearTimeout(timer);
-    }, [createdSessionId, controller, moa.desktop, publish]);
+    }, [createdSessionId, controller, publish]);
 
     const restore = React.useCallback(view => {
         const request = ++generation.current, currentMoa = latest.current;
@@ -94,7 +122,14 @@ export function useViewNavigation(controller, moa) {
         controller.dispatch({ type: "ui/canvasMaximized", on: view.canvasMaximized });
         controller.dispatch({ type: "ui/canvasZen", on: view.canvasZen });
         controller.dispatch({ type: "ui/diagnosticsOpen", open: view.diagnosticsOpen });
-        if (view.artifactFilename && view.artifactSessionId) {
+        // On a phone, put the same screen back: chat, diagnostics or canvas.
+        if (controller.mobileView) controller.mobileView.set(view.mobilePane || (view.canvasOpen ? "canvas" : "workspace"));
+        if (view.artifactFullscreen && view.artifactFilename && view.artifactSessionId) {
+            // The phone's full-screen preview, over the screen restored above.
+            controller.revealArtifact(view.artifactSessionId, view.artifactFilename, { fullscreen: true, preserveSession: true })
+                .then((shown) => { if (shown === false) unavailable(); })
+                .catch(unavailable);
+        } else if (view.artifactFilename && view.artifactSessionId) {
             // Selection happens before the fetch; a late response only warms
             // the cache and can never open a pane over a newer destination.
             controller.dispatch({ type: "files/select", sessionId: view.artifactSessionId, filename: view.artifactFilename });
@@ -124,14 +159,13 @@ export function useViewNavigation(controller, moa) {
 
     const move = React.useCallback(delta => {
         const history = data.current?.history;
-        if (!latest.current.desktop || !history?.destination(delta)) return;
+        if (!history?.destination(delta)) return;
         gesture.current = null;
         history.replace(capture(controller, latest.current));
         const destination = history.move(delta); publish(); restore(destination);
     }, [controller, publish, restore]);
 
     React.useEffect(() => {
-        if (!moa.desktop) return;
         let timer;
         // Observe user gestures, not store subscriptions: polling, streamed
         // messages, agent canvas presentations and resize never add entries.
@@ -139,7 +173,8 @@ export function useViewNavigation(controller, moa) {
         const begin = event => {
             if (!data.current || event.repeat || event.isComposing) return;
             if (event.type === "keydown") {
-                const direction = navigationShortcut(event);
+                // Keyboard shortcuts are the desktop's; a phone moves by swipe.
+                const direction = latest.current.desktop ? navigationShortcut(event) : 0;
                 if (direction && !document.querySelector('.ps-modal-backdrop, .ps-moa-dialog, .ps-share-overlay')) {
                     event.preventDefault(); event.stopPropagation(); move(direction); return;
                 }
@@ -162,13 +197,15 @@ export function useViewNavigation(controller, moa) {
         document.addEventListener("click", begin, true);
         window.addEventListener("keydown", begin, true);
         return () => { clearTimeout(timer); gesture.current = null; document.removeEventListener("click", begin, true); window.removeEventListener("keydown", begin, true); };
-    }, [controller, moa.desktop, move, publish]);
+    }, [controller, move, publish]);
 
     const state = controller.getState(), history = data.current?.history;
     const modifier = /Mac|iPhone|iPad/.test(navigator.platform) ? "Option" : "Alt";
     return {
         back: () => move(-1), forward: () => move(1),
         canBack: Boolean(history?.destination(-1)), canForward: Boolean(history?.destination(1)),
+        backTitle: history?.destination(-1) ? label(history.destination(-1), state) : "",
+        forwardTitle: history?.destination(1) ? label(history.destination(1), state) : "",
         backLabel: `Back${history?.destination(-1) ? ` to ${label(history.destination(-1), state)}` : ""} (${modifier}+−)`,
         forwardLabel: `Forward${history?.destination(1) ? ` to ${label(history.destination(1), state)}` : ""} (${modifier}++)`,
     };

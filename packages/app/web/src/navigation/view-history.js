@@ -1,5 +1,6 @@
 // Only navigation references are persisted: never drafts, transcripts or file contents.
 export const VIEW_HISTORY_LIMIT = 10;
+export const MOBILE_PANES = ["workspace", "inspector", "activity", "canvas"];
 const text = value => typeof value === "string" && value.length <= 1024 ? value : null;
 export function cleanView(value) {
     if (!value || !["workspace", "moa", "admin", "budget"].includes(value.mode)) return null;
@@ -12,6 +13,10 @@ export function cleanView(value) {
         canvasSlot: Number.isInteger(value.canvasSlot) && value.canvasSlot >= 1 && value.canvasSlot <= 5 ? value.canvasSlot : 1,
         diagnosticsOpen: value.diagnosticsOpen === true,
         artifactSessionId: text(value.artifactSessionId), artifactFilename: text(value.artifactFilename),
+        // A phone's full-screen artifact preview; false for the desktop pane.
+        artifactFullscreen: value.artifactFullscreen === true,
+        // The phone's screen within the workspace; null on the desktop.
+        mobilePane: MOBILE_PANES.includes(value.mobilePane) ? value.mobilePane : null,
     };
 }
 export function viewKey(view) {
@@ -19,7 +24,11 @@ export function viewKey(view) {
     if (view.mode !== "workspace") return view.mode;
     return JSON.stringify([view.mode, view.sessionId, view.canvasOpen,
         view.canvasOpen ? view.canvasSlot : null, view.canvasMaximized, view.canvasZen,
-        view.diagnosticsOpen, view.artifactSessionId, view.artifactFilename]);
+        view.diagnosticsOpen, view.artifactSessionId, view.artifactFilename,
+        // A phone's full-screen preview covers the screen under it: the same
+        // preview over chat or over the Files tab is one place.
+        view.artifactFullscreen === true ? null : view.mobilePane || null,
+        view.artifactFullscreen === true]);
 }
 export function createViewHistory(saved) {
     let entries = [], index = -1;

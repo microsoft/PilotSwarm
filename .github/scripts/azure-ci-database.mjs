@@ -5,14 +5,15 @@ import { randomBytes, createHash } from 'node:crypto';
 import { isIP } from 'node:net';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureHorizonDbParameterGroup } from '../../deploy/scripts/lib/horizondb.mjs';
+import { ensureHorizonDbParameterGroup, HORIZONDB_API_VERSION, HORIZONDB_POOL_NAME } from '../../deploy/scripts/lib/horizondb.mjs';
 
-const api = '2026-01-20-preview';
+const api = HORIZONDB_API_VERSION;
 export const CI_MAX_CONNECTIONS = 1500;
-// HorizonDB parameter groups are immutable. A new settings revision gets a
-// distinct stable name; subsequent runs reuse it instead of issuing an update.
+// One stable settings-group name per settings revision; later runs reuse it.
+// Revision 2 is the first group made with API 2026-10-01-preview. Revision 1
+// was made with API 2026-01-20-preview and is not reused.
 export function ciParameterGroupName(c) {
-  const hash = createHash('sha256').update(JSON.stringify({ base: c.parameterGroup, maxConnections: CI_MAX_CONNECTIONS, revision: 1 })).digest('hex').slice(0, 10);
+  const hash = createHash('sha256').update(JSON.stringify({ base: c.parameterGroup, maxConnections: CI_MAX_CONNECTIONS, revision: 2 })).digest('hex').slice(0, 10);
   return `${c.parameterGroup.slice(0, 45)}-${hash}`;
 }
 export function validateConfig(c) {
@@ -29,7 +30,7 @@ export function validateConfig(c) {
 }
 export function firewallUrl(c, runId, attempt) {
   if (!/^\d+$/.test(runId) || !/^\d+$/.test(attempt)) throw new Error('Expected a GitHub Actions run ID and attempt.');
-  return `https://management.azure.com/subscriptions/${c.subscription}/resourceGroups/${c.resourceGroup}/providers/Microsoft.HorizonDb/clusters/${c.cluster}/pools/DefaultPool/firewallRules/ci-${runId}-${attempt}?api-version=${api}`;
+  return `https://management.azure.com/subscriptions/${c.subscription}/resourceGroups/${c.resourceGroup}/providers/Microsoft.HorizonDb/clusters/${c.cluster}/pools/${HORIZONDB_POOL_NAME}/firewallRules/ci-${runId}-${attempt}?api-version=${api}`;
 }
 function az(args, { optional = false } = {}) {
   const r = spawnSync('az', args, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
@@ -58,22 +59,22 @@ function resource(c, type, name, optional = false) {
   const result = az(['rest', '--method', 'get', '--url', `https://management.azure.com/subscriptions/${c.subscription}/resourceGroups/${c.resourceGroup}/providers/Microsoft.HorizonDb/${type}/${name}?api-version=${api}`, '-o', 'json'], { optional });
   return result ? JSON.parse(result) : undefined;
 }
+// New clusters answer only on the endpoint's host name (<cluster>.rw.<id>...).
+function endpointHost(c) {
+  return resource(c, 'clusters', `${c.cluster}/endpoints/${c.cluster}`).properties.fullyQualifiedDomainName;
+}
 async function provision(c) {
   const cluster = resource(c, 'clusters', c.cluster, true);
+  const pool = cluster && resource(c, 'clusters', `${c.cluster}/pools/${HORIZONDB_POOL_NAME}`, true);
   const parameterGroup = ciParameterGroupName(c);
   mask(parameterGroup);
-  const existingGroup = resource(c, 'parameterGroups', parameterGroup, true);
-  if (existingGroup && existingGroup.properties?.parameters?.find(p => p.name === 'max_connections')?.value !== String(CI_MAX_CONNECTIONS)) {
-    throw new Error('The immutable CI parameter group has unexpected capacity; create a new settings revision.');
-  }
   let password = getSecret(c, c.passwordSecret, true);
   if (!password && cluster) throw new Error('Existing CI cluster has no saved administrator password; refusing to replace credentials.');
   if (!password) { password = randomBytes(36).toString('base64url'); mask(password); putSecret(c, c.passwordSecret, password); }
   const values = {
     location: c.location, clusterName: c.cluster, parameterGroupName: parameterGroup,
     administratorLogin: 'pilotswarmci', administratorLoginPassword: password,
-    vCores: 4, replicaCount: 1, clusterCreate: !cluster,
-    parameterGroupCreate: !existingGroup, maxConnections: CI_MAX_CONNECTIONS,
+    vCores: 4, nodeCount: 1, poolCreate: !pool, maxConnections: CI_MAX_CONNECTIONS,
   };
   const file = join(process.env.RUNNER_TEMP, 'ci-hdb-parameters.json');
   try {
@@ -84,7 +85,7 @@ async function provision(c) {
   await ensureHorizonDbParameterGroup({ HORIZONDB_ENABLED: 'true', SUBSCRIPTION_ID: c.subscription, RESOURCE_GROUP: c.resourceGroup, HORIZONDB_CLUSTER_NAME: c.cluster, HORIZONDB_PARAMETER_GROUP_NAME: parameterGroup }, {
     runFn: (_command, args) => ({ stdout: az(args), status: 0 }),
   });
-  const fqdn = resource(c, 'clusters', c.cluster).properties.fullyQualifiedDomainName;
+  const fqdn = endpointHost(c);
   mask(fqdn);
   if (!fqdn) throw new Error('CI database has no endpoint.');
   const url = new URL(`postgresql://${fqdn}/postgres?sslmode=require&uselibpqcompat=true`);
@@ -105,7 +106,7 @@ async function open(c) {
   const baseline = JSON.parse(process.env.CI_TEST_ENV_JSON || '{}');
   if (!baseline.GITHUB_TOKEN) throw new Error('CI_TEST_ENV_JSON requires a Copilot-enabled GITHUB_TOKEN.');
   const url = getSecret(c, c.urlSecret);
-  const expected = resource(c, 'clusters', c.cluster).properties.fullyQualifiedDomainName;
+  const expected = endpointHost(c);
   if (new URL(url).hostname !== expected) throw new Error('CI connection does not match the dedicated cluster.');
   const config = { ...baseline, DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/durable_copilot',
     PLAIN_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/durable_copilot',

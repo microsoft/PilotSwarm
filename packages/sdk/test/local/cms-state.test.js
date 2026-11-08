@@ -187,13 +187,14 @@ async function testRenameTruncatesLongTitle(env) {
         await withClient(env, async (client) => {
             const session = await client.createSession(ONEWORD_CONFIG);
 
-            const longTitle = "A".repeat(100);
+            // A person's title keeps up to 100 characters (MAX_SESSION_TITLE_LENGTH).
+            const longTitle = "A".repeat(150);
             await mgmt.renameSession(session.sessionId, longTitle);
 
             const row = await getSession(catalog, session.sessionId);
             console.log(`  Title length: ${row?.title?.length}`);
-            assertGreaterOrEqual(60, row.title.length, "title truncated to <= 60 chars");
-            assertEqual(row.title, "A".repeat(60), "title is first 60 chars");
+            assertGreaterOrEqual(100, row.title.length, "title truncated to <= 100 chars");
+            assertEqual(row.title, "A".repeat(100), "title is first 100 chars");
         });
     } finally {
         await mgmt.stop();

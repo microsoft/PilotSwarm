@@ -136,7 +136,7 @@
 .ps-moa-map-list button { flex: none; overflow-wrap: anywhere; min-height: 44px; text-align: left; padding: 8px; border: 1px solid var(--ps-border); color: var(--ps-foreground); background: var(--ps-background); font: inherit; }
 .ps-moa-map-list button[aria-current] { border-color: var(--ps-selection-background); box-shadow: inset 3px 0 var(--ps-selection-background); }
 .ps-moa-panel[hidden] { display: none !important; }
-@media (max-width: 920px) {
+@media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-moa-workspace.is-mobile { display: flex !important; }
   .ps-moa-workspace.is-mobile[hidden] { display: none !important; }
   .ps-moa-workspace.is-mobile .ps-moa-layout { padding: 0; }
@@ -173,7 +173,7 @@
 .ps-moa-dialog > .ps-moa-session-picker { flex: 1 1 0; height: auto; min-height: 0; }
 .ps-moa-session-picker > .ps-panel-header, .ps-moa-picker-detail { flex-shrink: 0; }
 .ps-moa-session-picker .ps-panel-body > .ps-session-list { min-height: 0; flex: 1 1 0; }
-@media (max-width: 920px) {
+@media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-moa-dialog:has(.ps-moa-session-picker) { height: calc(var(--ps-moa-viewport-height, 100dvh) - 16px); }
   .ps-moa-dialog { max-height: calc(var(--ps-moa-viewport-height, 100dvh) - 16px); }
   .ps-moa-session-picker .ps-session-detail-box { max-height: min(100px, calc(var(--ps-moa-viewport-height, 100dvh) * .15)); }
@@ -232,7 +232,7 @@
   .ps-moa-panel > header > .ps-moa-split-action { display: none; }
   .ps-moa-initial-panel > header > .ps-moa-split-action { display: inline-flex; }
 }
-@media (max-width: 920px) {
+@media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-moa-dialog .ps-moa-dashboard-item .ps-moa-icon-button { width: 44px; height: 44px; }
   .ps-moa-dialog .ps-moa-dashboard-picker > .ps-moa-icon-button { width: 44px; height: 44px; }
 }
@@ -314,3 +314,25 @@
 .ps-moa-stage > .ps-moa-divider::before { content: ""; position: absolute; inset: 0 -6px; }
 .ps-moa-stage > .ps-moa-divider[aria-orientation="horizontal"]::before { inset: -6px 0; }
 .ps-moa-stage > .ps-moa-divider:hover, .ps-moa-stage > .ps-moa-divider:focus-visible { background: var(--ps-selection-background); }
+
+/* The session picker (MoA panels, and the maximized chat's session selector
+   on a phone) uses the same list as the phone's session slide-over, on every
+   screen: rows two points larger and a little taller, and sub-agent chevrons.
+   Long titles end in an ellipsis rather than panning sideways (see
+   SessionPane). It fills the dialog rather than the phone pane's capped
+   strip. The dialog is portalled to <body>, so the MoA workspace's 44px phone
+   button rule never reached its + and ×; they are sized here. */
+.ps-moa-session-picker.is-phone-picker { max-height: none; }
+.ps-moa-session-picker.is-phone-picker .ps-session-list-button {
+  font-size: calc(var(--ps-font-size-dense) + 2px);
+  padding-block: 6px;
+}
+.ps-moa-session-picker.is-phone-picker > .ps-panel-header .ps-panel-actions button {
+  min-width: 44px;
+  min-height: 44px;
+  font-size: 22px;
+}
+.ps-moa-session-picker.is-phone-picker > .ps-panel-header .ps-panel-actions button svg {
+  width: 22px;
+  height: 22px;
+}

@@ -9,14 +9,14 @@ test('CI rejects the application cluster and shared credentials', () => {
   }
 });
 test('firewall rules are isolated by run and retry; invalid identifiers are rejected', () => {
-  assert.match(firewallUrl(config, '123', '2'), /\/ci-123-2\?api-version=/);
+  assert.match(firewallUrl(config, '123', '2'), /\/clusters\/ci-db\/pools\/DefaultPool\/firewallRules\/ci-123-2\?api-version=2026-10-01-preview$/);
   assert.notEqual(firewallUrl(config, '123', '1'), firewallUrl(config, '124', '1'));
   assert.throws(() => firewallUrl(config, '../app-db', '1'));
 });
 
-test('immutable parameter groups use stable distinct names for the desired settings', () => {
+test('the CI settings group has one stable name per settings revision', () => {
   const name = ciParameterGroupName(config);
-  assert.notEqual(name, config.parameterGroup, 'never update the existing group in place');
+  assert.notEqual(name, config.parameterGroup, 'the revisioned name never reuses the base group');
   assert.equal(name, ciParameterGroupName({ ...config }), 'retries reuse the same revision');
   assert.notEqual(name, ciParameterGroupName({ ...config, parameterGroup: 'another-base' }));
   const long = ciParameterGroupName({ ...config, parameterGroup: 'x'.repeat(90) });

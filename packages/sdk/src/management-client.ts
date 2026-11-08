@@ -90,7 +90,7 @@ import { ProviderError } from "./provider-store.js";
 import type { BudgetPeriod } from "./provider-budgets.js";
 import { wakeProviderPausedSessions } from "./provider-wake.js";
 import { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
-import { FeatureFlagError, resolveFeatureDefinition } from "./feature-flags.js";
+import { FeatureFlagError, isAlwaysOn, resolveFeatureDefinition } from "./feature-flags.js";
 import {
     TURN_CONTROL_EVENT_TYPES,
     TURN_CONTROL_OUTCOME_POLL_MS,
@@ -182,7 +182,9 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, Client } = require("duroxide");
 
 const STATUS_WAIT_SLICE_MS = 10_000;
-const MAX_SESSION_TITLE_LENGTH = 60;
+// The longest title a person may give a session. A named agent's prefix
+// ("Agent Smith: ") is extra: it never shortens what the person typed.
+const MAX_SESSION_TITLE_LENGTH = 100;
 const SESSION_COMMAND_SETTLE_TIMEOUT_MS = 65_000;
 const SESSION_STATE_POLL_MS = 500;
 const DEFAULT_SYSTEM_AGENT_DEHYDRATE_THRESHOLD = 30;
@@ -258,32 +260,54 @@ function createAbortError(message: string, reason?: unknown): Error {
 }
 
 function normalizeSessionTitleInput(title: string, maxLength = MAX_SESSION_TITLE_LENGTH): string {
-    return String(title || "").trim().slice(0, maxLength);
+    const trimmed = String(title || "").trim();
+    if (trimmed.length <= maxLength) return trimmed;
+    // Never cut between the two halves of a surrogate pair (emoji and other
+    // characters outside the BMP): a lone half is not valid text.
+    const end = /[\uD800-\uDBFF]/u.test(trimmed[maxLength - 1]) ? maxLength - 1 : maxLength;
+    return trimmed.slice(0, end).trimEnd();
 }
 
-function getNamedAgentTitlePrefix(session: { agentId?: string | null; title?: string | null } | null | undefined): string | null {
+/**
+ * The named-agent prefix a rename keeps. A named agent's session is titled
+ * "<agent name>: <title>" when it is created or spawned, so the prefix is the
+ * text before the first ": ". When the caller knows the agent's display
+ * titles (`agentTitles`, from the agent catalog), the longest one the title
+ * starts with wins instead, so a display title that itself contains ": " is
+ * kept whole. A rename never drops a prefix: without catalog data (an SDK or
+ * MCP caller, an agent that is not creatable, a failed lookup) it keeps
+ * exactly what main kept.
+ */
+export function getNamedAgentTitlePrefix(
+    session: { agentId?: string | null; title?: string | null } | null | undefined,
+    agentTitles: readonly string[] = [],
+): string | null {
     if (!session?.agentId) return null;
     const currentTitle = String(session.title || "").trim();
-    if (!currentTitle) return null;
-    const separatorIndex = currentTitle.indexOf(": ");
-    if (separatorIndex > 0) {
-        return currentTitle.slice(0, separatorIndex).trim() || null;
+    let known: string | null = null;
+    for (const candidate of agentTitles) {
+        const title = String(candidate || "").trim();
+        if (title && currentTitle.startsWith(`${title}: `) && (!known || title.length > known.length)) known = title;
     }
-    return null;
+    if (known) return known;
+    const separatorIndex = currentTitle.indexOf(": ");
+    if (separatorIndex <= 0) return null;
+    return currentTitle.slice(0, separatorIndex).trim() || null;
 }
 
-function buildStoredSessionTitle(
+export function buildStoredSessionTitle(
     session: { agentId?: string | null; title?: string | null } | null | undefined,
     requestedTitle: string,
+    agentTitles: readonly string[] = [],
 ): string {
-    const normalizedTitle = normalizeSessionTitleInput(requestedTitle);
-    const prefix = getNamedAgentTitlePrefix(session);
-    if (!prefix) return normalizedTitle;
-
-    const prefixLabel = `${prefix}: `;
-    const maxSuffixLength = Math.max(0, MAX_SESSION_TITLE_LENGTH - prefixLabel.length);
-    if (maxSuffixLength <= 0) return prefix.slice(0, MAX_SESSION_TITLE_LENGTH);
-    return `${prefixLabel}${normalizedTitle.slice(0, maxSuffixLength)}`;
+    const prefix = getNamedAgentTitlePrefix(session, agentTitles);
+    let requested = String(requestedTitle || "").trim();
+    // A caller that sends the whole stored title back ("Agent Smith: old")
+    // must not get the agent's name twice.
+    if (prefix && requested.startsWith(`${prefix}: `)) requested = requested.slice(prefix.length + 2);
+    const normalizedTitle = normalizeSessionTitleInput(requested);
+    if (!normalizedTitle) return "";
+    return prefix ? `${prefix}: ${normalizedTitle}` : normalizedTitle;
 }
 
 function throwIfAborted(signal: AbortSignal | undefined, message: string): void {
@@ -1600,9 +1624,11 @@ export class PilotSwarmManagementClient {
     }
 
     /**
-     * Rename a session. Updates the title in CMS.
+     * Rename a session. Updates the title in CMS. A named agent session keeps
+     * its agent-name prefix; pass the agent's catalog title in
+     * `options.agentTitles` so a custom display title is recognized as one.
      */
-    async renameSession(sessionId: string, title: string): Promise<void> {
+    async renameSession(sessionId: string, title: string, options: { agentTitles?: readonly string[] } = {}): Promise<void> {
         this._ensureStarted();
         const session = await this._catalog!.getSession(sessionId);
         if (!session) {
@@ -1612,7 +1638,7 @@ export class PilotSwarmManagementClient {
             throw systemSessionProtectedError("rename");
         }
 
-        const storedTitle = buildStoredSessionTitle(session, title);
+        const storedTitle = buildStoredSessionTitle(session, title, options.agentTitles ?? []);
         if (!storedTitle) {
             throw new Error("Title cannot be empty");
         }
@@ -2655,6 +2681,8 @@ export class PilotSwarmManagementClient {
 
     /** Resolve `sessions.steering` for the caller's viewer (cluster scope without one). */
     private async _steeringEnabled(caller: TurnControlCaller | undefined): Promise<boolean> {
+        // Always on (code-owned): no catalog read; stored settings do not apply.
+        if (isAlwaysOn(STEERING_FEATURE_KEY)) return true;
         const features = this._catalog?.features;
         if (!features) return false;
         const snapshot = await features.snapshot([STEERING_FEATURE_KEY]);

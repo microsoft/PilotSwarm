@@ -32,11 +32,18 @@ async function fixture(page) {
             if (Array.isArray(json.result)) json.result = json.result.map(system);
             else if (json.result?.sessions) json.result.sessions = json.result.sessions.map(system);
             else json.result = system(json.result);
-            return route.fulfill({ json });
+            // The browser may drop the request while it is fetched here (a
+            // refresh replaces it); answering it then is moot, not a failure.
+            try { return await route.fulfill({ json }); } catch (error) {
+                if (!/Route is already handled/.test(error.message)) throw error;
+            }
+            return undefined;
         }
         return route.fallback();
     });
     await page.goto(`${base}/?session=${sid(0)}`);
+    // On a phone the list is a slide-over behind the leftmost toolbar button.
+    if (page.viewportSize().width < 921) await page.locator('.ps-toolbar.is-mobile').getByRole('button', { name: 'Sessions', exact: true }).click();
     await expect(page.locator(`[data-session-id="${sid(1)}"]`).first()).toBeVisible();
     return errors;
 }

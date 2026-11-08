@@ -2435,8 +2435,9 @@ export function registerActivities(
 
         /**
          * Parent controls of a child's running turn: this agent is the
-         * control's sender, and sessions.steering resolves for this
-         * session's owner, as the Web API resolves it for a person.
+         * control's sender, with this session's owner as the viewer, as the
+         * Web API does for a person. sessions.steering is always on, so the
+         * management client passes steeringAllowed=true.
          */
         const parentControlCaller = async (): Promise<import("./types.js").TurnControlCaller> => {
             const owner = catalog

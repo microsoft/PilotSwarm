@@ -2,7 +2,7 @@ import React from "react";
 import { CompactViewNavigation } from "../navigation/CompactViewNavigation.jsx";
 import { createPortal } from "react-dom";
 import { SessionHeaderStatus, ChatPane, CanvasFrame, SessionPane, SessionComposer, SessionDetailBox, ScopedModalLayer as ModalLayer, ControllerContext, createWebPilotSwarmController, useControllerSelector } from "pilotswarm/ui-react";
-import { canvasKey, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOA_BREAKPOINT, selectSessionRows } from "pilotswarm/ui-core";
+import { randomUuid, canvasKey, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOBILE_MEDIA_QUERY, matchesMobileViewport, selectSessionRows, sessionDisplayTitle } from "pilotswarm/ui-core";
 import "./moa.css";
 import { panelRects, clockwisePanels, canSwipeFrom } from "./geometry.js";
 import { paneLayout, boxStyle, emptySessionPanes, MOA_PANE_GAP_PX } from "./pane-layout.js";
@@ -210,10 +210,10 @@ function DashboardPreview({ dashboard }) {
 }
 
 function useDesktop() {
-    const [desktop, setDesktop] = React.useState(() => window.innerWidth > MOA_BREAKPOINT);
+    const [desktop, setDesktop] = React.useState(() => !matchesMobileViewport());
     React.useEffect(() => {
-        const media = window.matchMedia(`(min-width: ${MOA_BREAKPOINT + 1}px)`);
-        const update = () => setDesktop(media.matches); update();
+        const media = window.matchMedia(MOBILE_MEDIA_QUERY);
+        const update = () => setDesktop(!media.matches); update();
         media.addEventListener("change", update); return () => media.removeEventListener("change", update);
     }, []);
     return desktop;
@@ -265,7 +265,7 @@ function Modal({ title, onClose, children, hideHeader = false, dismissible = tru
     }, []);
     React.useEffect(() => {
         const previous = document.activeElement;
-        ((window.innerWidth > MOA_BREAKPOINT && ref.current?.querySelector("input:not(:disabled)")) || ref.current?.querySelector("button:not(:disabled),select:not(:disabled)"))?.focus({ preventScroll: true });
+        ((!matchesMobileViewport() && ref.current?.querySelector("input:not(:disabled)")) || ref.current?.querySelector("button:not(:disabled),select:not(:disabled)"))?.focus({ preventScroll: true });
         const key = e => {
             if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeRef.current(); }
             if (e.key !== "Tab") return;
@@ -298,7 +298,9 @@ function SessionPicker({ controller, onChoose, onClose, onCreate, initial }) {
     const session = state.sessions.byId[selected];
     const canvases = [1, 2, 3, 4, 5].map(slot => ({ slot, ...state.canvas?.bySessionId?.[canvasKey(selected, slot)] })).filter(c => c.latestRev > 0 && c.sizeBytes !== 0);
     return <Modal title="Sessions" onClose={onClose} hideHeader>
-        <SessionPane controller={controller} structuredRows showDetailBox panelClassName="ps-moa-session-picker" actions={<><button className="ps-mini-button" aria-label="Close dialog" onClick={onClose}>×</button></>} selection={{ onCreate, sessionId: selected, query, onQuery: setQuery, onSelect: id => { setSelected(id); setKind("chat"); } }} />
+        {/* The picker's list is the phone slide-over's list, on every screen:
+            the same rows and sub-agent chevrons. */}
+        <SessionPane controller={controller} showDetailBox rowDisclosure panelClassName="ps-moa-session-picker ps-mobile-session-pane is-phone-picker" actions={<><button className="ps-mini-button" aria-label="Close dialog" onClick={onClose}>×</button></>} selection={{ onCreate, sessionId: selected, query, onQuery: setQuery, onSelect: id => { setSelected(id); setKind("chat"); } }} />
         <footer className="ps-moa-picker-detail"><div>{session?.title || (selected ? selected : "Select a session")}</div>
             <div className="ps-moa-row"><label htmlFor="moa-content-kind">Show</label><select id="moa-content-kind" value={kind} onChange={e => setKind(e.target.value)} disabled={!selected}>
                 <option value="chat">Session chat</option>{canvases.map(c => <option key={c.slot} value={c.slot}>Canvas {c.slot}{c.name ? ` · ${c.name}` : ""}</option>)}
@@ -690,11 +692,11 @@ function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout
         displayTree = visit(displayTree);
     }
     const geometry = paneLayout(displayTree);
-    const titleFor = node => `${node?.type === "canvas" ? `Canvas ${node.slot} · ` : ""}${node?.type === "empty" ? "Empty panel" : state.sessions.byId[node?.sessionId]?.title || "Session"}`;
+    const titleFor = node => `${node?.type === "canvas" ? `Canvas ${node.slot} · ` : ""}${node?.type === "empty" ? "Empty panel" : (state.sessions.byId[node?.sessionId] && sessionDisplayTitle(state.sessions.byId[node.sessionId], state.agentTitles)) || "Session"}`;
     const split = (node, direction) => {
         if (nodes.length >= MOA_MAX_PANELS) { setError(`A MoA supports up to ${MOA_MAX_PANELS} panels.`); return; }
         const empty = emptyMoaPanel();
-        replace(node.id, { id: crypto.randomUUID(), type: "split", direction, ratio: 50, first: node.id ? node : emptyMoaPanel(), second: empty }, empty.id); setMenu(null);
+        replace(node.id, { id: randomUuid(), type: "split", direction, ratio: 50, first: node.id ? node : emptyMoaPanel(), second: empty }, empty.id); setMenu(null);
     };
     const zoom = (node, artifact = null) => {
         setError("");
@@ -818,7 +820,7 @@ function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout
     const dashboardNav = <DashboardTabs value={value} onSelect={id => update({ ...value, activeDashboardId: id })} onPicker={() => setDashboardPicker(true)} onAdd={addDashboard} onEdit={() => setDashboardEdit({ name: layout.name })} onReorder={(id, index) => update(moveMoaDashboard(value, id, index))} />;
     function addDashboard() {
         if (value.dashboards.length >= MOA_MAX_DASHBOARDS) return;
-        const id = crypto.randomUUID();
+        const id = randomUuid();
         const names = new Set(value.dashboards.map(d => d.name)); let n = 1; while (names.has(`MoA ${n}`)) n++;
         update({ ...value, activeDashboardId: id, dashboards: [...value.dashboards, { id, name: `MoA ${n}`, tree: null }] });
     }
@@ -865,7 +867,7 @@ function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout
                 <small>Swipe left for the next panel, right for the previous. Canvas: swipe the title bar.</small>
             </div>
         </Modal>}
-        {visible && creating && <CreatePanelSession parent={controller} createTransport={createTransport} onClose={() => { setPicker(creating); setCreating(null); }} onCreated={created => { const target = creating; controller.dispatch({ type: "sessions/merged", session: created }); controller.refreshSessions().catch(() => {}); const next = { id: target.id || crypto.randomUUID(), type: "chat", sessionId: created.sessionId }; replace(target.id, next, next.id); setCreating(null); }} />}
+        {visible && creating && <CreatePanelSession parent={controller} createTransport={createTransport} onClose={() => { setPicker(creating); setCreating(null); }} onCreated={created => { const target = creating; controller.dispatch({ type: "sessions/merged", session: created }); controller.refreshSessions().catch(() => {}); const next = { id: target.id || randomUuid(), type: "chat", sessionId: created.sessionId }; replace(target.id, next, next.id); setCreating(null); }} />}
         {visible && dashboardPicker && <Modal title="MoA dashboards" onClose={() => setDashboardPicker(false)}><div className="ps-moa-dashboard-picker">
             {value.dashboards.map(d => <div className="ps-moa-dashboard-item" key={d.id}><button className="ps-moa-dashboard-choice" aria-current={d.id === layout.id ? "true" : undefined} onClick={() => { setDashboardPicker(false); update({ ...value, activeDashboardId: d.id }); }}><DashboardPreview dashboard={d} /><span>{d.name}<small>{moaLeaves(d.tree).length} panels{d.id === layout.id ? " · Active" : ""}</small></span></button><IconButton label={`Edit dashboard ${d.name}`} icon="controls" onClick={() => { setDashboardPicker(false); setDashboardEdit({ id: d.id, name: d.name }); }} /></div>)}
             <IconButton label="Add MoA dashboard" icon="add" disabled={value.dashboards.length >= MOA_MAX_DASHBOARDS} onClick={addDashboard} />
@@ -883,7 +885,7 @@ function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout
             <p>Clear “{layout.name}”? This removes the panels from this dashboard. Your sessions and canvases stay intact.</p>
             <div className="ps-moa-row"><IconButton label="Cancel clear" icon="close" onClick={() => setClearing(false)} /><IconButton label="Confirm clear layout" icon="clear" onClick={() => { saveLayout({ tree: null, focusedPanelId: null }); setClearing(false); setError(""); }} /></div>
         </div></Modal>}
-        {visible && picker && <SessionPicker controller={controller} initial={picker} onCreate={() => { setCreating(picker); setPicker(null); }} onClose={closePicker} onChoose={binding => { const next = { id: picker.id || crypto.randomUUID(), ...binding }; replace(picker.id, next, next.id); setPicker(null); }} />}
+        {visible && picker && <SessionPicker controller={controller} initial={picker} onCreate={() => { setCreating(picker); setPicker(null); }} onClose={closePicker} onChoose={binding => { const next = { id: picker.id || randomUuid(), ...binding }; replace(picker.id, next, next.id); setPicker(null); }} />}
         {visible && menu && <Modal title="Session control panel" onClose={closeMenu}><div className="ps-moa-control-panel">
             <p className="ps-moa-control-title">{state.sessions.byId[menu.sessionId]?.title || "Empty panel"}</p>
             {menu.type !== "empty" && <section aria-label="Session actions"><h3>Session</h3><div className="ps-moa-control-actions">

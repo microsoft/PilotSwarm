@@ -4,14 +4,18 @@ import { assertNativeEvaluationSetup } from "../lib/native-delegation-setup.mjs"
 import { delegationCatalogDefinitions } from "../lib/native-delegation-catalog.mjs";
 
 const enabled = { featureEnabled: true, canAdmitNativeTask: true, agentNames: ["swarm-explore", "swarm-task"] };
-const disabled = { featureEnabled: false, canAdmitNativeTask: false, agentNames: [] };
+// copilot.native_tasks is always on: an OFF run disables native tasks in the session manager, not the flag.
+const disabled = { featureEnabled: true, canAdmitNativeTask: false, agentNames: [] };
+const flagOff = { featureEnabled: false, canAdmitNativeTask: true, agentNames: ["swarm-explore", "swarm-task"] };
 
-test("evaluation verifies real native admission and SDK profiles for both flag states", () => {
+test("evaluation verifies real native admission and SDK profiles for both modes", () => {
     assertNativeEvaluationSetup("sync", enabled);
     assertNativeEvaluationSetup("off", disabled);
 });
 test("missing feature policy cannot silently turn an ON evaluation into another OFF run", () => {
-    assert.throws(() => assertNativeEvaluationSetup("sync", disabled), /Feature cache/);
+    assert.throws(() => assertNativeEvaluationSetup("sync", flagOff), /Feature cache/);
+    assert.throws(() => assertNativeEvaluationSetup("off", { ...disabled, featureEnabled: false }), /Feature cache/);
+    assert.throws(() => assertNativeEvaluationSetup("sync", disabled), /Managed session/);
     assert.throws(() => assertNativeEvaluationSetup("sync", { ...enabled, canAdmitNativeTask: false }), /Managed session/);
     assert.throws(() => assertNativeEvaluationSetup("sync", { ...enabled, agentNames: [] }), /SDK profile/);
 });

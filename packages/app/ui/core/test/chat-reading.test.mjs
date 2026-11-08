@@ -69,8 +69,9 @@ test("Appearance is a settings section, and only the main desktop chat opts in",
 
     const webApp = read("../../react/src/web-app.js");
     const moa = read("../../../web/src/moa/MoaWorkspace.jsx");
-    assert.match(webApp, /ChatPane, \{ controller, readingColumn: true \}/);
-    assert.equal((webApp.match(/readingColumn: true/g) || []).length, 1);
+    // The main desktop chat opts in, except in zen, which uses the full pane.
+    assert.match(webApp, /ChatPane, \{ controller, readingColumn: !zenActive \}/);
+    assert.equal((webApp.match(/readingColumn: (?!false)/g) || []).length, 1);
     assert.doesNotMatch(moa, /readingColumn/);
     assert.match(webApp, /readingColumn && storedReading\?\.on/);
     assert.doesNotMatch(webApp, /Same as before|Desktop chat only/);

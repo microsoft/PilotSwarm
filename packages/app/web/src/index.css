@@ -1,3 +1,40 @@
+/* JetBrains Mono ships with the portal, so the mono face is the same on every
+   device instead of whatever ui-monospace resolves to (Consolas on Windows,
+   DejaVu on Linux, SF Mono on Apple). One variable file per subset covers
+   weights 100-800. SIL OFL 1.1; the full text ships in THIRD-PARTY-NOTICES. */
+@font-face {
+  font-family: "PS JetBrains Mono";
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("./assets/fonts/jetbrains-mono/jetbrains-mono-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "PS JetBrains Mono";
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("./assets/fonts/jetbrains-mono/jetbrains-mono-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "PS JetBrains Mono";
+  font-style: italic;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("./assets/fonts/jetbrains-mono/jetbrains-mono-italic-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "PS JetBrains Mono";
+  font-style: italic;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("./assets/fonts/jetbrains-mono/jetbrains-mono-italic-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 :root {
   --ps-page-background: #0d1117;
   --ps-page-foreground: #f0f6fc;
@@ -196,7 +233,7 @@
 
 .ps-native-task-activity { margin: 12px 0 0; padding-left: 18px; color: var(--ps-chat-card-muted); overflow-wrap: anywhere; }
 .ps-native-tasks-more { color: var(--ps-foreground); background: transparent; border: 0; border-top: 1px solid var(--ps-border); padding: 9px 13px; font: inherit; cursor: pointer; width: 100%; text-align: left; }
-@media (max-width: 600px) {
+@media (max-width: 600px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-native-task > summary { grid-template-columns: 16px minmax(0, 1fr) 12px; gap: 7px; padding: 11px 10px; }
   .ps-native-task-meta { grid-column: 2; grid-row: 2; flex-direction: row; flex-wrap: wrap; text-align: left; }
   .ps-native-task-chevron { grid-column: 3; grid-row: 1; }
@@ -219,7 +256,7 @@ body,
   height: 100%;
   background: var(--ps-page-background);
   color: var(--ps-page-foreground);
-  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+  font-family: var(--ps-mono);
   font-size: var(--ps-font-size-base);
   line-height: var(--ps-line-height-base);
 }
@@ -275,6 +312,16 @@ button,
 input,
 textarea {
   font: inherit;
+}
+
+/* The user-agent sheet gives these the bare generic "monospace", which is the
+   browser's own default face, not the portal's. Point them at the bundled one;
+   any theme rule that names a font is more specific and still wins. */
+pre,
+code,
+kbd,
+samp {
+  font-family: var(--ps-mono);
 }
 
 button {
@@ -1486,7 +1533,7 @@ body.is-resizing-pane-y iframe {
 .ps-chat-preserve-block.is-splash-mobile {
   display: none;
 }
-@media (max-width: 920px) {
+@media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-chat-preserve-block.is-splash-desktop {
     display: none;
   }
@@ -1511,7 +1558,7 @@ body.is-resizing-pane-y iframe {
    that does not fit wraps (garbles) like it used to — agents that care ship
    a splashMobile variant, which the renderer swaps in before this fallback
    matters. */
-@media (max-width: 920px) {
+@media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-chat-preserve-block {
     overflow-x: hidden;
   }
@@ -1579,7 +1626,7 @@ body.is-resizing-pane-y iframe {
   padding: 8px 10px;
   border-left: 2px solid var(--ps-accent);
   color: var(--ps-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--ps-mono);
   font-size: 0.96rem;
   line-height: 1.5;
 }
@@ -1587,6 +1634,24 @@ body.is-resizing-pane-y iframe {
 .ps-sequence-turn-detail-label {
   color: var(--ps-accent);
 }
+
+/* The Manage dialog's fixed agent-name prefix, in front of the title field. */
+.ps-manage-title-prefix {
+  flex: none;
+  align-self: center;
+  color: var(--ps-muted);
+  white-space: nowrap;
+}
+
+/* The rename box's character count: quiet, right-aligned under the field. */
+.ps-modal-input-count {
+  margin: 4px 2px 0;
+  text-align: right;
+  color: var(--ps-muted);
+  font-size: 0.86rem;
+  font-variant-numeric: tabular-nums;
+}
+.ps-modal-input-count.is-at-limit { color: var(--ps-warning, #d29922); }
 
 .ps-scroll-panel.is-wrapped .ps-line,
 .ps-modal-details .ps-line,
@@ -1926,9 +1991,12 @@ body.is-resizing-pane-y iframe {
 .ps-chat-panel .ps-native-task {
   background: transparent;
 }
+/* The card is a button, so width:auto sizes it to its content: a long file
+   name made it wider than a phone's chat, and the whole chat scrolled
+   sideways. Cap it at the line, less its margins, so the title ellipsizes. */
 .ps-chat-panel .ps-artifact-card {
   width: auto;
-  max-width: 36rem;
+  max-width: min(36rem, calc(100% - 28px));
   margin: 8px 14px;
   padding: 7px 12px;
   border: 0;
@@ -1958,7 +2026,7 @@ body.is-resizing-pane-y iframe {
   color: var(--ps-chat-card-accent, var(--ps-accent));
 }
 .ps-activity-run-footer { padding: 7px 12px 8px; color: var(--ps-chat-card-muted); font-size: var(--ps-font-size-dense); }
-@media (max-width: 620px) {
+@media (max-width: 620px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-activity-run-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto 12px; gap: 5px 8px; }
   .ps-activity-run-latest { grid-column: 1 / 2; grid-row: 2; }
   .ps-activity-run-status { grid-column: 2; grid-row: 1; }
@@ -2301,7 +2369,7 @@ body.is-resizing-pane-y iframe {
 .ps-session-search-trigger { display: none; }
 
 /* Mobile search and sorting expand together in every session-list context. */
-@media (max-width: 920px) {
+@media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-session-pane .ps-panel-body { position: relative; overflow: hidden; }
   .ps-session-pane .ps-session-find-controls:not(:has(.ps-session-search.is-open)) { border: 0; }
   .ps-session-pane .ps-session-find-controls:not(:has(.ps-session-search.is-open)) .ps-session-sort-controls { display: none; }
@@ -2445,6 +2513,44 @@ body.is-resizing-pane-y iframe {
   flex: 0 0 auto;
   padding-inline-start: 4px;
   white-space: nowrap;
+}
+
+/* Sub-agent chevron (phone slide-over). It stands in for the row's status
+   mark: the same box and margin as the dot (the ring, on a nested row), so a
+   parent's title lines up with its siblings and its mark stays by the guide
+   rail. The glyph is drawn larger than the box, in the status colour, and
+   the tap target is larger again. */
+.ps-session-row-disclosure {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  vertical-align: 1px;
+  color: var(--ps-muted);
+  cursor: pointer;
+}
+.ps-session-row-disclosure.is-node {
+  width: 7px;
+  height: 7px;
+}
+.ps-session-row-disclosure::before {
+  content: "";
+  position: absolute;
+  inset: -12px -8px -12px -12px;
+}
+.ps-session-row-disclosure svg {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  transform: translate(-50%, -50%);
+  transition: transform 140ms ease;
+}
+.ps-session-row-disclosure.is-open svg {
+  transform: translate(-50%, -50%) rotate(90deg);
 }
 
 /* Right-hand context % — never shrinks, tabular so it forms a column. */
@@ -3648,6 +3754,17 @@ body.is-resizing-pane-y iframe {
     calc(var(--ps-reading-width, 720px) - var(--ps-reading-edge))
   );
 }
+/* The column moves tool runs to the text edge (above). Tiles inside a
+   message, an artifact card in its line or a Thought in an answer, keep the
+   14px transcript indent unless they move too, and then sit 14px to the
+   right of the runs. */
+.ps-chat-panel.is-reading .ps-scroll-panel > * .ps-artifact-card,
+.ps-chat-panel.is-reading .ps-scroll-panel > * .is-live-reasoning {
+  margin-left: 0;
+}
+.ps-chat-panel.is-reading .ps-scroll-panel > * .ps-artifact-card {
+  max-width: min(36rem, calc(100% - 14px));
+}
 .ps-chat-panel.is-reading .ps-panel-body {
   position: relative;
 }
@@ -3681,6 +3798,13 @@ body.is-resizing-pane-y iframe {
 @container reading (max-width: calc(var(--ps-reading-width, 720px) + var(--ps-reading-pad, 0px) + 36px)) {
   .ps-panel-body::after {
     content: none;
+  }
+}
+/* A pane this narrow is far below any reading width: the 36px gap before the
+   column's edge only takes room from the text and the composer. */
+@container reading (max-width: 480px) {
+  .ps-chat-panel.is-reading > * {
+    --ps-reading-edge: 0px;
   }
 }
 
@@ -4410,7 +4534,7 @@ body.is-resizing-pane-y iframe {
   border-color: color-mix(in srgb, var(--ps-modal-selected-border) 70%, var(--ps-modal-border));
 }
 
-@media (max-width: 920px) {
+@media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   :root {
     /* Phones step the scale down one notch, keeping the same proportions.
        Moves with the base ramp above — otherwise raising the desktop scale
@@ -4926,7 +5050,7 @@ body.is-resizing-pane-y iframe {
    same-specificity base rule written later — which is exactly what happened on
    the first attempt at this fix: the svh ceiling shipped as dead CSS while
    looking correct in the source. */
-@media (max-width: 920px) {
+@media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-share-overlay {
     padding: 12px;
     /* The home-indicator strip is not part of svh on iOS. */
@@ -5309,7 +5433,7 @@ body.is-resizing-pane-y iframe {
    Kept below the mobile breakpoint: there the session list is collapsed, so
    the header is the only thing naming the session you are in. The TUI is a
    separate renderer and is unaffected by any of this. */
-@media (min-width: 921px) {
+@media (min-width: 921px) and (orientation: portrait), (min-width: 921px) and (min-height: 501px), (min-width: 1001px), (min-width: 921px) and (pointer: fine), (min-width: 921px) and (pointer: none) {
   .ps-chat-panel > .ps-panel-header {
     display: none;
   }
@@ -5335,7 +5459,7 @@ body.is-resizing-pane-y iframe {
   display: contents;
 }
 
-@media (min-width: 921px) {
+@media (min-width: 921px) and (orientation: portrait), (min-width: 921px) and (min-height: 501px), (min-width: 1001px), (min-width: 921px) and (pointer: fine), (min-width: 921px) and (pointer: none) {
   /* Three columns — brand | centred toolbar | identity — for EVERY desktop
      chat view, not just rich. With the two-column grid the portalled toolbar
      became an ordinary grid item, overflowed, and pushed the identity block
@@ -6587,7 +6711,7 @@ body.is-resizing-pane-y iframe {
 
 /* Narrow panes: tighten the icon buttons so five of them plus a title still
    fit on one row rather than being clipped. */
-@media (max-width: 920px) {
+@media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-panel-header .ps-mini-button,
   .ps-panel-header .ps-toolbar-button,
   .ps-panel-header .ps-icon-button {
@@ -7234,7 +7358,7 @@ body.is-resizing-pane-y iframe {
 /* Below the app's MOBILE_BREAKPOINT (920) the drill-in stack takes over and
    carries the workspace pane — hide it only exactly there, or a 920-960px
    desktop band would lose the file browser entirely. */
-@media (max-width: 919.98px) {
+@media (max-width: 919.98px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
     .ps-admin-workspace { grid-template-columns: 200px minmax(0, 1fr); }
     .ps-admin-workspace .ps-admin-ws { display: none; }
 }
@@ -9050,10 +9174,17 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
    plain `.ps-canvas-layer.is-maximized` loses to it on specificity and the
    canvas would stay a column while claiming to be full screen. */
 .ps-workspace-column-host > .ps-canvas-layer.is-maximized,
-.ps-workspace-column-host.is-split > .ps-canvas-layer.is-maximized {
+.ps-workspace-column-host.is-split > .ps-canvas-layer.is-maximized,
+.ps-workspace-column-host > .ps-artifact-layer.is-maximized,
+.ps-workspace-column-host.is-split > .ps-artifact-layer.is-maximized {
   position: absolute;
   inset: 0;
   z-index: 60;
+}
+/* Panels are translucent in some themes: the reader at full screen must not
+   show the chat and session list through its bar. */
+.ps-workspace-column-host > .ps-artifact-layer.is-maximized {
+  background: var(--ps-page-background, var(--ps-background));
 }
 
 /* While a canvas is maximized its HOST must stop being a positioned ancestor,
@@ -9071,7 +9202,9 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
    squeezed its action buttons out of view — measured, not hypothetical. */
 .ps-toolbar:not(.is-mobile) {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  /* Flank weights are set from the header's geometry (Toolbar), so the
+     middle group sits on the screen's centre; 1fr each without them. */
+  grid-template-columns: var(--ps-toolbar-left, 1fr) auto var(--ps-toolbar-right, 1fr);
   align-items: center;
   width: 100%;
 }
@@ -9105,7 +9238,10 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
    canvas name gives way first (the picker names the canvas too), then the
    picker's drop-down, down to 40px. Its arrows never shrink, so nothing
    slides under the zoom control or out of the header's left side. */
-.ps-toolbar-canvas-slot .ps-toolbar-canvas-rev { flex: 0 1000 auto; }
+.ps-toolbar-canvas-slot .ps-toolbar-canvas-rev { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The controls stay inside their flank: the flank is sized to keep Back /
+   Forward on the screen's centre, and the controls shrink to fit it. */
+.ps-toolbar-side.is-left > .ps-toolbar-canvas-slot { min-width: 0; max-width: 100%; }
 .ps-toolbar-canvas-slot .ps-canvas-slot-controls { flex: 0 1 auto; min-width: 96px; /* two arrows and a 40px drop-down */ }
 .ps-toolbar-canvas-slot .ps-canvas-slot-controls > button { flex-shrink: 0; }
 .ps-toolbar-canvas-slot .ps-canvas-slot-select { flex: 0 1 96px; min-width: 40px; max-width: 96px; }
@@ -9257,42 +9393,113 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   max-height: none;
 }
 
-/* The session list may pan sideways when its rows overflow — long titles and
-   model names are routinely wider than a phone. Vertical stays the primary
-   axis (see useAxisLockedPan: sideways needs a deliberate, mostly
-   horizontal swipe), and rows stop truncating so there is something to reach. */
+/* Phone session list as a slide-over (the toolbar's leftmost button). The
+   chat keeps the whole height; the list keeps its usual look, at full height
+   and 86% of the width, over a dimmed chat. */
+.ps-mobile-workspace.has-session-slideover {
+  position: relative;
+}
+.ps-mobile-session-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  background: color-mix(in srgb, #000 50%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+.ps-mobile-session-backdrop.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ps-mobile-session-slideover {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 31;
+  width: min(86%, 440px);
+  display: flex;
+  min-height: 0;
+  /* Panels are slightly translucent, and some themes more so; over a chat
+     that would show the chat through the list. Give it the page behind. */
+  background: var(--ps-page-background, var(--ps-background));
+  border-radius: var(--ps-radius-sm);
+  transform: translateX(-104%);
+  visibility: hidden;
+  transition: transform 200ms ease, visibility 0s linear 200ms;
+}
+.ps-mobile-session-slideover.is-open {
+  transform: none;
+  visibility: visible;
+  transition: transform 200ms ease, visibility 0s;
+}
+/* The slide-over has the whole height, so its rows can afford to be easier
+   to read and to hit: two points larger, and a little taller. */
+.ps-mobile-session-slideover .ps-session-pane .ps-session-list-button {
+  font-size: calc(var(--ps-font-size-dense) + 2px);
+  padding-block: 6px;
+}
+.ps-mobile-session-slideover > .ps-mobile-session-pane {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  max-height: none;
+  box-shadow: 8px 0 22px color-mix(in srgb, #000 45%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ps-mobile-session-backdrop,
+  .ps-mobile-session-slideover,
+  .ps-mobile-session-slideover.is-open {
+    transition: none;
+  }
+}
+
+/* The phone's session list scrolls natively on both axes: the system's own
+   momentum, at the display's refresh rate, on the compositor. Two nested
+   scrollers, one axis each: the list scrolls up and down, and a track inside
+   it pans long rows sideways. iOS and Android then keep each swipe on one
+   axis themselves, as with a carousel in a feed. (A single two-axis scroller
+   drifts diagonally; the script that once locked the axis ran on the main
+   thread at 60fps and read as choppy.) */
 .ps-mobile-session-pane .ps-action-list {
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  touch-action: pan-x pan-y;
+}
+
+.ps-session-list-track {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
   overflow-x: auto;
+  overflow-y: hidden;
   overscroll-behavior-x: contain;
-  /* iOS draws its overlay scrollbar against the scrolled CONTENT when a
-     container pans both axes, so the indicator slid across the rows as a
-     stray vertical line. The gesture is the affordance on a phone; drop the
-     chrome. */
+  touch-action: pan-x pan-y;
+  /* The gesture is the affordance; a scrollbar would sit below the last row. */
   scrollbar-width: none;
 }
 
-.ps-mobile-session-pane .ps-action-list::-webkit-scrollbar {
+.ps-session-list-track::-webkit-scrollbar {
   display: none;
 }
 
-/* Rows must be intrinsically WIDE for there to be anything to pan to: the
-   default row clamps itself to the pane (max-width:100% on .ps-list-button,
-   ellipsis on the title text), so the list's scrollWidth equalled its
-   clientWidth and a sideways swipe moved nothing. On the phone pane the row
-   grows to its content and the title stops ellipsizing; the list scrolls.
-   Panning stays deliberate — useAxisLockedPan commits each gesture to one
-   axis, and sideways needs a drag that clearly beats vertical. (The old
-   comment here said the hook "keeps touch-action at pan-y"; it never touched
-   touch-action. The pan-y below is CSS's own, and is now only a fallback for
-   if those listeners fail to attach.) */
-.ps-session-pane.ps-mobile-session-pane .ps-action-list .ps-list-button {
+/* Rows grow to their content and share the widest row's width, so a
+   selected row highlights edge to edge wherever the track is panned. */
+.ps-session-list-track-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   width: max-content;
   min-width: 100%;
+}
+
+.ps-session-pane.ps-mobile-session-pane .ps-session-list-track .ps-list-button {
   max-width: none;
 }
 
-.ps-session-pane.ps-mobile-session-pane .ps-action-list .ps-session-row-title__text,
-.ps-session-pane.ps-mobile-session-pane .ps-action-list .ps-line {
+.ps-session-pane.ps-mobile-session-pane .ps-session-list-track .ps-session-row-title__text,
+.ps-session-pane.ps-mobile-session-pane .ps-session-list-track .ps-line {
   overflow: visible;
   text-overflow: clip;
 }
@@ -10050,7 +10257,7 @@ textarea.ps-link-input {
   display: inline-block; vertical-align: middle; width: 40px; margin-left: 4px;
   text-align: right; font-variant-numeric: tabular-nums; color: var(--ps-muted);
 }
-@media (max-width: 640px) {
+@media (max-width: 640px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-budget-system-models th.is-share, .ps-budget-system-models td.is-share { display: none; }
 }
 
@@ -10096,7 +10303,7 @@ textarea.ps-link-input {
    three periods stacked, and every number carries the period it belongs to.
    The label comes from the column via data-period, not from CSS counting
    children, so the two can never drift apart. */
-@media (max-width: 720px) {
+@media (max-width: 720px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-budget-head { padding: 11px 13px; flex-wrap: wrap; gap: 9px; }
   .ps-budget-headline { flex-wrap: wrap; gap: 6px; }
   .ps-budget-head .ps-budget-sub { flex-basis: 100%; }
@@ -10158,7 +10365,7 @@ textarea.ps-link-input {
    specificity, so an override written earlier in the file simply loses to a
    same-specificity base rule written later, and the ceiling ships as dead CSS
    that looks correct in the source. */
-@media (max-width: 920px) {
+@media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-budget-sheet-backdrop {
     padding: 12px;
     /* The home-indicator strip is not part of svh on iOS. */
@@ -10364,7 +10571,7 @@ textarea.ps-link-input {
 .ps-summary-picker__row:hover { background: color-mix(in srgb, var(--ps-border) 40%, transparent); border-radius: 4px; }
 .ps-summary-picker__name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
 .ps-summary-picker__empty { color: var(--ps-muted); padding: 6px 8px; font-size: 12px; }
-@media (max-width: 720px) { .ps-summary__kpis { grid-template-columns: 1fr; } }
+@media (max-width: 720px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) { .ps-summary__kpis { grid-template-columns: 1fr; } }
 
 /* The split row under a selected provider or model row: what each of its
    three used figures is made of. Quiet on purpose — the row above carries
@@ -10463,7 +10670,13 @@ textarea.ps-link-input {
 .ps-feature-user label { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
 .ps-feature-user-identity { display: flex; flex-wrap: wrap; gap: .35rem 1rem; overflow-wrap: anywhere; }
 .ps-feature-explanation { color: var(--ps-muted); }
-@media (max-width: 600px) {
+/* Always-on flags: a greyed, disabled switch with the notice; nothing to edit. */
+.ps-feature-flag.is-always-on { color: var(--ps-muted); }
+.ps-feature-flag.is-always-on h3, .ps-feature-flag.is-always-on strong { color: var(--ps-muted); }
+.ps-feature-always-on-switch { display: inline-flex; align-items: center; gap: .4rem; color: var(--ps-muted); cursor: not-allowed; }
+.ps-feature-flag.is-always-on input:disabled { opacity: .6; cursor: not-allowed; accent-color: var(--ps-muted); }
+.ps-feature-always-on { margin: .5rem 0 0; font-style: italic; }
+@media (max-width: 600px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-feature-flags-panel { padding: .7rem; }
   .ps-feature-flag { padding: .8rem; }
   .ps-feature-choices { flex-direction: column; }
@@ -10477,6 +10690,9 @@ textarea.ps-link-input {
 .ps-chat-panel .ps-panel-bottom-sticky.is-reserved { min-height: calc(1.24rem + 13px); flex-shrink: 0; }
 .ps-prompt-shell.is-mobile .ps-prompt-input::placeholder { font-size: inherit; line-height: inherit; }
 .ps-prompt-shell.is-compact { grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.ps-prompt-shell.is-narrow { grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.ps-prompt-shell.is-narrow .ps-prompt-label.is-default { display: none; }
+.ps-prompt-shell.is-narrow .ps-prompt-label:not(.is-default) { grid-column: 1 / -1; }
 .ps-prompt-shell.is-compact .ps-prompt-label.is-default { display: none; }
 .ps-prompt-shell.is-compact .ps-prompt-label:not(.is-default) { grid-column: 1 / -1; }
 .ps-prompt-shell.is-compact .ps-prompt-input { font-size: 16px; line-height: 1.35; min-height: 44px; }
@@ -10485,7 +10701,7 @@ textarea.ps-link-input {
 .ps-prompt-shell.is-compact .ps-steer-button { flex: none; min-width: 44px; min-height: 44px; }
 /* Phones: one line, [input][📎][■ while a turn runs][blue button], and no
  * "you" label. The composer does not grow when a turn starts. */
-@media (max-width: 600px) {
+@media (max-width: 600px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-prompt-shell.is-mobile { grid-template-columns: minmax(0, 1fr) auto; }
   .ps-prompt-shell.is-mobile .ps-prompt-label.is-default { display: none; }
   .ps-prompt-shell.is-mobile .ps-prompt-label:not(.is-default) { grid-column: 1 / -1; }
@@ -10493,14 +10709,16 @@ textarea.ps-link-input {
 
 /* Permanent desktop navigation geometry. Context controls may change, but
    neither a mode change nor a long canvas title can move Back / Forward. */
-@media (min-width: 921px) {
+@media (min-width: 921px) and (orientation: portrait), (min-width: 921px) and (min-height: 501px), (min-width: 1001px), (min-width: 921px) and (pointer: fine), (min-width: 921px) and (pointer: none) {
   .portal-header { padding-block: 4px; }
   .portal-header-brand { max-width: min(28vw, 320px); }
   .portal-header-slot { container: header-tools / inline-size; }
   .ps-toolbar:not(.is-mobile) {
     --ps-header-button: 44px;
     --ps-header-pair: 94px;
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    /* The flank weights put Back / Forward on the screen's centre (Toolbar
+       measures the header); equal flanks until they are set. */
+    grid-template-columns: minmax(0, var(--ps-toolbar-left, 1fr)) auto minmax(0, var(--ps-toolbar-right, 1fr));
     column-gap: 12px;
   }
   .ps-toolbar:not(.is-mobile) > .ps-toolbar-side { min-width: 0; min-height: 44px; }
@@ -10524,8 +10742,14 @@ textarea.ps-link-input {
   .ps-toolbar-canvas-rev { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 }
 /* Use the SAME two rows in every mode when the rails cannot fit. Reserving
-   both rows keeps the navigation's vertical position stable as well. */
-@container header-tools (max-width: 960px) {
+   both rows keeps the navigation's vertical position stable as well. The
+   widest mode decides: a full-screen canvas puts its controls (pane tabs,
+   canvas picker, zoom, zen, restore: about 341 px) in the left rail, and the
+   two rails are equal around the 294 px navigation, so one row needs about
+   1,000 px. At 960 a header that measured 961-1,000 px (WebKit's narrower
+   brand at 1,280 px) kept one row and the canvas controls ran into the
+   navigation. */
+@container header-tools (max-width: 1040px) {
   .ps-toolbar:not(.is-mobile) { grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 44px max(36px, var(--ps-control-min-height, 34px)); gap: 4px 6px; }
   .ps-toolbar:not(.is-mobile) > .ps-toolbar-navigation { grid-column: 1; grid-row: 1; }
   .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-left { grid-column: 1 / -1; grid-row: 2; min-height: max(36px, var(--ps-control-min-height, 34px)); }
@@ -10555,7 +10779,7 @@ textarea.ps-link-input {
 .ps-session-sort-controls .ps-session-sort-refresh { margin-left: auto; }
 .ps-session-sort-button[aria-pressed="true"] { color: var(--ps-selection-foreground); background: var(--ps-selection-background); box-shadow: inset 0 -2px currentColor; }
 .ps-session-sort-controls button:focus-visible { outline: 2px solid var(--ps-selection-background); outline-offset: 2px; }
-@media (min-width: 921px) {
+@media (min-width: 921px) and (orientation: portrait), (min-width: 921px) and (min-height: 501px), (min-width: 1001px), (min-width: 921px) and (pointer: fine), (min-width: 921px) and (pointer: none) {
   @container session-pane (min-width: 460px) {
     .ps-session-find-controls { flex-direction: row; align-items: center; gap: 6px; padding: 4px 8px; }
     .ps-session-find-controls > .ps-session-sort-controls { display: contents; }
@@ -10563,7 +10787,7 @@ textarea.ps-link-input {
     .ps-session-sort-refresh { order: 2; }
   }
 }
-@media (max-width: 920px) { .ps-session-sort-controls button { width: 44px; height: 44px; } }
+@media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) { .ps-session-sort-controls button { width: 44px; height: 44px; } }
 /* Mobile search lives above the chat in the visible viewport, including while
    Safari pans and shrinks it for the keyboard. Only result rows scroll. */
 .ps-session-search-overlay {
@@ -10586,7 +10810,7 @@ textarea.ps-link-input {
 .ps-session-search-overlay .ps-panel-actions button { min-width: 44px; min-height: 44px; }
 .ps-session-search-overlay .ps-session-find-controls { order: -1; border-top: 0; border-bottom: 1px solid var(--ps-border); }
 .ps-session-search-overlay .ps-session-pane .ps-session-list { flex: 1 1 0; min-height: 0; padding-bottom: calc(4px + var(--ps-list-tail)); }
-@media (max-width: 920px) {
+@media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-mobile-session-pane { max-height: min(22vh, 148px); }
   .ps-session-pane .ps-session-list { padding-bottom: calc(50px + var(--ps-list-tail)); }
 }
@@ -11090,7 +11314,7 @@ textarea.ps-link-input {
   z-index: 6;
 }
 .ps-ws-notice.is-error { border-color: var(--ps-danger); border-left-width: 4px; }
-@media (max-width: 720px) {
+@media (max-width: 720px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-ws-find-btn { min-width: 34px; min-height: 34px; }
   .ps-ws-main { flex-direction: column; }
   .ps-ws-side { flex: 0 0 var(--ps-ws-tree-height, 40%); min-width: 0; max-width: none; min-height: 80px; max-height: calc(100% - 120px); }
@@ -11640,7 +11864,7 @@ textarea.ps-link-input {
 }
 
 [data-mobile-settings] { display: none; }
-@media (max-width: 920px) {
+@media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   [data-mobile-settings] {
     display: inline-flex; position: relative; overflow: visible; cursor: pointer;
   }
@@ -11922,7 +12146,7 @@ textarea.ps-link-input {
 }
 
 /* Keep the existing phone type-scale rules ahead of feature-specific sheets. */
-@media (max-width: 920px) {
+@media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-motd-dialog { width: calc(100vw - 24px); max-height: calc(100dvh - 32px); margin: auto 12px 12px; border-radius: 18px; }
   .ps-motd-splash { max-height: calc(100dvh - 32px); }
   .ps-motd-copy { padding: 14px 18px 4px; }
@@ -11938,4 +12162,456 @@ textarea.ps-link-input {
   .ps-motd-history-row > .ps-motd-meta { grid-column: 1; grid-row: 2; }
   .ps-motd-history-row > .ps-motd-status { grid-column: 1; grid-row: 3; }
   .ps-motd-history-row > .ps-motd-history-actions { grid-column: 1; grid-row: 4; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   HORIZON DAWN — Azure HorizonDB, generally available on 17 November 2026.
+   Scoped to [data-ps-theme="horizon-dawn"]. A pre-dawn Azure sky full of
+   stars, Orion above a range of mountains, the HorizonDB cylinder holding a
+   light that slowly brightens and dims. No words: the scenery says it.
+   The sky always sits behind the land: the mountains are opaque and drawn on
+   top of the star field and the constellation. Art in ./assets/horizon-dawn.
+   Sora is bundled (SIL OFL 1.1, ./assets/horizon-dawn/Sora-OFL.txt).
+   Under reduced motion every layer is swapped for a still version.
+   ═══════════════════════════════════════════════════════════════════════════ */
+@font-face {
+  font-family: "PS Sora";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url("./assets/horizon-dawn/sora-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "PS Sora";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url("./assets/horizon-dawn/sora-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+:root[data-ps-theme="horizon-dawn"] {
+  /* Text and controls use the portal's mono face; Sora stays for the display
+     line (the kicker above the person's name). */
+  --dawn-ui: var(--ps-mono);
+  --dawn-display: "PS Sora", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --dawn-logo: url("./assets/horizon-dawn/logo.svg");
+  --dawn-sky: url("./assets/horizon-dawn/sky.svg");
+  --dawn-orion: url("./assets/horizon-dawn/orion.svg");
+  --dawn-orion-phone: url("./assets/horizon-dawn/orion-phone.svg");
+  --dawn-mountains-back: url("./assets/horizon-dawn/mountains-back.svg");
+  --dawn-mountains-front: url("./assets/horizon-dawn/mountains-front.svg");
+  --ps-chat-card-accent: var(--ps-accent);
+  --ps-chat-card-success: var(--ps-success);
+  --ps-chat-card-warning: var(--ps-warning);
+  color-scheme: dark;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-ps-theme="horizon-dawn"] {
+    --dawn-logo: url("./assets/horizon-dawn/logo-still.svg");
+    --dawn-sky: url("./assets/horizon-dawn/sky-still.svg");
+    --dawn-orion: url("./assets/horizon-dawn/orion-still.svg");
+    --dawn-orion-phone: url("./assets/horizon-dawn/orion-phone-still.svg");
+  }
+}
+
+:root[data-ps-theme="horizon-dawn"] :is(body, #root) {
+  font-family: var(--dawn-ui);
+}
+/* Sora's hinted advances at fractional sizes open gaps inside words
+   ("Pilo tSwarm") on Linux; geometric precision keeps the designed spacing.
+   It inherits from the root, but the browser's own stylesheet sets
+   `text-rendering: auto` on form controls (session rows are buttons), so it is
+   set on those too. Code keeps its own rendering. */
+:root[data-ps-theme="horizon-dawn"] :is(body, #root, button, input, textarea, select) {
+  text-rendering: geometricPrecision;
+}
+:root[data-ps-theme="horizon-dawn"] :is(pre, code, kbd, samp) {
+  text-rendering: auto;
+}
+:root[data-ps-theme="horizon-dawn"] body {
+  background-image:
+    radial-gradient(ellipse at 9% 0%, #14395c 0%, transparent 46%),
+    linear-gradient(180deg, #071125 0%, #0c1c33 65%, #10263d 100%);
+  background-attachment: fixed;
+}
+:root[data-ps-theme="horizon-dawn"] :is(button, input, textarea, select, .ps-panel, .ps-toolbar, .ps-prompt-input) {
+  font-family: var(--dawn-ui);
+}
+:root[data-ps-theme="horizon-dawn"] :is(pre, code, kbd, samp) {
+  font-family: var(--ps-mono);
+}
+
+/* The header: sky, Orion and mountains, back to front. */
+:root[data-ps-theme="horizon-dawn"] .portal-header {
+  position: relative;
+  isolation: isolate;
+  min-height: 94px;
+  padding-bottom: 26px;
+  overflow: hidden;
+  border-bottom: 1px solid #5cc8f273;
+  backdrop-filter: none;
+  background:
+    radial-gradient(ellipse 250px 140px at 180px 100%, #67d3f24d, transparent 77%),
+    radial-gradient(ellipse 370px 150px at 420px 110%, #3d8fe03b, transparent 80%),
+    linear-gradient(180deg, #071125 0%, #102b49 80%, #1c526c 100%);
+  box-shadow: 0 3px 20px #00000033, 0 1px 0 #b1f3ff29;
+}
+:root[data-ps-theme="horizon-dawn"] .portal-header::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image: var(--dawn-mountains-front), var(--dawn-mountains-back), var(--dawn-orion), var(--dawn-sky);
+  background-size: 100% 100%, 100% 100%, 300px 100px, 2000px 100px;
+  /* Orion sits midway between the brand (ends at about 154 px) and the
+     middle buttons (they start at 50vw - 147 px): its stars centre 145 px
+     into its tile. */
+  background-position: center bottom, center bottom, left calc(25vw - 142px) top, left top;
+  background-repeat: no-repeat, no-repeat, no-repeat, repeat;
+}
+:root[data-ps-theme="horizon-dawn"] :is(.portal-header-brand, .portal-header-slot) {
+  position: relative;
+  z-index: 1;
+}
+:root[data-ps-theme="horizon-dawn"] .portal-header-kicker {
+  color: #c5ecff;
+  font-family: var(--dawn-display);
+  font-weight: 650;
+  letter-spacing: 0.15em;
+}
+:root[data-ps-theme="horizon-dawn"] .portal-header-name { color: #f1fbff; font-weight: 550; }
+:root[data-ps-theme="horizon-dawn"] .portal-header-email { color: #bed0e5; }
+
+/* The HorizonDB mark, holding a light that slowly brightens and dims. The
+   artwork keeps room around the cylinder for its glow, so the frame is larger
+   than the row; the negative margins give the extra back and the name and the
+   header height stay where they were. */
+:root[data-ps-theme="horizon-dawn"] .portal-logo-frame {
+  width: 84px;
+  height: 90px;
+  margin: -14px -13px;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+  background: var(--dawn-logo) center / contain no-repeat;
+}
+:root[data-ps-theme="horizon-dawn"] .portal-logo-frame > * { visibility: hidden; }
+
+/* Panes: soft depth on the night sky. */
+:root[data-ps-theme="horizon-dawn"] .ps-panel {
+  background: linear-gradient(145deg, #162c4259, transparent 55%), #101d31f7;
+  border: 1px solid #304b67;
+  border-radius: 16px;
+  box-shadow: inset 0 1px 0 #d7eeff0d, 0 10px 30px #030a182b;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-panel-header {
+  background: #15294180;
+  border-bottom-color: #304b67;
+}
+:root[data-ps-theme="horizon-dawn"] :is(.ps-panel-title, .ps-moa-panel-title) {
+  color: #d7e8fc;
+  font-weight: 550;
+  letter-spacing: 0.015em;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-button {
+  background: #142740d9;
+  border: 1px solid #45627e;
+  border-radius: 9px;
+  box-shadow: inset 0 1px 0 #e5f4ff0b;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-button:hover {
+  background: #21405d;
+  border-color: #5cc8f2;
+}
+/* Full-screen canvas: its controls move into the header and sit on the sky
+   art. One solid plate behind them, with bright text and icons, so they
+   read as controls rather than part of the picture. */
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot {
+  /* The plate hugs the controls instead of filling the header's left side. */
+  width: fit-content;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px 4px 4px;
+  background: #0b1a2ef2;
+  border: 1px solid #45627e;
+  border-radius: 12px;
+  box-shadow: 0 6px 18px #020814b3, inset 0 1px 0 #e5f4ff12;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot .ps-toolbar-canvas-rev {
+  color: #d7e8fc;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot :is(.ps-side-pane-tabs, .ps-html-zoom) {
+  background: #142740;
+  border-color: #5a7894;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot :is(.ps-side-pane-tab, .ps-html-zoom-btn, .ps-html-zoom-level, .ps-artifact-pane-btn) {
+  color: #eaf3ff;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot .ps-side-pane-tab + .ps-side-pane-tab {
+  border-left-color: #5a7894;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot .ps-side-pane-tab.is-on {
+  background: #1c4865;
+  color: #f1fbff;
+  box-shadow: inset 0 -2px 0 #5cc8f2;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot .ps-artifact-pane-btn {
+  min-width: 30px;
+  height: 30px;
+  background: #142740;
+  border: 1px solid #5a7894;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot :is(.ps-artifact-pane-btn, .ps-side-pane-tab, .ps-html-zoom-btn, .ps-html-zoom-level):hover:not(:disabled) {
+  background: #21405d;
+  color: #ffffff;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot .ps-artifact-pane-btn.is-active {
+  background: #1c4865;
+  border-color: #5cc8f2;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-list-button.is-selected {
+  background: linear-gradient(90deg, #1c4865, #153d59);
+  border-color: #5cc8f28c;
+  box-shadow: inset 3px 0 0 #5cc8f2;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-session-list-button { border-radius: 8px; }
+/* State signals survive the theme's resting styles: the focused pane, the
+   focused composer, pressed toolbar toggles and the current inspector tab. */
+:root[data-ps-theme="horizon-dawn"] .ps-panel.is-focused {
+  border-color: #5cc8f2b3;
+  box-shadow: 0 0 0 1px #5cc8f266, inset 0 1px 0 #d7eeff0d, 0 10px 30px #030a182b;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-workspace-grid .ps-panel.is-focused {
+  box-shadow: inset 0 0 0 1px #5cc8f2b3, 0 10px 30px #030a182b;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-button.is-active {
+  background: #1c4865;
+  border-color: #5cc8f2;
+  color: #f1fbff;
+  box-shadow: inset 0 0 0 1px #5cc8f24d;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-tab-row-icons .ps-toolbar-button.is-active {
+  background: #5cc8f21f;
+  border-color: #5cc8f26b;
+  box-shadow: inset 0 -2px 0 #5cc8f2cc;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-prompt-input {
+  background: #0c1a2e;
+  border-color: #45627e;
+  border-radius: 11px;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-prompt-input::placeholder { color: #a4b8d1; opacity: 1; }
+:root[data-ps-theme="horizon-dawn"] .ps-prompt-input:focus {
+  border-color: #5cc8f2;
+  box-shadow: 0 0 0 3px #5cc8f233;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-prompt-label { color: #a7dcff; font-weight: 550; }
+:root[data-ps-theme="horizon-dawn"] .ps-chat-call { background: #12263b; border-color: #36536e; }
+
+@media (max-width: 600px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
+  :root[data-ps-theme="horizon-dawn"] .portal-logo-frame { width: 58px; height: 64px; margin: -9px -8px; }
+  /* Phone: the land is a low band; Orion is in open sky above it, behind the land. */
+  :root[data-ps-theme="horizon-dawn"] .portal-header::before {
+    background-image: var(--dawn-mountains-front), var(--dawn-mountains-back), var(--dawn-orion-phone), var(--dawn-sky);
+    background-size: 100% 26px, 100% 46px, 120px 100px, 2000px 100px;
+    background-position: center bottom, center bottom, center top, center top;
+    background-repeat: no-repeat, no-repeat, no-repeat, repeat;
+  }
+  :root[data-ps-theme="horizon-dawn"] .ps-panel { border-radius: 12px; background: #101d31; }
+}
+
+/* ═══ Phone: back and forward by a two-finger swipe ═════════════════════════
+   The workspace (or a full-screen canvas) follows the fingers; the
+   destination's name shows on the side it will come from, and lights up once
+   a release would navigate. */
+.ps-swipe-hint {
+  position: fixed;
+  top: 46%;
+  /* Above a full-screen canvas (70): a two-finger swipe works there too. */
+  z-index: 75;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(70vw, 320px);
+  padding: 9px 14px;
+  border: 1px solid var(--ps-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ps-surface) 94%, transparent);
+  color: var(--ps-foreground);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+  font-size: 14px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+.ps-swipe-hint[data-side="left"] { left: 12px; }
+.ps-swipe-hint[data-side="right"] { right: 12px; flex-direction: row-reverse; }
+.ps-swipe-hint[data-ready="true"] {
+  border-color: var(--ps-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ps-accent) 35%, transparent), 0 8px 28px rgba(0, 0, 0, 0.28);
+  transform: scale(1.04);
+}
+.ps-swipe-hint[data-blocked="true"] { color: var(--ps-muted); }
+.ps-swipe-hint-arrow { font-size: 22px; line-height: 1; color: var(--ps-accent); }
+.ps-swipe-hint-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+@media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
+  /* No will-change here: a lasting transform would make the workspace the
+     containing block of its fixed overlays. The swipe sets one only while a
+     finger is down, and clears it after. */
+  .ps-web-shell { overflow-x: clip; }
+}
+
+/* ═══ Canvas pinch: zoom inside the canvas box, never the page ═══════════════ */
+.ps-html-preview-host.is-pinched { overflow: hidden; }
+.ps-canvas-pinch-reset {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  min-width: 44px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--ps-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ps-surface) 88%, transparent);
+  color: var(--ps-foreground);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+/* A pinch that starts on the canvas's own chrome must not zoom the page. */
+.ps-mobile-canvas-layer,
+.ps-canvas-pane { touch-action: pan-x pan-y; }
+
+/* ═══ Phone held sideways ════════════════════════════════════════════════════
+   The phone layout stays; the notch and rounded corners now sit at the sides,
+   so the app keeps clear of them. A full-screen canvas takes the whole screen:
+   its strip becomes a small floating pill in the corner, with 44 px targets. */
+@media (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
+  .portal-app-shell {
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+  .ps-mobile-canvas-layer.is-maximized {
+    padding: 0 env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
+    background: #000;
+  }
+  .ps-mobile-canvas-layer.is-maximized .ps-artifact-pane-bar.is-rev-strip {
+    position: absolute;
+    top: max(6px, env(safe-area-inset-top, 0px));
+    right: calc(6px + env(safe-area-inset-right, 0px));
+    z-index: 5;
+    width: auto;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid color-mix(in srgb, var(--ps-border) 80%, transparent);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--ps-surface) 72%, transparent);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    opacity: 0.82;
+  }
+  .ps-mobile-canvas-layer.is-maximized .ps-artifact-pane-bar.is-rev-strip .ps-artifact-pane-type { display: none; }
+  .ps-mobile-canvas-layer.is-maximized .ps-canvas-max-btn {
+    min-width: 44px;
+    height: 36px;
+    margin-left: 0;
+    border-radius: 999px;
+  }
+  .ps-mobile-canvas-layer.is-maximized .ps-canvas-pane { height: 100%; }
+  /* Folded: one small button, quiet, so the page's own top bar stays usable. */
+  .ps-mobile-canvas-layer.is-maximized .ps-artifact-pane-bar.is-rev-strip.is-folded { opacity: 0.6; }
+  .ps-mobile-canvas-layer.is-maximized .ps-artifact-pane-bar.is-rev-strip.is-folded .ps-canvas-pill-handle {
+    position: relative;
+    min-width: 36px;
+    width: 36px;
+    height: 36px;
+  }
+  /* The touch target reaches 44 px around the small button. */
+  .ps-mobile-canvas-layer.is-maximized .ps-canvas-pill-handle::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+  }
+  .ps-mobile-canvas-layer.is-maximized .ps-artifact-pane-bar.is-rev-strip.is-unfolded { opacity: 0.94; }
+}
+/* The first zoom tells you how to move around: two fingers, like a map. */
+.ps-canvas-pinch-hint {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 3;
+  transform: translateX(-50%);
+  padding: 7px 12px;
+  border: 1px solid var(--ps-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ps-surface) 90%, transparent);
+  color: var(--ps-foreground);
+  font-size: 13px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  animation: ps-canvas-pinch-hint 2.6s ease forwards;
+}
+@keyframes ps-canvas-pinch-hint {
+  0% { opacity: 0; }
+  10%, 80% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ps-canvas-pinch-hint { animation: none; }
+}
+
+/* The code font: JetBrains Mono when the person picks it in Appearance, or
+   when the theme names it as its default (data-ps-mono, set from the profile).
+   Last in the file so it outranks a theme's own monospace stack. */
+:root[data-ps-mono="jetbrains"] {
+  --ps-mono: "PS JetBrains Mono", ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+}
+
+/* A native picker on the phone's Appearance list; 16 px so iOS does not zoom. */
+.ps-mobile-setting-select {
+  min-height: 36px;
+  max-width: 55%;
+  padding: 4px 8px;
+  border: 1px solid var(--ps-border);
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-surface);
+  color: var(--ps-foreground);
+  font: inherit;
+  font-size: 16px;
+}
+
+/* The phone's preview at full screen: no bar, the file fills the screen
+   (still clear of the notch and home bar), and one small button in the
+   top-right corner brings the bar back. Its touch target reaches 44 px. */
+.ps-artifact-overlay-restore {
+  position: absolute;
+  top: max(8px, env(safe-area-inset-top, 0px));
+  right: calc(8px + env(safe-area-inset-right, 0px));
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--ps-border) 80%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ps-surface) 72%, transparent);
+  color: var(--ps-foreground);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  opacity: 0.8;
+  cursor: pointer;
+}
+.ps-artifact-overlay-restore::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
 }

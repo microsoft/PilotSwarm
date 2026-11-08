@@ -7,6 +7,7 @@ import { useMobileAdminNavigation, useMobileAdminOverlay } from "./mobile-admin-
 import { imageFiles, handleImagePaste, handleImageDrop, hasFileDrag } from "./image-transfer.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { themeSoundPlayer } from "./theme-sound-player.js";
+import { TWO_FINGER_SWIPE_EVENT, classifyTwoFinger, useSwipeNavigation } from "./swipe-navigation.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
@@ -53,6 +54,7 @@ import {
     selectOutboxOverlayBlocks,
     selectCanvasView,
     selectFileBrowserItems,
+    selectArtifactPaneShown,
     selectFilesFilterModal,
     selectFilesScope,
     selectFilesView,
@@ -67,6 +69,9 @@ import {
     selectReasoningEffortPickerModal,
     selectContextTierPickerModal,
     selectRenameSessionModal,
+    RENAME_SESSION_MAX_LENGTH,
+    getRenameSessionEditableTitle,
+    getRenameSessionPrefix,
     selectSessionAgentPickerModal,
     selectSessionGroupNameModal,
     selectSessionWorkspaceModal,
@@ -93,12 +98,17 @@ import {
     normalizeStoredSessionOrder,
     computeFitWidthColumnLayout,
     normalizeTableCellText,
+    MOBILE_MEDIA_QUERY,
+    PHONE_LANDSCAPE_MEDIA_QUERY,
+    matchesMobileViewport,
+    normalizeCodeFont,
+    resolveCodeFont,
 } from "pilotswarm/ui-core";
 import { useControllerSelector } from "./use-controller-state.js";
 
-const MOBILE_BREAKPOINT = 920;
-// Phones: the one-line composer (no "you" label, the blue button steers).
-const PHONE_MEDIA_QUERY = "(max-width: 600px)";
+// Phones, in either orientation: the one-line composer (no "you" label, the
+// blue button steers).
+const PHONE_MEDIA_QUERY = `(max-width: 600px), ${PHONE_LANDSCAPE_MEDIA_QUERY}`;
 // A touch keyboard (no hover, coarse pointer): its return key adds a line and
 // the button sends. With a physical keyboard Enter sends at every width.
 const TOUCH_KEYBOARD_MEDIA_QUERY = "(hover: none) and (pointer: coarse)";
@@ -110,6 +120,7 @@ const PORTAL_WORKSPACE_GAP_PX = 8;
 const PORTAL_MIN_CHAT_COLUMN_PX = 224;
 const PORTAL_SESSION_COMPACT_COLUMN_PX = 190;
 const PORTAL_SESSION_HIDDEN_COLUMN_PX = 48;
+const COMPOSER_NARROW_PX = 480;
 const SCROLL_ROW_HEIGHT = 16;
 const HISTORY_SCROLL_GESTURE_GAP_MS = 200;
 const SCROLL_BOTTOM_EPSILON_PX = 0.5;
@@ -376,6 +387,11 @@ function normalizeProfileSettings(settings) {
         const themeSoundMobile = normalizeThemeSound(candidate.themeSoundMobile);
         if (themeSoundMobile) normalized.themeSoundMobile = themeSoundMobile;
     }
+    // The code font, one choice for every device.
+    if (hasOwn(candidate, "codeFont")) {
+        const codeFont = normalizeCodeFont(candidate.codeFont);
+        if (codeFont) normalized.codeFont = codeFont;
+    }
     if (hasOwn(candidate, "sessionOwnerFilter") && candidate.sessionOwnerFilter && typeof candidate.sessionOwnerFilter === "object") {
         const storedFilter = candidate.sessionOwnerFilter;
         // Profiles saved before the "Shared with me" bucket existed have no
@@ -433,9 +449,7 @@ function normalizeProfileSettings(settings) {
 
 /** True on phone-sized viewports — the device class that owns the mobile slot. */
 function isNarrowViewport() {
-    return typeof window !== "undefined"
-        && typeof window.matchMedia === "function"
-        && window.matchMedia("(max-width: 920px)").matches;
+    return matchesMobileViewport();
 }
 
 /** Profile key this device reads and writes. */
@@ -570,6 +584,7 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
         chatReading: state.chatReading,
         ...(state.themeSound ? { themeSound: state.themeSound } : {}),
         ...(state.themeSoundMobile ? { themeSoundMobile: state.themeSoundMobile } : {}),
+        ...(state.codeFont ? { codeFont: state.codeFont } : {}),
     });
 }
 
@@ -690,6 +705,9 @@ function materializeProfileSettings(remoteSettings, defaults) {
         ...(hasOwn(normalizedRemote, "themeSoundMobile")
             ? { themeSoundMobile: normalizedRemote.themeSoundMobile }
             : {}),
+        ...(hasOwn(normalizedRemote, "codeFont")
+            ? { codeFont: normalizedRemote.codeFont }
+            : {}),
         // Read back for the same reason as touchScale above: written but never
         // merged means the fold state resets on every reload. No default here
         // either — absent must stay absent so a poll cannot overwrite a toggle
@@ -774,29 +792,31 @@ const PORTAL_CANVAS_COL_DEFAULT_PX = 640;
 const PORTAL_DIAG_COL_DEFAULT_PX = 320;
 
 
-function portalSessionColumnBounds(width) {
-    const safeWidth = Math.max(0, Number(width) || 0);
-    const availableWidth = Math.max(
-        0,
-        safeWidth - PORTAL_SESSION_CHAT_DIVIDER_PX - (PORTAL_WORKSPACE_GAP_PX * 2),
-    );
-    const baseWidth = availableWidth * PORTAL_SESSION_COLUMN_RATIO;
-    const maxSessionWidth = Math.max(0, availableWidth - PORTAL_MIN_CHAT_COLUMN_PX);
+function portalSessionAvailableWidth(width) {
+    return Math.max(0, (Math.max(0, Number(width) || 0)) - PORTAL_SESSION_CHAT_DIVIDER_PX - (PORTAL_WORKSPACE_GAP_PX * 2));
+}
+
+/**
+ * The session list's width comes from the WHOLE workspace (sessions, chat and
+ * any canvas or diagnostics column), not from the share left beside those
+ * columns. A session with its canvas open used to shrink the list, so flipping
+ * between sessions made it jump. Now an open column takes its width from chat;
+ * the list gives way only where chat would fall below its floor.
+ * `mainWidth` is the sessions + chat grid; `workspaceWidth` defaults to it.
+ */
+function portalSessionColumnBounds(mainWidth, workspaceWidth = mainWidth) {
+    const baseWidth = portalSessionAvailableWidth(workspaceWidth || mainWidth) * PORTAL_SESSION_COLUMN_RATIO;
+    const maxSessionWidth = Math.max(0, portalSessionAvailableWidth(mainWidth) - PORTAL_MIN_CHAT_COLUMN_PX);
     return {
+        baseWidth,
         minAdjust: -baseWidth,
         maxAdjust: maxSessionWidth - baseWidth,
     };
 }
 
-function portalSessionColumnWidth(width, adjust) {
-    const bounds = portalSessionColumnBounds(width);
-    const safeWidth = Math.max(0, Number(width) || 0);
-    const availableWidth = Math.max(
-        0,
-        safeWidth - PORTAL_SESSION_CHAT_DIVIDER_PX - (PORTAL_WORKSPACE_GAP_PX * 2),
-    );
-    const baseWidth = availableWidth * PORTAL_SESSION_COLUMN_RATIO;
-    return clampNumber(baseWidth + (Number(adjust) || 0), 0, baseWidth + bounds.maxAdjust);
+function portalSessionColumnWidth(mainWidth, adjust, workspaceWidth = mainWidth) {
+    const bounds = portalSessionColumnBounds(mainWidth, workspaceWidth);
+    return clampNumber(bounds.baseWidth + (Number(adjust) || 0), 0, bounds.baseWidth + bounds.maxAdjust);
 }
 
 function portalSessionColumnMode(width) {
@@ -838,6 +858,17 @@ function getPortalInspectorContentWidth(paneWidth, inspectorTab, mobile = false)
     return Math.max(20, paneWidth - (mobile ? 6 : 4));
 }
 
+// The portal's mono face is a bundled web font with font-display: swap, so the
+// first paint can measure the fallback face. Every column probe re-measures
+// when a font finishes loading; the fallback (Consolas on Windows) is narrower
+// than the real face, and a stale count wraps lines past the pane edge.
+function onWebFontsLoaded(callback) {
+    const fonts = typeof document !== "undefined" ? document.fonts : null;
+    if (!fonts || typeof fonts.addEventListener !== "function") return () => {};
+    fonts.addEventListener("loadingdone", callback);
+    return () => fonts.removeEventListener("loadingdone", callback);
+}
+
 /**
  * The pane's own truth for content width, in character columns.
  *
@@ -858,10 +889,11 @@ function getPortalInspectorContentWidth(paneWidth, inspectorTab, mobile = false)
  */
 function useMeasuredPaneColumns({ slack = 1, debounceMs = 120 } = {}) {
     const [cols, setCols] = React.useState(null);
-    const stateRef = React.useRef({ node: null, observer: null, timer: null, frame: null });
+    const stateRef = React.useRef({ node: null, observer: null, timer: null, frame: null, unfonts: null });
     const attachRef = React.useCallback((node) => {
         const st = stateRef.current;
         if (st.observer) { st.observer.disconnect(); st.observer = null; }
+        if (st.unfonts) { st.unfonts(); st.unfonts = null; }
         if (st.timer) { window.clearTimeout(st.timer); st.timer = null; }
         if (st.frame) { cancelAnimationFrame(st.frame); st.frame = null; }
         st.node = node;
@@ -896,6 +928,7 @@ function useMeasuredPaneColumns({ slack = 1, debounceMs = 120 } = {}) {
             st.timer = window.setTimeout(measure, debounceMs);
         };
         st.frame = requestAnimationFrame(measure);
+        st.unfonts = onWebFontsLoaded(schedule);
         st.observer = new ResizeObserver(schedule);
         // content-box: a classic (non-overlay) vertical scrollbar appearing
         // shrinks the content box without touching the border box — observe
@@ -1063,6 +1096,12 @@ function applyTouchScale(enabled) {
     else delete document.documentElement.dataset.psTouch;
 }
 
+function applyCodeFont(choice, themeId) {
+    if (typeof document === "undefined") return;
+    // One attribute; the stylesheet maps it to --ps-mono.
+    document.documentElement.dataset.psMono = resolveCodeFont(choice, getTheme(themeId));
+}
+
 function applyDocumentTheme(themeId) {
     const theme = getTheme(themeId);
     if (!theme || typeof document === "undefined") return;
@@ -1118,10 +1157,16 @@ function applyDocumentTheme(themeId) {
 
 function useMeasuredViewport(ref, suspended = false) {
     const [viewport, setViewport] = React.useState({ width: 0, height: 0 });
+    // The measured element can be replaced: the Admin Console swaps the whole
+    // workspace out and back in. Follow ref.current, or the observer stays on
+    // the removed node and these numbers go stale until a reload.
+    const [element, setElement] = React.useState(null);
+    React.useLayoutEffect(() => {
+        if (ref.current !== element) setElement(ref.current);
+    });
 
     React.useLayoutEffect(() => {
         if (suspended) return undefined;
-        const element = ref.current;
         if (!element) return undefined;
 
         const update = () => {
@@ -1139,7 +1184,7 @@ function useMeasuredViewport(ref, suspended = false) {
             observer.disconnect();
             window.removeEventListener("resize", update);
         };
-    }, [ref, suspended]);
+    }, [element, suspended]);
 
     return viewport;
 }
@@ -1286,6 +1331,15 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             historyScroll.applied = true;
             historyScroll.target = pageScrollTop;
             historyScroll.releaseAt = performance.now() + HISTORY_SCROLL_GESTURE_GAP_MS;
+            // The gesture gap counts from when the person could see the new
+            // page. Laying out and painting a page of messages can take longer
+            // than the gap on a slow phone; without this, the fling still in
+            // progress would count as a new scroll once the paint finished and
+            // throw the reader to the top of the inserted page.
+            const settling = historyScroll;
+            window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+                if (historyScrollRef.current === settling) settling.releaseAt = performance.now() + HISTORY_SCROLL_GESTURE_GAP_MS;
+            }));
         }
         const interaction = userScrollRef.current;
         const now = typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -2265,9 +2319,7 @@ function openArtifactFromChat(controller, sessionId, filename) {
         Promise.resolve(controller.openChatArtifact(sessionId, filename)).catch(() => {});
         return;
     }
-    const isPhone = typeof window !== "undefined"
-        && typeof window.matchMedia === "function"
-        && window.matchMedia("(max-width: 920px)").matches;
+    const isPhone = matchesMobileViewport();
     // Whether ✕ hands the column back or collapses it again is decided inside
     // revealArtifact, from the layout it can already see.
     Promise.resolve(isPhone
@@ -3236,7 +3288,83 @@ function useElementBox(ref) {
 // click handlers, and leaves "#" links, targets and downloads alone.
 const CANVAS_LINK_GUARD = `<script>addEventListener('click',function(e){var a=e.target&&e.target.closest&&e.target.closest('a[href],area[href]');if(!a||e.defaultPrevented||a.hasAttribute('download'))return;var h=a.getAttribute('href')||'';if(!h||h.charAt(0)==='#'||/^javascript:/i.test(h))return;var t=a.getAttribute('target');if(t&&t!=='_self')return;e.preventDefault();try{window.open(new URL(h,document.baseURI).href,'_blank','noopener')}catch(x){}});</script>`;
 
-function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys = false, linkGuard = false) {
+// A pinch on a canvas zooms the canvas, not the page. Inside the frame the
+// browser's own pinch is switched off and the two fingers are reported to the
+// portal, which magnifies the frame within its box. A page that handles two
+// fingers itself (it calls preventDefault) keeps them.
+const CANVAS_PINCH_BRIDGE = `<style>html{touch-action:pan-x pan-y}</style><script>(function(){var on=false;function at(e){var a=e.touches[0],b=e.touches[1];return{x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2,d:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY)}}function post(m){try{parent.postMessage(m,'*')}catch(x){}}addEventListener('touchstart',function(e){if(e.touches.length===2&&!e.defaultPrevented){on=true;var p=at(e);post({type:'canvas-pinch',phase:'start',x:p.x,y:p.y,d:p.d,t:performance.timeOrigin+performance.now()})}},{passive:true});addEventListener('touchmove',function(e){if(!on||e.touches.length!==2||e.defaultPrevented)return;var p=at(e);post({type:'canvas-pinch',phase:'move',x:p.x,y:p.y,d:p.d,t:performance.timeOrigin+performance.now()})},{passive:true});function end(e){if(on&&e.touches.length<2){on=false;post({type:'canvas-pinch',phase:'end'})}}addEventListener('touchend',end,{passive:true});addEventListener('touchcancel',end,{passive:true});addEventListener('gesturestart',function(e){e.preventDefault()});addEventListener('gesturechange',function(e){e.preventDefault()})})();</script>`;
+const CANVAS_PINCH_MAX = 5;
+// The "two fingers to move" hint shows once per page load, on the first zoom.
+let canvasPanHintShown = false;
+
+// A phone's HTML artifact preview reports two fingers to the portal, so a
+// two-finger swipe over the page moves Back and Forward as it does
+// everywhere else. Unlike the canvas bridge it changes nothing in the page:
+// the browser's own pinch and scrolling stay as they were, and a page that
+// handles two fingers itself (it calls preventDefault) keeps them.
+const ARTIFACT_TOUCH_BRIDGE = `<script>(function(){var on=false;function at(e){var a=e.touches[0],b=e.touches[1];return{x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2,d:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY)}}function post(m){try{parent.postMessage(m,'*')}catch(x){}}addEventListener('touchstart',function(e){if(e.touches.length===2&&!e.defaultPrevented){on=true;var p=at(e);post({type:'artifact-touch',phase:'start',x:p.x,y:p.y,d:p.d})}else if(on&&e.touches.length>2){on=false;post({type:'artifact-touch',phase:'cancel'})}},{passive:true});addEventListener('touchmove',function(e){if(!on||e.touches.length!==2||e.defaultPrevented)return;var p=at(e);post({type:'artifact-touch',phase:'move',x:p.x,y:p.y,d:p.d})},{passive:true});function end(e){if(on&&e.touches.length<2){on=false;post({type:'artifact-touch',phase:'end'})}}addEventListener('touchend',end,{passive:true});addEventListener('touchcancel',function(){if(on){on=false;post({type:'artifact-touch',phase:'cancel'})}},{passive:true})})();</script>`;
+
+/**
+ * Two fingers reported by a phone's HTML artifact preview frame become the
+ * portal's two-finger swipe. Only the frame's own messages count, a gesture
+ * is classified once (a pinch or a scroll is left to the page), and leaving
+ * the preview cancels a swipe in progress.
+ */
+function useArtifactTouchSwipe(enabled, frameHostRef) {
+    React.useEffect(() => {
+        if (!enabled || typeof window === "undefined") return undefined;
+        let gesture = null;
+        const toPage = (frame, x, y) => {
+            const rect = frame.getBoundingClientRect();
+            // The frame may be scaled to fit the pane or zoomed: its client
+            // coordinates are in its own layout pixels.
+            const scale = frame.offsetWidth > 0 ? rect.width / frame.offsetWidth : 1;
+            return { x: rect.left + x * scale, y: rect.top + y * scale, scale };
+        };
+        const swipe = (phase, extra = {}) => window.dispatchEvent(new CustomEvent(TWO_FINGER_SWIPE_EVENT, { detail: { phase, gesture: gesture?.id, surface: frameHostRef.current, ...extra } }));
+        const onMessage = (event) => {
+            const payload = event.data;
+            if (!payload || payload.type !== "artifact-touch") return;
+            const host = frameHostRef.current;
+            const frame = host ? [...host.querySelectorAll("iframe.ps-html-preview-frame:not(.is-staging)")].find((el) => el.contentWindow === event.source) : null;
+            if (!frame) return;
+            if (payload.phase === "start") {
+                if (gesture?.mode === "swipe") swipe("cancel");
+                gesture = null;
+                if (!["x", "y", "d"].every((key) => Number.isFinite(Number(payload[key])))) return;
+                const p = toPage(frame, Number(payload.x), Number(payload.y));
+                const box = frame.getBoundingClientRect();
+                if (p.x < box.left || p.x > box.right || p.y < box.top || p.y > box.bottom) return;
+                gesture = { id: {}, mode: null, origin: { x: p.x, y: p.y, d: Number(payload.d) * p.scale } };
+                return;
+            }
+            if (!gesture) return;
+            if (payload.phase === "move") {
+                if (!["x", "y", "d"].every((key) => Number.isFinite(Number(payload[key])))) return;
+                const p = toPage(frame, Number(payload.x), Number(payload.y));
+                if (!gesture.mode) {
+                    const kind = classifyTwoFinger(p.x - gesture.origin.x, p.y - gesture.origin.y, Number(payload.d) * p.scale - gesture.origin.d);
+                    if (!kind) return;
+                    if (kind !== "swipe") { gesture = null; return; }
+                    gesture.mode = "swipe";
+                    swipe("start", { x: gesture.origin.x, y: gesture.origin.y });
+                }
+                swipe("move", { x: p.x, y: p.y });
+                return;
+            }
+            if (gesture.mode === "swipe") swipe(payload.phase === "end" ? "end" : "cancel");
+            gesture = null;
+        };
+        window.addEventListener("message", onMessage);
+        return () => {
+            window.removeEventListener("message", onMessage);
+            if (gesture?.mode === "swipe") swipe("cancel");
+            gesture = null;
+        };
+    }, [enabled, frameHostRef]);
+}
+
+function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys = false, linkGuard = false, touchBridge = false) {
     const downloadResponse = controller?.transport?.api?.downloadArtifactResponse;
     if (typeof downloadResponse !== "function") {
         return Promise.reject(new Error("artifact download unavailable"));
@@ -3251,9 +3379,11 @@ function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys =
             const bytes = await response.arrayBuffer();
             // Only MoA canvases opt into panel navigation; ordinary canvases
             // retain native Tab behavior. A canvas gets the link guard; an
-            // artifact preview keeps its exact document bytes.
+            // artifact preview keeps its exact document bytes, except that a
+            // phone's preview reports two fingers for Back and Forward.
             const bridge = (panelKeys ? `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.metaKey&&!e.ctrlKey&&(e.key==='Tab'||e.key==='Escape')){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>` : "")
-                + (linkGuard ? CANVAS_LINK_GUARD : "");
+                + (linkGuard ? CANVAS_LINK_GUARD + CANVAS_PINCH_BRIDGE : "")
+                + (touchBridge ? ARTIFACT_TOUCH_BRIDGE : "");
             let parts = [bytes];
             if (bridge) {
                 const html = new TextDecoder().decode(bytes);
@@ -3307,6 +3437,10 @@ function HtmlArtifactPreviewPanel({
     // reloaded, and reloading would cost the reader their scroll position on
     // something as ordinary as rotating the phone.
     const frames = useHtmlPreviewReload(frameHostRef, mode === "rendered" && !fitActive, `${sessionId}/${filename}`, zoom);
+    // On a phone the page reports two fingers, so Back and Forward work over
+    // it too. Desktop previews keep their exact bytes.
+    const phone = useMediaQuery(MOBILE_MEDIA_QUERY);
+    useArtifactTouchSwipe(phone && mode === "rendered", frameHostRef);
 
     // The object URL is owned by this component — created on mount, revoked on
     // unmount or artifact change. It deliberately does not share the thumbnail
@@ -3318,7 +3452,7 @@ function HtmlArtifactPreviewPanel({
         if (mode !== "rendered" || !controller || !sessionId || !filename) return undefined;
         let cancelled = false;
         let created = null;
-        fetchArtifactHtmlObjectUrl(controller, sessionId, filename)
+        fetchArtifactHtmlObjectUrl(controller, sessionId, filename, false, false, phone)
             .then((url) => {
                 created = url;
                 if (cancelled) {
@@ -3332,7 +3466,7 @@ function HtmlArtifactPreviewPanel({
             cancelled = true;
             if (created) URL.revokeObjectURL(created);
         };
-    }, [controller, sessionId, filename, mode]);
+    }, [controller, sessionId, filename, mode, phone]);
 
     const deepLink = buildArtifactLinkUrl(sessionId, filename);
     const actions = chromeless ? null : React.createElement(React.Fragment, null,
@@ -4939,7 +5073,7 @@ function railNodeInsetPx(depth) {
 }
 
 const SessionListRow = React.memo(function SessionListRow({
-    row, theme, structuredRows, mobile, onRowClick, setRef, drag,
+    row, theme, structuredRows, mobile, onRowClick, onToggleChildren = null, setRef, drag,
 }) {
     const depth = Math.max(0, row.depth);
     const railStyle = React.useMemo(() => {
@@ -5040,6 +5174,7 @@ const SessionListRow = React.memo(function SessionListRow({
         },
             React.createElement(SessionRowContent, {
                 row, theme, structured: structuredRows, showInlineDetail: mobile,
+                onToggleChildren: row.hasChildren && !row.isGroup ? onToggleChildren : null,
             })));
 });
 
@@ -5134,13 +5269,34 @@ function OwnerAvatar({ badge, size = "sm" }) {
 function withoutOwnerChip(runs) {
     return Array.isArray(runs) ? runs.filter((run) => !run?.ownerChip) : runs;
 }
-function SessionRowContent({ row, theme, structured = false, showInlineDetail = false }) {
+function SessionRowContent({ row, theme, structured = false, showInlineDetail = false, onToggleChildren = null }) {
+    // Sub-agent chevron (phone slide-over). It takes the place of the row's
+    // status mark, in the mark's own colour and box, so a parent's title
+    // starts where its siblings' do and its mark stays on the guide rail.
+    // A span, not a button: the row itself is a <button>. It handles its own
+    // tap (a target larger than it looks), so the row does not select or close.
+    const mark = (statusColor) => (onToggleChildren
+        ? React.createElement("span", {
+            className: `ps-session-row-disclosure${row.collapsed ? "" : " is-open"}${row.depth > 0 ? " is-node" : ""}`,
+            style: statusColor ? { color: statusColor } : undefined,
+            role: "button",
+            tabIndex: -1,
+            "aria-label": row.collapsed ? "Show sub-agents" : "Hide sub-agents",
+            "aria-expanded": row.collapsed ? "false" : "true",
+            onPointerDown: (event) => event.stopPropagation(),
+            onClick: (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onToggleChildren(row);
+            },
+        }, React.createElement(ChevronGlyph))
+        : (statusColor ? React.createElement(StatusDot, { color: statusColor, node: row.depth > 0 }) : null));
     const hasStructuredRuns = structured && Array.isArray(row.titleRuns);
     if (!hasStructuredRuns) {
         if (!Array.isArray(row.runs)) return row.text;
         const plain = portalRowRuns(withoutOwnerChip(row.runs), theme);
         return React.createElement(React.Fragment, null,
-            plain.statusColor ? React.createElement(StatusDot, { color: plain.statusColor, node: row.depth > 0 }) : null,
+            mark(plain.statusColor),
             React.createElement(OwnerAvatar, { badge: row.ownerBadge }),
             React.createElement(SessionCanvasMark, { mark: row.canvasMark }),
             React.createElement("span", { className: "ps-session-row-title__text" },
@@ -5171,7 +5327,7 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
     return React.createElement(React.Fragment, null,
         React.createElement("div", { className: "ps-session-row-line" },
             React.createElement("div", { className: "ps-session-row-title" },
-                title.statusColor ? React.createElement(StatusDot, { color: title.statusColor, node: row.depth > 0 }) : null,
+                mark(title.statusColor),
                 React.createElement(OwnerAvatar, { badge: row.ownerBadge }),
                 React.createElement(SessionCanvasMark, { mark: row.canvasMark }),
                 // Runs wrapped in ONE element: the title is a flex row so the
@@ -5188,7 +5344,8 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
             hasCtx
                 ? React.createElement("div", { className: "ps-session-row-ctx" },
                     React.createElement(Runs, { runs: ctxRuns, theme }))
-                : null),
+                : null,
+),
         hasDetail
             ? React.createElement("div", { className: "ps-session-row-detail" },
                 React.createElement(Runs, { runs: detailRuns, theme }))
@@ -5223,178 +5380,6 @@ function useStableValue(value) {
         ref.current = value;
     }
     return ref.current;
-}
-
-/**
- * One axis per gesture: a touch drag scrolls the session list up/down OR
- * left/right, never both.
- *
- * The session list has `width: max-content` rows, so it overflows sideways
- * whenever a title is long. With both axes on offer a swipe is never perfectly
- * vertical, so scrolling down kept sliding the list sideways too.
- *
- * This used to hand the vertical case back to the browser (`touch-action:
- * pan-y`) and only drive horizontal itself. That relied on the browser to
- * refuse the sideways component, and it has two problems:
- *
- *   - What counts as "vertical enough" for `pan-y` is the browser's call, not
- *     ours, and engines disagree. The guarantee was only as good as whichever
- *     one the reader happened to be using.
- *   - A drag near 45° fell in the gap: we committed it to vertical and stepped
- *     aside, and the browser then declined to pan it at all. The list simply
- *     did not move, which reads as broken rather than as a locked axis.
- *
- * So both axes are driven here. Every gesture past the slop threshold commits
- * to exactly one axis and always moves it — no dead zone, and no engine gets a
- * vote on the diagonal. Vertical stays the default: sideways has to be asked
- * for, by a drag that beats vertical by PAN_HORIZONTAL_RATIO.
- *
- * The list tracks the finger and stops on release: no inertial fling. Chat
- * and canvas scrolling are independent and keep their native behavior.
- * CSS keeps `touch-action: pan-y` as a floor: if these
- * listeners ever fail to attach, the list still scrolls vertically the native
- * way rather than becoming inert.
- */
-const PAN_COMMIT_PX = 10;      // ignore the first few px — every swipe starts noisy
-const PAN_HORIZONTAL_RATIO = 1.6;   // |dx| must beat |dy| by this much to go sideways
-
-/**
- * Which axis does this gesture own? Pure, and exported so the rule can be
- * tested without a browser — the bug it replaces was a gesture that matched
- * NEITHER branch and therefore scrolled nothing.
- *
- * Returns null while the drag is still inside the slop radius, then "x" or
- * "y" — never null again, and never both. Every gesture that gets past the
- * threshold moves something.
- */
-export function commitPanAxis(dx, dy) {
-    if (Math.abs(dx) < PAN_COMMIT_PX && Math.abs(dy) < PAN_COMMIT_PX) return null;
-    // Ties, and anything close to a tie, go to vertical. Vertical is the
-    // primary axis; sideways has to be asked for.
-    return Math.abs(dx) > Math.abs(dy) * PAN_HORIZONTAL_RATIO ? "x" : "y";
-}
-
-function useAxisLockedPan(ref, enabled = true) {
-    React.useEffect(() => {
-        const el = ref.current;
-        // Coarse pointers only. On a touchscreen LAPTOP the pointer is fine,
-        // so drag-to-reorder is armed on the same rows — and because this hook
-        // prevents native scrolling, the browser never fires the pointercancel
-        // that would otherwise end that drag. Both would then own one finger:
-        // a ghost row appears, the list pans under it, and the drop resolves
-        // against a list that moved. Mirrors the gate reorder uses the other
-        // way round; a fine pointer scrolls natively under the pan-y CSS.
-        if (!el || !enabled) return undefined;
-
-        let startX = 0;
-        let startY = 0;
-        let lastX = 0;
-        let lastY = 0;
-        let axis = null;    // null = undecided, "x" | "y" = committed, "done" = not ours
-        let swallowClick = false;
-        const canScroll = (which) => (which === "x"
-            ? el.scrollWidth > el.clientWidth + 1
-            : el.scrollHeight > el.clientHeight + 1);
-
-        const onTouchStart = (event) => {
-            swallowClick = false;
-            // targetTouches, not touches: a thumb resting elsewhere on the page
-            // is not part of this gesture. Two fingers HERE is a pinch.
-            if (event.targetTouches.length !== 1) { axis = "done"; return; }
-            const touch = event.targetTouches[0];
-            startX = lastX = touch.clientX;
-            startY = lastY = touch.clientY;
-            axis = null;
-        };
-
-        const onTouchMove = (event) => {
-            if (axis === "done" || event.targetTouches.length !== 1) return;
-            const touch = event.targetTouches[0];
-            const dx = touch.clientX - startX;
-            const dy = touch.clientY - startY;
-
-            if (axis === null) {
-                // Decide BEFORE preventing. Preventing a touchmove prevents
-                // scrolling for every later move of that touch, so a hand-off
-                // after the commit cannot hand anything back — the browser has
-                // already been told no.
-                //
-                // Vertical is the browser's own axis here (touch-action:
-                // pan-y), and it has to be claimed from the FIRST move or not
-                // at all: the browser's slop is smaller than ours (5-8px
-                // against 10), so an un-prevented move past it starts a native
-                // pan-y scroll and marks the rest of the gesture
-                // non-cancelable — our preventDefault then no-ops while
-                // scrollTop -= step still runs, and vertical moved at double
-                // speed with two flings on release. So a list with vertical
-                // overflow is claimed now, inside the slop.
-                //
-                // A list WITHOUT vertical overflow leaves the early moves
-                // alone. The browser only ever takes the vertical under pan-y,
-                // so a sideways commit can still claim the gesture for the
-                // list's horizontal overflow (a short list of long titles),
-                // and a vertical commit hands the pane its scroll untouched.
-                const ownsVertical = canScroll("y");
-                if (!ownsVertical && !canScroll("x")) { axis = "done"; return; }
-                if (ownsVertical && event.cancelable) event.preventDefault();
-                axis = commitPanAxis(dx, dy);
-                if (axis === null) return;
-                // A list that cannot scroll on the committed axis is not ours
-                // to pan; and if the browser has already begun its own scroll
-                // (the event is no longer cancelable), the gesture is its.
-                if (!canScroll(axis) || !event.cancelable) { axis = "done"; return; }
-                // Measure from here, so the slop we ignored is not also applied.
-                lastX = touch.clientX;
-                lastY = touch.clientY;
-                // A drag must not select whichever row ends up under the thumb.
-                swallowClick = true;
-            }
-
-            // Ours: stop the browser doing it as well. A repeat of the
-            // first-move prevent for a list that owns vertical; the first
-            // prevent of the gesture for a sideways pan on a short list.
-            if (event.cancelable) event.preventDefault();
-
-            const stepX = touch.clientX - lastX;
-            const stepY = touch.clientY - lastY;
-
-            if (axis === "x") el.scrollLeft -= stepX;
-            else el.scrollTop -= stepY;
-
-            lastX = touch.clientX;
-            lastY = touch.clientY;
-        };
-
-        const onTouchEnd = (event) => {
-            // Lifting ONE finger of a pinch does not hand the survivor a pan:
-            // its start point belongs to a different gesture, and the commit
-            // would land on a large bogus delta. Stay out until all lift.
-            if (event.targetTouches.length > 0) { axis = "done"; return; }
-            axis = null;
-        };
-
-        const onTouchCancel = () => { axis = "done"; };
-
-        const onClickCapture = (event) => {
-            if (!swallowClick || event.detail === 0) return;
-            swallowClick = false;
-            event.preventDefault();
-            event.stopPropagation();
-        };
-
-        el.addEventListener("touchstart", onTouchStart, { passive: true });
-        el.addEventListener("touchmove", onTouchMove, { passive: false });
-        el.addEventListener("touchend", onTouchEnd, { passive: true });
-        el.addEventListener("touchcancel", onTouchCancel, { passive: true });
-        el.addEventListener("click", onClickCapture, true);
-        return () => {
-            el.removeEventListener("touchstart", onTouchStart);
-            el.removeEventListener("touchmove", onTouchMove);
-            el.removeEventListener("touchend", onTouchEnd);
-            el.removeEventListener("touchcancel", onTouchCancel);
-            el.removeEventListener("click", onClickCapture, true);
-        };
-    }, [ref, enabled]);
 }
 
 const SessionSearchControl = React.memo(function SessionSearchControl({ query = "", onQuery, matchCount = 0, mobile = false, expanded = false, onOpen, onClose, triggerRef, listRef = null }) {
@@ -5478,18 +5463,19 @@ const SessionSearchControl = React.memo(function SessionSearchControl({ query = 
 
 const EMPTY_PICKER_SELECTION = Object.freeze([]);
 
-function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null, actionsOnly = false, actionsHost = null, onAction = null, onDialogChange = null }) {
+function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null, actionsOnly = false, actionsHost = null, onAction = null, onDialogChange = null, rowDisclosure = false }) {
     // Mobile keeps its inline detail line and normally gets no detail box — a
     // reserved footer would eat a meaningful slice of a phone screen. The
     // sessions-ONLY layout is the exception: it has the whole screen and the
     // detail box is the point of asking for it.
     const isMobilePane = String(panelClassName).includes("ps-mobile-session-pane");
-    const compactSearch = useMediaQuery("(max-width: 920px)");
+    const compactSearch = useMediaQuery(MOBILE_MEDIA_QUERY);
     const [searchOpen, setSearchOpen] = React.useState(false);
     const searchOverlay = compactSearch && searchOpen;
     const searchDialogRef = React.useRef(null);
     const searchTriggerRef = React.useRef(null);
-    // Vertical is the primary scroll axis; sideways takes a deliberate swipe.
+    // On a touch screen the list scrolls natively: the system's own momentum,
+    // at the display's refresh rate, on the compositor.
     const sessionListRef = React.useRef(null);
     // Selection reverts to plain taps wherever the primary input is a finger:
     // the mobile pane, and the chat-focus overlay's list on a phone. Matches
@@ -5499,7 +5485,6 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // waiting for panelClassName to change under a mounted pane.
     const coarsePointer = useCoarsePointer();
     const touchInput = isMobilePane || coarsePointer;
-    useAxisLockedPan(sessionListRef, touchInput);
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const detailCollapsed = useControllerSelector(
@@ -5539,6 +5524,10 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // three sessions stopped for three different reasons all read
         // "waiting".
         budgetPaused: state.budget?.paused,
+        // Agent display titles order a named agent session's title (the
+        // person's title first). Same trap again: leave it out and every
+        // "DeepWiki Code Explorer: <title>" row keeps the agent name first.
+        agentTitles: state.agentTitles,
     }), shallowEqualObject);
     // Picker state is local React state, not controller state. Reading these
     // props inside the subscription selector delays changes until the next
@@ -5577,7 +5566,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             prefs: viewState.canvasPrefs,
         },
         budget: { paused: viewState.budgetPaused },
-    }), [viewState.activeSessionId, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.sortMode, viewState.sortSnapshot, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
+        agentTitles: viewState.agentTitles,
+    }), [viewState.activeSessionId, viewState.agentTitles, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.sortMode, viewState.sortSnapshot, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
     // Hold the previous rows when a poll produced identical output.
     const rows = useStableValue(computedRows);
     const searchScrollRef = React.useRef({ top: 0, left: 0, restore: false });
@@ -6152,6 +6142,12 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         }
     }, []);
 
+    // The phone slide-over shows sub-agents through a chevron on the row: a
+    // tap on the row itself picks the session and closes the list.
+    const toggleRowChildren = React.useCallback((row) => {
+        controller.dispatch({ type: row.collapsed ? "sessions/expand" : "sessions/collapse", sessionId: row.sessionId });
+    }, [controller]);
+
     const setSessionButtonRef = React.useCallback((sessionId, node) => {
         if (!sessionId) return;
         if (node) {
@@ -6378,18 +6374,29 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             ? React.createElement("div", { className: "ps-empty-state" }, viewState.filterQuery
                 ? `No sessions matched "${viewState.filterQuery}".`
                 : "No sessions yet.")
-            : rows.map((row) => React.createElement(SessionListRow, {
+            : (rowNodes => isMobilePane && !selection
+                // On a phone, long rows pan sideways in a track of their own
+                // nested in the vertical list: two native scrollers, one axis
+                // each, so the system keeps every swipe on one axis. Not in a
+                // picker: rows sized to their content make every keystroke of
+                // the picker's search lay out every row (2.3 s against 0.3 s
+                // for 1,500 sessions), and the picker's footer already shows
+                // the selected session's full title.
+                ? React.createElement("div", { className: "ps-session-list-track" },
+                    React.createElement("div", { className: "ps-session-list-track-rows" }, rowNodes))
+                : rowNodes)(rows.map((row) => React.createElement(SessionListRow, {
                 key: row.sessionId,
                 row,
                 theme,
                 structuredRows,
                 mobile: isMobilePane,
                 onRowClick: handleRowClick,
+                onToggleChildren: rowDisclosure ? toggleRowChildren : null,
                 setRef: setSessionButtonRef,
                 // Drag-to-folder is a fine-pointer gesture: arming it on
                 // touch hijacks the finger that should be scrolling the list.
                 drag: selection || touchInput || viewState.sortMode !== "saved" ? null : dragHandlers,
-            }))),
+            })))),
     React.createElement("div", {
         className: "ps-session-find-controls",
         onPointerDown: (event) => {
@@ -6459,7 +6466,10 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         ? React.createElement(SessionModifyModal, {
             controller,
             sessionId: activeSession.sessionId,
-            initialTitle: activeSession.title || "",
+            // The same editable part and fixed agent-name prefix as the rename
+            // box: seeding the stored title made Save prefix the agent twice.
+            initialTitle: getRenameSessionEditableTitle(activeSession, controller.cachedAgentTitles?.(activeSession.agentId) || []),
+            titlePrefix: getRenameSessionPrefix(activeSession, controller.cachedAgentTitles?.(activeSession.agentId) || []),
             allowSharing: !actionsOnly,
             currentModel: activeSession.model || "",
             currentReasoningEffort: activeSession.reasoningEffort || "",
@@ -6557,6 +6567,20 @@ function SearchGlyph() {
 
 // Back to the transcript. Replaces the 💬 emoji, which iOS force-renders in
 // colour against an otherwise monochrome row (see the note on the tab table).
+
+/** A right-pointing chevron; rotated by CSS when its row is open. */
+function ChevronGlyph() {
+    return React.createElement("svg", { viewBox: "0 0 16 16", width: 14, height: 14, "aria-hidden": "true" },
+        React.createElement("path", { d: "M6 3.5 10.5 8 6 12.5", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" }));
+}
+
+/** Three bars: the phone's session list, which slides over the chat. */
+function SessionListGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("line", { x1: "4", y1: "6", x2: "20", y2: "6" }),
+    React.createElement("line", { x1: "4", y1: "12", x2: "20", y2: "12" }),
+    React.createElement("line", { x1: "4", y1: "18", x2: "20", y2: "18" }));
+}
 
 function PlusGlyph() {
     return React.createElement(Glyph, null,
@@ -6856,7 +6880,7 @@ function useActiveSessionAccess(controller, activeSessionId, isGroup) {
 // rename, copy link, plus (for the owner/admin) sharing — visibility +
 // per-person grants. Fetches its own access snapshot so callers only pass the
 // session id + current title.
-function SessionModifyModal({ controller, sessionId, initialTitle, currentModel, currentReasoningEffort, principal, onClose, onSwitchModel, onChanged, allowSharing = true }) {
+function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix = null, currentModel, currentReasoningEffort, principal, onClose, onSwitchModel, onChanged, allowSharing = true }) {
     const [tab, setTab] = React.useState("general");
     const [access, setAccess] = React.useState(null);
     const [title, setTitle] = React.useState(initialTitle || "");
@@ -6907,6 +6931,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
 
     const saveTitle = () => run(async () => {
         await controller.transport.renameSession(sessionId, title.trim());
+        await controller.refreshSessions?.();
     });
     // Resolve the typed text to a directory member (by name, email, or id).
     // Falls back to treating the text as a raw subject for a not-yet-seen user.
@@ -7031,9 +7056,13 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
             activeTab === "general" ? React.createElement(React.Fragment, null,
                 React.createElement("div", { className: "ps-share-section-label" }, "Name"),
                 React.createElement("div", { className: "ps-share-add-row" },
+                    titlePrefix
+                        ? React.createElement("span", { className: "ps-manage-title-prefix", title: "The agent's name stays in front" }, `${titlePrefix}:`)
+                        : null,
                     React.createElement("input", {
                         className: "ps-share-add-input", placeholder: "Session title",
-                        value: title, disabled: busy,
+                        value: title, disabled: busy, maxLength: RENAME_SESSION_MAX_LENGTH,
+                        "aria-label": titlePrefix ? `Session title after ${titlePrefix}` : "Session title",
                         onChange: (e) => setTitle(e.target.value),
                         onKeyDown: (e) => { if (e.key === "Enter") saveTitle(); },
                     }),
@@ -7363,6 +7392,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
                 ? state.outbox.bySessionId[activeSessionId]
                 : EMPTY_ARRAY,
             branding: state.branding,
+            agentTitles: state.agentTitles,
             connection: state.connection,
             sessionsById: state.sessions.byId,
             sessionsFlat: state.sessions.flat,
@@ -7380,6 +7410,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     }, shallowEqualObject);
     const selectorState = React.useMemo(() => ({
         branding: viewState.branding,
+        agentTitles: viewState.agentTitles,
         connection: viewState.connection,
         auth: { principal: viewState.authPrincipal },
         sessions: {
@@ -7404,6 +7435,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         viewState.activeHistory,
         viewState.activeSessionId,
         viewState.activeOutbox,
+        viewState.agentTitles,
         viewState.authPrincipal,
         viewState.branding,
         viewState.connection,
@@ -7565,7 +7597,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
  * ✕ hands the column back to the inspector/activity split, or re-collapses it
  * if it was already collapsed when the pane opened (see closeArtifactPane).
  */
-function ArtifactTakeoverPane({ controller, onClose }) {
+function ArtifactTakeoverPane({ controller, onClose, maximized = false, onToggleMaximized = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const view = useControllerSelector(controller, (state) => {
@@ -7603,8 +7635,9 @@ function ArtifactTakeoverPane({ controller, onClose }) {
         if (event.metaKey || event.ctrlKey || event.altKey) return;
         if (event.key === "ArrowLeft" || event.key === "[") { event.preventDefault(); step(-1); return; }
         if (event.key === "ArrowRight" || event.key === "]") { event.preventDefault(); step(1); return; }
-        if (event.key === "Escape") { event.preventDefault(); onClose(); }
-    }, [onClose, step]);
+        // Escape steps down one rung: full screen first, then close.
+        if (event.key === "Escape") { event.preventDefault(); if (maximized && onToggleMaximized) onToggleMaximized(); else onClose(); }
+    }, [maximized, onClose, onToggleMaximized, step]);
 
     const deepLink = buildArtifactLinkUrl(view.sessionId, view.filename);
 
@@ -7674,6 +7707,15 @@ function ArtifactTakeoverPane({ controller, onClose }) {
                 title: "Download",
                 "aria-label": "Download",
             }, React.createElement(DownloadGlyph)),
+            onToggleMaximized
+                ? React.createElement("button", {
+                    type: "button",
+                    className: "ps-artifact-pane-btn",
+                    onClick: onToggleMaximized,
+                    title: maximized ? "Back to the reader column (Esc)" : "Full screen — hide chat and sessions",
+                    "aria-label": maximized ? "Restore preview" : "Full screen preview",
+                }, React.createElement(maximized ? RestoreGlyph : MaximizeGlyph))
+                : null,
             React.createElement("button", {
                 type: "button",
                 className: "ps-artifact-pane-btn is-close",
@@ -7710,17 +7752,49 @@ function ArtifactTakeoverPane({ controller, onClose }) {
 function MobileCanvasLayer({ controller, visible = true }) {
     const [maximized, setMaximized] = React.useState(false);
     const toggleMaximized = React.useCallback(() => setMaximized((current) => !current), []);
+    // Turning the phone sideways with the canvas showing takes the canvas full
+    // screen: in landscape the portal's chrome would leave it a strip. Turning
+    // back restores the inset view, unless the person chose full screen.
+    const landscape = useMediaQuery(PHONE_LANDSCAPE_MEDIA_QUERY);
+    const autoMaximizedRef = React.useRef(false);
+    React.useEffect(() => {
+        if (!visible) return;
+        if (landscape) {
+            setMaximized((current) => {
+                if (!current) autoMaximizedRef.current = true;
+                return true;
+            });
+        } else if (autoMaximizedRef.current) {
+            autoMaximizedRef.current = false;
+            setMaximized(false);
+        }
+    }, [landscape, visible]);
+    // A pinch that starts on the canvas's own chrome must not zoom the page
+    // (iOS reports a page pinch as gesture events on the top document).
+    const layerRef = React.useRef(null);
+    React.useEffect(() => {
+        const el = layerRef.current;
+        if (!el) return undefined;
+        const stop = (event) => event.preventDefault();
+        el.addEventListener("gesturestart", stop);
+        el.addEventListener("gesturechange", stop);
+        return () => {
+            el.removeEventListener("gesturestart", stop);
+            el.removeEventListener("gesturechange", stop);
+        };
+    }, []);
     // Leaving the canvas drops full-screen, so coming back lands in the inset
     // presentation rather than a takeover the user has to undo before they can
     // reach the toolbar again.
     React.useEffect(() => {
-        if (!visible) setMaximized(false);
+        if (!visible) { setMaximized(false); autoMaximizedRef.current = false; }
     }, [visible]);
     // Kept MOUNTED while hidden: unmounting destroys the sandboxed document,
     // and with it everything the user typed and scrolled. The hidden state is
     // an off-screen transform (see .ps-mobile-canvas-layer.is-hidden), so the
     // frame keeps a real, unchanged box and no settle-reload fires on re-show.
     return React.createElement("div", {
+        ref: layerRef,
         className: `ps-mobile-canvas-layer${maximized ? " is-maximized" : ""}${visible ? "" : " is-hidden"}`,
         ...(visible ? {} : { inert: true, "aria-hidden": "true" }),
     },
@@ -7757,13 +7831,26 @@ function MobileArtifactOverlay({ controller }) {
         || isDiffArtifact(view.filename);
     const [contentWidth, setContentWidth] = React.useState(false);
     React.useEffect(() => { setContentWidth(false); }, [view.filename]);
+    // Full screen: the bar and the preview's own header step aside and the
+    // file takes the whole screen; one small button in the corner brings
+    // them back. Stepping to another file keeps it, closing drops it.
+    const [maximized, setMaximized] = React.useState(false);
 
     const step = React.useCallback((delta) => {
         controller.stepArtifactPreview(delta).catch(() => {});
     }, [controller]);
 
-    return React.createElement("div", { className: "ps-artifact-overlay" },
-        React.createElement("header", { className: "ps-artifact-overlay-bar" },
+    return React.createElement("div", { className: `ps-artifact-overlay${maximized ? " is-maximized" : ""}` },
+        maximized
+            ? React.createElement("button", {
+                type: "button",
+                className: "ps-artifact-overlay-restore",
+                onClick: () => setMaximized(false),
+                title: "Show the bar again",
+                "aria-label": "Restore preview",
+            }, React.createElement(RestoreGlyph))
+            : null,
+        maximized ? null : React.createElement("header", { className: "ps-artifact-overlay-bar" },
             React.createElement("button", {
                 type: "button",
                 className: "ps-artifact-overlay-btn",
@@ -7793,13 +7880,20 @@ function MobileArtifactOverlay({ controller }) {
                 disabled: !view.canNext,
                 onClick: () => step(1),
                 "aria-label": "Next artifact",
-            }, "›")),
+            }, "›"),
+            React.createElement("button", {
+                type: "button",
+                className: "ps-artifact-overlay-btn",
+                onClick: () => setMaximized(true),
+                title: "Full screen — hide this bar",
+                "aria-label": "Full screen preview",
+            }, React.createElement(MaximizeGlyph))),
         // No swipe handlers: horizontal drag belongs to the content, so a wide
         // code line can be scrolled without also changing which file you are on.
         React.createElement("div", {
             className: `ps-artifact-overlay-body${contentWidth ? " is-content-width" : ""}`,
         }, React.createElement(FilesPane, {
-            controller, focused: true, mobile: true, previewOnly: true, nativeScroll: true,
+            controller, focused: true, mobile: true, previewOnly: true, nativeScroll: true, chromeless: maximized,
         })));
 }
 
@@ -7874,28 +7968,60 @@ function useKeyboardTakeover(enabled, focusSelector = ".ps-prompt-input") {
  * detail sub-panel). This replaced chat-focus mode, which was a second way to
  * say "chat only" with its own chrome and its own exit.
  */
-function MobileWorkspace({ controller, layout = "split", onEnterZen }) {
-    const sessionPane = React.createElement(SessionPane, {
-        controller,
-        panelClassName: "ps-mobile-session-pane",
+/**
+ * The phone's Main pane: the chat takes the whole height, and the session list
+ * slides over it from the left when the toolbar's list button opens it.
+ *
+ * The list stays mounted while closed, so it keeps its scroll position and
+ * search between openings. Picking a session closes it; a folder row only
+ * opens or closes the folder, and multi-select taps only select.
+ */
+function MobileWorkspace({ controller, onEnterZen, sessionsOpen = false, onCloseSessions = null }) {
+    const close = () => { if (onCloseSessions) onCloseSessions(); };
+    React.useEffect(() => {
+        if (!sessionsOpen) return undefined;
+        const onKey = (event) => {
+            // A search box or dialog inside the list answers Escape first.
+            if (event.key !== "Escape" || event.defaultPrevented) return;
+            if (event.target instanceof Element && event.target.closest("input, textarea, dialog")) return;
+            close();
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
     });
-    if (layout === "chat") {
-        return React.createElement("div", { className: "ps-mobile-workspace is-chat-only" },
-            React.createElement("div", { className: "ps-mobile-chat-pane" },
-                React.createElement(ChatPane, { controller, mobile: true, fullWidth: true, onEnterZen })));
-    }
-    if (layout === "sessions") {
-        return React.createElement("div", { className: "ps-mobile-workspace is-sessions-only" },
+    return React.createElement("div", { className: "ps-mobile-workspace is-chat-only has-session-slideover" },
+        React.createElement("div", { className: "ps-mobile-chat-pane", ...(sessionsOpen ? { inert: true } : {}) },
+            React.createElement(ChatPane, { controller, mobile: true, fullWidth: true, onEnterZen })),
+        React.createElement("div", {
+            className: `ps-mobile-session-backdrop${sessionsOpen ? " is-open" : ""}`,
+            "aria-hidden": "true",
+            onClick: close,
+        }),
+        React.createElement("div", {
+            className: `ps-mobile-session-slideover${sessionsOpen ? " is-open" : ""}`,
+            ...(sessionsOpen ? {} : { inert: true, "aria-hidden": "true" }),
+            onClick: (event) => {
+                const row = event.target instanceof Element && event.target.closest(".ps-session-list-button[data-session-id]");
+                if (!row || row.dataset.groupRow === "1") return;
+                if (controller.getState().sessions?.selectMode) return;
+                // A tap on the already-open parent folds its sub-agents (the
+                // list's own behaviour); that is not a pick.
+                if (row.getAttribute("aria-selected") === "true" && row.querySelector(".ps-session-row-disclosure")) return;
+                close();
+            },
+        },
             React.createElement(SessionPane, {
                 controller,
                 panelClassName: "ps-mobile-session-pane",
                 showDetailBox: true,
-            }));
-    }
-    return React.createElement("div", { className: "ps-mobile-workspace" },
-        sessionPane,
-        React.createElement("div", { className: "ps-mobile-chat-pane" },
-            React.createElement(ChatPane, { controller, mobile: true, fullWidth: true, onEnterZen })));
+                rowDisclosure: true,
+                actions: React.createElement(IconButton, {
+                    className: "ps-mini-button",
+                    icon: React.createElement(FunnelGlyph),
+                    label: "Filter sessions",
+                    onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_SESSION_FILTER).catch(() => {}),
+                }),
+            })));
 }
 
 /** Frame-and-easel glyph for the Canvas toggle. */
@@ -8226,6 +8352,18 @@ function MaximizeGlyph() {
         React.createElement("path", { d: "M8 3H3v5M12 3h5v5M12 17h5v-5M8 17H3v-5", ...stroke }));
 }
 
+/** Three dots: the canvas controls, folded away. */
+function MoreGlyph() {
+    return React.createElement("svg", { viewBox: "0 0 20 20", width: 15, height: 15, "aria-hidden": "true" },
+        [5, 10, 15].map((cx) => React.createElement("circle", { key: cx, cx, cy: 10, r: 1.7, fill: "currentColor" })));
+}
+
+// A phone held sideways shows a full-screen canvas edge to edge. Its
+// controls fold into one small button in the corner, so they do not sit on
+// the page's own top bar; a tap opens them, and they fold again after a few
+// seconds without a touch.
+const CANVAS_PILL_FOLD_MS = 4000;
+
 /** Corners pulling IN — back to the canvas inset in the content region. */
 function RestoreGlyph() {
     const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 1.9, strokeLinecap: "round", strokeLinejoin: "round" };
@@ -8277,7 +8415,10 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
     // canvas-ws: why the server refused this app's manifest, shown until a redraw.
     // A page shows only its own guess; the owner needs the real reason.
     const [brokenManifest, setBrokenManifest] = React.useState(null);
-    React.useEffect(() => { setBrokenManifest(null); }, [latestRev]);
+    // A dismissed notice stays dismissed for this revision: the page's
+    // reads that are still in flight report the same reason again.
+    const dismissedManifestRef = React.useRef(null);
+    React.useEffect(() => { setBrokenManifest(null); dismissedManifestRef.current = null; }, [latestRev]);
     const hostBox = useElementBox(hostRef);
     // The frame geometry each revision LOADED at. A sandboxed page cannot be
     // poked after the fact (no reaching into an opaque origin), and pages
@@ -8291,8 +8432,62 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
     const loadedBoxRef = React.useRef(null);
     const zoomRef = React.useRef(zoom);
     zoomRef.current = zoom;
+    // Pinch magnification of the live frame within its box: scale s about a
+    // translation (tx, ty), in host pixels. Applied straight to the frame's
+    // style so a moving pinch costs no React render.
+    const pinchRef = React.useRef({ s: 1, tx: 0, ty: 0, start: null, seen: [] });
+    const [pinched, setPinched] = React.useState(false);
+    const [panHint, setPanHint] = React.useState(false);
+    React.useEffect(() => {
+        if (!pinched || canvasPanHintShown) return undefined;
+        canvasPanHintShown = true;
+        setPanHint(true);
+        const timer = setTimeout(() => setPanHint(false), 2600);
+        return () => clearTimeout(timer);
+    }, [pinched]);
+    const applyPinch = React.useCallback((animate = false) => {
+        const el = liveIframeElRef.current;
+        if (!el) return;
+        const { s: scale, tx, ty } = pinchRef.current;
+        const z = zoomRef.current || 1;
+        const base = z !== 1 ? ` scale(${z})` : "";
+        el.style.transition = animate ? "transform 180ms ease-out" : "";
+        el.style.transformOrigin = "top left";
+        el.style.transform = scale === 1 && !tx && !ty ? (base ? base.trim() : "") : `translate(${tx}px, ${ty}px) scale(${scale})${base}`;
+        // The frame's touches arrive by message, so a touch reported after this
+        // line may have been located against an earlier transform. Note when
+        // each transform began, and read each touch against the one in force
+        // when the frame handled it (the frame stamps the time it handled it).
+        const seen = pinchRef.current.seen;
+        seen.push({ at: performance.timeOrigin + performance.now(), s: scale, tx, ty });
+        if (seen.length > 40) seen.splice(0, seen.length - 40);
+    }, []);
+    const resetPinch = React.useCallback(() => {
+        pinchRef.current = { s: 1, tx: 0, ty: 0, start: null, seen: [] };
+        applyPinch(true);
+        setPinched(false);
+    }, [applyPinch]);
+    // A new revision, or a change of the zoom setting, starts unmagnified.
+    // The transform was written straight onto the frame, so write it back:
+    // React does not reset a style it never set.
+    React.useEffect(() => {
+        pinchRef.current = { s: 1, tx: 0, ty: 0, start: null, seen: [] };
+        setPinched(false);
+        applyPinch(false);
+    }, [live?.url, zoom, applyPinch]);
     const visibleRef = React.useRef(visible);
     visibleRef.current = visible;
+    // Hiding the canvas or leaving its session ends any two-finger swipe it
+    // was driving, so a half-finished gesture can never complete later.
+    React.useEffect(() => {
+        const pinch = pinchRef.current;
+        if (pinch.mode === "swipe" && typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent(TWO_FINGER_SWIPE_EVENT, { detail: { phase: "cancel", gesture: pinch.gesture } }));
+        }
+        pinch.mode = null;
+        pinch.start = null;
+        pinch.gesture = null;
+    }, [visible, sessionId]);
 
     // The interactive-canvas bridge. Provenance is THIS check: a message is
     // accepted only when its source window is the LIVE canvas iframe — the
@@ -8318,6 +8513,77 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             // window that asked). Writes and actions stay live-frame only.
             const fromStaging = Boolean(stagingIframeElRef.current && event.source === stagingIframeElRef.current.contentWindow && stagingIframeElRef.current.dataset.session === sessionId);
             if (!fromLive && !fromStaging) return;
+            if (payload.type === "canvas-pinch") {
+                // Only the canvas the person is looking at: the frame stays
+                // mounted while hidden, and a hidden page must not zoom
+                // itself or move the portal back and forward.
+                if (!fromLive || !visibleRef.current) return;
+                if (!["start", "move", "end"].includes(payload.phase)) return;
+                if (payload.phase !== "end" && !["x", "y", "d"].every((key) => Number.isFinite(Number(payload[key])))) return;
+                const pinch = pinchRef.current;
+                const z = zoomRef.current || 1;
+                const box = hostRef.current?.getBoundingClientRect();
+                // The transform this touch was located against.
+                const when = Number(payload.t) || Infinity;
+                let shown = { s: 1, tx: 0, ty: 0 };
+                for (let i = pinch.seen.length - 1; i >= 0; i--) {
+                    if (pinch.seen[i].at <= when) { shown = pinch.seen[i]; break; }
+                }
+                // Where the fingers are on the host, and how far apart.
+                const hx = shown.tx + shown.s * z * (Number(payload.x) || 0);
+                const hy = shown.ty + shown.s * z * (Number(payload.y) || 0);
+                const d = Math.max(1, Number(payload.d) || 1) * shown.s * z;
+                const swipe = (phase, x = hx, y = hy) => {
+                    if (!box || typeof window === "undefined") return;
+                    window.dispatchEvent(new CustomEvent(TWO_FINGER_SWIPE_EVENT, { detail: { phase, x: box.left + x, y: box.top + y, gesture: pinch.gesture } }));
+                };
+                if (payload.phase === "start") {
+                    // A gesture starts on the canvas box or not at all.
+                    if (!box || hx < 0 || hy < 0 || hx > box.width || hy > box.height) { pinch.start = null; pinch.mode = null; return; }
+                    pinch.gesture = {};
+                    pinch.start = { s: pinch.s, x: Number(payload.x) || 0, y: Number(payload.y) || 0, d };
+                    // Two fingers sideways at 1x are the phone's back and
+                    // forward, as everywhere else. A magnified page keeps
+                    // two fingers for moving it.
+                    pinch.mode = pinch.s > 1.001 ? "pinch" : null;
+                    pinch.origin = { x: hx, y: hy, d };
+                    return;
+                }
+                if (payload.phase === "move" && pinch.start && !pinch.mode && pinch.origin) {
+                    const kind = classifyTwoFinger(hx - pinch.origin.x, hy - pinch.origin.y, d - pinch.origin.d);
+                    if (!kind) return;
+                    pinch.mode = kind === "swipe" ? "swipe" : "pinch";
+                    if (pinch.mode === "swipe") swipe("start", pinch.origin.x, pinch.origin.y);
+                }
+                if (pinch.mode === "swipe") {
+                    if (payload.phase === "move") swipe("move");
+                    else if (payload.phase === "end") { swipe("end"); pinch.mode = null; pinch.start = null; }
+                    return;
+                }
+                if (payload.phase === "move" && pinch.start && box) {
+                    // Keep the point first touched under the fingers while the
+                    // scale follows their spread. Moving both fingers together
+                    // moves a magnified page; spreading them zooms.
+                    const next = Math.min(CANVAS_PINCH_MAX, Math.max(1, pinch.start.s * d / pinch.start.d));
+                    let tx = hx - next * z * pinch.start.x;
+                    let ty = hy - next * z * pinch.start.y;
+                    // Never let the page slide off its box: the magnified frame
+                    // always covers it edge to edge.
+                    tx = Math.min(0, Math.max(box.width * (1 - next), tx));
+                    ty = Math.min(0, Math.max(box.height * (1 - next), ty));
+                    Object.assign(pinch, { s: next, tx: next === 1 ? 0 : tx, ty: next === 1 ? 0 : ty });
+                    applyPinch(false);
+                    if (next > 1.02 && !pinched) setPinched(true);
+                    return;
+                }
+                if (payload.phase === "end") {
+                    pinch.start = null;
+                    pinch.mode = null;
+                    if (pinch.s < 1.08) resetPinch();
+                    return;
+                }
+                return;
+            }
             if (payload.type === "moa-panel-key") {
                 if (fromLive && document.activeElement === frameEl && ["Tab", "Escape"].includes(payload.key)) panelKeyRef.current?.(payload.key, payload.backwards === true);
                 return;
@@ -8398,7 +8664,8 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
                 const fail = (error, code = "ERROR") => {
                     const message = String(error?.message || error || "failed");
                     if (error?.code === "CANVAS_WS_UNDECLARED" && /manifest is broken/i.test(message)) {
-                        setBrokenManifest(message.replace(/^.*?manifest is broken[^:]*:\s*/i, ""));
+                        const reason = message.replace(/^.*?manifest is broken[^:]*:\s*/i, "");
+                        if (reason !== dismissedManifestRef.current) setBrokenManifest(reason);
                     }
                     post({ type: "canvas-ws-result", id, ok: false, error: message, code: error?.code || code });
                 };
@@ -8677,7 +8944,19 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
         }
         : undefined;
 
-    return React.createElement("div", { ref: hostRef, className: "ps-html-preview-host is-fitting" },
+    return React.createElement("div", { ref: hostRef, className: `ps-html-preview-host is-fitting${pinched ? " is-pinched" : ""}` },
+        pinched && panHint
+            ? React.createElement("span", { className: "ps-canvas-pinch-hint", role: "status" }, "Two fingers to move")
+            : null,
+        pinched
+            ? React.createElement("button", {
+                type: "button",
+                className: "ps-canvas-pinch-reset",
+                onClick: resetPinch,
+                "aria-label": "Reset canvas zoom",
+                title: "Reset canvas zoom",
+            }, "1:1")
+            : null,
         [live, staging].filter(Boolean).map((frame) => React.createElement("iframe", {
             key: `canvas:${frame.rev}:${frame.url}`,
             ref: frame === live
@@ -8712,7 +8991,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
         brokenManifest && !loadError
             ? React.createElement("div", { className: "ps-canvas-load-error", role: "status" },
                 React.createElement("span", null, `This canvas app cannot use the session's files: its manifest is broken (${brokenManifest}). Ask the agent to draw it again.`),
-                React.createElement("button", { type: "button", className: "ps-artifact-pane-btn", onClick: () => setBrokenManifest(null) }, "Dismiss"))
+                React.createElement("button", { type: "button", className: "ps-artifact-pane-btn", onClick: () => { dismissedManifestRef.current = brokenManifest; setBrokenManifest(null); } }, "Dismiss"))
             : null,
         loadError
             ? React.createElement("div", { className: "ps-canvas-load-error" },
@@ -8847,9 +9126,43 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     // With a Workspace tab the strip always renders: it holds the Canvas |
     // Workspace switch, the only way to reach the Workspace on a phone.
     const showRevStrip = mobile && (workspaceTab || view.exists || maximized);
+    const landscape = useMediaQuery(PHONE_LANDSCAPE_MEDIA_QUERY);
+    const foldable = mobile && maximized && landscape;
+    const [pillOpen, setPillOpen] = React.useState(false);
+    const pillTouch = React.useRef(0);
+    React.useEffect(() => { if (!foldable) setPillOpen(false); }, [foldable]);
+    React.useEffect(() => {
+        if (!foldable || !pillOpen) return undefined;
+        let timer;
+        const arm = () => {
+            clearTimeout(timer);
+            timer = setTimeout(() => {
+                // A dialog opened from the controls keeps them open.
+                if (shareOpen) { arm(); return; }
+                setPillOpen(false);
+            }, CANVAS_PILL_FOLD_MS);
+        };
+        arm();
+        pillTouch.current = arm;
+        return () => { clearTimeout(timer); pillTouch.current = 0; };
+    }, [foldable, pillOpen, shareOpen]);
+    const folded = foldable && !pillOpen;
     const header = mobile
-        ? (showRevStrip
-            ? React.createElement("header", { className: "ps-artifact-pane-bar is-rev-strip" },
+        ? (showRevStrip && folded
+            ? React.createElement("header", { className: "ps-artifact-pane-bar is-rev-strip is-folded" },
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-canvas-max-btn ps-canvas-pill-handle",
+                    onClick: () => setPillOpen(true),
+                    title: "Canvas controls",
+                    "aria-label": "Canvas controls",
+                    "aria-expanded": "false",
+                }, React.createElement(MoreGlyph)))
+            : showRevStrip
+            ? React.createElement("header", {
+                className: `ps-artifact-pane-bar is-rev-strip${foldable ? " is-unfolded" : ""}`,
+                ...(foldable ? { onPointerDown: () => { if (typeof pillTouch.current === "function") pillTouch.current(); } } : {}),
+            },
                 React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode, compact: true }),
                 React.createElement("span", { className: "ps-artifact-pane-type", title: onCanvas ? (view.note || undefined) : undefined },
                     onCanvas ? (view.exists ? `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}` : "") : "Workspace"),
@@ -8989,8 +9302,15 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
             : null);
 }
 
+// On a phone, Activity is a tab of the diagnostics view rather than a stop of
+// the toolbar button. The phone's diagnostics view provides this; desktop
+// never does, so its tab row is unchanged.
+const MobileDiagnosticsContext = React.createContext(null);
+
 function InspectorTabs({ activeTab, controller }) {
     const visibleTabs = React.useMemo(() => getVisibleInspectorTabs(controller), [controller]);
+    const phoneDiagnostics = React.useContext(MobileDiagnosticsContext);
+    const activityActive = Boolean(phoneDiagnostics?.activityActive);
     // Icon-only tabs: the full label (e.g. "Node Map") lives in the IconButton
     // tooltip, so there's no per-label width pressure and no mobile shortening.
     // Default IconButton className ("ps-toolbar-button") so these render
@@ -9000,12 +9320,25 @@ function InspectorTabs({ activeTab, controller }) {
             key: tab,
             icon: INSPECTOR_TAB_ICONS[tab] ? React.createElement(INSPECTOR_TAB_ICONS[tab]) : "•",
             label: INSPECTOR_TAB_LABELS[tab] || tab,
-            active: activeTab === tab,
+            active: !activityActive && activeTab === tab,
             onClick: () => {
+                phoneDiagnostics?.selectInspector();
                 controller.setFocus("inspector");
                 controller.selectInspectorTab(tab).catch(() => {});
             },
-        })));
+        })),
+        phoneDiagnostics
+            ? React.createElement(IconButton, {
+                key: "activity",
+                icon: React.createElement(ActivityPaneGlyph),
+                label: "Activity",
+                active: activityActive,
+                onClick: () => {
+                    phoneDiagnostics.selectActivity();
+                    controller.setFocus("activity");
+                },
+            })
+            : null);
 }
 
 // `previewOnly` renders JUST the artifact preview panel, so the desktop layout
@@ -9542,6 +9875,8 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
     // republishes from those measurements. Runs after paint on mount and tab
     // switches; the ±2 tolerance keeps it from ping-ponging with publish().
     const clampFrameRef = React.useRef(null);
+    const [fontsLoadedSeq, setFontsLoadedSeq] = React.useState(0);
+    React.useEffect(() => onWebFontsLoaded(() => setFontsLoadedSeq((n) => n + 1)), []);
     React.useEffect(() => {
         if (!mobile) return undefined;
         clampFrameRef.current = requestAnimationFrame(() => {
@@ -9580,7 +9915,7 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         return () => {
             if (clampFrameRef.current) cancelAnimationFrame(clampFrameRef.current);
         };
-    }, [controller, mobile, viewState.inspectorTab, viewState.activeSessionId]);
+    }, [controller, mobile, viewState.inspectorTab, viewState.activeSessionId, fontsLoadedSeq]);
 
     if (viewState.inspectorTab === "files" && !inspector.disabled) {
         return React.createElement(FilesPane, { controller, focused: viewState.focused, mobile });
@@ -9659,7 +9994,7 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
     });
 }
 
-function ActivityPane({ controller, panelClassName = "", extraActions = null }) {
+function ActivityPane({ controller, panelClassName = "", extraActions = null, topContent = null, forceActivity = false }) {
     const viewState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
         const layout = computeStateLayout(state);
@@ -9686,7 +10021,7 @@ function ActivityPane({ controller, panelClassName = "", extraActions = null }) 
     }, shallowEqualObject);
     // On the Node Map tab this pane IS the worker-details pane; Activity
     // returns the moment the inspector shows anything else.
-    const nodeMode = viewState.inspectorTab === "nodes";
+    const nodeMode = !forceActivity && viewState.inspectorTab === "nodes";
     const selectorState = React.useMemo(() => ({
         branding: viewState.branding,
         admin: { workers: viewState.adminWorkers },
@@ -9726,6 +10061,7 @@ function ActivityPane({ controller, panelClassName = "", extraActions = null }) 
         color: "gray",
         focused: viewState.focused,
         actions: extraActions,
+        topContent,
         lines: activity.lines,
         scrollOffset: viewState.scroll,
         scrollMode: viewState.followBottom ? "bottom" : "top",
@@ -10072,14 +10408,29 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         };
     }, shallowEqualObject);
     const inputRef = React.useRef(null);
+    const shellRef = React.useRef(null);
     const attachInputRef = React.useRef(null);
     const [dragOver, setDragOver] = React.useState(false);
+    // A narrow composer (the zen rail) takes the phone's layout: no "you"
+    // label and the short hint. Beside a label and three buttons, the input
+    // was ~140px wide and the long hint wrapped it to four lines. Measured
+    // on the shell, whose width the label does not change.
+    const [narrow, setNarrow] = React.useState(false);
+    React.useLayoutEffect(() => {
+        const node = shellRef.current;
+        if (!node || typeof ResizeObserver === "undefined") return undefined;
+        const update = () => setNarrow(node.clientWidth > 0 && node.clientWidth < COMPOSER_NARROW_PX);
+        update();
+        const observer = new ResizeObserver(update);
+        observer.observe(node);
+        return () => observer.disconnect();
+    }, []);
     const phone = useMediaQuery(PHONE_MEDIA_QUERY);
     const touchKeyboard = useMediaQuery(TOUCH_KEYBOARD_MEDIA_QUERY);
     const selectedQueued = promptState.selectedOutboxPhase === "queued";
     const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
     const selectedReadOnly = selectedQueued || selectedCancelling;
-    const placeholder = mobile && !promptState.editingPending ? (promptState.answerMode ? "Answer…" : "Message…") : promptState.answerMode
+    const placeholder = (mobile || narrow) && !promptState.editingPending ? (promptState.answerMode ? "Answer…" : "Message…") : promptState.answerMode
         ? "Type an answer and press Enter"
         : promptState.editingPending
             ? selectedCancelling
@@ -10114,7 +10465,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         const length = String(promptState.value || "").length;
         // Equal length can still drop a wrapped line (a selection replaced by
         // as many characters), so only strict growth takes the cheap path.
-        const mayHaveShrunk = length <= lastPromptLengthRef.current;
+        // The first character also replaces the placeholder, which may have
+        // wrapped to more lines than the text needs.
+        const mayHaveShrunk = length <= lastPromptLengthRef.current || lastPromptLengthRef.current === 0;
         lastPromptLengthRef.current = length;
         growInput(mayHaveShrunk || length === 0);
         // Empty textareas measure their placeholder too. Send briefly shows
@@ -10214,6 +10567,21 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
     }, [active, mobile, autoFocus, promptState.cursor, promptState.value, promptState.focused, promptState.modalOpen]);
 
     const sendPrompt = React.useCallback(() => {
+        // The send cue confirms something will go out: text, a staged image,
+        // or a queued batch that an empty send flushes. An empty send is silent.
+        const sendState = controller.getState();
+        const sendSessionId = sendState.sessions.activeSessionId;
+        // Editing a message that is already queued or being cancelled only
+        // closes the editor: nothing goes out.
+        const promptEdit = sendSessionId ? controller.getPromptEditSessionMatch?.(sendSessionId) : null;
+        const editedPhase = promptEdit
+            ? controller.getSessionOutbox?.(sendSessionId)?.find((item) => item.id === promptEdit.itemId)?.phase
+            : null;
+        const willSend = editedPhase !== "queued" && editedPhase !== "cancelling" && (
+            String(sendState.ui.prompt || "").trim()
+            || controller.getPromptAttachments?.().some((attachment) => attachment?.kind === "image")
+            || (sendSessionId && controller.getPendingOutboxItems?.(sendSessionId)?.length > 0));
+        if (willSend) themeSoundPlayer().cue("send");
         controller.handleCommand(UI_COMMANDS.SEND_PROMPT)
             .catch(() => {})
             .finally(() => {
@@ -10275,7 +10643,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             : "❯";
 
     return React.createElement("div", {
-        className: `ps-prompt-shell${compact ? " is-compact" : ""}${mobile ? " is-mobile" : ""}${dragOver ? " is-drag-over" : ""}`,
+        ref: shellRef,
+        className: `ps-prompt-shell${compact ? " is-compact" : ""}${mobile ? " is-mobile" : ""}${narrow && !compact && !mobile ? " is-narrow" : ""}${dragOver ? " is-drag-over" : ""}`,
         // Scopes the composer's turn-control selectors to this session (MoA
         // panels each have their own composer).
         "data-session-id": promptState.sessionId || undefined,
@@ -10689,7 +11058,12 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, pr
     tooltipNode);
 }
 
-function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", onSelectMobilePane = null, mobileMainLayout = "split" }) {
+// The narrowest the toolbar's left flank gets: room for the full-screen
+// canvas controls (pane tabs, slot picker, zoom, zen, restore) at their
+// smallest, so they never overlap the session controls.
+const TOOLBAR_LEFT_FLANK_MIN_PX = 360;
+
+function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", mobileDiagnosticsPane = "inspector", onSelectMobilePane = null, mobileSessionsOpen = false, onToggleMobileSessions = null }) {
     const [headerSlot, setHeaderSlot] = React.useState(null);
     React.useEffect(() => {
         if (typeof document === "undefined") return;
@@ -10699,6 +11073,55 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
         // the inline strip; there is no header room for it on a phone.
         setHeaderSlot(!mobile ? document.getElementById("ps-header-toolbar-slot") : null);
     }, [mobile]);
+    // The session controls sit in the middle of the SCREEN, not just of the
+    // toolbar: the brand on the left and the account controls on the right
+    // differ in width, so a toolbar centred between them is off-centre. The
+    // two flanks get weights that put the middle group on the header's centre;
+    // each flank still keeps room for its own content.
+    const toolbarRef = React.useRef(null);
+    // Layout effect and a synchronous observer: the weights land before the
+    // header paints, so its controls never shift (or a MoA tab never
+    // disappears) a frame after they appear.
+    React.useLayoutEffect(() => {
+        const bar = toolbarRef.current;
+        if (mobile || !headerSlot || !bar || typeof ResizeObserver === "undefined") return undefined;
+        const header = bar.closest(".portal-header");
+        const place = () => {
+            const nav = bar.querySelector(":scope > .ps-toolbar-navigation");
+            const left = bar.querySelector(":scope > .ps-toolbar-side.is-left");
+            const right = bar.querySelector(":scope > .ps-toolbar-side.is-right");
+            if (!header || !nav || !left || !right) return;
+            const h = header.getBoundingClientRect();
+            const n = nav.getBoundingClientRect();
+            // Weights are the flank widths in px: centring moves width from
+            // one flank to the other. Only geometry decides them, never the
+            // flanks' content, so Back / Forward stay put between screens.
+            // The left flank keeps room for the full-screen canvas controls.
+            // The brand is wider than the space right of the toolbar, so
+            // centring only ever moves width to the right flank: it never
+            // gets less than an even split would give it.
+            const lw = left.getBoundingClientRect().width, rw = right.getBoundingClientRect().width;
+            const total = lw + rw;
+            const wanted = lw + (h.left + h.width / 2) - (n.left + n.width / 2);
+            const l = Math.min(Math.max(TOOLBAR_LEFT_FLANK_MIN_PX, wanted), total / 2);
+            const r = Math.max(1, total - l);
+            if (Math.abs(l - lw) < 1) return;
+            bar.style.setProperty("--ps-toolbar-left", `${Math.round(l)}fr`);
+            bar.style.setProperty("--ps-toolbar-right", `${Math.round(r)}fr`);
+        };
+        // The header, the toolbar and the middle group are placed in the same
+        // frame. The flanks are only watched for a later frame: placing changes
+        // their size, and a same-frame notice for that would be a
+        // ResizeObserver loop error.
+        const nav = bar.querySelector(":scope > .ps-toolbar-navigation");
+        const now = new ResizeObserver(place);
+        for (const el of [header, bar, nav]) if (el) now.observe(el);
+        let frame = 0;
+        const later = new ResizeObserver(() => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; place(); }); });
+        for (const el of bar.querySelectorAll(":scope > .ps-toolbar-side")) later.observe(el);
+        place();
+        return () => { now.disconnect(); later.disconnect(); if (frame) cancelAnimationFrame(frame); };
+    }, [mobile, headerSlot]);
     const adminVisible = useControllerSelector(controller, (state) => Boolean(state.admin?.visible));
     // The same panel is Settings for a plain user — their own providers,
     // default and packages — and the Admin Console for an admin, who also
@@ -10714,17 +11137,30 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
     ));
     const consoleName = isAdminUser ? "admin console" : "settings";
     const budgetOpen = useControllerSelector(controller, (state) => Boolean(state.ui?.budgetOpen));
+    // A session asking a question waits on the user; the phone's list button
+    // carries the same corner dot the canvas button uses for unseen changes.
+    const sessionWaiting = useControllerSelector(controller, (state) => Boolean(mobile
+        && Object.values(state.sessions?.byId || {}).some((session) => session?.pendingQuestion?.question)));
     const canvasView = useControllerSelector(controller, selectCanvasView, shallowEqualObject);
     const diagnosticsOpen = useControllerSelector(controller, (s) => s?.ui?.diagnosticsOpen === true);
     const canvasMaximized = useControllerSelector(controller, (s) => s?.ui?.canvasMaximized === true);
     // The artifact reader takes over the right side; while it is up, the
     // surface on screen is NOT the canvas, so the canvas toggle must not
     // read as active (its next press still shows the canvas).
-    const artifactReaderOpen = useControllerSelector(controller, (s) => Boolean(s?.files?.paneOpen && s?.files?.selectedArtifactId));
+    const artifactReaderOpen = useControllerSelector(controller, selectArtifactPaneShown);
 
     // Icon-first toolbar: the glyph is the affordance, the label rides a
     // tooltip (desktop hover via title; mobile long-press via IconButton).
     const buttonDefs = [
+        // Phone only, and leftmost: the session list slides over the chat.
+        ...(mobile ? [{
+            key: "sessions",
+            icon: React.createElement(SessionListGlyph),
+            label: mobileSessionsOpen ? "Hide the session list" : "Sessions",
+            onClick: () => { if (onToggleMobileSessions) onToggleMobileSessions(); },
+            active: mobileSessionsOpen,
+            badge: sessionWaiting && !mobileSessionsOpen,
+        }] : []),
         // ONE new-session button, and it opens the chooser. The plain "＋"
         // (default model, generic agent) and "＋⚙" (choose model, then agent)
         // were two buttons for one intent, and the pair cost a slot the phone
@@ -10735,12 +11171,14 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
             label: "New session — choose model and agent",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {}),
         },
-        {
+        // On a phone the filter lives in the session list's own header, so
+        // the list button costs the toolbar no width.
+        ...(mobile ? [] : [{
             key: "filter",
             icon: React.createElement(FunnelGlyph),
             label: "Filter sessions",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_SESSION_FILTER).catch(() => {}),
-        },
+        }]),
         {
             key: "theme",
             icon: React.createElement(ContrastGlyph),
@@ -10872,35 +11310,24 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
     };
 
     if (mobile) {
-        // One row, two groups: actions left, the three VIEW MODES right —
-        // they used to be word tabs pinned to the bottom of the screen, and
-        // folding them up here hands that whole strip back to the chat pane.
-        // The Main button is a CYCLE once you are already on Main: split →
-        // chat only → sessions only. ONE glyph for all three states (a
-        // layout/panes mark) — a shape-shifting icon reads as three different
-        // buttons; only the tooltip names what the next tap gives you.
-        const mainLabels = {
-            split: "Sessions — list and chat (tap for chat only)",
-            chat: "Sessions — chat only (tap for list only)",
-            sessions: "Sessions — list only (tap for both)",
-        };
-        // Two tabs, not three: the row was out of space, and Inspector +
-        // Activity are one idea on the desktop already (Diagnostics, the
-        // bug). The bug button opens the inspector; tapping it again while
-        // inside diagnostics flips inspector <-> activity; the main button is
-        // always the way back.
+        // One row, two groups: actions left, the VIEW MODES right — they used
+        // to be word tabs pinned to the bottom of the screen, and folding them
+        // up here hands that whole strip back to the chat pane. Main is the
+        // chat; the session list is the slide-over behind the leftmost button.
+        // There is no Chat button: the chat is where every other surface
+        // returns to. Diagnostics is a toggle: it opens the diagnostics view
+        // (the inspector tabs, with Activity as one more tab) where it was
+        // left, and a second tap returns to the chat. The list button and the
+        // canvas toggle also lead back to the chat.
         const onDiagnostics = mobilePane === "inspector" || mobilePane === "activity";
-        const nextDiagnosticsPane = mobilePane === "inspector" ? "activity" : "inspector";
+        const diagnosticsPane = mobileDiagnosticsPane === "activity" ? "activity" : "inspector";
         const paneDefs = [
-            { id: "workspace", icon: MainLayoutGlyph, label: mainLabels[mobileMainLayout] || mainLabels.split, focus: "chat" },
             {
-                id: nextDiagnosticsPane,
+                id: onDiagnostics ? "workspace" : diagnosticsPane,
                 icon: DiagnosticsGlyph,
                 active: onDiagnostics,
-                label: onDiagnostics
-                    ? (mobilePane === "inspector" ? "Diagnostics — inspector (tap for activity)" : "Diagnostics — activity (tap for inspector)")
-                    : "Diagnostics — inspector and activity",
-                focus: nextDiagnosticsPane,
+                label: onDiagnostics ? "Diagnostics — back to the chat" : "Diagnostics",
+                focus: onDiagnostics ? "chat" : diagnosticsPane,
             },
         ];
         return React.createElement("div", { className: "ps-toolbar is-mobile" },
@@ -10909,10 +11336,10 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
                 React.createElement("div", { className: "ps-toolbar-row-actions is-panes" },
                     ...buttonDefs.filter(def => def.key === "moa").map(renderButton),
                     paneDefs.map((def) => React.createElement(IconButton, {
-                        key: def.id === "workspace" ? "workspace" : "diagnostics",
+                        key: "diagnostics",
                         icon: React.createElement(def.icon),
                         label: def.label,
-                        active: def.active ?? (mobilePane === def.id),
+                        active: def.active ?? (mobilePane === def.id && !mobileSessionsOpen),
                         onClick: () => {
                             if (onSelectMobilePane) onSelectMobilePane(def.id, def.focus);
                         },
@@ -10955,7 +11382,7 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
         ...pick(["theme"]),
     ];
 
-    const toolbar = React.createElement("div", { className: `ps-toolbar${moa?.active ? " is-moa" : ""}` },
+    const toolbar = React.createElement("div", { ref: toolbarRef, className: `ps-toolbar${moa?.active ? " is-moa" : ""}` },
         React.createElement("div", { className: "ps-toolbar-side is-left" },
             moa?.active ? React.createElement("div", { id: "ps-moa-status-slot" }) : null,
             // Canvas controls retain their state in CanvasPane. Their portal
@@ -11217,7 +11644,8 @@ function SessionColumnResizeHandle({ controller, portalSessionColumnAdjust = 0 }
             event.preventDefault();
             capturePointerForDrag(event);
             const gridNode = event.currentTarget.closest(".ps-workspace-main-grid");
-            const bounds = portalSessionColumnBounds(gridNode?.getBoundingClientRect?.().width);
+            const bounds = portalSessionColumnBounds(gridNode?.getBoundingClientRect?.().width,
+                gridNode?.closest?.(".ps-workspace-grid")?.getBoundingClientRect?.().width);
             dragStateRef.current = {
                 startX: event.clientX,
                 startAdjust: Number(portalSessionColumnAdjust) || 0,
@@ -11232,7 +11660,8 @@ function SessionColumnResizeHandle({ controller, portalSessionColumnAdjust = 0 }
         },
         onKeyDown: (event) => {
             const gridNode = event.currentTarget.closest(".ps-workspace-main-grid");
-            const bounds = portalSessionColumnBounds(gridNode?.getBoundingClientRect?.().width);
+            const bounds = portalSessionColumnBounds(gridNode?.getBoundingClientRect?.().width,
+                gridNode?.closest?.(".ps-workspace-grid")?.getBoundingClientRect?.().width);
             const adjustBy = (delta) => {
                 const nextAdjust = clampNumber(
                     (Number(portalSessionColumnAdjust) || 0) + delta,
@@ -11478,7 +11907,8 @@ function ChatRightResizeHandle({ controller, target, adjust = 0 }) {
             // How far the right block may still grow: exactly what chat can
             // give before it reaches its floor. Measured at drag start from
             // the chat slot (the main grid's last column), the same element
-            // the grid template protects with its own minimum.
+            // the grid template protects with its own minimum. The session
+            // list never gives way to the right block; see the grid template.
             const chatSlot = document.querySelector(".ps-workspace-main-grid > .ps-workspace-pane-slot:last-child");
             const chatWidth = chatSlot ? chatSlot.getBoundingClientRect().width : Number.POSITIVE_INFINITY;
             const startAdjust = Number(adjust) || 0;
@@ -13934,6 +14364,12 @@ function ModalLayer({ controller }) {
                     },
                     autoFocus: true,
                 }),
+                modalState.renameSession.lengthLine
+                    ? React.createElement("div", {
+                        className: `ps-modal-input-count${modalState.renameSession.atLimit ? " is-at-limit" : ""}`,
+                        role: modalState.renameSession.atLimit ? "status" : undefined,
+                    }, modalState.renameSession.lengthLine)
+                    : null,
                 React.createElement("div", { className: "ps-modal-details" },
                     normalizeLines(modalState.renameSession.helpLines || []).map((line, index) => React.createElement(Line, { key: `help:${index}`, line, theme, className: "ps-modal-detail-line" })),
                 ),
@@ -14224,6 +14660,32 @@ function ScopedModalLayer({ controller }) {
     return React.createElement(ModalLayer, { controller });
 }
 
+/**
+ * Keep the session row a keyboard move selected on screen.
+ *
+ * Selection from elsewhere (a refresh, a deep link, MoA) never moves the list;
+ * see the active-row reveal in SessionPane. An arrow or page key IN the list is
+ * the user moving through it, so the row they land on must stay visible:
+ * "nearest" scrolls only when the row is off screen, and only as far as needed.
+ */
+function revealKeyboardSessionRow(controller) {
+    let frames = 0;
+    const step = () => {
+        const sessionId = controller.getState().sessions.activeSessionId;
+        const row = sessionId
+            ? [...document.querySelectorAll(".ps-session-list-button[data-session-id]")]
+                .find((node) => node.dataset.sessionId === sessionId && node.offsetParent && !node.closest(".ps-modal"))
+            : null;
+        if (row) {
+            row.scrollIntoView({ block: "nearest", inline: "nearest" });
+            return;
+        }
+        // The new selection renders on the next frame or two.
+        if (++frames < 4) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+}
+
 function useKeyboardShortcuts(controller, mobile, suspended = false) {
     React.useEffect(() => {
         if (suspended) return undefined;
@@ -14482,12 +14944,14 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
             }
             if (focusRegion === "sessions" && (event.key === "ArrowUp" || event.key === "k")) {
                 event.preventDefault();
-                controller.handleCommand(UI_COMMANDS.MOVE_SESSION_UP).catch(() => {});
+                controller.handleCommand(UI_COMMANDS.MOVE_SESSION_UP)
+                    .then(() => revealKeyboardSessionRow(controller)).catch(() => {});
                 return;
             }
             if (focusRegion === "sessions" && (event.key === "ArrowDown" || event.key === "j")) {
                 event.preventDefault();
-                controller.handleCommand(UI_COMMANDS.MOVE_SESSION_DOWN).catch(() => {});
+                controller.handleCommand(UI_COMMANDS.MOVE_SESSION_DOWN)
+                    .then(() => revealKeyboardSessionRow(controller)).catch(() => {});
                 return;
             }
             if (focusRegion === "sessions" && event.ctrlKey && event.key.toLowerCase() === "g" && !event.metaKey && !event.altKey) {
@@ -14497,12 +14961,14 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
             }
             if (focusRegion === "sessions" && (event.key === "PageUp" || (event.ctrlKey && event.key.toLowerCase() === "u"))) {
                 event.preventDefault();
-                controller.handleCommand(UI_COMMANDS.PAGE_UP).catch(() => {});
+                controller.handleCommand(UI_COMMANDS.PAGE_UP)
+                    .then(() => revealKeyboardSessionRow(controller)).catch(() => {});
                 return;
             }
             if (focusRegion === "sessions" && (event.key === "PageDown" || (event.ctrlKey && event.key.toLowerCase() === "d"))) {
                 event.preventDefault();
-                controller.handleCommand(UI_COMMANDS.PAGE_DOWN).catch(() => {});
+                controller.handleCommand(UI_COMMANDS.PAGE_DOWN)
+                    .then(() => revealKeyboardSessionRow(controller)).catch(() => {});
                 return;
             }
             if (focusRegion === "sessions" && event.key === "t" && isPlainShortcut) {
@@ -14628,6 +15094,24 @@ function ThemeSoundControl({ setting, theme, onChange }) {
             : React.createElement("p", { className: "ps-admin-console__hint" }, "This theme has no sound."));
 }
 
+const CODE_FONT_LABELS = { theme: "Theme default", jetbrains: "JetBrains Mono", system: "System" };
+
+/** The code font: the theme's choice, JetBrains Mono, or the system monospace. */
+function CodeFontControl({ value, onChange }) {
+    const current = normalizeCodeFont(value) || "theme";
+    return React.createElement("div", { className: "ps-reading-control is-stacked ps-code-font-control" },
+        React.createElement("div", { className: "ps-reading-width" },
+            React.createElement("span", null, "Code font"),
+            React.createElement("span", { className: "ps-reading-align", role: "group", "aria-label": "Code font" },
+                Object.entries(CODE_FONT_LABELS).map(([id, label]) => React.createElement("button", {
+                    key: id,
+                    type: "button",
+                    className: current === id ? "is-on" : "",
+                    "aria-pressed": current === id,
+                    onClick: () => onChange(id),
+                }, label)))));
+}
+
 function MobileThemeSoundRows({ setting, theme, onChange }) {
     const value = setting || { on: true, volume: 40 };
     const set = (patch) => onChange({ ...value, ...patch });
@@ -14667,6 +15151,22 @@ function AppearanceSettingsPane({ controller, mobile = false }) {
     const themeSoundMobile = useControllerSelector(controller, (state) => state.ui.themeSoundMobile);
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const touchScale = useControllerSelector(controller, state => state.ui.touchScale);
+    const codeFont = useControllerSelector(controller, (state) => state.ui.codeFont);
+    const setCodeFont = (next) => controller.dispatch({ type: "ui/codeFont", codeFont: next });
+    // Phone only: which people's sessions the list shows. The phone toolbar
+    // has no room for the funnel the desktop keeps beside New session.
+    const ownerFilterSummary = useControllerSelector(controller, (state) => {
+        const filter = state.sessions?.ownerFilter;
+        if (!filter || filter.all) return "Everyone";
+        const parts = [];
+        if (filter.includeMe) parts.push("Me");
+        if (filter.includeShared) parts.push("Shared");
+        const others = Array.isArray(filter.ownerKeys) ? filter.ownerKeys.length : 0;
+        if (others) parts.push(`${others} ${others === 1 ? "person" : "people"}`);
+        if (filter.includeSystem) parts.push("System");
+        if (filter.includeUnowned) parts.push("Unowned");
+        return parts.length ? parts.join(", ") : "Nobody";
+    });
     if (mobile) return React.createElement("section", { className: "ps-appearance", "aria-label": "Appearance" },
         React.createElement("h3", null, "Appearance"),
         React.createElement("label", { className: "ps-mobile-setting-row" },
@@ -14676,6 +15176,19 @@ function AppearanceSettingsPane({ controller, mobile = false }) {
         React.createElement("button", { type: "button", className: "ps-mobile-setting-row",
             onClick: () => controller.openThemePicker() },
             React.createElement("span", null, "Theme"), React.createElement("span", null, getTheme(themeId)?.label || themeId, " ›")),
+        React.createElement("label", { className: "ps-mobile-setting-row" },
+            React.createElement("span", null, "Code font"),
+            React.createElement("select", {
+                className: "ps-mobile-setting-select",
+                "aria-label": "Code font",
+                value: normalizeCodeFont(codeFont) || "theme",
+                onChange: (event) => setCodeFont(event.target.value),
+            }, Object.entries(CODE_FONT_LABELS).map(([id, label]) => React.createElement("option", { key: id, value: id }, label)))),
+        React.createElement("button", { type: "button", className: "ps-mobile-setting-row",
+            "aria-label": "Filter sessions",
+            onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_SESSION_FILTER).catch(() => {}) },
+            React.createElement("span", null, "Show sessions from"),
+            React.createElement("span", null, ownerFilterSummary, " ›")),
         React.createElement(MobileThemeSoundRows, {
             setting: themeSoundMobile,
             theme: getTheme(themeId),
@@ -14696,7 +15209,8 @@ function AppearanceSettingsPane({ controller, mobile = false }) {
                 setting: themeSound,
                 theme: getTheme(themeId),
                 onChange: (next) => controller.dispatch({ type: "ui/themeSound", themeSound: next }),
-            })));
+            }),
+            React.createElement(CodeFontControl, { value: codeFont, onChange: setCodeFont })));
 }
 
 function AdminConsolePanel({ controller, mobile = false, navigation = null }) {
@@ -16083,9 +16597,7 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
     // terminal view fits far more per screen and does not reflow wide content.
     // This is only the DEFAULT — a stored profile preference still wins once
     // settings load, so an explicit choice is never overridden.
-    const isNarrowViewport = typeof window !== "undefined"
-        && typeof window.matchMedia === "function"
-        && window.matchMedia("(max-width: 920px)").matches;
+    const isNarrowViewport = matchesMobileViewport();
     const store = createStore(appReducer, createInitialState({
         mode,
         branding,
@@ -16105,6 +16617,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     const mainGridRef = React.useRef(null);
     const viewport = useMeasuredViewport(viewportRef, suspended);
     const mainGridViewport = useMeasuredViewport(mainGridRef, suspended);
+    const workspaceGridRef = React.useRef(null);
+    const workspaceGridViewport = useMeasuredViewport(workspaceGridRef, suspended);
     const gridViewport = computeGridViewport(viewport);
 
     // Publish the real viewport in character cells. Without this the ui-core
@@ -16156,15 +16670,17 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         const onResize = () => { clearTimeout(timer); timer = setTimeout(publish, 150); };
         window.addEventListener("resize", onResize);
         window.addEventListener("orientationchange", onResize);
+        const unfonts = onWebFontsLoaded(onResize);
         return () => {
             clearTimeout(timer);
+            unfonts();
             window.removeEventListener("resize", onResize);
             window.removeEventListener("orientationchange", onResize);
         };
     }, [controller]);
     // The phone's Main layout: split | chat | sessions (cycled by the Main
     // toolbar button). Desktop has real columns and needs no such cycle.
-    const [mobileMainLayout, setMobileMainLayout] = React.useState("split");
+    const [mobileSessionsOpen, setMobileSessionsOpen] = React.useState(false);
     const state = useControllerSelector(controller, (rootState) => ({
         moa: rootState.ui.moa,
         themeId: rootState.ui.themeId,
@@ -16172,6 +16688,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         chatReading: rootState.ui.chatReading,
         themeSound: rootState.ui.themeSound,
         themeSoundMobile: rootState.ui.themeSoundMobile,
+        codeFont: rootState.ui.codeFont,
         sessionDetailCollapsed: Boolean(rootState.ui.sessionDetailCollapsed),
         agentPickerUsage: rootState.ui.agentPickerUsage,
         ownerFilter: rootState.sessions.ownerFilter,
@@ -16213,7 +16730,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         inspectorTab: rootState.ui.inspectorTab,
         filesFullscreen: Boolean(rootState.files.fullscreen),
         selectedArtifactId: rootState.files.selectedArtifactId || null,
-        artifactPaneOpen: Boolean(rootState.files.paneOpen),
+        artifactPaneOpen: selectArtifactPaneShown(rootState),
         adminVisible: Boolean(rootState.admin?.visible),
         // Providers & Budgets takes the workspace, like the admin console. The
         // reducer keeps the two apart — opening either closes the other — so
@@ -16243,9 +16760,55 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     const appliedProfileSettingsJsonRef = React.useRef(null);
     const defaultProfileSettingsRef = React.useRef(null);
     const [mobilePane, setMobilePane] = React.useState("workspace");
+    // The diagnostics view reopens on the tab it was left on.
+    const lastDiagnosticsPaneRef = React.useRef("inspector");
+    if (mobilePane === "inspector" || mobilePane === "activity") lastDiagnosticsPaneRef.current = mobilePane;
+    const mobileDiagnostics = React.useMemo(() => ({
+        activityActive: mobilePane === "activity",
+        selectActivity: () => setMobilePane("activity"),
+        selectInspector: () => setMobilePane("inspector"),
+    }), [mobilePane]);
+
     // Match the CSS and MoA breakpoint. The padded shell is narrower than
     // the browser and otherwise flips to mobile while the header is desktop.
-    const mobile = useMediaQuery(`(max-width: ${MOBILE_BREAKPOINT}px)`);
+    const mobile = useMediaQuery(MOBILE_MEDIA_QUERY);
+    // The phone's view history: which screen is showing (chat, diagnostics and
+    // its tab, canvas) is phone-local state, so the history reads and restores
+    // it through this bridge. Desktop never registers one.
+    const mobilePaneRef = React.useRef(mobilePane);
+    const mobilePendingPaneRef = React.useRef(null);
+    const mobileCanvasSessionRef = React.useRef(null);
+    mobilePaneRef.current = mobilePane;
+    React.useEffect(() => {
+        if (!mobile) return undefined;
+        const bridge = {
+            get: () => mobilePaneRef.current,
+            set: (pane) => {
+                const next = ["workspace", "inspector", "activity", "canvas"].includes(pane) ? pane : "workspace";
+                setMobileSessionsOpen(false);
+                // History may have just selected another session. The reset
+                // that runs on a session change would then put the pane back,
+                // so leave it the pane to land on for that session.
+                const target = controller.getState().sessions.activeSessionId || null;
+                mobilePendingPaneRef.current = target && target !== mobileCanvasSessionRef.current
+                    ? { sessionId: target, pane: next }
+                    : null;
+                if (next === "canvas") setMobileCanvasEverOpened(true);
+                setMobilePane(next);
+            },
+        };
+        controller.mobileView = bridge;
+        return () => { if (controller.mobileView === bridge) delete controller.mobileView; };
+    }, [controller, mobile]);
+    const mobileSwipeRef = React.useRef(null);
+    useSwipeNavigation(mobileSwipeRef, {
+        enabled: Boolean(mobile && viewNavigation && !suspended),
+        navigation: viewNavigation,
+    });
+    // The slide-over belongs to Main on a phone; leaving either closes it.
+    React.useEffect(() => {
+        if (!mobile || mobilePane !== "workspace") setMobileSessionsOpen(false);
+    }, [mobile, mobilePane]);
     const mobileAdminNavigation = useMobileAdminNavigation(controller, mobile, state.adminVisible);
     useMobileAdminOverlay(mobileAdminNavigation, mobile && state.adminVisible, Boolean(state.modalType),
         "modal", () => controller.closeModal());
@@ -16265,7 +16828,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         if (!state.revealedCreatedSessionId || state.activeSessionId !== state.revealedCreatedSessionId) return;
         if (mobile) {
             setMobilePane("workspace");
-            setMobileMainLayout("chat");
+            setMobileSessionsOpen(false);
         }
         // Creation opens the ordinary session workspace, without modifying
         // any of the user's saved Master of Agents panels.
@@ -16310,15 +16873,28 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // Which pane the canvas was opened FROM. Toggling it off puts that back —
     // chat, activity or inspector — instead of dropping the user on Main.
     const paneBeforeCanvasRef = React.useRef("workspace");
+    // The session the canvas state below belongs to, and a pane the view
+    // history asked for in a session it just selected (see the bridge).
+    mobileCanvasSessionRef.current = canvasShellView.sessionId || null;
     // Once opened, the canvas stays MOUNTED (hidden) for the rest of the
     // session selection — page state (typed input, scroll, game progress)
     // survives toggling. A session switch remounts fresh via the key below.
     const [mobileCanvasEverOpened, setMobileCanvasEverOpened] = React.useState(false);
     const [desktopCanvasEverOpened, setDesktopCanvasEverOpened] = React.useState(false);
     React.useEffect(() => {
+        const pending = mobilePendingPaneRef.current;
+        mobilePendingPaneRef.current = null;
+        setDesktopCanvasEverOpened(false);
+        if (pending && pending.sessionId === (canvasShellView.sessionId || null)) {
+            // Back or Forward into this session's canvas (or another pane):
+            // land there instead of resetting.
+            if (pending.pane !== "canvas") paneBeforeCanvasRef.current = pending.pane;
+            setMobileCanvasEverOpened(pending.pane === "canvas");
+            setMobilePane(pending.pane);
+            return;
+        }
         setMobilePane((current) => (current === "canvas" ? (paneBeforeCanvasRef.current || "workspace") : current));
         setMobileCanvasEverOpened(false);
-        setDesktopCanvasEverOpened(false);
     }, [canvasShellView.sessionId]);
     // iOS scroll-chaining: while the canvas is up, a pan that Safari decides
     // is not the iframe's must not scroll the app shell behind it.
@@ -16543,12 +17119,13 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 });
         }, 400);
         return undefined;
-    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.chatReading, state.themeSound, state.themeSoundMobile]);
+    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.chatReading, state.themeSound, state.themeSoundMobile, state.codeFont]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);
         applyTouchScale(state.touchScale);
-    }, [state.themeId, state.touchScale]);
+        applyCodeFont(state.codeFont, state.themeId);
+    }, [state.themeId, state.touchScale, state.codeFont]);
 
     // The theme's ambient sound, if it has one and the person turned sounds on.
     // Each device class has its own setting: crossing the phone breakpoint
@@ -16557,7 +17134,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     const [narrowViewport, setNarrowViewport] = React.useState(isNarrowViewport);
     React.useEffect(() => {
         if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
-        const query = window.matchMedia("(max-width: 920px)");
+        const query = window.matchMedia(MOBILE_MEDIA_QUERY);
         const onChange = () => setNarrowViewport(query.matches);
         query.addEventListener?.("change", onChange);
         return () => query.removeEventListener?.("change", onChange);
@@ -16572,6 +17149,31 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         });
     }, [state.themeId, state.themeSound, state.themeSoundMobile, narrowViewport]);
     React.useEffect(() => () => themeSoundPlayer().update({ enabled: false }), []);
+    // Action cues, for a theme that has them: a tick on any enabled button or
+    // tab (Send has its own), and a chime when the open session's turn ends.
+    React.useEffect(() => {
+        if (typeof document === "undefined") return undefined;
+        const onClick = (event) => {
+            const target = event.target instanceof Element
+                ? event.target.closest("button, [role='button'], [role='tab'], [role='switch'], summary, select")
+                : null;
+            if (!target || target.disabled || target.getAttribute("aria-disabled") === "true") return;
+            if (target.closest(".ps-send-button")) return;
+            themeSoundPlayer().cue("tick");
+        };
+        document.addEventListener("click", onClick, true);
+        return () => document.removeEventListener("click", onClick, true);
+    }, []);
+    const activeTurn = useControllerSelector(controller, (rootState) => {
+        const id = rootState.sessions.activeSessionId || null;
+        return { id, running: (rootState.sessions.byId[id]?.status || "") === "running" };
+    }, shallowEqualObject);
+    const lastTurnRef = React.useRef(activeTurn);
+    React.useEffect(() => {
+        const last = lastTurnRef.current;
+        lastTurnRef.current = activeTurn;
+        if (last.id && last.id === activeTurn.id && last.running && !activeTurn.running) themeSoundPlayer().cue("done");
+    }, [activeTurn]);
 
     React.useEffect(() => {
         const reading = state.chatReading;
@@ -16720,16 +17322,54 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     const closeArtifactPane = React.useCallback(() => {
         controller.closeArtifactPane().catch(() => {});
     }, [controller]);
+    // The reader can take the whole workspace, as the canvas can. Closing the
+    // reader drops it, so the next one opens in its column again.
+    const [artifactFullScreen, setArtifactFullScreen] = React.useState(false);
+    React.useEffect(() => { if (!artifactPaneActive) setArtifactFullScreen(false); }, [artifactPaneActive]);
+    const artifactMaximized = artifactPaneActive && artifactFullScreen;
+    const toggleArtifactFullScreen = React.useCallback(() => setArtifactFullScreen((on) => !on), []);
+    React.useEffect(() => {
+        if (suspended || !artifactMaximized) return undefined;
+        const onKey = (e) => {
+            if (e.key !== "Escape" || e.defaultPrevented) return;
+            const target = e.target;
+            if (target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) return;
+            setArtifactFullScreen(false);
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [artifactMaximized, suspended]);
 
     const estimatedMainGridWidth = Math.max(0, (viewport.width || 0) * 0.68);
     const measuredMainGridWidth = mainGridViewport.width || estimatedMainGridWidth;
-    const sessionColumnWidth = portalSessionColumnWidth(measuredMainGridWidth, state.portalSessionColumnAdjust);
+    const measuredWorkspaceWidth = workspaceGridViewport.width
+        || (measuredMainGridWidth + (rightSideActive ? PORTAL_SESSION_CHAT_DIVIDER_PX + rightSidePx : 0));
+    const sessionColumnWidth = portalSessionColumnWidth(measuredMainGridWidth, state.portalSessionColumnAdjust, measuredWorkspaceWidth);
     const sessionColumnMode = zenActive ? "hidden" : portalSessionColumnMode(sessionColumnWidth);
+    const sessionColumnBase = portalSessionColumnBounds(measuredMainGridWidth, measuredWorkspaceWidth).baseWidth;
+    // What the main grid must keep beside the right block: the list at its
+    // width, plus the 32px the list track's own clamp (below) leaves beside
+    // chat's floor.
+    const sessionColumnReservePx = (sessionColumnMode === "hidden"
+        ? 0
+        : Math.max(0, Math.round(sessionColumnBase + (Number(state.portalSessionColumnAdjust) || 0))) + 32)
+        + PORTAL_MIN_CHAT_COLUMN_PX;
+    // With no side column the main grid IS the workspace, so the list's share
+    // is plain CSS and needs no measurement. Pixels from a measurement land a
+    // frame after the first paint; that late width change made chat re-pin
+    // itself to the bottom under a reader who had just scrolled up. Only with
+    // a canvas, reader or diagnostics column open does the share come from the
+    // (measured) workspace, so the list keeps its width beside the column.
+    const sessionColumnAdjustPx = Number(state.portalSessionColumnAdjust) || 0;
+    const sessionColumnPreferred = rightSideActive
+        ? `${Math.round(sessionColumnBase + sessionColumnAdjustPx)}px`
+        : `calc((100% - ${PORTAL_SESSION_CHAT_DIVIDER_PX + PORTAL_WORKSPACE_GAP_PX * 2}px) * ${PORTAL_SESSION_COLUMN_RATIO} + ${sessionColumnAdjustPx}px)`;
     const sessionColumnTrack = sessionColumnMode === "hidden"
         ? "0px"
-        : `clamp(0px, calc(${PORTAL_SESSION_COLUMN_RATIO * 100}% + ${Number(state.portalSessionColumnAdjust) || 0}px), max(0px, calc(100% - 14rem - 32px)))`;
+        : `clamp(0px, ${sessionColumnPreferred}, max(0px, calc(100% - ${PORTAL_MIN_CHAT_COLUMN_PX}px - 32px)))`;
 
     const desktopWorkspace = React.createElement("div", {
+        ref: workspaceGridRef,
         className: `ps-workspace-grid${rightSideActive ? "" : " is-right-hidden"}`,
         style: {
             // With both optional columns off there is no right side and no
@@ -16759,7 +17399,14 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                         // fixed pixels and the diagnostics column, the flex
                         // one, gave them up — so the chat↔canvas seam moved
                         // the canvas↔diagnostics seam instead.
-                        ? `minmax(0, 1fr) var(--ps-resizer-track, 16px) min(${rightSidePx}px, calc(100% - var(--ps-resizer-track, 16px) - ${PORTAL_MIN_CHAT_COLUMN_PX}px))`
+                        //
+                        // The block also stops short of the session list. A
+                        // canvas width is remembered per session, and some are
+                        // wider than the window can give; the list used to
+                        // pay for them, so flipping to such a session squeezed
+                        // it, even to nothing. Now the canvas shows narrower
+                        // (its remembered width is kept) and the list holds.
+                        ? `minmax(0, 1fr) var(--ps-resizer-track, 16px) min(${rightSidePx}px, max(0px, calc(100% - var(--ps-resizer-track, 16px) - ${sessionColumnReservePx}px)))`
                         : "minmax(0, 1fr)")),
         },
     },
@@ -16767,7 +17414,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         ref: mainGridRef,
         className: `ps-workspace-main-grid is-session-${sessionColumnMode}`,
         style: {
-            gridTemplateColumns: `${sessionColumnTrack} var(--ps-resizer-track, 16px) minmax(14rem, 1fr)`,
+            gridTemplateColumns: `${sessionColumnTrack} var(--ps-resizer-track, 16px) minmax(${PORTAL_MIN_CHAT_COLUMN_PX}px, 1fr)`,
         },
     },
     sessionColumnMode !== "hidden" ? React.createElement("div", {
@@ -16787,7 +17434,9 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         className: "ps-workspace-pane-slot",
         style: { gridColumn: "3" },
     },
-        React.createElement(ChatPane, { controller, readingColumn: true }))),
+        // Zen makes chat a narrow rail beside the canvas: the reading column
+        // and its inset are for a wide chat, so the rail ignores them.
+        React.createElement(ChatPane, { controller, readingColumn: !zenActive }))),
     rightSideActive
         ? (artifactPaneActive
             ? React.createElement(ColumnResizeHandle, { controller, paneAdjust: state.paneAdjust })
@@ -16812,10 +17461,15 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // The artifact reader still takes the WHOLE right side while it is open —
     // canvas, inspector and activity all step aside — which is why
     // diagnosticsActive already excludes it.
-    React.createElement("div", { className: `ps-workspace-column-host is-split${canvasMaximized ? " has-maximized" : ""}` },
+    React.createElement("div", { className: `ps-workspace-column-host is-split${canvasMaximized || artifactMaximized ? " has-maximized" : ""}` },
     artifactPaneActive
-        ? React.createElement("div", { className: "ps-workspace-column is-artifact" },
-            React.createElement(ArtifactTakeoverPane, { controller, onClose: closeArtifactPane }))
+        ? React.createElement("div", { className: `ps-workspace-column is-artifact ps-artifact-layer${artifactMaximized ? " is-maximized" : ""}` },
+            React.createElement(ArtifactTakeoverPane, {
+                controller,
+                onClose: closeArtifactPane,
+                maximized: artifactMaximized,
+                onToggleMaximized: toggleArtifactFullScreen,
+            }))
         : null,
     // The canvas keeps its DOCUMENT alive across toggles: once opened for this
     // session it stays mounted in a hidden layer — unmounting destroys typed
@@ -16899,19 +17553,30 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // means. On a phone Activity is a separate bottom tab, so tapping a node
     // filled a pane you could not see. Stack them here instead — the node list
     // scrolls, the details sit under it.
-    else if (mobilePane === "inspector") mobileContent = (state.inspectorTab === "nodes")
-        ? React.createElement("div", { className: "ps-mobile-pane-fill ps-mobile-node-split" },
-            React.createElement(InspectorPane, { controller, mobile: true }),
-            React.createElement(ActivityPane, { controller, panelClassName: "ps-mobile-node-detail" }))
-        : React.createElement("div", { className: "ps-mobile-pane-fill" },
-            React.createElement(InspectorPane, { controller, mobile: true }));
-    else if (mobilePane === "activity") mobileContent = React.createElement("div", { className: "ps-mobile-pane-fill" },
-        React.createElement(ActivityPane, { controller }));
+    else if (mobilePane === "inspector") mobileContent = React.createElement(MobileDiagnosticsContext.Provider, { value: mobileDiagnostics },
+        (state.inspectorTab === "nodes")
+            ? React.createElement("div", { className: "ps-mobile-pane-fill ps-mobile-node-split" },
+                React.createElement(InspectorPane, { controller, mobile: true }),
+                React.createElement(ActivityPane, { controller, panelClassName: "ps-mobile-node-detail" }))
+            : React.createElement("div", { className: "ps-mobile-pane-fill" },
+                React.createElement(InspectorPane, { controller, mobile: true })));
+    // Activity is a tab of the diagnostics view: the same tab row on top, the
+    // session's activity below.
+    else if (mobilePane === "activity") mobileContent = React.createElement(MobileDiagnosticsContext.Provider, { value: mobileDiagnostics },
+        React.createElement("div", { className: "ps-mobile-pane-fill" },
+            React.createElement(ActivityPane, {
+                controller,
+                forceActivity: true,
+                topContent: React.createElement(InspectorTabs, { activeTab: state.inspectorTab, controller }),
+            })));
     // The canvas fills the whole region, so there is nothing to render under
     // it — the layer below is a SIBLING of this content and covers it. Drawing
     // a pane here would only be invisible work.
     else if (mobilePane === "canvas") mobileContent = null;
-    else mobileContent = React.createElement(MobileWorkspace, { controller, layout: mobileMainLayout, onEnterZen: moa?.openMobileZen });
+    else mobileContent = React.createElement(MobileWorkspace, {
+        controller, onEnterZen: moa?.openMobileZen,
+        sessionsOpen: mobileSessionsOpen, onCloseSessions: () => setMobileSessionsOpen(false),
+    });
 
     // The phone's canvas layer: a sibling of the content region's pane, NOT a
     // child of any pane. That is deliberate — panes mount and unmount as the
@@ -16932,25 +17597,32 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         React.createElement(MotdOverlay, { controller, mobile }));
     return React.createElement(ControllerContext.Provider, { value: controller },
         React.createElement("div", { ref: viewportRef, className: "ps-web-shell" },
-        // The phone's toolbar carries its NAVIGATION (the three view modes,
-        // plus the Main layout cycle), so it renders on every pane — hiding it
-        // anywhere would trap the user with no way back.
+        // The phone's toolbar carries its NAVIGATION (the session list, the
+        // diagnostics cycle and the canvas), so it renders on every pane —
+        // hiding it anywhere would trap the user with no way back.
         React.createElement(Toolbar, {
             controller, moa, viewNavigation,
             mobile,
             canvasPaneOpen: mobileCanvasOpen,
             onToggleCanvasPane: toggleMobileCanvas,
             mobilePane,
-            mobileMainLayout,
-            onSelectMobilePane: (paneId, focus) => {
-                // Tapping Main while already on Main cycles its layout; from
-                // another pane (the canvas included) it just returns you to
-                // Main, unchanged.
-                if (paneId === "workspace" && mobilePane === "workspace") {
-                    setMobileMainLayout((current) => (
-                        current === "split" ? "chat" : current === "chat" ? "sessions" : "split"
-                    ));
+            mobileDiagnosticsPane: lastDiagnosticsPaneRef.current,
+            mobileSessionsOpen: mobileSessionsOpen && mobilePane === "workspace" && !state.budgetOpen && !state.adminVisible,
+            onToggleMobileSessions: () => {
+                // From any other surface (canvas, diagnostics, budget), the
+                // list button goes to Main and opens the list there.
+                const onMain = mobilePane === "workspace" && !state.budgetOpen && !state.adminVisible;
+                if (!onMain) {
+                    controller.closeBudget();
+                    controller.closeAdminConsole();
+                    setMobilePane("workspace");
+                    setMobileSessionsOpen(true);
+                    return;
                 }
+                setMobileSessionsOpen((open) => !open);
+            },
+            onSelectMobilePane: (paneId, focus) => {
+                setMobileSessionsOpen(false);
                 // The budget surface REPLACES the workspace, so a pane the
                 // phone switches to would render behind it and the tap would
                 // look dead. Picking a pane puts it away. Already closed, the
@@ -16961,7 +17633,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 if (focus) controller.setFocus(focus);
             },
         }),
-        React.createElement("div", { className: "ps-workspace" },
+        React.createElement("div", { className: "ps-workspace", ref: mobileSwipeRef },
             state.adminVisible
                 ? React.createElement(AdminConsolePanel, { controller, mobile, navigation: mobileAdminNavigation })
                 : state.budgetOpen
