@@ -12,6 +12,7 @@ apps). Both paths share the same plugin model —
 - Agent authoring: [for SDK apps](./building/sdk-agents.md) · [for CLI apps](./building/cli-agents.md)
 - [Facts & graph from the SDK](./building/facts-and-graph.md)
 - [Durable workflows](./building/workflow-sessions.md) — durable workflow support: a chat's Workflow Definitions (`kind: Workflow`) run scripts, waits, typed messages, agent and parallel steps without model turns; `workflow_definition`, Workflows on demand per chat
+- [Workflows and GitHub Copilot](./building/workflows-and-github-copilot.md) — how durable Workflows compare with GitHub Actions, GitHub Agentic Workflows and Copilot dynamic workflows, and when to use which
 - [Writing a workspace provider](./building/workspace-providers.md) — give sessions git clones, shared folders and a folder per person
 - [Builder agent templates](./building/builder-agents.md) — reusable Copilot agents that scaffold PilotSwarm apps
 - [Examples](./building/examples.md) — runnable samples, including the DevOps Command Center

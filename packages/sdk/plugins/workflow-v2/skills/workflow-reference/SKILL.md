@@ -1,6 +1,6 @@
 ---
 name: workflow-reference
-description: Field reference for Workflow YAML (root keys, every state type, bindings, outputs, runtime error codes) and a complete review fan-out example. Load with workflow-authoring.
+description: Field reference for Workflow YAML (root keys, every state type, bindings, outputs, runtime error codes), what the engine guarantees, and a review fan-out example. For design, call load_skill with name workflow-authoring.
 ---
 
 # Workflow reference
@@ -222,6 +222,57 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 `needs_input`, `execution_failed`. On an error route, `input` and
 `runtime.error` are the envelope `{ code, message, details? }`.
 
+## Semantics
+
+What the engine guarantees. Do not rely on more.
+
+- **Durable.** The store keeps the run, each visit (input, outcome,
+  output), the variables, accepted messages and requests; the controller's
+  history keeps its place. After a worker restart the run goes on where
+  it was.
+- **Order.** The run starts at `initial`. Outside a parallel state one state
+  runs at a time: its outcome, or its runtime error, takes one route, and the
+  next state gets its output (or the error envelope). Every visit counts
+  toward `maxNodeExecutions`; at the limit the run fails (`limit_exceeded`).
+- **One result per visit.** The first result stored stands. Nothing is
+  undone: side effects that happened stay.
+
+| Effect | On a retry or a worker restart |
+|---|---|
+| script | Runs again from its start (`context.attempt` above 1), tool calls too: make it safe to repeat. |
+| agent | Keeps the same child chat; its prompt is not given twice. The first accepted `complete_workflow_node` decides; later ones are refused. |
+| send | An agent session may get it twice (a repeat is dropped while its id is recent). A workflow takes it once. |
+| request | Reaches the responder at least once, under one id. The first answer decides; none after the deadline. |
+| receive | Takes each message once, in the order the run accepted it. |
+| wait | Elapses once, by the store's clock. |
+
+- **Timers.** Every deadline (a wait, a receive's `wait`, a request, an agent
+  or parallel `timeoutSeconds`, the run's `limits.timeoutSeconds`) is a
+  durable timer, fixed when its state or run starts. Restarts and pauses do
+  not stop it.
+- **Joins.** `forEach` is read once, at entry. At most `concurrency`
+  branches run at once. Only successes stored in time count. A cancelled
+  branch's running script may still finish (stopping is best-effort), but
+  its result does not count.
+- **Pause.** No state starts and no result is routed until `resume`. Started
+  work finishes and keeps its result; a state whose deadline passes
+  meanwhile is routed after the resume.
+- **Stop.** Nothing new starts; started work settles. The run ends `stopped`
+  when nothing is pending, or at the end of its grace, cancelling the rest.
+- **Cancel, delete.** The run ends when it is accepted: pending visits are
+  cancelled, then scripts are stopped and agent chats ended. A delete tells
+  no one.
+- **Run deadline.** Pending work is cancelled and the run fails `timed_out`,
+  paused or not.
+- **Failure.** A runtime error takes its code's route, else `failure`, else
+  `catchAll` (once per run; a later route to it fails the run), else the
+  run fails. In a branch it ends the branch without success. A run whose
+  controller stopped shows `needsRecovery`; `recover` ends it failed.
+- **Versions.** A Workflow runs the revision it started with, with its
+  named agents' pinned versions; a later save never changes it. To run a
+  change, start the new revision as another Workflow. Only its variables
+  change (`set_vars`); a step reads them as of its start.
+
 ## Not supported: do not write
 
 `transition.function`, `transition.delaySeconds` (version 1 only; use a wait
@@ -231,9 +282,9 @@ and the route `timeout`, and text around a binding.
 
 ## Tools
 
-Every argument of the Workflow tools, and the refusals you can fix, are in
-the `workflow-tools` skill. Use `read_workflow`, not `list_sessions`, for a
-Workflow's status.
+For every argument of the Workflow tools and the refusals you can fix, call
+`load_skill` with name `workflow-tools`. Use `read_workflow`, not
+`list_sessions`, for a Workflow's status.
 
 ## Example: review fan-out with bounded rework
 

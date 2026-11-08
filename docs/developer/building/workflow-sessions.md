@@ -1,21 +1,57 @@
 # Durable workflows
 
-A **workflow session** runs a durable state machine instead of a
-conversation. No LLM runs inside it. A workflow document names its
-**states**, the **initial** state, and how each state's **outcome** leads to
-the next state; every run ends at a **terminal** state.
+A **Workflow** is a durable program that a chat hands work to. It runs a state
+machine on PilotSwarm workers, without model turns, and it survives worker
+restarts. Use one for a finite procedure with clear steps: scripts, waits,
+typed messages, requests for an answer, agent steps and fan-out.
 
-This version runs two state types:
+- **Definitions.** A chat writes a **Workflow Definition** as YAML
+  (`apiVersion: pilotswarm.dev/v2-draft`, `kind: Workflow`) and saves it with
+  its `workflow_definition` tool. Each save is a new revision that never
+  changes. A person can also edit and save the YAML in the Workflow tab.
+- **Workflows.** **Start** makes a Workflow from one revision. The Workflow
+  runs that revision, whatever is saved later. A chat can start many
+  Workflows of one definition. When one ends, the chat gets a message, unless
+  the start turned that off.
+- **States.** A definition names its **states**, the **initial** state, and
+  the route that each **outcome** takes to the next state. Every run ends at
+  a **terminal** state.
 
 | Type | What it does |
 |---|---|
-| `script` | Runs JavaScript on Node for a new workflow. It invokes the parent's captured permitted tools without a model turn and reports an outcome to select the next state. |
-| `terminal` | Ends the run with an outcome: `succeeded`, `blocked`, `failed` or `cancelled`, an optional summary and an optional output. |
+| `script` | Runs a Node ES module on the worker. It calls the chat's permitted tools and reports an outcome. It can run more than once, so make it safe to repeat. |
+| `agent` | Runs an ordinary child chat for one task. Only the chat's `complete_workflow_node` call, with a result that matches the state's schema, ends the step. |
+| `wait` | A durable timer: a number of seconds, or the next clock time (`at`). |
+| `messaging` | `send` a typed message, `receive` one (optionally with a time limit), or `request` a typed answer from a chat before a deadline. |
+| `parallel` | Runs a body for each item of a list, or named branches, and joins the results. |
+| `terminal` | Ends the run: `succeeded`, `blocked`, `failed` or `cancelled`, with an optional output. |
 
-Other state types of the workflow language (`agent`, `question`, `action`,
-`observed-condition`), `transition.handler` and `identity` are planned; a
-document that uses one is refused with "not supported yet" before any session
-is created.
+- **On demand per chat.** A chat that has never used a Workflow carries one
+  small tool, `enable_workflows`, instead of the Workflow tools. The model
+  calls it when the person asks for a Workflow, or for a repeated check that
+  a script could do. See [Workflows on demand per chat](#workflows-on-demand-per-chat).
+- **Scripts** run as guarded child processes on the worker. An operator can
+  turn them off. See [Scripts](#scripts).
+- **Tests.** When the person asks, a chat tests a revision with
+  `workflow_definition test`. Prepared answers (fixtures) stand in for tool
+  calls, agent steps, sends and requests, and waits pass at once. Scripts run
+  for real. See [A definition belongs to the chat](#a-definition-belongs-to-the-chat-stage-21).
+- **Packages** can ship Workflow Definitions with an interface card. See
+  [A package's Workflow Definitions](#a-packages-workflow-definitions-stage-23).
+
+Models learn the details from the Workflow skills in
+`packages/sdk/plugins/workflow-v2/skills/`: `workflow-authoring`,
+`workflow-reference` (every field, and what the engine guarantees on retries,
+restarts, timers, joins and stops), `workflow-tools` and `workflow-patterns`.
+
+How Workflows compare with GitHub Actions, GitHub Agentic Workflows and
+Copilot dynamic workflows: [Workflows and GitHub Copilot](./workflows-and-github-copilot.md).
+
+Version 1 documents (`apiVersion: pilotswarm.dev/v1alpha1`, with only script
+and terminal states) were never released. Models are no longer offered
+`spawn_workflow`, the tool that started them. Where a section below
+describes version 1 documents, or the workflow session that runs underneath a
+Workflow, it says so.
 
 ## Sessions own their Workflows (stage 1)
 
@@ -588,81 +624,84 @@ script is a Node ES module: use `await setResult(...)`, not a top-level
 `return`. Preserve data needed by later steps in the output you pass forward.
 
 ```yaml
-apiVersion: pilotswarm.dev/v1alpha1
+apiVersion: pilotswarm.dev/v2-draft
 kind: Workflow
-metadata:
-  name: nightly-report
-  version: 1.0.0
-inputs:                        # optional; checked when a run is created
-  keyPattern: { type: string, required: true }
+metadata: { name: nightly-report, version: "1.0.0" }
+description: Reads the facts that match a key pattern and stores a short report.
+inputs:                        # checked when the Workflow starts
+  schema:
+    type: object
+    additionalProperties: false
+    required: [keyPattern]
+    properties:
+      keyPattern: { type: string, minLength: 1 }
 initial: collect
 states:
   collect:
     type: script
-    runtime: node              # new admissions are JavaScript-only
-    timeoutSeconds: 120        # optional, 1-3600, default 300
+    timeoutSeconds: 120        # 1 to 3,600; default 300
+    outcomes: [found, empty]
     source: |
-      const facts = await callTool("read_facts", {key_pattern: context.inputs.keyPattern});
-      await setResult(facts.count ? "found" : "empty", {count: facts.count});
-    completion: { outcomes: [found, empty, failure] }
+      const facts = await callTool("read_facts", { key_pattern: context.inputs.keyPattern });
+      await setResult(facts.count ? "found" : "empty", { count: facts.count });
     transition:
       next: { found: report, empty: nothing, failure: failed }
   report:
     type: script
-    runtime: node
+    outcomes: [done]
     source: |
       await callTool("store_fact", { key: "reports/latest", value: context.input });
       await setResult("done", context.input);
-    completion: { outcomes: [done] }
     transition:
-      next: { done: published }
+      next: { done: published, failure: failed }
   published:
     type: terminal
     outcome: succeeded
     summary: Report published.
-    output: ${states.report.result}
+    output: "${input}"
   nothing: { type: terminal, outcome: blocked, summary: No facts matched. }
-  failed: { type: terminal, outcome: failed, summary: Could not read facts. }
+  failed: { type: terminal, outcome: failed, output: "${runtime.error}" }
 ```
 
 | Rule | Detail |
 |---|---|
-| Document | `apiVersion: pilotswarm.dev/v1alpha1`, `kind: Workflow`, `metadata.name` and `metadata.version` are required. |
-| States | Ids are a letter, then up to 63 letters, digits, `_` or `-`; at most 100 states. `initial` must be a script state; at least one terminal state is required. |
-| Transitions | `completion.outcomes` lists every outcome a script state may return; `transition.next` maps **each** of them to a state, and nothing else. An outcome not listed fails the run. |
-| Inputs | `inputs` declares types (`string`, `number`, `integer`, `boolean`, `object`, `array`) and `required`. A run whose inputs do not match is refused; undeclared inputs pass through. |
-| Terminal output | `output` may hold values that are exactly one `${inputs.x}`, `${configuration.x}` or `${states.<id>.result...}` expression (the latest output of that state). Inside a `{ }` flow mapping, quote it: `output: { total: "${states.sum.result}" }`. |
-| Session status | A terminal outcome `succeeded` or `blocked` ends the session `completed`; `failed` ends it `failed`; `cancelled` ends it `cancelled`. |
-| Size limits | YAML at most 256 KB. Each state's output at most 256 KB of JSON: store larger data as a fact or artifact and pass its key. |
-| Run limit | At most 1,000 script-state executions per run, so a loop in the graph cannot run forever. |
-| Poll delay | New child workflows may declare `transition.delaySeconds: { unchanged: 30 }`. Keys must be declared outcomes; values are integer seconds from 1 to 3,600. The controller waits after that outcome, without occupying a script process or waking the parent. |
+| Document | `apiVersion: pilotswarm.dev/v2-draft`, `kind: Workflow`, `metadata.name` and `metadata.version` (a semantic version; quote it, as in `"1.0.0"`) are required. |
+| States | 1 to 100 states. An id is a letter, then up to 63 letters, digits, `_` or `-`. `initial` is not a terminal, and every state the run can reach must be able to reach a terminal. |
+| Routes | `transition.next` maps each outcome a state can report, and each runtime error you handle (by its code, or `failure` for all), to a state. A runtime error with no route goes to `catchAll` when there is one, else it fails the run. |
+| Data | Each state's output is the next state's input. A binding is one whole string, such as `"${input.count}"` or `"${inputs.keyPattern}"`. |
+| Inputs | `inputs.schema` is a JSON Schema 2020-12 document. A start whose inputs do not match is refused. |
+| Size limits | YAML at most 256 KB. A state's output at most 256 KB of JSON: store larger data as a fact or artifact and pass its key. |
+| Run limits | `limits.maxNodeExecutions` (default 1,000, at most 10,000) bounds the visits of a run, so a loop cannot run forever. `limits.timeoutSeconds` is an optional deadline of up to 30 days. |
+
+The `workflow-reference` skill has every field of every state type.
 
 ## What a script sees
 
-The script's standard input is a JSON **context**, already parsed into a
-variable named `context` (a JavaScript object for new runs):
+A script is a Node ES module with top-level `await`. It gets its context as a
+parsed object named `context`:
 
 | Field | Value |
 |---|---|
-| `inputs` | The `inputs` object given when the workflow was created. |
-| `input` | The previous state's output (`null` for the initial state). |
-| `node` (the state id), `step`, `workflow`, `sessionId` | Where the script is running. |
+| `inputs` | The Workflow's inputs, as given at Start. |
+| `input` | The value that arrived: the previous state's output, the error envelope `{ code, message, details? }` on an error route, or `initialInput` (default null) for the first state. |
+| `kv` | The Workflow's variables, as they were when this state started. |
+| `branch` | In a parallel branch: its `item` and `index`, or its `name` in a named branch. |
+| `attempt` | 1 at first; above 1 when a worker failure ran the script again. |
+| `node` (the state id), `step`, `nodeExecutionId`, `workflow`, `version`, `runId`, `sessionId` | Where the script runs. |
 
-New runs use the Node helpers. Historical Python/PowerShell definitions remain
-executable only for workflows admitted before the parent-tool policy:
+It calls a tool with `await callTool(name, args)` and reports its result with
+`await setResult(outcome, output)`. The last `setResult` counts. Without one,
+a final stdout line that is a JSON object with a string `outcome` counts;
+otherwise exit code 0 is outcome `success` (output: stdout). In every case
+the outcome must be one the state declares, and the output must be plain
+JSON that matches its `outputSchema`; if not, the state fails
+`invalid_output`. A non-zero exit without a result fails `execution_failed`,
+and a script past its `timeoutSeconds` fails `timed_out`. Route those codes
+in `next`, or `failure` for all, to handle them.
 
-| | Call a tool | Report the result |
-|---|---|---|
-| Python | `call_tool(name, args)` | `set_result(outcome, output)` |
-| Node (ES module, top-level `await`) | `await callTool(name, args)` | `await setResult(outcome, output)` |
-| PowerShell 7 | `Invoke-PilotSwarmTool -Name -Arguments` | `Set-PilotSwarmResult -Outcome -Output` |
-
-If a script reports nothing, its result comes from the last stdout line when
-that is a JSON object with a string `outcome`; otherwise exit code 0 is
-outcome `success` (output: stdout), any other exit code is `failure` (output:
-`{ exitCode, stderr }`), and running past the timeout is `timeout`. Route
-`failure` and `timeout` in `next` to handle them; otherwise they fail the
-workflow.
+Workflows run Node only. Version 1 documents admitted before the parent-tool
+policy could also run Python (`call_tool`, `set_result`) or PowerShell 7
+(`Invoke-PilotSwarmTool`, `Set-PilotSwarmResult`).
 
 ## Tools a script can call
 
@@ -759,16 +798,23 @@ baseline in `context.input`, and return `unchanged` until a meaningful
 difference appears:
 
 ```yaml
-completion: { outcomes: [unchanged, changed, expired] }
-transition:
-  next: { unchanged: poll, changed: report, expired: no_change }
-  delaySeconds: { unchanged: 30 }
+poll:
+  type: script
+  outcomes: [unchanged, changed, expired]
+  source: |
+    // compare the new snapshot with the baseline in context.input
+  transition:
+    next: { unchanged: pause, changed: report, expired: no_change, failure: failed }
+pause:
+  type: wait                     # its output is its input: the baseline
+  seconds: 30
+  transition: { next: { elapsed: poll, failure: failed } }
 ```
 
 Only a terminal result wakes the parent. The watcher ends on the first change;
 it does not automatically start again. Include an explicit poll-count or time
-limit and a terminal `expired` path. The global 1,000-step bound is a final
-safety limit, not a recommended watcher lifetime. Store a large delta as an
+limit and a terminal `expired` path. The run's node limit
+(`limits.maxNodeExecutions`, 1,000 by default) is a final safety limit, not a recommended watcher lifetime. Store a large delta as an
 artifact and return its reference; the parent message contains a short preview.
 
 Completion notification is on by default. `notify_on_completion: false`
@@ -1012,8 +1058,8 @@ process it started, even one that left its process tree, does not outlive the
 step, and one that keeps the script's output open no longer holds the step
 until its timeout.
 
-Upgrade workers before admitting new child workflows. New runs use controller
-`workflow-session@1.1.0` and `workflow.child.*` activities; workers that only
+Version 1 documents only: upgrade workers before admitting new child
+workflows. New runs use controller `workflow-session@1.1.0` and `workflow.child.*` activities; workers that only
 know the old controller cannot execute them. Do not admit new runs into a
 mixed-version worker fleet. Existing runs keep controller `1.0.0`, its activity
 names and its version at continue-as-new, including historical runtimes.
@@ -1225,14 +1271,35 @@ Isolation, in this version:
 
 ## Durability
 
-Each workflow session is a duroxide orchestration (`workflow-session`,
-version `1.0.0`), separate from the agent orchestration. The compiled graph
-and every state's result are recorded in its history, so a worker restart
-resumes at the state that was running: finished states are never run again,
-and the state that was running is run again from its start. A script can
-also run again without a restart: when its worker stalls for longer than
-its activity lock allows (`PILOTSWARM_WORKER_LOCK_TIMEOUT_MS`, renewed while
-it runs), the lock is lost, that run is stopped, and another worker runs the
-script from its start. Scripts run at least once, not exactly once: write
-them so that running one twice is safe. The orchestration continues as new every 20
-script states to keep its history small.
+Each Workflow run has one durable controller orchestration
+(`workflow-v2-controller`, version 1.9.0), separate from the chat's own
+orchestration. The controller keeps the exact ids of the work it started in
+its own history. Each visit of a state, with its input, outcome and output, is
+a row in PostgreSQL. So a worker restart loses nothing: the controller goes on
+where it was, and waits, receives, requests and agent steps keep their
+deadlines.
+
+- A visit's first stored result stands (a compare-and-swap). A late or
+  repeated result does not change it.
+- A script runs at least once, not exactly once. When its worker dies, or
+  stalls for longer than its activity lock allows
+  (`PILOTSWARM_WORKER_LOCK_TIMEOUT_MS`, renewed while it runs), another worker
+  runs the script again from its start, and `context.attempt` goes up. Write
+  scripts so that running one twice is safe.
+- An agent step's chat has a stable id. A retry finds the same chat and does
+  not give it its prompt twice.
+- A message to an agent session, a request and the end notice are queued with
+  a stable client message id: at least once, not exactly once.
+- The controller continues as new after 25 admitted states or 50 idle waits,
+  to keep its history small.
+- A run records the controller version it started at. A build that cannot
+  replay that version fails the run visibly: `read_workflow` shows
+  `needsRecovery`, and `recover` ends the run.
+
+The `workflow-reference` skill's Semantics section tells models the same, with
+what pause, stop, cancel, deadlines and joins do.
+
+Version 1 documents ran on another orchestration (`workflow-session`, version
+`1.0.0`). It recorded the compiled graph and every state's result in its
+history, ran the state that was running again from its start after a restart,
+and continued as new every 20 script states.
