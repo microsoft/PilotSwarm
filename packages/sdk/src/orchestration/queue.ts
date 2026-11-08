@@ -1544,14 +1544,22 @@ function* processAnswer(runtime: DurableSessionRuntime, answerItem: any): Genera
 }
 
 /**
+ * The runtime's own prompt headers. 1.0.82 stamped no sender on the runtime's prompts, so one queued before the upgrade
+ * and drained on 1.0.83 is told apart by its header (review RLR-F2).
+ */
+const RUNTIME_PROMPT_HEADER = /^\[(?:SYSTEM:|SESSION_MESSAGE(?:_RESPONSE)?\b|WORKFLOW_UPDATE\b|CHILD_UPDATE\b|FACTS_INTAKE\b)/;
+
+/**
  * FU-9: whether a queued prompt is a person's words: its sender is not an agent or the runtime (kind `agent` or
  * `system`). Every prompt the runtime enqueues itself carries one of these (message-sender.ts agentSender and
  * systemSender; test/unit/fu9-sender-stamps.test.mjs checks every enqueue site), and a client's custom event cannot
- * claim one (client.ts sendEvent). A person's sender, or none (a client that names no sender), is a person's.
+ * claim one (client.ts sendEvent). A person's sender is a person's. A prompt with none (a client that names no sender,
+ * or a prompt queued on 1.0.82) is a person's unless it starts with a runtime header (RUNTIME_PROMPT_HEADER).
  */
 function isPersonPrompt(item: any): boolean {
-    const kind = normalizeMessageSender(item?.sender)?.kind;
-    return kind !== "agent" && kind !== "system";
+    const sender = normalizeMessageSender(item?.sender);
+    if (sender) return sender.kind !== "agent" && sender.kind !== "system";
+    return !(typeof item?.prompt === "string" && RUNTIME_PROMPT_HEADER.test(item.prompt));
 }
 
 /**

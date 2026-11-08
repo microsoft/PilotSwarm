@@ -176,9 +176,12 @@ const QUEUE_CHANGED_82 = [
 /** FU-9 (1.0.83, option b): a person's words never merge with a non-person prompt (queue.ts isPersonPrompt). */
 const QUEUE_FU9_ADDED = [
     'import { messageSenderKey, normalizeMessageSender } from "../message-sender.js";',
+    // Review RLR-F2: a prompt queued on 1.0.82 has no sender; a runtime header marks it as not a person's.
+    "const RUNTIME_PROMPT_HEADER = /^\\[(?:SYSTEM:|SESSION_MESSAGE(?:_RESPONSE)?\\b|WORKFLOW_UPDATE\\b|CHILD_UPDATE\\b|FACTS_INTAKE\\b)/;",
     "function isPersonPrompt(item: any): boolean {",
-    "    const kind = normalizeMessageSender(item?.sender)?.kind;",
-    '    return kind !== "agent" && kind !== "system";',
+    "    const sender = normalizeMessageSender(item?.sender);",
+    '    if (sender) return sender.kind !== "agent" && sender.kind !== "system";',
+    '    return !(typeof item?.prompt === "string" && RUNTIME_PROMPT_HEADER.test(item.prompt));',
     "            || Boolean(peek.bootstrap) !== Boolean(first.bootstrap)",
     "            || isPersonPrompt(peek) !== isPersonPrompt(first)) {",
 ];

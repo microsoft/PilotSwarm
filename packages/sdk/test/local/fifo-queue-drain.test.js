@@ -373,6 +373,30 @@ describe("FU-9: a person's words and a non-person prompt run as two turns", () =
         expect(digest[0]).toMatch(/RESULT-A[\s\S]*RESULT-B|RESULT-B[\s\S]*RESULT-A/);
     });
 
+    // Review RLR-F2: 1.0.82 stamped no sender on the runtime's own prompts. One queued before the upgrade and drained on
+    // 1.0.83 has none, so a runtime header at its start marks it as not a person's: it stays apart from a person's words.
+    for (const header of ["[SESSION_MESSAGE request_id=r-1 from=peer subject=ping]", "[SESSION_MESSAGE_RESPONSE request_id=r-1 from=peer verdict=answered]",
+        "[SYSTEM: The budget that paused this session has changed.]", "[WORKFLOW_UPDATE from=wf-1 workflow=w@1.0.0 run=r type=ended]",
+        "[FACTS_INTAKE {}]", "[CHILD_UPDATE from=child-a type=completed]"]) {
+        it(`RLR-F2: an unstamped runtime prompt queued on 1.0.82 (${header.slice(0, 20)}…) and a person's prompt: two turns`, () => {
+            const legacy = `${header}\nLEGACY-RUNTIME`;
+            const after = drainAndRun(harness(), [prompt("PERSON-1", { sender: PERSON }), prompt(legacy)], 2);
+            expect(after).toHaveLength(2);
+            expect(after[0]).toContain("PERSON-1");
+            expect(after[0]).not.toContain("LEGACY-RUNTIME");
+            expect(after[1]).toContain("LEGACY-RUNTIME");
+            const before = drainAndRun(harness(), [prompt(legacy), prompt("PERSON-2")], 2);
+            expect(before[0]).toContain("LEGACY-RUNTIME");
+            expect(before[0]).not.toContain("PERSON-2");
+        });
+    }
+
+    it("RLR-F2: unstamped words without a runtime header are a person's, and still merge with a person's", () => {
+        const turns = drainAndRun(harness(), [prompt("PERSON-1", { sender: PERSON }), prompt("plain words [SYSTEM: later in the text]")], 1);
+        expect(turns).toHaveLength(1);
+        expect(turns[0]).toMatch(/PERSON-1[\s\S]*plain words/);
+    });
+
     // F-FU9-1: the runtime's own enqueue sites stamp their sender, so their real payloads stay apart from a person's words.
     const enqueuedBy = async (send) => {
         const enqueued = [];
