@@ -151,7 +151,10 @@ for (const moa of [false, true]) test(`${moa ? "MoA" : "chat"}: expanded native 
     const fixture = fixtureEvents();
     fixture.events.unshift(...Array.from({ length: 50 }, (_, i) =>
         fixture.event(i, "user.message", { content: `Earlier message ${i}: ${"reading context ".repeat(8)}` })));
-    fixture.events = fixture.events.map((event, i) => ({ ...event, seq: i + 1 }));
+    const started = Date.now() - 10_000;
+    fixture.events = fixture.events.map((event, i) => ({
+        ...event, seq: i + 1, createdAt: started + i * 100, timestamp: started + i * 100,
+    }));
     await page.route("**/api/v1/me/profile**", route => route.fulfill({ json: { ok: true, result: {
         isAdmin: false, profileSettings: { moa: { version: 2, tree: { id: "native-growth", type: "chat", sessionId: ID } } },
     } } }));
