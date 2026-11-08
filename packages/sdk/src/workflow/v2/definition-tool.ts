@@ -35,74 +35,40 @@ import { parseWorkflowAgentModels, requireAgentModelsForRevision, workflowChosen
 export const WORKFLOW_DEFINITION_TOOL = "workflow_definition";
 
 /**
- * Stage 2.5: the tool's declaration where its host can (`tests`, a workflow request turn: chat-test.ts requires
- * host.requests) or cannot run a Workflow test. Without tests the operation test, its fixtures and test_id are not
- * declared, so the model is never offered an operation that always refuses; a call of it is still refused
- * (WORKFLOW_TEST_UNAVAILABLE).
+ * The tool's declaration, its contract only (owner 2026-11-08T16:55Z: details in the workflow-tools skill). Stage 2.5:
+ * where its host cannot run a Workflow test (`tests: false`, a frozen 1.0.82 turn; chat-test.ts requires host.requests),
+ * the operation test, its fixtures and test_id are not declared, so the model is never offered an operation that always
+ * refuses; a call of it is still refused (WORKFLOW_TEST_UNAVAILABLE).
  */
 export function workflowDefinitionToolSpec(options: { tests?: boolean } = {}) {
     const tests = options.tests !== false;
     return {
         description:
-            "Your Workflow Definitions: each is named, belongs to this chat, and has revisions 1, 2, 3 (each save is a new revision; a "
-            + "Workflow runs the revision it started with). Operations: "
-            + "list (your definitions, each with its definition_id and current revision); "
-            + "read (name or definition_id; optional revision, default the newest: its YAML, errors and the Workflows started from it); "
-            + "save (name and yaml; to change an existing definition also give definition_id and expected_revision, the revision you read: a "
-            + "save based on an older revision is refused, so read again and redo your change; a revision with errors is saved and shown "
-            + "with its errors, but cannot start); "
-            + "start (name or definition_id; optional revision, default the newest valid one; inputs; vars: a new Workflow from that revision; "
-            + "to run a definition again, start it again; agent_models, optional: leave it out, so every agent node uses this chat's model, "
-            + "reasoning and context; give it only when the person asks for a model, or a package card's model hint for a node asks for a "
-            + "kind of model, reasoning or context: then map that agent node's id, its key under states: (one key for all items of a For "
-            + "each), to { model: an exact provider:model from list_available_models (the owning chat's catalog), reasoning_effort?, "
-            + "context_tier? (each one the model lists) } and say what you chose; an id that is not an agent node of that revision, or a "
-            + "model, effort or tier the owning chat's catalog does not have, refuses the start); "
-            + (tests
-                ? "test (only when the user asks you to test it, or before you publish it in a package; never on your own, and Start never needs a "
-                    + "test: name or definition_id; optional "
-                    + "revision; inputs; vars; fixtures, the prepared answers for its tool calls, agent steps, sends and requests: each { operation?: "
-                    + "tool.call (default) | agent | send | request, tool (a tool call's) or state (another step's), arguments? (absent: any arguments), "
-                    + "response: { kind: success | error | cancel, value } }; the success value by kind: a tool call's result, an agent step's "
-                    + "{ outcome: one of its outcomes, output }, a request step's { response: <the answer> } or { decline: { reason } }, a send "
-                    + "step's any value; an error's value is { code: a runtime error code such as execution_failed, message }. For example, an "
-                    + "agent step classify and a request step approve: [{ operation: agent, state: classify, response: { kind: success, value: "
-                    + "{ outcome: bug, output: { label: \"bug\" } } } }, { operation: request, state: approve, response: { kind: success, value: "
-                    + "{ response: { approved: true } } } }]. A prepared answer of the wrong shape fails the test, which says the shape it needs. "
-                    + "It runs that revision "
-                    + "to its end in a hidden test (scripts run for real; waits pass at once; a call with no prepared answer fails the test, which names "
-                    + "it) and returns a report; if it is still running after a few minutes, read it again with test_id); "
-                : "Workflow tests do not run here, so there is no test operation: if the user asks for a test, say a test cannot run here. ")
-            + "card (name <package>/<name>: a package's Workflow Definition's interface card: what it does, its inputs with an example, how it ends, "
-            + "what it asks and sends you). A package's definition is named <package>/<name> (such as release-tools/release-watch) and is locked: "
-            + "you start it, you never save it. list shows under canStart the package definitions you may start; read a card before you start one, "
-            + "ask the person for any input you lack, and start it by its <package>/<name> (update: true starts the package's newer version when "
-            + "list shows one). Change a Workflow = save a new "
-            + "revision, then start it. Recurring or polling work is one Workflow with a wait node looping back, never a timer that starts a "
-            + "Workflow each time. Returns JSON.",
+            "This chat's Workflow Definitions, each named, with revisions 1, 2, 3. list: yours, and under canStart the package definitions "
+            + "(<package>/<name>, locked) you may start. read: one, with its YAML, errors and Workflows. save: a new revision (to change one, "
+            + "definition_id and the expected_revision you read; a stale save is refused); a revision with errors is saved but cannot start. "
+            + "start: a new Workflow from a revision (default the newest valid); start again to run it again. "
+            + (tests ? "test: only when the user asks, or before you publish it in a package. " : "")
+            + "card: a package definition's inputs and results; read it before you start one. "
+            + "Load the workflow-tools skill for every argument. Returns JSON.",
         parameters: {
             type: "object",
             properties: {
-                operation: { type: "string", enum: tests ? ["list", "read", "save", "start", "test", "card"] : ["list", "read", "save", "start", "card"],
-                    description: "What to do." },
-                name: { type: "string", description: "The definition's name (its YAML's metadata.name), or <package>/<name> for a package's definition." },
-                definition_id: { type: "string", description: "The definition's id, from list, read or a save. Needed to save over an existing one." },
-                expected_revision: { type: "integer", description: "save: the revision your change is based on (from read or list)." },
-                yaml: { type: "string", description: "save: the whole definition YAML (apiVersion pilotswarm.dev/v2-draft)." },
-                revision: { type: "integer", description: "read or start: a revision number; default the newest (start: the newest valid)." },
-                inputs: { type: "object", description: "start: the run's inputs, as the definition's inputs schema asks." },
-                vars: { type: "object", description: "start: the run's initial variables." },
-                notify_on_completion: { type: "boolean", description: "start: tell this chat when the Workflow ends. Default true." },
-                agent_models: { type: "object", description: "start, optional (OF-S2-7): agent node id (its key under states:) → { model: "
-                    + "exact provider:model from list_available_models (the owning chat's catalog), reasoning_effort?, context_tier? }. Leave it out to use this chat's "
-                    + "model; give it only when the person asks, or a package card's hint asks for a kind of model." },
+                operation: { type: "string", enum: tests ? ["list", "read", "save", "start", "test", "card"] : ["list", "read", "save", "start", "card"] },
+                name: { type: "string", description: "metadata.name, or <package>/<name>." },
+                definition_id: { type: "string" },
+                expected_revision: { type: "integer", description: "save: the revision you read." },
+                yaml: { type: "string", description: "save: the whole YAML (pilotswarm.dev/v2-draft)." },
+                revision: { type: "integer" },
+                inputs: { type: "object" },
+                vars: { type: "object" },
+                notify_on_completion: { type: "boolean", description: "start: default true." },
+                agent_models: { type: "object", description: "start: only when the person asks for a model." },
                 ...(tests ? {
-                    fixtures: { type: "array", items: { type: "object" }, description: "test: the prepared answers, each { operation?, tool or state, "
-                        + "arguments?, response: { kind, value } }: an agent step's value { outcome, output }, a request step's { response } or "
-                        + "{ decline: { reason } }, a send step's any value, a tool call's its result (see the operation test for an example)." },
-                    test_id: { type: "string", description: "test: read a test that was still running (its test_id from the earlier answer)." },
+                    fixtures: { type: "array", items: { type: "object" }, description: "test: prepared answers (workflow-tools skill)." },
+                    test_id: { type: "string", description: "test: a test still running." },
                 } : {}),
-                update: { type: "boolean", description: "start of a package's definition: start the package's newer version (list shows it as newerVersion)." },
+                update: { type: "boolean", description: "start: a package's newer version." },
             },
             required: ["operation"],
         },

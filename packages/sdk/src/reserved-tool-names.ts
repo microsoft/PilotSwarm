@@ -99,12 +99,21 @@ const SESSION_ATTACHED_TOOL_NAMES = [
  */
 export const WORKFLOW_TURN_TOOL_NAMES = ["respond_session_request", "complete_workflow_node"] as const;
 
+/**
+ * The Workflow tools a turn always has handlers for, declared or not: spawn_workflow is no longer declared (its handler
+ * answers a stale call), and the others are declared only where Workflows are on in the chat. Reserved whatever a session
+ * declares, so no package or capability tool takes one of their names.
+ */
+export const WORKFLOW_TOOL_NAMES = ["enable_workflows", "workflow_definition", "spawn_workflow", "update_workflow", "read_workflow",
+    "send_workflow_input"] as const;
+
 /** Complete platform namespace, including tools gated by role or store. */
 export function reservedPlatformToolNames(baseToolNames: Iterable<string> = []): Set<string> {
     return new Set([
         ...baseToolNames,
         ...SESSION_ATTACHED_TOOL_NAMES,
         ...WORKFLOW_TURN_TOOL_NAMES,
+        ...WORKFLOW_TOOL_NAMES,
         ...PROVIDER_TOOL_NAMES,
         ...FEATURE_OPERATION_SPECS.map(spec => spec.name),
         ...MOTD_OPERATION_SPECS.map(spec => spec.name),

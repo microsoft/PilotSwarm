@@ -3,8 +3,8 @@
  * always-on review's AOS-F1 fix): session orchestration 1.0.83 is the latest version and every worker runs controller
  * 1.9.0, so every session's host compiles agent, parallel and request states (compileWorkflowV2ForHost with requests:
  * true), and every session is taught them.
- * a) a default worker (scripts off, no request-turn flag) carries the full text: agent nodes, named branches, agent models
- *    and the request answer, and a scripts-off line that names agent and parallel nodes;
+ * a) a default worker (scripts off, no request-turn flag) carries the full text (trimmed, owner 2026-11-08T16:55Z): agent
+ *    nodes, the request answer and the skills, and a scripts-off line that names agent and parallel nodes;
  * b) every state type and inline example that prompt teaches compiles, with the real compiler, on the host every session
  *    has;
  * c) a 1.0.83 turn (a workflow request turn) has the same text, with clock waits and revision tests;
@@ -40,7 +40,7 @@ function systemPrompt({ scripts, requestTurn }) {
 
 /** The prompt's Workflow block: from its heading to the next top-level heading, or the end. */
 function workflowBlock(prompt) {
-    const start = prompt.indexOf("## Workflow Sessions");
+    const start = prompt.indexOf("## Workflows");
     assert.ok(start >= 0, "the prompt carries the Workflow guidance");
     const rest = prompt.slice(start);
     const end = rest.slice(3).search(/\n#{1,2} /);
@@ -124,22 +124,21 @@ test("the canonical examples are real: each compiles on the host every session h
 
 test("(a) a default worker (scripts off, no request-turn flag) carries the full text, and its scripts-off line names agent and parallel nodes", () => {
     const block = workflowBlock(systemPrompt({ scripts: false, requestTurn: false }));
-    for (const phrase of ["An agent node has two chat modes.", "a parallel state with named `branches`", "`agent_models`",
-        "answer it once with `respond_session_request`", "The Workflow calls a model only at the agent nodes that need judgment."]) {
+    for (const phrase of ["at the agent nodes that need judgment", "answer it once with `respond_session_request`",
+        "load the `workflow-authoring` skill"]) {
         assert.ok(block.includes(phrase), phrase);
     }
-    assert.match(block, /Use wait, messaging, agent and parallel nodes instead/);
+    assert.match(block, /Use wait, messaging, agent and parallel nodes/);
 });
 
 test("(b) every state type and inline example the default worker's prompt teaches compiles on the host every session has", () => {
     for (const scripts of [false, true]) {
         const block = workflowBlock(systemPrompt({ scripts, requestTurn: false }));
         const taught = Object.entries(STATE_TYPES).filter(([, { named }]) => named.test(block));
-        for (const type of ["wait", "agent", "parallel", "request"]) assert.ok(taught.some(([name]) => name === type), `scripts ${scripts}: it teaches ${type}`);
+        for (const type of ["wait", "agent", "request"]) assert.ok(taught.some(([name]) => name === type), `scripts ${scripts}: it teaches ${type}`);
         for (const [type, { yaml }] of taught) assert.deepEqual(compileErrors(FULL_HOST, yaml), [], `scripts ${scripts}: ${type}`);
-        const inline = inlineExamples(block);
-        assert.ok(inline.length >= 1, "the wait example is there");
-        for (const { example, yaml } of inline) assert.deepEqual(compileErrors(FULL_HOST, yaml), [], `scripts ${scripts}: ${example}`);
+        // The trimmed guidance shows no inline state; any it shows must compile.
+        for (const { example, yaml } of inlineExamples(block)) assert.deepEqual(compileErrors(FULL_HOST, yaml), [], `scripts ${scripts}: ${example}`);
     }
 });
 
@@ -149,13 +148,13 @@ test("(c) a 1.0.83 turn has the same text, with clock waits and revision tests",
         const prompt = systemPrompt({ scripts, requestTurn: true });
         assert.ok(prompt.includes(workflowSessionGuidance(testMode, { scripts, clockWaits: true, tests: true })), `scripts ${scripts}`);
         const block = workflowBlock(prompt);
-        assert.ok(block.includes("Testing is optional."));
-        assert.match(block, /give the wait state `at` instead of `seconds`/);
+        assert.ok(block.includes("Test a revision only when the user asks"));
+        assert.match(block, /A wait state can wait until a clock time: `at: \{/);
         for (const [type, { named, yaml }] of Object.entries(STATE_TYPES)) {
             if (named.test(block)) assert.deepEqual(compileErrors(FULL_HOST, yaml), [], `scripts ${scripts}: ${type}`);
         }
     }
-    assert.equal(workflowSessionGuidance(true), WORKFLOW_SESSION_GUIDANCE);
+    assert.equal(workflowSessionGuidance(false), WORKFLOW_SESSION_GUIDANCE);
 });
 
 test("(d) the basic-engine text is gone: no export, and no option gives a session less than the full text", () => {
@@ -163,7 +162,7 @@ test("(d) the basic-engine text is gone: no export, and no option gives a sessio
         assert.equal(name in guidance, false, name);
     }
     assert.equal(workflowSessionGuidance(false, { scripts: true, fullEngine: false }), workflowSessionGuidance(false, { scripts: true }));
-    for (const phrase of ["An agent node has two chat modes.", "named `branches`"]) {
+    for (const phrase of ["at the agent nodes that need judgment", "`workflow-reference`: every field"]) {
         assert.ok(workflowSessionGuidance(false, { scripts: true }).includes(phrase), phrase);
     }
 });

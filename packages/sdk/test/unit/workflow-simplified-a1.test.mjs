@@ -62,7 +62,8 @@ test("the model is declared no definition tools inside a Workflow, and keeps eve
         const outside = names(ManagedSession.subAgentToolDefs(opts));
         const inside = names(ManagedSession.subAgentToolDefs({ ...opts, workflowInsideWorkflow: true }));
         for (const tool of WORKFLOW_DEFINITION_TOOLS) {
-            assert.ok(outside.includes(tool), tool);
+            // spawn_workflow is no longer declared anywhere (owner 2026-11-08T16:55Z); its handler refuses inside a Workflow.
+            assert.equal(outside.includes(tool), tool !== "spawn_workflow", tool);
             assert.ok(!inside.includes(tool), tool);
         }
         assert.deepEqual(inside, outside.filter(name => !WORKFLOW_DEFINITION_TOOLS.includes(name)));
@@ -98,10 +99,10 @@ test("the base guidance hands prescriptive work to a Workflow (O3)", () => {
     for (const phrase of [
         "Some work is prescriptive or repetitive and needs little judgment most of the time.",
         "For that work, write a Workflow Definition and start a Workflow instead of doing each step yourself.",
-        "The Workflow calls a model only at the agent nodes that need judgment.",
-        "You may still spawn sub-agents when that fits better.",
+        "It runs without model turns, except at the agent nodes that need judgment.",
+        "you may still spawn sub-agents when that fits better.",
     ]) {
         assert.ok(WORKFLOW_SESSION_GUIDANCE.includes(phrase), phrase);
     }
-    assert.ok(WORKFLOW_SESSION_GUIDANCE.indexOf("prescriptive or repetitive") < WORKFLOW_SESSION_GUIDANCE.indexOf("When `workflow_definition` is available"));
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.indexOf("prescriptive or repetitive") < WORKFLOW_SESSION_GUIDANCE.indexOf("`workflow_definition`"));
 });

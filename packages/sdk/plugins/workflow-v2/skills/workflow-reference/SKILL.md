@@ -1,6 +1,6 @@
 ---
 name: workflow-reference
-description: Field reference for version 2 workflow YAML (root keys, every state type, outputs, error codes), the workflow tools and their refusals, and a complete review fan-out example. Load with workflow-authoring.
+description: Field reference for version 2 workflow YAML (root keys, every state type, bindings, outputs, runtime error codes) and a complete review fan-out example. Load with workflow-authoring.
 ---
 
 # Workflow reference
@@ -73,7 +73,8 @@ Output: the `setResult` output. Errors: `invalid_input`, `invalid_output`
 
 | Field | Rule |
 |---|---|
-| `seconds` | Required. 1 to 86,400, or one binding (checked at entry: `invalid_input`). |
+| `seconds` | 1 to 86,400, or one binding (checked at entry: `invalid_input`). Required unless `at`. |
+| `at` | Instead of `seconds`: `{ minute, hour?, day_of_week? (0-6, Sunday 0) or day_of_month? (1-31), tz }`; a day needs `hour`, and `minute` alone is every hour. Waits until the next such time in the IANA zone `tz` (daylight saving included), decided at entry. |
 | `input` | Optional template. |
 
 Outcome: `elapsed` (route required). Output: its input.
@@ -143,7 +144,8 @@ when visits are independent. `chat: continue` keeps one chat across the
 state's visits in a Workflow: each later visit arrives as "cycle N" with the
 input, the variables now, which changed, and the previous result. Use it for
 memory of earlier cycles (no repeats, incremental work); its context grows,
-so it costs more. Each completion gives `node_execution_id` from its prompt.
+so it costs more. Another Workflow (Run again) starts new chats. Each
+completion gives `node_execution_id` from its prompt.
 The time limit is per visit; the chat ends with the Workflow (a stop ends an
 idle one at once). A chat that ended on its own is replaced, and the prompt
 says so.
@@ -229,63 +231,9 @@ and the route `timeout`, and text around a binding.
 
 ## Tools
 
-`workflow_definition`: `list`; `read` (`name` or `definition_id`,
-`revision?`); `save` (`name`, `yaml`, and to change one `definition_id` and
-`expected_revision`; stale: `REVISION_STALE`); `start` (`name` or
-`definition_id`, `revision?` default newest valid, `inputs`, `vars?`,
-`notify_on_completion?`). `spawn_workflow` is kept one release: it saves
-the YAML as the next revision and, with `start: true`, starts it.
-
-`update_workflow`: `workflow_id`, `operation`, `operation_id`, and (its
-definition operations: older Workflows only):
-
-| Operation | Arguments | Effect |
-|---|---|---|
-| `replace_definition` | `yaml`, `expected_revision` | New draft revision; drafts only; same `metadata.version`. |
-| `publish` | `expected_revision`, `definition_hash` | Publishes that exact revision and pins each named agent's exact version; does not start. A run keeps that version after its package is republished. |
-| `publish_and_start` | publish arguments, `inputs`, `vars?`, `notify_on_completion?` | Publishes and starts the live run. |
-| `start` | `definition_hash`, `inputs`, `vars?`, `notify_on_completion?` | Starts this Workflow's live run of the published revision. Each Workflow has one live run; one definition may have many Workflows running at once. |
-| `set_vars` | `set?`, `delete?`, `expected_kv_revision`, `run_id?` | One atomic KV change. |
-| `pause`, `resume`, `cancel` | `reason?`, `run_id?` | Run control. |
-| `stop` | `reason?`, `grace_seconds?` (0 to 3,600, default 60), `run_id?` | Admits nothing new; admitted work settles; then the run ends `stopped`. |
-| `recover` | `run_id?` | Ends or starts a run that `read_workflow` shows as `needsRecovery`. |
-
-`read_workflow`: `workflow_id`, `run_id?` (default live run),
-`include_yaml?`, `limit?`, `cursor?` (a `run.pages` nextCursor: older
-rows), `execution_id?` (its whole result). Shows the graph, runs, a
-run's newest rows (open ones apart), KV, stop, `agent.childSessionId`,
-branches. It is how you follow a run (`workflow-authoring`, Follow
-a run): use it, not `list_sessions`, for a workflow's status.
-
-`send_workflow_input`: `workflow_id`, `contract`, `payload`,
-`correlation?`, `run_id?`, `ttl_seconds?` (1 to 86,400, the default),
-`operation_id`. Gives a run one typed input for its receive states.
-
-`respond_session_request` (the recipient of a request): `request_id`,
-`operation_id`, and `response` or `decline: { reason }`.
-
-`complete_workflow_node` (an agent state's child): `operation_id`, and
-`outcome` with `output`, or `error: { code: needs_input or
-execution_failed, message, details? }`.
-
-## Refusals you can fix
-
-| Code | Meaning |
-|---|---|
-| `DEFINITION_INVALID` | The revision has compile errors; read `diagnostics`. |
-| `REVISION_CONFLICT` | The current revision is not `expected_revision`; read it again. |
-| `DEFINITION_HASH_MISMATCH` | `definition_hash` is not the hash of that revision. |
-| `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | A published definition or its version does not change; use a new workflow child. |
-| `OPERATION_CONFLICT` | The `operation_id` was used for another request. |
-| `LIVE_RUN_EXISTS` | The workflow child already has its live run. |
-| `WORKFLOW_YAML_TOO_LARGE`, `WORKFLOW_REVISION_LIMIT` | The YAML is over 256 KiB, or the child holds 1,000 revisions or 64 MiB of YAML. Nothing was saved; use a new workflow child. |
-| `KV_REVISION_CONFLICT` | Read `kvRevision` again. |
-| `WORKFLOW_INPUT_INVALID`, `INPUT_INVALID` | Inputs or a payload do not match the schema; read the field errors. |
-| `RUN_STOP_UNSUPPORTED` | The run's controller does not stop gracefully; cancel it. |
-| `WORKFLOW_STORE_UNAVAILABLE` | The store cannot be reached or has no room now; try once more, then report the error as given. |
-| `AGENT_UNAVAILABLE` | Publication could not pin a named agent. |
-| `CONTRACT_MISMATCH` | The state is not exactly its agent's workflow interface; read `problems`. |
-| `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | Only the creating agent changes or reads its workflow child. |
+Every argument of the Workflow tools, and the refusals you can fix, are in
+the `workflow-tools` skill. Use `read_workflow`, not `list_sessions`, for a
+Workflow's status.
 
 ## Example: review fan-out with bounded rework
 

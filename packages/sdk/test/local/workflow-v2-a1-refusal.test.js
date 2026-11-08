@@ -7,7 +7,8 @@
  *   Workflow session itself and an ordinary sub-agent of that chat are not (O3: ordinary sub-agents keep the tools).
  * - spawn_workflow refuses inside a Workflow in words, for a version 2 document (the tools' JSON refusal with its code)
  *   and a version 1 one (its [SYSTEM: ...] line), before anything is made; outside it reaches its own checks.
- * - The model is not declared spawn_workflow or update_workflow inside a Workflow; every other tool stays (A5).
+ * - The model is not declared update_workflow or workflow_definition inside a Workflow (spawn_workflow nowhere); every other
+ *   tool stays (A5).
  *
  * No controller runs here: the lineage is the agent state's admitted invocation record, as the controller writes it.
  */
@@ -150,7 +151,9 @@ describe("Workflow Simplified A1: no definition tools inside a Workflow", () => 
         for (const opts of [{}, { workflowMilestone: true }, { workflowMilestone: true, workflowAgentChild: true }]) {
             const outside = names(ManagedSession.subAgentToolDefs(opts));
             const inside = names(ManagedSession.subAgentToolDefs({ ...opts, workflowInsideWorkflow: true }));
-            expect(outside).toEqual(expect.arrayContaining(["spawn_workflow", "update_workflow"]));
+            // spawn_workflow is no longer declared anywhere (its handler refuses inside a Workflow, above).
+            expect(outside).toEqual(expect.arrayContaining(["update_workflow", "workflow_definition"]));
+            expect(outside).not.toContain("spawn_workflow");
             expect(inside).not.toContain("spawn_workflow");
             expect(inside).not.toContain("update_workflow");
             expect(inside).not.toContain("workflow_definition");

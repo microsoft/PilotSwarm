@@ -12,8 +12,8 @@ definition as YAML and save it with `workflow_definition`: it belongs to this
 chat and each save is a new revision. `start` makes a Workflow from a
 revision; the Workflow runs that revision, whatever is saved later.
 
-Load `workflow-reference` only when you need every field of a state or every
-tool operation.
+Load `workflow-reference` for every field of a state, and `workflow-tools`
+for every tool argument.
 
 If the compiler answers `WORKFLOW_NODE_TYPE_UNSUPPORTED` or
 `WORKFLOW_FEATURE_UNSUPPORTED`, or `update_workflow` refuses an operation
@@ -51,6 +51,10 @@ checked against the schema you declare.
 
 ## 3. Design a bounded graph
 
+- Keep it small: few states and a straight common path a reader follows in
+  one look. Send corner cases, parsing and many-way decisions to an agent
+  state with a short, clear task, not to conditions or scripts: scripts do
+  work, not decisions.
 - Every state that the run can reach must be able to reach a terminal state.
   The compiler refuses a graph that cannot finish.
 - Route every outcome that a state can report. Route the runtime errors that
@@ -163,6 +167,9 @@ for its typed result.
   after a visit times out, the next visit's prompt can wait behind the old
   turn until its abort lands, and the next visit's time limit runs during
   that wait.
+- Write the task so the agent can work from its input: name the input
+  fields it uses, give `inputSchema` real `properties`, and say whether it
+  may fetch more data (it is told not to fetch its input again).
 - `tools: none` or a list limits the agent and its sub-agents to those
   tools (plus `complete_workflow_node`).
 - A child whose turn ends with its state open and nothing pending is
@@ -218,27 +225,19 @@ Never use several Workflows for this; `workflow-patterns` has an example.
 
 ## 9. The lifecycle
 
-1. `workflow_definition` `save` with `name` (the YAML's `metadata.name`) and
-   `yaml` saves revision 1. A revision may have errors; read
-   them in the answer.
-2. Show the user the revision and its errors (`workflow_definition` `read`).
-   Change it with `save` and its `definition_id` and the `expected_revision`
-   you read: that is the next revision. A save based on an older revision is
-   refused; read again and redo your change. `metadata.version` is a label;
-   revisions order the history.
-3. Start a Workflow: `workflow_definition` `start` with `inputs` and
-   optional `vars` (default the newest valid revision; name another with
-   `revision`). A revision with errors cannot start. Each Workflow has one
-   live run; one definition may have many Workflows running at once. To
-   start another Workflow, call `start` again. Never rename the definition:
-   a new name makes a new definition.
-4. Control the run: `update_workflow` `pause` and `resume`; `stop` with
-   `grace_seconds` (admit nothing new, let admitted work settle, then end
-   `stopped`); `cancel`; `set_vars` with `expected_kv_revision`. If
-   `read_workflow` shows `needsRecovery`, use `recover`.
+1. `workflow_definition` `save` (`name`, `yaml`) saves revision 1; read its
+   errors in the answer. Show the person the revision (`read`). Change it with
+   `save`, its `definition_id` and the `expected_revision` you read: that is
+   the next revision. A save based on an older revision is refused.
+2. `start` makes a Workflow from the newest valid revision (`inputs`,
+   `vars?`). A revision with errors cannot start. To start another Workflow,
+   call `start` again; never rename the definition.
+3. Control the run with `update_workflow`: `pause`, `resume`, `stop`,
+   `cancel`, `set_vars`, and `recover` when `read_workflow` shows
+   `needsRecovery`. Give each change a new `operation_id`; retry a change
+   with its same id.
 
-Give each new `update_workflow` change a new `operation_id`; retry a change
-with its same id.
+`workflow-tools` has every argument.
 
 ## 10. Diagnose a failure
 

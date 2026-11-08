@@ -26,8 +26,6 @@ import {
 import { workflowAgentReminderText } from "../../dist/workflow/v2/agent-reminder.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL_SPEC } from "../../dist/workflow/v2/agent-node-service.js";
 import { WORKFLOW_SESSION_GUIDANCE, WORKFLOW_V2_SKILLS_DIR } from "../../dist/workflow/guidance.js";
-import { SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC } from "../../dist/workflow/tool-spec.js";
-import { UPDATE_WORKFLOW_TOOL_SPEC } from "../../dist/workflow/v2/tools.js";
 
 const AGENTS = { enableRequests: true, enableAgents: true };
 const PARALLEL = { ...AGENTS, enableParallel: true };
@@ -185,15 +183,10 @@ test("the graph shows the mode only when the chat continues; the reminder names 
     assert.deepEqual(COMPLETE_WORKFLOW_NODE_TOOL_SPEC.parameters.required, ["operation_id"]);
 });
 
-test("the guidance every agent reads explains both chat modes and when to choose each", () => {
+// Owner 2026-11-08T16:55Z: the base guidance is trimmed to its rules; the chat modes are taught in the skills it names.
+test("the skills every Workflow author reads explain both chat modes and when to choose each", () => {
     const skill = name => fs.readFileSync(path.join(WORKFLOW_V2_SKILLS_DIR, name, "SKILL.md"), "utf8").replace(/\s+/g, " ");
-    const base = WORKFLOW_SESSION_GUIDANCE;
-    assert.ok(base.includes("An agent node has two chat modes. `chat: new` (the default) gives each visit of the node a new agent chat: a clean "
-        + "context, cheaper, and it cannot drift; use it when visits are independent."));
-    assert.ok(base.includes("`chat: continue` keeps one agent chat for the node across its visits in a Workflow"));
-    assert.ok(base.includes("use it when the agent needs memory of earlier cycles (no repeats, incremental work, a running conversation). "
-        + "Its context grows with each visit, so it costs more."));
-    assert.ok(base.includes("It is refused inside a For each, and a new Workflow (Run again) always starts new chats."));
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("load the `workflow-authoring` skill"));
     const authoring = skill("workflow-authoring");
     assert.ok(authoring.includes("`chat: new` (default) gives each visit a new chat. `chat: continue` keeps one chat across the state's visits, "
         + "for memory of earlier cycles; its context grows. Not in a parallel body."));
@@ -204,11 +197,7 @@ test("the guidance every agent reads explains both chat modes and when to choose
     assert.ok(reference.includes("| `chat` | Optional. `new` (default) or `continue`. Refused in a parallel body. |"));
     assert.ok(reference.includes("`chat: new` gives each visit a new chat: clean, cheaper, no drift; use it when visits are independent."));
     assert.ok(reference.includes("Use it for memory of earlier cycles (no repeats, incremental work); its context grows, so it costs more."));
+    assert.ok(reference.includes("Another Workflow (Run again) starts new chats."));
     assert.ok(reference.includes("Each completion gives `node_execution_id` from its prompt."));
-    const spawn = SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC.description;
-    assert.ok(spawn.includes("chat: new (default) gives each visit a new chat (clean, cheaper; for independent visits), chat: continue keeps one "
-        + "chat across the state's visits in the Workflow"));
-    assert.ok(spawn.includes("refused in a parallel body; each completion gives node_execution_id"));
-    assert.ok(UPDATE_WORKFLOW_TOOL_SPEC.description.includes("an agent state with chat: continue keeps one agent chat across its visits in the run "
-        + "(chat: new, the default, a new chat each visit), and another Workflow starts new chats"));
 });
+

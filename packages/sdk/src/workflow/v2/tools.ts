@@ -81,48 +81,42 @@ export function operationWords(operations: readonly string[]): string {
     return operations.length < 2 ? operations.join("") : `${operations.slice(0, -1).join(", ")} or ${operations.at(-1)}`;
 }
 
+/**
+ * The workflow tools' declarations carry their contract only (owner 2026-11-08T16:55Z); the workflow-tools skill has
+ * every argument and the operations' details. update_workflow on a frozen 1.0.82 turn: its run and definition operations
+ * and recover.
+ */
+function updateWorkflowDescription(options: { stop: boolean; test: boolean }): string {
+    return "Control one of your Workflows: workflow_id, operation, and a new operation_id for each change (a retry reuses it). "
+        + "pause, resume, cancel; "
+        + (options.stop ? "stop (grace_seconds 0 to 3600, default 60: nothing new starts, started work may finish, then the run ends stopped); " : "")
+        + "set_vars (set, delete, and expected_kv_revision from read_workflow: one atomic change to the run's variables); recover (when "
+        + "read_workflow shows needsRecovery). "
+        + (options.test ? "test, test_respond and test_advance run and answer a draft's test run (the workflow-testing skill). " : "")
+        + "run_id defaults to the live run. To change or start a definition use workflow_definition: replace_definition, publish, "
+        + "publish_and_start and start apply only to Workflows made before revisions. Load the workflow-tools skill for every argument. "
+        + "Returns JSON.";
+}
+
 export const UPDATE_WORKFLOW_TOOL_SPEC = {
-    description:
-        "Control one of your Workflows (apiVersion pilotswarm.dev/v2-draft). To change a definition or start a Workflow, use workflow_definition "
-        + "(save, start); the definition operations here apply only to Workflows made before definitions had revisions, and a Workflow that is a "
-        + "copy of a revision of your definitions refuses them (PINNED_TO_CHAT_REVISION). "
-        + "operation: replace_definition (yaml + expected_revision; drafts only, same metadata.version); "
-        + "publish (expected_revision + definition_hash of the exact revision you reviewed; starts nothing); "
-        + "publish_and_start (the publish fields + inputs, optional vars); start (definition_hash + inputs, optional vars; each Workflow, that is each spawn_workflow call, has one live run, and one definition may have many Workflows running at once: to run it again, call workflow_definition start); "
-        + "an agent state with chat: continue keeps one agent chat across its visits in the run (chat: new, the default, a new chat each visit), and another Workflow starts new chats; "
-        + "starting a live run (publish_and_start, start) tells you its result when it ends unless notify_on_completion is false; "
-        + "set_vars (set: {key: JSON value} and/or delete: [keys], with expected_kv_revision from read_workflow: one atomic change to the run's "
-        + "variables; null is a value, deleting is explicit; a step that starts later reads them as context.kv, ${kv.key} or ${kv[\"any key\"]}, "
-        + "a running step keeps the values it started with); pause (no new step starts; work already started finishes and keeps its result); "
-        + "resume (a paused run); cancel (a run that has not begun ends at once; otherwise read_workflow shows when it has ended); "
-        + "recover (when read_workflow shows needsRecovery: a run whose controller stopped without ending it ends as failed (controller_ended) "
-        + "and its parent is told, as for any end; a run accepted but never started is started; otherwise nothing changes). "
-        + "run_id names the run for set_vars, pause, resume, cancel and recover (default the live run). "
-        + "operation_id makes every operation idempotent: repeating it returns the original receipt; reusing it for a different request fails. "
-        + "A receipt shows the run as the command was accepted; read_workflow shows it now. "
-        + "A published definition never changes; a new version needs a new workflow child. One name and version is one definition: "
-        + "a version that another workflow of this session has with other YAML is refused (SEMVER_REUSED). Returns JSON.",
+    description: updateWorkflowDescription({ stop: false, test: false }),
     parameters: {
         type: "object",
         properties: {
-            workflow_id: { type: "string", description: "The workflow session id from spawn_workflow." },
+            workflow_id: { type: "string" },
             operation: { type: "string", enum: [...UPDATE_WORKFLOW_OPERATIONS.definition, ...UPDATE_WORKFLOW_OPERATIONS.run, ...UPDATE_WORKFLOW_OPERATIONS.agent] },
             operation_id: { type: "string", description: "Idempotency id for this change." },
-            yaml: { type: "string", description: "replace_definition: the complete new Workflow YAML." },
-            expected_revision: { type: "integer", description: "replace_definition/publish: the draft revision you reviewed." },
-            definition_hash: { type: "string", description: "publish/start: the yamlSha256 of the reviewed revision." },
-            inputs: { type: "object", description: "publish_and_start/start: static run inputs checked against inputs.schema." },
-            vars: { type: "object", description: "publish_and_start/start: the run's initial variables (any keys, JSON values)." },
-            notify_on_completion: {
-                type: "boolean",
-                description: "publish_and_start/start: tell you the live run's result when it ends. Default true: starting a live run turns this "
-                    + "workflow's notification on, even if spawn_workflow had it off; false keeps it off.",
-            },
-            set: { type: "object", description: "set_vars: keys to set, with their JSON values." },
+            yaml: { type: "string" },
+            expected_revision: { type: "integer" },
+            definition_hash: { type: "string" },
+            inputs: { type: "object" },
+            vars: { type: "object" },
+            notify_on_completion: { type: "boolean" },
+            set: { type: "object", description: "set_vars: keys to set." },
             delete: { type: "array", items: { type: "string" }, description: "set_vars: keys to delete." },
-            expected_kv_revision: { type: "integer", description: "set_vars: the run's kvRevision you read." },
-            reason: { type: "string", description: "pause/resume/cancel: an optional short reason." },
-            run_id: { type: "string", description: "set_vars/pause/resume/cancel/recover: the run; default the live run." },
+            expected_kv_revision: { type: "integer", description: "set_vars: the kvRevision you read." },
+            reason: { type: "string" },
+            run_id: { type: "string" },
         },
         required: ["workflow_id", "operation", "operation_id"],
     },
@@ -130,161 +124,88 @@ export const UPDATE_WORKFLOW_TOOL_SPEC = {
 
 export const READ_WORKFLOW_TOOL_SPEC = {
     description:
-        "Read a workflow child you created with spawn_workflow (v2). Reading changes nothing. Returns JSON: the definition (state, current "
-        + "revision, diagnostics), its graph, its runs, and one run (run_id, default the live run) with its step executions, its variables "
-        + "(kv, kvRevision), the typed inputs it received (inbox) and the messages its send steps sent (outbox), and, while it is paused, "
-        + "pausedFrom and pauseSettled (true once no step it started is still running). A sent message that is delivered was accepted by its "
-        + "recipient, not necessarily read. An active run whose controller can no longer end it shows run.controller.needsRecovery: "
-        + "use update_workflow operation recover.",
+        "Read one of your Workflows; reading changes nothing. Returns JSON: its definition, graph and runs, and one run (run_id, default the "
+        + "live run) with its step executions, variables (kv, kvRevision), the inputs it received (inbox) and the messages it sent (outbox). "
+        + "Use it, not list_sessions, for a Workflow's status. A run that shows needsRecovery needs update_workflow recover.",
     parameters: {
         type: "object",
         properties: {
-            workflow_id: { type: "string", description: "The workflow session id." },
-            run_id: { type: "string", description: "Optional run id; default the live run." },
-            include_yaml: { type: "boolean", description: "Include the current revision's YAML. Default false." },
+            workflow_id: { type: "string" },
+            run_id: { type: "string" },
+            include_yaml: { type: "boolean", description: "Include the current revision's YAML." },
         },
         required: ["workflow_id"],
     },
 } as const;
 
-/**
- * The operations update_workflow takes only on a host that starts runs at
- * controller 1.9.0 (WorkflowV2Host.requests; INACTIVE: only a turn of a worker
- * that runs it, which only tests register).
- */
+/** The operations update_workflow takes only on a host that starts runs at controller 1.9.0 (every 1.0.83 turn). */
 export const UPDATE_WORKFLOW_MILESTONE_OPERATIONS = UPDATE_WORKFLOW_OPERATIONS.milestone;
 
-/**
- * update_workflow as such a turn shows it (R26, T125): the production
- * description and parameters, which stay byte for byte as they are for every
- * other turn, with the milestone operations and their arguments added.
- */
-export const UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC = {
-    description: UPDATE_WORKFLOW_TOOL_SPEC.description
-        + " This host also takes: stop (run_id optional, reason, grace_seconds 0 to 3600, default 60: no new step starts; work already "
-        + "started may finish until the grace ends, then the run ends stopped); "
-        + "test (a draft only: expected_revision and definition_hash of its exact current revision, inputs, optional vars, agent_mode mocked "
-        + "or real, fixtures and scenario): a test run of the draft whose workflow tool calls, agents, sends and requests are held for you or a "
-        + "fixture to answer (with agent_mode real, each agent step runs a real agent whose workflow tool calls are held), and whose deadlines "
-        + "run on a virtual clock. A published workflow is not tested (TEST_NEEDS_DRAFT); test a change as a new draft. "
-        + "A test is not a sandbox: a script's own effects are real, and a test result is not a live result; "
-        + "test_respond (run_id of the test run, interception_id, response { kind: success, error or cancel, value }) answers one held call "
-        + "once; test_advance (run_id of the test run, seconds 1 to 2592000) moves its virtual clock and decides what came due. Both also "
-        + "work for a test run that began before the workflow was published, so it can finish.",
-    parameters: {
-        type: "object",
-        properties: {
-            ...UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties,
-            operation: { type: "string", enum: [...UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties.operation.enum, ...UPDATE_WORKFLOW_MILESTONE_OPERATIONS] },
-            expected_revision: { type: "integer", description: "replace_definition/publish/test: the draft revision you reviewed." },
-            definition_hash: { type: "string", description: "publish/start/test: the yamlSha256 of the reviewed revision." },
-            inputs: { type: "object", description: "publish_and_start/start/test: static run inputs checked against inputs.schema." },
-            vars: { type: "object", description: "publish_and_start/start/test: the run's initial variables (any keys, JSON values)." },
-            reason: { type: "string", description: "pause/resume/cancel/stop: an optional short reason." },
-            run_id: { type: "string", description: "set_vars/pause/resume/cancel/recover/stop: the run, default the live run; test_respond/test_advance: the test run (required)." },
-            grace_seconds: { type: "integer", description: "stop: how long work already started may finish, 0 to 3600. Default 60." },
-            agent_mode: {
-                type: "string", enum: ["mocked", "real"],
-                description: "test: mocked (default): you supply each agent step's typed result. real: each agent step runs a real agent child (it spends "
-                    + "model tokens) whose workflow tool calls are held for you to answer (tool.call fixtures answer them in advance); its "
-                    + "model's own built-in tools (shell, files) run normally, and MCP tools are refused.",
-            },
-            fixtures: {
-                type: "array", items: { type: "object" },
-                description: "test: answers given in advance, each { operation?: tool.call (default), agent, send or request, tool (tool calls) or state "
-                    + "(the others), arguments (the exact call arguments, or the state's exact input), response { kind, value } }.",
-            },
-            scenario: { type: "string", description: "test: an optional scenario name kept with the test run, at most 128 characters." },
-            agent_models: { type: "object", description: "publish_and_start/start, or test with agent_mode real, optional (OF-S2-7): agent node id → "
-                + "{ model: exact provider:model from the owning chat's catalog (list_available_models), reasoning_effort?, context_tier? }; leave it "
-                + "out so the agents use the Workflow's chat's model." },
-            interception_id: { type: "string", description: "test_respond: the held call, from read_workflow or the notice you received." },
-            response: { type: "object", description: "test_respond: { kind: success, error or cancel, value }; read_workflow shows the schema an answer must match." },
-            seconds: { type: "integer", description: "test_advance: whole seconds to move the virtual clock, 1 to 2592000." },
-        },
-        required: ["workflow_id", "operation", "operation_id"],
-    },
-} as const;
-
-/**
- * read_workflow as a turn of a worker that runs controller 1.9.0 shows it (R26): the run's milestone fields are named
- * too, and its paging and whole-value arguments (design 04 read_workflow "Bounded history pagination"; R01; mock M10).
- * Every turn's handler reads a run's sections newest first and lists its open rows apart; only this declaration names
- * the arguments that page further and read one execution's whole value, as the production one stays byte for byte.
- */
-export const READ_WORKFLOW_MILESTONE_TOOL_SPEC = {
-    description: READ_WORKFLOW_TOOL_SPEC.description
-        + " On this host a run also shows its stop (requestedAt, deadline, graceSeconds, reason and, while it runs, settled), each agent "
-        + "step's chat (agent.childSessionId) and its lifecycle, each parallel branch (scopeId, branch), and for a test run (give its run_id) "
-        + "run.test: the notice, the tested revision and whether it is stale, the virtual clock, every held call with the answer it must match "
-        + "and the one it got, and the coverage. definition.publishedAgentPins shows the agent versions a publication locked."
-        + " Each section of a run (nodeExecutions, inbox, outbox, run.test.interceptions) holds its newest rows, oldest first; rows still "
-        + "open are listed apart, however old (openExecutions, openInbox, openOutbox, run.test.openInterceptions). run.pages gives each "
-        + "section's nextCursor: give it back as cursor for that section's next, older page (null: none is older); limit sets the rows per "
-        + "page. execution_id, kv_revision (with kv_key), agent_versions, definition_revision and step_input are separate reads: each "
-        + "argument says what it returns.",
-    parameters: {
-        type: "object",
-        properties: {
-            ...READ_WORKFLOW_TOOL_SPEC.parameters.properties,
-            limit: { type: "integer", description: `Rows per page of each section, 1 to ${WORKFLOW_READ_PAGE_MAX}. Default: 200 executions, 50 inputs, 50 sent messages, 200 held calls.` },
-            cursor: { type: "object", description: "A nextCursor from run.pages (or from a page), given back as it was: that section's next, older page." },
-            execution_id: { type: "string", description: "With run_id (default the live run), not with cursor: one step execution's whole output or error (execution.result) instead of its preview." },
-            kv_revision: { type: "integer", description: "A revision of the run's variables, 1 to its kvRevision: that snapshot, each with its size and sha256, whole up to 256 KiB in all (each step execution's kvRevision is the one it applied)." },
-            kv_key: { type: "string", description: "With kv_revision: one variable of that revision, whole." },
-            agent_versions: { type: "boolean", description: "true, alone: the agent versions publishing the current revision would lock now (each named agent step's agent, package, version and revision, or the problem that would refuse it); reading locks nothing." },
-            definition_revision: { type: "integer", description: "Alone: a revision of the definition, 1 to the current one: its YAML as saved and formatted, its hash, validity and diagnostics." },
-            step_input: { type: "object", description: "{ state, input? }, alone: an agent step's input fields in the current draft and where each takes its value from; input (field -> { source, name | path | value }) also gives the draft's YAML with only that step's inputs changed (proposed.yaml, to save with replace_definition)." },
-        },
-        required: ["workflow_id"],
-    },
-} as const;
-
-/**
- * update_workflow on a 1.9.0 turn while workflow test mode is off (test-mode-switch.ts; spec 16, E1/O2): the milestone
- * declaration with stop only. No test operation, argument or sentence is declared.
- */
+/** update_workflow on a 1.0.83 turn while workflow test mode is off (spec 16, E1/O2): stop, and no test operation. */
 export const UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC = {
-    description: UPDATE_WORKFLOW_TOOL_SPEC.description
-        + " This host also takes: stop (run_id optional, reason, grace_seconds 0 to 3600, default 60: no new step starts; work already "
-        + "started may finish until the grace ends, then the run ends stopped).",
+    description: updateWorkflowDescription({ stop: true, test: false }),
     parameters: {
         type: "object",
         properties: {
             ...UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties,
             operation: { type: "string", enum: [...UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties.operation.enum, "stop"] },
-            reason: { type: "string", description: "pause/resume/cancel/stop: an optional short reason." },
-            run_id: { type: "string", description: "set_vars/pause/resume/cancel/recover/stop: the run; default the live run." },
-            grace_seconds: { type: "integer", description: "stop: how long work already started may finish, 0 to 3600. Default 60." },
+            grace_seconds: { type: "integer" },
         },
         required: ["workflow_id", "operation", "operation_id"],
     },
 } as const;
 
-/**
- * read_workflow on a 1.9.0 turn while workflow test mode is off: the milestone declaration without a test run's
- * fields (stored test runs are kept, not shown).
- */
-export const READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC = {
-    description: READ_WORKFLOW_TOOL_SPEC.description
-        + " On this host a run also shows its stop (requestedAt, deadline, graceSeconds, reason and, while it runs, settled), each agent "
-        + "step's chat (agent.childSessionId) and its lifecycle, and each parallel branch (scopeId, branch). "
-        + "definition.publishedAgentPins shows the agent versions a publication locked."
-        + " Each section of a run (nodeExecutions, inbox, outbox) holds its newest rows, oldest first; rows still "
-        + "open are listed apart, however old (openExecutions, openInbox, openOutbox). run.pages gives each "
-        + "section's nextCursor: give it back as cursor for that section's next, older page (null: none is older); limit sets the rows per "
-        + "page. execution_id, kv_revision (with kv_key), agent_versions, definition_revision and step_input are separate reads: each "
-        + "argument says what it returns.",
+/** update_workflow on a 1.0.83 turn with workflow test mode on: stop and the test operations (the workflow-testing skill). */
+export const UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC = {
+    description: updateWorkflowDescription({ stop: true, test: true }),
     parameters: {
-        ...READ_WORKFLOW_MILESTONE_TOOL_SPEC.parameters,
+        type: "object",
         properties: {
-            ...READ_WORKFLOW_MILESTONE_TOOL_SPEC.parameters.properties,
-            limit: { type: "integer", description: `Rows per page of each section, 1 to ${WORKFLOW_READ_PAGE_MAX}. Default: 200 executions, 50 inputs, 50 sent messages.` },
+            ...UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC.parameters.properties,
+            operation: { type: "string", enum: [...UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties.operation.enum, ...UPDATE_WORKFLOW_MILESTONE_OPERATIONS] },
+            agent_mode: { type: "string", enum: ["mocked", "real"] },
+            fixtures: { type: "array", items: { type: "object" } },
+            scenario: { type: "string" },
+            agent_models: { type: "object" },
+            interception_id: { type: "string" },
+            response: { type: "object" },
+            seconds: { type: "integer" },
         },
+        required: ["workflow_id", "operation", "operation_id"],
     },
 } as const;
 
-/** The update_workflow declaration of a turn: production, the 1.9.0 one, or the 1.9.0 one without test operations. */
+const READ_MILESTONE_WORDS = " It also shows a run's stop, each agent step's chat and each branch. Each section holds its newest rows, open "
+    + "rows listed apart; limit and cursor (from run.pages) page older rows. execution_id, kv_revision with kv_key, agent_versions, "
+    + "definition_revision and step_input are separate reads (the workflow-tools skill).";
+
+/** read_workflow on a 1.0.83 turn while workflow test mode is off: paging and the separate reads (design 04; R01; mock M10). */
+export const READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC = {
+    description: `${READ_WORKFLOW_TOOL_SPEC.description}${READ_MILESTONE_WORDS}`,
+    parameters: {
+        type: "object",
+        properties: {
+            ...READ_WORKFLOW_TOOL_SPEC.parameters.properties,
+            limit: { type: "integer", description: `Rows per page, 1 to ${WORKFLOW_READ_PAGE_MAX}.` },
+            cursor: { type: "object" },
+            execution_id: { type: "string" },
+            kv_revision: { type: "integer" },
+            kv_key: { type: "string" },
+            agent_versions: { type: "boolean" },
+            definition_revision: { type: "integer" },
+            step_input: { type: "object" },
+        },
+        required: ["workflow_id"],
+    },
+} as const;
+
+/** read_workflow on a 1.0.83 turn with workflow test mode on: a test run's run.test too. */
+export const READ_WORKFLOW_MILESTONE_TOOL_SPEC = {
+    description: `${READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC.description} A test run (its run_id) shows run.test.`,
+    parameters: READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC.parameters,
+} as const;
+
+/** The update_workflow declaration of a turn: a frozen 1.0.82 turn's, or a 1.0.83 turn's with or without test operations. */
 export function updateWorkflowToolSpec(options: { milestone: boolean; testMode: boolean }) {
     if (!options.milestone) return UPDATE_WORKFLOW_TOOL_SPEC;
     return options.testMode ? UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC : UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC;
@@ -298,26 +219,21 @@ export function readWorkflowToolSpec(options: { milestone: boolean; testMode: bo
 
 export const SEND_WORKFLOW_INPUT_TOOL_SPEC = {
     description:
-        "Give a run of a version 2 workflow one typed input for its receive steps (messaging mode: receive). "
-        + "contract names the message type a receive step accepts (Name@version, such as BuildEvent@1); payload must satisfy its schema. "
-        + "correlation (optional JSON object) must equal the receive's correlate values; run_id defaults to the live run. "
-        + "The input is accepted and saved once per operation_id: a repeat returns the same receipt, unchanged, and another request with the id is refused. "
-        + "A receive step that waits takes it now; otherwise it stays available, in order, until a receive step takes it or ttl_seconds pass "
-        + "(default and most 86400), even if a receive elapsed first. Accepted is not processing: read_workflow shows what the run did. "
-        + "You may send to the workflows you created, and to workflows that your own user owns when your session is owned by that user too; "
-        + "a receive may also require a specific sender. "
-        + "Returns the receipt as JSON: messageId, requestSha256 and payloadSha256 (the request and payload it accepted), "
-        + "acceptedAt and expiresAt (ISO 8601 with microseconds) and claimedBy (the receive step that took it on arrival, or null).",
+        "Give a run of a Workflow one typed input for its receive steps. contract is the message type a receive step accepts (Name@version); "
+        + "payload must match its schema; correlation must equal the receive's correlate values; run_id defaults to the live run. It is "
+        + "accepted once per operation_id (a repeat returns the same receipt) and waits, in order, until a receive step takes it or "
+        + "ttl_seconds pass (default and most 86400). Accepted is not processed: read_workflow shows what the run did. You may send to your "
+        + "own Workflows and your user's. Returns the receipt as JSON.",
     parameters: {
         type: "object",
         properties: {
-            workflow_id: { type: "string", description: "The workflow session id." },
-            contract: { type: "string", description: "The message type, Name@version, that a receive step of the workflow accepts." },
-            payload: { description: "The JSON value; it must satisfy the contract's schema." },
-            correlation: { type: "object", description: "Optional correlation values; they must equal the receive's correlate values. Default {}." },
-            run_id: { type: "string", description: "Optional run id; default the live run." },
-            ttl_seconds: { type: "integer", description: "How long the input stays available until a receive step takes it, 1 to 86400. Default 86400." },
-            operation_id: { type: "string", description: "Idempotency id for this input from you." },
+            workflow_id: { type: "string" },
+            contract: { type: "string" },
+            payload: { description: "A JSON value." },
+            correlation: { type: "object" },
+            run_id: { type: "string" },
+            ttl_seconds: { type: "integer" },
+            operation_id: { type: "string", description: "Idempotency id for this input." },
         },
         required: ["workflow_id", "contract", "payload", "operation_id"],
     },

@@ -6,8 +6,7 @@ import { SessionManager } from "../../dist/session-manager.js";
 import { loadSkillsSync } from "../../dist/skills.js";
 import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
 import {
-    WORKFLOW_AUTHORING_POINTER, WORKFLOW_AUTHORING_SKILL, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR,
-    workflowAuthoringSkillLoaded, workflowSessionGuidance,
+    WORKFLOW_AUTHORING_SKILL, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_TESTS_UNAVAILABLE_GUIDANCE, WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR,
 } from "../../dist/workflow/guidance.js";
 
 // The base's workflow guidance mentions testing only with workflow test mode on (Workflow Simplified, spec 16); these
@@ -28,7 +27,7 @@ const testModeSkills = () => loadSkillsSync(WORKFLOW_V2_TEST_MODE_SKILLS_DIR);
 
 test("the workflow skills load from their own plugin directory, which no worker tier loads", () => {
     assert.equal(path.resolve(WORKFLOW_V2_SKILLS_DIR), path.join(PLUGINS, "workflow-v2", "skills"));
-    assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-authoring", "workflow-patterns", "workflow-reference"]);
+    assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-authoring", "workflow-patterns", "workflow-reference", "workflow-tools"]);
     assert.equal(path.resolve(WORKFLOW_V2_TEST_MODE_SKILLS_DIR), path.join(PLUGINS, "workflow-v2", "test-mode-skills"));
     assert.deepEqual(testModeSkills().map(skill => skill.name), ["workflow-testing"]);
     for (const skill of [...skills(), ...testModeSkills()]) {
@@ -56,12 +55,10 @@ test("the workflow skills load from their own plugin directory, which no worker 
     assert.match(testModeSkills()[0].prompt, /Hidden \(Workflow Simplified, spec 16\)/);
 });
 
-test("the base names the authoring skill on a worker that loaded it from its directory, scripts on or off (Workflows are always on)", () => {
+// Owner 2026-11-08T16:55Z: the trimmed guidance itself names the Workflow skills; the separate authoring pointer is gone.
+test("the base names the Workflow skills in its guidance, scripts on or off, whatever skills the worker loaded", () => {
     const loaded = skills();
     const elsewhere = loaded.map(skill => ({ ...skill, dir: path.join(PLUGINS, "elsewhere", skill.name) }));
-    assert.equal(workflowAuthoringSkillLoaded(loaded), true);
-    assert.equal(workflowAuthoringSkillLoaded(elsewhere), false);
-    assert.equal(workflowAuthoringSkillLoaded(undefined), false);
     // A workflow request turn (workflowMilestoneTurn), the one turn that can test a revision, is taught testing (stage 2.5).
     const prompt = (workerSkills, scripts, version, requestTurn = true) => {
         const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "Legacy base.", ...(workerSkills ? { skills: workerSkills } : {}) });
@@ -70,19 +67,16 @@ test("the base names the authoring skill on a worker that loaded it from its dir
             ...(requestTurn ? { workflowMilestoneTurn: true } : {}) }));
     };
     for (const version of ["v1", "v2"]) {
-        const on = prompt(loaded, true, version);
-        assert.equal(on.split(WORKFLOW_AUTHORING_POINTER).length - 1, 1, version);
-        assert.ok(on.indexOf("## Workflow Sessions") < on.indexOf(WORKFLOW_AUTHORING_POINTER), version);
-        // Workflows are always on (owner 2026-11-08T08:03Z): with scripts off the pointer is still given.
-        assert.equal(prompt(loaded, false, version).split(WORKFLOW_AUTHORING_POINTER).length - 1, 1, version);
-        // Every other worker's prompt is as before: the guidance alone.
-        for (const workerSkills of [undefined, [], elsewhere]) {
-            const before = prompt(workerSkills, true, version);
-            assert.ok(!before.includes(WORKFLOW_AUTHORING_POINTER), version);
-            assert.ok(before.includes(JSON.stringify(WORKFLOW_SESSION_GUIDANCE).slice(1, -1)), version);
+        for (const workerSkills of [loaded, undefined, [], elsewhere]) {
+            for (const scripts of [true, false]) {
+                const on = prompt(workerSkills, scripts, version);
+                assert.equal(on.split("load the `workflow-authoring` skill").length - 1, 1, version);
+                assert.ok(on.includes(JSON.stringify(WORKFLOW_SESSION_GUIDANCE).slice(1, -1)), version);
+                assert.ok(!on.includes("When an authorized task is a finite procedure"), "the old pointer is gone");
+            }
             const noTests = prompt(workerSkills, true, version, false);
-            assert.ok(noTests.includes(JSON.stringify(workflowSessionGuidance(true, { tests: false })).slice(1, -1)), version);
-            assert.ok(!noTests.includes("Testing is optional."), version);
+            assert.ok(noTests.includes(JSON.stringify(WORKFLOW_TESTS_UNAVAILABLE_GUIDANCE).slice(1, -1)), version);
+            assert.ok(!noTests.includes("Test a revision only when the user asks"), version);
         }
     }
 });

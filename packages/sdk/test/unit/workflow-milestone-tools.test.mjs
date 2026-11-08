@@ -28,29 +28,35 @@ process.env.PILOTSWARM_WORKFLOW_TEST_MODE = "on";
 const PRODUCTION_OPERATIONS = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "recover"];
 const MILESTONE_OPERATIONS = ["stop", "test", "test_respond", "test_advance"];
 
-test("every other turn keeps the production tool descriptions and parameters", () => {
+// Owner 2026-11-08T16:55Z: each declaration carries its contract only; the workflow-tools skill has every argument.
+test("a frozen 1.0.82 turn's declarations name its operations only", () => {
     assert.deepEqual([...UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties.operation.enum], PRODUCTION_OPERATIONS);
     for (const name of ["grace_seconds", "agent_mode", "fixtures", "scenario", "interception_id", "response", "seconds"]) {
         assert.equal(Object.hasOwn(UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties, name), false, name);
     }
     for (const operation of MILESTONE_OPERATIONS) assert.ok(!UPDATE_WORKFLOW_TOOL_SPEC.description.includes(`${operation} (`), operation);
-    assert.ok(SPAWN_WORKFLOW_TOOL_SPEC.description.includes("mode request is not supported yet"));
     assert.ok(!READ_WORKFLOW_TOOL_SPEC.description.includes("run.test"));
+    for (const spec of [UPDATE_WORKFLOW_TOOL_SPEC, READ_WORKFLOW_TOOL_SPEC, SPAWN_WORKFLOW_TOOL_SPEC]) {
+        assert.ok(spec.description.length <= 700, `${spec.description.length}`);
+    }
 });
 
-test("on a 1.9.0 turn the descriptions and parameters add the milestone operations, states and fields", () => {
+test("on a 1.9.0 turn the declarations add the milestone operations and fields", () => {
     assert.deepEqual([...UPDATE_WORKFLOW_MILESTONE_OPERATIONS], MILESTONE_OPERATIONS);
     const update = UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC;
     assert.deepEqual([...update.parameters.properties.operation.enum], [...PRODUCTION_OPERATIONS, ...MILESTONE_OPERATIONS]);
-    assert.ok(update.description.startsWith(UPDATE_WORKFLOW_TOOL_SPEC.description));
     for (const name of Object.keys(UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties)) assert.ok(Object.hasOwn(update.parameters.properties, name), name);
     for (const name of ["grace_seconds", "agent_mode", "fixtures", "scenario", "interception_id", "response", "seconds"]) {
         assert.ok(Object.hasOwn(update.parameters.properties, name), name);
-        assert.ok(update.description.includes(name), `the description names ${name}`);
+    }
+    for (const words of ["stop (grace_seconds 0 to 3600, default 60", "test, test_respond and test_advance", "the workflow-testing skill",
+        "Load the workflow-tools skill for every argument"]) {
+        assert.ok(update.description.includes(words), words);
     }
     assert.deepEqual(update.parameters.required, UPDATE_WORKFLOW_TOOL_SPEC.parameters.required);
+    assert.ok(update.description.length <= 800, `${update.description.length}`);
     assert.ok(READ_WORKFLOW_MILESTONE_TOOL_SPEC.description.startsWith(READ_WORKFLOW_TOOL_SPEC.description));
-    for (const field of ["run.test", "agent.childSessionId", "publishedAgentPins", "graceSeconds", "openExecutions", "run.pages", "nextCursor"]) {
+    for (const field of ["run.test", "run.pages", "limit and cursor"]) {
         assert.ok(READ_WORKFLOW_MILESTONE_TOOL_SPEC.description.includes(field), field);
     }
     // The paging and whole-value arguments are declared on this host only; every production argument is declared as it is.
@@ -64,13 +70,7 @@ test("on a 1.9.0 turn the descriptions and parameters add the milestone operatio
         assert.ok(READ_WORKFLOW_MILESTONE_TOOL_SPEC.description.includes(name), `the description names ${name}`);
     }
     assert.deepEqual(read.required, READ_WORKFLOW_TOOL_SPEC.parameters.required);
-    const spawn = SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC.description;
-    assert.ok(!spawn.includes("not supported yet"));
-    for (const phrase of ["mode: request", "respond_session_request", "invoke:", "complete_workflow_node", "forEach:", "all_required", "${branch.item}",
-        "{first: k}", "timeoutSeconds, which needs a timed_out route"]) {
-        assert.ok(spawn.includes(phrase), phrase);
-    }
-    assert.equal(SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC.parameters, SPAWN_WORKFLOW_TOOL_SPEC.parameters);
+    assert.equal(SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC, SPAWN_WORKFLOW_TOOL_SPEC);
 });
 
 const names = defs => defs.map(def => def.name);
@@ -81,7 +81,7 @@ test("the model is declared what a 1.9.0 turn's handlers take; every other sessi
     // handlers alone are invisible to it.
     const production = ManagedSession.subAgentToolDefs();
     for (const name of [RESPOND_SESSION_REQUEST_TOOL, COMPLETE_WORKFLOW_NODE_TOOL]) assert.ok(!names(production).includes(name), name);
-    assert.equal(named(production, "spawn_workflow").description, SPAWN_WORKFLOW_TOOL_SPEC.description);
+    assert.equal(named(production, "spawn_workflow"), undefined, "spawn_workflow is not declared (its handler stays)");
     assert.equal(named(production, "update_workflow").description, UPDATE_WORKFLOW_TOOL_SPEC.description);
     assert.equal(named(production, "update_workflow").parameters, UPDATE_WORKFLOW_TOOL_SPEC.parameters);
     assert.equal(named(production, "read_workflow").description, READ_WORKFLOW_TOOL_SPEC.description);
@@ -89,7 +89,7 @@ test("the model is declared what a 1.9.0 turn's handlers take; every other sessi
         names(production), "the child flag adds only the completion tool");
 
     const milestone = ManagedSession.subAgentToolDefs({ workflowMilestone: true });
-    assert.equal(named(milestone, "spawn_workflow").description, SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC.description);
+    assert.equal(named(milestone, "spawn_workflow"), undefined);
     assert.equal(named(milestone, "update_workflow").description, UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC.description);
     assert.equal(named(milestone, "update_workflow").parameters, UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC.parameters);
     assert.equal(named(milestone, "read_workflow").description, READ_WORKFLOW_MILESTONE_TOOL_SPEC.description);
@@ -233,9 +233,9 @@ test("the milestone operations keep the production authorization: only the agent
     }
 });
 
-test("the reference skill's update_workflow table names exactly the operations a 1.9.0 host takes with test mode hidden (spec 16)", () => {
-    const text = fs.readFileSync(new URL("../../plugins/workflow-v2/skills/workflow-reference/SKILL.md", import.meta.url), "utf8");
-    const table = text.slice(text.indexOf("| Operation | Arguments | Effect |"), text.indexOf("`read_workflow`:"));
+test("the workflow-tools skill's update_workflow table names exactly the operations a 1.9.0 host takes with test mode hidden (spec 16)", () => {
+    const text = fs.readFileSync(new URL("../../plugins/workflow-v2/skills/workflow-tools/SKILL.md", import.meta.url), "utf8");
+    const table = text.slice(text.indexOf("| Operation | Arguments | Effect |"), text.indexOf("## read_workflow"));
     const named = table.split("\n").slice(2).filter(line => line.startsWith("| `"))
         .flatMap(line => line.split("|")[1].split(",").map(cell => cell.trim().replace(/`/g, "")));
     assert.deepEqual(named.sort(), [...UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC.parameters.properties.operation.enum].sort());

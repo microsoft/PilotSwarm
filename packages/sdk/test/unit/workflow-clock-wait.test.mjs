@@ -95,11 +95,12 @@ test("its words, and the graph's description of it", () => {
 
 test("agents on a host that runs clock waits are told of them; others are not", async () => {
     const { workflowSessionGuidance, WORKFLOW_CLOCK_WAIT_GUIDANCE } = await import("../../dist/workflow/guidance.js");
-    const { SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC, SPAWN_WORKFLOW_TOOL_SPEC } = await import("../../dist/workflow/tool-spec.js");
     assert.ok(workflowSessionGuidance(false, { clockWaits: true }).endsWith(WORKFLOW_CLOCK_WAIT_GUIDANCE));
     assert.ok(!workflowSessionGuidance(false).includes(WORKFLOW_CLOCK_WAIT_GUIDANCE));
     assert.equal(workflowSessionGuidance(false, { clockWaits: false }), workflowSessionGuidance(false));
     assert.match(WORKFLOW_CLOCK_WAIT_GUIDANCE, /at: \{ minute: 0, hour: 9, tz: America\/Los_Angeles \}/);
-    assert.match(SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC.description, /A wait may give at instead of seconds/);
-    assert.ok(!SPAWN_WORKFLOW_TOOL_SPEC.description.includes("A wait may give at"));
+    // The field itself is in the reference skill (owner 2026-11-08T16:55Z: declarations carry their contract only).
+    const fs = await import("node:fs");
+    const reference = fs.readFileSync(new URL("../../plugins/workflow-v2/skills/workflow-reference/SKILL.md", import.meta.url), "utf8");
+    assert.match(reference, /\| `at` \| Instead of `seconds`: `\{ minute, hour\?, day_of_week\? \(0-6, Sunday 0\) or day_of_month\? \(1-31\), tz \}`/);
 });

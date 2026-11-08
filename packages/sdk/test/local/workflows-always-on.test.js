@@ -178,7 +178,7 @@ states:
   hold: { type: wait, seconds: 5, transition: { next: { elapsed: done } } }
   done: { type: terminal, outcome: succeeded }
 `;
-    it("spawn_workflow is offered; a definition with a script node is refused in words naming the setting, one without is saved", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
+    it("spawn_workflow still answers; a definition with a script node is refused in words naming the setting, one without is saved", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
         const env = getEnv();
         const seen = [];
         const script = async (_call, _prompt, opts) => {

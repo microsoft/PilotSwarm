@@ -8,6 +8,7 @@
  * Run: node --test test/unit/workflow-chat-definitions.test.mjs
  */
 import test from "node:test";
+import fs from "node:fs";
 import assert from "node:assert/strict";
 import { ManagedSession } from "../../dist/managed-session.js";
 import { WORKFLOW_DEFINITION_TOOL, WORKFLOW_DEFINITION_TOOL_SPEC, workflowDefinitionFromTool, workflowDefinitionToolSpec } from "../../dist/workflow/v2/definition-tool.js";
@@ -29,15 +30,24 @@ test("the tool: one name, list, read, save, start and (stage 2.2) test, the guar
     for (const key of ["name", "definition_id", "expected_revision", "yaml", "revision", "inputs", "vars", "notify_on_completion", "fixtures", "test_id", "update"]) {
         assert.ok(WORKFLOW_DEFINITION_TOOL_SPEC.parameters.properties[key], key);
     }
+    // Owner 2026-11-08T16:55Z: the declaration carries its contract; the workflow-tools skill has the details.
     const text = WORKFLOW_DEFINITION_TOOL_SPEC.description;
-    for (const phrase of ["belongs to this chat", "each save is a new revision", "a Workflow runs the revision it started with",
-        "a save based on an older revision is refused, so read again and redo your change", "Change a Workflow = save a new revision, then start it.",
-        "never a timer that starts a Workflow each time", "test (only when the user asks you to test it, or before you publish it in a package; never on your own, and Start never needs a test",
-        "a call with no prepared answer fails the test, which names it",
+    assert.ok(text.length <= 700, `${text.length}`);
+    for (const phrase of ["This chat's Workflow Definitions, each named, with revisions 1, 2, 3.", "a stale save is refused",
+        "a revision with errors is saved but cannot start", "start again to run it again",
+        "test: only when the user asks, or before you publish it in a package.",
         // Stage 2.3 (P3, P4, D7, E2-7).
-        "A package's definition is named <package>/<name>", "you start it, you never save it", "list shows under canStart",
-        "read a card before you start one", "ask the person for any input you lack"]) {
+        "under canStart the package definitions (<package>/<name>, locked) you may start", "read it before you start one",
+        "Load the workflow-tools skill for every argument."]) {
         assert.ok(text.includes(phrase), phrase);
+    }
+    const tools = fs.readFileSync(new URL("../../plugins/workflow-v2/skills/workflow-tools/SKILL.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+    for (const phrase of ["every save is a new revision, and a Workflow runs the revision it started with", "A save based on an older revision is refused",
+        "Read again and redo your change on the newest revision.", "A call with no prepared answer fails the test, which names it.",
+        "Test only when the user asks (for example \"test it before you start it\") or before you publish it in a package; never on your own, and `start` never needs a test.",
+        "A package's definition is named `<package>/<name>`", "you start it, you never save it", "`list` shows the ones you may start under `canStart`.",
+        "Read its `card` first", "ask the person for any input you lack"]) {
+        assert.ok(tools.includes(phrase), `workflow-tools: ${phrase}`);
     }
     assert.ok(!/delete/i.test(WORKFLOW_DEFINITION_TOOL_SPEC.parameters.properties.operation.enum.join(" ")), "a person deletes (Q8)");
 });
@@ -51,8 +61,7 @@ test("without tests the tool declares no test operation, fixtures or test_id, an
     assert.deepEqual(spec.parameters.properties.operation.enum, ["list", "read", "save", "start", "card"]);
     assert.equal(Object.hasOwn(spec.parameters.properties, "fixtures"), false);
     assert.equal(Object.hasOwn(spec.parameters.properties, "test_id"), false);
-    assert.ok(!spec.description.includes("test (only when"));
-    assert.ok(spec.description.includes("Workflow tests do not run here, so there is no test operation: if the user asks for a test, say a test cannot run here."));
+    assert.ok(!/\btest\b/.test(spec.description), spec.description);
     for (const key of ["name", "definition_id", "expected_revision", "yaml", "revision", "inputs", "vars", "notify_on_completion", "update"]) {
         assert.deepEqual(spec.parameters.properties[key], WORKFLOW_DEFINITION_TOOL_SPEC.parameters.properties[key], key);
     }
@@ -121,13 +130,14 @@ test("migration 0107: registered before 0108; one live definition per name; the 
     assert.ok(!/PARTITION BY[^)]*semver/.test(sql));
 });
 
-test("declarations: workflow_definition is a definition tool, declared beside spawn_workflow, and not inside a Workflow (A1)", () => {
+test("declarations: workflow_definition is a definition tool, declared (spawn_workflow is not), and not inside a Workflow (A1)", () => {
     assert.ok(WORKFLOW_DEFINITION_TOOLS.includes("workflow_definition"));
     const names = defs => defs.map(def => def.name);
     const outside = names(ManagedSession.subAgentToolDefs());
     assert.ok(outside.includes("workflow_definition"));
-    assert.ok(outside.indexOf("workflow_definition") < outside.indexOf("spawn_workflow"));
+    assert.ok(!outside.includes("spawn_workflow"));
     const inside = names(ManagedSession.subAgentToolDefs({ workflowInsideWorkflow: true }));
     for (const tool of ["workflow_definition", "spawn_workflow", "update_workflow"]) assert.ok(!inside.includes(tool), tool);
     assert.ok(inside.includes("read_workflow"));
 });
+

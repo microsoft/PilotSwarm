@@ -26,7 +26,7 @@ import {
 import {
     updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowHumanMilestoneOperations, WORKFLOW_HUMAN_OPERATIONS,
 } from "../../dist/workflow/v2/human-commands.js";
-import { WORKFLOW_AUTHORING_POINTER, WORKFLOW_SESSION_GUIDANCE, workflowAuthoringPointer, workflowSessionGuidance } from "../../dist/workflow/guidance.js";
+import { WORKFLOW_SESSION_GUIDANCE, workflowSessionGuidance } from "../../dist/workflow/guidance.js";
 import { ManagedSession } from "../../dist/managed-session.js";
 import { SessionManager } from "../../dist/session-manager.js";
 import { RESPOND_SESSION_REQUEST_TOOL } from "../../dist/workflow/v2/request-service.js";
@@ -81,8 +81,7 @@ test("the flag is on only when it is exactly `on`, separate from the test enviro
 test("agent tool: with test mode off, a 1.9.0 turn is declared stop and no test operation, argument or field", () => {
     const update = UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC;
     assert.deepEqual([...update.parameters.properties.operation.enum], [...PRODUCTION, "stop"]);
-    assert.ok(update.description.startsWith(UPDATE_WORKFLOW_TOOL_SPEC.description));
-    assert.ok(update.description.includes("stop (run_id optional, reason, grace_seconds 0 to 3600"));
+    assert.ok(update.description.includes("stop (grace_seconds 0 to 3600, default 60"));
     assert.ok(!/\btest/i.test(update.description), update.description);
     for (const name of TEST_ARGUMENTS) assert.equal(Object.hasOwn(update.parameters.properties, name), false, name);
     assert.ok(Object.hasOwn(update.parameters.properties, "grace_seconds"));
@@ -93,7 +92,7 @@ test("agent tool: with test mode off, a 1.9.0 turn is declared stop and no test 
     assert.ok(read.description.startsWith(READ_WORKFLOW_TOOL_SPEC.description));
     assert.ok(!/\btest|held call/i.test(read.description), read.description);
     assert.ok(!/held call/.test(read.parameters.properties.limit.description));
-    for (const field of ["agent.childSessionId", "publishedAgentPins", "graceSeconds", "openExecutions", "run.pages", "nextCursor"]) {
+    for (const field of ["a run's stop", "each agent step's chat", "run.pages", "limit and cursor"]) {
         assert.ok(read.description.includes(field), field);
     }
     assert.deepEqual(Object.keys(read.parameters.properties), Object.keys(READ_WORKFLOW_MILESTONE_TOOL_SPEC.parameters.properties));
@@ -232,16 +231,12 @@ test("a person's commands (Web API, MCP): with test mode off a test operation an
     assert.match(restrictedOn.restriction.reason, /only its controlling agent changes, resumes or tests it\.$/);
 });
 
-test("base guidance: with test mode off, neither the guidance nor the authoring pointer mentions testing", async () => {
-    assert.equal(workflowSessionGuidance(true), WORKFLOW_SESSION_GUIDANCE);
-    assert.equal(workflowAuthoringPointer(true), WORKFLOW_AUTHORING_POINTER);
+test("base guidance: with test mode off, the guidance does not mention test runs", async () => {
+    assert.equal(workflowSessionGuidance(false), WORKFLOW_SESSION_GUIDANCE);
     const guidance = workflowSessionGuidance(false);
     assert.ok(!guidance.includes("test_waiting") && !guidance.includes("test_respond"));
-    assert.ok(guidance.includes("- `request`: answer it once with `respond_session_request`"));
-    assert.ok(guidance.includes("\n\nA person's \"Ask the parent agent\" note"));
-    assert.equal(guidance.length, WORKFLOW_SESSION_GUIDANCE.length - "\n- `test_waiting`: a test run's held call. Answer it with `update_workflow` operation `test_respond`.".length);
-    assert.ok(!/\btest/i.test(workflowAuthoringPointer(false)));
-    assert.ok(workflowAuthoringPointer(false).includes("load the `workflow-authoring` skill"));
+    assert.ok(guidance.includes("`request`: answer it once with `respond_session_request`"));
+    assert.equal(workflowSessionGuidance(true), `${WORKFLOW_SESSION_GUIDANCE}\n\`test_waiting\`: a test run's held call; answer it with \`update_workflow\` operation \`test_respond\`.`);
 
     const prompt = (requestTurn = false) => {
         const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "Legacy base." });
@@ -249,7 +244,7 @@ test("base guidance: with test mode off, neither the guidance nor the authoring 
         return JSON.stringify(manager._buildSystemMessage("session", { baseAgentPolicy: { version: "v2", fingerprint: "test", revision: null },
             ...(requestTurn ? { workflowMilestoneTurn: true } : {}) }));
     };
-    assert.ok(prompt().includes("## Workflow Sessions"));
+    assert.ok(prompt().includes("## Workflows"));
     assert.ok(!prompt().includes("test_waiting") && !prompt(true).includes("test_waiting"), "off by default");
     // On, every session (each runs the full engine) is told of a held call.
     await withFlag("on", () => {

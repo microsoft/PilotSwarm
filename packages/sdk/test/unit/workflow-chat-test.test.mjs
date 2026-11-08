@@ -294,10 +294,15 @@ test("a request step: { response } and { decline: { reason } } are not refused (
         + `Add a fixture for it (or fix the definition) and test again. ${REQUEST_SHAPE}`);
 });
 
-test("the test tool's words give every step kind's answer shape and a two-fixture example", async () => {
+test("the test operation's answer shapes and a two-fixture example are in the workflow-tools skill its declaration names", async () => {
     const { workflowDefinitionToolSpec } = await import("../../dist/workflow/v2/definition-tool.js");
+    const fs = await import("node:fs");
     const spec = workflowDefinitionToolSpec();
-    assert.match(spec.description, /an agent step's \{ outcome: one of its outcomes, output \}, a request step's \{ response: <the answer> \} or \{ decline: \{ reason \} \}, a send step's any value/);
-    assert.match(spec.description, /\[\{ operation: agent, state: classify, response: \{ kind: success, value: \{ outcome: bug, output: \{ label: "bug" \} \} \} \}, \{ operation: request, state: approve, response: \{ kind: success, value: \{ response: \{ approved: true \} \} \} \}\]/);
-    assert.match(spec.parameters.properties.fixtures.description, /a request step's \{ response \} or \{ decline: \{ reason \} \}/);
+    assert.match(spec.parameters.properties.fixtures.description, /workflow-tools skill/);
+    const tools = fs.readFileSync(new URL("../../plugins/workflow-v2/skills/workflow-tools/SKILL.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+    assert.ok(tools.includes("a tool call's result; an agent step's `{ outcome, output }`; a request step's `{ response }` or `{ decline: { reason } }`; a send step's any value."));
+    assert.ok(tools.includes('- { operation: agent, state: classify, response: { kind: success, value: { outcome: bug, output: { label: "bug" } } } }'));
+    assert.ok(tools.includes("- { operation: request, state: approve, response: { kind: success, value: { response: { approved: true } } } }"));
+    assert.ok(tools.includes("An answer of the wrong shape fails the test, which says the shape it needs."));
 });
+

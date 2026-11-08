@@ -77,7 +77,7 @@ test("the patterns skill's named-branches example compiles: two branches, each i
     requireAgentModelsForRevision({ quick_summary: { model: "a:fast" }, careful_summary: { model: "a:strong" } }, compiled.ir, "the example");
 });
 
-test("named branches first, the router pattern as the older form: the patterns skill, authoring, the reference, the guidance", () => {
+test("named branches first, the router pattern as the older form: the patterns skill, authoring and the reference", () => {
     const named = PATTERNS.slice(PATTERNS.indexOf("## Different work in each branch at once: named branches"), PATTERNS.indexOf("## When the branches are data"));
     for (const want of ["write ONE parallel state\nwith named `branches`", "Do not split it into several Workflows.", "Its routes stay inside it.",
         "A branch has no `catchAll`", "its own\n  `agent_models` entry", "`joined` gives `{ <name>: output }`", "holds the winners only",
@@ -107,10 +107,9 @@ test("named branches first, the router pattern as the older form: the patterns s
     assert.match(parallel, /`concurrency`\s+defaults to their number \(set it above 16\)/);
     assert.match(REFERENCE, /`concurrency` defaults to their number; above 16, set it\./);
     assert.match(named, /Above\s+16 branches, set it \(at most 16\)\./);
-    // The base guidance: one Workflow, named branches; the router when the branches come from a list.
-    assert.match(WORKFLOW_SESSION_GUIDANCE, /When different branches must run different nodes at once \(a different prompt, or a different model for each\), write one Workflow, never several: a parallel state with named `branches`/);
-    assert.match(WORKFLOW_SESSION_GUIDANCE, /its own state id \(so each can take its own `agent_models` entry\); `joined` gives `\{ <name>: output \}`/);
-    assert.match(WORKFLOW_SESSION_GUIDANCE, /When the branches come from a list, a router script over a list of lanes does it instead \(load the `workflow-patterns` skill for both, with examples\)\./);
+    // The base guidance names the authoring skill, which teaches named branches and points to the patterns skill (owner
+    // 2026-11-08T16:55Z: the guidance keeps its rules; the details are in the skills).
+    assert.match(WORKFLOW_SESSION_GUIDANCE, /load the `workflow-authoring` skill/);
     assert.doesNotMatch(WORKFLOW_SESSION_GUIDANCE, /section 8a/);
     assert.doesNotMatch(REFERENCE, /section 8a/);
 });

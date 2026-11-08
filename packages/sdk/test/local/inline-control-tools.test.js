@@ -4,6 +4,7 @@ import { ManagedSession, TURN_INACTIVITY_ERROR_MARKER } from "../../src/managed-
 import { LiveTurnControl } from "../../src/turn-control.ts";
 import { collectContractViolations, isFailureToolCompletion, SYSTEM_ONLY_TURN_PROMPT } from "../../src/session-proxy.ts";
 import { WORKFLOW_ASK_USER_REFUSAL } from "../../src/workflow/v2/input-policy.ts";
+import { SPAWN_WORKFLOW_TOOL_SPEC } from "../../src/workflow/tool-spec.ts";
 import {
     answerAsksParent, publishedScheduleActive, turnAskedForAnswer, turnScheduleEffect, workflowAgentReminderText,
 } from "../../src/workflow/v2/agent-reminder.ts";
@@ -486,10 +487,12 @@ describe("inline control tool execution", () => {
         const managed = new ManagedSession("inline-spawn-workflow", fakeSession, {});
         const result = await managed.runTurn("run my workflow", { controlToolBridge });
 
+        // spawn_workflow is no longer declared (workflow_definition replaces it); its handler stays registered, so a stale
+        // call is still answered.
         const live = fakeSession.registeredTools.find((tool) => tool.name === "spawn_workflow");
-        const stub = ManagedSession.subAgentToolDefs().find((tool) => tool.name === "spawn_workflow");
-        expect(live?.parameters).toEqual(stub?.parameters);
-        expect(live?.description).toBe(stub?.description);
+        expect(ManagedSession.subAgentToolDefs().find((tool) => tool.name === "spawn_workflow")).toBeUndefined();
+        expect(live?.parameters).toEqual(SPAWN_WORKFLOW_TOOL_SPEC.parameters);
+        expect(live?.description).toBe(SPAWN_WORKFLOW_TOOL_SPEC.description);
         expect(controlToolBridge.spawnWorkflow).toHaveBeenCalledTimes(1);
         expect(controlToolBridge.spawnWorkflow).toHaveBeenCalledWith({ yaml, inputs: { n: 1 } }, { toolCallId: "call-wf" });
         expect(results).toEqual([

@@ -1,7 +1,7 @@
 /**
  * Workflows are always on (owner decision 2026-11-08T08:03Z): the PILOTSWARM_WORKFLOWS switch (stage 2.0) is gone.
  * - the retired setting: a deployment that still sets it, to any value, is ignored with one warning per process;
- * - agents: a session manager made with no Workflow setting declares the five workflow tools, scripts on or off, and the
+ * - agents: a session manager made with no Workflow setting declares the four workflow tools, scripts on or off, and the
  *   base instructions carry the Workflow guidance; no handler, bridge or spawn path reads a switch;
  * - the management client: the capabilities always say `enabled: true` (kept for an older client); reads, commands, the
  *   access check and lifecycle commands reach the Workflow store, whatever PILOTSWARM_WORKFLOWS says;
@@ -24,7 +24,7 @@ import { workflowCapabilities } from "../../dist/workflow/v2/human-commands.js";
 
 const SRC = new URL("../../src/", import.meta.url);
 const read = name => fs.readFileSync(new URL(name, SRC), "utf8");
-const WORKFLOW_TOOLS = ["workflow_definition", "spawn_workflow", "update_workflow", "read_workflow", "send_workflow_input"];
+const WORKFLOW_TOOLS = ["workflow_definition", "update_workflow", "read_workflow", "send_workflow_input"];
 
 /** Runs `fn` with PILOTSWARM_WORKFLOWS as given (undefined: unset), then puts it back. */
 async function withRetired(value, fn) {
@@ -89,7 +89,7 @@ function managerFixture(t, { scripts = true } = {}) {
     return { manager, calls };
 }
 
-test("agents: a session manager made with no Workflow setting declares the five workflow tools, scripts on or off, PILOTSWARM_WORKFLOWS=off ignored", async (t) => {
+test("agents: a session manager made with no Workflow setting declares the four workflow tools, scripts on or off, PILOTSWARM_WORKFLOWS=off ignored", async (t) => {
     const names = tools => tools.map(tool => tool.name);
     for (const [scripts, retired] of [[false, undefined], [true, undefined], [true, "off"]]) {
         await withRetired(retired, async () => {
@@ -103,34 +103,22 @@ test("agents: a session manager made with no Workflow setting declares the five 
     }
 });
 
-test("agents (stage 2.5, PR 235 4b0ac3ca): with scripts on, cron sends a check a script can do to one Workflow; cron_at too where clock waits run; otherwise main's words", async (t) => {
+test("agents (owner 2026-11-08T16:55Z): with scripts on, cron and cron_at keep main's words plus one sentence for a Workflow loop; otherwise main's words", async (t) => {
     const { ManagedSession } = await import("../../dist/managed-session.js");
-    const { WORKFLOW_AWARE_CRON_DESCRIPTION, WORKFLOW_AWARE_CRON_AT_DESCRIPTION } = await import("../../dist/workflow/guidance.js");
+    const { WORKFLOW_SCHEDULING_HINT } = await import("../../dist/workflow/guidance.js");
     const main = Object.fromEntries(ManagedSession.systemToolDefs().map(tool => [tool.name, tool.description]));
     const described = (tools, name) => tools.find(tool => tool.name === name)?.description;
-    for (const [scripts, clockWaits, cron, cronAt] of [
-        [false, true, main.cron, main.cron_at],
-        [true, false, WORKFLOW_AWARE_CRON_DESCRIPTION, main.cron_at],
-        [true, true, WORKFLOW_AWARE_CRON_DESCRIPTION, WORKFLOW_AWARE_CRON_AT_DESCRIPTION],
-    ]) {
+    for (const [scripts, clockWaits] of [[false, true], [true, false], [true, true]]) {
         const { manager, calls } = managerFixture(t, { scripts });
         await manager.getOrCreate(`s-${scripts}-${clockWaits}`, { toolNames: [], ...(clockWaits ? { workflowMilestoneTurn: true } : {}) }, { turnIndex: 0 });
         const tools = calls.at(-1).tools;
         const label = `scripts=${scripts}, clockWaits=${clockWaits}`;
-        assert.equal(described(tools, "cron"), cron, `cron, ${label}`);
-        assert.equal(described(tools, "cron_at"), cronAt, `cron_at, ${label}`);
+        for (const name of ["cron", "cron_at"]) {
+            assert.equal(described(tools, name), scripts ? `${main[name]}${WORKFLOW_SCHEDULING_HINT}` : main[name], `${name}, ${label}`);
+        }
     }
-    // Each keeps every rule of main's wording; only what a Workflow does better is added.
-    for (const rule of ["Do not use cron solely to poll sub-agent status", "clarify that intent before setting cron", "Minimum interval is 15 seconds."]) {
-        assert.ok(main.cron.includes(rule) && WORKFLOW_AWARE_CRON_DESCRIPTION.includes(rule), rule);
-    }
-    for (const rule of ["Do NOT implement wall-clock schedules by polling every N minutes", "Recurrence is inferred from the fields you provide",
-        "Pass max_fires=1 for a single one-shot scheduled-at-time action.", "Cancel with action='cancel'."]) {
-        assert.ok(main.cron_at.includes(rule) && WORKFLOW_AWARE_CRON_AT_DESCRIPTION.includes(rule), rule);
-    }
-    assert.match(WORKFLOW_AWARE_CRON_DESCRIPTION, /workflow_definition and start it ONCE, with a loop through a wait state/);
-    assert.match(WORKFLOW_AWARE_CRON_AT_DESCRIPTION, /wait state that has `at`/);
-    assert.ok(!/spawn_workflow/.test(WORKFLOW_AWARE_CRON_DESCRIPTION + WORKFLOW_AWARE_CRON_AT_DESCRIPTION), "the tool of this stage, not the compat one");
+    assert.match(WORKFLOW_SCHEDULING_HINT, /^ For a fixed check a script can do, start one Workflow that loops through a wait state instead: it costs no model turns\.$/);
+    assert.ok(!/spawn_workflow/.test(WORKFLOW_SCHEDULING_HINT), "the tool of this stage, not the compat one");
 });
 
 test("agents (stage 2.5): workflow_definition declares test, and the guidance teaches it, only on a turn that can run a test", async (t) => {
@@ -144,15 +132,12 @@ test("agents (stage 2.5): workflow_definition declares test, and the guidance te
         const declared = JSON.stringify(definition.parameters);
         assert.equal(definition.parameters.properties.operation.enum.includes("test"), requestTurn, label);
         assert.equal(/"fixtures"|"test_id"/.test(declared), requestTurn, label);
-        assert.equal(definition.description.includes("test (only when the user asks you to test it"), requestTurn, label);
         // OF-S2-4 A: a package's author (Agent Smith) tests a definition before it publishes it.
-        assert.equal(definition.description.includes("or before you publish it in a package"), requestTurn, label);
-        assert.equal(definition.description.includes("Workflow tests do not run here, so there is no test operation"), !requestTurn, label);
+        assert.equal(definition.description.includes("test: only when the user asks, or before you publish it in a package."), requestTurn, label);
         for (const operation of ["list", "read", "save", "start", "card"]) assert.ok(definition.parameters.properties.operation.enum.includes(operation), operation);
         const prompt = JSON.stringify(manager._buildSystemMessage(`s-tests-${requestTurn}`, {
             baseAgentPolicy: { version: "v2", fingerprint: "test", revision: null }, ...(requestTurn ? { workflowMilestoneTurn: true } : {}) }));
-        assert.equal(prompt.includes("Testing is optional. Test a revision only when the user asks"), requestTurn, label);
-        assert.equal(prompt.includes("or before you publish it in a package; never test on your own"), requestTurn, label);
+        assert.equal(prompt.includes("Test a revision only when the user asks, or before you publish it in a package"), requestTurn, label);
         assert.equal(prompt.includes(JSON.stringify(WORKFLOW_TESTS_UNAVAILABLE_GUIDANCE).slice(1, -1)), !requestTurn, label);
     }
 });
@@ -163,15 +148,15 @@ test("agents: the base instructions always carry the Workflow guidance; with scr
         manager.workflowScriptsEnabled = scripts;
         return JSON.stringify(manager._buildSystemMessage("session", { baseAgentPolicy: { version: "v2", fingerprint: "test", revision: null } }));
     };
-    assert.ok(prompt(true).includes("## Workflow Sessions"));
-    assert.ok(!prompt(true).includes("Script nodes are turned off"));
-    assert.ok(prompt(false).includes("## Workflow Sessions"));
-    assert.ok(prompt(false).includes("Script nodes are turned off on this server (an operator set PILOTSWARM_WORKFLOW_SCRIPTS=0)"));
+    assert.ok(prompt(true).includes("## Workflows"));
+    assert.ok(!prompt(true).includes("Script nodes are off"));
+    assert.ok(prompt(false).includes("## Workflows"));
+    assert.ok(prompt(false).includes("Script nodes are off on this server (PILOTSWARM_WORKFLOW_SCRIPTS=0)"));
     // A session manager made with no setting runs scripts (owner 2026-11-08T15:45Z): its base has no scripts-off line.
     const fresh = new SessionManager(undefined, null, { frameworkBasePrompt: "Legacy base." });
     assert.equal(fresh.workflowScriptsEnabled, true);
     assert.ok(!JSON.stringify(fresh._buildSystemMessage("session", { baseAgentPolicy: { version: "v2", fingerprint: "test", revision: null } }))
-        .includes("Script nodes are turned off"));
+        .includes("Script nodes are off"));
 });
 
 test("agents: no handler, bridge, lifecycle helper or spawn path reads a Workflows switch", () => {

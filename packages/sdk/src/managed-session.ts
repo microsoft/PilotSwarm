@@ -1463,9 +1463,6 @@ export class ManagedSession {
         const workflowMilestone = opts?.workflowMilestone === true;
         // Workflow test mode is hidden unless the deployment flag is on (spec 16): the 1.9.0 declarations then name stop only.
         const workflowSpecs = { milestone: workflowMilestone, testMode: workflowTestModeFromEnv() };
-        const spawnWorkflowTool = defineTool("spawn_workflow", {
-            ...(workflowMilestone ? SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC : SPAWN_WORKFLOW_TOOL_SPEC), handler: async () => "stub",
-        });
         const updateWorkflowTool = defineTool("update_workflow", {
             ...updateWorkflowToolSpec(workflowSpecs), handler: async () => "stub",
         });
@@ -1483,8 +1480,9 @@ export class ManagedSession {
         const completeWorkflowNodeTools = opts?.workflowAgentChild === true
             ? [defineTool(COMPLETE_WORKFLOW_NODE_TOOL, { ...COMPLETE_WORKFLOW_NODE_TOOL_SPEC, handler: async () => "stub" })] : [];
         // A1 (Workflow Simplified, spec 14): a session inside a Workflow is declared no definition tools; A5: every other
-        // tool stays.
-        const definitionTools = opts?.workflowInsideWorkflow === true ? [] : [workflowDefinitionTool, spawnWorkflowTool, updateWorkflowTool];
+        // tool stays. spawn_workflow is no longer declared (owner 2026-11-08T16:55Z, ruling 18:12Z): workflow_definition
+        // replaces it; its turn handler stays, so a stale call is still answered.
+        const definitionTools = opts?.workflowInsideWorkflow === true ? [] : [workflowDefinitionTool, updateWorkflowTool];
 
         return [spawnAgentTool, ...definitionTools, readWorkflowTool, sendWorkflowInputTool, ...respondSessionRequestTools,
             ...completeWorkflowNodeTools, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,

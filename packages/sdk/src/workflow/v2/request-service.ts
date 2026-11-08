@@ -16,24 +16,19 @@ export const RESPOND_SESSION_REQUEST_TOOL = "respond_session_request";
 /** The respond_session_request tool's description and parameters. */
 export const RESPOND_SESSION_REQUEST_TOOL_SPEC = {
     description:
-        "Answer a typed request that a workflow sent you, once, before its deadline. "
-        + "request_id is the requestId of the request; operation_id is an id you choose for this answer: repeat the same call with it to retry, "
-        + "and you get the same receipt. Give exactly one of response (a JSON value that matches the request's response schema) "
-        + "or decline ({ \"reason\": a short text } when you will not or cannot answer). Chat text is not an answer. "
-        + "Returns the receipt as JSON, or a refusal: REQUEST_NOT_FOUND (no such request is open to you), REQUEST_EXPIRED (its deadline passed), "
-        + "REQUEST_CLOSED (it was cancelled or ended), RESPONSE_CONFLICT (another answer was accepted first), "
-        + "OPERATION_CONFLICT (this operation_id gave another answer), RESPONSE_INVALID (the value does not match), "
-        + "or OPERATION_LIMIT (too many operations for this request).",
+        "Answer a typed request that a Workflow sent you, once, before its deadline; chat text is not an answer. request_id is its "
+        + "requestId; operation_id is your id for this answer (repeat the call with it to retry). Give exactly one of response (a JSON "
+        + "value matching the request's response schema) or decline ({ reason }). Returns the receipt as JSON, or a refusal such as "
+        + "REQUEST_EXPIRED, REQUEST_CLOSED, RESPONSE_CONFLICT or RESPONSE_INVALID.",
     parameters: {
         type: "object",
         properties: {
-            request_id: { type: "string", description: "The requestId of the workflow's request." },
-            operation_id: { type: "string", description: "Your idempotency id for this answer." },
-            response: { description: "The response: a JSON value that matches the request's response schema." },
+            request_id: { type: "string" },
+            operation_id: { type: "string" },
+            response: { description: "A JSON value matching the request's response schema." },
             decline: {
                 type: "object",
-                description: "A declared refusal instead of a response.",
-                properties: { reason: { type: "string", description: "Why, in 1 to 2,000 characters." } },
+                properties: { reason: { type: "string", description: "1 to 2,000 characters." } },
                 required: ["reason"],
                 additionalProperties: false,
             },

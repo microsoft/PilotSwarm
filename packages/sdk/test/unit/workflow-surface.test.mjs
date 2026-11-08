@@ -49,25 +49,31 @@ ${stateExtra}    completion: { outcomes: [success] }
   done: { type: terminal, outcome: succeeded }
 `;
 
-test("spawn_workflow is declared for agent sessions and carries the YAML contract", () => {
-    const defs = ManagedSession.subAgentToolDefs();
-    const tool = defs.find((def) => def.name === "spawn_workflow");
-    assert.ok(tool, "spawn_workflow must be declared beside spawn_agent");
+// Owner 2026-11-08T16:55Z, ruling 18:12Z: spawn_workflow is no longer declared (workflow_definition replaces it); its spec
+// stays for its turn handler, which still answers a stale call.
+test("spawn_workflow is no longer declared; its handler's spec keeps the YAML contract", () => {
+    for (const opts of [{}, { workflowMilestone: true }, { workflowMilestone: true, workflowAgentChild: true }]) {
+        assert.ok(!ManagedSession.subAgentToolDefs(opts).some((def) => def.name === "spawn_workflow"), JSON.stringify(opts));
+    }
+    const tool = SPAWN_WORKFLOW_TOOL_SPEC;
     assert.deepEqual(tool.parameters.required, ["yaml"]);
     assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["agent_models", "inputs", "key", "notify_on_completion", "start", "state", "vars", "yaml"]);
-    for (const phrase of ["kind: Workflow", "type: script", "type: terminal", "completion: { outcomes:", "transition:", "callTool", "setResult", "cron", "JavaScript-only", "parent", "recover a run"]) {
+    for (const phrase of ["Kept for one release; prefer workflow_definition", "pilotswarm.dev/v2-draft", "pilotswarm.dev/v1alpha1", "state: published", "start: true", "key", "notify_on_completion"]) {
         assert.ok(tool.description.includes(phrase), `description should mention ${phrase}`);
     }
-    assert.equal(tool.description, SPAWN_WORKFLOW_TOOL_SPEC.description);
 });
 
-test("a package cannot shadow spawn_workflow", () => {
+
+test("a package cannot shadow a Workflow tool, declared or not (spawn_workflow keeps its handler)", () => {
     const platform = [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()].map((def) => def.name);
-    assert.equal(findReservedPackageToolName(["spawn_workflow"], platform, []), "spawn_workflow");
-    for (const name of ["update_workflow", "read_workflow", "send_workflow_input"]) assert.equal(findReservedPackageToolName([name], platform, []), name);
+    assert.ok(!platform.includes("spawn_workflow"));
+    for (const name of ["spawn_workflow", "workflow_definition", "update_workflow", "read_workflow", "send_workflow_input", "enable_workflows"]) {
+        assert.equal(findReservedPackageToolName([name], platform, []), name);
+        assert.equal(findReservedPackageToolName([name], [], []), name, `${name} with no declarations at all`);
+    }
 });
 
-test("workflow v2 tools are declared beside spawn_workflow with typed operations", () => {
+test("update_workflow and read_workflow are declared with typed operations", () => {
     const defs = ManagedSession.subAgentToolDefs();
     const update = defs.find((def) => def.name === "update_workflow");
     const read = defs.find((def) => def.name === "read_workflow");
@@ -79,16 +85,16 @@ test("workflow v2 tools are declared beside spawn_workflow with typed operations
         ["definition_hash", "delete", "expected_kv_revision", "expected_revision", "inputs", "notify_on_completion", "operation", "operation_id", "reason", "run_id", "set", "vars",
             "workflow_id", "yaml"]);
     assert.ok(update.description.includes("recover") && update.description.includes("needsRecovery"), "update_workflow describes recover");
-    for (const operation of ["set_vars", "pause", "resume", "cancel", "expected_kv_revision"]) {
+    for (const operation of ["set_vars", "pause", "resume", "cancel", "expected_kv_revision", "workflow-tools skill"]) {
         assert.ok(update.description.includes(operation), `update_workflow describes ${operation}`);
     }
     assert.deepEqual([...read.parameters.required], ["workflow_id"]);
     assert.deepEqual(Object.keys(read.parameters.properties).sort(), ["include_yaml", "run_id", "workflow_id"]);
     // Reading never changes a workflow: the read tool has no operation, and says so.
-    assert.ok(read.description.includes("Reading changes nothing"), "read_workflow promises a pure read");
-    assert.ok(read.description.includes("needsRecovery") && read.description.includes("update_workflow operation recover"),
+    assert.ok(read.description.includes("reading changes nothing"), "read_workflow promises a pure read");
+    assert.ok(read.description.includes("needsRecovery") && read.description.includes("update_workflow recover"),
         "read_workflow points to recover instead of acting itself");
-    assert.ok(read.description.includes("kvRevision") && read.description.includes("pausedFrom"), "read_workflow shows the run's KV and pause");
+    assert.ok(read.description.includes("kvRevision") && read.description.includes("not list_sessions"), "read_workflow shows the run's KV and is the status read");
 });
 
 test("send_workflow_input is declared beside the workflow tools, with the sender taken from the session", () => {
@@ -100,7 +106,7 @@ test("send_workflow_input is declared beside the workflow tools, with the sender
         ["contract", "correlation", "operation_id", "payload", "run_id", "ttl_seconds", "workflow_id"]);
     // No field names a sender: the runtime names the calling session.
     assert.ok(!Object.keys(send.parameters.properties).some((name) => /sender|from|actor/.test(name)));
-    for (const phrase of ["receive", "operation_id", "claimedBy", "not processing", "your own user", "unchanged", "payloadSha256", "microseconds"]) {
+    for (const phrase of ["receive", "operation_id", "same receipt", "Accepted is not processed", "your user's", "ttl_seconds", "receipt as JSON"]) {
         assert.ok(send.description.includes(phrase), `send_workflow_input describes ${phrase}`);
     }
 });
