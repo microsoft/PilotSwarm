@@ -49,6 +49,7 @@ async function mount(page, { kind, long = false, moa = false, atTop = false }) {
     const scope = page.locator(moa ? ".ps-moa-workspace" : ".ps-chat-panel");
     const pane = scope.locator(".ps-scroll-panel").first();
     if (kind === "tool") await scope.locator(".ps-activity-run > summary").click();
+    if (kind === "native") await scope.locator(".ps-native-task > summary").click();
     if (kind !== "update") await scope.locator(".ps-chat-call > summary").click();
     const target = scope.locator(kind === "update" ? ".ps-assistant-preview-viewport" : ".ps-chat-call > .ps-system-notice-body").first();
     await expect(target).toBeVisible();
