@@ -1,6 +1,6 @@
 ---
 name: workflow-reference
-description: Field reference for version 2 workflow YAML (root keys, every state type, bindings, outputs, runtime error codes) and a complete review fan-out example. Load with workflow-authoring.
+description: Field reference for Workflow YAML (root keys, every state type, bindings, outputs, runtime error codes) and a complete review fan-out example. Load with workflow-authoring.
 ---
 
 # Workflow reference

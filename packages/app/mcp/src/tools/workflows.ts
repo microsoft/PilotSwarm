@@ -29,7 +29,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
         {
             title: "Read Workflow",
             description:
-                "Read a version 2 workflow session without changing it, as a person: its definition (state, current revision, "
+                "Read a Workflow without changing it, as a person: its definition (state, current revision, "
                 + "diagnostics), graph and runs, and one run (run_id, default the live run). Each section of the run holds its newest rows, "
                 + "oldest first; rows still open are listed apart, however old (openExecutions, openInbox, openOutbox"
                 + `${testMode ? ", run.test.openInterceptions" : ""}). run.pages gives each section's nextCursor: give it back as cursor (a JSON object; limit may `
@@ -87,7 +87,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
         {
             title: "Update Workflow",
             description:
-                "Send one command to a version 2 workflow session, as a person. command is the update_workflow agent tool's command: "
+                "Send one command to a Workflow, as a person. command is the update_workflow agent tool's command: "
                 + operations
                 + "A live start (publish_and_start, start) tells the workflow's parent agent the result when the run ends unless "
                 + "notify_on_completion is false. Answers the command's receipt. "

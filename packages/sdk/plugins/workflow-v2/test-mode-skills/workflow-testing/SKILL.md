@@ -1,6 +1,6 @@
 ---
 name: workflow-testing
-description: Load before you test a version 2 workflow with mocked effects — the test, test_respond and test_advance operations, fixtures, interception ids, valid answers, the virtual clock, test evidence and what a test run does not prove.
+description: Load before you test a Workflow with mocked effects — the test, test_respond and test_advance operations, fixtures, interception ids, valid answers, the virtual clock, test evidence and what a test run does not prove.
 ---
 
 # Workflow testing

@@ -1,4 +1,4 @@
-# Workflow sessions
+# Durable workflows
 
 A **workflow session** runs a durable state machine instead of a
 conversation. No LLM runs inside it. A workflow document names its
@@ -17,7 +17,7 @@ Other state types of the workflow language (`agent`, `question`, `action`,
 document that uses one is refused with "not supported yet" before any session
 is created.
 
-## Sessions own their Workflows (Workflow Simplified, stage 1)
+## Sessions own their Workflows (stage 1)
 
 A session (a chat) owns its **Workflow Definitions** and its **Workflows**.
 A Workflow is one execution of one revision of a definition; underneath, it is
@@ -219,7 +219,7 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   top-level chat, and each refusal says so in words.
 - **Test mode is hidden** (see [Test mode (hidden)](#test-mode-hidden)).
 
-## A definition belongs to the chat (Workflow Simplified, stage 2.1)
+## A definition belongs to the chat (stage 2.1)
 
 A chat owns named **Workflow Definitions**; each save is a new, immutable
 **revision** (1, 2, 3) that records who saved it (`by the chat`, `by <person>`,
@@ -533,7 +533,7 @@ workflow, a link) instead of its cron.
   loaded checks rather than claiming the whole run. The workflow screen has
   no message box: nobody types into a workflow.
 
-## A package's Workflow Definitions (Workflow Simplified, stage 2.3)
+## A package's Workflow Definitions (stage 2.3)
 
 A package can ship Workflow Definitions as top-level entries
 (`workflows/<name>/workflow.yaml` with its interface card `card.md`; see
@@ -1204,8 +1204,9 @@ Isolation, in this version:
   services and the internet. The shipped worker templates (the GitOps worker
   base and `deploy/k8s/worker-network-policy.yaml`) carry a NetworkPolicy that
   denies the worker pods the instance metadata address (169.254.169.254),
-  which would otherwise hand out the node's managed identity token, and keep
-  all other egress. A deployment that does not use these templates, or whose
+  which would otherwise hand out the node's managed identity token, and the
+  Azure host endpoint (168.63.129.16, DNS on it excepted), and keep all other
+  egress. A deployment that does not use these templates, or whose
   cluster has no network policy engine, must block that address itself (for
   example, with the AKS IMDS restriction) or turn scripts off with
   `PILOTSWARM_WORKFLOW_SCRIPTS=0`.

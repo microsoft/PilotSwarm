@@ -123,6 +123,27 @@ async function latestHandler() {
     return fn;
 }
 
+/** The frozen 1.0.82 handler: a live 1.0.82 chat replays on it until its next continue-as-new. */
+async function frozenHandler() {
+    const { durableSessionOrchestration_1_0_82: fn } = await import("../../src/orchestration_1_0_82/index.ts");
+    expect(fn).toBeTypeOf("function");
+    return fn;
+}
+
+/**
+ * A failed turn's retry as its continue-as-new carries it: 1.0.83 owns it (input.ownedRetry: the prompt contract with
+ * its count and required tool); the frozen 1.0.82 carried them at the top level (retryCount, requiredTool).
+ */
+const carriedRetry = (input) => input.ownedRetry ?? { retryCount: input.retryCount, requiredTool: input.requiredTool };
+
+const VERSIONS = [
+    ["the latest version (1.0.83: the retry is owned)", latestHandler, (input) => {
+        expect(input.ownedRetry, "1.0.83 carries an owned retry").toBeTruthy();
+        expect(input.sourceOrchestrationVersion).toBe("1.0.83");
+    }],
+    ["the frozen 1.0.82", frozenHandler, (input) => expect(input.ownedRetry).toBeUndefined()],
+];
+
 /** Run until park, continue-as-new, or return — throwing scripted rejections in. */
 function drive(gen, harness, { maxSteps = 400 } = {}) {
     let input;
@@ -158,73 +179,79 @@ const INPUT = (overrides = {}) => ({
 describe("generic retry exhaustion (orchestration 1.0.69)", () => {
     beforeEach(() => { mockSession = null; mockManager = null; });
 
-    it("after the last retry the failure lands on the session row, not just the status plane", async () => {
-        const handler = await latestHandler();
+    // The carried retry, on the latest version and on the frozen 1.0.82 (c9b23671 full run: these tests read 1.0.82's shape).
+    for (const [label, handlerOf, shapeOf] of VERSIONS) describe(label, () => {
+        it("after the last retry the failure lands on the session row, not just the status plane", async () => {
+            const handler = await handlerOf();
 
-        // Attempt 1: throw → continue-as-new with retryCount 1.
-        let harness = createThrowingHarness();
-        let out = drive(handler(harness.ctx, INPUT()), harness);
-        expect(out.kind).toBe("continueAsNew");
-        expect(out.input.retryCount).toBe(1);
-        expect(harness.cmsStateCalls.some(([, state]) => state === "error")).toBe(false);
+            // Attempt 1: throw → continue-as-new with retryCount 1.
+            let harness = createThrowingHarness();
+            let out = drive(handler(harness.ctx, INPUT()), harness);
+            expect(out.kind).toBe("continueAsNew");
+            expect(carriedRetry(out.input).retryCount).toBe(1);
+            shapeOf(out.input);
+            expect(harness.cmsStateCalls.some(([, state]) => state === "error")).toBe(false);
 
-        // Attempt 2.
-        harness = createThrowingHarness();
-        out = drive(handler(harness.ctx, INPUT(out.input)), harness);
-        expect(out.kind).toBe("continueAsNew");
-        expect(out.input.retryCount).toBe(2);
+            // Attempt 2.
+            harness = createThrowingHarness();
+            out = drive(handler(harness.ctx, INPUT(out.input)), harness);
+            expect(out.kind).toBe("continueAsNew");
+            expect(carriedRetry(out.input).retryCount).toBe(2);
 
-        // Attempt 3 = MAX_RETRIES: the exhaustion branch. No further CAN —
-        // the session parks waiting for input, and the ROW must say why.
-        harness = createThrowingHarness();
-        out = drive(handler(harness.ctx, INPUT(out.input)), harness);
-        expect(out.kind).not.toBe("continueAsNew");
-        const errorWrites = harness.cmsStateCalls.filter(([, state]) => state === "error");
-        expect(errorWrites.length).toBeGreaterThanOrEqual(1);
-        const [, , lastError] = errorWrites[errorWrites.length - 1];
-        expect(String(lastError)).toMatch(/Failed after 3 attempts/);
-        expect(String(lastError)).toMatch(/LLM endpoint exploded/);
-    });
+            // Attempt 3 = MAX_RETRIES: the exhaustion branch. No further CAN —
+            // the session parks waiting for input, and the ROW must say why.
+            harness = createThrowingHarness();
+            out = drive(handler(harness.ctx, INPUT(out.input)), harness);
+            expect(out.kind).not.toBe("continueAsNew");
+            const errorWrites = harness.cmsStateCalls.filter(([, state]) => state === "error");
+            expect(errorWrites.length).toBeGreaterThanOrEqual(1);
+            const [, , lastError] = errorWrites[errorWrites.length - 1];
+            expect(String(lastError)).toMatch(/Failed after 3 attempts/);
+            expect(String(lastError)).toMatch(/LLM endpoint exploded/);
+        });
 
-    it("a RETURNED error result accumulates retries across continue-as-new instead of looping at 1/3 for ever", async () => {
-        // The storm the regression workflow caught live: the activity caught
-        // the provider failure and RETURNED {type:"error"}; the blanket
-        // retryCount reset then wiped the carried count every cycle, so the
-        // counter read 1/3 for ever and exhaustion was unreachable.
-        const handler = await latestHandler();
-        const errResult = { type: "error", message: "provider melted (HTTP 503)" };
+        it("a RETURNED error result accumulates retries across continue-as-new instead of looping at 1/3 for ever", async () => {
+            // The storm the regression workflow caught live: the activity caught
+            // the provider failure and RETURNED {type:"error"}; the blanket
+            // retryCount reset then wiped the carried count every cycle, so the
+            // counter read 1/3 for ever and exhaustion was unreachable.
+            const handler = await handlerOf();
+            const errResult = { type: "error", message: "provider melted (HTTP 503)" };
 
-        let harness = createThrowingHarness({ turnResults: [errResult] });
-        let out = drive(handler(harness.ctx, INPUT()), harness);
-        expect(out.kind).toBe("continueAsNew");
-        expect(out.input.retryCount).toBe(1);
+            let harness = createThrowingHarness({ turnResults: [errResult] });
+            let out = drive(handler(harness.ctx, INPUT()), harness);
+            expect(out.kind).toBe("continueAsNew");
+            expect(carriedRetry(out.input).retryCount).toBe(1);
+            shapeOf(out.input);
 
-        harness = createThrowingHarness({ turnResults: [errResult] });
-        out = drive(handler(harness.ctx, INPUT(out.input)), harness);
-        expect(out.kind).toBe("continueAsNew");
-        expect(out.input.retryCount).toBe(2);
+            harness = createThrowingHarness({ turnResults: [errResult] });
+            out = drive(handler(harness.ctx, INPUT(out.input)), harness);
+            expect(out.kind).toBe("continueAsNew");
+            expect(carriedRetry(out.input).retryCount).toBe(2);
 
-        harness = createThrowingHarness({ turnResults: [errResult] });
-        out = drive(handler(harness.ctx, INPUT(out.input)), harness);
-        expect(out.kind).not.toBe("continueAsNew");
-        const errorWrites = harness.cmsStateCalls.filter(([, state]) => state === "error");
-        const [, , lastError] = errorWrites[errorWrites.length - 1];
-        expect(String(lastError)).toMatch(/Failed after 3 attempts/);
-    });
+            harness = createThrowingHarness({ turnResults: [errResult] });
+            out = drive(handler(harness.ctx, INPUT(out.input)), harness);
+            expect(out.kind).not.toBe("continueAsNew");
+            const errorWrites = harness.cmsStateCalls.filter(([, state]) => state === "error");
+            const [, , lastError] = errorWrites[errorWrites.length - 1];
+            expect(String(lastError)).toMatch(/Failed after 3 attempts/);
+        });
 
-    it("a returned transient error preserves the initial required tool on retry", async () => {
-        const handler = await latestHandler();
-        const errResult = { type: "error", message: "provider melted (HTTP 503)" };
-        const harness = createThrowingHarness({ turnResults: [errResult] });
+        it("a returned transient error preserves the initial required tool on retry", async () => {
+            const handler = await handlerOf();
+            const errResult = { type: "error", message: "provider melted (HTTP 503)" };
+            const harness = createThrowingHarness({ turnResults: [errResult] });
 
-        const out = drive(handler(harness.ctx, INPUT({
-            requiredTool: "package_catalog",
-        })), harness);
+            const out = drive(handler(harness.ctx, INPUT({
+                requiredTool: "package_catalog",
+            })), harness);
 
-        expect(out.kind).toBe("continueAsNew");
-        expect(harness.turns[0].opts.requiredTool).toBe("package_catalog");
-        expect(out.input.requiredTool).toBe("package_catalog");
-        expect(Object.hasOwn(out.input.config, "initialRequiredTool")).toBe(false);
+            expect(out.kind).toBe("continueAsNew");
+            expect(harness.turns[0].opts.requiredTool).toBe("package_catalog");
+            expect(carriedRetry(out.input).requiredTool).toBe("package_catalog");
+            shapeOf(out.input);
+            expect(Object.hasOwn(out.input.config, "initialRequiredTool")).toBe(false);
+        });
     });
 
     it("a RETURNED auth failure stops immediately with the fix-your-key hint, like the thrown one always did", async () => {

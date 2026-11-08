@@ -1,11 +1,11 @@
 ---
 name: workflow-authoring
-description: Load before you create, edit, publish or run a version 2 workflow (pilotswarm.dev/v2-draft) — choosing states, bounded graphs, bindings, typed contracts, agent and parallel states, the lifecycle and failure diagnosis.
+description: Load before you create, edit, publish or run a Workflow (pilotswarm.dev/v2-draft) — choosing states, bounded graphs, bindings, typed contracts, agent and parallel states, the lifecycle and failure diagnosis.
 ---
 
 # Workflow authoring
 
-A version 2 Workflow is a child session of yours that runs a state graph
+A Workflow is a child session of yours that runs a state graph
 without model turns. Its controller runs scripts, timers, typed messages,
 agent children and fan-out exactly as the definition declares. You write the
 definition as YAML and save it with `workflow_definition`: it belongs to this
