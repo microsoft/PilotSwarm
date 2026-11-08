@@ -86,7 +86,10 @@ export {
     RETIRED_WORKFLOW_SETTINGS, RETIRED_WORKFLOW_TEST_ENVIRONMENT_VARIABLE, RETIRED_WORKFLOW_TEST_ENVIRONMENT_WARNING, RETIRED_WORKFLOWS_VARIABLE,
     RETIRED_WORKFLOWS_WARNING, warnRetiredWorkflowsSetting,
 } from "./workflow/retired-workflows-setting.js";
-export { WORKFLOW_SCRIPTS_DISABLED, workflowScriptsOptionFromEnv, workflowV2ScriptNodes, workflowScriptsDisabledText } from "./workflow/v2/scripts-gate.js";
+export {
+    WORKFLOW_SCRIPTS_DISABLED, WORKFLOW_SCRIPTS_UNKNOWN_VALUE_WARNING, WORKFLOW_SCRIPTS_VARIABLE, resetWorkflowScriptsWarning,
+    workflowScriptsDisabledText, workflowScriptsEnabledFromEnv, workflowScriptsOptionFromEnv, workflowV2ScriptNodes,
+} from "./workflow/v2/scripts-gate.js";
 // Workflow v2: the view of a person who may read a workflow but not change it (adversarial review R2-SF-2).
 export { workflowV2ReaderView } from "./workflow/v2/tools.js";
 export type { HorizonEnvConfig } from "./horizon-env.js";

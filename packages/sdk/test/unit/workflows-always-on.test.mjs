@@ -157,7 +157,7 @@ test("agents (stage 2.5): workflow_definition declares test, and the guidance te
     }
 });
 
-test("agents: the base instructions always carry the Workflow guidance; with scripts off they say so", () => {
+test("agents: the base instructions always carry the Workflow guidance; with scripts explicitly off (they are on by default) they say so", () => {
     const prompt = scripts => {
         const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "Legacy base." });
         manager.workflowScriptsEnabled = scripts;
@@ -166,7 +166,12 @@ test("agents: the base instructions always carry the Workflow guidance; with scr
     assert.ok(prompt(true).includes("## Workflow Sessions"));
     assert.ok(!prompt(true).includes("Script nodes are turned off"));
     assert.ok(prompt(false).includes("## Workflow Sessions"));
-    assert.ok(prompt(false).includes("Script nodes are turned off on this server (PILOTSWARM_WORKFLOW_SCRIPTS)"));
+    assert.ok(prompt(false).includes("Script nodes are turned off on this server (an operator set PILOTSWARM_WORKFLOW_SCRIPTS=0)"));
+    // A session manager made with no setting runs scripts (owner 2026-11-08T15:45Z): its base has no scripts-off line.
+    const fresh = new SessionManager(undefined, null, { frameworkBasePrompt: "Legacy base." });
+    assert.equal(fresh.workflowScriptsEnabled, true);
+    assert.ok(!JSON.stringify(fresh._buildSystemMessage("session", { baseAgentPolicy: { version: "v2", fingerprint: "test", revision: null } }))
+        .includes("Script nodes are turned off"));
 });
 
 test("agents: no handler, bridge, lifecycle helper or spawn path reads a Workflows switch", () => {

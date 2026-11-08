@@ -379,7 +379,7 @@ new PilotSwarmWorker({
     waitThreshold: 30,       // seconds — waits above this become durable timers
     workerNodeId: "pod-1",   // identifier for this worker (default: hostname)
     turnTimeoutMs: 1_200_000, // explicit override; 0 disables the cap
-    workflowScripts: { enabled: false }, // run workflow script states (env PILOTSWARM_WORKFLOW_SCRIPTS=1)
+    workflowScripts: { enabled: true },  // run workflow script states; on by default (env PILOTSWARM_WORKFLOW_SCRIPTS=0 turns them off)
 
     // Blob storage for session dehydration
     blobConnectionString: string,   // Azure Storage connection string
@@ -893,14 +893,15 @@ desired state rather than maintain a second long-lived configuration source.
 ## Workflow scripts
 
 Workflows are always on, on the portal, every worker and the MCP server; they
-need no setting. Script nodes are off by default: a workflow's script states
-run as processes on the worker. See
+need no setting. Script nodes are on by default: a workflow's script states
+run as processes on the worker, on its Node with the permission model (file
+access limited to the script's own folder, no child processes). See
 [Workflow sessions](../building/workflow-sessions.md).
 
 | Variable | Default | Effect |
 |---|---|---|
 | `PILOTSWARM_WORKFLOWS` | retired | Workflows are always on. A deployment that still sets it, to any value, is ignored with one startup warning on each worker, the portal and the MCP server: "PILOTSWARM_WORKFLOWS is ignored: Workflows are always on. Remove it from the deployment's settings." |
-| `PILOTSWARM_WORKFLOW_SCRIPTS` | off | `1` runs workflow script states on this worker. The `workflowScripts.enabled` option wins. Off, a definition with a script node is refused at save and Start (`WORKFLOW_SCRIPTS_DISABLED`). Set on the portal and the MCP server too, so a person's save or Start is checked there. |
+| `PILOTSWARM_WORKFLOW_SCRIPTS` | on | An opt-out. Unset or empty: script states run on this worker. `0`, `false`, `no` or `off` turns them off; `1`, `true` or `yes` keeps them on; any other value keeps them on, with one startup warning. The `workflowScripts.enabled` option wins. Off, a definition with a script node is refused at save and Start (`WORKFLOW_SCRIPTS_DISABLED`). Set the same value on the portal and the MCP server, so a person's save or Start is checked there. |
 | `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` | retired | Every worker runs the full Workflow engine (session orchestration 1.0.83 and controller 1.9.0) and every deployment takes a person's workflow commands. A deployment that still sets it, to any value, is ignored with one startup warning on each worker, the portal and the MCP server: "PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT is ignored: every worker runs the full Workflow engine. Remove it from the deployment's settings." |
 | `PILOTSWARM_WORKFLOW_PYTHON` | `python3` | The Python program for `runtime: python`. |
 | `PILOTSWARM_WORKFLOW_PWSH` | `pwsh` | The PowerShell 7 program for `runtime: powershell`. |

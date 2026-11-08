@@ -77,8 +77,8 @@ test("the script nodes of a definition, the refusal's words, and the code", () =
     assert.equal(WORKFLOW_SCRIPTS_DISABLED, "WORKFLOW_SCRIPTS_DISABLED");
     assert.equal(sdk.WORKFLOW_SCRIPTS_DISABLED, WORKFLOW_SCRIPTS_DISABLED);
     assert.equal(workflowScriptsDisabledText(["poll"], "save"),
-        "This workflow has script node (poll), and script nodes are turned off on this server. An operator turns them on with "
-        + "PILOTSWARM_WORKFLOW_SCRIPTS=1 on every worker. Nothing was saved.");
+        "This workflow has script node (poll), and script nodes are turned off on this server: an operator turned them off with "
+        + "PILOTSWARM_WORKFLOW_SCRIPTS=0. Nothing was saved.");
     assert.match(workflowScriptsDisabledText(["a", "b", "c", "d", "e", "f", "g"], "start"), /script nodes \(a, b, c, d, e, and 2 more\).*Nothing was started\.$/);
     const ir = compileWorkflowV2(SCRIPT_YAML).ir;
     assert.doesNotThrow(() => requireWorkflowScripts({}, ir, "save"), "not known: no refusal");
@@ -126,12 +126,28 @@ test("Start: publishing and starting, or starting, a stored definition with a sc
     }
 });
 
-test("a management client's option from this process's PILOTSWARM_WORKFLOW_SCRIPTS: set says it, unset is not known", () => {
-    assert.deepEqual(workflowScriptsOptionFromEnv({}), {});
-    assert.deepEqual(workflowScriptsOptionFromEnv({ PILOTSWARM_WORKFLOW_SCRIPTS: "" }), {});
-    assert.deepEqual(workflowScriptsOptionFromEnv({ PILOTSWARM_WORKFLOW_SCRIPTS: " " }), {});
-    for (const on of ["1", "true", "yes", " TRUE "]) assert.deepEqual(workflowScriptsOptionFromEnv({ PILOTSWARM_WORKFLOW_SCRIPTS: on }), { workflowScripts: true }, on);
-    for (const off of ["0", "false", "no", "off"]) assert.deepEqual(workflowScriptsOptionFromEnv({ PILOTSWARM_WORKFLOW_SCRIPTS: off }), { workflowScripts: false }, off);
+// Owner 2026-11-08T15:45Z (pse/decision/scripts-default-on): PILOTSWARM_WORKFLOW_SCRIPTS is an opt-out, read the same way
+// by the worker, the portal and the MCP server.
+test("a management client's option from this process's PILOTSWARM_WORKFLOW_SCRIPTS: on unless it turns them off", () => {
+    for (const on of [undefined, "", " ", "1", "true", "yes", " TRUE "]) {
+        assert.deepEqual(workflowScriptsOptionFromEnv(on === undefined ? {} : { PILOTSWARM_WORKFLOW_SCRIPTS: on }), { workflowScripts: true }, JSON.stringify(on));
+    }
+    for (const off of ["0", "false", "no", "off", " No "]) {
+        assert.deepEqual(workflowScriptsOptionFromEnv({ PILOTSWARM_WORKFLOW_SCRIPTS: off }), { workflowScripts: false }, off);
+    }
+});
+
+test("an unknown PILOTSWARM_WORKFLOW_SCRIPTS value keeps scripts on, with one warning per process that does not echo it", () => {
+    sdk.resetWorkflowScriptsWarning();
+    const warned = [];
+    const warn = message => warned.push(message);
+    assert.equal(sdk.workflowScriptsEnabledFromEnv({ PILOTSWARM_WORKFLOW_SCRIPTS: "enabled-please" }, warn), true);
+    assert.equal(sdk.workflowScriptsEnabledFromEnv({ PILOTSWARM_WORKFLOW_SCRIPTS: "maybe" }, warn), true);
+    assert.deepEqual(warned, [sdk.WORKFLOW_SCRIPTS_UNKNOWN_VALUE_WARNING]);
+    assert.ok(!warned[0].includes("enabled-please"));
+    assert.equal(sdk.workflowScriptsEnabledFromEnv({ PILOTSWARM_WORKFLOW_SCRIPTS: "0" }, warn), false);
+    assert.equal(warned.length, 1);
+    sdk.resetWorkflowScriptsWarning();
 });
 
 // d52e5ed2 (executor diagnosis 2): the chat's save and start paths captured the chat's tool binding before the scripts gate,
@@ -261,7 +277,7 @@ test("e02ec6f8: the scripts gate decides from the YAML alone, before the host is
         const text = await spawnWorkflowFromTool(args, { toolCallId: "call-1" }, deps);
         const answer = JSON.parse(text);
         assert.equal(answer.error?.code, WORKFLOW_SCRIPTS_DISABLED, text);
-        assert.match(answer.error.message, new RegExp(`PILOTSWARM_WORKFLOW_SCRIPTS=1 .*Nothing was ${when}\\.$`));
+        assert.match(answer.error.message, new RegExp(`PILOTSWARM_WORKFLOW_SCRIPTS=0\\. Nothing was ${when}\\.$`));
     }
     // Without a script node the call goes on to the host (here one that cannot be made: its coded answer, as before).
     const waits = JSON.parse(await spawnWorkflowFromTool({ yaml: WAIT_YAML, key: "waits" }, { toolCallId: "call-3" }, deps));

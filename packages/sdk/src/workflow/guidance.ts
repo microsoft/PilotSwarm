@@ -66,8 +66,9 @@ export const WORKFLOW_TESTS_UNAVAILABLE_GUIDANCE = "Workflow tests do not run on
 const TEST_WAITING_GUIDANCE_LINE = "\n- `test_waiting`: a test run's held call. Answer it with `update_workflow` operation `test_respond`.";
 
 /** The line the guidance carries on a worker that runs no script nodes (stage 2.0: Workflows and scripts are separate settings). */
-export const WORKFLOW_SCRIPTS_OFF_GUIDANCE = "Script nodes are turned off on this server (PILOTSWARM_WORKFLOW_SCRIPTS): a definition with a script node is "
-    + "refused when you save or start it. Use wait, messaging, agent and parallel nodes instead, or tell the user an operator must turn scripts on.";
+export const WORKFLOW_SCRIPTS_OFF_GUIDANCE = "Script nodes are turned off on this server (an operator set PILOTSWARM_WORKFLOW_SCRIPTS=0): a definition with "
+    + "a script node is refused when you save or start it. Use wait, messaging, agent and parallel nodes instead, or tell the user an operator must "
+    + "turn scripts back on.";
 
 /**
  * Stage 2.4: the line the guidance carries where clock waits run (a host that runs controller 1.9.0): a wait until a

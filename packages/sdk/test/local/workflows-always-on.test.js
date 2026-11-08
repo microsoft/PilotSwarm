@@ -215,7 +215,7 @@ states:
                     const answer = JSON.parse(seen[0][field]);
                     expect(answer.ok, seen[0][field]).toBe(false);
                     expect(answer.error.code, seen[0][field]).toBe("WORKFLOW_SCRIPTS_DISABLED");
-                    expect(answer.error.message, seen[0][field]).toContain("PILOTSWARM_WORKFLOW_SCRIPTS=1");
+                    expect(answer.error.message, seen[0][field]).toContain("PILOTSWARM_WORKFLOW_SCRIPTS=0");
                     expect(answer.error.message.endsWith(`Nothing was ${when}.`), seen[0][field]).toBe(true);
                 }
                 expect(seen[0].waits).not.toContain("WORKFLOW_SCRIPTS_DISABLED");

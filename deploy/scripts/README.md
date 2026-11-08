@@ -502,8 +502,9 @@ SecretProviderClass once their deploy path is on duroxide-node ≥ 0.1.25
 Workflows need no setting. Every worker serves session orchestration 1.0.83
 (the latest version) and Workflow controller 1.9.0: agent, parallel and request
 states, clock waits, revision tests and a person's workflow commands, on every
-deployment. Script states still need `PILOTSWARM_WORKFLOW_SCRIPTS=1` on the
-workers, and workflow test mode still needs `PILOTSWARM_WORKFLOW_TEST_MODE=on`.
+deployment. Script states run by default; `PILOTSWARM_WORKFLOW_SCRIPTS=0` on
+every worker (and the portal and the MCP server) turns them off. Workflow test
+mode still needs `PILOTSWARM_WORKFLOW_TEST_MODE=on`.
 
 Two settings are retired. A deployment that still sets one, to any value, is
 ignored with one startup warning on each worker, the portal and the MCP server;

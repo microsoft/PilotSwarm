@@ -176,7 +176,7 @@ describe("previously admitted script workflow sessions (worker + client + Postgr
                 expect(view.status).toBe("failed");
                 const events = await mgmt.getSessionEvents(sessionId);
                 const failed = events.find((event) => event.eventType === "workflow.failed");
-                expect(failed.data.error).toMatch(/Workflow scripts are disabled on this worker/);
+                expect(failed.data.error).toMatch(/Workflow scripts are turned off on this worker: an operator turned them off with PILOTSWARM_WORKFLOW_SCRIPTS=0/);
                 expect(events.some((event) => event.eventType === "workflow.state_started")).toBe(false);
             } finally {
                 await mgmt.stop?.();

@@ -53,8 +53,8 @@ export interface WorkflowActivityDeps {
 }
 
 export const WORKFLOW_SCRIPTS_DISABLED_MESSAGE =
-    "Workflow scripts are disabled on this worker. An operator enables them with PILOTSWARM_WORKFLOW_SCRIPTS=1 "
-    + "(or the worker option workflowScripts.enabled), because scripts run as processes on the worker.";
+    "Workflow scripts are turned off on this worker: an operator turned them off with PILOTSWARM_WORKFLOW_SCRIPTS=0 "
+    + "(or the worker option workflowScripts.enabled: false).";
 
 const PREVIEW_CHARS = 1_000;
 

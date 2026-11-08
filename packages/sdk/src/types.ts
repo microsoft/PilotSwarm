@@ -1489,12 +1489,13 @@ export interface SessionPolicy {
 export interface PilotSwarmWorkerOptions {
     store: string;
     /**
-     * Script states in workflow sessions. Off unless enabled here or with
-     * `PILOTSWARM_WORKFLOW_SCRIPTS=1`: a workflow's scripts run as child
-     * processes on the worker (without the worker's environment), so an
-     * operator opts in. A worker with them off still runs the controller and
-     * fails each new workflow that has script states at its start, with a
-     * clear message. `executables` overrides the program per runtime (env
+     * Script states in workflow sessions. On unless turned off here
+     * (`enabled: false`) or with `PILOTSWARM_WORKFLOW_SCRIPTS=0` (or false,
+     * no, off): a workflow's scripts run as child processes on the worker's
+     * Node with its permission model (file access limited to the script's own
+     * folder, no child processes) and without the worker's environment. A
+     * worker with them off still runs the controller and fails each new
+     * workflow that has script states at its start, with a clear message. `executables` overrides the program per runtime (env
      * `PILOTSWARM_WORKFLOW_PYTHON`, `PILOTSWARM_WORKFLOW_PWSH`).
      */
     workflowScripts?: {

@@ -1,6 +1,7 @@
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
 import { isWorkflowTestBench } from "./workflow/v2/test-bench.js";
 import { warnRetiredWorkflowsSetting } from "./workflow/retired-workflows-setting.js";
+import { workflowScriptsEnabledFromEnv } from "./workflow/v2/scripts-gate.js";
 import { WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR } from "./workflow/guidance.js";
 import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
 import { AGENT_HANDOFF_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
@@ -145,13 +146,12 @@ export function resolveDuroxideLockOptions(
     return options;
 }
 
-/** @internal Workflow script switch and runtimes: explicit option > deployment env > off. */
+/** @internal Workflow script switch and runtimes: explicit option > deployment env (an opt-out) > on. */
 export function resolveWorkflowScriptSettings(
     config: PilotSwarmWorkerOptions["workflowScripts"],
     env: Record<string, string | undefined> = process.env,
 ): { enabled: boolean; executables: Partial<Record<"node" | "python" | "powershell", string>> } {
-    const flag = String(env.PILOTSWARM_WORKFLOW_SCRIPTS ?? "").trim().toLowerCase();
-    const enabled = config?.enabled ?? (flag === "1" || flag === "true" || flag === "yes");
+    const enabled = config?.enabled ?? workflowScriptsEnabledFromEnv(env);
     const executables: Partial<Record<"node" | "python" | "powershell", string>> = {
         ...(env.PILOTSWARM_WORKFLOW_PYTHON ? { python: env.PILOTSWARM_WORKFLOW_PYTHON } : {}),
         ...(env.PILOTSWARM_WORKFLOW_PWSH ? { powershell: env.PILOTSWARM_WORKFLOW_PWSH } : {}),

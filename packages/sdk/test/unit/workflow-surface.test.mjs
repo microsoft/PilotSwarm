@@ -199,12 +199,16 @@ test("script tools are the generic agent's data-plane tools, bound to the workfl
     assert.equal(stored[0].sessionId, "wf-session");
 });
 
-test("workflow scripts are off unless an operator turns them on", () => {
-    assert.equal(resolveWorkflowScriptSettings(undefined, {}).enabled, false);
-    assert.equal(resolveWorkflowScriptSettings(undefined, { PILOTSWARM_WORKFLOW_SCRIPTS: "1" }).enabled, true);
-    assert.equal(resolveWorkflowScriptSettings(undefined, { PILOTSWARM_WORKFLOW_SCRIPTS: "true" }).enabled, true);
-    assert.equal(resolveWorkflowScriptSettings({ enabled: false }, { PILOTSWARM_WORKFLOW_SCRIPTS: "1" }).enabled, false);
-    assert.equal(resolveWorkflowScriptSettings({ enabled: true }, {}).enabled, true);
+// Owner 2026-11-08T15:45Z (pse/decision/scripts-default-on): PILOTSWARM_WORKFLOW_SCRIPTS is an opt-out.
+test("workflow scripts are on unless an operator turns them off", () => {
+    assert.equal(resolveWorkflowScriptSettings(undefined, {}).enabled, true, "unset: on");
+    assert.equal(resolveWorkflowScriptSettings(undefined, { PILOTSWARM_WORKFLOW_SCRIPTS: "" }).enabled, true, "empty: on");
+    for (const off of ["0", "false", "no", "off", " OFF "]) {
+        assert.equal(resolveWorkflowScriptSettings(undefined, { PILOTSWARM_WORKFLOW_SCRIPTS: off }).enabled, false, off);
+    }
+    for (const on of ["1", "true", "yes"]) assert.equal(resolveWorkflowScriptSettings(undefined, { PILOTSWARM_WORKFLOW_SCRIPTS: on }).enabled, true, on);
+    assert.equal(resolveWorkflowScriptSettings({ enabled: false }, {}).enabled, false, "the option wins");
+    assert.equal(resolveWorkflowScriptSettings({ enabled: true }, { PILOTSWARM_WORKFLOW_SCRIPTS: "0" }).enabled, true, "the option wins");
     assert.deepEqual(
         resolveWorkflowScriptSettings({ executables: { powershell: "/opt/pwsh" } }, { PILOTSWARM_WORKFLOW_PYTHON: "/usr/bin/python3.12" }).executables,
         { python: "/usr/bin/python3.12", powershell: "/opt/pwsh" },
@@ -306,7 +310,8 @@ test("spawn_workflow is idempotent per key, and per tool call without one", asyn
 
 test("spawn_workflow refuses when Workflow scripts are off or the YAML is wrong, without creating anything", async () => {
     const off = spawnDeps({ enabled: () => false });
-    assert.match(await spawnWorkflowFromTool({ yaml: yaml() }, {}, off.deps), /refused — Workflow scripts are disabled on this worker/);
+    assert.match(await spawnWorkflowFromTool({ yaml: yaml() }, {}, off.deps),
+        /refused — Workflow scripts are turned off on this worker: an operator turned them off with PILOTSWARM_WORKFLOW_SCRIPTS=0/);
     assert.equal(off.created.length, 0);
 
     const bad = spawnDeps();

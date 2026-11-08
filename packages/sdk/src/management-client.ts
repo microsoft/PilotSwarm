@@ -879,10 +879,10 @@ export interface PilotSwarmManagementClientOptions {
      */
     workflowCommands?: { requests?: boolean; testMode?: boolean } | null;
     /**
-     * Whether the deployment's workers run workflow script nodes (PILOTSWARM_WORKFLOW_SCRIPTS), as far as this client knows:
-     * false refuses a person's save or Start of a definition with a script node, in words naming the setting
+     * Whether the deployment's workers run workflow script nodes (PILOTSWARM_WORKFLOW_SCRIPTS, an opt-out), as far as this
+     * client knows: false refuses a person's save or Start of a definition with a script node, in words naming the setting
      * (scripts-gate.ts); absent, not known, and such a run fails at its first script node instead. The portal and the MCP
-     * server pass it only when their own process sets the variable (workflowScriptsOptionFromEnv).
+     * server pass what their own process's setting says (workflowScriptsOptionFromEnv: on unless it is 0, false, no or off).
      */
     workflowScripts?: boolean;
 }

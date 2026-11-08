@@ -1,6 +1,7 @@
 /**
  * Script nodes are gated on their own (Workflow Simplified stage 2.0, coordinator 03:02Z). Workflows are always on (owner
- * 2026-11-08T08:03Z); PILOTSWARM_WORKFLOW_SCRIPTS only decides whether script nodes run. A host that
+ * 2026-11-08T08:03Z), and script nodes are on by default (owner 2026-11-08T15:45Z, pse/decision/scripts-default-on):
+ * PILOTSWARM_WORKFLOW_SCRIPTS is an opt-out that only decides whether script nodes run. A host that
  * knows its workers run no scripts (`scripts: false`) refuses a definition with a script node when it is saved and when it
  * is started, in words that name the setting, before anything is written. A host that does not know (`scripts` absent: a
  * portal or MCP server whose own process does not set the variable) does not refuse; such a run fails at its first script
@@ -11,17 +12,45 @@ import { WorkflowStoreError } from "./store.js";
 
 export const WORKFLOW_SCRIPTS_DISABLED = "WORKFLOW_SCRIPTS_DISABLED";
 
+/** The setting that turns script nodes off (an opt-out since 2026-11-08T15:45Z). */
+export const WORKFLOW_SCRIPTS_VARIABLE = "PILOTSWARM_WORKFLOW_SCRIPTS";
+const SCRIPTS_OFF_VALUES = new Set(["0", "false", "no", "off"]);
+const SCRIPTS_ON_VALUES = new Set(["1", "true", "yes"]);
+
+/** The warning a process logs once when PILOTSWARM_WORKFLOW_SCRIPTS holds a value it does not know (script nodes stay on). */
+export const WORKFLOW_SCRIPTS_UNKNOWN_VALUE_WARNING = "PILOTSWARM_WORKFLOW_SCRIPTS has a value this build does not know, so script nodes "
+    + "are on. Use 0, false, no or off to turn them off.";
+
+let warnedUnknownScriptsValue = false;
+
 /**
- * A management client's `workflowScripts` option from this process's PILOTSWARM_WORKFLOW_SCRIPTS (stage 2.0):
- * `{ workflowScripts: true }` for 1, true or yes (as a worker reads it), `{ workflowScripts: false }` for any other value that
- * is set, and `{}` when the variable is unset or empty (not known here: a person's save or Start is not refused for script
- * nodes; such a run fails at its first script node). Pure.
+ * Whether script nodes run, from `env`'s PILOTSWARM_WORKFLOW_SCRIPTS: unset or empty, on (the default); 0, false, no or off,
+ * off; 1, true or yes, on; any other value, on, with one warning per process (the value is not echoed). The worker, the
+ * management client's option (workflowScriptsOptionFromEnv), the portal and the MCP server all read it here.
+ */
+export function workflowScriptsEnabledFromEnv(env: Record<string, string | undefined> = process.env,
+    warn: (message: string) => void = message => console.warn(message)): boolean {
+    const raw = env[WORKFLOW_SCRIPTS_VARIABLE];
+    if (raw === undefined || raw.trim() === "") return true;
+    const flag = raw.trim().toLowerCase();
+    if (SCRIPTS_OFF_VALUES.has(flag)) return false;
+    if (SCRIPTS_ON_VALUES.has(flag)) return true;
+    if (!warnedUnknownScriptsValue) {
+        warnedUnknownScriptsValue = true;
+        warn(WORKFLOW_SCRIPTS_UNKNOWN_VALUE_WARNING);
+    }
+    return true;
+}
+
+/** Test hook: let the next unknown value warn again. */
+export function resetWorkflowScriptsWarning(): void { warnedUnknownScriptsValue = false; }
+
+/**
+ * A management client's `workflowScripts` option from this process's PILOTSWARM_WORKFLOW_SCRIPTS: what its workers do by
+ * the same setting (workflowScriptsEnabledFromEnv), so unset now gives `{ workflowScripts: true }`.
  */
 export function workflowScriptsOptionFromEnv(env: Record<string, string | undefined> = process.env): { workflowScripts?: boolean } {
-    const raw = env.PILOTSWARM_WORKFLOW_SCRIPTS;
-    if (raw === undefined || raw.trim() === "") return {};
-    const flag = raw.trim().toLowerCase();
-    return { workflowScripts: flag === "1" || flag === "true" || flag === "yes" };
+    return { workflowScripts: workflowScriptsEnabledFromEnv(env) };
 }
 
 /** The ids of a definition's script nodes (parallel bodies included: their members are nodes of the IR), in IR order. */
@@ -33,8 +62,8 @@ export function workflowV2ScriptNodes(ir: Pick<WorkflowIR, "nodes"> | null | und
 /** The refusal's words: the script nodes, the setting, and what was not done. */
 export function workflowScriptsDisabledText(nodes: readonly string[], when: "save" | "start" | "test"): string {
     const list = nodes.slice(0, 5).join(", ") + (nodes.length > 5 ? `, and ${nodes.length - 5} more` : "");
-    return `This workflow has script node${nodes.length === 1 ? "" : "s"} (${list}), and script nodes are turned off on this server. `
-        + "An operator turns them on with PILOTSWARM_WORKFLOW_SCRIPTS=1 on every worker. "
+    return `This workflow has script node${nodes.length === 1 ? "" : "s"} (${list}), and script nodes are turned off on this server: `
+        + "an operator turned them off with PILOTSWARM_WORKFLOW_SCRIPTS=0. "
         + (when === "save" ? "Nothing was saved." : when === "test" ? "Nothing was tested." : "Nothing was started.");
 }
 

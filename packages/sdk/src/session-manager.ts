@@ -1062,8 +1062,8 @@ export class SessionManager {
      * it is absent rather than failing a turn.
      */
     artifactStore: import("./session-store.js").ArtifactStore | null = null;
-    /** Whether this worker runs workflow scripts; set by the worker at start. */
-    workflowScriptsEnabled = false;
+    /** Whether this worker runs workflow scripts; set by the worker at start. On by default (an opt-out since 2026-11-08T15:45Z). */
+    workflowScriptsEnabled = true;
 
     /** Store full config (with tools/hooks) for a session. Called by PilotSwarmClient. */
     setConfig(sessionId: string, config: ManagedSessionConfig): void {

@@ -908,13 +908,12 @@ parallel or request states.
 
 The five tools, the guidance and the screens are there whether or not the
 workers run scripts. `PILOTSWARM_WORKFLOW_SCRIPTS` (below) decides only whether
-script nodes run; it is off unless set to `1`. Where they do not run, a
+script nodes run; they run unless it is `0` (or `false`, `no`, `off`). Where they do not run, a
 definition with a script node is refused when it is saved and when it is
 started (`WORKFLOW_SCRIPTS_DISABLED`, naming the setting), and the agent's
 guidance says so. A person's save or Start through the portal or MCP is
-refused the same way when that process sets `PILOTSWARM_WORKFLOW_SCRIPTS`;
-when it does not set it, such a run fails at its first script node, with the
-setting named.
+refused the same way when that process turns scripts off too; when only the
+workers do, such a run fails at its first script node, with the setting named.
 
 `cron` and `cron_at` (stage 2.5, PR 235 `4b0ac3ca`): where the workers run
 scripts, `cron` says it wakes the agent only for work that
@@ -954,16 +953,16 @@ guide is kept apart from the authoring skills, in
 where test mode is on. The SDK's local tests run with the flag on.
 
 ### Scripts
-Scripts run as child processes **on the worker**, so script states are
-**off** until an operator turns them on:
+Scripts run as child processes **on the worker**. Script states are **on** by
+default (owner decision, 2026-11-08); an operator can turn them off:
 
 | Setting | Effect |
 |---|---|
-| `PILOTSWARM_WORKFLOW_SCRIPTS=1` or `new PilotSwarmWorker({ workflowScripts: { enabled: true } })` | Run workflow script states on this worker. |
+| `PILOTSWARM_WORKFLOW_SCRIPTS=0` (or `false`, `no`, `off`) or `new PilotSwarmWorker({ workflowScripts: { enabled: false } })` | Run no workflow script states on this worker. Unset, empty, `1`, `true` or `yes`: they run; any other value: they run, with one startup warning. |
 | `PILOTSWARM_WORKFLOW_PYTHON`, `PILOTSWARM_WORKFLOW_PWSH`, or `workflowScripts.executables` | The program for a runtime. Defaults: this worker's Node, `python3`, `pwsh`. |
 
-Turn scripts on for **every** worker of a deployment: any worker may run any
-state. A worker with scripts off still runs the controller, so a workflow
+Turn scripts off on **every** worker of a deployment, or on none: any worker
+may run any state. A worker with scripts off still runs the controller, so a workflow
 with script states fails there at its start, or at its next script state,
 with a message that names the setting instead of waiting. Agents on such a
 worker still have the workflow tools; a definition with a script node is
@@ -1163,6 +1162,11 @@ Isolation, in this version:
   own bootstrap/scratch directory, without direct child-process, worker-thread
   or native-addon permission. This prevents accidental direct filesystem
   access; it is **not** a hostile-code or network sandbox.
+- Network: on the worker's Node (24.x) the permission model does not limit
+  the network. A script can reach whatever the worker pod can: the cluster's
+  services, the internet, and the node's instance metadata address
+  (169.254.169.254). Limit that with the cluster's network policy (for
+  example, deny the worker pods egress to 169.254.169.254) where it matters.
 - Such a script runs on the worker's own Node (`process.execPath`), and only
   when that Node is in the SDK's engines range, `^24.22.1 || >=26.12.1`.
   Outside it, the state fails with `execution_failed` before its script
