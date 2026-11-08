@@ -397,6 +397,57 @@ function giveBackCarriedWork(
     }
 }
 
+/**
+ * 1.0.83 (late cancel; formal finding rn.late-cancel): the owed work a queued
+ * prompt took rides on its FIFO item too, so a cancel that drops the prompt
+ * at dispatch, after the pass that queued it, still gives it back. The
+ * markers only add to the item's size: when they would make it too large to
+ * store, the digest's marker goes first, then the notice's, and the prompt is
+ * queued as before (only that late give-back is lost).
+ */
+function markCarriedWork(runtime: DurableSessionRuntime, item: any, carried: CarriedWork): void {
+    if (carried.rehydrationMessage !== undefined) item.carriedRehydrationMessage = carried.rehydrationMessage;
+    if (carried.digest) item.carriedChildDigest = carried.digest;
+    if (item.carriedChildDigest && isFifoItemTooLarge(item)) {
+        delete item.carriedChildDigest;
+        runtime.ctx.traceInfo(`[drain] the queued prompt is too large to also carry its child digest for a late cancel; queued it without`);
+    }
+    if (item.carriedRehydrationMessage !== undefined && isFifoItemTooLarge(item)) {
+        delete item.carriedRehydrationMessage;
+        runtime.ctx.traceInfo(`[drain] the queued prompt is too large to also carry its rehydration notice for a late cancel; queued it without`);
+    }
+}
+
+/** A child digest as a FIFO item carries it (read back from its JSON); null when the item carries none or a malformed one. */
+function carriedChildDigestOf(value: unknown): PendingChildDigest | null {
+    if (!value || typeof value !== "object") return null;
+    const digest = value as PendingChildDigest;
+    return typeof digest.startedAtMs === "number" && Array.isArray(digest.updates) && digest.updates.length > 0
+        && digest.updates.every(entry => entry && typeof entry === "object" && typeof entry.sessionId === "string")
+        ? digest : null;
+}
+
+/**
+ * 1.0.83 (late cancel): a queued prompt that a cancel drops at dispatch never
+ * ran, so the owed work it carries (markCarriedWork) is given back, under the
+ * rule giveBackCarriedWork applies to a prompt that was never queued: the
+ * rehydration notice only while none is pending (never a second copy), and
+ * the child digest merged with the pending one, whose updates arrived after
+ * the prompt took it and so count as newer.
+ */
+function giveBackDroppedPromptWork(runtime: DurableSessionRuntime, item: any, where: string): void {
+    const { ctx, state } = runtime;
+    const digest = carriedChildDigestOf(item?.carriedChildDigest);
+    if (digest) {
+        restorePendingChildDigest(runtime, digest);
+        ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the child digest it carried (${digest.updates.length} update(s))`);
+    }
+    if (typeof item?.carriedRehydrationMessage === "string" && state.pendingRehydrationMessage === undefined) {
+        state.pendingRehydrationMessage = item.carriedRehydrationMessage;
+        ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the rehydration notice it carried`);
+    }
+}
+
 function duplicateClientMessageIds(
     runtime: DurableSessionRuntime,
     ids: string[],
@@ -1214,6 +1265,8 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                     ...(carriedDigest ? { digest: carriedDigest } : {}),
                     ...(carriedRehydration !== undefined ? { rehydrationMessage: carriedRehydration } : {}),
                 });
+                // 1.0.83 (late cancel): and on the item, for a cancel at dispatch.
+                markCarriedWork(runtime, stashedPrompt, carriedByItem.get(stashedPrompt)!);
             }
             for (const id of incomingClientMessageIds) pendingClientMessageIds.add(id);
             continue;
@@ -1457,6 +1510,7 @@ function* collectMergeablePrompts(
             ctx.traceInfo(`[decide] dropping merged FIFO prompt cancelled by tombstone (ids=${peekIds.join(",")})`);
             removed.add(`${bucket}:${index}`);
             yield* dropCancelledPrompt(runtime, peekIds, "decide-merge");
+            giveBackDroppedPromptWork(runtime, peek, "decide-merge");
             continue;
         }
         if (first.carriedSteersWake === true || peek.carriedSteersWake === true
@@ -1559,6 +1613,7 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                 if (promptIdsIntersectCancellation(runtime, ids)) {
                     ctx.traceInfo(`[decide] dropping FIFO prompt cancelled by tombstone (ids=${ids.join(",")})`);
                     yield* dropCancelledPrompt(runtime, ids, "decide-fifo");
+                    giveBackDroppedPromptWork(runtime, item, "decide-fifo");
                     return true;
                 }
 

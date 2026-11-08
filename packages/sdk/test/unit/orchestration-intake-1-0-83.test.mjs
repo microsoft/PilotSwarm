@@ -216,6 +216,43 @@ const HISTORY_CHECK_82 = "        if (state.loopIteration % HISTORY_SIZE_CHECK_I
 const HISTORY_CHECK_83 = "        if (state.loopIteration % HISTORY_SIZE_CHECK_INTERVAL_ITERATIONS === 0) {\n            // 1.0.83: only the stats read is tolerated; the continue-as-new's own refusals (its version floor, the intake's\n            // carried-state checks) fail the execution, as at every other continue-as-new.\n            let historySizeBytes = 0;\n            try {\n                const stats = yield runtime.manager.getOrchestrationStats(runtime.input.sessionId);\n                historySizeBytes = Number(stats?.historySizeBytes) || 0;\n            } catch (err: any) {\n                ctx.traceInfo(`[orch] history size check failed at loop ${state.loopIteration}: ${err?.message ?? err}`);\n            }\n            if (historySizeBytes >= MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES) {\n                ctx.traceInfo(\n                    `[orch] history size cap (${historySizeBytes} >= ${MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES}) ` +\n                    `at loop ${state.loopIteration} \u2014 continuing as new`,\n                );\n                yield* versionedContinueAsNew(runtime, continueInput(runtime));\n                return \"\";\n            }\n        }\n";
 
 /**
+ * The lines 1.0.83 adds to queue.ts for the late cancel (formal finding rn.late-cancel; owner decision
+ * 2026-11-08T03:29Z, option A: fixed in 1.0.83 itself): the owed work a stashed prompt took also rides on its FIFO item
+ * (markCarriedWork), and a cancel that drops it at dispatch (decide-fifo, decide-merge) gives it back
+ * (giveBackDroppedPromptWork). Its comments and structure are allowed as the intake's are; every other line is here.
+ */
+const QUEUE_LATE_CANCEL_ADDED = [
+    "function markCarriedWork(runtime: DurableSessionRuntime, item: any, carried: CarriedWork): void {",
+    "    if (carried.rehydrationMessage !== undefined) item.carriedRehydrationMessage = carried.rehydrationMessage;",
+    "    if (carried.digest) item.carriedChildDigest = carried.digest;",
+    "    if (item.carriedChildDigest && isFifoItemTooLarge(item)) {",
+    "        delete item.carriedChildDigest;",
+    "        runtime.ctx.traceInfo(`[drain] the queued prompt is too large to also carry its child digest for a late cancel; queued it without`);",
+    "    if (item.carriedRehydrationMessage !== undefined && isFifoItemTooLarge(item)) {",
+    "        delete item.carriedRehydrationMessage;",
+    "        runtime.ctx.traceInfo(`[drain] the queued prompt is too large to also carry its rehydration notice for a late cancel; queued it without`);",
+    "/** A child digest as a FIFO item carries it (read back from its JSON); null when the item carries none or a malformed one. */",
+    "function carriedChildDigestOf(value: unknown): PendingChildDigest | null {",
+    "    if (!value || typeof value !== \"object\") return null;",
+    "    const digest = value as PendingChildDigest;",
+    "    return typeof digest.startedAtMs === \"number\" && Array.isArray(digest.updates) && digest.updates.length > 0",
+    "        && digest.updates.every(entry => entry && typeof entry === \"object\" && typeof entry.sessionId === \"string\")",
+    "        ? digest : null;",
+    "function giveBackDroppedPromptWork(runtime: DurableSessionRuntime, item: any, where: string): void {",
+    "    const digest = carriedChildDigestOf(item?.carriedChildDigest);",
+    "    if (digest) {",
+    "        restorePendingChildDigest(runtime, digest);",
+    "        ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the child digest it carried (${digest.updates.length} update(s))`);",
+    "    if (typeof item?.carriedRehydrationMessage === \"string\" && state.pendingRehydrationMessage === undefined) {",
+    "        state.pendingRehydrationMessage = item.carriedRehydrationMessage;",
+    "        ctx.traceInfo(`[${where}] a queued prompt dropped by a cancel gave back the rehydration notice it carried`);",
+    "                markCarriedWork(runtime, stashedPrompt, carriedByItem.get(stashedPrompt)!);",
+    "            giveBackDroppedPromptWork(runtime, peek, \"decide-merge\");",
+    "                    giveBackDroppedPromptWork(runtime, item, \"decide-fifo\");",
+    "    const { ctx, state } = runtime;",
+];
+
+/**
  * Lines the file `name` of 1.0.83 adds that neither name the intake or the
  * owed retry (ownedRetry, review Q-W2-7) nor are a comment or structure must
  * be listed in `generic`.
@@ -248,14 +285,14 @@ test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change 
             "        if (state.activeTimer) continue;        // drain will race the timer next iteration\n"
             + "        if (intakeDueAtMs(state.intake) !== null) continue; // 1.0.83: drain will race the intake's due write\n"));
     // queue.ts: only the intake's hooks (arrival in drain and the sweep, the tombstone latch first in both, the intake
-    // deadline's own race and its wake, each turn's stimulus and decide's turn for the intake alone) and the owed retry's
-    // (drain's sweep while it is owed, its timer release and decide's dispatch of it first; review Q-W2-7). The one
-    // frozen line it changes is listed; every line it adds names the intake or the owed retry, is a comment or
-    // structure, or is one of the listed reuses of 1.0.82's own expressions.
+    // deadline's own race and its wake, each turn's stimulus and decide's turn for the intake alone), the owed retry's
+    // (drain's sweep while it is owed, its timer release and decide's dispatch of it first; review Q-W2-7) and the
+    // late-cancel give-back (QUEUE_LATE_CANCEL_ADDED). The one frozen line it changes is listed; every line it adds names
+    // the intake or the owed retry, is a comment or structure, or is one of the listed lines.
     const queue82 = read("orchestration_1_0_82/queue.ts");
     const queue83 = read("orchestration_1_0_83/queue.ts");
     assert.deepEqual(linesOnly(queue82, queue83).sort(), [...QUEUE_CHANGED_82].sort());
-    assertIntakeOnlyAdditions("queue.ts", linesOnly(queue83, queue82), QUEUE_ADDED_GENERIC);
+    assertIntakeOnlyAdditions("queue.ts", linesOnly(queue83, queue82), [...QUEUE_ADDED_GENERIC, ...QUEUE_LATE_CANCEL_ADDED]);
     // turn.ts: only the intake's hooks (each attempt's carry, its dispatch and outcome, each timer turn's stimulus), the
     // owed retry of a failed turn and the listed frozen lines; every line it adds names the intake or the owed retry or
     // is a comment or structure.
