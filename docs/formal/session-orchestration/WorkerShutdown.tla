@@ -1,16 +1,19 @@
 ----------------------------- MODULE WorkerShutdown -----------------------------
 (***************************************************************************)
 (* Worker graceful shutdown under one deadline (worker.ts 1307-1404 at     *)
-(* e76a6133; every worker). Each step races the same deadline (drain       *)
-(* budget plus PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS); a hung step is        *)
-(* abandoned at the deadline and the later steps are skipped. Steps:       *)
-(* drain, workspace release (1374), release sweep (1394,                   *)
-(* sweepIdleSessions(1)), stop (1403). The sweep deletes the local copy   *)
-(* of a session whose snapshot is committed (it carries the commit         *)
-(* marker) and dehydrates an unmarked legacy session (upload, then delete  *)
-(* the local copy).                                                        *)
-(* Sessions: "c" committed (marker, durable snapshot); "l" legacy          *)
-(* (no marker, local state only).                                          *)
+(* bb162ed8; every worker). `bounded` (1317-1338) always STARTS its step   *)
+(* (Promise.resolve().then(work)) and races it against the time left to   *)
+(* the deadline, at least 0: past the deadline a step is started with a    *)
+(* zero budget and its wait abandoned at once, while its work goes on. So  *)
+(* after a late drain, the workspace release (1374), the release sweep     *)
+(* (1394, sweepIdleSessions(1)) and closing the worker (1403, stop()) are  *)
+(* all started and may run at the same time; the process exits when       *)
+(* gracefulShutdown returns, which ends whatever still runs.               *)
+(* The sweep deletes the local copy of a session whose snapshot is         *)
+(* committed (the commit marker) and dehydrates an unmarked legacy one     *)
+(* (upload, then delete the local copy). Once the worker is closed, an     *)
+(* upload in flight fails and the local copy stays.                        *)
+(* Sessions: "c" committed (marker, durable snapshot); "l" legacy.         *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -23,90 +26,104 @@ ASSUME HasDeadline \in BOOLEAN /\ LocalSurvivesExit \in BOOLEAN
 ASSUME Fault \in {"none", "delete-unmarked", "marker-early"}
 
 S == {"c", "l"}
-Steps == {"drain", "release", "sweep"}
+Steps == {"drain", "release", "sweep", "close"}
+NextStep(p) == CASE p = "drain" -> "release" [] p = "release" -> "sweep" [] p = "sweep" -> "close" [] OTHER -> "returned"
 
-VARIABLES phase, late, hung, hangs, local, durable, marker, deh, gh
-vars == <<phase, late, hung, hangs, local, durable, marker, deh, gh>>
+VARIABLES
+    phase,    \* the step gracefulShutdown is waiting for, then "returned", "exited"
+    late,     \* the deadline has passed
+    pending,  \* steps started and still running (a late step keeps running)
+    hung,     \* a step that will not finish by itself
+    hangs, local, durable, marker, deh, closed, gh
+vars == <<phase, late, pending, hung, hangs, local, durable, marker, deh, closed, gh>>
 
 Init ==
-    /\ phase = "drain" /\ late = FALSE /\ hung = FALSE /\ hangs = 0
+    /\ phase = "drain" /\ late = FALSE /\ pending = {"drain"} /\ hung = {} /\ hangs = 0
     /\ local = [s \in S |-> TRUE]
-    \* marker-early: the marker is written before the snapshot commit lands
     /\ durable = [s \in S |-> s = "c" /\ Fault # "marker-early"]
     /\ marker = [s \in S |-> s = "c"]
-    /\ deh = FALSE /\ gh = {}
+    /\ deh = FALSE /\ closed = FALSE /\ gh = {}
 
 DeadlinePasses ==
     /\ HasDeadline /\ ~late /\ phase # "exited"
     /\ late' = TRUE
-    /\ UNCHANGED <<phase, hung, hangs, local, durable, marker, deh, gh>>
+    /\ UNCHANGED <<phase, pending, hung, hangs, local, durable, marker, deh, closed, gh>>
 
 Hang ==
-    /\ phase \in Steps /\ ~hung /\ hangs = 0
-    /\ hung' = TRUE /\ hangs' = 1
-    /\ UNCHANGED <<phase, late, local, durable, marker, deh, gh>>
+    /\ hangs = 0 /\ \E x \in pending : hung' = {x}
+    /\ hangs' = 1
+    /\ UNCHANGED <<phase, late, pending, local, durable, marker, deh, closed, gh>>
 
-Next1(p) == IF p = "drain" THEN "release" ELSE "sweep"
+(* The sweep tries each session once: a dehydrate cut by the close is not  *)
+(* retried.                                                                *)
+SweepDoneWork == ~(local["c"] /\ marker["c"]) /\ (~(local["l"] /\ ~marker["l"]) \/ "closeCut" \in gh) /\ ~deh
 
-StepDone ==
-    /\ phase \in {"drain", "release"} /\ ~hung /\ ~late
-    /\ phase' = Next1(phase)
-    /\ UNCHANGED <<late, hung, hangs, local, durable, marker, deh, gh>>
+(* A running step finishes (the sweep once its work is done).              *)
+Finish ==
+    \E x \in pending :
+       /\ x \notin hung
+       /\ (x = "sweep" => SweepDoneWork)
+       /\ pending' = pending \ {x}
+       /\ closed' = (closed \/ x = "close")
+       /\ UNCHANGED <<phase, late, hung, hangs, local, durable, marker, deh, gh>>
+
+(* gracefulShutdown goes on to the next step when the current one finished *)
+(* or, at the deadline, without waiting; the next step is started anyway. *)
+Advance ==
+    /\ phase \in Steps
+    /\ (phase \notin pending \/ late)
+    /\ gh' = gh \cup (IF phase \in pending THEN {"abandoned"} ELSE {})
+    /\ phase' = NextStep(phase)
+    /\ pending' = IF NextStep(phase) \in Steps THEN pending \cup {NextStep(phase)} ELSE pending
+    /\ UNCHANGED <<late, hung, hangs, local, durable, marker, deh, closed>>
+
+Overlap == IF (pending \ {"sweep"}) \cap {"release", "close"} # {} \/ closed THEN {"overlap"} ELSE {}
 
 SweepCommitted ==
-    /\ phase = "sweep" /\ ~hung /\ ~late /\ local["c"] /\ marker["c"]
+    /\ "sweep" \in pending /\ "sweep" \notin hung /\ local["c"] /\ marker["c"]
     /\ local' = [local EXCEPT !["c"] = FALSE]
-    /\ UNCHANGED <<phase, late, hung, hangs, durable, marker, deh, gh>>
+    /\ gh' = gh \cup Overlap
+    /\ UNCHANGED <<phase, late, pending, hung, hangs, durable, marker, deh, closed>>
 
 SweepLegacyStart ==
-    /\ phase = "sweep" /\ ~hung /\ ~late /\ local["l"] /\ ~marker["l"] /\ ~deh
+    /\ "sweep" \in pending /\ "sweep" \notin hung /\ local["l"] /\ ~marker["l"] /\ ~deh /\ "closeCut" \notin gh
     /\ IF Fault = "delete-unmarked"
-       THEN /\ local' = [local EXCEPT !["l"] = FALSE] /\ gh' = gh \cup {"deletedUnmarked"}
+       THEN /\ local' = [local EXCEPT !["l"] = FALSE] /\ gh' = gh \cup {"deletedUnmarked"} \cup Overlap
             /\ UNCHANGED deh
-       ELSE /\ deh' = TRUE /\ UNCHANGED <<local, gh>>
-    /\ UNCHANGED <<phase, late, hung, hangs, durable, marker>>
+       ELSE /\ deh' = TRUE /\ gh' = gh \cup Overlap /\ UNCHANGED local
+    /\ UNCHANGED <<phase, late, pending, hung, hangs, durable, marker, closed>>
 
+(* The upload lands, then the local copy is deleted; after close it fails  *)
+(* and the local copy stays (the sweep reports the failure).               *)
 SweepLegacyFinish ==
-    /\ phase = "sweep" /\ ~hung /\ ~late /\ deh
-    /\ durable' = [durable EXCEPT !["l"] = TRUE]
-    /\ local' = [local EXCEPT !["l"] = FALSE]
-    /\ deh' = FALSE
-    /\ UNCHANGED <<phase, late, hung, hangs, marker, gh>>
+    /\ "sweep" \in pending /\ "sweep" \notin hung /\ deh
+    /\ IF closed
+       THEN /\ deh' = FALSE /\ gh' = gh \cup {"closeCut"} /\ UNCHANGED <<durable, local>>
+       ELSE /\ durable' = [durable EXCEPT !["l"] = TRUE] /\ local' = [local EXCEPT !["l"] = FALSE]
+            /\ deh' = FALSE /\ UNCHANGED gh
+    /\ UNCHANGED <<phase, late, pending, hung, hangs, marker, closed>>
 
-SweepDone ==
-    /\ phase = "sweep" /\ ~hung /\ ~late /\ ~deh
-    /\ ~(local["c"] /\ marker["c"]) /\ ~(local["l"] /\ ~marker["l"])
-    /\ phase' = "stop"
-    /\ UNCHANGED <<late, hung, hangs, local, durable, marker, deh, gh>>
-
-(* The deadline abandons the running step (a dehydrate in flight is cut;   *)
-(* its local copy stays) and skips the remaining steps.                    *)
-Abandon ==
-    /\ late /\ phase \in Steps
-    /\ phase' = "stop" /\ hung' = FALSE /\ deh' = FALSE
-    /\ gh' = gh \cup {"abandoned"}
-    /\ UNCHANGED <<late, hangs, local, durable, marker>>
-
+(* gracefulShutdown returned; the caller exits, ending all running work.  *)
 Exit ==
-    /\ phase = "stop"
-    /\ phase' = "exited"
+    /\ phase = "returned"
+    /\ phase' = "exited" /\ pending' = {} /\ hung' = {} /\ deh' = FALSE
     /\ local' = IF LocalSurvivesExit THEN local ELSE [s \in S |-> FALSE]
-    /\ UNCHANGED <<late, hung, hangs, durable, marker, deh, gh>>
+    /\ UNCHANGED <<late, hangs, durable, marker, closed, gh>>
 
 Done == phase = "exited" /\ UNCHANGED vars
 
-Next == DeadlinePasses \/ Hang \/ StepDone \/ SweepCommitted \/ SweepLegacyStart
-        \/ SweepLegacyFinish \/ SweepDone \/ Abandon \/ Exit \/ Done
+Next == DeadlinePasses \/ Hang \/ Finish \/ Advance \/ SweepCommitted \/ SweepLegacyStart
+        \/ SweepLegacyFinish \/ Exit \/ Done
 Spec == Init /\ [][Next]_vars
-Fairness == WF_vars(DeadlinePasses) /\ WF_vars(StepDone) /\ WF_vars(SweepCommitted)
-            /\ WF_vars(SweepLegacyStart) /\ WF_vars(SweepLegacyFinish) /\ WF_vars(SweepDone)
-            /\ WF_vars(Abandon) /\ WF_vars(Exit)
+Fairness == WF_vars(DeadlinePasses) /\ WF_vars(Finish) /\ WF_vars(Advance) /\ WF_vars(SweepCommitted)
+            /\ WF_vars(SweepLegacyStart) /\ WF_vars(SweepLegacyFinish) /\ WF_vars(Exit)
 LiveSpec == Spec /\ Fairness
 
 -----------------------------------------------------------------------------
 Recoverable(s) == durable[s] \/ local[s]
-TypeOK == phase \in Steps \cup {"stop", "exited"} /\ {late, hung, deh} \subseteq BOOLEAN
-          /\ hangs \in 0..1 /\ local \in [S -> BOOLEAN] /\ durable \in [S -> BOOLEAN] /\ marker \in [S -> BOOLEAN]
+TypeOK == phase \in Steps \cup {"returned", "exited"} /\ pending \subseteq Steps /\ hung \subseteq Steps
+          /\ {late, deh, closed} \subseteq BOOLEAN /\ hangs \in 0..1
+          /\ local \in [S -> BOOLEAN] /\ durable \in [S -> BOOLEAN] /\ marker \in [S -> BOOLEAN]
 Inv_CommittedRecoverable == Recoverable("c")
 Inv_DeleteOnlyMarked == "deletedUnmarked" \notin gh
 Inv_LegacyRecoverable == Recoverable("l")
@@ -114,4 +131,6 @@ Prop_WorkerExits == <>(phase = "exited")
 
 W_Abandoned == "abandoned" \notin gh
 W_LegacySwept == ~(phase = "exited" /\ durable["l"])
+W_NoOverlap == "overlap" \notin gh
+W_NoCloseCut == "closeCut" \notin gh
 =============================================================================

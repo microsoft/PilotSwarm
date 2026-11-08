@@ -1626,8 +1626,8 @@
   "properties": [],
   "deadlock": true,
   "rows": "H05",
-  "note": "One deadline, a hang, a committed and a legacy session; the local folder survives exit.",
-  "batch": "so3"
+  "note": "One deadline, a hang, steps started late and overlapping, a committed and a legacy session; the local folder survives exit.",
+  "batch": "ws2"
  },
  {
   "id": "ws.committed",
@@ -1645,8 +1645,8 @@
   "properties": [],
   "deadlock": true,
   "rows": "H05",
-  "note": "The local folder is lost at exit: the committed session is still recoverable.",
-  "batch": "so3"
+  "note": "The local folder is lost at exit: the committed session is still recoverable, also with overlapping steps.",
+  "batch": "ws2"
  },
  {
   "id": "ws.legacy-cut",
@@ -1662,8 +1662,8 @@
   "properties": [],
   "deadlock": false,
   "rows": "H05",
-  "note": "The deadline cuts a legacy session's dehydrate and the local folder is lost at exit.",
-  "batch": "so3"
+  "note": "Accepted known limit: a legacy dehydrate cut by the deadline or the close, and the local folder lost at exit.",
+  "batch": "ws2"
  },
  {
   "id": "ws.live",
@@ -1683,8 +1683,8 @@
   ],
   "deadlock": true,
   "rows": "H05",
-  "note": "The worker exits, also when a step hangs.",
-  "batch": "so3"
+  "note": "The worker exits, also when a step hangs and later steps overlap.",
+  "batch": "ws2"
  },
  {
   "id": "comparison.ws-no-deadline",
@@ -1701,7 +1701,7 @@
   "deadlock": false,
   "rows": "H05",
   "note": "Without the deadline a hung step keeps the worker from exiting.",
-  "batch": "so3"
+  "batch": "ws2"
  },
  {
   "id": "fault.ws-delete-unmarked",
@@ -1718,7 +1718,7 @@
   "deadlock": false,
   "rows": "H05",
   "note": "The sweep deletes an unmarked legacy session's local copy.",
-  "batch": "so3"
+  "batch": "ws2"
  },
  {
   "id": "fault.ws-marker-early",
@@ -1735,7 +1735,7 @@
   "deadlock": false,
   "rows": "H05",
   "note": "The marker is written before the snapshot commit lands; the sweep deletes the only copy.",
-  "batch": "so3"
+  "batch": "ws2"
  },
  {
   "id": "wit.ws-abandoned",
@@ -1751,8 +1751,8 @@
   "properties": [],
   "deadlock": true,
   "rows": "H05",
-  "note": "The deadline abandons a step.",
-  "batch": "so3"
+  "note": "The deadline abandons a step's wait.",
+  "batch": "ws2"
  },
  {
   "id": "wit.ws-legacy-swept",
@@ -1769,7 +1769,7 @@
   "deadlock": true,
   "rows": "H05",
   "note": "A legacy session is dehydrated and the worker exits.",
-  "batch": "so3"
+  "batch": "ws2"
  },
  {
   "id": "impl.rn-late-give-back-83",
@@ -2418,5 +2418,39 @@
   "deadlock": true,
   "note": "F2: set_model in the sweep with the prompt still queued.",
   "batch": "so5b"
+ },
+ {
+  "id": "wit.ws-overlap",
+  "module": "WorkerShutdown",
+  "config": "wit.ws-overlap.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoOverlap"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "H05",
+  "note": "The release sweep works while the workspace release or the close is still running.",
+  "batch": "ws2"
+ },
+ {
+  "id": "wit.ws-close-cut",
+  "module": "WorkerShutdown",
+  "config": "wit.ws-close-cut.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoCloseCut"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "H05",
+  "note": "The close cuts a legacy dehydrate in flight; the local copy stays.",
+  "batch": "ws2"
  }
 ]

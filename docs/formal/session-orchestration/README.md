@@ -16,6 +16,8 @@ a bounded check, not a proof. A FAIL is a model counterexample.
 | Result | 38 cases: 21 PASS, 17 FAIL, 0 VOID, 0 not run |
 | Batch so2 (2026-11-08, `e76a6133`) | 16 cases of `RehydrationNotice` and `SnapshotWarmDrop`: 16 of 16 as expected, one code finding (`rn.late-cancel`) |
 | Batch so3 (2026-11-08, `e76a6133`) | 35 cases of `OwnedRetry`, `IntakeDrain`, `WorkerShutdown` and the late-cancel fix: 36 of 36 as expected in the run (with `rn.late-cancel` again), two design limits, no new code finding |
+| Batch ws2 (2026-11-08, `bb162ed8`) | `WorkerShutdown` with steps started after the deadline and overlapping (final review): 11 of 11 as expected; the overlap breaks no invariant |
+| Re-run on v0.8.10 (2026-11-08, `8aaf5435`, `packages/sdk/src` identical to `bb162ed8`) | so2 16 of 16, so3 36 of 36, so5b 48 of 48 as expected (and fork-join fj3 91 of 91) |
 | Batches so4b, so5, so5b (2026-11-08) | The late-cancel give-back fixes in 1.0.83 (`CarriedGiveBack`): so4b found three gaps, so5 and so5b check their fixes; so5b, 48 cases at `bb162ed8` (`packages/sdk/src` identical at `8aaf5435` on v0.8.10): 48 of 48 as expected |
 
 1.0.82 is the version sessions run. The models therefore describe the current
@@ -53,7 +55,7 @@ by `RehydrationNotice` and `SnapshotWarmDrop`, bound to `e76a6133`
 | `OwnedRetry.tla` | 1.0.83: a failed turn's retry is owned apart from the pending prompt; it runs before any other turn, alone reuses the thrown attempt's key and is carried by every continue-as-new; a lossy hand-off's retry is fresh (no key); while it is owed an armed wait is released and an agent wait is kept, its poll queued after the retry | 12 (including 4 faults and 1 comparison) |
 | `IntakeDrain.tla` | 1.0.83: no continue-as-new while an intake write is due; one intake call per wake; the arrival flag is carried; a refused continue-as-new at the history cap fails the execution; no continue-as-new to an older version; 1.0.83 turns only on workers with the intake routing | 12 (including 5 faults and 1 comparison) |
 | `CarriedGiveBack.tla` | 1.0.83: a queued prompt that took the child digest and the rehydration notice carries them as markers; a cancel that drops it at dispatch, or in the same drain pass, gives them back: child entries merged by observation time and rank, nothing a later queued prompt carries, the notice only once; a `set_model` in the pre-dispatch sweep keeps the prompt queued | 33 (including 5 faults, 10 references to earlier code, 3 design limits) |
-| `WorkerShutdown.tla` | Every worker: graceful shutdown under one deadline (drain, workspace release, release sweep, stop); a hung step is abandoned; the sweep deletes only marked (committed) sessions' local copies and dehydrates unmarked legacy ones | 9 (including 2 faults and 1 comparison) |
+| `WorkerShutdown.tla` | Every worker: graceful shutdown under one deadline (drain, workspace release, release sweep, close). As written, each step is started even after the deadline, with a zero budget, and only its wait is abandoned, so later steps can overlap a still-running one and the close can cut a legacy upload; the sweep deletes only marked (committed) sessions' local copies and dehydrates unmarked legacy ones | 11 (including 2 faults, 1 comparison and 4 witnesses) |
 
 ## 2. The code these models are bound to
 
@@ -87,7 +89,7 @@ N02, N04-N07 and N10):
 |---|---|
 | `OwnedRetry` | `orchestration_1_0_83/state.ts` 255-410 (`ownedRetry`), 759-761; `queue.ts` 620-629, 749-760 (`releaseTimerForOwnedRetry`), 1495-1517 (`decide`); `turn.ts` 159, 194, 364, 549-553; `lifecycle.ts` 733-740 |
 | `IntakeDrain` | `orchestration_1_0_83/queue.ts` 482-520, 797-812; `runtime.ts` 253-278, 303; `lifecycle.ts` 724-776; `intake-state.ts` 534-545; `intake-wiring.ts` 326, 584; `state.ts` 804; `orchestration-version.ts` 15, 33; `activity-routing.ts` 10-22, 93-128; `session-proxy.ts` 5778 |
-| `WorkerShutdown` | `worker.ts` 1307-1404 (`gracefulShutdown`: workspace release 1374, release sweep 1394, stop 1403) |
+| `WorkerShutdown` | `worker.ts` 1307-1404 (`gracefulShutdown`; `bounded` 1317-1338 starts every step and races it against the time left; workspace release 1374, release sweep 1394, stop 1403). Updated to `bb162ed8` in batch ws2 (`CORRESPONDENCE-bb162ed8-ws2.md`) |
 
 Bound to `bb162ed8` (`CORRESPONDENCE-bb162ed8-so5b.md`):
 
@@ -97,7 +99,7 @@ Bound to `bb162ed8` (`CORRESPONDENCE-bb162ed8-so5b.md`):
 
 ## 3. Case taxonomy and expected results
 
-`cases.tsv` lists all 123 cases with their module; `cases.json` gives each case
+`cases.tsv` lists all 125 cases with their module; `cases.json` gives each case
 its `mode`, expected result, `meaning`, constants, invariants and properties.
 `expected` is `PASS`, or `safety` or `liveness` when a violation is expected.
 
@@ -209,6 +211,12 @@ code findings, all fixed in 1.0.83 in place:
 so5 (33 cases at `3eebc211`): 32 of 33 as expected; the mismatch was the same-pass give-back restoring an older notice,
 which blocked the newer one. Fixed in `b8aa360f` (the same-pass give-back leaves to a later stash prompt what it
 carries).
+
+ws2 (11 cases at `bb162ed8`, final review): `bounded` starts every step even past the deadline and abandons
+only its wait, so after a late drain the workspace release, the release sweep and the close can run at the same
+time, and the close can cut a legacy upload (its local copy stays). `WorkerShutdown` now models that; 11 of 11 as
+expected: committed sessions stay recoverable, only marked copies are deleted, the worker exits; the legacy loss at
+exit stays the accepted limit (`ws.legacy-cut`). A unit test records the same order of starts.
 
 so5b (48 cases at `bb162ed8`, with the controller idle-wake model in `../workflow-v2/idle-wake/`): 48 of 48 as
 expected. Known limits, accepted: a marker dropped because the item would be too large cannot be given back; and when

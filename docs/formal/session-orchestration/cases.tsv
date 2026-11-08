@@ -121,3 +121,5 @@ wit.cg-notice-given-back	wit.cg-notice-given-back.cfg	CarriedGiveBack
 wit.cg-merged	wit.cg-merged.cfg	CarriedGiveBack
 wit.cg-skipped	wit.cg-skipped.cfg	CarriedGiveBack
 wit.cg-requeued	wit.cg-requeued.cfg	CarriedGiveBack
+wit.ws-overlap	wit.ws-overlap.cfg	WorkerShutdown
+wit.ws-close-cut	wit.ws-close-cut.cfg	WorkerShutdown
