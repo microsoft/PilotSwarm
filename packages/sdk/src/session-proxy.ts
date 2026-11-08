@@ -2685,10 +2685,11 @@ export function registerActivities(
             }
         };
 
-        // On a turn of a worker that runs controller 1.9.0, the workflow tools take its
-        // request, agent and parallel states and its stop and test operations, and a publication pins its named agents:
-        // package agents at the registry's exact revision, this worker's deployment and system agents by name
-        // (agent-resolver.ts). Every other turn's host is unchanged.
+        // Every worker runs controller 1.9.0 (owner decision 2026-11-08T15:30Z), so every turn's host does, a frozen
+        // version's turn included (a chat of the previous release, until its continue-as-new): the workflow tools take
+        // request, agent and parallel states and the stop and test operations, every run starts at 1.9.0 (controller 1.8.0
+        // stays registered but unreachable), and a publication pins its named agents: package agents at the registry's
+        // exact revision, this worker's deployment and system agents by name (agent-resolver.ts).
         const workflowV2Host = async (): Promise<WorkflowToolHost> => {
             if (!catalog?.workflowStore) throw new Error("Workflow v2 storage is unavailable on this worker.");
             const sdkClient = await getInlineClient();
@@ -2700,15 +2701,13 @@ export function registerActivities(
                 ...(packageWorkflowSource ? { packageWorkflows: packageWorkflowSource } : {}),
                 // OF-S2-7: an agent node's model chosen at start is checked against the owning chat's catalog (its owner's).
                 checkAgentModel: sdkClient._workflowAgentModelCheck(),
-                ...(workflowRequestTurn ? {
-                    requests: true,
-                    // The test operations only while workflow test mode is on (spec 16; off by default).
-                    testMode: workflowTestModeFromEnv(),
-                    resolveAgent: createWorkflowAgentResolver({
-                        catalog,
-                        deploymentAgents: () => ({ userAgents: [...(unpinnedAgents(userAgents) ?? [])], systemAgents: [...(systemAgents ?? [])] }),
-                    }),
-                } : {}),
+                requests: true,
+                // The test operations only while workflow test mode is on (spec 16; off by default).
+                testMode: workflowTestModeFromEnv(),
+                resolveAgent: createWorkflowAgentResolver({
+                    catalog,
+                    deploymentAgents: () => ({ userAgents: [...(unpinnedAgents(userAgents) ?? [])], systemAgents: [...(systemAgents ?? [])] }),
+                }),
             };
         };
         // Stage 2.3 (P4): the Workflow Definitions the bound agent names, and its package (bare names are that package's).

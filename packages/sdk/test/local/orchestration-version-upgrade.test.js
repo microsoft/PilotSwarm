@@ -341,4 +341,71 @@ describe("orchestration version upgrades", () => {
         // The turn index carries on from the 1.0.82 session's.
         expect(turns[0][2]).toBe(4);
     });
+    // Formal audit R2: a 1.0.82 turn that threw continues as new with its retry as its prompt and its thrown attempt's key
+    // (1.0.81's contract), stamped with its own literal source version "1.0.82". 1.0.83 converts that into its owed retry
+    // (state.ts ownedRetryOfInput): the retry runs once, with the thrown attempt's key and its count, never twice.
+    it("a 1.0.82 turn that threw continues into 1.0.83 and its retry runs once, with the thrown attempt's key", async () => {
+        const values = new Map();
+        let guid = 0;
+        let thrown = 0;
+        const sourceTurns = [];
+        const sourceGen = (await loadHandler("1.0.82"))(createCtx(values, []), {
+            sessionId: "upgrade-82-thrown",
+            config: { model: "github-copilot:gpt-5.4" },
+            sourceOrchestrationVersion: "1.0.82",
+            iteration: 2,
+            isSystem: true,
+            blobEnabled: true,
+            prompt: "THROWN-PROMPT",
+            clientMessageIds: ["thrown-1"],
+        });
+        // Drive 1.0.82 by hand: its first turn throws (a lost worker), its retry timer fires, and it continues as new.
+        let input;
+        let failure;
+        let can = null;
+        for (let step = 0; step < 300 && can === null; step += 1) {
+            const next = failure ? sourceGen.throw(failure) : sourceGen.next(input);
+            failure = undefined;
+            input = undefined;
+            if (next.done) throw new Error(`1.0.82 ended: ${JSON.stringify(next.value)}`);
+            const effect = next.value;
+            const turn = effect?.effect === "session.runTurn" ? effect
+                : effect?.effect === "race" ? [effect.left, effect.right].find(side => side?.effect === "session.runTurn") : null;
+            if (turn) {
+                sourceTurns.push(turn.args);
+                thrown += 1;
+                failure = new Error("worker lost the session");
+                continue;
+            }
+            switch (effect?.effect) {
+                case "continueAsNew": can = effect; break;
+                case "newGuid": input = `guid-${++guid}`; break;
+                case "scheduleTimer": input = undefined; break;
+                case "utcNow": input = 1_713_083_589_000 + step; break;
+                case "race": input = { index: [effect.left, effect.right].findIndex(side => side?.effect === "scheduleTimer") }; break;
+                case "dequeueEvent": throw new Error("1.0.82 blocked before its retry");
+                default: input = undefined;
+            }
+        }
+        expect(thrown).toBe(1);
+        expect(can).toMatchObject({ effect: "continueAsNew", version: "1.0.83" });
+        const carried = can.input;
+        expect(carried.sourceOrchestrationVersion).toBe("1.0.82");
+        expect(carried.prompt).toContain("THROWN-PROMPT");
+        expect(carried.retryCount).toBe(1);
+        expect(typeof carried.thrownTurnKey).toBe("string");
+        const thrownKey = carried.thrownTurnKey;
+        expect(sourceTurns[0][3]?.snapshot?.turnKey ?? thrownKey).toBe(thrownKey);
+
+        const turns = [];
+        const latestCtx = createCtx(values, [], turns);
+        const resolve = latestCtx.resolveEffect.bind(latestCtx);
+        latestCtx.resolveEffect = (effect) => (effect?.effect === "newGuid" ? `guid-${++guid}` : resolve(effect));
+        const parked = driveUntilParked((await loadHandler("1.0.83"))(latestCtx, carried), latestCtx);
+        expect(parked.done).toBe(false);
+        const retries = turns.filter(turn => String(turn[0]).includes("THROWN-PROMPT"));
+        expect(retries).toHaveLength(1);
+        expect(retries[0][3]?.retryCount).toBe(1);
+        expect(retries[0][3]?.snapshot?.turnKey).toBe(thrownKey);
+    });
 });

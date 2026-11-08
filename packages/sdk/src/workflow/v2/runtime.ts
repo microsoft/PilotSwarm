@@ -129,6 +129,9 @@ export const WORKFLOW_V2_CONTROLLER_NAME = "workflow-v2-controller";
  * orchestration that delivers its message and wakes the controller.
  */
 export const WORKFLOW_V2_CONTROLLER_VERSION = "1.8.0";
+// UNREACHABLE since 1.0.83's release (ruling pse/wfs/stage2/release-1083-plan-rulings, item 3): every production host starts
+// runs at WORKFLOW_V2_REQUEST_CONTROLLER_VERSION (service.ts controllerVersionFor). 1.8.0 and its untagged paths stay
+// registered only until the follow-up cleanup PR deletes them; Workflow V2 was never released, so no deployment has a 1.8.0 run.
 /**
  * Controller versions written only by pre-release builds, in ascending order
  * (duroxide registers an orchestration's versions only in that order). Their
@@ -3264,6 +3267,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     for (const version of WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS) {
         runtime.registerOrchestrationVersioned(WORKFLOW_V2_CONTROLLER_NAME, version, unsupportedController(version));
     }
+    // Controller 1.8.0: registered but unreachable (every production host starts runs at 1.9.0); deleted by the cleanup PR.
     runtime.registerOrchestrationVersioned(WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, workflowV2Controller);
     runtime.registerOrchestrationVersioned(WORKFLOW_V2_EFFECT_NAME, WORKFLOW_V2_EFFECT_VERSION, workflowV2Effect);
     runtime.registerOrchestrationVersioned(WORKFLOW_V2_NOTIFY_NAME, WORKFLOW_V2_NOTIFY_VERSION, workflowV2Notify);

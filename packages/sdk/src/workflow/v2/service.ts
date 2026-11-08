@@ -277,7 +277,14 @@ async function publicationAgentPins(host: Pick<WorkflowV2Host, "resolveAgent">, 
     return Object.keys(pins).length > 0 ? canonicalJson(pins) : null;
 }
 
-/** The controller version a host starts runs at (WorkflowV2Host.requests). */
+/**
+ * The controller version a host starts runs at (WorkflowV2Host.requests). Every production host has `requests: true`
+ * (every worker's turn host and the management client's default; owner decision 2026-11-08T15:30Z), so every run starts
+ * at 1.9.0. Controller 1.8.0 stays registered but is unreachable: only a test host without `requests` still starts it.
+ * Its deletion (with its untagged 1.0.0 orchestrations, the legacy activity names, the `requests: false` paths and
+ * WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS) is a follow-up cleanup PR (ruling pse/wfs/stage2/release-1083-plan-rulings,
+ * item 3).
+ */
 function controllerVersionFor(host: Pick<WorkflowV2Host, "requests">): string {
     return host.requests === true ? WORKFLOW_V2_REQUEST_CONTROLLER_VERSION : WORKFLOW_V2_CONTROLLER_VERSION;
 }
