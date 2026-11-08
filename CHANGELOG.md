@@ -57,10 +57,11 @@ limit the network: a script can reach cluster services and the internet.
 
 **Worker egress policy.** Both worker templates now ship a NetworkPolicy,
 `copilot-runtime-worker-egress`, that denies worker pods the instance
-metadata address `169.254.169.254` and keeps all other egress (DNS, the
+metadata address `169.254.169.254` and the Azure host endpoint
+`168.63.129.16` (except DNS on it) and keeps all other egress (DNS, the
 cluster, Postgres, Blob, Key Vault, model endpoints, the internet). Workflow
-scripts, agent shells and tools share the worker pod's network, and that
-address would give any of them the node's managed identity token. The
+scripts, agent shells and tools share the worker pod's network, and the
+metadata address would give any of them the node's managed identity token. The
 workers do not need it: GitOps workers use workload identity, and
 `deploy/k8s` workers use the keys in their Secret. It is in the GitOps worker
 base and in `deploy/k8s/worker-network-policy.yaml`, which

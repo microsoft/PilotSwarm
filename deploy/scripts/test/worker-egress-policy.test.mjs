@@ -4,7 +4,8 @@
 // A Workflow script, an agent shell or a tool in the worker pod shares the
 // pod's network, and Node's permission model does not limit it. The policy
 // must deny the instance metadata address (169.254.169.254, which hands out the
-// node's managed identity token) and keep every other egress the worker had.
+// node's managed identity token) and the Azure host endpoint (168.63.129.16)
+// except DNS on it, and keep every other egress the worker had.
 //
 // The checks run on the rendered objects, the same build Flux runs, and judge
 // them with a small evaluator of Kubernetes egress semantics. The evaluator
@@ -146,16 +147,21 @@ const MODES = [
   ["an ipBlock does not match pod addresses (Cilium)", { ipBlockMatchesPods: false }],
 ];
 
+const WIRESERVER = "168.63.129.16";
+
 const DENIED = [
   ["instance metadata, HTTP", { ip: IMDS, port: 80, protocol: "TCP" }],
   ["instance metadata, HTTPS", { ip: IMDS, port: 443, protocol: "TCP" }],
+  ["the Azure host endpoint, HTTP", { ip: WIRESERVER, port: 80, protocol: "TCP" }],
+  ["the Azure host endpoint, its guest agent port", { ip: WIRESERVER, port: 32526, protocol: "TCP" }],
 ];
 
 const ALLOWED = [
   ["the internet, HTTPS", { ip: "20.1.2.3", port: 443, protocol: "TCP" }],
   ["a model endpoint over IPv6", { ip: "2603:1030::1", port: 443, protocol: "TCP" }],
   ["Postgres on a private address", { ip: "10.20.30.40", port: 5432, protocol: "TCP" }],
-  ["Azure DNS", { ip: "168.63.129.16", port: 53, protocol: "UDP" }],
+  ["Azure DNS (the host endpoint, port 53 only)", { ip: WIRESERVER, port: 53, protocol: "UDP" }],
+  ["Azure DNS over TCP", { ip: WIRESERVER, port: 53, protocol: "TCP" }],
   ["a node-local DNS cache", { ip: "169.254.20.10", port: 53, protocol: "UDP" }],
   ["the address next to the metadata address", { ip: "169.254.169.253", port: 80, protocol: "TCP" }],
   ["cluster DNS in kube-system", { ip: "10.244.1.10", port: 53, protocol: "UDP", pod: { namespace: "kube-system" } }],

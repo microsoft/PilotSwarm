@@ -1,4 +1,5 @@
-# Worker egress: everything except the instance metadata address.
+# Worker egress: everything except the instance metadata address and the
+# Azure host endpoint.
 #
 # Workflow scripts, agent shells and tools run inside the worker pod and share
 # its network. Node's permission model does not limit the network, so without
@@ -6,6 +7,9 @@
 # identity token. The worker itself never needs that address: it authenticates
 # with workload identity (the pod label and the service account's client id),
 # which reads its federated token from a file.
+#
+# 168.63.129.16 (the Azure host endpoint, or wire server) is denied too, except
+# for DNS: Azure DNS answers there on port 53, which the DNS rule keeps.
 #
 # All other egress stays as it was: DNS, every pod and service in the cluster,
 # Postgres, Blob, Key Vault, the model endpoints and the internet. The pod and
@@ -39,11 +43,13 @@ spec:
     - to:
         - podSelector: {}
         - namespaceSelector: {}
-    # Every other address, except the instance metadata address.
+    # Every other address, except the instance metadata address and the Azure
+    # host endpoint (168.63.129.16, the platform's wire server).
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
             except:
               - 169.254.169.254/32
+              - 168.63.129.16/32
         - ipBlock:
             cidr: ::/0

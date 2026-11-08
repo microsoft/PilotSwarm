@@ -778,7 +778,8 @@ kubectl apply -f deploy/k8s/worker-network-policy.yaml
 
 The second file is the worker egress policy: worker pods reach everything
 they reached before (DNS, the cluster, Postgres, Blob, model endpoints, the
-internet) except the instance metadata address `169.254.169.254`. Workflow
+internet) except the instance metadata address `169.254.169.254` and the
+Azure host endpoint `168.63.129.16` (DNS on it stays allowed). Workflow
 scripts, agent shells and tools share the worker pod's network, and the
 metadata address would give any of them the node's managed identity token.
 These workers authenticate with the keys in `copilot-runtime-secrets` and do
@@ -983,6 +984,11 @@ this release: stop, deploy, start" in `deploy/scripts/README.md`.
 
 ### Rolling Update
 
+Use a rolling update only for a release that keeps the default session
+orchestration version. A release that changes it, such as the one that makes
+1.0.83 the default, is deployed by stop, deploy, start (above): during a
+rolling update an old worker can take a chat of the new version and fail it.
+
 ```bash
 # Rebuild and push
 npm run build
@@ -996,7 +1002,7 @@ kubectl rollout restart deployment/copilot-runtime-worker -n copilot-runtime
 kubectl rollout status deployment/copilot-runtime-worker -n copilot-runtime
 ```
 
-In-flight orchestrations are safe during rollouts. If a worker is killed mid-turn, duroxide will retry the activity on another worker after the lock timeout.
+When the default orchestration version does not change, in-flight orchestrations are safe during rollouts: if a worker is killed mid-turn, duroxide retries the activity on another worker after the lock timeout.
 
 ### Database Reset
 

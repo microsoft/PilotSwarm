@@ -512,7 +512,8 @@ reaches. The worker base therefore ships `network-policy.yaml`
 (`copilot-runtime-worker-egress`): worker pods keep all egress (DNS, the
 cluster, Postgres, Blob, Key Vault, model endpoints, the internet) except the
 instance metadata address `169.254.169.254`, which would hand out the node's
-managed identity token. The worker does not need it: it authenticates with
+managed identity token, and the Azure host endpoint `168.63.129.16` (DNS on it
+stays allowed). The worker does not need it: it authenticates with
 workload identity. A deployment that does not use these templates, or whose
 cluster has no network policy engine, must block worker pods from
 `169.254.169.254` itself (for example, with the AKS IMDS restriction) or set
