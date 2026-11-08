@@ -411,6 +411,19 @@ export function workflowAgentToolAllowlist(config: { workflowToolLimit?: string[
     return [...new Set([...config.workflowToolLimit, ...(config.workflowAgentChild === true ? [WORKFLOW_V2_AGENT_COMPLETION_TOOL] : [])])].sort();
 }
 
+/**
+ * FU-17: the PilotSwarm tools (the SDK `tools`) a session under an agent state's limit is declared. The CLI's availableTools
+ * cuts only its own tools and MCP tools: a tool registered through the SDK stays offered, and runs, whatever availableTools
+ * says (Copilot CLI 1.0.83). So they are cut here, to the ones the allowlist names (as `name` or `custom:name`). A tool the
+ * session is not declared is unknown to the CLI, so a call the model guesses anyway never reaches its handler. Every tool
+ * without a limit.
+ */
+export function workflowLimitedSdkTools<T extends { name: string }>(tools: T[], allowlist: readonly string[] | null): T[] {
+    if (!allowlist) return tools;
+    const names = new Set(allowlist);
+    return tools.filter(tool => names.has(tool.name) || names.has(`custom:${tool.name}`));
+}
+
 export function buildBindingFingerprintInput(parts: {
     capabilityFingerprint: unknown;
     baseAgentPolicy: unknown;
@@ -2792,7 +2805,10 @@ export class SessionManager {
             // refreshes the client-side handler map). Pinned so tool search
             // cannot defer PilotSwarm tools out of the prompt — see
             // tool-pinning.ts for the why and the phase-2 opt-out path.
-            tools: pinToolsNeverDefer(nativeEnabled ? guardNativeExternalTools(allTools, sessionId, nativeTaskAccess) : allTools),
+            // FU-17: under an agent state's limit, only the PilotSwarm tools it names (availableTools does not cut them).
+            tools: pinToolsNeverDefer(nativeEnabled
+                ? guardNativeExternalTools(workflowLimitedSdkTools(allTools, agentToolAllowlist), sessionId, nativeTaskAccess)
+                : workflowLimitedSdkTools(allTools, agentToolAllowlist)),
             model: sdkModelName,
             // Tell the runtime what a BYOK model can do.
             //

@@ -5,7 +5,9 @@
  * - The graph (describeWorkflowV2States) says the limit, so the portal and the TUI show it.
  * - A session in the subtree of a state that limits its tools is offered only those (the Copilot session's
  *   availableTools); the state's own chat also keeps complete_workflow_node; another session is offered every tool. A
- *   change of the limit is a new binding (the handle is made again).
+ *   change of the limit is a new binding (the handle is made again). PilotSwarm's own tools (the SDK `tools`) are cut to the
+ *   limit by the session manager: the CLI's availableTools does not cut them (Copilot CLI 1.0.83). The real CLI case is
+ *   test/local/workflow-agent-native-always-on.test.js.
  * The runTurn activity reads the limit from the state's run revision (store.readAgentToolLimit, on PostgreSQL in
  * test/local/workflow-v2-agent-tool-limit.test.js).
  *
@@ -18,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compileWorkflowV2, parseWorkflowIr, WORKFLOW_V2_MILESTONE_IR_VERSION, WORKFLOW_V2_AGENT_TOOLS_MAX } from "../../dist/workflow/v2/compiler.js";
 import { describeWorkflowV2States } from "../../dist/workflow/v2/runtime.js";
-import { SessionManager, buildBindingFingerprintInput, workflowAgentToolAllowlist } from "../../dist/session-manager.js";
+import { SessionManager, buildBindingFingerprintInput, workflowAgentToolAllowlist, workflowLimitedSdkTools } from "../../dist/session-manager.js";
 
 const OPTIONS = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true };
 const READ = { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION };
@@ -104,6 +106,16 @@ test("the allowlist: the limit, with complete_workflow_node for the state's own 
     assert.deepEqual(buildBindingFingerprintInput({ ...parts, availableTools: ["read_facts"] }).availableTools, ["read_facts"]);
 });
 
+test("PilotSwarm's own tools under a limit: only the ones it names (as name or custom:name); all of them without a limit", () => {
+    const tools = ["read_facts", "store_fact", "spawn_agent", "complete_workflow_node"].map(name => ({ name }));
+    const kept = (allowlist) => workflowLimitedSdkTools(tools, allowlist).map(tool => tool.name);
+    assert.deepEqual(kept(null), ["read_facts", "store_fact", "spawn_agent", "complete_workflow_node"]);
+    assert.deepEqual(kept([]), []);
+    assert.deepEqual(kept(["complete_workflow_node"]), ["complete_workflow_node"]);
+    assert.deepEqual(kept(["complete_workflow_node", "read_facts", "view", "notes-read_note"]), ["read_facts", "complete_workflow_node"]);
+    assert.deepEqual(kept(["custom:spawn_agent"]), ["spawn_agent"]);
+});
+
 /** A SessionManager whose Copilot transport is stubbed; each handle's config. */
 function managerFixture(t) {
     const home = fs.mkdtempSync(join(tmpdir(), "ps-wf-tool-limit-"));
@@ -135,12 +147,17 @@ function managerFixture(t) {
 
 test("a session under a limit is offered only its tools; the state's chat keeps complete_workflow_node; another session every tool", async (t) => {
     const { manager, configs } = managerFixture(t);
+    const declared = config => config.tools.map(tool => tool.name).sort();
     await manager.getOrCreate("node-chat", { toolNames: [], workflowInsideWorkflow: true, workflowAgentChild: true, workflowToolLimit: [] }, { turnIndex: 0 });
     assert.deepEqual(configs.at(-1).availableTools, ["complete_workflow_node"]);
+    // The CLI's availableTools does not cut PilotSwarm's tools, so they are cut in the declaration too.
+    assert.deepEqual(declared(configs.at(-1)), ["complete_workflow_node"]);
     await manager.getOrCreate("sub-agent", { toolNames: [], workflowInsideWorkflow: true, workflowToolLimit: ["read_facts", "spawn_agent"] }, { turnIndex: 0 });
     assert.deepEqual(configs.at(-1).availableTools, ["read_facts", "spawn_agent"]);
+    assert.deepEqual(declared(configs.at(-1)), ["read_facts", "spawn_agent"]);
     await manager.getOrCreate("plain", { toolNames: [] }, { turnIndex: 0 });
     assert.equal(Object.hasOwn(configs.at(-1), "availableTools"), false);
+    assert.ok(declared(configs.at(-1)).includes("store_fact") && declared(configs.at(-1)).includes("spawn_agent"), "a session without a limit keeps every tool");
     // A later turn without the limit (a state that no longer limits it is a new chat; this checks the flag is not kept).
     const before = configs.length;
     await manager.getOrCreate("node-chat", { toolNames: [], workflowInsideWorkflow: true, workflowAgentChild: true }, { turnIndex: 1 });

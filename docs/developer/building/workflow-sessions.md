@@ -152,7 +152,11 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   sees them) leaves it those and `complete_workflow_node`. The limit applies
   to the node's chat and every session it starts. Each turn reads it from the
   node's run revision (a later revision never changes a running visit) and
-  offers the Copilot session only those tools (`availableTools`). Native
+  offers the Copilot session only those tools (`availableTools`). The CLI's
+  `availableTools` cuts only its own tools and MCP tools (Copilot CLI
+  1.0.83), so the session manager also declares only the PilotSwarm tools
+  the list names (`workflowLimitedSdkTools`); a PilotSwarm tool the model
+  guesses anyway is unknown to the CLI and never runs. Native
   tasks it starts (`task`: the swarm workers and adopted repository agents)
   are held to the same list: their declared tools and MCP grants are cut to
   it, and a worker's call of any other tool (such as `bash`) is refused; a
