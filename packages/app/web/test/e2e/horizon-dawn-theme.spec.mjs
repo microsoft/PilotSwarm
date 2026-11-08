@@ -37,6 +37,55 @@ const layers = page => page.locator(".portal-header").evaluate(header => getComp
 const art = name => new RegExp(`hd-${name}(?![-a-z])|/${name}-[A-Za-z0-9_-]{8}\\.svg`);
 const where = (images, name) => images.search(art(name));
 
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    test(`cyan accent ${viewport.width}px: solid dot and fading trail stay in the header without changing geometry`, async ({ page }) => {
+        await openTheme(page, viewport);
+        const accent = page.locator(".portal-header-accent");
+        await expect(accent).toHaveAttribute("aria-hidden", "true");
+        const before = await page.locator(".portal-header").boundingBox();
+        await accent.evaluate(el => { el.dataset.active = "true"; });
+        const look = await accent.evaluate(el => {
+            const style = node => getComputedStyle(node);
+            const box = el.getBoundingClientRect(), header = el.parentElement.getBoundingClientRect();
+            const dot = el.querySelector(".portal-header-accent-dot"), tail = el.querySelector(".portal-header-accent-trail");
+            return {
+                pointerEvents: style(el).pointerEvents, inside: box.top >= header.top && box.bottom <= header.bottom,
+                dotWidth: style(dot).width, dotHeight: style(dot).height, color: style(dot).backgroundColor,
+                trailWidth: style(tail).width, animation: style(el.querySelector(".portal-header-accent-pass")).animationName,
+            };
+        });
+        expect(look).toEqual({
+            pointerEvents: "none", inside: true, dotWidth: "5px", dotHeight: "5px",
+            color: "rgb(201, 250, 255)", trailWidth: "120px", animation: "portal-header-accent-cross",
+        });
+        expect(await page.locator(".portal-header").boundingBox()).toEqual(before);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
+    });
+}
+
+test("cyan accent: no early pass or immediate repeat, and reduced motion cancels it", async ({ page }) => {
+    await page.addInitScript(() => { Math.random = () => 0; });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await openTheme(page, { width: 1440, height: 900 });
+    await page.clock.install();
+    const accent = page.locator(".portal-header-accent");
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await expect(accent).toBeVisible();
+    await page.clock.fastForward(59_000);
+    await expect(accent).not.toHaveAttribute("data-active", "true");
+    await page.clock.runFor(1_500);
+    await expect(accent).toHaveAttribute("data-active", "true");
+    await page.clock.runFor(5_500);
+    await expect(accent).toHaveAttribute("data-active", "false");
+    await page.clock.fastForward(59_000);
+    await expect(accent).not.toHaveAttribute("data-active", "true");
+    await page.clock.runFor(1_500);
+    await expect(accent).toHaveAttribute("data-active", "true");
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await expect(accent).toBeHidden();
+    await expect(accent).toHaveAttribute("data-active", "false");
+});
+
 test("desktop: no words in the scenery, a compact header, and every layer from the bundle", async ({ page }) => {
     const failed = await openTheme(page, { width: 1440, height: 900 });
     const header = page.locator(".portal-header");

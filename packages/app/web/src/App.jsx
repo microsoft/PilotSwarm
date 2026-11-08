@@ -10,6 +10,7 @@ import { selectSessionFilterExceptionNotice, selectStatusBar } from "pilotswarm/
 import { BrowserPortalTransport } from "./browser-transport.js";
 import { usePortalAuth } from "./auth-client.js";
 import { PILOTSWARM_PORTAL_VERSION_LABEL } from "./version.js";
+import { createHeaderAccent } from "./header-accent.js";
 import {
     DEEP_LINK_SESSION_STORAGE_KEY,
     parseStashedDeepLinkTarget,
@@ -473,6 +474,39 @@ function PortalHeaderIconButton({ toolbar = false, ...props }) {
     });
 }
 
+function PortalHeaderAccent({ controller }) {
+    const ref = React.useRef(null);
+    React.useEffect(() => {
+        const element = ref.current;
+        const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+        const accent = createHeaderAccent({
+            start: () => { element.dataset.active = "true"; },
+            stop: () => { element.dataset.active = "false"; },
+        });
+        const sync = () => accent.setEnabled(
+            controller.getState().ui?.themeId === "horizon-dawn"
+                && !motion.matches && document.visibilityState === "visible",
+        );
+        const unsubscribe = controller.subscribe(sync);
+        motion.addEventListener("change", sync);
+        document.addEventListener("visibilitychange", sync);
+        sync();
+        return () => {
+            accent.dispose();
+            unsubscribe();
+            motion.removeEventListener("change", sync);
+            document.removeEventListener("visibilitychange", sync);
+        };
+    }, [controller]);
+    return React.createElement("div", {
+        className: "portal-header-accent",
+        ref,
+        "aria-hidden": "true",
+    }, React.createElement("span", { className: "portal-header-accent-pass" },
+        React.createElement("span", { className: "portal-header-accent-trail" }),
+        React.createElement("span", { className: "portal-header-accent-dot" })));
+}
+
 function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignOut, controller, versionLabel = null, statusText = "", themeIcon = null }) {
     const buildStale = useBuildFreshness();
     const [consoleOpen, setConsoleOpen] = React.useState(() => Boolean(controller.getState().admin?.visible));
@@ -507,6 +541,7 @@ function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignO
     const name = isAdmin ? `(*) ${baseName}` : baseName;
     const email = account?.username || account?.idTokenClaims?.preferred_username || "";
     return React.createElement("header", { className: "portal-header" },
+        React.createElement(PortalHeaderAccent, { controller }),
         React.createElement("div", { className: "portal-header-brand" },
             React.createElement(PortalBrandMark, { branding, themeIcon }),
             React.createElement("div", { className: "portal-header-brand-copy" },
