@@ -108,6 +108,9 @@ function admissionStore(...answers) {
             if (answer instanceof Error) throw answer;
             return answer;
         }),
+        // Every 1.0.83 turn reads its session's Workflow lineage first (session-proxy executeTurnBody; the real store's
+        // readWorkflowLineage): these chats are in no Workflow.
+        readWorkflowLineage: vi.fn(async () => null),
     };
 }
 
@@ -197,8 +200,8 @@ function deferred() {
 }
 
 describe("runTurnV5: the turn of an invocation", () => {
-    it("is registered only with the test option; runTurnV4 ignores an intake field and asks no admission", async () => {
-        expect(makeRunTurnHarness().handlers.runTurnV5).toBeUndefined();
+    it("is registered on every worker (no option, owner 2026-11-08T15:30Z); runTurnV4 ignores an intake field and asks no admission", async () => {
+        expect(makeRunTurnHarness().handlers.runTurnV5).toBeTypeOf("function");
         const v4 = turnControlCatalog();
         const h = intakeHarness({ catalogExtras: v4.extras });
         expect(Object.keys(h.handlers).filter((name) => name.endsWith("V5"))).toEqual(["runTurnV5", "runTurnEpochV5"]);

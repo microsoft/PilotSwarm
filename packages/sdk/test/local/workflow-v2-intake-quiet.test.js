@@ -59,10 +59,17 @@ function turnControlCatalog({ end = { stopped: false, late: [] } } = {}) {
     };
 }
 
-/** A workflow store whose admission gives `answer` to every ask. */
+/**
+ * A workflow store whose admission gives `answer` to every ask. Every 1.0.83 turn reads its session's Workflow lineage
+ * first (session-proxy executeTurnBody; the real store's readWorkflowLineage): this chat is in no Workflow.
+ */
 function admissionStore(answer) {
     const calls = [];
-    return { calls, exposeWorkflowIntake: vi.fn(async (request) => { calls.push(request); return answer; }) };
+    return {
+        calls,
+        exposeWorkflowIntake: vi.fn(async (request) => { calls.push(request); return answer; }),
+        readWorkflowLineage: vi.fn(async () => null),
+    };
 }
 
 /** The runTurn harness with 1.0.83's turn activities registered (the test option), as workflow-v2-intake-turn.test.js builds it. */
