@@ -1238,7 +1238,8 @@ const viewerContrast = (page) => page.evaluate(() => {
         if (!visible(element) || !(element.textContent || "").trim()) continue;
         const before = out.length;
         measure("text", element, parse(getComputedStyle(element).color), behind(element), 4.5);
-        if (out.length > before) out.at(-1).selector = TEXT.find(selector => element.matches(selector)) ?? null;
+        // Every selector it matches: the failed last test is also a span of the line under the pickers (DEV run of 5d5b8841).
+        if (out.length > before) out.at(-1).selectors = TEXT.filter(selector => element.matches(selector));
     }
     for (const text of tab.querySelectorAll(".ps-workflow-edge-label text")) {
         const rect = text.parentElement.querySelector("rect");
@@ -1366,7 +1367,7 @@ for (const theme of listThemes()) {
         if (SHOTS) await main.screenshot({ path: path.join(SHOTS, `fui-f2-log-${theme.id}.png`) });
         const all = [...definition, ...listed, ...result, ...log];
         for (const selector of [".ps-wf-last-test.is-failed", ".ps-wf-list-reason", ".ps-wf-result.is-error pre", '.ps-wf-log li[data-level="error"]']) {
-            expect(all.some(item => item.selector === selector), `${theme.id}: measured ${selector}`).toBe(true);
+            expect(all.some(item => item.selectors?.includes(selector)), `${theme.id}: measured ${selector}`).toBe(true);
         }
         const low = all.filter(item => item.ratio < item.min);
         expect(low, `${theme.id}: under the target`).toEqual([]);
