@@ -15,7 +15,7 @@ let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 2, transcriptTurns: 1 }); });
 test.afterAll(async () => { if (stub) await new Promise(resolve => stub.server.close(resolve)); });
 
-async function openTheme(page, viewport, soundOn = true) {
+async function openTheme(page, viewport, soundOn = true, activeSessionId = sessionId) {
     const failed = [];
     page.on("requestfailed", request => failed.push(request.url()));
     page.on("response", response => { if (response.status() >= 400 && /horizon-dawn|sora|\.svg|\.woff2/i.test(response.url())) failed.push(`${response.status()} ${response.url()}`); });
@@ -27,7 +27,7 @@ async function openTheme(page, viewport, soundOn = true) {
         return route.fallback();
     });
     await page.setViewportSize(viewport);
-    await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${activeSessionId}`);
     await expect(page.locator("html")).toHaveAttribute("data-ps-theme", "horizon-dawn");
     await page.evaluate(() => document.fonts.ready);
     return failed;
@@ -40,7 +40,7 @@ const art = name => new RegExp(`hd-${name}(?![-a-z])|/${name}-[A-Za-z0-9_-]{8}\\
 const where = (images, name) => images.search(art(name));
 
 test("selected session: the stronger theme fill survives pinned and hovered row styles", async ({ page }) => {
-    await openTheme(page, { width: 1440, height: 900 });
+    await openTheme(page, { width: 1440, height: 900 }, true, "11111110-2222-3333-4444-555555555550");
     const row = page.locator(".ps-session-list-button.is-selected").first();
     await expect(row).toBeVisible();
     const before = await row.boundingBox();
