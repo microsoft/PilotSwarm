@@ -202,7 +202,11 @@ export const WORKFLOW_V2_SEND_DISABLED_MESSAGE = "Workflow execution is disabled
 export const WORKFLOW_V2_ADMISSION_EVALUATIONS = 5;
 /** Node admissions per controller execution before continue-as-new bounds history. */
 export const WORKFLOW_V2_ADMISSIONS_PER_EXECUTION = 25;
-/** Idle waits (backstop timers that found nothing) per controller execution before continue-as-new. */
+/**
+ * Idle waits per controller execution before continue-as-new: each wait for a wake, a command or the backstop timer that
+ * ended with no command (its timer, or a wake: a hint only), running or paused. Counted after a command is applied, so
+ * the continue-as-new never drops one.
+ */
 export const WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION = 50;
 /** Default interval of the backstop collection while the controller waits for a wake. */
 export const WORKFLOW_V2_DEFAULT_WAKE_BACKSTOP_MS = 30_000;
@@ -1350,14 +1354,16 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
         const nearest = now === null || deadlines.length === 0 ? null : Math.min(...deadlines.map(wait => wait.deadlineMs)) - now;
         const timerMs = nearest === null ? plan.wakeBackstopMs : Math.max(1, Math.min(plan.wakeBackstopMs, nearest));
         const raced = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(timerMs)));
-        if (raced.index === 1) {
-            idleWaits += 1;
-            if (idleWaits >= WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION) return yield* continueAsNew();
-            continue;
+        // A command is applied first, so a continue-as-new never drops one it dequeued. Any other wait, the timer or a wake
+        // (a wake, or any other message, only prompts the next collection), is an idle wait, as the paused loop counts it,
+        // so a run whose work all waits continues as new under a steady stream of wakes too (V-2 diagnosis, 2026-11-08;
+        // changed in place: Workflow V2 is not on main).
+        if (raced.index === 0) {
+            const command = parseWorkflowCommand(raced.value);
+            if (command) return yield* applyCommand(ctx, input, command);
         }
-        const command = parseWorkflowCommand(raced.value);
-        if (command) return yield* applyCommand(ctx, input, command);
-        // A wake (or any other message) only prompts the next collection.
+        idleWaits += 1;
+        if (idleWaits >= WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION) return yield* continueAsNew();
     }
 }
 
@@ -2081,13 +2087,15 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         const nearest = now === null || deadlines.length === 0 ? null : Math.min(...deadlines) - now;
         const timerMs = nearest === null ? plan.wakeBackstopMs : Math.max(1, Math.min(plan.wakeBackstopMs, nearest));
         const raced = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(timerMs)));
-        if (raced.index === 1) {
-            idleWaits += 1;
-            if (idleWaits >= WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION) return yield* continueAsNew();
-            continue;
+        // A command is applied first, so a continue-as-new never drops one it dequeued. Any other wait, the timer or a wake
+        // (a hint: the next pass collects what it was for, from the store), is an idle wait, as the paused pass counts it, so
+        // a run whose work all waits continues as new under a steady stream of wakes too (V-2 diagnosis, 2026-11-08).
+        if (raced.index === 0) {
+            const command = parseWorkflowCommand(raced.value);
+            if (command) return yield* applyCommand(ctx, input, command, REQUEST_PROFILE);
         }
-        const command = parseWorkflowCommand(raced.value);
-        if (command) return yield* applyCommand(ctx, input, command, REQUEST_PROFILE);
+        idleWaits += 1;
+        if (idleWaits >= WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION) return yield* continueAsNew();
     }
 }
 

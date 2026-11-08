@@ -1115,11 +1115,15 @@ duroxide limits shape it:
   but does not remove it: the timer still fires later and adds a turn and a
   history entry. The
   controller continues as new after 25 admitted steps, or after 50 waits
-  (a wait counts when its timer found nothing, and every wait counts while
-  the run is paused). These counts bound the work that one execution
-  repeats. They do not bound its history: wake messages, the timers that lost
-  their races and the timers of retried store activities add entries that no
-  count includes.
+  (a wait counts when it brings no command: its timer fired, or a wake
+  came, running or paused; a command is applied first, never dropped by
+  the continue-as-new). So a run whose work all waits continues as new
+  under a steady stream of wakes too; a wake is only a hint, and the next
+  execution's first collection finds what it was for. These counts bound
+  the work that one execution repeats. They do not bound its history
+  exactly: the wakes that arrive faster than the controller reads them,
+  the timers that lost their races and the timers of retried store
+  activities add entries that no count includes.
 - The queue carries hints. An accepted cancel, complete or delete is store
   state: it has already ended the run, and the controller's next store call
   finds that (see Stopping a workflow). duroxide carries at most 100 unread
