@@ -582,6 +582,21 @@ function extractAssistantMessageContent(event: any): string | undefined {
     return typeof content === "string" && stripInvisibleContent(content) ? content : undefined;
 }
 
+/**
+ * enable_workflows where Workflows are already on, in a chat whose Workflows are on demand. Such a chat stays declared the
+ * tool once they are on: a call of a tool the CLI was not declared is refused by the CLI itself ("Tool 'enable_workflows'
+ * does not exist."), which the chat shows as a Failed enable_workflows row although Workflows are on. Declared, the call
+ * reaches the handler, which answers that they are already on and changes nothing.
+ */
+const ENABLE_WORKFLOWS_ON_TOOL_SPEC = {
+    description: "Workflows are already on in this chat and their tools are declared; calling this changes nothing.",
+    parameters: { type: "object", properties: {} },
+} as const;
+
+/** Review RLR-F4: a second enable_workflows call while one is turning Workflows on (a parallel call in the same response). */
+const ENABLE_WORKFLOWS_IN_PROGRESS = "[SYSTEM: enable_workflows was not executed: an earlier enable_workflows call in this turn "
+    + "is turning Workflows on. Its result says how it ended.]";
+
 function acknowledgeTurnBoundary(action: string): string {
     return `[SYSTEM: ${action} acknowledged. The runtime will suspend at the end of this turn. ` +
         `Finish any remaining tool results for the current step, then stop.]`;
@@ -947,9 +962,33 @@ export class ManagedSession {
     /** Set for the duration of runTurn(); read by the lock-bypassing stop path. */
     private activeTurn: { turnIndex: number; startedAt: number } | null = null;
     private nativeFeatureRevoked = false;
+    /**
+     * Review RLR-F4: the turn-boundary fence that enable_workflows shares with native-task admission. Activation closes it
+     * before it reads the native tasks and saves the flag; while it is closed the native-task hook admits no task
+     * (canAdmitNativeTask). A refused activation opens it again; a successful one leaves it closed until the turn ends (the
+     * next runTurn opens it).
+     */
+    private nativeAdmissionFence: string | null = null;
+    /**
+     * Review RLR-F4: this turn's parent `task` calls that started and have not completed: an admission in progress (the
+     * hook may have let it through before the fence closed, and the CLI may not list its task yet) or a task that runs.
+     * Kept from the turn's own tool events; activation refuses while one is open.
+     */
+    private readonly nativeTaskCallsInFlight = new Set<string>();
     canAdmitNativeTask(): boolean {
+        return this.nativeAdmissionFence === null && this.nativeFeatureAllows();
+    }
+    /** The native-task feature policy alone (the fence aside). */
+    private nativeFeatureAllows(): boolean {
         return this.config.nativeSubagents === "sync" && !this.nativeFeatureRevoked
             && (this.config.nativeFeatureAllowed?.() ?? false);
+    }
+    /** RLR-F4: track a parent `task` call from its start to its completion. */
+    private noteNativeTaskCall(eventType: string, data: any): void {
+        const id = typeof data?.toolCallId === "string" ? data.toolCallId : "";
+        if (!id) return;
+        if (eventType === "tool.execution_start" && (data.toolName ?? data.name) === "task") this.nativeTaskCallsInFlight.add(id);
+        else if (eventType === "tool.execution_complete") this.nativeTaskCallsInFlight.delete(id);
     }
     /**
      * Workflow v2 real-agent test runs: set once a turn of this
@@ -964,7 +1003,7 @@ export class ManagedSession {
     }
     /** A cached OFF is sticky for this turn, even if the next poll is ON. */
     refreshNativeFeaturePolicy(): void {
-        if (this.activeTurn && !this.canAdmitNativeTask()) this.nativeFeatureRevoked = true;
+        if (this.activeTurn && !this.nativeFeatureAllows()) this.nativeFeatureRevoked = true;
     }
     /** Set only by requestStop(); classifies the turn unwind as "stopped". */
     private stopRequest: { reason: string; requestedAt: number } | null = null;
@@ -1318,7 +1357,7 @@ export class ManagedSession {
      * Like wait/ask_user, handlers are stubs — real handlers set per-turn in runTurn().
      */
     static subAgentToolDefs(opts?: { workspaceTools?: boolean; workflowMilestone?: boolean; workflowAgentChild?: boolean; workflowInsideWorkflow?: boolean;
-        workflowContext?: WorkflowContextMode }): Tool<any>[] {
+        workflowContext?: WorkflowContextMode; workflowOnDemand?: boolean }): Tool<any>[] {
         const spawnAgentTool = defineTool("spawn_agent", {
             description: DURABLE_SPAWN_DESCRIPTION,
             parameters: {
@@ -1469,13 +1508,13 @@ export class ManagedSession {
             ...updateWorkflowToolSpec(workflowSpecs), handler: async () => "stub",
         });
         const readWorkflowTool = defineTool("read_workflow", {
-            ...readWorkflowToolSpec(workflowSpecs), handler: async () => "stub",
+            ...readWorkflowToolSpec({ ...workflowSpecs, updateWorkflow: opts?.workflowInsideWorkflow !== true }), handler: async () => "stub",
         });
         const sendWorkflowInputTool = defineTool("send_workflow_input", { ...SEND_WORKFLOW_INPUT_TOOL_SPEC, handler: async () => "stub" });
         // Stage 2.1: the chat's definitions, with revisions (definition-tool.ts).
-        // Stage 2.5: the test operation only where a test can run (a workflow request turn).
+        // Every turn's host runs a Workflow test (session-proxy.ts sets requests), a frozen 1.0.82 turn's included.
         const workflowDefinitionTool = defineTool(WORKFLOW_DEFINITION_TOOL, {
-            ...workflowDefinitionToolSpec({ tests: workflowMilestone }), handler: async () => "stub",
+            ...workflowDefinitionToolSpec(), handler: async () => "stub",
         });
         const respondSessionRequestTools = workflowMilestone
             ? [defineTool(RESPOND_SESSION_REQUEST_TOOL, { ...RESPOND_SESSION_REQUEST_TOOL_SPEC, handler: async () => "stub" })] : [];
@@ -1486,10 +1525,14 @@ export class ManagedSession {
         // replaces it; its turn handler stays, so a stale call is still answered.
         const definitionTools = opts?.workflowInsideWorkflow === true ? [] : [workflowDefinitionTool, updateWorkflowTool];
         // Workflows on demand (owner 2026-11-08T16:55Z): while they are off in the chat it is declared enable_workflows
-        // instead of the Workflow tools (their handlers stay, so a stale call is still answered); `none` declares neither.
+        // instead of the Workflow tools; `none` declares neither. The CLI refuses a call of a tool it was not declared, so a
+        // handler alone answers nothing: a chat whose Workflows are on demand (`workflowOnDemand`) keeps enable_workflows
+        // declared once they are on, whose call is answered "already on" (not a Failed row).
         const context = opts?.workflowContext ?? "on";
+        const enableWorkflowsOn = context === "on" && opts?.workflowOnDemand === true
+            ? [defineTool(ENABLE_WORKFLOWS_TOOL, { ...ENABLE_WORKFLOWS_ON_TOOL_SPEC, handler: async () => "stub" })] : [];
         const workflowTools = context === "on"
-            ? [...definitionTools, readWorkflowTool, sendWorkflowInputTool, ...respondSessionRequestTools, ...completeWorkflowNodeTools]
+            ? [...definitionTools, readWorkflowTool, sendWorkflowInputTool, ...respondSessionRequestTools, ...completeWorkflowNodeTools, ...enableWorkflowsOn]
             : context === "off" ? [defineTool(ENABLE_WORKFLOWS_TOOL, { ...ENABLE_WORKFLOWS_TOOL_SPEC, handler: async () => "stub" })] : [];
 
         return [spawnAgentTool, ...workflowTools, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
@@ -1585,6 +1628,8 @@ export class ManagedSession {
      */
     async runTurn(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
         this.nativeFeatureRevoked = false;
+        this.nativeAdmissionFence = null;
+        this.nativeTaskCallsInFlight.clear();
         this.activeTurn = { turnIndex: opts?.turnIndex ?? -1, startedAt: Date.now() };
         const interrupt: RunInterrupt = { reason: null, aborted: false, wake: null };
         this.runInterrupt = interrupt;
@@ -3285,7 +3330,7 @@ export class ManagedSession {
             },
         });
         const readWorkflowTool = defineTool("read_workflow", {
-            ...readWorkflowToolSpec(workflowSpecs),
+            ...readWorkflowToolSpec({ ...workflowSpecs, updateWorkflow: !insideWorkflow }),
             handler: async (args: Record<string, unknown>) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("read_workflow");
                 if (!controlBridge?.readWorkflow) return "Error: read_workflow is not available in this session.";
@@ -3295,9 +3340,9 @@ export class ManagedSession {
         });
         // Stage 2.1: the chat's Workflow Definitions (definition-tool.ts): list, read, save and start. Refused inside a Workflow
         // (A1), as the other definition tools are.
-        // Stage 2.5: the test operation is declared only on a workflow request turn, the one turn that can run a test.
+        // Every turn's host runs a Workflow test (session-proxy.ts sets requests), a frozen 1.0.82 turn's included.
         const workflowDefinitionTool = defineTool(WORKFLOW_DEFINITION_TOOL, {
-            ...workflowDefinitionToolSpec({ tests: this.config.workflowMilestoneTurn === true }),
+            ...workflowDefinitionToolSpec(),
             handler: async (args: Record<string, unknown>, invocation?: { toolCallId?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(WORKFLOW_DEFINITION_TOOL);
                 if (insideWorkflow) return workflowDefinitionToolsRefusal(WORKFLOW_DEFINITION_TOOL);
@@ -3309,6 +3354,10 @@ export class ManagedSession {
         // turn starts at once with the Workflow tools and guidance (the use_package path: forceContinuePrompt). Idempotent:
         // a chat that already has them is told so and nothing changes. Refused while native tasks run, as use_package is: the
         // refresh would cancel their shells.
+        // Review RLR-F4: activation and native-task admission share the turn-boundary fence. It is closed before the task list
+        // is read and the flag saved, so no task is admitted meanwhile; a task call already started (its admission may be in
+        // progress) refuses activation; a refusal opens the fence again, a success keeps it closed to the turn's end. A second
+        // call while one runs does nothing, so the turn has one continuation.
         const enableWorkflowsTool = defineTool(ENABLE_WORKFLOWS_TOOL, {
             ...ENABLE_WORKFLOWS_TOOL_SPEC,
             handler: async () => {
@@ -3318,19 +3367,28 @@ export class ManagedSession {
                 }
                 const service = this.config.capabilityServices;
                 if (!service?.enableWorkflows) return "Error: Workflows cannot be turned on in this session.";
+                if (this.nativeAdmissionFence !== null) return ENABLE_WORKFLOWS_IN_PROGRESS;
+                this.nativeAdmissionFence = ENABLE_WORKFLOWS_TOOL;
+                let activated = false;
                 try {
                     if (this.config.nativeSubagents === "sync") {
                         const tasks = (await this.copilotSession.rpc.tasks.list()).tasks;
-                        if (tasks.some(task => task.type === "agent" && (task.status === "running" || task.status === "idle"))) {
+                        if (this.nativeTaskCallsInFlight.size > 0
+                            || tasks.some(task => task.type === "agent" && (task.status === "running" || task.status === "idle"))) {
                             return "Error: finish native tasks before turning Workflows on.";
                         }
                     }
                     await service.enableWorkflows();
+                    activated = true;
                     turnState.pendingActions.push({ type: "completed", content: "Workflows turned on in this chat.",
                         forceContinuePrompt: "Workflows are now on in this chat: the Workflow tools and guidance are loaded. Continue the "
                             + "user's task; do not call enable_workflows again." });
                     return `${JSON.stringify({ workflows: "on" })}\n${acknowledgeTurnBoundary(ENABLE_WORKFLOWS_TOOL)}`;
-                } catch (error) { return failureToolResult(error); }
+                } catch (error) {
+                    return failureToolResult(error);
+                } finally {
+                    if (!activated) this.nativeAdmissionFence = null;
+                }
             },
         });
         const sendWorkflowInputTool = defineTool("send_workflow_input", {
@@ -4037,6 +4095,7 @@ export class ManagedSession {
                     if (eventType === "tool.execution_start" || eventType === "assistant.tool_call_delta") {
                         trackLateToolCallPiece(eventType, rawEventData);
                     }
+                    if (eventType === "tool.execution_start" || eventType === "tool.execution_complete") this.noteNativeTaskCall(eventType, eventData);
                     const captured: CapturedEvent = { eventType, data: eventData };
                     if (eventType === "session.error" && opts?.quietEmptyAnswer === true && quietedEmptyAnswer === null
                         && isEmptyAnswerQueryError(eventData)) {

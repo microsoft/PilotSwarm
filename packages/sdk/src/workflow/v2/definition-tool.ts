@@ -35,10 +35,10 @@ import { parseWorkflowAgentModels, requireAgentModelsForRevision, workflowChosen
 export const WORKFLOW_DEFINITION_TOOL = "workflow_definition";
 
 /**
- * The tool's declaration, its contract only (owner 2026-11-08T16:55Z: details in the workflow-tools skill). Stage 2.5:
- * where its host cannot run a Workflow test (`tests: false`, a frozen 1.0.82 turn; chat-test.ts requires host.requests),
- * the operation test, its fixtures and test_id are not declared, so the model is never offered an operation that always
- * refuses; a call of it is still refused (WORKFLOW_TEST_UNAVAILABLE).
+ * The tool's declaration, its contract only (owner 2026-11-08T16:55Z: details in the workflow-tools skill). Every turn's
+ * host runs a Workflow test, a frozen 1.0.82 turn's included (session-proxy.ts workflowV2Host sets requests, all that
+ * chat-test.ts requireTestHost checks), so every turn declares the test operation. `tests: false` declares none: for a host
+ * that cannot run one (requests unset), where a call of it is refused (WORKFLOW_TEST_UNAVAILABLE).
  */
 export function workflowDefinitionToolSpec(options: { tests?: boolean } = {}) {
     const tests = options.tests !== false;

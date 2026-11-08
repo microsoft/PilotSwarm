@@ -6,7 +6,7 @@ import { SessionManager } from "../../dist/session-manager.js";
 import { loadSkillsSync } from "../../dist/skills.js";
 import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
 import {
-    WORKFLOW_AUTHORING_SKILL, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_TESTS_UNAVAILABLE_GUIDANCE, WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR,
+    WORKFLOW_AUTHORING_SKILL, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR,
 } from "../../dist/workflow/guidance.js";
 
 // The base's workflow guidance mentions testing only with workflow test mode on (Workflow Simplified, spec 16); these
@@ -59,7 +59,7 @@ test("the workflow skills load from their own plugin directory, which no worker 
 test("the base names the Workflow skills in its guidance, scripts on or off, whatever skills the worker loaded", () => {
     const loaded = skills();
     const elsewhere = loaded.map(skill => ({ ...skill, dir: path.join(PLUGINS, "elsewhere", skill.name) }));
-    // A workflow request turn (workflowMilestoneTurn), the one turn that can test a revision, is taught testing (stage 2.5).
+    // G-4: every turn can test a revision (its host runs tests), a frozen 1.0.82 turn's included: each is taught testing.
     const prompt = (workerSkills, scripts, version, requestTurn = true) => {
         const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "Legacy base.", ...(workerSkills ? { skills: workerSkills } : {}) });
         manager.workflowScriptsEnabled = scripts;
@@ -75,9 +75,9 @@ test("the base names the Workflow skills in its guidance, scripts on or off, wha
                 assert.ok(on.includes(JSON.stringify(WORKFLOW_SESSION_GUIDANCE).slice(1, -1)), version);
                 assert.ok(!on.includes("When an authorized task is a finite procedure"), "the old pointer is gone");
             }
-            const noTests = prompt(workerSkills, true, version, false);
-            assert.ok(noTests.includes(JSON.stringify(WORKFLOW_TESTS_UNAVAILABLE_GUIDANCE).slice(1, -1)), version);
-            assert.ok(!noTests.includes("Test a revision only when the user asks"), version);
+            const frozen = prompt(workerSkills, true, version, false);
+            assert.ok(!/tests do not run here/i.test(frozen), version);
+            assert.ok(frozen.includes("Test a revision only when the user asks"), version);
         }
     }
 });

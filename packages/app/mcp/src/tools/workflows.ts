@@ -73,15 +73,16 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
 
     if (ctx.workflowCommands !== true) return;
 
-    // Off, update_workflow names stop and no test operation.
+    // Off, update_workflow names stop and no test operation. Every worker runs controller 1.9.0, so stop (and, with test mode
+    // on, the test operations) are named without a condition.
     const operations = testMode
-        ? "operation (replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel; stop, test, test_respond "
-            + "and test_advance when the workers run controller 1.9.0), operation_id (repeat it to retry the same command) and the "
-            + "operation's arguments (expected_revision, definition_hash, yaml, inputs, vars, notify_on_completion, set, delete, "
-            + "expected_kv_revision, run_id, reason, grace_seconds, agent_mode, fixtures, scenario, interception_id, response, seconds). "
-        : "operation (replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel; stop when the workers run "
-            + "controller 1.9.0), operation_id (repeat it to retry the same command) and the operation's arguments (expected_revision, "
-            + "definition_hash, yaml, inputs, vars, notify_on_completion, set, delete, expected_kv_revision, run_id, reason, grace_seconds). ";
+        ? "operation (replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel, stop, test, test_respond "
+            + "and test_advance), operation_id (repeat it to retry the same command) and the operation's arguments (expected_revision, "
+            + "definition_hash, yaml, inputs, vars, notify_on_completion, set, delete, expected_kv_revision, run_id, reason, grace_seconds, "
+            + "agent_mode, fixtures, scenario, interception_id, response, seconds). "
+        : "operation (replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel and stop), operation_id "
+            + "(repeat it to retry the same command) and the operation's arguments (expected_revision, definition_hash, yaml, inputs, "
+            + "vars, notify_on_completion, set, delete, expected_kv_revision, run_id, reason, grace_seconds). ";
     server.registerTool(
         "update_workflow",
         {

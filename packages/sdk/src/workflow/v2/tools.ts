@@ -83,8 +83,11 @@ export function operationWords(operations: readonly string[]): string {
 
 /**
  * The workflow tools' declarations carry their contract only (owner 2026-11-08T16:55Z); the workflow-tools skill has
- * every argument and the operations' details. update_workflow on a frozen 1.0.82 turn: its run and definition operations
- * and recover.
+ * every argument and the operations' details. update_workflow on a frozen 1.0.82 turn: its run operations and recover.
+ * The definition operations (UPDATE_WORKFLOW_OPERATIONS.definition: replace_definition, publish, publish_and_start, start)
+ * and their arguments are not declared: they serve only a Workflow made before revisions (spawn_workflow's version 1,
+ * never released), and workflow_definition changes and starts definitions. Their handlers stay, so a stale call is still
+ * answered (runUpdateWorkflowCommand), as spawn_workflow's is.
  */
 function updateWorkflowDescription(options: { stop: boolean; test: boolean }): string {
     return "Control one of your Workflows: workflow_id, operation, and a new operation_id for each change (a retry reuses it). "
@@ -93,10 +96,12 @@ function updateWorkflowDescription(options: { stop: boolean; test: boolean }): s
         + "set_vars (set, delete, and expected_kv_revision from read_workflow: one atomic change to the run's variables); recover (when "
         + "read_workflow shows needsRecovery). "
         + (options.test ? "test, test_respond and test_advance run and answer a draft's test run (call load_skill with name workflow-testing). " : "")
-        + "run_id defaults to the live run. To change or start a definition use workflow_definition: replace_definition, publish, "
-        + "publish_and_start and start apply only to Workflows made before revisions. Call load_skill with name workflow-tools for every argument. "
-        + "Returns JSON.";
+        + "run_id defaults to the live run. To change or start a definition use workflow_definition. "
+        + "Call load_skill with name workflow-tools for every argument. Returns JSON.";
 }
+
+/** The operations every update_workflow declaration names: the run operations and recover. */
+const UPDATE_WORKFLOW_DECLARED_OPERATIONS = [...UPDATE_WORKFLOW_OPERATIONS.run, ...UPDATE_WORKFLOW_OPERATIONS.agent];
 
 export const UPDATE_WORKFLOW_TOOL_SPEC = {
     description: updateWorkflowDescription({ stop: false, test: false }),
@@ -104,14 +109,8 @@ export const UPDATE_WORKFLOW_TOOL_SPEC = {
         type: "object",
         properties: {
             workflow_id: { type: "string" },
-            operation: { type: "string", enum: [...UPDATE_WORKFLOW_OPERATIONS.definition, ...UPDATE_WORKFLOW_OPERATIONS.run, ...UPDATE_WORKFLOW_OPERATIONS.agent] },
+            operation: { type: "string", enum: UPDATE_WORKFLOW_DECLARED_OPERATIONS },
             operation_id: { type: "string", description: "Idempotency id for this change." },
-            yaml: { type: "string" },
-            expected_revision: { type: "integer" },
-            definition_hash: { type: "string" },
-            inputs: { type: "object" },
-            vars: { type: "object" },
-            notify_on_completion: { type: "boolean" },
             set: { type: "object", description: "set_vars: keys to set." },
             delete: { type: "array", items: { type: "string" }, description: "set_vars: keys to delete." },
             expected_kv_revision: { type: "integer", description: "set_vars: the kvRevision you read." },
@@ -122,11 +121,14 @@ export const UPDATE_WORKFLOW_TOOL_SPEC = {
     },
 } as const;
 
+/** read_workflow's sentence on recover: only where update_workflow is declared (readWorkflowToolSpec). */
+const READ_WORKFLOW_RECOVER_WORDS = " A run that shows needsRecovery needs update_workflow recover.";
+
 export const READ_WORKFLOW_TOOL_SPEC = {
     description:
         "Read one of your Workflows; reading changes nothing. Returns JSON: its definition, graph and runs, and one run (run_id, default the "
         + "live run) with its step executions, variables (kv, kvRevision), the inputs it received (inbox) and the messages it sent (outbox). "
-        + "Use it, not list_sessions, for a Workflow's status. A run that shows needsRecovery needs update_workflow recover.",
+        + `Use it, not list_sessions, for a Workflow's status.${READ_WORKFLOW_RECOVER_WORDS}`,
     parameters: {
         type: "object",
         properties: {
@@ -148,7 +150,7 @@ export const UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC = {
         type: "object",
         properties: {
             ...UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties,
-            operation: { type: "string", enum: [...UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties.operation.enum, "stop"] },
+            operation: { type: "string", enum: [...UPDATE_WORKFLOW_DECLARED_OPERATIONS, "stop"] },
             grace_seconds: { type: "integer" },
         },
         required: ["workflow_id", "operation", "operation_id"],
@@ -162,7 +164,12 @@ export const UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC = {
         type: "object",
         properties: {
             ...UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC.parameters.properties,
-            operation: { type: "string", enum: [...UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties.operation.enum, ...UPDATE_WORKFLOW_MILESTONE_OPERATIONS] },
+            operation: { type: "string", enum: [...UPDATE_WORKFLOW_DECLARED_OPERATIONS, ...UPDATE_WORKFLOW_MILESTONE_OPERATIONS] },
+            // test: the draft's revision and hash (read_workflow), its inputs and initial variables (the workflow-testing skill).
+            expected_revision: { type: "integer" },
+            definition_hash: { type: "string" },
+            inputs: { type: "object" },
+            vars: { type: "object" },
             agent_mode: { type: "string", enum: ["mocked", "real"] },
             fixtures: { type: "array", items: { type: "object" } },
             scenario: { type: "string" },
@@ -211,10 +218,15 @@ export function updateWorkflowToolSpec(options: { milestone: boolean; testMode: 
     return options.testMode ? UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC : UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC;
 }
 
-/** The read_workflow declaration of a turn, chosen as updateWorkflowToolSpec chooses. */
-export function readWorkflowToolSpec(options: { milestone: boolean; testMode: boolean }) {
-    if (!options.milestone) return READ_WORKFLOW_TOOL_SPEC;
-    return options.testMode ? READ_WORKFLOW_MILESTONE_TOOL_SPEC : READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC;
+/**
+ * The read_workflow declaration of a turn, chosen as updateWorkflowToolSpec chooses. `updateWorkflow: false` (a session
+ * inside a Workflow, declared no update_workflow): without the sentence that sends a reader to update_workflow recover.
+ */
+export function readWorkflowToolSpec(options: { milestone: boolean; testMode: boolean; updateWorkflow?: boolean }) {
+    const spec = !options.milestone ? READ_WORKFLOW_TOOL_SPEC
+        : options.testMode ? READ_WORKFLOW_MILESTONE_TOOL_SPEC : READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC;
+    if (options.updateWorkflow !== false) return spec;
+    return { ...spec, description: spec.description.replace(READ_WORKFLOW_RECOVER_WORDS, "") };
 }
 
 export const SEND_WORKFLOW_INPUT_TOOL_SPEC = {

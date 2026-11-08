@@ -94,7 +94,8 @@ Workflow, never several: a parallel state with named `branches`, each its own
 small graph whose agent node has its own state id, joined as
 `{ <name>: output }`. When the branches come from a list, the older router
 pattern (a router script first in a For each body over a literal list of
-lanes) does it. The `workflow-patterns` skill has both, with examples.
+lanes) does it. The `workflow-patterns` skill has both, with examples: call
+load_skill with name workflow-patterns.
 
 Test it before you publish the package that adds or changes it. The
 person's request to publish is their request for this test. For exact
@@ -139,12 +140,13 @@ shapes, call load_skill with name workflow-tools.
 6. Tell the person each expected end and its passing run, and the tools the
    package needs at run time, with the publish plan.
 
-If the test operation is not offered in your session (every current session
-has it; a chat of an earlier release may not, until it continues), say so
-and do not publish without the person's explicit yes. Then have it started
-once from the new-session picker in a disposable chat before the shared
-publish, and check that the chat asks for the card's inputs and that the
-Workflow ends as the card says.
+If the test operation is not offered in your session (it is offered where
+Workflows are on: Agent Smith's own session has them, and another chat turns
+them on with `enable_workflows`; a chat of an earlier release may not have it
+until it continues), say so and do not publish without the person's explicit
+yes. Then have it started once from the new-session picker in a disposable
+chat before the shared publish, and check that the chat asks for the card's
+inputs and that the Workflow ends as the card says.
 
 **The named-entry-point check is mandatory when you were spawned by the agent
 you are editing.** In that arrangement you are the child and the thing you are about

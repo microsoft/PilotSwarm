@@ -1338,7 +1338,7 @@ export function workflowV2AskParentMessage({ workflowName = null, workflowSessio
 /** What a person can ask the parent agent about a step (owner decision q16), with the words its button and message use. */
 export const WORKFLOW_V2_ASK_PARENT_KINDS = Object.freeze({
     findings: { label: "Send findings", about: "one of its steps has findings", action: "pass these findings to whoever needs them (for example the author of the change), or act on them." },
-    rework: { label: "Ask for rework", about: "one of its steps needs rework", action: "arrange the rework: for example change the draft or its inputs and start a new run, or ask whoever owns the work to change it." },
+    rework: { label: "Ask for rework", about: "one of its steps needs rework", action: "arrange the rework: for example save a new revision of its definition or change its inputs, then start it again, or ask whoever owns the work to change it." },
     approval: { label: "Ask for approval", about: "one of its steps asks for your approval", action: "approve it and continue the workflow accordingly (for example answer the request it waits on)." },
 });
 

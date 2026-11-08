@@ -26,11 +26,14 @@ process.env.PILOTSWARM_WORKFLOW_TEST_MODE = "on";
  */
 
 const PRODUCTION_OPERATIONS = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "recover"];
+// G-9: the definition operations (Workflows made before revisions) are not declared; their handlers stay.
+const DEFINITION_OPERATIONS = ["replace_definition", "publish", "publish_and_start", "start"];
+const DECLARED_OPERATIONS = PRODUCTION_OPERATIONS.filter(operation => !DEFINITION_OPERATIONS.includes(operation));
 const MILESTONE_OPERATIONS = ["stop", "test", "test_respond", "test_advance"];
 
 // Owner 2026-11-08T16:55Z: each declaration carries its contract only; the workflow-tools skill has every argument.
 test("a frozen 1.0.82 turn's declarations name its operations only", () => {
-    assert.deepEqual([...UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties.operation.enum], PRODUCTION_OPERATIONS);
+    assert.deepEqual([...UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties.operation.enum], DECLARED_OPERATIONS);
     for (const name of ["grace_seconds", "agent_mode", "fixtures", "scenario", "interception_id", "response", "seconds"]) {
         assert.equal(Object.hasOwn(UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties, name), false, name);
     }
@@ -44,7 +47,7 @@ test("a frozen 1.0.82 turn's declarations name its operations only", () => {
 test("on a 1.9.0 turn the declarations add the milestone operations and fields", () => {
     assert.deepEqual([...UPDATE_WORKFLOW_MILESTONE_OPERATIONS], MILESTONE_OPERATIONS);
     const update = UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC;
-    assert.deepEqual([...update.parameters.properties.operation.enum], [...PRODUCTION_OPERATIONS, ...MILESTONE_OPERATIONS]);
+    assert.deepEqual([...update.parameters.properties.operation.enum], [...DECLARED_OPERATIONS, ...MILESTONE_OPERATIONS]);
     for (const name of Object.keys(UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties)) assert.ok(Object.hasOwn(update.parameters.properties, name), name);
     for (const name of ["grace_seconds", "agent_mode", "fixtures", "scenario", "interception_id", "response", "seconds"]) {
         assert.ok(Object.hasOwn(update.parameters.properties, name), name);

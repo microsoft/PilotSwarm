@@ -99,6 +99,14 @@ test("the question to the parent agent says what is asked, with the run, step, v
     assert.equal(workflowV2StepQuestion({ workflowSessionId: "wf", runId: RUN, stateId: "work", execution: null, kind: "other" }), null);
 });
 
+test("G-11: Ask for rework tells the parent agent the current way to redo a Workflow: a new revision or other inputs, then Start again", () => {
+    const rework = workflowV2StepQuestion({ workflowSessionId: "wf", runId: RUN, stateId: "work", execution: { id: "p", ordinal: 3, status: "pending" }, kind: "rework" });
+    assert.ok(rework.includes("\nIf you agree, arrange the rework: for example save a new revision of its definition or change its inputs, then start it again, "
+        + "or ask whoever owns the work to change it.\n"), rework);
+    // No word of the earlier draft-and-new-run flow is left.
+    assert.doesNotMatch(rework, /the draft|a new run/);
+});
+
 function seeded({ parent = "parent-1" } = {}) {
     const sent = [];
     const store = createStore(appReducer, createInitialState({ mode: "local" }));

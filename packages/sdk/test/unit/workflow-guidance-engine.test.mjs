@@ -124,10 +124,12 @@ test("the canonical examples are real: each compiles on the host every session h
 
 test("(a) a default worker (scripts off, no request-turn flag) carries the full text, and its scripts-off line names agent and parallel nodes", () => {
     const block = workflowBlock(systemPrompt({ scripts: false, requestTurn: false }));
-    for (const phrase of ["at the agent nodes that need judgment", "answer it once with `respond_session_request`",
-        "call `load_skill` with name `workflow-authoring`"]) {
+    for (const phrase of ["at the agent nodes that need judgment", "call `load_skill` with name `workflow-authoring`",
+        "Test a revision only when the user asks"]) {
         assert.ok(block.includes(phrase), phrase);
     }
+    // G-3: a frozen 1.0.82 turn is not declared respond_session_request, so its guidance does not name it.
+    assert.ok(!block.includes("respond_session_request"), "not named on a frozen 1.0.82 turn");
     assert.match(block, /Use wait, messaging, agent and parallel nodes/);
 });
 
@@ -135,7 +137,7 @@ test("(b) every state type and inline example the default worker's prompt teache
     for (const scripts of [false, true]) {
         const block = workflowBlock(systemPrompt({ scripts, requestTurn: false }));
         const taught = Object.entries(STATE_TYPES).filter(([, { named }]) => named.test(block));
-        for (const type of ["wait", "agent", "request"]) assert.ok(taught.some(([name]) => name === type), `scripts ${scripts}: it teaches ${type}`);
+        for (const type of ["wait", "agent"]) assert.ok(taught.some(([name]) => name === type), `scripts ${scripts}: it teaches ${type}`);
         for (const [type, { yaml }] of taught) assert.deepEqual(compileErrors(FULL_HOST, yaml), [], `scripts ${scripts}: ${type}`);
         // The trimmed guidance shows no inline state; any it shows must compile.
         for (const { example, yaml } of inlineExamples(block)) assert.deepEqual(compileErrors(FULL_HOST, yaml), [], `scripts ${scripts}: ${example}`);
@@ -146,9 +148,10 @@ test("(c) a 1.0.83 turn has the same text, with clock waits and revision tests",
     const testMode = workflowTestModeFromEnv();
     for (const scripts of [false, true]) {
         const prompt = systemPrompt({ scripts, requestTurn: true });
-        assert.ok(prompt.includes(workflowSessionGuidance(testMode, { scripts, clockWaits: true, tests: true })), `scripts ${scripts}`);
+        assert.ok(prompt.includes(workflowSessionGuidance(testMode, { scripts, clockWaits: true, requests: true })), `scripts ${scripts}`);
         const block = workflowBlock(prompt);
         assert.ok(block.includes("Test a revision only when the user asks"));
+        assert.ok(block.includes("`request`: answer it once with `respond_session_request` before its deadline, never in chat."));
         assert.match(block, /A wait state can wait until a clock time: `at: \{/);
         for (const [type, { named, yaml }] of Object.entries(STATE_TYPES)) {
             if (named.test(block)) assert.deepEqual(compileErrors(FULL_HOST, yaml), [], `scripts ${scripts}: ${type}`);

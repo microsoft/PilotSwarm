@@ -156,3 +156,21 @@ test("the prompt and the repair loop teach named branches, then the router patte
     }
     assert.match(prompt, /forEach: \[\{ lane: quick \}, \{ lane: careful \}\]/);
 });
+
+// 1.4.11 (G-12/13, Workflows on demand): an ordinary chat has no Workflow tools until enable_workflows; Agent Smith's own
+// session has them. Neither text says `test` is offered in every session, and each names the call that loads a skill.
+test("the prompt and the repair loop say where `test` is offered: where Workflows are on, turned on with enable_workflows", () => {
+    const skill = fs.readFileSync(path.join(pkgDir, "skills/agent-repair-loop/SKILL.md"), "utf8");
+    for (const text of [prompt, skill]) {
+        assert.doesNotMatch(text, /every current\s+session|always on with the full engine/);
+        assert.match(text, /offered where\s+Workflows\s+are on/);
+        assert.match(text, /turns\s+them on with\s+`enable_workflows`/);
+        assert.match(text, /call\s+load_skill with name workflow-patterns/);
+        assert.doesNotMatch(text, /Load the `workflow-patterns` skill/);
+    }
+    assert.match(prompt, /Your own session has them/);
+    assert.match(skill, /Agent Smith's own session has them/);
+    const changelog = fs.readFileSync(path.join(pkgDir, "CHANGELOG.md"), "utf8");
+    const current = changelog.slice(changelog.indexOf("## 1.4.11"), changelog.indexOf("## 1.4.10"));
+    assert.match(current, /offered where Workflows are on/);
+});

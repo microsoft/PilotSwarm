@@ -356,11 +356,12 @@ a package that adds or changes a Workflow Definition (`workflows/<name>/`):
    diff: the revision tested, each expected end and its result, what the
    reports showed, and the tools the package needs at run time.
 
-Workflows are always on with the full engine, so `workflow_definition` and
-its `test` operation are offered in every current session. If `test` is not
-offered in your session (a chat of an earlier release, until it continues),
-say so plainly, and do not publish that definition without the person's
-explicit yes to publishing it untested. A test is not a sandbox:
+`workflow_definition` and its `test` operation are offered where Workflows
+are on. Your own session has them; another chat turns them on with
+`enable_workflows`. If `test` is not offered in your session (a chat of an
+earlier release may not have it until it continues), say so plainly, and do
+not publish that definition without the person's explicit yes to publishing
+it untested. A test is not a sandbox:
 its scripts run for real, so read the definition's effects before you test.
 
 This is a discipline you hold, not a lock the tool enforces. The tool will let

@@ -82,6 +82,15 @@ test("every tool has a declaration AND a handler", () => {
     }
 });
 
+// G-14: the card fields staging lists match the agent's prompt, which teaches `modelHints` (a valid card.md field).
+test("stage_agent_package_edit lists a Workflow card's modelHints with its model", () => {
+    const { byName } = toolsWith();
+    const d = byName.get("stage_agent_package_edit").description;
+    assert.match(d, /optional model, optional modelHints/);
+    assert.match(d, /\{ strength\?, reasoning\?, context\?, note\? \}/);
+    assert.match(d, /never a model's name/);
+});
+
 // ── Staging ───────────────────────────────────────────────────────
 
 test("a brand-new package starts from an empty staging area", async () => {

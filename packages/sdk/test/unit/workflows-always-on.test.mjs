@@ -121,8 +121,11 @@ test("agents (owner 2026-11-08T16:55Z): with scripts on, cron and cron_at keep m
     assert.ok(!/spawn_workflow/.test(WORKFLOW_SCHEDULING_HINT), "the tool of this stage, not the compat one");
 });
 
-test("agents (stage 2.5): workflow_definition declares test, and the guidance teaches it, only on a turn that can run a test", async (t) => {
-    const { WORKFLOW_TESTS_UNAVAILABLE_GUIDANCE } = await import("../../dist/workflow/guidance.js");
+// G-4: every turn's host runs a Workflow test, a frozen 1.0.82 turn's included (session-proxy.ts workflowV2Host sets requests,
+// all that chat-test.ts requireTestHost checks), so every turn declares workflow_definition's test and the guidance teaches it.
+test("agents (G-4): every turn declares workflow_definition's test and the guidance teaches it, a frozen 1.0.82 turn's included", async (t) => {
+    const guidance = await import("../../dist/workflow/guidance.js");
+    assert.equal(Object.hasOwn(guidance, "WORKFLOW_TESTS_UNAVAILABLE_GUIDANCE"), false, "no line says Workflow tests do not run here");
     for (const requestTurn of [false, true]) {
         const { manager, calls } = managerFixture(t, { scripts: true });
         await manager.getOrCreate(`s-tests-${requestTurn}`, { toolNames: [], ...(requestTurn ? { workflowMilestoneTurn: true } : {}) }, { turnIndex: 0 });
@@ -130,15 +133,15 @@ test("agents (stage 2.5): workflow_definition declares test, and the guidance te
         const label = `request turn=${requestTurn}`;
         assert.ok(definition, label);
         const declared = JSON.stringify(definition.parameters);
-        assert.equal(definition.parameters.properties.operation.enum.includes("test"), requestTurn, label);
-        assert.equal(/"fixtures"|"test_id"/.test(declared), requestTurn, label);
+        assert.ok(definition.parameters.properties.operation.enum.includes("test"), label);
+        assert.ok(/"fixtures"/.test(declared) && /"test_id"/.test(declared), label);
         // OF-S2-4 A: a package's author (Agent Smith) tests a definition before it publishes it.
-        assert.equal(definition.description.includes("test: only when the user asks, or before you publish it in a package."), requestTurn, label);
+        assert.ok(definition.description.includes("test: only when the user asks, or before you publish it in a package."), label);
         for (const operation of ["list", "read", "save", "start", "card"]) assert.ok(definition.parameters.properties.operation.enum.includes(operation), operation);
         const prompt = JSON.stringify(manager._buildSystemMessage(`s-tests-${requestTurn}`, {
             baseAgentPolicy: { version: "v2", fingerprint: "test", revision: null }, ...(requestTurn ? { workflowMilestoneTurn: true } : {}) }));
-        assert.equal(prompt.includes("Test a revision only when the user asks, or before you publish it in a package"), requestTurn, label);
-        assert.equal(prompt.includes(JSON.stringify(WORKFLOW_TESTS_UNAVAILABLE_GUIDANCE).slice(1, -1)), !requestTurn, label);
+        assert.ok(prompt.includes("Test a revision only when the user asks, or before you publish it in a package"), label);
+        assert.ok(!/tests do not run here/i.test(prompt), label);
     }
 });
 

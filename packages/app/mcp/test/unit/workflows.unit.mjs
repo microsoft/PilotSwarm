@@ -346,11 +346,15 @@ console.log("✅ the retired Workflow V2 test environment switch: every server r
     try {
         for (const off of [descriptions({ workflowCommands: true, mgmt: {} }), descriptions({ workflowCommands: true, workflowTestMode: false, mgmt: {} })]) {
             for (const word of ["test_respond", "test_advance", "agent_mode", "fixtures", "interception_id", " test,"]) assert.ok(!off.includes(word), word);
-            assert.ok(off.includes("stop when the workers run controller 1.9.0"));
+            // Every worker runs controller 1.9.0: stop is named without a condition.
+            assert.ok(off.includes("operation (replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel and stop),"), off);
+            assert.ok(!/controller 1\.9\.0|when the workers run/.test(off), off);
             assert.ok(off.includes("grace_seconds"));
         }
         const on = descriptions({ workflowCommands: true, workflowTestMode: true, mgmt: {} });
         for (const word of ["test_respond", "test_advance", "agent_mode", "interception_id"]) assert.ok(on.includes(word), word);
+        assert.ok(on.includes("cancel, stop, test, test_respond and test_advance),"), on);
+        assert.ok(!/controller 1\.9\.0|when the workers run/.test(on), on);
         // read_workflow (review SF-5): off, its description names no test run's part either.
         const readDescription = ctx => {
             const specs = new Map();

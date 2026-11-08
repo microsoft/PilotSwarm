@@ -145,11 +145,12 @@ describe("the full engine: where a chat's sub-agent starts", () => {
         expect(parent).toBe(chat);
         expect(version).toBe(DURABLE_SESSION_LATEST_VERSION);
         expect(result, JSON.stringify(result)).toMatchObject({ ok: true, operation: "save", revision: 1, valid: true });
-        // Off at first: enable_workflows and no Workflow tool; on in the next turn: the Workflow tools, no enable_workflows.
+        // Off at first: enable_workflows and no Workflow tool; on in the next turn: the Workflow tools, and enable_workflows
+        // still declared (answered "already on": a call of an undeclared tool is refused by the CLI, a Failed row).
         expect(declared[0]).toContain("enable_workflows");
         expect(declared[0]).not.toContain("workflow_definition");
         expect(declared[1]).toContain("workflow_definition");
-        expect(declared[1]).not.toContain("enable_workflows");
+        expect(declared[1]).toContain("enable_workflows");
         expect(flag).toBe(true);
     });
 

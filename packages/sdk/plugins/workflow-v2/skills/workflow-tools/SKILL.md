@@ -134,15 +134,11 @@ its report is the answer. If it is still running, read it again with its
 ## update_workflow
 
 `workflow_id`, `operation`, `operation_id` (a new one for each change; a
-retry reuses it) and the operation's arguments. The definition operations
-apply only to Workflows made before definitions had revisions.
+retry reuses it) and the operation's arguments. It controls a Workflow's
+run; to change or start a definition, use `workflow_definition`.
 
 | Operation | Arguments | Effect |
 |---|---|---|
-| `replace_definition` | `yaml`, `expected_revision` | New draft revision; drafts only; same `metadata.version`. |
-| `publish` | `expected_revision`, `definition_hash` | Publishes that exact revision and pins each named agent's exact version; does not start. A run keeps that version after its package is republished. |
-| `publish_and_start` | publish arguments, `inputs`, `vars?`, `notify_on_completion?` | Publishes and starts the live run. |
-| `start` | `definition_hash`, `inputs`, `vars?`, `notify_on_completion?` | Starts this Workflow's live run of the published revision. Each Workflow has one live run; one definition may have many Workflows running at once. |
 | `set_vars` | `set?`, `delete?`, `expected_kv_revision`, `run_id?` | One atomic KV change. |
 | `pause`, `resume`, `cancel` | `reason?`, `run_id?` | Run control. |
 | `stop` | `reason?`, `grace_seconds?` (0 to 3,600, default 60), `run_id?` | Admits nothing new; admitted work settles; then the run ends `stopped`. |
@@ -160,8 +156,6 @@ More on each operation:
 - `recover`: a run whose controller stopped without ending it ends as
   failed (`controller_ended`) and its parent is told; a run accepted but
   never started is started; otherwise nothing changes.
-- A Workflow that is a copy of a revision of your definitions refuses the
-  definition operations (`PINNED_TO_CHAT_REVISION`).
 - A repeated `operation_id` returns the original receipt; reusing it for
   another request is refused. A receipt shows the run as the command was
   accepted; `read_workflow` shows it now.
@@ -222,16 +216,15 @@ execution_failed, message, details? }`.
 | Code | Meaning |
 |---|---|
 | `DEFINITION_INVALID` | The revision has compile errors; read `diagnostics`. |
-| `REVISION_CONFLICT` | The current revision is not `expected_revision`; read it again. |
-| `DEFINITION_HASH_MISMATCH` | `definition_hash` is not the hash of that revision. |
-| `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | A published definition or its version does not change; use a new workflow child. |
+| `REVISION_STALE` | Someone saved since the revision you read; read the definition again and redo your change on the newest revision. |
+| `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | A Workflow keeps its revision; it never changes. Save a new revision with `workflow_definition`, then start it. |
 | `OPERATION_CONFLICT` | The `operation_id` was used for another request. |
-| `LIVE_RUN_EXISTS` | The workflow child already has its live run. |
-| `WORKFLOW_YAML_TOO_LARGE`, `WORKFLOW_REVISION_LIMIT` | The YAML is over 256 KiB, or the child holds 1,000 revisions or 64 MiB of YAML. Nothing was saved; use a new workflow child. |
+| `LIVE_RUN_EXISTS` | This Workflow already has its live run. To run the definition again, `start` it again: each start is a new Workflow. |
+| `WORKFLOW_YAML_TOO_LARGE`, `REVISION_LIMIT` | The YAML is over 256 KiB (save a shorter one), or the definition has 1,000 revisions, the most it keeps (nothing was saved; tell the person). |
 | `KV_REVISION_CONFLICT` | Read `kvRevision` again. |
 | `WORKFLOW_INPUT_INVALID`, `INPUT_INVALID` | Inputs or a payload do not match the schema; read the field errors. |
 | `RUN_STOP_UNSUPPORTED` | The run's controller does not stop gracefully; cancel it. |
 | `WORKFLOW_STORE_UNAVAILABLE` | The store cannot be reached or has no room now; try once more, then report the error as given. |
 | `AGENT_UNAVAILABLE` | Publication could not pin a named agent. |
 | `CONTRACT_MISMATCH` | The state is not exactly its agent's workflow interface; read `problems`. |
-| `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | Only the creating agent changes or reads its workflow child. |
+| `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | `update_workflow` and `read_workflow` take only this chat's Workflows: those started from its definitions, by you or the person. A person changes theirs in the Workflow tab. |

@@ -48,7 +48,8 @@ async function withFlag(value, fn) {
     }
 }
 
-const PRODUCTION = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "recover"];
+// G-9: the declared operations (the definition operations of a Workflow made before revisions are not declared).
+const PRODUCTION = ["set_vars", "pause", "resume", "cancel", "recover"];
 const TEST_ARGUMENTS = ["agent_mode", "fixtures", "scenario", "interception_id", "response", "seconds"];
 const names = defs => defs.map(def => def.name);
 const named = (defs, name) => defs.find(def => def.name === name);
@@ -84,6 +85,11 @@ test("agent tool: with test mode off, a 1.9.0 turn is declared stop and no test 
     assert.ok(update.description.includes("stop (grace_seconds 0 to 3600, default 60"));
     assert.ok(!/\btest/i.test(update.description), update.description);
     for (const name of TEST_ARGUMENTS) assert.equal(Object.hasOwn(update.parameters.properties, name), false, name);
+    // G-9: test's revision, hash, inputs and variables only with test mode on.
+    for (const name of ["expected_revision", "definition_hash", "inputs", "vars"]) {
+        assert.equal(Object.hasOwn(update.parameters.properties, name), false, name);
+        assert.ok(Object.hasOwn(UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC.parameters.properties, name), name);
+    }
     assert.ok(Object.hasOwn(update.parameters.properties, "grace_seconds"));
     for (const name of Object.keys(UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties)) assert.ok(Object.hasOwn(update.parameters.properties, name), name);
     assert.deepEqual(update.parameters.required, UPDATE_WORKFLOW_TOOL_SPEC.parameters.required);

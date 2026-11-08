@@ -395,8 +395,9 @@ export async function startChatWorkflowTest(host: WorkflowV2Host, request: {
 }
 
 /**
- * A host that runs Workflow tests (a workflow request turn), or WORKFLOW_TEST_UNAVAILABLE. S2RT-F9: checked before a new test
- * and before a test is read again by its id (which can advance its clock or end it), so neither runs where tests cannot.
+ * A host that runs Workflow tests (every turn's: session-proxy.ts sets requests), or WORKFLOW_TEST_UNAVAILABLE. S2RT-F9:
+ * checked before a new test and before a test is read again by its id (which can advance its clock or end it), so neither
+ * runs where tests cannot.
  */
 export function requireTestHost(host: Pick<WorkflowV2Host, "requests">): void {
     if (host.requests !== true) {

@@ -2,7 +2,7 @@ import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
 import { isWorkflowTestBench } from "./workflow/v2/test-bench.js";
 import { warnRetiredWorkflowsSetting } from "./workflow/retired-workflows-setting.js";
 import { workflowScriptsEnabledFromEnv } from "./workflow/v2/scripts-gate.js";
-import { WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR } from "./workflow/guidance.js";
+import { skillsIndexLine, skillsIndexSection, WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR } from "./workflow/guidance.js";
 import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
 import { AGENT_HANDOFF_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
@@ -21,7 +21,7 @@ import { createAgentDiscoveryTool } from "./agent-discovery.js";
 import type { AgentPackageInstallEntry, SessionCatalog } from "./cms.js";
 import { TurnControlHub } from "./turn-control.js";
 import { loadAgentFiles, validateAgentDefinition } from "./agent-loader.js";
-import { clipDescription, composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
+import { composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
 import { resolveSystemAgentSessionPlans, startSystemAgents } from "./system-agents.js";
 import { firstRuntimeModel } from "./provider-catalog.js";
 import { loadMcpConfig, mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
@@ -2236,19 +2236,18 @@ export class PilotSwarmWorker {
             }
             if (seen.has(skill.name)) continue;
             this._loadableSkills.push(skill);
-            // The Workflow skills are loadable but not indexed: the Workflow guidance names them where Workflows are on.
+            // The Workflow skills are loadable but not indexed here, in the base every chat shares: a chat with Workflows on
+            // lists them in its own copy of this index (session-manager, withWorkflowSkillsListed), as Base V2 does.
             if (this._unlistedSkillDirs.some(dir => typeof skill.dir === "string" && path.resolve(path.dirname(skill.dir)) === dir)) {
                 seen.set(skill.name, null);
                 continue;
             }
-            const description = clipDescription(String(skill.description || "").replace(/\s+/g, " ").trim(), 240);
-            seen.set(skill.name, description);
+            seen.set(skill.name, skillsIndexLine(skill));
         }
         const listed = [...seen.entries()].filter((entry): entry is [string, string] => entry[1] !== null);
         if (!this._frameworkBasePrompt || listed.length === 0) return;
-        const lines = listed.sort(([a], [b]) => a.localeCompare(b))
-            .map(([name, description]) => `- \`${name}\`${description ? ` — ${description}` : ""}`);
-        this._frameworkBasePrompt += `\n\n## Skills available on demand\n\nCall \`load_skill(name)\` when a task matches one; the full instructions come back as the tool result. Load a skill once per session, before the work it covers.\n\n${lines.join("\n")}`;
+        const lines = listed.sort(([a], [b]) => a.localeCompare(b)).map(([, line]) => line);
+        this._frameworkBasePrompt += `\n\n${skillsIndexSection(lines)}`;
     }
 
     private _applyDeclaredAgentSkills(): void {

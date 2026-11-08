@@ -531,8 +531,9 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
             + "Staging is written to a session artifact, so a human can see it while deciding. "
             + "A package may ship Workflow Definitions: workflows/<name>/workflow.yaml (metadata.name = <name>) with its interface "
             + "card workflows/<name>/card.md (front matter: name, description, whenToUse, inputs.example, outcomes for every terminal "
-            + "state, asks for every request state, sends for every send state, effects, optional model; then notes). An agent names "
-            + "the definitions its chat may start in its front matter: workflows: [<name>, <package>/<name>]. "
+            + "state, asks for every request state, sends for every send state, effects, optional model, optional modelHints: an "
+            + "agent node's id → { strength?, reasoning?, context?, note? }, the kind of model that node needs, never a model's name; "
+            + "then notes). An agent names the definitions its chat may start in its front matter: workflows: [<name>, <package>/<name>]. "
             + "Nothing is published until you call publish_agent_package.",
         parameters: {
             type: "object" as const,

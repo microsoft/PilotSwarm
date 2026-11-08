@@ -278,7 +278,8 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             receipt.steps.toolCalls = names;
             const state = await catalog.getSessionCapabilities(chat.sessionId);
             receipt.steps.workflowsFlag = state?.workflows ?? null;
-            // For the record: what the chat's CLI session declares now (Workflows on: the Workflow tools, no enable_workflows).
+            // For the record: what the chat's CLI session declares now (Workflows on: the Workflow tools, and enable_workflows,
+            // answered "already on").
             receipt.steps.declared = await declaredTools(worker, chat.sessionId).catch(error => `unreadable: ${error?.message ?? error}`);
             const enabledAt = names.indexOf("enable_workflows");
             const firstWorkflowTool = names.findIndex(name => WORKFLOW_TOOLS.includes(name));

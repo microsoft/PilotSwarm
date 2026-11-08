@@ -297,13 +297,15 @@ states:
                     const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
                     await turnWorkflowsOn(client._catalog, session.sessionId);
                     await session.sendAndWait("list your tools", TIMEOUT);
-                    const names = model.sessionRequests("list your tools")[0].body.tools.map((tool) => tool?.function?.name);
+                    const listed = model.sessionRequests("list your tools")[0].body.tools;
+                    const names = listed.map((tool) => tool?.function?.name);
                     expect(names).toContain("spawn_agent");
                     for (const name of ["workflow_definition", "update_workflow", "read_workflow", "send_workflow_input"]) {
                         expect(names, name).toContain(name);
                     }
                     expect(names).not.toContain("spawn_workflow");
-                    expect(names).not.toContain("enable_workflows");
+                    // Kept declared once they are on, answered "already on" (a call of an undeclared tool is a Failed row).
+                    expect(listed.find((tool) => tool?.function?.name === "enable_workflows")?.function?.description).toMatch(/already on in this chat/);
                 });
             } finally {
                 if (before === undefined) delete process.env.PILOTSWARM_WORKFLOWS;

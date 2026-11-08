@@ -9,6 +9,12 @@
  *   chat that owns a definition or a Workflow (saved; a chat that owns none is not read again); a session inside a
  *   Workflow; Agent Smith; a frozen 1.0.82 turn; a session manager without durable capability storage.
  * - None: the read-only tuner and service sessions get neither the paragraph nor enable_workflows.
+ * - A chat whose Workflows are on demand keeps enable_workflows declared once they are on ("already on"): the CLI refuses
+ *   a call of a tool it was not declared, which the chat shows as a Failed row (the deployed UX check).
+ * - Review RLR-F3: a lasting trigger saves with enable_workflows' revision-checked retry; a save that does not commit
+ *   keeps them on and pending, and a later plain turn saves the flag, keeping every other field.
+ * - Review RLR-F4: enable_workflows and native-task admission share one fence: closed before the task list is read and
+ *   the flag saved, open again after a refusal, closed after a success; a task call already started refuses activation.
  *
  * No database: the catalog is an in-memory stand-in with the capability store's compare-and-set.
  *
@@ -23,7 +29,7 @@ import { ManagedSession } from "../../src/managed-session.ts";
 import { normalizeCapabilityState, withWorkflowsOn, withWorkspaceLoad } from "../../src/capability-catalog.ts";
 import { nextCapabilityState } from "../../src/capability-runtime.ts";
 import {
-    ENABLE_WORKFLOWS_TOOL_SPEC, WORKFLOW_CONTEXT_STUB, WORKFLOW_SCHEDULING_HINT, WORKFLOW_SCHEDULING_HINT_OFF, WORKFLOW_SESSION_GUIDANCE,
+    ENABLE_WORKFLOWS_TOOL_SPEC, WORKFLOW_CONTEXT_STUB, WORKFLOW_INSIDE_GUIDANCE, WORKFLOW_SCHEDULING_HINT, WORKFLOW_SCHEDULING_HINT_OFF, WORKFLOW_SESSION_GUIDANCE,
 } from "../../src/workflow/guidance.ts";
 
 const owner = { provider: "test", subject: "workflow-context-owner", email: null, displayName: null };
@@ -31,10 +37,12 @@ const WORKFLOW_TOOLS = ["workflow_definition", "update_workflow", "read_workflow
 const cleanup = [];
 afterEach(async () => { while (cleanup.length) await cleanup.pop()(); });
 
-function fixture({ catalogStorage = true, agentIdentity, sources = [], native = false } = {}) {
+function fixture({ catalogStorage = true, agentIdentity, sources = [], native = false, handle: makeHandle } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "ps-workflow-context-"));
     let state = { revision: 0, selections: [] };
     const saves = [];
+    // A fault for the next saves: called before the compare-and-set; it may throw, wait, or return false (not committed).
+    let fault = null;
     const row = { sessionId: "chat", owner, isSystem: false, parentSessionId: null, rootSessionId: "chat", ...(agentIdentity ? { agentId: agentIdentity } : {}) };
     const catalog = {
         getSession: async id => (id === row.sessionId ? row : null),
@@ -43,6 +51,7 @@ function fixture({ catalogStorage = true, agentIdentity, sources = [], native = 
         ...(catalogStorage ? {
             getSessionCapabilities: async () => structuredClone(state),
             saveSessionCapabilities: async (_id, expected, next) => {
+                if (fault && await fault(expected, next) === false) return false;
                 saves.push(structuredClone(next));
                 if (state.revision !== expected) return false;
                 state = structuredClone(next);
@@ -57,7 +66,7 @@ function fixture({ catalogStorage = true, agentIdentity, sources = [], native = 
     const opened = [];
     const open = (kind, config) => {
         mkdirSync(join(dir, config.sessionId), { recursive: true });
-        const handle = { sessionId: config.sessionId, disconnect: vi.fn(async () => {}), registerTools: vi.fn(),
+        const handle = makeHandle ? makeHandle(config) : { sessionId: config.sessionId, disconnect: vi.fn(async () => {}), registerTools: vi.fn(),
             rpc: { tasks: { list: vi.fn(async () => ({ tasks: [] })) } } };
         opened.push({ kind, config, handle });
         return handle;
@@ -74,7 +83,8 @@ function fixture({ catalogStorage = true, agentIdentity, sources = [], native = 
         const last = opened.at(-1).config;
         return { config: session.config, names: last.tools.map(tool => tool.name), tools: last.tools, prompt: JSON.stringify(last.systemMessage ?? null) };
     };
-    return { manager, opened, saves, turn, get state() { return state; }, set state(value) { state = value; } };
+    return { manager, opened, saves, turn, get state() { return state; }, set state(value) { state = value; },
+        set fault(value) { fault = value; } };
 }
 
 const has = (names, list) => list.every(name => names.includes(name));
@@ -112,7 +122,8 @@ describe("Workflows on demand: declarations and instructions", () => {
         expect(on.config.workflowContext).toBe("on");
         expect(f.opened.length).toBe(before + 1);
         expect(has(on.names, ["workflow_definition", "update_workflow", "read_workflow", "send_workflow_input", "respond_session_request"])).toBe(true);
-        expect(on.names).not.toContain("enable_workflows");
+        // Still declared, answered "already on": the CLI refuses a call of a tool it was not declared (a Failed row).
+        expect(described(on.tools, "enable_workflows")).toMatch(/already on in this chat/);
         expect(on.prompt).toContain(inPrompt(WORKFLOW_SESSION_GUIDANCE.split("\n\n")[1]));
         expect(on.prompt).not.toContain(inPrompt(WORKFLOW_CONTEXT_STUB));
         for (const name of ["cron", "cron_at"]) expect(described(on.tools, name).endsWith(WORKFLOW_SCHEDULING_HINT)).toBe(true);
@@ -161,9 +172,23 @@ describe("Workflows on demand: declarations and instructions", () => {
         expect((await standalone.turn(0)).config.workflowContext).toBe("on");
     });
 
+    it("inside a Workflow: the inside guidance, and cron and cron_at without the Workflow hint (no Workflow starts there)", async () => {
+        const f = fixture();
+        const inside = await f.turn(0, { workflowInsideWorkflow: true, workflowAgentChild: true });
+        expect(inside.prompt).toContain(inPrompt(WORKFLOW_INSIDE_GUIDANCE));
+        for (const name of ["cron", "cron_at"]) {
+            expect(described(inside.tools, name)).not.toContain(WORKFLOW_SCHEDULING_HINT);
+            expect(described(inside.tools, name)).not.toContain(WORKFLOW_SCHEDULING_HINT_OFF);
+        }
+        const chat = await fixture().turn(0);
+        expect(chat.prompt).not.toContain(inPrompt(WORKFLOW_INSIDE_GUIDANCE));
+    });
+
     it("Agent Smith has them on; the read-only tuner gets neither the paragraph nor enable_workflows", async () => {
         const smith = fixture({ agentIdentity: "agent-manager" });
-        expect((await smith.turn(0)).config.workflowContext).toBe("on");
+        const smithTurn = await smith.turn(0);
+        expect(smithTurn.config.workflowContext).toBe("on");
+        expect(smithTurn.names).not.toContain("enable_workflows");
         const tuner = fixture({ agentIdentity: "agent-tuner" });
         const t = await tuner.turn(0);
         expect(t.config.workflowContext).toBe("none");
@@ -244,8 +269,9 @@ class TurnSession {
     async send() {
         queueMicrotask(async () => {
             for (const call of this.calls) {
+                if (call.emit) { this.emit(...call.emit); continue; }
                 const tool = this.registeredTools.find(item => item.name === call.name);
-                this.results.push(await tool.handler(call.args ?? {}, { sessionId: "turn-session" }));
+                this.results.push(await tool.handler(call.args ?? {}, { sessionId: this.sessionId }));
             }
             this.emit("assistant.message", { content: "model tried to continue" });
             this.emit("session.idle");
@@ -299,5 +325,155 @@ describe("enable_workflows in a turn", () => {
         const bare = new TurnSession([{ name: "enable_workflows" }]);
         await new ManagedSession("turn-session", bare, { workflowContext: "off" }).runTurn("watch it");
         expect(bare.results[0]).toBe("Error: Workflows cannot be turned on in this session.");
+    });
+});
+
+describe("Workflows on demand: an automatic save that does not commit (review RLR-F3)", () => {
+    const SELECTION_STATE = () => {
+        const used = nextCapabilityState({ revision: 4, selections: [] }, "src", { source_ref: "cap1.src", tools: ["lookup"], expected_revision: 4, request_id: "r-1" });
+        return { ...used.state, loads: [{ kind: "skill", name: "notes", root: "home", path: "users/a/notes" }] };
+    };
+    const otherLoad = n => ({ kind: "skill", name: `other-${n}`, root: "home", path: `users/a/other-${n}` });
+
+    for (const how of ["throws once", "loses every revision check to another writer"]) {
+        it(`a lasting trigger whose save ${how}: the next plain turns stay on and save the flag, keeping every other field`, async () => {
+            const f = fixture();
+            f.state = SELECTION_STATE();
+            const owns = vi.fn(async () => false);
+            // A plain turn: the chat owns no definition; that is kept.
+            expect((await f.turn(0, { workflowContextOwnsCheck: owns })).config.workflowContext).toBe("off");
+            expect(owns).toHaveBeenCalledTimes(1);
+            // The person saved a definition: its note is a lasting trigger. The save does not commit.
+            const others = [];
+            if (how === "throws once") {
+                let thrown = false;
+                f.fault = async () => { if (!thrown) { thrown = true; throw new Error("connection reset"); } };
+            } else {
+                // Another writer commits first every time (a load by path), so each compare-and-set fails.
+                f.fault = async () => {
+                    const load = otherLoad(others.length + 1);
+                    others.push(load);
+                    f.state = { ...f.state, revision: f.state.revision + 1, loads: [...f.state.loads, load] };
+                    return false;
+                };
+            }
+            const noted = await f.turn(1, { workflowContextTrigger: "lasting", workflowContextOwnsCheck: owns });
+            expect(noted.config.workflowContext).toBe("on");
+            expect(f.state.workflows).toBeUndefined();
+            if (how !== "throws once") f.fault = null;
+            // The note was consumed with that turn: the next turn has no trigger, and the chat's cached "owns none" is gone.
+            expect(f.manager.workflowContextOwnsNone.has("chat")).toBe(false);
+            const plain = await f.turn(2, { workflowContextOwnsCheck: owns });
+            expect(plain.config.workflowContext).toBe("on");
+            expect(has(plain.names, ["workflow_definition", "update_workflow", "read_workflow"])).toBe(true);
+            expect(f.state.workflows).toBe(true);
+            const expected = SELECTION_STATE();
+            expect(f.state.selections).toEqual(expected.selections);
+            expect(f.state.requests).toEqual(expected.requests);
+            expect(f.state.loads).toEqual([...expected.loads, ...others]);
+            // Saved: later turns are on from the flag, with no further save.
+            const saves = f.saves.length;
+            expect((await f.turn(3, { workflowContextOwnsCheck: owns })).config.workflowContext).toBe("on");
+            expect(f.saves).toHaveLength(saves);
+        });
+    }
+
+    it("a lasting trigger's save retries a lost revision check on the state read again", async () => {
+        const f = fixture();
+        f.state = SELECTION_STATE();
+        let lost = false;
+        f.fault = async () => {
+            if (lost) return true;
+            lost = true;
+            f.state = { ...f.state, revision: f.state.revision + 1, loads: [...f.state.loads, otherLoad(1)] };
+            return false;
+        };
+        expect((await f.turn(0, { workflowContextTrigger: "lasting" })).config.workflowContext).toBe("on");
+        expect(f.state.workflows).toBe(true);
+        expect(f.state.loads).toEqual([...SELECTION_STATE().loads, otherLoad(1)]);
+        expect(f.state.selections).toEqual(SELECTION_STATE().selections);
+    });
+});
+
+describe("enable_workflows and native-task admission share one fence (review RLR-F4)", () => {
+    const TASK = { toolName: "task", toolArgs: { name: "probe", agent_type: "swarm-task", mode: "sync", description: "Run the tests", prompt: "Run the tests" } };
+    // The native-task hook as the session manager wired it into the chat's CLI session (nativeSubagentHooks).
+    const admit = (f, sessionId = "chat") => f.opened.at(-1).config.hooks.onPreToolUse({ ...TASK, sessionId, timestamp: new Date(), workingDirectory: "/" }, { sessionId });
+    const admitted = decision => decision?.permissionDecision !== "deny" && decision?.modifiedArgs?.mode === "sync";
+    const chatSession = calls => {
+        const holder = {};
+        return { holder, handle: config => {
+            const session = new TurnSession(calls);
+            session.sessionId = config.sessionId;
+            holder.session = session;
+            return session;
+        } };
+    };
+
+    it("a task asked for while activation saves is refused, and after it; one flag write, one continuation, no task cancelled", async () => {
+        const { holder, handle } = chatSession([{ name: "enable_workflows" }]);
+        const f = fixture({ native: true, handle });
+        await f.turn(0);
+        const managed = f.manager.sessions.get("chat");
+        expect(admitted(await admit(f))).toBe(true);
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        let saving;
+        const started = new Promise(resolve => { saving = resolve; });
+        f.fault = async () => { saving(); await gate; };
+        const running = managed.runTurn("watch the build every minute");
+        await started;
+        // Activation read the task list (empty) and waits on its save: settle (2 reads), then activation's own.
+        expect(holder.session.rpc.tasks.list).toHaveBeenCalledTimes(3);
+        expect((await admit(f)).permissionDecision).toBe("deny");
+        release();
+        const result = await running;
+        expect((await admit(f)).permissionDecision).toBe("deny");
+        expect(result).toMatchObject({ type: "completed", content: "Workflows turned on in this chat." });
+        expect(result.forceContinuePrompt).toMatch(/^Workflows are now on in this chat/);
+        expect(result.queuedActions ?? []).toEqual([]);
+        expect(f.saves).toHaveLength(1);
+        expect(f.state.workflows).toBe(true);
+        expect(holder.session.rpc.tasks.cancel).not.toHaveBeenCalled();
+        expect(holder.session.rpc.tasks.remove).not.toHaveBeenCalled();
+        // Turn end settled once (2 reads): no cleanup retry.
+        expect(holder.session.rpc.tasks.list).toHaveBeenCalledTimes(5);
+    });
+
+    it("a task call already started (its admission may be in progress, the task not yet listed) refuses activation; the fence opens again", async () => {
+        const { holder, handle } = chatSession([
+            { emit: ["tool.execution_start", { toolCallId: "task-1", toolName: "task", arguments: TASK.toolArgs }] },
+            { name: "enable_workflows" },
+        ]);
+        const f = fixture({ native: true, handle });
+        await f.turn(0);
+        const result = await f.manager.sessions.get("chat").runTurn("watch the build every minute");
+        expect(holder.session.results[0]).toMatch(/finish native tasks before turning Workflows on/);
+        expect(result.forceContinuePrompt).toBeUndefined();
+        expect(f.saves).toEqual([]);
+        expect(admitted(await admit(f))).toBe(true);
+    });
+
+    it("two calls in one response (run at the same time): one activation, one continuation", async () => {
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        const enable = vi.fn(async () => { await gate; return { changed: true, revision: 1 }; });
+        const session = new TurnSession([]);
+        session.send = async () => {
+            queueMicrotask(async () => {
+                const tool = session.registeredTools.find(item => item.name === "enable_workflows");
+                const both = Promise.all([tool.handler({}, { sessionId: session.sessionId }), tool.handler({}, { sessionId: session.sessionId })]);
+                release();
+                session.results.push(...await both);
+                session.emit("session.idle");
+            });
+        };
+        const managed = new ManagedSession("turn-session", session, { workflowContext: "off", capabilityServices: services(enable) });
+        const result = await managed.runTurn("watch it");
+        expect(enable).toHaveBeenCalledOnce();
+        expect(session.results.filter(text => String(text).startsWith('{"workflows":"on"}'))).toHaveLength(1);
+        expect(session.results.some(text => /earlier enable_workflows call in this turn/.test(String(text)))).toBe(true);
+        expect(result.forceContinuePrompt).toMatch(/^Workflows are now on/);
+        expect(result.queuedActions ?? []).toEqual([]);
     });
 });

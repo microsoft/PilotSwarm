@@ -13,12 +13,12 @@ const skill = name => fs.readFileSync(path.join(WORKFLOW_V2_SKILLS_DIR, name, "S
 
 test("the guidance keeps its rules in about 1,500 characters, whatever the turn and worker add", () => {
     assert.ok(WORKFLOW_SESSION_GUIDANCE.length <= 1800, `core: ${WORKFLOW_SESSION_GUIDANCE.length}`);
-    // The default: test mode off, scripts on, a 1.0.83 turn (clock waits and revision tests).
-    const usual = workflowSessionGuidance(false, { scripts: true, clockWaits: true, tests: true });
+    // The default: test mode off, scripts on, a 1.0.83 turn (clock waits and respond_session_request).
+    const usual = workflowSessionGuidance(false, { scripts: true, clockWaits: true, requests: true });
     assert.ok(usual.length <= 2000, `default: ${usual.length}`);
-    for (const testMode of [false, true]) for (const scripts of [false, true]) for (const turn of [false, true]) {
-        const text = workflowSessionGuidance(testMode, { scripts, clockWaits: turn, tests: turn });
-        assert.ok(text.length <= 2300, `test mode ${testMode}, scripts ${scripts}, 1.0.83 ${turn}: ${text.length}`);
+    for (const testMode of [false, true]) for (const scripts of [false, true]) for (const turn of [false, true]) for (const inside of [false, true]) {
+        const text = workflowSessionGuidance(testMode, { scripts, clockWaits: turn, requests: turn, insideWorkflow: inside });
+        assert.ok(text.length <= 2300, `test mode ${testMode}, scripts ${scripts}, 1.0.83 ${turn}, inside ${inside}: ${text.length}`);
     }
 });
 

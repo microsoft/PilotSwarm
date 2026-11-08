@@ -449,11 +449,13 @@ test("the test's fixtures declaration names the load_skill call; the guidance sa
     assert.doesNotMatch(fixtures, /load_skill workflow-tools/, "never the bare `load_skill workflow-tools`");
     const sentence = "A test's `expect` names its end; receive fixtures give its messages.";
     assert.ok(WORKFLOW_SESSION_GUIDANCE.includes(sentence));
-    const usual = workflowSessionGuidance(false, { scripts: true, clockWaits: true, tests: true });
+    const usual = workflowSessionGuidance(false, { scripts: true, clockWaits: true, requests: true });
     assert.ok(usual.includes(sentence) && usual.length <= 2000, `${usual.length}`);
     assert.ok(WORKFLOW_SESSION_GUIDANCE.length <= 1800, `${WORKFLOW_SESSION_GUIDANCE.length}`);
-    // Where tests cannot run, the test line (and the sentence with it) gives way.
-    assert.ok(!workflowSessionGuidance(false, { tests: false }).includes(sentence));
+    // G-4: every turn runs a test (a frozen 1.0.82 turn's host too), so the test line stays; inside a Workflow, where no
+    // definition is written, it gives way with the definition paragraphs.
+    assert.ok(workflowSessionGuidance(false, { requests: false }).includes(sentence));
+    assert.ok(!workflowSessionGuidance(false, { insideWorkflow: true }).includes(sentence));
 });
 
 test("the skills teach receive and visit fixtures, expect, the report's fields and tools a run needs, within their budgets", () => {

@@ -10,6 +10,9 @@
   polling and receive states; the repair loop has the full procedure.
 - Every instruction to load a Workflow skill says to call load_skill with its
   name.
+- The `test` operation is described as offered where Workflows are on (Agent
+  Smith's own session has them; another chat turns them on with
+  `enable_workflows`), no longer as offered in every session.
 
 ## 1.4.10
 
