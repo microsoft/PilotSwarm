@@ -24,7 +24,8 @@ import {
 } from "../../core/src/workflow-v2-commands.js";
 
 const h = React.createElement;
-const TONES = { error: "var(--ps-danger)", warning: "var(--ps-warning)", info: "var(--ps-muted)" };
+// UXFD-F5: error words use the Workflow's danger text colour, chosen per theme for 4.5:1 (FUI-F2), as the CSS does.
+const TONES = { error: "var(--ps-wf-danger-text, var(--ps-danger))", warning: "var(--ps-warning)", info: "var(--ps-muted)" };
 
 /** What is wrong with a JSON box's text, in plain words, or null (empty text is left to the submit's own check). */
 function jsonProblem(text, { name, object }) {
@@ -100,9 +101,10 @@ export function WorkflowV2Diagnostics({ diagnostics }) {
     if (!diagnostics?.length) return null;
     return h("ul", { className: "ps-workflow-diagnostics", "aria-label": "Definition diagnostics",
         style: { margin: 0, paddingLeft: 18, fontSize: "0.8rem", overflowWrap: "anywhere" } },
-    diagnostics.map((item, i) => h("li", { key: i, "data-severity": item.severity },
-        h("strong", null, item.severity), " ", item.code, item.path ? ` · ${item.path}` : "", item.line ? ` · line ${item.line}` : "",
-        ": ", item.message)));
+    // UXFD-F6: the words a person reads are the line and the message; the code and the path stay in the tooltip, for support.
+    diagnostics.map((item, i) => h("li", { key: i, "data-severity": item.severity, "data-code": item.code ?? undefined,
+        title: [item.code, item.path].filter(Boolean).join(" · ") || undefined },
+        item.severity === "warning" ? "Warning: " : "", item.line ? `Line ${item.line}: ` : "", item.message)));
 }
 
 /**

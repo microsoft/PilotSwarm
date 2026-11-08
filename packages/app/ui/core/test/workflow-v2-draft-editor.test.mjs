@@ -169,7 +169,8 @@ test("the YAML tab edits the draft's YAML; without it, for a published definitio
     assert.ok(open.includes(`>${YAML}</textarea>`), "the YAML is in the editor");
     assert.ok(open.includes("The version stays 1.0.0: a new version needs a new workflow."));
     // Owner, 2026-11-06T13:43Z (F1): Save is an icon named "Save"; the reason it cannot save is its tooltip.
-    assert.match(open, /<button type="button" disabled=""[^>]*aria-label="Save" data-title="Nothing changed\."[^>]*data-operation="replace_definition"/);
+    // UXFD-F15: a disabled tool button stays focusable (aria-disabled), so its reason is reachable by keyboard.
+    assert.match(open, /<button type="button" aria-disabled="true"[^>]*aria-label="Save" data-title="Nothing changed\."[^>]*data-operation="replace_definition"/);
 
     for (const [label, model] of [["no YAML", modelOf({ draft: null })], ["published", modelOf({ definition: { state: "published", currentRevision: 1 } })],
         ["subtree", modelOf({ operations: ["pause", "stop", "cancel"] })]]) {

@@ -208,6 +208,7 @@ export function WorkflowToolButton({ label, glyph: glyphName, title = null, dang
     const act = event => {
         // The click after a long-press only showed the tooltip.
         if (longPressRef.current) { longPressRef.current = false; event.preventDefault?.(); return; }
+        if (disabled) { event.preventDefault?.(); return; }
         onClick?.(event);
     };
     const focusVisible = element => {
@@ -228,8 +229,10 @@ export function WorkflowToolButton({ label, glyph: glyphName, title = null, dang
         onPointerDown: startPress, onPointerMove: movePress, onPointerUp: endPress, onPointerCancel: endPress,
         // iOS opens its callout on a long-press without this (and the touch-callout CSS on the button).
         onContextMenu: event => { if (longPressRef.current || pressOriginRef.current) event.preventDefault?.(); } },
-    h("button", { ref: buttonRef, type: "button", disabled,
-        className: `ps-mini-button ps-workflow-tool-button${danger ? " is-danger" : ""}`,
+    // UXFD-F15: a disabled tool button stays focusable (aria-disabled, not the disabled attribute), so a keyboard or
+    // screen-reader user reaches it and hears why (its description, as the tooltip shows it); a click does nothing.
+    h("button", { ref: buttonRef, type: "button", "aria-disabled": disabled ? "true" : undefined,
+        className: `ps-mini-button ps-workflow-tool-button${danger ? " is-danger" : ""}${disabled ? " is-disabled" : ""}`,
         "aria-label": label, "data-title": explain ?? undefined, "aria-describedby": explain ? describedId : undefined,
         onClick: act, onFocus: event => { if (focusVisible(event.currentTarget)) show(); }, onBlur: hide,
         onKeyDown: event => { if (event.key === "Escape" && tip) { event.stopPropagation(); hide(); } },

@@ -186,7 +186,7 @@ test("the graph shows the mode only when the chat continues; the reminder names 
 // Owner 2026-11-08T16:55Z: the base guidance is trimmed to its rules; the chat modes are taught in the skills it names.
 test("the skills every Workflow author reads explain both chat modes and when to choose each", () => {
     const skill = name => fs.readFileSync(path.join(WORKFLOW_V2_SKILLS_DIR, name, "SKILL.md"), "utf8").replace(/\s+/g, " ");
-    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("load the `workflow-authoring` skill"));
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("call `load_skill` with name `workflow-authoring`"));
     const authoring = skill("workflow-authoring");
     assert.ok(authoring.includes("`chat: new` (default) gives each visit a new chat. `chat: continue` keeps one chat across the state's visits, "
         + "for memory of earlier cycles; its context grows. Not in a parallel body."));

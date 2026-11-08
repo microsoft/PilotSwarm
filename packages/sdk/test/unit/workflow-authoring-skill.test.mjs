@@ -70,7 +70,8 @@ test("the base names the Workflow skills in its guidance, scripts on or off, wha
         for (const workerSkills of [loaded, undefined, [], elsewhere]) {
             for (const scripts of [true, false]) {
                 const on = prompt(workerSkills, scripts, version);
-                assert.equal(on.split("load the `workflow-authoring` skill").length - 1, 1, version);
+                assert.equal(on.split("## Workflows").length - 1, 1, version);
+                assert.ok(on.includes("call `load_skill` with name `workflow-authoring`"), version);
                 assert.ok(on.includes(JSON.stringify(WORKFLOW_SESSION_GUIDANCE).slice(1, -1)), version);
                 assert.ok(!on.includes("When an authorized task is a finite procedure"), "the old pointer is gone");
             }

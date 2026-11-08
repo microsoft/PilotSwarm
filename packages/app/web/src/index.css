@@ -841,6 +841,7 @@ button {
 /* Hover must not animate a button that cannot be pressed. */
 .ps-toolbar-button:disabled:hover,
 .ps-mini-button:disabled:hover,
+.ps-mini-button[aria-disabled="true"]:hover,
 .ps-modal-button:disabled:hover,
 .ps-mobile-nav-button:disabled:hover {
   background: inherit;
@@ -12432,6 +12433,7 @@ textarea.ps-link-input {
    whole value, the variables), and the older detail pane's, not only the script's and samples'. */
 :root[data-ps-theme="win95"] .ps-wf-tab .ps-workflow-yaml,
 :root[data-ps-theme="win95"] .ps-wf-tab pre.ps-wf-code,
+:root[data-ps-theme="win95"] .ps-wf-tab .ps-workflow-compare-view,
 :root[data-ps-theme="win95"] .ps-workflow-detail-content pre.ps-wf-code {
   background: #ffffff;
   color: var(--w95-dark);
@@ -13189,7 +13191,8 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
   flex-direction: column;
   flex: 0 0 auto;
   min-height: 0;
-  border-top: 1px solid var(--ps-border);
+  /* UXFD-F7: the rule above the bottom panel is drawn in the control-border colour (3:1 or better), as controls are. */
+  border-top: 1px solid var(--ps-control-border, var(--ps-border));
   background: var(--ps-surface);
 }
 .ps-wf-panel.is-closed { flex-direction: row; align-items: center; padding: 2px 6px; }
@@ -13337,6 +13340,10 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 /* Final review FUI-F1: the phone query, a phone held sideways included. */
 @media (max-width: 600px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-wf-replay-range { min-height: 44px; }
+  /* UXFD-F9: the "Line 11" buttons under the YAML box are 44 px targets on a phone. */
+  .ps-workflow-yaml-marks .ps-mini-button { min-height: 44px; min-width: 44px; }
+  /* Packages UX P11: an icon button (Hide the Workflow tab, and the toolbar's) is 44 px tall on a phone held sideways too. */
+  .ps-icon-button { min-height: 44px; }
   .ps-wf-log .ps-link-button[data-action="replay-visit"] { min-height: 44px; }
   /* Review S2UI-F8: the replay's buttons (Step back, Play, Step on, Back to now, Load older visits) and a package
      definition's Make a copy and Use it for the next Workflow are 44 px targets on a phone. */
@@ -13410,6 +13417,14 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
    pickers: Definition and full screen, then Rev, the view icons, YAML, Compare and Start…. */
 .ps-wf-tab.is-phone .ps-wf-tab-head.is-two-lines { flex-wrap: wrap; }
 .ps-wf-tab.is-phone .ps-wf-tab-head.is-two-lines > .ps-wf-head-rest { flex: 1 1 100%; gap: 6px; }
+/* UXFD-F11: from 700 px wide (a phone held sideways), the row fits on one line. */
+@media (min-width: 700px) {
+  .ps-wf-tab.is-phone .ps-wf-tab-head.is-two-lines { flex-wrap: nowrap; }
+  .ps-wf-tab.is-phone .ps-wf-tab-head.is-two-lines > .ps-wf-head-rest { flex: 0 1 auto; min-width: 0; }
+}
+/* UXFD-F10: on a phone the YAML box scrolls inside a capped height, and the editor's bar stays at the top of the tab. */
+.ps-wf-tab.is-phone .ps-workflow-draft-editor > .ps-workflow-yaml { max-height: 55vh; overflow: auto; }
+.ps-wf-tab.is-phone .ps-workflow-draft-editor > .ps-workflow-yaml-strip { position: sticky; top: 0; z-index: 2; background: var(--ps-surface); }
 .ps-wf-tab.is-phone .ps-wf-head-actions { gap: 6px; }
 .ps-wf-tab.is-phone .ps-wf-picker-select { width: 100%; min-height: 44px; text-overflow: ellipsis; }
 .ps-wf-tab.is-phone .ps-wf-picker-face { min-height: 44px; }

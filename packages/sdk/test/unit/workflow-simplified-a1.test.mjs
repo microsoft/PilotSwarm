@@ -97,10 +97,9 @@ test("an agent node too deep is refused in words naming its node and the levels"
 
 test("the base guidance hands prescriptive work to a Workflow (O3)", () => {
     for (const phrase of [
-        "Some work is prescriptive or repetitive and needs little judgment most of the time.",
-        "For that work, write a Workflow Definition and start a Workflow instead of doing each step yourself.",
+        "For prescriptive or repetitive work that needs little judgment, write a Workflow Definition and start a Workflow instead of doing each step yourself.",
         "It runs without model turns, except at the agent nodes that need judgment.",
-        "you may still spawn sub-agents when that fits better.",
+        "Do one-off work directly, or spawn sub-agents when that fits better.",
     ]) {
         assert.ok(WORKFLOW_SESSION_GUIDANCE.includes(phrase), phrase);
     }

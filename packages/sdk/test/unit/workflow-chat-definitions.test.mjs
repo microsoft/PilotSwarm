@@ -32,13 +32,13 @@ test("the tool: one name, list, read, save, start and (stage 2.2) test, the guar
     }
     // Owner 2026-11-08T16:55Z: the declaration carries its contract; the workflow-tools skill has the details.
     const text = WORKFLOW_DEFINITION_TOOL_SPEC.description;
-    assert.ok(text.length <= 700, `${text.length}`);
+    assert.ok(text.length <= 900, `${text.length}`);
     for (const phrase of ["This chat's Workflow Definitions, each named, with revisions 1, 2, 3.", "a stale save is refused",
         "a revision with errors is saved but cannot start", "start again to run it again",
         "test: only when the user asks, or before you publish it in a package.",
         // Stage 2.3 (P3, P4, D7, E2-7).
         "under canStart the package definitions (<package>/<name>, locked) you may start", "read it before you start one",
-        "Load the workflow-tools skill for every argument."]) {
+        "Call load_skill with name workflow-tools for every argument."]) {
         assert.ok(text.includes(phrase), phrase);
     }
     const tools = fs.readFileSync(new URL("../../plugins/workflow-v2/skills/workflow-tools/SKILL.md", import.meta.url), "utf8").replace(/\s+/g, " ");

@@ -109,7 +109,7 @@ test("named branches first, the router pattern as the older form: the patterns s
     assert.match(named, /Above\s+16 branches, set it \(at most 16\)\./);
     // The base guidance names the authoring skill, which teaches named branches and points to the patterns skill (owner
     // 2026-11-08T16:55Z: the guidance keeps its rules; the details are in the skills).
-    assert.match(WORKFLOW_SESSION_GUIDANCE, /load the `workflow-authoring` skill/);
+    assert.match(WORKFLOW_SESSION_GUIDANCE, /call `load_skill` with name `workflow-authoring`/);
     assert.doesNotMatch(WORKFLOW_SESSION_GUIDANCE, /section 8a/);
     assert.doesNotMatch(REFERENCE, /section 8a/);
 });

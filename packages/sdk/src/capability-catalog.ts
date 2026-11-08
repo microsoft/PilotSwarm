@@ -15,7 +15,7 @@ export interface CapabilitySource {
     scope: "shared" | "user"; owner?: FeatureOwner | null; packageId?: string;
     artifacts: CapabilityArtifact[]; tools: Map<string, Tool<any>>;
     mcpServers: Record<string, any>;
-    /** Not listed in a session's skills index (search and load still find it): instructions that name it point to it. */
+    /** Listed in a session's V2 skills index only where Workflows are on in it; search and load find it either way. */
     unlisted?: boolean;
 }
 export interface CapabilitySelection { sourceId: string; sourceRef?: string; tools: string[]; mcpServers: string[] }
@@ -210,11 +210,11 @@ export function workspaceCapabilityHits(workspace: WorkspaceCapabilities | undef
 }
 
 /** Complete, body-free inventory trusted for automatic Base V2 discovery. */
-export function ownedAndStaticCapabilityInventory(sources: CapabilitySource[], owner: FeatureOwner | null) {
+export function ownedAndStaticCapabilityInventory(sources: CapabilitySource[], owner: FeatureOwner | null, options: { includeUnlisted?: boolean } = {}) {
     const entries: Array<{ kind: "skill" | "agent"; name: string; description: string; package: string;
         ownership: "static" | "owned"; scope: "shared" | "user"; ref: string }> = [];
     for (const source of sources) {
-        if (source.unlisted === true || !visibleCapabilitySource(source, owner)) continue;
+        if ((source.unlisted === true && options.includeUnlisted !== true) || !visibleCapabilitySource(source, owner)) continue;
         const ownership = capabilityOwnership(source, owner);
         if (ownership === "other_shared") continue;
         for (const [index, artifact] of source.artifacts.entries()) {

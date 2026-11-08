@@ -92,9 +92,9 @@ function updateWorkflowDescription(options: { stop: boolean; test: boolean }): s
         + (options.stop ? "stop (grace_seconds 0 to 3600, default 60: nothing new starts, started work may finish, then the run ends stopped); " : "")
         + "set_vars (set, delete, and expected_kv_revision from read_workflow: one atomic change to the run's variables); recover (when "
         + "read_workflow shows needsRecovery). "
-        + (options.test ? "test, test_respond and test_advance run and answer a draft's test run (the workflow-testing skill). " : "")
+        + (options.test ? "test, test_respond and test_advance run and answer a draft's test run (call load_skill with name workflow-testing). " : "")
         + "run_id defaults to the live run. To change or start a definition use workflow_definition: replace_definition, publish, "
-        + "publish_and_start and start apply only to Workflows made before revisions. Load the workflow-tools skill for every argument. "
+        + "publish_and_start and start apply only to Workflows made before revisions. Call load_skill with name workflow-tools for every argument. "
         + "Returns JSON.";
 }
 
@@ -177,7 +177,7 @@ export const UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC = {
 
 const READ_MILESTONE_WORDS = " It also shows a run's stop, each agent step's chat and each branch. Each section holds its newest rows, open "
     + "rows listed apart; limit and cursor (from run.pages) page older rows. execution_id, kv_revision with kv_key, agent_versions, "
-    + "definition_revision and step_input are separate reads (the workflow-tools skill).";
+    + "definition_revision and step_input are separate reads (load_skill workflow-tools has each).";
 
 /** read_workflow on a 1.0.83 turn while workflow test mode is off: paging and the separate reads (design 04; R01; mock M10). */
 export const READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC = {

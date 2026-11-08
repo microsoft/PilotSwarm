@@ -6,7 +6,7 @@
  * Workflow skills (plugins/workflow-v2/skills, and workflow-testing with test
  * mode on) from an SDK directory rather than a plugin directory, so they must
  * also come as a static capability source; otherwise a V2 chat that follows
- * the guidance ("load the `workflow-authoring` skill") is told no such skill
+ * the guidance (call load_skill with name workflow-authoring) is told no such skill
  * exists. A V1 session reads the worker's shared skill list and must keep
  * them too.
  *

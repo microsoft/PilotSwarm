@@ -50,7 +50,9 @@ export function workflowDefinitionToolSpec(options: { tests?: boolean } = {}) {
             + "start: a new Workflow from a revision (default the newest valid); start again to run it again. "
             + (tests ? "test: only when the user asks, or before you publish it in a package. " : "")
             + "card: a package definition's inputs and results; read it before you start one. "
-            + "Load the workflow-tools skill for every argument. Returns JSON.",
+            + "A definition's inputs are one JSON Schema under inputs.schema, as in: inputs: { schema: { type: object, required: [topic], "
+            + "properties: { topic: { type: string } } } }. "
+            + "Call load_skill with name workflow-tools for every argument. Returns JSON.",
         parameters: {
             type: "object",
             properties: {
@@ -65,7 +67,7 @@ export function workflowDefinitionToolSpec(options: { tests?: boolean } = {}) {
                 notify_on_completion: { type: "boolean", description: "start: default true." },
                 agent_models: { type: "object", description: "start: only when the person asks for a model." },
                 ...(tests ? {
-                    fixtures: { type: "array", items: { type: "object" }, description: "test: prepared answers (workflow-tools skill)." },
+                    fixtures: { type: "array", items: { type: "object" }, description: "test: prepared answers (load_skill workflow-tools)." },
                     test_id: { type: "string", description: "test: a test still running." },
                 } : {}),
                 update: { type: "boolean", description: "start: a package's newer version." },

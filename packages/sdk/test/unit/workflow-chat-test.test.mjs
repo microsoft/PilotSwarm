@@ -298,7 +298,7 @@ test("the test operation's answer shapes and a two-fixture example are in the wo
     const { workflowDefinitionToolSpec } = await import("../../dist/workflow/v2/definition-tool.js");
     const fs = await import("node:fs");
     const spec = workflowDefinitionToolSpec();
-    assert.match(spec.parameters.properties.fixtures.description, /workflow-tools skill/);
+    assert.match(spec.parameters.properties.fixtures.description, /load_skill workflow-tools/);
     const tools = fs.readFileSync(new URL("../../plugins/workflow-v2/skills/workflow-tools/SKILL.md", import.meta.url), "utf8").replace(/\s+/g, " ");
     assert.ok(tools.includes("a tool call's result; an agent step's `{ outcome, output }`; a request step's `{ response }` or `{ decline: { reason } }`; a send step's any value."));
     assert.ok(tools.includes('- { operation: agent, state: classify, response: { kind: success, value: { outcome: bug, output: { label: "bug" } } } }'));

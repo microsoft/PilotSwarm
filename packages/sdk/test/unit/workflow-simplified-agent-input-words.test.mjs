@@ -84,6 +84,6 @@ test("the authoring skill tells authors to name an agent node's input fields, gi
     assert.equal(authoring.split(AUTHORING).length - 1, 1);
     const agents = authoring.slice(authoring.indexOf("## 7. Agent states"), authoring.indexOf("## 8. Parallel states"));
     assert.ok(agents.includes(AUTHORING), "in the agent states section");
-    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("load the `workflow-authoring` skill"));
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("call `load_skill` with name `workflow-authoring`"));
 });
 

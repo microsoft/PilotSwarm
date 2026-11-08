@@ -125,7 +125,7 @@ test("the canonical examples are real: each compiles on the host every session h
 test("(a) a default worker (scripts off, no request-turn flag) carries the full text, and its scripts-off line names agent and parallel nodes", () => {
     const block = workflowBlock(systemPrompt({ scripts: false, requestTurn: false }));
     for (const phrase of ["at the agent nodes that need judgment", "answer it once with `respond_session_request`",
-        "load the `workflow-authoring` skill"]) {
+        "call `load_skill` with name `workflow-authoring`"]) {
         assert.ok(block.includes(phrase), phrase);
     }
     assert.match(block, /Use wait, messaging, agent and parallel nodes/);
@@ -162,7 +162,7 @@ test("(d) the basic-engine text is gone: no export, and no option gives a sessio
         assert.equal(name in guidance, false, name);
     }
     assert.equal(workflowSessionGuidance(false, { scripts: true, fullEngine: false }), workflowSessionGuidance(false, { scripts: true }));
-    for (const phrase of ["at the agent nodes that need judgment", "`workflow-reference`: every field"]) {
+    for (const phrase of ["at the agent nodes that need judgment", "every field: `workflow-reference`"]) {
         assert.ok(workflowSessionGuidance(false, { scripts: true }).includes(phrase), phrase);
     }
 });

@@ -85,7 +85,7 @@ test("update_workflow and read_workflow are declared with typed operations", () 
         ["definition_hash", "delete", "expected_kv_revision", "expected_revision", "inputs", "notify_on_completion", "operation", "operation_id", "reason", "run_id", "set", "vars",
             "workflow_id", "yaml"]);
     assert.ok(update.description.includes("recover") && update.description.includes("needsRecovery"), "update_workflow describes recover");
-    for (const operation of ["set_vars", "pause", "resume", "cancel", "expected_kv_revision", "workflow-tools skill"]) {
+    for (const operation of ["set_vars", "pause", "resume", "cancel", "expected_kv_revision", "load_skill with name workflow-tools"]) {
         assert.ok(update.description.includes(operation), `update_workflow describes ${operation}`);
     }
     assert.deepEqual([...read.parameters.required], ["workflow_id"]);

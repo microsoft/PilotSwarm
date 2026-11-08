@@ -12,8 +12,8 @@ definition as YAML and save it with `workflow_definition`: it belongs to this
 chat and each save is a new revision. `start` makes a Workflow from a
 revision; the Workflow runs that revision, whatever is saved later.
 
-Load `workflow-reference` for every field of a state, and `workflow-tools`
-for every tool argument.
+Call `load_skill` with name `workflow-reference` for every field of a state,
+and with name `workflow-tools` for every tool argument.
 
 If the compiler answers `WORKFLOW_NODE_TYPE_UNSUPPORTED` or
 `WORKFLOW_FEATURE_UNSUPPORTED`, or `update_workflow` refuses an operation

@@ -6,7 +6,7 @@
  * every save, start and delete.
  */
 import { workflowChildrenOf, workflowStateOf } from "./workflow-owner.js";
-import { WORKFLOW_RUN_STATE_WORDS } from "./workflow-words.js";
+import { WORKFLOW_RUN_STATE_WORDS, workflowShortTime } from "./workflow-words.js";
 import { workflowV2LineDiff, workflowV2RunCommandFailure } from "./workflow-v2-commands.js";
 import { formatLocalTime } from "./formatting.js";
 
@@ -392,10 +392,10 @@ export function chatRevisionCompare(readFrom, readTo, from, to) {
 
 /**
  * What a refused or unanswered save, start or delete says (E2-3: "Revision 6 was saved by the chat at 9:41 AM. Reload to
- * edit it."), with the time as this screen shows times (`timeOf`). { phase: "failed" | "unconfirmed", code, message,
+ * edit it."), with the time as this screen shows times (`timeOf`; UXFD-F14: the info line's form, workflowShortTime). { phase: "failed" | "unconfirmed", code, message,
  * stale (REVISION_STALE: the newest revision, to reload) }.
  */
-export function chatDefinitionFailure(error, { timeOf = chatShownTime } = {}) {
+export function chatDefinitionFailure(error, { timeOf = workflowShortTime } = {}) {
     const failure = workflowV2RunCommandFailure(error);
     const details = isRecord(error?.details) ? error.details : null;
     if (failure.code === "REVISION_STALE" && Number.isSafeInteger(details?.currentRevision)) {

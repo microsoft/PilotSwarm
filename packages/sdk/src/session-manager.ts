@@ -2709,8 +2709,10 @@ export class SessionManager {
         // the prompt callback must not repeat an inspect/role database lookup.
         const v2Owner = catalogRow?.isSystem || (nativeOwner?.provider === SYSTEM_USER_PRINCIPAL.provider
             && nativeOwner?.subject === SYSTEM_USER_PRINCIPAL.subject) ? null : nativeOwner;
+        // The Workflow skills are listed only where Workflows are on in the chat (the coordinator's on-demand rule); load_skill
+        // and search_capabilities find them either way.
         const v2Inventory = config.baseAgentPolicy?.version === "v2"
-            ? ownedAndStaticCapabilityInventory(getSources(), v2Owner) : undefined;
+            ? ownedAndStaticCapabilityInventory(getSources(), v2Owner, { includeUnlisted: workflowContext === "on" }) : undefined;
         config.baseV2CapabilityIndex = v2Inventory ? this._baseV2CapabilityIndexSection(v2Inventory) : undefined;
 
         // Build system message: worker base + client override. Section 4.11:

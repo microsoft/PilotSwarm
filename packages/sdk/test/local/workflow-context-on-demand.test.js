@@ -31,7 +31,7 @@ const WORKFLOW_TOOLS = ["workflow_definition", "update_workflow", "read_workflow
 const cleanup = [];
 afterEach(async () => { while (cleanup.length) await cleanup.pop()(); });
 
-function fixture({ catalogStorage = true, agentIdentity } = {}) {
+function fixture({ catalogStorage = true, agentIdentity, sources = [], native = false } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "ps-workflow-context-"));
     let state = { revision: 0, selections: [] };
     const saves = [];
@@ -50,7 +50,7 @@ function fixture({ catalogStorage = true, agentIdentity } = {}) {
             },
         } : {}),
     };
-    const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "legacy base", nativeSubagents: "off", getCapabilitySources: () => [] }, dir);
+    const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "legacy base", nativeSubagents: native ? "sync" : "off", getCapabilitySources: () => sources }, dir);
     manager.workflowScriptsEnabled = true;
     manager.setSessionCatalog(catalog);
     manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
@@ -170,6 +170,34 @@ describe("Workflows on demand: declarations and instructions", () => {
         expect(none(t.names, ["enable_workflows", ...WORKFLOW_TOOLS])).toBe(true);
         expect(t.prompt).not.toContain("## Workflows");
         await expect(t.config.capabilityServices.enableWorkflows()).rejects.toThrow(/restricted session/);
+    });
+});
+
+describe("Workflows on demand: the V2 skills index", () => {
+    // The Workflow skills, as worker.ts registers them: a static source, not listed while Workflows are off.
+    const WORKFLOW_SKILLS = { id: "static:workflow-skills", name: "PilotSwarm Workflow skills", source: "static", scope: "shared", revision: "r1",
+        unlisted: true, tools: new Map(), mcpServers: {}, artifacts: [
+            { kind: "skill", name: "workflow-authoring", description: "Load before you create a Workflow.", body: "BODY" },
+            { kind: "skill", name: "workflow-tools", description: "Every argument of the Workflow tools.", body: "BODY" }] };
+    const OTHER = { id: "static:canvas", name: "Canvas", source: "static", scope: "shared", revision: "r1", tools: new Map(), mcpServers: {},
+        artifacts: [{ kind: "skill", name: "canvas-apps", description: "Canvas apps.", body: "BODY" }] };
+    // The V2 index is the turn's dynamic section (config.baseV2CapabilityIndex), added to the prompt each turn.
+    const indexOf = shown => shown.config.baseV2CapabilityIndex ?? "";
+
+    it("off: the index does not list the Workflow skills (search and load still find them); on: it lists them", async () => {
+        // Base Agent V2 (its index) comes with native tasks.
+        const off = fixture({ sources: [WORKFLOW_SKILLS, OTHER], native: true });
+        const shown = await off.turn(0);
+        expect(shown.config.baseAgentPolicy?.version).toBe("v2");
+        expect(indexOf(shown)).toContain("canvas-apps");
+        expect(indexOf(shown)).not.toContain("workflow-authoring");
+        const found = await shown.config.capabilityServices.search({ query: "workflow authoring", kinds: ["skill"] });
+        expect(found.capabilities.map(item => item.name)).toContain("workflow-authoring");
+        await shown.config.capabilityServices.enableWorkflows();
+        const on = await off.turn(1);
+        expect(on.config.workflowContext).toBe("on");
+        expect(indexOf(on)).toContain("workflow-authoring");
+        expect(indexOf(on)).toContain("workflow-tools");
     });
 });
 

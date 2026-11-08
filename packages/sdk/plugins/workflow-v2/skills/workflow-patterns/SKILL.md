@@ -5,7 +5,7 @@ description: Load when one Workflow must run different nodes in its branches at 
 
 # Workflow patterns
 
-Load `workflow-authoring` first. This skill adds two patterns to it.
+Call `load_skill` with name `workflow-authoring` first. This skill adds two patterns to it.
 
 ## Different work in each branch at once: named branches
 

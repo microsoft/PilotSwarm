@@ -49,8 +49,8 @@ test("on a 1.9.0 turn the declarations add the milestone operations and fields",
     for (const name of ["grace_seconds", "agent_mode", "fixtures", "scenario", "interception_id", "response", "seconds"]) {
         assert.ok(Object.hasOwn(update.parameters.properties, name), name);
     }
-    for (const words of ["stop (grace_seconds 0 to 3600, default 60", "test, test_respond and test_advance", "the workflow-testing skill",
-        "Load the workflow-tools skill for every argument"]) {
+    for (const words of ["stop (grace_seconds 0 to 3600, default 60", "test, test_respond and test_advance", "load_skill with name workflow-testing",
+        "Call load_skill with name workflow-tools for every argument"]) {
         assert.ok(update.description.includes(words), words);
     }
     assert.deepEqual(update.parameters.required, UPDATE_WORKFLOW_TOOL_SPEC.parameters.required);

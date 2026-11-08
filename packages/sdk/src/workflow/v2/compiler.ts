@@ -1,4 +1,4 @@
-import { parseDocument } from "yaml";
+import { isScalar, parseDocument, visit, type Document } from "yaml";
 import { bindingRootsOf, parseBindingExpression, validateBindingTemplate, WorkflowBindingError } from "./bindings.js";
 import { canonicalJson, isJsonObject, isStorableText, sha256Hex, WorkflowJsonError, type JsonValue } from "./json.js";
 import { normalizeSchema, SCHEMA_NAME_PATTERN, schemaReferences, wholeSchemaRefusal, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
@@ -498,6 +498,29 @@ class Diagnostics {
         this.items.push({ severity: "warning", code, path, message });
     }
     get failed(): boolean { return this.items.some(item => item.severity === "error"); }
+}
+
+/**
+ * UXFD-F2: a duplicated key's words name the key and both lines, as `Duplicate key "required" at line 11 (first at line 8)`,
+ * from the key the parser flags (its offset) and the first key of the same name in the same map; null when not found.
+ */
+function duplicateKeyWords(document: Document, yaml: string, offset: number | undefined): string | null {
+    if (typeof offset !== "number") return null;
+    let words: string | null = null;
+    visit(document, {
+        Map(_key, map) {
+            if (words !== null) return visit.BREAK;
+            const keys = map.items.map(pair => pair.key).filter(isScalar);
+            const second = keys.find(key => key.range?.[0] === offset);
+            if (!second) return undefined;
+            const first = keys.find(key => key !== second && key.value === second.value && (key.range?.[0] ?? Infinity) < offset);
+            if (!first) return undefined;
+            words = `Duplicate key "${String(second.value).slice(0, 100)}" at line ${lineOf(yaml, offset)} (first at line ${lineOf(yaml, first.range?.[0])}): `
+                + "a mapping may name each key once.";
+            return visit.BREAK;
+        },
+    });
+    return words;
 }
 
 function lineOf(yaml: string, offset: number | undefined): number | undefined {
@@ -1428,7 +1451,10 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
     }
     let parsed: unknown;
     const document = parseDocument(yaml, { prettyErrors: false, strict: true, uniqueKeys: true });
-    for (const error of document.errors) diagnostics.error("WORKFLOW_YAML_INVALID", "$", error.message, lineOf(yaml, error.pos?.[0]));
+    for (const error of document.errors) {
+        const message = error.code === "DUPLICATE_KEY" ? duplicateKeyWords(document, yaml, error.pos?.[0]) ?? error.message : error.message;
+        diagnostics.error("WORKFLOW_YAML_INVALID", "$", message, lineOf(yaml, error.pos?.[0]));
+    }
     for (const warning of document.warnings) diagnostics.warning("WORKFLOW_YAML_WARNING", "$", warning.message);
     if (document.errors.length) return result(null, null, null);
     try {
