@@ -80,7 +80,7 @@ test("UXFD-F4: the guidance has a stop rule for a repeated error, and workflow_d
     const guidance = workflowSessionGuidance(false, { scripts: true, clockWaits: true, tests: true });
     assert.ok(guidance.includes("A save with errors: fix the line each error names. If the same error returns after two saves, "
         + "stop: call `load_skill` with name `workflow-authoring`, or tell the person the exact error."), guidance);
-    assert.ok(guidance.length <= 1900, `${guidance.length}`);
+    assert.ok(guidance.length <= 2000, `${guidance.length}`);
     const description = workflowDefinitionToolSpec({ tests: true }).description;
     const example = /inputs: (\{ schema: \{ type: object, required: \[topic\], properties: \{ topic: \{ type: string \} \} \} \})/.exec(description)?.[1];
     assert.ok(example, description);

@@ -144,3 +144,15 @@ states:
   done: { type: terminal, outcome: succeeded, output: "${input}" }   # [quick lane's result, careful lane's result]
   failed: { type: terminal, outcome: failed, output: "${input}" }
 ```
+
+## Testing these patterns
+
+A test's fixtures (`workflow-tools`) answer by state id, so each branch's
+agent node has its own: `{ operation: agent, state: quick_summary, ... }`
+and `{ operation: agent, state: careful_summary, ... }`. A For each body's
+node runs once per item; one fixture answers every item, and `visit`
+counts per item. In a loop, `visit: n` answers the n-th round of a state;
+a fixture without `visit` answers the other rounds. A receive gets its
+message from `{ operation: receive, state: <id>, visit?, response: { kind:
+success, value: <message> } }`. The report's `path` names each step's
+`branch` (its name, or `item N`) and `enteredBy`.

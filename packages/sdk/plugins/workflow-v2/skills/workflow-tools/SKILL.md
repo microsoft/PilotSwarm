@@ -21,7 +21,7 @@ revision it started with.
 | `read` | `name` or `definition_id`, `revision?` (default the newest) | Its YAML, errors and the Workflows started from it. |
 | `save` | `name`, `yaml`; to change one, `definition_id` and `expected_revision` | The next revision, with its errors. |
 | `start` | `name` or `definition_id`, `revision?` (default the newest valid), `inputs`, `vars?`, `notify_on_completion?` (default true), `agent_models?`, `update?` | A new Workflow from that revision. |
-| `test` | `name` or `definition_id`, `revision?`, `inputs`, `vars?`, `fixtures`, `test_id?` | A test report. |
+| `test` | `name` or `definition_id`, `revision?`, `inputs`, `vars?`, `fixtures`, `expect?`, `test_id?` | A test report. |
 | `card` | `name` (`<package>/<name>`) | A package definition's interface card. |
 
 ### Save
@@ -80,29 +80,56 @@ pass at once, and each tool call, agent step, send and request takes a
 prepared answer from `fixtures`. A call with no prepared answer fails the
 test, which names it.
 
-A fixture is `{ operation?, tool or state, arguments?, response: { kind,
-value } }`:
+A fixture is `{ operation?, tool or state, arguments?, visit?, response:
+{ kind, value } }`:
 
 - `operation`: `tool.call` (the default; `tool` names the tool), `agent`,
-  `send` or `request` (`state` names the step). Without `arguments` it
-  answers any call of that tool or step.
+  `send`, `request` or `receive` (`state` names the step). Without
+  `arguments` it answers any call of that tool or step; an agent, send or
+  request step's `arguments` are its input.
+- `visit` (1 or more): it answers only the n-th time the run reaches that
+  state (counted in its own branch or item); a tool call's visit is its
+  script step's. A fixture with the visit wins over one without. Use it
+  for loops: one answer per round.
+- `receive`: the message a receive step gets, as `value` (no `arguments`).
+  The test gives it as a real message (from the step's `from`, else you)
+  before its wait passes. Without one, a receive with `wait` elapses at
+  once; one without `wait` fails the test.
 - `kind: success`, and the value has the shape of its step: a tool call's
   result; an agent step's `{ outcome, output }`; a request step's
-  `{ response }` or `{ decline: { reason } }`; a send step's any value.
+  `{ response }` or `{ decline: { reason } }`; a send step's any value; a
+  receive's message, as its contract's schema says.
 - `kind: error`, value `{ code, message }` (a runtime error code such as
-  `execution_failed`), or `kind: cancel`.
+  `execution_failed`), or `kind: cancel`; a receive takes only success.
 
 ```yaml
 - { operation: agent, state: classify, response: { kind: success, value: { outcome: bug, output: { label: "bug" } } } }
 - { operation: request, state: approve, response: { kind: success, value: { response: { approved: true } } } }
+- { operation: receive, state: await_event, visit: 2, response: { kind: success, value: { buildId: 7, state: succeeded } } }
+- { tool: post_status, arguments: { text: done }, response: { kind: success, value: "posted" } }
 ```
 
+A script's call of a tool this chat does not have is answered by its
+fixture too (no real call is made); the report lists it in
+`needsToolAtRunTime`: a run of the revision needs that tool. Without a
+fixture such a call fails as it would in a run. Control tools (such as
+`spawn_agent`) are always refused.
+
+`expect`: the terminal state id or the outcome (`succeeded`, `blocked`,
+`failed`, `cancelled`) the test must end at; default outcome `succeeded`.
+The test passes when it ends there with nothing unanswered or refused. An
+`expect` the revision has no end for is refused before the test starts.
+
 An answer of the wrong shape fails the test, which says the shape it needs.
-The report gives the path taken, each step's outcome and output, the first
-error and the time used. When a test fails, fix the definition or its
-fixtures, save, and test again if the user wants. A test never tells you
-anything later: its report is the answer. If it is still running, read it
-again with its `test_id`.
+The report gives the `path` taken (each step's `visit`, outcome and output;
+`enteredBy`: the step and route it came from; `branch`: its named branch or
+`item N` of a For each; `input`: a preview), the first error, `answeredCalls`,
+`needsToolAtRunTime` and the time used. A call with no answer is in
+`unanswered`, whose `fixture` is the exact fixture to add: replace its
+`<...>` value. When a test fails, fix the definition or its fixtures, save,
+and test again if the user wants. A test never tells you anything later:
+its report is the answer. If it is still running, read it again with its
+`test_id`.
 
 ## update_workflow
 

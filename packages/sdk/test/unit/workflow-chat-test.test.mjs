@@ -128,7 +128,9 @@ test("the report of a failed test names its first error in words, or the call it
     assert.equal(cancelled.status, "failed");
     const toolShape = 'A tool call\'s answer is { kind: "success", value: <what the tool returns> }. A failure is { kind: "error", value: '
         + '{ code: "execution_failed", message: "..." } } (code: a runtime error code).';
-    assert.deepEqual(cancelled.unanswered, { call: "tool call read_build in step poll", arguments: '{"buildId":7}', expected: toolShape });
+    // G5: with the fixture to add (the call's arguments; no visit for a first visit).
+    assert.deepEqual(cancelled.unanswered, { call: "tool call read_build in step poll", arguments: '{"buildId":7}', expected: toolShape,
+        fixture: { operation: "tool.call", tool: "read_build", arguments: { buildId: 7 }, response: { kind: "success", value: "<what the tool returns>" } } });
     assert.equal(cancelled.message, "The test of hn-top-watch revision 3 failed: no prepared answer for the tool call read_build in step poll. "
         + `Add a fixture for it (or fix the definition) and test again. ${toolShape}`);
     assert.deepEqual(cancelled.firstError, { step: "poll", words: `no prepared answer for the tool call read_build in step poll. ${toolShape}` });
@@ -298,9 +300,10 @@ test("the test operation's answer shapes and a two-fixture example are in the wo
     const { workflowDefinitionToolSpec } = await import("../../dist/workflow/v2/definition-tool.js");
     const fs = await import("node:fs");
     const spec = workflowDefinitionToolSpec();
-    assert.match(spec.parameters.properties.fixtures.description, /load_skill workflow-tools/);
+    assert.match(spec.parameters.properties.fixtures.description, /call load_skill with name workflow-tools/);
     const tools = fs.readFileSync(new URL("../../plugins/workflow-v2/skills/workflow-tools/SKILL.md", import.meta.url), "utf8").replace(/\s+/g, " ");
-    assert.ok(tools.includes("a tool call's result; an agent step's `{ outcome, output }`; a request step's `{ response }` or `{ decline: { reason } }`; a send step's any value."));
+    assert.ok(tools.includes("a tool call's result; an agent step's `{ outcome, output }`; a request step's `{ response }` or `{ decline: { reason } }`; a send step's any value; "
+        + "a receive's message, as its contract's schema says."));
     assert.ok(tools.includes('- { operation: agent, state: classify, response: { kind: success, value: { outcome: bug, output: { label: "bug" } } } }'));
     assert.ok(tools.includes("- { operation: request, state: approve, response: { kind: success, value: { response: { approved: true } } } }"));
     assert.ok(tools.includes("An answer of the wrong shape fails the test, which says the shape it needs."));

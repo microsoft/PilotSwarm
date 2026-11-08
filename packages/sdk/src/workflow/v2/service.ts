@@ -85,8 +85,8 @@ export interface WorkflowV2Host {
         enqueueEvent(instanceId: string, queueName: string, data: string): Promise<void>;
     };
     /**
-     * Request states (design workflow-messaging-request.md 8.4; INACTIVE:
-     * only a test sets it, with workers that register them): a definition
+     * Request states (design workflow-messaging-request.md 8.4; every worker
+     * sets it): a definition
      * compiles with request states enabled (IR 7), and runs start at
      * controller 1.9.0 with the 1.1.0 notifier. Absent or false: a request
      * state keeps a definition an invalid draft, and runs start at 1.8.0.
@@ -117,8 +117,8 @@ export interface WorkflowV2Host {
      */
     resolveAgent?: (name: string, callerSessionId: string, packageName?: string | null) => Promise<WorkflowPublicationAgent | null>;
     /**
-     * The test-run retention policy (design 05 cleanup; INACTIVE: only a host
-     * that runs tests applies it): after each test admission, the workflow's
+     * The test-run retention policy (design 05 cleanup; applied by a host
+     * that runs tests): after each test admission, the workflow's
      * ended test runs beyond the newest `keep` that ended at least
      * `graceSeconds` ago, and whose controller has finished, are deleted
      * (WorkflowStore.pruneTestRun). Defaults: WORKFLOW_V2_TEST_RUNS_RETAINED
@@ -388,8 +388,9 @@ export interface CreateWorkflowV2Request {
     /**
      * Stage 2.2: the Workflow is an agent's test bench for this revision of a chat's definition (chat-test.ts): a service
      * session (service_kind workflow-test; its definition and revision in its creation config) that no list shows, never a Workflow of the definition.
+     * G4: `expect`, the end its test must reach (a terminal state or an outcome), kept with them for its report.
      */
-    testBench?: { definitionId: string; revision: number } | null;
+    testBench?: { definitionId: string; revision: number; expect?: { state: string } | { outcome: string } | null } | null;
 }
 
 /** Operation ids are stored as TEXT and compared exactly; refuse text PostgreSQL would reject or rewrite. */
@@ -853,7 +854,7 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
         : null;
     // The session row is claimed exclusively: an existing row of any kind,
     // or one a concurrent creator inserts first, is never modified here.
-    if (!host.catalog.createWorkflowSessionV2) throw new WorkflowStoreError("WORKFLOW_V2_UNAVAILABLE", "This session catalog cannot create v2 workflows.");
+    if (!host.catalog.createWorkflowSessionV2) throw new WorkflowStoreError("WORKFLOW_V2_UNAVAILABLE", "This session catalog cannot create Workflows.");
     const claim = await host.catalog.createWorkflowSessionV2(request.workflowSessionId, {
         parentSessionId: request.parentSessionId,
         owner: request.owner ?? null,
@@ -865,7 +866,8 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
                 // S2RT-F5: a chat Start's pin is part of its creation's identity: a replay continues only with this pin.
                 ...(request.chatPin ? { chatPin: { definitionId: request.chatPin.definitionId, revision: request.chatPin.revision } } : {}) },
             ...(request.binding ? { workflowToolBinding: request.binding } : {}),
-            ...(request.testBench ? { agentTest: { definitionId: request.testBench.definitionId, revision: request.testBench.revision } } : {}),
+            ...(request.testBench ? { agentTest: { definitionId: request.testBench.definitionId, revision: request.testBench.revision,
+                ...(request.testBench.expect ? { expect: request.testBench.expect } : {}) } } : {}),
         },
         ...(versionGuard || (request.childBudget && parentId) || (request.testBench && parentId) ? { afterClaim: async (client: PoolClient) => {
             // S2RT-F6: a test bench is made only while its chat is live and its definition is not deleted, under their locks.
@@ -890,7 +892,7 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
         if (!row || row.deletedAt || row.sessionKind !== "workflow" || (row.parentSessionId ?? null) !== request.parentSessionId
             || !isJsonObject(marker)) {
             throw new WorkflowStoreError("SESSION_EXISTS",
-                `Session ${request.workflowSessionId} already exists and is not this parent's v2 workflow; nothing was changed.`);
+                `Session ${request.workflowSessionId} already exists and is not this parent's Workflow; nothing was changed.`);
         }
         // Compare with the fingerprint the claim recorded; what it did not
         // cover (the owner, the first grant) must match the stored row.
@@ -1076,8 +1078,8 @@ async function commandRun(host: Pick<WorkflowV2Host, "store">, workflowSessionId
  * - cancel: send the run's controller its cancel command. The receipt says
  *   the command was accepted, not that the run has ended: the first
  *   run-ending transaction decides, and read_workflow shows the result;
- * - stop (controller 1.9.0 only; INACTIVE: only a test host starts runs
- *   there): a graceful stop. The store records it once, with its deadline
+ * - stop (controller 1.9.0 only; every new run starts there): a graceful
+ *   stop. The store records it once, with its deadline
  *   (the store's clock plus the grace), for a run admitted for a controller
  *   that stops (store.requestRunStop): the run admits no new state, its
  *   admitted work may settle until the deadline, and then its controller
@@ -1380,7 +1382,7 @@ async function acceptTypedInput(host: TypedInputHost, request: TypedInputRequest
     requireOperationId(request.operationId);
     const { workflowSessionId, senderSessionId } = request;
     const definition = await host.store.readDefinition(workflowSessionId);
-    if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `${workflowSessionId} is not a version 2 workflow.`);
+    if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `Session ${workflowSessionId} is not a durable Workflow.`);
     if (definition.state === "deleted") throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
     // An earlier refusal on the catalog's rows; a fresh input is decided again
     // when it is accepted, under the session locks (store.acceptInput).
@@ -1490,7 +1492,7 @@ async function testAgentPins(host: Pick<WorkflowV2Host, "store" | "resolveAgent"
 export async function previewWorkflowV2AgentVersions(host: Pick<WorkflowV2Host, "store" | "resolveAgent" | "requests">, workflowSessionId: string)
     : Promise<{ [key: string]: JsonValue }> {
     const definition = await host.store.readDefinition(workflowSessionId);
-    if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
+    if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No Workflow ${workflowSessionId}.`);
     const revisionNumber = definition.currentRevision;
     const revision = await host.store.readRevision(workflowSessionId, revisionNumber);
     if (!revision) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "The current revision is missing.");

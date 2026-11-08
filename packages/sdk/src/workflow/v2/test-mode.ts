@@ -13,9 +13,8 @@ import { promptSafeJson, workflowUpdateHeader, workflowUpdateMessage, workflowUp
 import { redactErrorThenClip } from "./redact.js";
 
 /**
- * Workflow v2 test runs (design 05 tool-mocked testing; R19, R20, R28;
- * INACTIVE: only controller 1.9.0 runs them, and only a host that starts
- * 1.9.0 runs starts one).
+ * Workflow test runs (design 05 tool-mocked testing; R19, R20, R28;
+ * controller 1.9.0 runs them).
  *
  * A test run executes its scripts normally: their direct effects (network,
  * files, processes, the clock, randomness) are real. What the framework
@@ -53,9 +52,15 @@ export interface WorkflowTestResponse {
     value: JsonValue;
 }
 
+/**
+ * What a fixture answers: an intercepted effect (WORKFLOW_V2_TEST_OPERATIONS), or, in an agent's test of a revision only
+ * (chat-test.ts), `receive`: a message the test delivers to a receive state before its clock moves on (G1).
+ */
+export type WorkflowTestFixtureOperation = WorkflowTestOperation | "receive";
+
 /** A fixture: an answer given in advance for the effect with this operation, tool or state, and arguments. */
 export interface WorkflowTestFixture {
-    operation: WorkflowTestOperation;
+    operation: WorkflowTestFixtureOperation;
     /** The tool of a tool call; null for the other operations. */
     tool: string | null;
     /** The state of an agent, send or request effect; null for a tool call. */
@@ -65,6 +70,12 @@ export interface WorkflowTestFixture {
      * null for a fixture that gave no arguments (stage 2.2): it answers any call of its tool or state, after every exact one.
      */
     argumentsSha256: string | null;
+    /**
+     * G2: the visit it answers (the n-th time the run reaches the state in its scope: the root, or one branch or item; for a
+     * tool call, its script state's visit); absent (or null) for any visit. A fixture for the visit wins over one for any
+     * visit. Absent, not null, when it names none, so fixtures without one keep their stored form (and request digest).
+     */
+    visit?: number | null;
     response: WorkflowTestResponse;
 }
 
@@ -100,25 +111,35 @@ export function parseTestResponse(value: unknown, path = "response"): WorkflowTe
 }
 
 /**
- * Parse a test run's fixtures: a list of `{ operation?, tool?, state?, arguments?, response }`. A tool call's fixture
+ * Parse a test run's fixtures: a list of `{ operation?, tool?, state?, arguments?, visit?, response }`. A tool call's fixture
  * (operation tool.call, the default) names its tool; an agent's, send's or request's names its state. Each is matched by
  * its operation, tool or state and the hash of its arguments' canonical JSON. Stage 2.2 (an agent's test): a fixture
  * without `arguments` answers any call of its tool or state, but only when no fixture gives that call's exact arguments.
+ * G2: `visit` (1 to 10000) answers only that visit of its state. G1: `receive` (options.receive: an agent's test only,
+ * chat-test.ts) is a receive state's message, given as the response's value; it takes no arguments.
  */
-export function parseTestFixtures(value: unknown): WorkflowTestFixture[] {
+export function parseTestFixtures(value: unknown, options: { receive?: boolean } = {}): WorkflowTestFixture[] {
     if (value === undefined || value === null) return [];
     const refuse = (message: string) => new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", message);
     if (!Array.isArray(value)) throw refuse("fixtures must be a list.");
     if (value.length > WORKFLOW_V2_TEST_MAX_FIXTURES) throw refuse(`fixtures may hold at most ${WORKFLOW_V2_TEST_MAX_FIXTURES} entries.`);
+    const operations: readonly string[] = options.receive === true ? [...WORKFLOW_V2_TEST_OPERATIONS, "receive"] : WORKFLOW_V2_TEST_OPERATIONS;
     const fixtures = value.map((item, index): WorkflowTestFixture => {
         const at = `fixtures[${index}]`;
-        if (!isJsonObject(item)) throw refuse(`${at} must be { operation?, tool?, state?, arguments?, response }.`);
+        if (!isJsonObject(item)) throw refuse(`${at} must be { operation?, tool?, state?, arguments?, visit?, response }.`);
         for (const key of Object.keys(item)) {
-            if (!["operation", "tool", "state", "arguments", "response"].includes(key)) throw refuse(`${at}.${key} is not a field of a fixture.`);
+            if (!["operation", "tool", "state", "arguments", "visit", "response"].includes(key)) throw refuse(`${at}.${key} is not a field of a fixture.`);
         }
         const operation = item.operation === undefined ? "tool.call" : item.operation;
-        if (typeof operation !== "string" || !(WORKFLOW_V2_TEST_OPERATIONS as readonly string[]).includes(operation)) {
-            throw refuse(`${at}.operation must be one of ${WORKFLOW_V2_TEST_OPERATIONS.join(", ")}.`);
+        if (typeof operation !== "string" || !operations.includes(operation)) {
+            throw refuse(`${at}.operation must be one of ${operations.join(", ")}.`);
+        }
+        const visit = item.visit === undefined || item.visit === null ? null : item.visit;
+        if (visit !== null && (typeof visit !== "number" || !Number.isSafeInteger(visit) || visit < 1 || visit > 10_000)) {
+            throw refuse(`${at}.visit must be the visit it answers, 1 to 10000 (the n-th time the run reaches the state).`);
+        }
+        if (operation === "receive" && Object.hasOwn(item, "arguments")) {
+            throw refuse(`${at}: a receive fixture gives the message as its response's value, not arguments.`);
         }
         const isTool = operation === "tool.call";
         const name = isTool ? item.tool : item.state;
@@ -140,9 +161,12 @@ export function parseTestFixtures(value: unknown): WorkflowTestFixture[] {
             if (error instanceof WorkflowStoreError) throw refuse(error.message);
             throw error;
         }
+        if (operation === "receive" && response.kind !== "success") {
+            throw refuse(`${at}: a receive fixture's response is { kind: success, value: <the message> }.`);
+        }
         return {
-            operation: operation as WorkflowTestOperation, tool: isTool ? name : null, state: isTool ? null : name,
-            argumentsSha256: argumentsText === null ? null : sha256Hex(argumentsText), response,
+            operation: operation as WorkflowTestFixtureOperation, tool: isTool ? name : null, state: isTool ? null : name,
+            argumentsSha256: argumentsText === null ? null : sha256Hex(argumentsText), ...(visit !== null ? { visit: visit as number } : {}), response,
         };
     });
     if (Buffer.byteLength(canonicalJson(fixtures), "utf8") > WORKFLOW_V2_TEST_FIXTURES_MAX_BYTES) {
@@ -155,29 +179,39 @@ export function parseTestFixtures(value: unknown): WorkflowTestFixture[] {
 export function storedTestFixtures(value: JsonValue): WorkflowTestFixture[] {
     if (!Array.isArray(value)) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "Stored test fixtures are not a list.");
     return value.map(item => {
-        if (!isJsonObject(item) || typeof item.operation !== "string" || !(WORKFLOW_V2_TEST_OPERATIONS as readonly string[]).includes(item.operation)
+        const visit = isJsonObject(item) && item.visit !== undefined ? item.visit : null;
+        if (!isJsonObject(item) || typeof item.operation !== "string" || ![...WORKFLOW_V2_TEST_OPERATIONS, "receive"].includes(item.operation)
             || (item.tool !== null && typeof item.tool !== "string") || (item.state !== null && typeof item.state !== "string")
-            || (item.argumentsSha256 !== null && typeof item.argumentsSha256 !== "string") || !isJsonObject(item.response)) {
+            || (item.argumentsSha256 !== null && typeof item.argumentsSha256 !== "string") || !isJsonObject(item.response)
+            || (visit !== null && (typeof visit !== "number" || !Number.isSafeInteger(visit) || visit < 1))) {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "A stored test fixture has an invalid shape.");
         }
         return {
-            operation: item.operation as WorkflowTestOperation, tool: item.tool as string | null, state: item.state as string | null,
-            argumentsSha256: item.argumentsSha256 as string | null, response: parseTestResponse(item.response),
+            operation: item.operation as WorkflowTestFixtureOperation, tool: item.tool as string | null, state: item.state as string | null,
+            argumentsSha256: item.argumentsSha256 as string | null, ...(visit !== null ? { visit: visit as number } : {}), response: parseTestResponse(item.response),
         };
     });
 }
 
 /**
  * The first fixture for this effect: its operation, its tool (a tool call) or state, and the exact hash of its arguments;
- * else the first one of its operation and tool or state that gave no arguments (any arguments).
+ * else the first one of its operation and tool or state that gave no arguments (any arguments). G2: among those, one for
+ * the effect's visit wins over one for any visit (`visit` null); a fixture for another visit never answers. An effect with
+ * no visit (null) takes only fixtures for any visit.
  */
 export function matchTestFixture(fixtures: readonly WorkflowTestFixture[], effect: {
-    operation: WorkflowTestOperation; tool: string | null; state: string | null; argumentsSha256: string;
+    operation: WorkflowTestFixtureOperation; tool: string | null; state: string | null; argumentsSha256: string | null; visit?: number | null;
 }): WorkflowTestFixture | null {
+    const visit = effect.visit ?? null;
     const same = (fixture: WorkflowTestFixture): boolean => fixture.operation === effect.operation
         && (effect.operation === "tool.call" ? fixture.tool === effect.tool : fixture.state === effect.state);
-    return fixtures.find(fixture => same(fixture) && fixture.argumentsSha256 === effect.argumentsSha256)
-        ?? fixtures.find(fixture => same(fixture) && fixture.argumentsSha256 === null) ?? null;
+    const forVisit = (fixture: WorkflowTestFixture, exact: boolean): boolean => (exact ? visit !== null && fixture.visit === visit : (fixture.visit ?? null) === null);
+    for (const [args, exact] of [[true, true], [true, false], [false, true], [false, false]] as const) {
+        const found = fixtures.find(fixture => same(fixture) && forVisit(fixture, exact)
+            && (args ? effect.argumentsSha256 !== null && fixture.argumentsSha256 === effect.argumentsSha256 : fixture.argumentsSha256 === null));
+        if (found) return found;
+    }
+    return null;
 }
 
 let declineSchemas: WorkflowSchemaSet | null = null;

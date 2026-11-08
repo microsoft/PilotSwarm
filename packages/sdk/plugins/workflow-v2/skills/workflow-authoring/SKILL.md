@@ -205,14 +205,11 @@ named `branches`, and joins the branches.
   branch (how it ended, its outcome, its output or error) and `needed`.
 - `failFast: true` cancels the other branches once the join can no longer
   succeed; without it they run to their end, then the join blocks.
-- `timeoutSeconds` (optional, as a wait's seconds): the state's own time
-  limit from its start. It needs a `timed_out` route, which is refused
-  without it. A success counts only when saved by the time limit. Then
-  running branches are cancelled and queued ones do not start: with k
-  counted successes the state joins; with fewer it fails `timed_out`, its
-  `details` reporting every branch (each finished one's result), or it is
-  `blocked` with `timedOut: true` if k could already no longer happen. A
-  pause does not stop the time limit; the route is taken after resume.
+- `timeoutSeconds` (optional): the state's own time limit from its start;
+  it needs a `timed_out` route. At the limit running branches are
+  cancelled: with k successes saved by then it joins, else it fails
+  `timed_out` (or is `blocked`); `workflow-reference` has the details. A
+  pause does not stop it.
 
 Named branches run different nodes at once (a prompt or a model for each):
 `branches: { <name>: { initial, states, input? } }` instead of `forEach` and
@@ -236,6 +233,9 @@ Never use several Workflows for this; `workflow-patterns` has an example.
    `cancel`, `set_vars`, and `recover` when `read_workflow` shows
    `needsRecovery`. Give each change a new `operation_id`; retry a change
    with its same id.
+4. Test only when the person asks: `test` with `inputs`, `fixtures`
+   (prepared answers) and `expect` (the end it must reach); a failed test's
+   report gives the fixture to add.
 
 `workflow-tools` has every argument.
 
@@ -255,9 +255,8 @@ Never use several Workflows for this; `workflow-patterns` has an example.
 ## 11. Fork, review and join work
 
 For review or SDLC work, give each branch pinned facts: the repository, the
-exact base and head commits, and the round. Let a schema bound the rounds.
-Return evidence in typed outputs (reviewed commit, findings, test receipt),
-not in chat: people see them in each branch's results. A response such as
+exact base and head commits, and the round. Return evidence (reviewed
+commit, findings, test receipt) in typed outputs, not in chat. A response such as
 `approved: true` from a request is the responder's decision as the runtime
 authenticated it; if a person must approve, get that approval through the
 normal approval path first. Opening, merging and publishing remain separate
@@ -399,4 +398,6 @@ states:
 `get_build_status` stands for a read-only tool of your own. The parent gives
 the run a `BuildEvent@1` with `send_workflow_input` (`correlation:
 { buildId }`), before or after the receive starts; without one, its wait
-elapses after 300 seconds and the run polls once.
+elapses after 300 seconds and the run polls once. A test of it gives that
+event as a fixture: `{ operation: receive, state: await_event, response:
+{ kind: success, value: { buildId: 7, state: succeeded } } }`, `expect: done`.

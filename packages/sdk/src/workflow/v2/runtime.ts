@@ -4,7 +4,7 @@ import type { ScriptToolCall } from "../executor.js";
 import { runScriptNode, type RunScriptNodeResult, type ScriptRunnerOptions } from "../runner.js";
 import { WORKFLOW_COMMAND_QUEUE, parseWorkflowCommand, workflowErrorMessage } from "../orchestration.js";
 import { WORKFLOW_SCRIPTS_DISABLED_MESSAGE } from "../activities.js";
-import { admittedWorkflowToolGrant, validateWorkflowToolArguments, type WorkflowToolBinding } from "../tool-policy.js";
+import { admittedWorkflowToolGrant, isWorkflowControlTool, validateWorkflowToolArguments, type WorkflowToolBinding } from "../tool-policy.js";
 import type { WorkflowToolExecutor } from "../tool-executor.js";
 import { bindingWithDefaultShown, evaluateBindingTemplate, WorkflowBindingError, type BindingScope } from "./bindings.js";
 import { redactErrorThenClip, redactThenClip, redactWorkflowSecrets, workflowOutputTail } from "./redact.js";
@@ -109,6 +109,9 @@ import {
  * recovered on the next collection. A messaging send state's message is
  * delivered the same way, by a send orchestration per node execution.
  */
+
+/** A script's tool call in a Workflow with no delegated tool grant (runScript; a test run's call no fixture answers too). */
+const NO_TOOL_GRANT_MESSAGE = "This workflow has no delegated tool grant; scripts in it cannot call tools.";
 
 export const WORKFLOW_V2_CONTROLLER_NAME = "workflow-v2-controller";
 /**
@@ -4554,21 +4557,42 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             executor: null, opening: null, stop: new AbortController() };
         // A test run's tool calls are intercepted (migration 0102; design 05): no live tool runs. Each call is recorded by
         // its stable id (the script's n-th call) and answered by a fixture (its tool and the exact hash of its arguments) or
-        // by the parent; the script waits for the answer, within its own timeout. The grant still decides which tools a
-        // script may call, as live.
+        // by the parent; the script waits for the answer, within its own timeout. The grant decides which tools a script may
+        // call, as live, except that a fixture answers a call of a tool the grant lacks (G3; never a control tool).
         const testFixtures = run.mode === "test" ? storedTestFixtures(await store.readTestFixtures(run.runId)) : null;
         const test = { calls: 0, active: false };
         let scriptDone = false;
-        const interceptedToolCall = async (granted: WorkflowToolBinding, call: ScriptToolCall, fixtures: readonly WorkflowTestFixture[]): Promise<unknown> => {
+        const interceptedToolCall = async (granted: WorkflowToolBinding | null, call: ScriptToolCall, fixtures: readonly WorkflowTestFixture[]): Promise<unknown> => {
             if (test.active) throw new Error("Concurrent workflow tool calls are not supported.");
             if (test.calls >= 100) throw new Error("Workflow tool call limit exceeded.");
-            admittedWorkflowToolGrant(call.name, granted.tools, granted.excludedTools);
+            // G3 (test runs only): a call of a tool the workflow's grant lacks (or of any tool, with no grant) is answered by
+            // its fixture when one matches; no real call is made either way (the test's report lists it as needing that tool
+            // at run time). A control tool is never answered, and a call no fixture answers fails with the error a live one has.
+            if (isWorkflowControlTool(call.name)) admittedWorkflowToolGrant(call.name, [], []);
+            let notGranted: unknown = null;
+            if (!granted) notGranted = new Error(NO_TOOL_GRANT_MESSAGE);
+            else {
+                try { admittedWorkflowToolGrant(call.name, granted.tools, granted.excludedTools); }
+                catch (error) { notGranted = error; }
+            }
+            if (notGranted !== null) {
+                let answered = false;
+                try {
+                    const argumentsText = boundedCanonicalJson(call.arguments, `The arguments of tool call ${test.calls + 1}`);
+                    answered = matchTestFixture(fixtures, { operation: "tool.call", tool: call.name, state: null, argumentsSha256: sha256Hex(argumentsText),
+                        visit: executed.ordinal }) !== null;
+                } catch {
+                    answered = false;
+                }
+                if (!answered) throw notGranted;
+            }
             validateWorkflowToolArguments(call.name, call.arguments);
             test.calls += 1;
             test.active = true;
             try {
                 const argumentsText = boundedCanonicalJson(call.arguments, `The arguments of tool call ${test.calls}`);
-                const fixture = matchTestFixture(fixtures, { operation: "tool.call", tool: call.name, state: null, argumentsSha256: sha256Hex(argumentsText) });
+                const fixture = matchTestFixture(fixtures, { operation: "tool.call", tool: call.name, state: null, argumentsSha256: sha256Hex(argumentsText),
+                    visit: executed.ordinal });
                 const recorded = await store.interceptToolCall({
                     runId: run.runId, nodeExecutionId: executed.nodeExecutionId, call: test.calls, tool: call.name, argumentsText,
                     fixture: fixture ? { kind: fixture.response.kind, valueText: canonicalJson(fixture.response.value) } : null,
@@ -4608,8 +4632,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             }
         };
         const callTool = async (call: ScriptToolCall): Promise<unknown> => {
-            if (!binding) throw new Error("This workflow has no delegated tool grant; scripts in it cannot call tools.");
+            // G3: a test run's call is answered by its fixture even where the grant lacks its tool (or there is no grant).
             if (testFixtures !== null) return interceptedToolCall(binding, call, testFixtures);
+            if (!binding) throw new Error(NO_TOOL_GRANT_MESSAGE);
             if (scriptDone || tools.stop.signal.aborted) throw new Error("The script ended before its tool call ran.");
             tools.opening ??= deps.openToolExecutor(run.workflowSessionId, binding, executed.ordinal, { signal: tools.stop.signal });
             const executor = await tools.opening;
@@ -5385,7 +5410,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (!intercepted) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} was admitted without its interception.`);
         if (intercepted.state === "responded" || executed.state !== "pending") return { decided: false };
         const fixture = matchTestFixture(storedTestFixtures(await store.readTestFixtures(run.runId)),
-            { operation, tool: null, state: executed.nodeId, argumentsSha256: executed.inputSha256 });
+            { operation, tool: null, state: executed.nodeId, argumentsSha256: executed.inputSha256, visit: executed.ordinal });
         if (fixture) {
             try {
                 const decide = testResultFor(intercepted, node, ir, run.irSha256, fixture.response);

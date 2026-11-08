@@ -22,7 +22,7 @@ import {
     listChatWorkflowDefinitions, readChatWorkflowDefinition, saveChatWorkflowDefinition, startChatWorkflowDefinition, type ChatDefinitionView,
 } from "./chat-definitions.js";
 import { workflowToolErrorPayload } from "./tools.js";
-import { chatTestBench, requireTestHost, startChatWorkflowTest, waitChatWorkflowTest } from "./chat-test.js";
+import { chatTestBench, requireTestHost, startChatWorkflowTest, waitChatWorkflowTest, WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS } from "./chat-test.js";
 import { parseTestFixtures } from "./test-mode.js";
 import type { ChatRevisionRow, ChatSaveReceipt } from "./chat-definition-store.js";
 import {
@@ -67,7 +67,9 @@ export function workflowDefinitionToolSpec(options: { tests?: boolean } = {}) {
                 notify_on_completion: { type: "boolean", description: "start: default true." },
                 agent_models: { type: "object", description: "start: only when the person asks for a model." },
                 ...(tests ? {
-                    fixtures: { type: "array", items: { type: "object" }, description: "test: prepared answers (load_skill workflow-tools)." },
+                    fixtures: { type: "array", items: { type: "object" }, description: "test: prepared answers (call load_skill with name workflow-tools)." },
+                    expect: { type: "string", maxLength: WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS,
+                        description: "test: the terminal state or outcome it must end at (default: succeeded)." },
                     test_id: { type: "string", description: "test: a test still running." },
                 } : {}),
                 update: { type: "boolean", description: "start: a package's newer version." },
@@ -302,9 +304,17 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
             }
             if (!context.toolCallId) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "test needs a tool call id.");
             if (!ref.definitionId && !ref.name) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "test needs name or definition_id.");
-            const fixtures = parseTestFixtures(args.fixtures);
+            // G1: an agent's test also takes receive fixtures (a receive state's message; chat-test.ts gives it).
+            const fixtures = parseTestFixtures(args.fixtures, { receive: true });
+            // G4: the end it must reach; its shape here, against the revision's terminal states when the test starts.
+            const expect = args.expect === undefined || args.expect === null ? null : args.expect;
+            if (expect !== null && (typeof expect !== "string" || !expect.trim() || expect.length > WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS)) {
+                throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `expect must be a terminal state id or an outcome, at most `
+                    + `${WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS} characters. Nothing was tested.`);
+            }
             const started = await startChatWorkflowTest(context.host, { ownerSessionId: chat, definition: ref, revision: intArg(args, "revision"),
-                inputs: objectArg(args, "inputs") ?? {}, vars: objectArg(args, "vars"), fixtures, operationId: `definition:${context.toolCallId}`, actor,
+                inputs: objectArg(args, "inputs") ?? {}, vars: objectArg(args, "vars"), fixtures, ...(expect !== null ? { expect } : {}),
+                operationId: `definition:${context.toolCallId}`, actor,
                 owner: async () => context.owner, binding: context.binding });
             return JSON.stringify(await waitChatWorkflowTest(context.host, started, { actor, ...context.testWait }));
         }
