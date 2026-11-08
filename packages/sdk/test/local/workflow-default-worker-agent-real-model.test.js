@@ -21,6 +21,12 @@
  *   with the CLI's own `skill` tool (a TEST check at 27b2eaef found a model using it; the worker gives it the Workflow
  *   skills directory). The load must succeed. Turning Workflows on first is allowed. Held (runs with PS_TEST_RUN_HELD=1)
  *   until the owner decides how the CLI's tool serves these skills.
+ *
+ * UXP-AC-01 (a real user's chat invented state types and said there was no script node): on a worker with script nodes
+ * on, a new chat is asked, with no YAML words, "Create and start a Workflow that checks every minute whether a counter
+ * variable has reached 3, using a small script, and ends when it does." PASS: within its first 3 saved revisions, one is
+ * valid and has a `type: script` state, and a Workflow of the chat starts. Held (PS_TEST_RUN_HELD=1 runs it) until the
+ * owner decides the guidance's state-type sentence and the compiler's type suggestions; the assertion stays as it is.
  * Every case checks tool calls, events, tool metadata and stored state, never the model's words.
  *
  * Every case reads the chat's orchestration version after its first prompt: createSession writes only the session row,
@@ -31,7 +37,7 @@
  * (provider:model) and optionally PS_WORKFLOW_V2_REAL_MODEL_EFFORT, on a local worker whose model catalog
  * (PS_MODEL_PROVIDERS_PATH) serves it (test/helpers/workflow-v2-real-model.mjs). Asked but unable to run, it fails as
  * BLOCKED. The receipt goes to PS_WORKFLOW_V2_REAL_MODEL_RECEIPT when set (an on-demand case's to the same path with its
- * key before the extension: <name>.enable.json, <name>.stays-off.json, <name>.load-skill.json); a summary is printed. The
+ * key before the extension: <name>.enable.json, <name>.stays-off.json, <name>.load-skill.json, <name>.script-state.json); a summary is printed. The
  * haiku case: one asked turn, the agent node's turn, and the turn the Workflow's ending notice starts; each on-demand case:
  * one or two turns (enable_workflows ends a turn and starts the next), and the simple Workflow's ending notice.
  *
@@ -55,8 +61,14 @@ const ASK = "Set up a Workflow with one agent step that writes a one-line haiku 
 const ASK_SIMPLE = "Build a simple Workflow that waits 5 seconds and then finishes, start it, and tell me when it has finished.";
 const ASK_PLAIN = "What is the capital of France? Answer in one word.";
 const ASK_SKILL = "Load the Workflow authoring skill, then tell me in one sentence what it covers.";
+/** UXP-AC-01: no YAML words; the chat must find the script state type itself. */
+const ASK_SCRIPT = "Create and start a Workflow that checks every minute whether a counter variable has reached 3, using a small script, and ends when it does.";
+/** UXP-AC-01: the first saved revisions (across the chat's definitions) in which a valid one with a script state must be. */
+const SCRIPT_SAVES = 3;
 /** A default worker: no test options; script nodes off, as PILOTSWARM_WORKFLOW_SCRIPTS=0 sets them. */
 const WORKER = { workflowScripts: { enabled: false }, logLevel: "warning" };
+/** A default worker with script nodes on (the default since 8ef4b681), for UXP-AC-01. */
+const WORKER_SCRIPTS = { workflowScripts: { enabled: true }, logLevel: "warning" };
 /** The Workflow tools a chat is declared only while Workflows are on in it (spawn_workflow is no longer declared at all). */
 const WORKFLOW_TOOLS = ["workflow_definition", "update_workflow", "read_workflow", "send_workflow_input", "respond_session_request", "spawn_workflow"];
 const AUTHORING_SKILL = "workflow-authoring";
@@ -185,6 +197,15 @@ const TITLE = "a default worker: a real model builds and runs a Workflow with an
 const TITLE_ENABLE = "Workflows on demand: a new chat asked in prose to build and run a simple Workflow calls enable_workflows, then runs it to its end";
 const TITLE_STAYS_OFF = "Workflows on demand: a new chat asked an ordinary question keeps Workflows off (no enable_workflows, no Workflow tool declared)";
 const TITLE_LOAD_SKILL = "Workflows on demand: a new chat asked in prose to load the Workflow authoring skill loads it (load_skill or the CLI's skill tool) and gets its body";
+const TITLE_SCRIPT = "UXP-AC-01: a new chat asked in plain words for a counter check with a small script saves a valid revision with a script state within 3 saves and starts it";
+/** Cases held until the owner decides; PS_TEST_RUN_HELD=1 runs them. */
+const RUN_HELD = process.env.PS_TEST_RUN_HELD === "1";
+const HELD = {
+    [TITLE_LOAD_SKILL]: "held: how the CLI's own skill tool serves the Workflow skills awaits the owner's decision",
+    [TITLE_SCRIPT]: "held: UXP-AC-01 (the guidance's state-type sentence and the compiler's type suggestions) awaits the owner's decision",
+};
+/** `it`, or a skip that says why the case is held. */
+const caseOf = title => (RUN_HELD || !HELD[title] ? it : (name, _options, _body) => it.skip(`${name} — ${HELD[name]}`, () => {}));
 
 /** Where a case's receipt goes: PS_WORKFLOW_V2_REAL_MODEL_RECEIPT, with an on-demand case's key before its extension. */
 function receiptPath(key) {
@@ -199,7 +220,7 @@ function receiptPath(key) {
  * chat's orchestration version (its instance exists from the first prompt on), then `check({ env, client, worker,
  * catalog, chat, receipt })`. Prints the receipt and writes it (receiptPath), with the verdict, whatever the outcome.
  */
-async function realModelChat(key, ask, check, { workflowsOn = false } = {}) {
+async function realModelChat(key, ask, check, { workflowsOn = false, worker: workerOptions = WORKER } = {}) {
     if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
     if (plan.target !== "local") throw new Error("BLOCKED: this check runs on a local worker (PS_WORKFLOW_V2_REAL_MODEL_TARGET=local).");
     const test = key ? `workflow-default-worker-agent-real-model.${key}` : "workflow-default-worker-agent-real-model";
@@ -207,7 +228,7 @@ async function realModelChat(key, ask, check, { workflowsOn = false } = {}) {
         model: { ref: plan.model.ref, effort: plan.effort ?? "the model's default" }, ask, steps: {}, verdict: null };
     const env = createTestEnv(test);
     try {
-        await withClient(env, { worker: WORKER }, async (client, worker) => {
+        await withClient(env, { worker: workerOptions }, async (client, worker) => {
             const catalog = client._catalog;
             const chat = await client.createSession({ model: plan.model.ref, owner: OWNER, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });
             receipt.steps.sessionId = chat.sessionId;
@@ -244,7 +265,7 @@ function workflowsEnded(chatStore, sessionId, ms) {
 
 describe("the full Workflow engine on a default worker, on a real model", () => {
     if (plan.state === "skip") {
-        for (const title of [TITLE, TITLE_ENABLE, TITLE_STAYS_OFF, TITLE_LOAD_SKILL]) it.skip(`${title} — skipped: ${plan.reason}`, () => {});
+        for (const title of [TITLE, TITLE_ENABLE, TITLE_STAYS_OFF, TITLE_LOAD_SKILL, TITLE_SCRIPT]) it.skip(`${title} — skipped: ${plan.reason}`, () => {});
         return;
     }
 
@@ -341,10 +362,8 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
     });
 
     // Known failure until the owner decides how the CLI's own `skill` tool serves the Workflow skills: a model that calls it
-    // with `name` (as the guidance says for load_skill) is refused '"skill": Required' and may stop there. Runs with
-    // PS_TEST_RUN_HELD=1.
-    const heldCliSkill = process.env.PS_TEST_RUN_HELD !== "1";
-    it.skipIf(heldCliSkill)(TITLE_LOAD_SKILL, { timeout: TEST_TIMEOUT }, async () => {
+    // with `name` (as the guidance says for load_skill) is refused '"skill": Required' and may stop there (HELD).
+    caseOf(TITLE_LOAD_SKILL)(TITLE_LOAD_SKILL, { timeout: TEST_TIMEOUT }, async () => {
         await realModelChat("load-skill", ASK_SKILL, async ({ catalog, chat, receipt }) => {
             // Turning Workflows on first is allowed: enable_workflows ends its turn (sendAndWait may return there) and the next
             // one, started at once, loads the skill. So wait for a load (load_skill or "skill") to have its result, or for the
@@ -382,5 +401,41 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             expect(authoring.length, `load_skill or the CLI's skill tool was called for ${AUTHORING_SKILL}. ${why}`).toBeGreaterThan(0);
             expect(loaded, `a call for ${AUTHORING_SKILL} (load_skill or the CLI's skill tool) succeeded and returned its body. ${why}`).toBe(true);
         });
+    });
+    caseOf(TITLE_SCRIPT)(TITLE_SCRIPT, { timeout: TEST_TIMEOUT }, async () => {
+        await realModelChat("script-state", ASK_SCRIPT, async ({ catalog, chat, receipt }) => {
+            const chatStore = catalog.workflowStore().chat;
+            // enable_workflows may end the first turn; the Workflow is built after it. Wait for a Workflow of the chat to start,
+            // then for the chat to settle (it checks every minute; it need not end here).
+            const started = await until(async () => {
+                const rows = await chatStore.listWorkflows({ ownerSessionId: chat.sessionId });
+                return rows.length ? rows : null;
+            }, RUN_MS);
+            receipt.steps.settled = await settle(catalog, chat.sessionId, TURN_MS);
+            const workflows = started ?? await chatStore.listWorkflows({ ownerSessionId: chat.sessionId });
+            receipt.steps.workflows = workflows.map(row => ({ id: row.workflowSessionId, revision: row.revision, status: row.runStatus }));
+            receipt.steps.toolCalls = (await toolCallsOf(catalog, chat.sessionId)).map(call => call.name);
+            // Every saved revision of the chat's definitions, in the order they were saved.
+            const saved = [];
+            for (const definition of await chatStore.listDefinitions(chat.sessionId, { includeDeleted: true })) {
+                for (const summary of await chatStore.listRevisions(definition.definitionId)) {
+                    const ir = summary.valid
+                        ? await chatStore.readRevisionIr(definition.definitionId, summary.revision, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION })
+                        : null;
+                    saved.push({ name: definition.name, revision: summary.revision, valid: summary.valid, createdAt: summary.createdAt,
+                        states: ir ? stateKinds(ir) : [], errors: summary.errorCount });
+                }
+            }
+            saved.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || a.revision - b.revision);
+            receipt.steps.saved = saved;
+            const firstScript = saved.findIndex(item => item.valid && item.states.includes("script"));
+            receipt.steps.firstScriptSave = firstScript < 0 ? null : firstScript + 1;
+
+            const why = JSON.stringify(receipt);
+            expect(receipt.steps.chatVersion, why).toBe(DURABLE_SESSION_LATEST_VERSION);
+            expect(firstScript, `a valid revision with a script state was saved. ${why}`).toBeGreaterThanOrEqual(0);
+            expect(firstScript, `it was among the first ${SCRIPT_SAVES} saves. ${why}`).toBeLessThan(SCRIPT_SAVES);
+            expect(workflows.length, `a Workflow of the chat started. ${why}`).toBeGreaterThan(0);
+        }, { worker: WORKER_SCRIPTS });
     });
 });
