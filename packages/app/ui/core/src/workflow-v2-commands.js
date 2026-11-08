@@ -1046,14 +1046,40 @@ export function workflowV2RunCommandFailure(error) {
     const refused = Number.isSafeInteger(status) && ((status >= 400 && status < 500) || status === 501);
     // A contract's refusal lists its problems (WORKFLOW_INPUT_INVALID: a list; TEST_RESPONSE_INVALID: { problems }, or the
     // state's outcomes); the first few are shown with it.
-    const listed = Array.isArray(error?.details) ? error.details : Array.isArray(error?.details?.problems) ? error.details.problems : [];
-    const problems = listed.filter(item => isRecord(item) && typeof item.message === "string")
-        .slice(0, 3).map(item => `${typeof item.path === "string" && item.path ? `${item.path}: ` : ""}${item.message}`);
+    const listed = (Array.isArray(error?.details) ? error.details : Array.isArray(error?.details?.problems) ? error.details.problems : [])
+        .filter(item => isRecord(item) && typeof item.message === "string" && item.message.trim());
+    const shown = listed.slice(0, 3);
+    const problems = shown.map(workflowV2ProblemText);
+    const more = listed.length > shown.length ? `and ${listed.length - shown.length} more` : "";
     if (!problems.length && Array.isArray(error?.details?.outcomes)) {
         problems.push(`Its outcomes are ${error.details.outcomes.filter(item => typeof item === "string").join(", ")}`);
     }
-    const message = bounded(`${String(error?.message || error || "The request failed.")}${problems.length ? ` ${problems.join("; ")}` : ""}`);
-    return { phase: refused ? "failed" : "unconfirmed", message, code: typeof error?.code === "string" ? error.code : null };
+    const code = typeof error?.code === "string" ? error.code : null;
+    // UXFD (C): inputs that do not match the inputs schema say only what is wrong, in the server's plain words
+    // ("Start refused: model is required; sessions needs at least 6 items."), without the schema's name or any JSON.
+    const plain = code === "WORKFLOW_INPUT_INVALID" && shown.length > 0 && shown.every(item => !AJV_WORDS.test(item.message.trim()));
+    const message = bounded(plain
+        ? `${[...problems, more].filter(Boolean).join("; ")}.`
+        : `${String(error?.message || error || "The request failed.")}${problems.length ? ` ${[...problems, more].filter(Boolean).join("; ")}` : ""}`);
+    return { phase: refused ? "failed" : "unconfirmed", message, code };
+}
+
+/**
+ * Words for a problem that name no place: Ajv's own (an older server's) begin "must …" ("must be string"), "boolean
+ * schema …" or "property name …"; others begin with the verb ("is required"). The server's plain words begin with their
+ * place ("repo must be text", "The value must be an object", "items 1 and 2 of tags are the same").
+ */
+const AJV_WORDS = /^(?:must|is|has|should|boolean schema|property name)\b/i;
+
+/**
+ * One problem of a refusal as shown: the server's plain words as they are, without a full stop (several are joined with
+ * "; "); words that name no place after it ("/repo: must be string").
+ */
+export function workflowV2ProblemText(item) {
+    const message = String(item?.message ?? "").trim();
+    const path = typeof item?.path === "string" && item.path ? item.path : "";
+    if (AJV_WORDS.test(message)) return `${path ? `${path}: ` : ""}${message}`;
+    return message.replace(/\.$/, "");
 }
 
 /**
@@ -1481,46 +1507,67 @@ function sampleType(schema) {
     return null;
 }
 
-/** A sample of one value of `schema`, named `name` (its property name), or undefined when the schema says nothing usable. */
-function sampleOf(schema, name, depth, budget) {
+/** A day `offset` days after 2026-01-01, as an ISO date and time (UTC). */
+function sampleDate(offset) {
+    return new Date(Date.UTC(2026, 0, 1 + offset, 9, 0, 0)).toISOString().replace(/\.000Z$/, "Z");
+}
+
+/**
+ * A sample of one value of `schema`, named `name` (its property name), or undefined when the schema says nothing usable.
+ * `variant` (UXFD C2): the items of a list whose items must differ (uniqueItems) are variants 0, 1, 2… of its items'
+ * sample: the next enum value or example, else the sample by type made different (a number one more, a text with its
+ * number, "example tags 2"), so the sample can be submitted as it is.
+ */
+function sampleOf(schema, name, depth, budget, variant = 0) {
     if (depth > SAMPLE_MAX_DEPTH) return null;
     if (schema === true || schema === undefined) return undefined;
     if (!isRecord(schema)) return undefined;
-    const sources = [
-        Array.isArray(schema.examples) && schema.examples.length ? [schema.examples[0]] : [],
+    const enumValues = Array.isArray(schema.enum) ? schema.enum : [];
+    const examples = Array.isArray(schema.examples) ? schema.examples : [];
+    const sources = variant === 0 ? [
+        examples.length ? [examples[0]] : [],
         // OF-S2-8: an OpenAPI-style single `example` too.
         Object.hasOwn(schema, "example") ? [schema.example] : [],
         Object.hasOwn(schema, "default") ? [schema.default] : [],
-        Array.isArray(schema.enum) && schema.enum.length ? [schema.enum[0]] : [],
+        enumValues.length ? [enumValues[0]] : [],
         Object.hasOwn(schema, "const") ? [schema.const] : [],
-    ].flat();
+    ].flat()
+        // A later variant: an allowed value must stay one (the next, while there are any); else the next example.
+        : enumValues.length ? [enumValues[variant % enumValues.length]]
+            : Object.hasOwn(schema, "const") ? [schema.const]
+                : examples.length > variant ? [examples[variant]] : [];
     for (const source of sources) {
         const given = givenValue(budget, source);
         if (given !== undefined) return given;
     }
     for (const key of ["oneOf", "anyOf"]) {
         if (Array.isArray(schema[key]) && schema[key].length) {
-            const value = sampleOf(schema[key].find(item => !(isRecord(item) && item.type === "null")) ?? schema[key][0], name, depth + 1, budget);
+            const value = sampleOf(schema[key].find(item => !(isRecord(item) && item.type === "null")) ?? schema[key][0], name, depth + 1, budget, variant);
             if (value !== undefined) return value;
         }
     }
     if (Array.isArray(schema.allOf) && schema.allOf.length) {
-        const parts = schema.allOf.map(part => sampleOf(part, name, depth + 1, budget)).filter(value => value !== undefined);
+        const parts = schema.allOf.map(part => sampleOf(part, name, depth + 1, budget, variant)).filter(value => value !== undefined);
         if (parts.length && parts.every(isRecord)) return Object.assign({}, ...parts);
         if (parts.length) return parts[0];
     }
     // A long name gives no longer a text than this (UI-3 verification).
     const words = sampleWords(name).slice(0, 60).trim();
+    const tag = variant > 0 ? String(variant + 1) : "";
     switch (sampleType(schema)) {
         case "string": {
             const format = typeof schema.format === "string" ? schema.format : "";
             const slug = words.replace(/\s+/g, "-") || "item";
-            let value = format === "date-time" ? "2026-01-01T09:00:00Z" : format === "date" ? "2026-01-01" : format === "time" ? "09:00:00"
-                : format === "uri" || format === "url" || format === "iri" ? `https://example.com/${slug}`
-                    : format === "email" ? `${slug.replace(/-/g, ".")}@example.com`
-                        : format === "uuid" ? "00000000-0000-4000-8000-000000000000"
-                            : words ? `example ${words}` : "example";
-            if (Number.isSafeInteger(schema.maxLength) && schema.maxLength >= 0 && value.length > schema.maxLength) value = value.slice(0, schema.maxLength);
+            let value = format === "date-time" ? sampleDate(variant) : format === "date" ? sampleDate(variant).slice(0, 10)
+                : format === "time" ? sampleDate(0).slice(11, 17) + String(variant % 60).padStart(2, "0")
+                    : format === "uri" || format === "url" || format === "iri" ? `https://example.com/${slug}${tag ? `-${tag}` : ""}`
+                        : format === "email" ? `${slug.replace(/-/g, ".")}${tag}@example.com`
+                            : format === "uuid" ? `00000000-0000-4000-8000-${String(variant % 1e12).padStart(12, "0")}`
+                                : `${words ? `example ${words}` : "example"}${tag ? ` ${tag}` : ""}`;
+            if (Number.isSafeInteger(schema.maxLength) && schema.maxLength >= 0 && value.length > schema.maxLength) {
+                // A variant keeps its number at the end, so the cut texts still differ.
+                value = tag && schema.maxLength >= tag.length ? `${value.slice(0, schema.maxLength - tag.length)}${tag}` : value.slice(0, schema.maxLength);
+            }
             // UI-3: checked before anything is allocated.
             if (typeof schema.minLength === "number" && schema.minLength > SAMPLE_MAX_STRING) throw SAMPLE_OVER_BUDGET;
             if (Number.isSafeInteger(schema.minLength) && value.length < schema.minLength) value = value.padEnd(schema.minLength, "x");
@@ -1530,20 +1577,38 @@ function sampleOf(schema, name, depth, budget) {
         case "integer":
         case "number": {
             const integer = sampleType(schema) === "integer";
-            if (typeof schema.minimum === "number") return integer ? Math.ceil(schema.minimum) : schema.minimum;
-            if (typeof schema.exclusiveMinimum === "number") return integer ? Math.floor(schema.exclusiveMinimum) + 1 : schema.exclusiveMinimum + 1;
-            if (typeof schema.maximum === "number" && schema.maximum < 1) return integer ? Math.floor(schema.maximum) : schema.maximum;
-            return 1;
+            let value = 1;
+            if (typeof schema.minimum === "number") value = integer ? Math.ceil(schema.minimum) : schema.minimum;
+            else if (typeof schema.exclusiveMinimum === "number") value = integer ? Math.floor(schema.exclusiveMinimum) + 1 : schema.exclusiveMinimum + 1;
+            else if (typeof schema.maximum === "number" && schema.maximum < 1) value = integer ? Math.floor(schema.maximum) : schema.maximum;
+            if (variant === 0) return value;
+            // A later variant counts up from it, or down when that passes the maximum.
+            const up = value + variant;
+            const over = (typeof schema.maximum === "number" && up > schema.maximum) || (typeof schema.exclusiveMaximum === "number" && up >= schema.exclusiveMaximum);
+            return over ? value - variant : up;
         }
-        case "boolean": return false;
+        case "boolean": return variant % 2 === 1;
         case "null": return null;
         case "array": {
-            const item = sampleOf(Array.isArray(schema.items) ? schema.items[0] : schema.items, name, depth + 1, budget);
-            const count = Number.isSafeInteger(schema.minItems) && schema.minItems > 1 ? Math.min(schema.minItems, 3) : 1;
-            if (item === undefined) return [];
-            // The copies after the first count too (the item's own characters were counted once).
-            if (count > 1) chargeSample(budget, (JSON.stringify(item)?.length ?? 4) * (count - 1));
-            return Array.from({ length: count }, () => item);
+            const itemSchema = Array.isArray(schema.items) ? schema.items[0] : schema.items;
+            if (schema.maxItems === 0) return [];
+            // UXFD (C2): as many items as minItems asks for (a sample offered must be one that can be submitted).
+            const count = Number.isSafeInteger(schema.minItems) && schema.minItems > 1 ? schema.minItems : 1;
+            // UI-3: every item takes at least its separator; a count past the budget is refused before anything is made.
+            if (count * 2 > SAMPLE_MAX_CHARS) throw SAMPLE_OVER_BUDGET;
+            const first = sampleOf(itemSchema, name, depth + 1, budget, schema.uniqueItems === true ? variant * count : variant);
+            if (first === undefined) return [];
+            if (schema.uniqueItems !== true) {
+                // The copies after the first count too (the item's own characters were counted once).
+                if (count > 1) chargeSample(budget, (JSON.stringify(first)?.length ?? 4) * (count - 1));
+                return Array.from({ length: count }, () => first);
+            }
+            const items = [first];
+            for (let index = 1; index < count; index += 1) {
+                chargeSample(budget, 1);
+                items.push(sampleOf(itemSchema, name, depth + 1, budget, variant * count + index));
+            }
+            return items;
         }
         case "object": {
             const properties = isRecord(schema.properties) ? schema.properties : {};
@@ -1555,9 +1620,9 @@ function sampleOf(schema, name, depth, budget) {
                 if (!required.has(key) && !all) continue;
                 // The key as JSON writes it (escapes included), its colon and its separator.
                 chargeSample(budget, JSON.stringify(key).length + 2);
-                const value = sampleOf(properties[key], key, depth + 1, budget);
+                const value = sampleOf(properties[key], key, depth + 1, budget, variant);
                 if (value !== undefined) { out[key] = value; continue; }
-                const fallback = `example ${sampleWords(key).slice(0, 60).trim() || "value"}`;
+                const fallback = `example ${sampleWords(key).slice(0, 60).trim() || "value"}${tag ? ` ${tag}` : ""}`;
                 chargeSample(budget, JSON.stringify(fallback).length);
                 out[key] = fallback;
             }
@@ -1571,8 +1636,9 @@ function sampleOf(schema, name, depth, budget) {
  * Sample inputs for a run, built from the workflow's input schema (batch 7, f-05; the read model's graph.inputsSchema,
  * its references already resolved): for each field its first example, else its default, else its first enum value,
  * else a value by its type: a short readable text from the field's name for a string ("example change" for change; a
- * date, time, URL, e-mail address or UUID for those formats), the minimum or 1 for a number, false for a boolean, one
- * sample item for an array, and for an object its required properties (all of them when it has four or fewer). A JSON
+ * date, time, URL, e-mail address or UUID for those formats; padded to minLength), the minimum or 1 for a number, false
+ * for a boolean, for an array as many items as minItems asks for (at least one), all different when uniqueItems asks for
+ * that, and for an object its required properties (all of them when it has four or fewer). A JSON
  * object, or null when there is no schema or it does not describe an object (the box then keeps "{}"). Pure.
  */
 export function workflowV2SampleInputs(schema) {

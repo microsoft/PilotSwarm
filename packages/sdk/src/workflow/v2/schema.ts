@@ -1,5 +1,6 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { AnySchemaObject, ErrorObject, FuncKeywordDefinition, SchemaValidateFunction } from "ajv";
+import { schemaProblemWords } from "./schema-words.js";
 import { isJsonObject, type JsonValue } from "./json.js";
 
 type Validator = NonNullable<ReturnType<Ajv2020["getSchema"]>>;
@@ -437,17 +438,14 @@ function createAjv(): Ajv2020 {
 }
 
 /**
- * Ajv's params that carry a value the schema's author wrote (a const's, an enum's): left out of a problem's message
- * (adversarial review R2-SF-4), which is returned to the caller, stored with the node and shown; the message still says
- * what is wrong ("must be equal to constant", "must be equal to one of the allowed values").
+ * Each problem as its place (a JSON pointer) and plain words that name the place and what is wrong
+ * (schemaProblemWords): "sessions needs at least 6 items", "model is required". No JSON of Ajv's params: the message is
+ * returned to the caller (a refused Start, in the Start dialog and the chat's answer alike), stored with the node and
+ * shown. It names no value a schema's author wrote for a const or an enum (adversarial review R2-SF-4); it still says what
+ * is wrong ("must be one of the allowed values").
  */
-const LITERAL_PARAMS: ReadonlySet<string> = new Set(["allowedValue", "allowedValues"]);
-
-function describeErrors(errors: ErrorObject[] | null | undefined): SchemaProblem[] {
-    return (errors ?? []).slice(0, MAX_REPORTED_ERRORS).map(error => {
-        const params = Object.fromEntries(Object.entries(error.params ?? {}).filter(([key]) => !LITERAL_PARAMS.has(key)));
-        return { path: error.instancePath || "/", message: `${error.message ?? "is invalid"}${Object.keys(params).length ? ` ${JSON.stringify(params)}` : ""}` };
-    });
+function describeErrors(errors: ErrorObject[] | null | undefined, at: string): SchemaProblem[] {
+    return (errors ?? []).slice(0, MAX_REPORTED_ERRORS).map(error => ({ path: error.instancePath || "/", message: schemaProblemWords(error, at) }));
 }
 
 /** Compiled validators for one definition's `$defs`. */
@@ -497,12 +495,16 @@ export class WorkflowSchemaSet {
         return validate;
     }
 
-    /** Problems found validating `value` against the named schema; empty when valid. */
-    validate(name: string, value: JsonValue): SchemaProblem[] {
+    /**
+     * Problems found validating `value` against the named schema; empty when valid. `at`: where `value` sits in a larger
+     * value (a JSON pointer), for the words of each message only ("/home" → "home.city is required"); each `path` stays
+     * relative to `value`.
+     */
+    validate(name: string, value: JsonValue, at = ""): SchemaProblem[] {
         const validate = this.validator(name);
         const valid = validate(value);
         if (typeof valid !== "boolean") throw new WorkflowSchemaError("asynchronous schemas are not supported", `$defs.${name}`);
-        return valid ? [] : describeErrors(validate.errors);
+        return valid ? [] : describeErrors(validate.errors, at);
     }
 }
 

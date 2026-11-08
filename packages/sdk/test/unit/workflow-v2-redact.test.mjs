@@ -397,9 +397,9 @@ test("R2-SF-4: complete_workflow_node's and respond_session_request's failures a
 test("R2-SF-4: a problem's message names no value of a const or an enum; its other details stay", () => {
     const set = new WorkflowSchemaSet({ C: { const: `${SENTINEL}-c` }, E: { enum: ["a", `${SENTINEL}-e`] }, N: { type: "integer", minimum: 3 } });
     const problems = [...set.validate("C", "x"), ...set.validate("E", "x")];
-    assert.deepEqual(problems.map(problem => problem.message), ["must be equal to constant", "must be equal to one of the allowed values"]);
+    assert.deepEqual(problems.map(problem => problem.message), ["The value must be the allowed value", "The value must be one of the allowed values"]);
     assert.ok(!JSON.stringify(problems).includes(SENTINEL));
-    assert.deepEqual(set.validate("N", 1).map(problem => problem.message), ["must be >= 3 {\"comparison\":\">=\",\"limit\":3}"]);
+    assert.deepEqual(set.validate("N", 1).map(problem => problem.message), ["The value must be at least 3"]);
 });
 
 // S7-DX stderr guard: a process output tail cut at its front begins inside a line, so a secret's value can be there without

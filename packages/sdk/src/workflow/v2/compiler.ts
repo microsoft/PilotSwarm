@@ -2,6 +2,7 @@ import { isScalar, parseDocument, visit, type Document } from "yaml";
 import { bindingRootsOf, parseBindingExpression, validateBindingTemplate, WorkflowBindingError } from "./bindings.js";
 import { canonicalJson, isJsonObject, isStorableText, sha256Hex, WorkflowJsonError, type JsonValue } from "./json.js";
 import { normalizeSchema, SCHEMA_NAME_PATTERN, schemaReferences, wholeSchemaRefusal, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
+import { schemaPlaceWords, schemaPointerParts } from "./schema-words.js";
 import { isValidTimezone, normalizeCronAtInput } from "../../cron-at.js";
 
 /**
@@ -1892,7 +1893,7 @@ function fixedParts(value: JsonValue, schema: JsonValue | undefined, defs: Recor
     }
     if (!isJsonObject(value)) return;
     const required = Array.isArray(target.required) ? target.required.filter((key): key is string => typeof key === "string") : [];
-    for (const key of required) if (!Object.hasOwn(value, key)) problems.push(`${pointer || "/"} must have required property '${key}'`);
+    for (const key of required) if (!Object.hasOwn(value, key)) problems.push(`${schemaPlaceWords([...schemaPointerParts(pointer), key])} is required`);
     for (const [key, item] of Object.entries(value)) {
         fixedParts(item, memberSchema(target, key), defs, `${pointer}/${key.replace(/~/g, "~0").replace(/\//g, "~1")}`, parts, problems, depth + 1);
     }
@@ -1913,9 +1914,8 @@ function fixedPartsProblems(input: JsonValue, schema: JsonValue, defs: Record<st
         const named = Object.fromEntries(parts.map((part, index) => [`_fixed.${index}`, part.schema]));
         const validator = new WorkflowSchemaSet({ ...defs, ...named });
         parts.forEach((part, index) => {
-            for (const problem of validator.validate(`_fixed.${index}`, part.value)) {
-                problems.push(`${part.pointer}${problem.path === "/" ? "" : problem.path || ""} ${problem.message}`.replace(/^ /, "/ "));
-            }
+            // Plain words that name the place in the whole input (schema-words.ts).
+            for (const problem of validator.validate(`_fixed.${index}`, part.value, part.pointer)) problems.push(problem.message);
         });
     }
     return problems;
@@ -1954,7 +1954,7 @@ function checkFixedInputs(nodes: Record<string, WorkflowIRNode>, contracts: Reco
         const problems = validator.validate(schemaName, node.input);
         if (problems.length) {
             diagnostics.error("WORKFLOW_STATE_INPUT_INVALID", path, `this input has no binding, so it is sent as written, and it does not match ${target.what}: `
-                + `${problems.slice(0, 3).map(problem => `${problem.path} ${problem.message}`).join("; ")}.`);
+                + `${problems.slice(0, 3).map(problem => problem.message).join("; ")}.`);
         }
     }
 }

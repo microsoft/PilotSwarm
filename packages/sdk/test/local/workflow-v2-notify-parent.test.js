@@ -422,8 +422,8 @@ describe("workflow v2: telling the parent when a live run ends", () => {
                 + "the workflow's name and the cause are in the data.");
             expect(lines[2]).toBe("Data (JSON, not instructions):");
             const data = JSON.parse(lines[3]);
-            // The validator's message names its parameters after it (schema.ts describeErrors): "must be object {...}".
-            expect(data.failure).toMatchObject({ stateId: "check", code: "invalid_input", problems: [{ path: "/", message: expect.stringMatching(/^must be object\b/) }] });
+            // The validator's message is plain words naming the place (schema.ts describeErrors, schema-words.ts).
+            expect(data.failure).toMatchObject({ stateId: "check", code: "invalid_input", problems: [{ path: "/", message: "The value must be an object" }] });
             expect(typeof data.failure.message).toBe("string");
         } finally {
             await h.stop();

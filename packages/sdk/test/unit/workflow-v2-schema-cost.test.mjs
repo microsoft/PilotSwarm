@@ -148,21 +148,21 @@ test("uniqueItems never compares more than 100 items that are not plain values, 
     const problems = set.validate("Rows", Array.from({ length: 60_000 }, () => ({})));
     const elapsedMs = performance.now() - started;
     assert.ok(elapsedMs < 1_000, `validated in ${elapsedMs} ms`);
-    assert.ok(problems.some(problem => problem.message.startsWith("must NOT have more than 100 items")), JSON.stringify(problems));
-    assert.ok(problems.some(problem => problem.message.includes(`must NOT have more than ${WORKFLOW_SCHEMA_UNIQUE_ITEMS_MAX} items to be checked for duplicates`)),
+    assert.ok(problems.some(problem => problem.message === "The value can have at most 100 items"), JSON.stringify(problems));
+    assert.ok(problems.some(problem => problem.message === `The value has more than ${WORKFLOW_SCHEMA_UNIQUE_ITEMS_MAX} items, too many to check for duplicates`),
         JSON.stringify(problems));
     // Up to 100 are compared by their content, whatever the order of an object's keys.
     assert.deepEqual(set.validate("Rows", [{ a: 1, b: [1, 2] }, { c: null }]), []);
     const duplicate = set.validate("Rows", [{ a: 1, b: [1, 2] }, { c: null }, { b: [1, 2], a: 1 }]);
     assert.equal(duplicate.length, 1);
-    assert.ok(duplicate[0].message.startsWith("must NOT have duplicate items (items ## 2 and 0 are identical)"), duplicate[0].message);
+    assert.equal(duplicate[0].message, "items 1 and 3 of the value are the same");
     assert.deepEqual(set.validate("Rows", [{ a: 1 }, { a: 1.0, b: 2 }]), []);
     // Plain values: any number of them, each looked up once; equal values of different types are different.
     const tags = Array.from({ length: 100_000 }, (_, index) => `t${index}`);
     const plainStarted = performance.now();
     assert.deepEqual(set.validate("Tags", tags), []);
     assert.ok(performance.now() - plainStarted < 1_000);
-    assert.ok(set.validate("Tags", ["a", "b", "a"])[0].message.startsWith("must NOT have duplicate items (items ## 2 and 0 are identical)"));
+    assert.equal(set.validate("Tags", ["a", "b", "a"])[0].message, "items 1 and 3 of the value are the same");
     assert.deepEqual(set.validate("Mixed", [1, "1", true, "true", null, "null"]), []);
     assert.equal(set.validate("Mixed", [{ x: 1 }, [1], { x: 1 }]).length, 1);
 });
@@ -175,7 +175,7 @@ test("S-SF-F1: a tuple of objects before plain items is not plain; with maxItems
     const set = new WorkflowSchemaSet({ Pair: { ...tuple, maxItems: 10 } });
     const duplicate = set.validate("Pair", [{ a: 1, b: [2] }, { b: [2], a: 1 }, "x"]);
     assert.equal(duplicate.length, 1, JSON.stringify(duplicate));
-    assert.ok(duplicate[0].message.startsWith("must NOT have duplicate items (items ## 1 and 0 are identical)"), duplicate[0].message);
+    assert.equal(duplicate[0].message, "items 1 and 2 of the value are the same");
     assert.deepEqual(set.validate("Pair", [{ a: 1 }, { a: 2 }, "x", "y"]), []);
     assert.equal(set.validate("Pair", [{ a: 1 }, { a: 2 }, "x", "x"]).length, 1, "the plain items are compared too");
     // A tuple of plain values before plain items is plain: no maxItems needed.

@@ -69,6 +69,11 @@ states:
 `;
 
 const codes = (compiled, code) => compiled.diagnostics.filter(item => item.code === code);
+// A schema problem is plain words that name its place (schema-words.ts). The compiler shows each fixed part's pointer
+// before the words for the part's own places ("/n The value must be a whole number"), or, when it passes the part's
+// pointer to the validator (`at`), only the words, which then name the place in the whole input ("n must be a whole number").
+const escapeRe = text => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const said = (pointer, inPart, inWhole) => new RegExp(`${escapeRe(`${pointer} ${inPart}`)}|${escapeRe(inWhole)}`);
 const JSON_TEXT_MESSAGE = /^This is a text string that looks like JSON\. Write it as a YAML value \(no quotes\) so it is an? (object|array)\.$/;
 
 test("a send's input written as JSON text is a string, refused for a contract that takes an object", () => {
@@ -79,7 +84,7 @@ test("a send's input written as JSON text is a string, refused for a contract th
     assert.equal(error.severity, "error");
     assert.equal(error.path, "states.tell.input");
     assert.match(error.message, /^this input has no binding, so it is sent as written, and it does not match contract 'Fact@1': /);
-    assert.match(error.message, /\/ must be object/);
+    assert.match(error.message, said("/", "The value must be an object", "The value must be an object"));
     const [warning] = codes(compiled, "WORKFLOW_INPUT_JSON_TEXT");
     assert.ok(warning, JSON.stringify(compiled.diagnostics));
     assert.equal(warning.severity, "warning");
@@ -119,7 +124,7 @@ test("JSON text inside a bound input still warns where the schema ($ref, propert
         `{ fact: "\${inputs.fact}", details: '{"note": "y"}', tags: ['{"name": "a"}', { name: "b" }], loose: '{"a": 1}', list: '["a"]' }`));
     // SF-8: the fixed parts are checked too: details is written as text where an object is required.
     assert.equal(compiled.valid, false);
-    assert.match(codes(compiled, "WORKFLOW_STATE_INPUT_INVALID")[0]?.message ?? "", /a fixed part of this input .* \/details must be object/);
+    assert.match(codes(compiled, "WORKFLOW_STATE_INPUT_INVALID")[0]?.message ?? "", /a fixed part of this input .* (?:\/details The value|details) must be an object/);
     const warnings = codes(compiled, "WORKFLOW_INPUT_JSON_TEXT");
     assert.deepEqual(warnings.map(item => item.path).sort(),
         ["states.tell.input.details", "states.tell.input.list", "states.tell.input.loose", "states.tell.input.tags[0]"]);
@@ -150,7 +155,8 @@ test("a script's fixed input is checked against its inputSchema", () => {
     assert.ok(error, JSON.stringify(bad.diagnostics));
     assert.equal(error.path, "states.calc.input");
     assert.match(error.message, /does not match its inputSchema: /);
-    assert.match(error.message, /\/n /);
+    // Plain words that name the place (schema-words.ts), never a JSON pointer or Ajv's params.
+    assert.match(error.message, /: n must be a whole number\.$/);
 
     const text = compileWorkflowV2(SCRIPT(`'{"n": 2}'`));
     assert.equal(text.valid, false);
@@ -173,10 +179,10 @@ test("a script's fixed input is checked against its inputSchema", () => {
 test("SF-8: a partly bound input's fixed parts are checked: wrong type, missing required property, enum", () => {
     const wrongType = compileWorkflowV2(SCRIPT(`{ n: "x", options: "\${inputs.options}" }`));
     assert.equal(wrongType.valid, false);
-    assert.match(codes(wrongType, "WORKFLOW_STATE_INPUT_INVALID")[0].message, /\/n must be integer/);
+    assert.match(codes(wrongType, "WORKFLOW_STATE_INPUT_INVALID")[0].message, said("/n", "The value must be a whole number", "n must be a whole number"));
     const missing = compileWorkflowV2(SENDER(`{ other: "\${inputs.fact}" }`));
     assert.equal(missing.valid, false);
-    assert.match(codes(missing, "WORKFLOW_STATE_INPUT_INVALID")[0].message, /must have required property 'fact'/);
+    assert.match(codes(missing, "WORKFLOW_STATE_INPUT_INVALID")[0].message, /must have required property 'fact'|\bfact is required/);
     const fine = compileWorkflowV2(SCRIPT(`{ n: 3, options: "\${inputs.options}" }`));
     assert.equal(fine.valid, true, JSON.stringify(fine.diagnostics));
     const allBound = compileWorkflowV2(SCRIPT(`"\${inputs.whole}"`));
@@ -218,21 +224,21 @@ states:
 const problemOf = yaml => codes(compileWorkflowV2(yaml), "WORKFLOW_STATE_INPUT_INVALID")[0]?.message ?? "";
 
 test("SF-8: a fixed scalar below its minimum beside a binding is refused", () => {
-    assert.match(problemOf(RICH(`{ age: 12, user: "\${inputs.user}" }`)), /\/age must be >= 18/);
+    assert.match(problemOf(RICH(`{ age: 12, user: "\${inputs.user}" }`)), said("/age", "The value must be at least 18", "age must be at least 18"));
 });
 
 test("SF-8: a fixed nested object missing a required property, or with a too-short string, is refused", () => {
-    assert.match(problemOf(RICH(`{ user: "\${inputs.user}", home: { street: "x" } }`)), /\/home must have required property 'city'/);
-    assert.match(problemOf(RICH(`{ user: "\${inputs.user}", home: { city: "x" } }`)), /\/home\/city must NOT have fewer than 2 characters/);
+    assert.match(problemOf(RICH(`{ user: "\${inputs.user}", home: { street: "x" } }`)), said("/home", "city is required", "home.city is required"));
+    assert.match(problemOf(RICH(`{ user: "\${inputs.user}", home: { city: "x" } }`)), said("/home/city", "city needs at least 2 characters", "home.city needs at least 2 characters"));
 });
 
 test("SF-8: a fixed array item beside a bound one, and a prefixItems item, are checked", () => {
-    assert.match(problemOf(RICH(`{ tags: ["ok", "\${inputs.tag}", "toolong"] }`)), /\/tags\/2 must NOT have more than 3 characters/);
-    assert.match(problemOf(RICH(`{ pair: ["\${inputs.n}", 7] }`)), /\/pair\/1 must be string/);
+    assert.match(problemOf(RICH(`{ tags: ["ok", "\${inputs.tag}", "toolong"] }`)), said("/tags/2", "The value can have at most 3 characters", "item 3 of tags can have at most 3 characters"));
+    assert.match(problemOf(RICH(`{ pair: ["\${inputs.n}", 7] }`)), said("/pair/1", "The value must be text", "item 2 of pair must be text"));
 });
 
 test("SF-8: a written-out object holding a binding must have its required properties, nested too", () => {
-    assert.match(problemOf(RICH(`{ home: { street: "\${inputs.street}" } }`)), /\/home must have required property 'city'/);
+    assert.match(problemOf(RICH(`{ home: { street: "\${inputs.street}" } }`)), /\/home must have required property 'city'|\bhome\.city is required/);
 });
 
 test("SF-8: valid fixed parts beside bindings compile; a part holding a binding is left to the run", () => {
@@ -274,10 +280,10 @@ states:
 
 test("E2-T6: a named member is checked against its property; a key that names nothing takes additionalProperties", () => {
     assert.equal(compileWorkflowV2(MEMBERS(`{ user: "\${inputs.user}", count: 3 }`)).valid, true);
-    assert.match(problemOf(MEMBERS(`{ user: "\${inputs.user}", count: "three" }`)), /\/count must be integer/);
-    assert.match(problemOf(MEMBERS(`{ user: "\${inputs.user}", note: "abcd" }`)), /\/note must NOT have more than 3 characters/);
-    assert.ok(problemOf(MEMBERS(`{ user: "\${inputs.user}", other: "x" }`)).includes("/other"), "an unnamed key takes additionalProperties: false");
-    assert.match(problemOf(MEMBERS(`{ other: "x" }`)), /additional properties/);
+    assert.match(problemOf(MEMBERS(`{ user: "\${inputs.user}", count: "three" }`)), said("/count", "The value must be a whole number", "count must be a whole number"));
+    assert.match(problemOf(MEMBERS(`{ user: "\${inputs.user}", note: "abcd" }`)), said("/note", "The value can have at most 3 characters", "note can have at most 3 characters"));
+    assert.match(problemOf(MEMBERS(`{ user: "\${inputs.user}", other: "x" }`)), /\bother is not (allowed|a known field)/, "an unnamed key takes additionalProperties: false");
+    assert.match(problemOf(MEMBERS(`{ other: "x" }`)), /\bother is not a known field/);
 });
 
 // Owner decision Q1 (d): no workflow schema runs a regular expression, so the compiler checks a fixed input whole again,
@@ -285,10 +291,10 @@ test("E2-T6: a named member is checked against its property; a key that names no
 test("Q1 (d): long fixed keys and strings are checked at compile time, quickly", { timeout: 20_000 }, () => {
     const long = "a".repeat(100_000);
     for (const [input, expected] of [
-        [`{ user: "\${inputs.user}", note: "${long}" }`, /\/note must NOT have more than 3 characters/],
-        [`{ note: "${long}" }`, /\/note must NOT have more than 3 characters/],
-        [`{ user: "\${inputs.user}", "${long}": 1 }`, new RegExp(`/${long.slice(0, 40)}`)],
-        [`{ "${long}": 1 }`, /additional properties/],
+        [`{ user: "\${inputs.user}", note: "${long}" }`, said("/note", "The value can have at most 3 characters", "note can have at most 3 characters")],
+        [`{ note: "${long}" }`, said("/note", "The value can have at most 3 characters", "note can have at most 3 characters")],
+        [`{ user: "\${inputs.user}", "${long}": 1 }`, new RegExp(`/?${long.slice(0, 40)}`)],
+        [`{ "${long}": 1 }`, new RegExp(`\\b${long.slice(0, 80)}… is not a known field`)],
     ]) {
         const started = performance.now();
         const problem = problemOf(MEMBERS(input));

@@ -92,3 +92,31 @@ export function chatCallLine(item) {
         status: item.status, time: item.time,
     };
 }
+
+/**
+ * The header of a group of calls in the chat (one collapsed run of tool or agent calls): what it counts, the latest
+ * call's name, and its state. A failed state is never shown beside the name of a call that succeeded: a group of more
+ * than one call in which some failed says how many ("1 of 3 failed"), whichever call came last; a single failed call
+ * says "Failed". While the latest call runs it says "Working"; when none failed, "Done". `failedNames` lists the names
+ * of the calls that failed (for a tooltip).
+ */
+export function chatActivityRunHeader(calls) {
+    const list = Array.isArray(calls) ? calls : [];
+    const latest = list[list.length - 1] || {};
+    const active = latest.status === "Called" || latest.status === "Started";
+    const failedCalls = list.filter((call) => call?.status === "Failed");
+    const failed = failedCalls.length > 0;
+    const categories = new Set(list.map((call) => call?.category || "Tool"));
+    const countLabel = categories.size === 1 && categories.has("Tool")
+        ? `${list.length} tool ${list.length === 1 ? "call" : "calls"}`
+        : categories.size === 1 && categories.has("Agent")
+            ? `${list.length} agent ${list.length === 1 ? "activity" : "activities"}`
+            : `${list.length} activities`;
+    const nameOf = (call) => String(call?.text || call?.category || "activity").split(" — ")[0];
+    const status = active ? "Working"
+        : !failed ? "Done"
+            : list.length === 1 ? "Failed"
+                : `${failedCalls.length} of ${list.length} failed`;
+    return { countLabel, latestName: nameOf(latest), latestTitle: latest.text || "", active, failed, status,
+        failedNames: [...new Set(failedCalls.map(nameOf))] };
+}

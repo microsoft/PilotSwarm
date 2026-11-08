@@ -2,6 +2,7 @@ import { normalizeSessionSortMode, normalizeSessionUsage } from "../../core/src/
 import { normalizeWorkflowLayouts } from "../../core/src/workflow-layouts.js";
 import { workflowSessionDetails, workflowStepLogHistory, workflowStepLogScope, workflowStepParent } from "../../core/src/workflow-view.js";
 import { ChatCallLine } from "./chat-call-line.js";
+import { chatActivityRunHeader } from "../../core/src/chat-activity.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { MotdOverlay, MotdAdminPanel } from "./motd.js";
@@ -1852,19 +1853,14 @@ function SystemNoticeLine({ line, theme }) {
 
 function ChatActivityRun({ calls }) {
     const latest = calls[calls.length - 1] || {};
-    const active = latest.status === "Called" || latest.status === "Started";
-    const failed = latest.status === "Failed";
+    // The header's words (ui/core chat-activity.js): a failed state never sits beside the name of a call that succeeded;
+    // a group with a failed call says "N of M failed" and names them. The group itself reads failed only when its latest
+    // call failed, and it starts closed (main #278).
+    const { countLabel, latestName, latestTitle, active, failed, status, failedNames } = chatActivityRunHeader(calls);
+    const latestFailed = latest.status === "Failed";
     const [open, setOpen] = React.useState(false);
     const viewportRef = React.useRef(null);
     const followRef = React.useRef(true);
-    const categories = new Set(calls.map((call) => call.category || "Tool"));
-    const countLabel = categories.size === 1 && categories.has("Tool")
-        ? `${calls.length} tool ${calls.length === 1 ? "call" : "calls"}`
-        : categories.size === 1 && categories.has("Agent")
-            ? `${calls.length} agent ${calls.length === 1 ? "activity" : "activities"}`
-            : `${calls.length} activities`;
-    const latestName = String(latest.text || latest.category || "activity").split(" — ")[0];
-    const status = active ? "Working" : failed ? "Failed" : "Done";
     const updateKey = `${latest.callKey || ""}:${latest.status || ""}:${String(latest.body || "").length}`;
 
     React.useLayoutEffect(() => {
@@ -1873,7 +1869,7 @@ function ChatActivityRun({ calls }) {
     }, [open, calls.length, updateKey]);
 
     return React.createElement("details", {
-        className: `ps-native-tasks ps-activity-run${failed ? " is-failed" : active ? " is-working" : " is-done"}`,
+        className: `ps-native-tasks ps-activity-run${latestFailed ? " is-failed" : active ? " is-working" : " is-done"}`,
         open,
         onToggle: (event) => { if (event.target === event.currentTarget) setOpen(event.currentTarget.open); },
     },
@@ -1881,8 +1877,9 @@ function ChatActivityRun({ calls }) {
         React.createElement("span", { className: "ps-native-tasks-title" },
             React.createElement("span", { className: "ps-native-task-branch", "aria-hidden": true }, "⌘"),
             countLabel),
-        React.createElement("span", { className: "ps-activity-run-latest", title: latest.text || "" }, `latest: ${latestName}`),
-        React.createElement("span", { className: `ps-activity-run-status${failed ? " is-failed" : ""}` }, status),
+        React.createElement("span", { className: "ps-activity-run-latest", title: latestTitle }, `latest: ${latestName}`),
+        React.createElement("span", { className: `ps-activity-run-status${failed ? " is-failed" : ""}`,
+            title: failed && failedNames.length ? `Failed: ${failedNames.join(", ")}` : undefined }, status),
         React.createElement("span", { className: "ps-activity-run-chevron", "aria-hidden": true }, "›")),
     React.createElement("div", {
         ref: viewportRef,
