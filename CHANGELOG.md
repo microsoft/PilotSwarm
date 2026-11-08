@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+**Upgrade: stop every worker, deploy, then start them. Do not roll the
+workers.** Chat orchestration 1.0.83 becomes the default, and a worker of an
+earlier release does not have it. Such a worker that picks up a 1.0.83 chat
+gives it back and tries again, and after 10 tries the chat fails. To upgrade:
+
+1. Stop every worker of the deployment (scale it to zero; on the GitOps path,
+   suspend its Flux Kustomization first) and wait until no worker pod runs.
+2. Deploy this release: the workers, then the portal and the MCP server. A
+   portal, MCP server or terminal UI of this release starts new chats at
+   1.0.83, so do not start one while a worker of an earlier release runs.
+3. Start the workers.
+
+Existing chats keep running on the frozen 1.0.82 and move to 1.0.83 at their
+next continue-as-new, with their queued prompts, pending child updates,
+notices and model. The commands are in `deploy/scripts/README.md`
+("Upgrading to this release: stop, deploy, start") and
+`docs/developer/deploy/aks.md` ("Upgrading to orchestration 1.0.83").
+
+**Chat orchestration 1.0.83 is the default.** New chats start at 1.0.83 and
+every continue-as-new targets it; 1.0.82 is frozen and stays registered for
+chats that are still on it. 1.0.83 adds the durable Workflow intake, and a
+person's message no longer merges into one turn with a prompt from an agent
+or the system (prompts of the same kind still merge).
+
+**Workflows are always on, with everything.** Every worker serves the full
+Workflow engine with controller 1.9.0: agent, parallel and request states,
+clock waits, revision tests, named branches, per-node models and a person's
+Workflow commands, on every deployment. Every Workflow run starts at
+controller 1.9.0. The Workflow authoring skills load on every worker. See
+`docs/developer/building/workflow-sessions.md`.
+
+**Script states run by default.** `PILOTSWARM_WORKFLOW_SCRIPTS` is now an
+opt-out: unset, empty, `1`, `true` or `yes` keeps scripts on; `0`, `false`,
+`no` or `off` turns them off; any other value keeps them on, with one
+warning. To turn scripts off, set `PILOTSWARM_WORKFLOW_SCRIPTS=0` on every
+worker, the portal and the MCP server. A script runs on the worker's Node
+with the permission model: it reads and writes only its own folder, starts
+no child process and gets a clean environment. The permission model does not
+limit the network: a script can reach cluster services, the instance
+metadata address and the internet. Block egress with a network policy where
+that matters.
+
+**Retired settings.** `PILOTSWARM_WORKFLOWS` and
+`PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` are ignored, with one startup
+warning on each worker, the portal and the MCP server. Remove them from the
+environment. `PILOTSWARM_WORKFLOW_TEST_MODE` is unchanged and off by default.
+
 ## 0.8.10 — 2026-11-07
 
 **Always-on feature flags.** The code registry can mark a feature flag

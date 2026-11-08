@@ -903,8 +903,12 @@ it from the deployment's settings."
 Sessions of the previous release (orchestration 1.0.82) keep running on the
 frozen 1.0.82 and move to 1.0.83 at their next continue-as-new, which carries
 their queued prompts, pending child updates, notices and model. Until then a
-turn of such a session runs on 1.0.82, whose Workflows cannot use agent,
-parallel or request states.
+turn of such a session runs on 1.0.82. Its Workflows run on controller 1.9.0
+like every other, but that turn is not offered the `test` operation, the
+clock-wait line or `respond_session_request`, and a Workflow's request to the
+session is refused until it continues as new. Upgrade by stopping every
+worker, deploying, then starting them (`deploy/scripts/README.md`, "Upgrading
+to this release: stop, deploy, start"); do not roll the workers.
 
 The five tools, the guidance and the screens are there whether or not the
 workers run scripts. `PILOTSWARM_WORKFLOW_SCRIPTS` (below) decides only whether

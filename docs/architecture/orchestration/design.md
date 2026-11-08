@@ -554,20 +554,26 @@ existing continue-as-new mechanism. Disabling Steer is not an orchestration
 rollback. Retain V4-capable workers until 1.0.81 sessions drain, unless a
 separately authorized coordinated rollback restores both code and durable state.
 
-1.0.83 (the durable workflow intake, released with the Workflow work) follows
-the same pattern. 1.0.82 is frozen in `orchestration_1_0_82/` and stays
-registered: in-flight 1.0.82 histories replay on it, and each such session
-moves to 1.0.83 at its next continue-as-new, which carries its queued prompts
-(the KV FIFO), its pending child digest, its rehydration notice and its model.
-Duroxide does not route orchestration items by version: during a rolling
-restart a worker of the previous image that fetches a 1.0.83 (or Workflow
+1.0.83 (the durable workflow intake, released with the Workflow work) keeps
+the same version pattern. 1.0.82 is frozen in `orchestration_1_0_82/` and
+stays registered: in-flight 1.0.82 histories replay on it, and each such
+session moves to 1.0.83 at its next continue-as-new, which carries its queued
+prompts (the KV FIFO), its pending child digest, its rehydration notice and
+its model.
+
+Its deployment is not rolling (owner decision 2026-11-08): stop every worker,
+deploy, then start them. Duroxide does not route orchestration items by
+version. A worker of the previous image that fetches a 1.0.83 (or Workflow
 controller 1.9.0) item has no such version registered and abandons it with
-duroxide's unregistered-version backoff (it marks an item poison only after
-its maximum attempts), so a worker of the new image takes it. 1.0.83's turn
-and intake activities carry the workflow-request capability tag, which the
-previous image does not declare, so it never fetches them. Roll the workers
-before, or with, the portal, run one image per database, and leave no old
-workers in another namespace.
+duroxide's unregistered-version backoff; after its maximum attempts (10 by
+default) duroxide marks the item poison and the session fails. Nothing makes
+a worker of the new image win that race, so no old worker may run once a
+1.0.83 item can exist: that is, once a worker, portal, MCP server or terminal
+UI of the new release has started. 1.0.83's turn and intake activities carry
+the workflow-request capability tag, which the previous image does not
+declare, so an old worker never fetches those activities. The commands are in
+`deploy/scripts/README.md` ("Upgrading to this release: stop, deploy, start").
+Run one image per database and leave no old workers in another namespace.
 
 ### processTimer
 

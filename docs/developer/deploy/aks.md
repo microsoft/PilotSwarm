@@ -940,6 +940,35 @@ owners/shares/ledgers. Rollback is an explicit operator change to
 `AUTHZ_ADMIN_SCOPE=unrestricted` followed by a consistent rollout. See the
 [mini spec](../../proposals/cluster-scoped-admin.md) for boundaries and tests.
 
+### Upgrading to orchestration 1.0.83 (stop, deploy, start)
+
+The release that makes session orchestration 1.0.83 the default (the
+Workflow release) must not roll the workers. A worker of an earlier release
+does not have 1.0.83: when it picks up a 1.0.83 chat it gives the chat back
+and tries again, and after 10 tries the chat fails. Stop every worker,
+deploy, then start them:
+
+```bash
+# 1. Stop every worker and wait until none runs. Start nothing of the new
+#    release that starts chats (portal, MCP server, TUI) before this ends.
+kubectl scale deployment/copilot-runtime-worker -n copilot-runtime --replicas=0
+kubectl wait pod -n copilot-runtime -l app.kubernetes.io/component=worker --for=delete --timeout=10m
+
+# 2. Build and push the new image (as in the rolling update below), then
+#    point the Deployment at it while it has no pods. (With the :latest tag
+#    and imagePullPolicy: Always, the push is enough: new pods pull it.)
+kubectl set image deployment/copilot-runtime-worker -n copilot-runtime \
+    worker=<your-acr-name>.azurecr.io/copilot-runtime-worker:<new-tag>
+
+# 3. Start the workers, then update the portal and the MCP server.
+kubectl scale deployment/copilot-runtime-worker -n copilot-runtime --replicas=<count>
+kubectl rollout status deployment/copilot-runtime-worker -n copilot-runtime
+```
+
+Existing chats keep replaying on the frozen 1.0.82 and move to 1.0.83 at
+their next continue-as-new. For the GitOps path (Flux), see "Upgrading to
+this release: stop, deploy, start" in `deploy/scripts/README.md`.
+
 ### Rolling Update
 
 ```bash
