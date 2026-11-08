@@ -5228,7 +5228,7 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
   border-color: var(--ps-modal-selected-border);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--ps-modal-selected-border) 20%, transparent);
 }
-.ps-workflow-input[aria-invalid="true"] { border-color: var(--ps-danger); }
+.ps-workflow-input[aria-invalid="true"] { border-color: var(--ps-wf-danger-text, var(--ps-danger)); }
 .ps-workflow-input[aria-invalid="true"]:focus {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--ps-danger) 22%, transparent);
 }
@@ -5240,7 +5240,7 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 .ps-workflow-field-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
 .ps-workflow-field-head > label { color: var(--ps-muted); font-size: 0.75rem; }
 .ps-workflow-field-head .ps-mini-button.ps-workflow-tool-button { min-width: 24px; min-height: 24px; padding: 2px 4px; }
-.ps-workflow-field-error { color: var(--ps-danger); font-size: 0.75rem; overflow-wrap: anywhere; }
+.ps-workflow-field-error { color: var(--ps-wf-danger-text, var(--ps-danger)); font-size: 0.75rem; overflow-wrap: anywhere; }
 .ps-workflow-yaml {
   display: flex;
   border: 1px solid var(--ps-control-border, var(--ps-border));
@@ -5450,7 +5450,9 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 .ps-workflow-node.is-selected, .ps-workflow-node:focus-visible { border-color: var(--ps-wf-selected, var(--ps-accent)); box-shadow: inset 0 0 0 1.5px var(--ps-wf-selected, var(--ps-accent)); }
 .ps-workflow-node.is-running { background: color-mix(in srgb, var(--ps-accent) 15%, var(--ps-surface)); }
 .ps-workflow-node.is-done:not(.is-selected) { border-color: var(--ps-success); }
-.ps-workflow-node.is-failed { border-color: var(--ps-danger); }
+/* FUI-F2 (DEV run of 297824f4): a failed card's edge in the Workflow's danger colour, seen on the canvas in every theme
+   (the theme's own read 2.7:1 in gruvbox-dark and ms-dos). */
+.ps-workflow-node.is-failed { border-color: var(--ps-wf-danger-text, var(--ps-danger)); }
 .ps-workflow-node.is-cancelled { border-color: var(--ps-warning); }
 .ps-workflow-edge-path { fill: none; stroke: var(--ps-wf-edge, var(--ps-muted)); stroke-width: 1.5; }
 .ps-workflow-edge-label rect { fill: var(--ps-surface); stroke: color-mix(in srgb, var(--ps-border) 70%, transparent); stroke-width: 1; }
@@ -5475,7 +5477,7 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 /* IR 11: named branches are lanes side by side in one box, not a stack of items. */
 .ps-workflow-group.is-named { box-shadow: none; }
 .ps-workflow-group.is-joined, .ps-workflow-group.is-done { border-color: var(--ps-success); }
-.ps-workflow-group.is-blocked, .ps-workflow-group.is-failed, .ps-workflow-group.is-timed_out { border-color: var(--ps-danger); }
+.ps-workflow-group.is-blocked, .ps-workflow-group.is-failed, .ps-workflow-group.is-timed_out { border-color: var(--ps-wf-danger-text, var(--ps-danger)); }
 .ps-workflow-group-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 8px 12px; pointer-events: auto; cursor: grab; }
 .ps-workflow-graph-static .ps-workflow-group-head { cursor: default; }
 .ps-workflow-group-label { flex: none; color: var(--ps-foreground); font-size: 11px; font-weight: 600; }
@@ -5501,7 +5503,7 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 .ps-workflow-join.is-waiting .ps-workflow-join-bar { background: var(--ps-accent); }
 .ps-workflow-join.is-joined .ps-workflow-join-bar, .ps-workflow-join.is-done .ps-workflow-join-bar { background: var(--ps-success); }
 .ps-workflow-join.is-blocked .ps-workflow-join-bar, .ps-workflow-join.is-failed .ps-workflow-join-bar,
-.ps-workflow-join.is-timed_out .ps-workflow-join-bar { background: var(--ps-danger); }
+.ps-workflow-join.is-timed_out .ps-workflow-join-bar { background: var(--ps-wf-danger-text, var(--ps-danger)); }
 .ps-workflow-join.is-cancelled .ps-workflow-join-bar { background: var(--ps-warning); }
 .ps-workflow-join.is-selected .ps-workflow-join-bar, .ps-workflow-join:focus-visible .ps-workflow-join-bar { box-shadow: 0 0 0 2px var(--ps-accent); }
 /* React Flow, in the app's colours in every theme: edges and arrowheads in the muted text colour, the dots of the
@@ -13134,7 +13136,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-state.is-paused,
 .ps-wf-state.is-canceling,
 .ps-wf-state.is-canceled { --ps-wf-tone: var(--ps-muted); }
-.ps-wf-state.is-failed { --ps-wf-tone: var(--ps-danger); }
+.ps-wf-state.is-failed { --ps-wf-tone: var(--ps-wf-danger-text, var(--ps-danger)); }
 .ps-wf-state.is-completed { --ps-wf-tone: var(--ps-success); }
 .ps-session-row-workflow-state { margin-left: auto; flex: none; font-size: 0.85em; }
 /* UX2D-F11: in a narrow session column (1024 px with the Workflow tab open) a Workflow row read "… Completed [+1]": its
@@ -13629,9 +13631,9 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-workflow-join-rule { color: var(--ps-muted); font-weight: 500; }
 .ps-workflow-join.is-blocked .ps-workflow-join-rule,
 .ps-workflow-join.is-failed .ps-workflow-join-rule,
-.ps-workflow-join.is-timed_out .ps-workflow-join-rule { color: var(--ps-danger); }
+.ps-workflow-join.is-timed_out .ps-workflow-join-rule { color: var(--ps-wf-danger-text, var(--ps-danger)); }
 .ps-workflow-group.is-failed .ps-workflow-group-counts,
-.ps-workflow-group.is-blocked .ps-workflow-group-counts { color: var(--ps-danger); }
+.ps-workflow-group.is-blocked .ps-workflow-group-counts { color: var(--ps-wf-danger-text, var(--ps-danger)); }
 /* ═══════════════════════════════════════════════════════════════════════════
    HORIZON DAWN — Azure HorizonDB, generally available on 17 November 2026.
    Scoped to [data-ps-theme="horizon-dawn"]. A pre-dawn Azure sky full of

@@ -39,11 +39,30 @@ test("FUI-F2: danger words use the Workflow's danger-text colour, which reads 4.
         assert.ok(line, rule);
         assert.match(line, /color: var\(--ps-wf-danger-text, var\(--ps-danger\)\);/, rule);
     }
+    // DEV run of 297824f4: on the graph too, a failed card's edge, a failed or blocked box's edge and counts, and a join's rule.
+    for (const rule of [".ps-workflow-node.is-failed { border-color: var(--ps-wf-danger-text, var(--ps-danger)); }",
+        ".ps-workflow-group.is-blocked, .ps-workflow-group.is-failed, .ps-workflow-group.is-timed_out { border-color: var(--ps-wf-danger-text, var(--ps-danger)); }",
+        ".ps-workflow-join.is-timed_out .ps-workflow-join-rule { color: var(--ps-wf-danger-text, var(--ps-danger)); }",
+        ".ps-workflow-group.is-blocked .ps-workflow-group-counts { color: var(--ps-wf-danger-text, var(--ps-danger)); }",
+        ".ps-wf-state.is-failed { --ps-wf-tone: var(--ps-wf-danger-text, var(--ps-danger)); }",
+        '.ps-workflow-input[aria-invalid="true"] { border-color: var(--ps-wf-danger-text, var(--ps-danger)); }',
+        ".ps-workflow-field-error { color: var(--ps-wf-danger-text, var(--ps-danger));"]) {
+        assert.ok(css.includes(rule), rule);
+    }
+    // No other rule of the Workflow viewer uses the theme's own danger colour bare (the toolbar's error badge is a filled
+    // count, its digits drawn on it: not a part on the viewer's ground).
+    const bare = [];
+    for (const match of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        const [, selector, body] = match;
+        if (/ps-wf|ps-workflow/.test(selector) && /(?<!, )var\(--ps-danger\)/.test(body)) bare.push(selector.trim().split("\n").at(-1));
+    }
+    assert.deepEqual(bare, ['.ps-workflow-tool-badge[data-level="error"]']);
     for (const id of ["gruvbox-dark", "ms-dos"]) {
         const theme = getTheme(id);
         const danger = themeWorkflowColors(theme)["danger-text"];
-        for (const ground of [theme.tui.background, theme.tui.surface]) {
+        for (const ground of [theme.tui.background, theme.tui.surface, theme.page.workflowGround ?? theme.tui.background]) {
             assert.ok(contrastRatio(danger, ground) >= 4.5, `${id}: danger-text on ${ground}`);
+            assert.ok(contrastRatio(danger, ground) >= 3, `${id}: a failed card's edge on ${ground}`);
             assert.ok(contrastRatio(theme.tui.red, ground) < 4.5 || danger === theme.tui.red, `${id}: its own red on ${ground} was the defect`);
         }
     }
