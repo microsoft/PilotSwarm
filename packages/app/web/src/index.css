@@ -9122,7 +9122,7 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
      heading, and paint straight under the actions cluster — the zoom's
      "100%" rendered inside the select pill. The arrows stay fixed; the
      select gives. */
-  min-width: 0;
+  min-width: 100px;
   flex: 0 1 auto;
 }
 
@@ -9149,6 +9149,9 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   width: 140px;
   min-width: 44px;
   max-width: 140px;
+  /* WebKit's native option text must not scroll the surrounding heading
+     when focus moves from the transparent select to an arrow button. */
+  overflow: clip;
   color: var(--ps-foreground);
   border-radius: 5px;
 }

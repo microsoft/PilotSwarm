@@ -62,8 +62,13 @@ for (const theme of ["horizon-dawn", "win95"]) test(`${theme}: a narrow picker b
     await expect(select).toHaveValue("2");
     await expect(select).toHaveAttribute("title", `Choose canvas: ${names[1]}`);
     await expect(pane.locator("iframe.ps-html-preview-frame:not(.is-staging)").contentFrame().getByRole("heading", { name: "Canvas 2", exact: true })).toBeVisible();
+    const heading = pane.locator(".ps-artifact-pane-heading");
+    const next = pane.getByRole("button", { name: "Next canvas", exact: true });
+    const nextBefore = await next.boundingBox();
     await pane.getByRole("button", { name: "Next canvas", exact: true }).click();
     await expect(select).toHaveValue("3");
+    expect(await heading.evaluate(el => el.scrollLeft)).toBe(0);
+    expect((await next.boundingBox()).x).toBe(nextBefore.x);
     await pane.getByRole("button", { name: "Previous canvas", exact: true }).click();
     await expect(select).toHaveValue("2");
     await page.screenshot({ path: test.info().outputPath("compact-picker.png") });
