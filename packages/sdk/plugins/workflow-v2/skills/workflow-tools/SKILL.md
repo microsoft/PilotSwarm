@@ -126,8 +126,10 @@ The report gives the `path` taken (each step's `visit`, outcome and output;
 `item N` of a For each; `input`: a preview), the first error, `answeredCalls`,
 `needsToolAtRunTime` and the time used. A call with no answer is in
 `unanswered`, whose `fixture` is the exact fixture to add: replace its
-`<...>` value. When a test fails, fix the definition or its fixtures, save,
-and test again if the user wants. A test never tells you anything later:
+`<...>` value. After a failed test, tell the person what failed. To fix it,
+change the definition or its fixtures, save, and test again if the user
+wants. Never say you fixed, saved or tested again when you did not: report
+only what you ran. A test never tells you anything later:
 its report is the answer. If it is still running, read it again with its
 `test_id`.
 

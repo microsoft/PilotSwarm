@@ -90,8 +90,8 @@ test("every complete example in the workflow skills compiles as written, with no
         }
     }
     assert.deepEqual(examples.map(item => `${item.skill}/${item.name}`).sort(),
-        ["workflow-authoring/build-watch", "workflow-patterns/two-lane-summary", "workflow-patterns/two-views", "workflow-reference/change-review",
-            "workflow-testing/release-notes"]);
+        ["workflow-authoring/build-watch", "workflow-patterns/ci-poll", "workflow-patterns/two-lane-summary", "workflow-patterns/two-views",
+            "workflow-reference/change-review", "workflow-testing/release-notes"]);
     const kinds = new Set();
     for (const example of examples) {
         const compiled = compileWorkflowV2(example.yaml, MILESTONE);

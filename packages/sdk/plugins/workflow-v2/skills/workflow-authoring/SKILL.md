@@ -6,9 +6,8 @@ description: Load before you create, edit, publish or run a Workflow (pilotswarm
 # Workflow authoring
 
 A Workflow is a child session of yours that runs a state graph
-without model turns. Its controller runs scripts, timers, typed messages,
-agent children and fan-out exactly as the definition declares. You write the
-definition as YAML and save it with `workflow_definition`: it belongs to this
+without model turns. Its controller runs exactly what the definition
+declares. You write the definition as YAML and save it with `workflow_definition`: it belongs to this
 chat and each save is a new revision. `start` makes a Workflow from a
 revision; the Workflow runs that revision, whatever is saved later.
 
@@ -45,9 +44,8 @@ until it is started: do not describe it as a live result.
 | Different nodes at once (a prompt or a model for each branch), then one join | `parallel` with named `branches` | several Workflows |
 | The end of the run, with its outcome | `terminal` | — |
 
-Keep reasoning in agent states. Keep deterministic work in scripts. A
-script's outcome is a fact it computed; an agent's outcome is its judgment,
-checked against the schema you declare.
+A script's outcome is a fact it computed; an agent's outcome is its
+judgment, checked against the schema you declare.
 
 ## 3. Design a bounded graph
 
@@ -77,15 +75,16 @@ checked against the schema you declare.
 ## 4. Move data through the graph
 
 Each state's output is the next state's input. That is the only data path
-between states, so carry what later states need in each output. A send's
-output is its delivery receipt and a request's output is the response, so
-put them where the next state needs only that.
+between states, so carry what later states need in each output. A
+request's output is its response. A send's output is its delivery receipt,
+not the message: a state after it cannot read the message, so send after the
+states that need it.
 
 | Name | What it is | Binding | In a script |
 |---|---|---|---|
 | inputs | The run's static inputs, checked against `inputs.schema` | `${inputs.x}` | `context.inputs` |
 | input | The value that arrived: the previous output, or the runtime error envelope `{code, message, details}` on an error route. The first state gets `initialInput` (default null). | `${input.x}` | `context.input` |
-| kv | The run's open key-value map, as the state was admitted with it | `${kv.x}`, `${kv["any key"]}` | `context.kv` |
+| kv | The run's open key-value map, as of the state's start | `${kv.x}`, `${kv["any key"]}` | `context.kv` |
 | runtime.error | The error envelope on an error route | `${runtime.error}` | — |
 | branch | A parallel branch's item and index, or its name (branch states only) | `${branch.item}`, `${branch.index}`, `${branch.name}` | `context.branch` |
 
@@ -104,14 +103,20 @@ put them where the next state needs only that.
   input: '{"fact": "MVCC keeps old row versions"}'   # wrong: a string
   input: { fact: "MVCC keeps old row versions" }     # right: an object
   ```
-- The parent sets KV at start (`vars`) and with `update_workflow`
-  `set_vars`. Scripts cannot write KV.
+- A route back to a state brings it the previous state's output. Map it
+  with `input:`, or let its `inputSchema` take those fields: a closed schema
+  (`additionalProperties: false`) refuses extra ones, such as `ciState`.
+  Call `load_skill` with name `workflow-patterns` for a polling loop.
+- Only the parent (`vars` at start, `set_vars`) and the person (Variables)
+  set KV; no state writes it. Read a KV key with a default (`kv.x ?? 30`),
+  and only keys they set: name the person's keys in the description. A value
+  the run needs is a required input, not KV.
 
 ## 5. Write scripts
 
 ```js
 const prior = context.input;                  // the value that arrived
-const limit = context.kv.pollLimit ?? 12;     // the admitted KV snapshot
+const limit = context.kv.pollLimit ?? 12;     // KV, with a default
 const status = await callTool("get_build_status", { buildId: context.inputs.buildId });
 await setResult(status.state === "running" ? "running" : "finished", { status, limit });
 ```
@@ -147,15 +152,15 @@ await setResult(status.state === "running" ? "running" : "finished", { status, l
 
 ## 7. Agent states
 
-An agent state runs an ordinary child agent session for one task and waits
-for its typed result.
+An agent state runs an agent session for one task and waits for its typed
+result.
 
 - The task is `invoke: { prompt: "..." }` or a named agent:
   `invoke: { agent: { name: code-reviewer, package: review-kit, version: "1.2.0" } }`.
   A version needs its package. Publication pins each named agent's version
   (`publishedAgentPins`); a live run uses it.
-- The child receives a host-generated wrapper with its input, schemas,
-  outcomes, deadline and controlling parent agent (you). Only its
+- The agent session gets a wrapper with its input, schemas, outcomes,
+  deadline and controlling parent agent (you). Only its
   `complete_workflow_node` call finishes the state: one of the declared
   outcomes with a valid output, or `needs_input` or `execution_failed`. Its
   final message does not. Three invalid completions fail the state with
@@ -172,14 +177,14 @@ for its typed result.
   may fetch more data (it is told not to fetch its input again).
 - `tools: none` or a list limits the agent and its sub-agents to those
   tools (plus `complete_workflow_node`).
-- A child whose turn ends with its state open and nothing pending is
-  reminded to call `complete_workflow_node`, at most 3 times per state.
-- You may message the child with `message_agent` (it neither completes the
-  state nor moves the deadline), and the child may message you.
+- An agent session whose turn ends with its state open and nothing
+  pending is reminded to call `complete_workflow_node`, at most 3 times.
+- You may message it with `message_agent` (that neither completes the
+  state nor moves the deadline), and it may message you.
 - People can read the agent session. They cannot prompt, answer or steer it,
-  and the child cannot use `ask_user`: it consults you or completes with
+  and it cannot use `ask_user`: it consults you or completes with
   `needs_input`. Route `needs_input` to a state that asks the parent.
-- The child may delegate; its own children are level 3, the deepest.
+- The agent session may delegate; its children are level 3, the deepest.
 
 ## 8. Parallel states
 
@@ -187,7 +192,7 @@ A parallel state runs its `body` once for each item of `forEach`, or its
 named `branches`, and joins the branches.
 
 - `forEach`: one binding that gives a list, or a list (at most 64 items),
-  read once when the state starts (later KV changes do not change it).
+  read once when the state starts.
 - `concurrency` (1 to 16, default 1): the most branches active at once. Keep
   it below the worker's slots (`PILOTSWARM_WORKER_CONCURRENCY`): with full
   slots, a race's losers stop late and may finish their side effects.
@@ -197,12 +202,10 @@ named `branches`, and joins the branches.
   route, ends the branch without success.
 - `join: all` (default; `all_required` is the same): every branch must
   succeed; `joined` gives their outputs in list order. `join: { first: k }`:
-  joined at k successes, with `[{ index, output }]` of those k in the order
-  the store saved them (ties: lower index first); the rest are cancelled or
-  not started. Use `first: 1` for a race. k above a literal list's items is
-  an error; a binding with fewer than k items blocks at once.
-- `blocked`: k successes can no longer happen. Its output reports every
-  branch (how it ended, its outcome, its output or error) and `needed`.
+  joined at k successes, with `[{ index, output }]` of those k (in the order
+  saved); the rest are cancelled or not started. Use `first: 1` for a race.
+- `blocked`: k successes can no longer happen; its output reports every
+  branch and `needed`.
 - `failFast: true` cancels the other branches once the join can no longer
   succeed; without it they run to their end, then the join blocks.
 - `timeoutSeconds` (optional): the state's own time limit from its start;
@@ -237,8 +240,6 @@ Never use several Workflows for this; `workflow-patterns` has an example.
    (prepared answers) and `expect` (the end it must reach); a failed test's
    report gives the fixture to add.
 
-`workflow-tools` has every argument.
-
 ## 10. Diagnose a failure
 
 - `read_workflow` shows each node execution's state, outcome, `resultKind`
@@ -256,12 +257,11 @@ Never use several Workflows for this; `workflow-patterns` has an example.
 
 For review or SDLC work, give each branch pinned facts: the repository, the
 exact base and head commits, and the round. Return evidence (reviewed
-commit, findings, test receipt) in typed outputs, not in chat. A response such as
-`approved: true` from a request is the responder's decision as the runtime
-authenticated it; if a person must approve, get that approval through the
-normal approval path first. Opening, merging and publishing remain separate
-authorized actions. `workflow-reference` has a complete review fan-out
-example, with approval and rework.
+commit, findings, test receipt) in typed outputs, not in messages. A request's
+`approved: true` is the responder's authenticated decision; if a person must
+approve, get that approval the normal way first. Opening, merging and
+publishing remain separate authorized actions. `workflow-reference` has a
+review fan-out example, with approval and rework.
 
 ## 12. Rework and approval
 
@@ -275,8 +275,8 @@ decision itself into the graph:
   routes `approved` or `rejected`.
 - Rework: route a review's "changes required" outcome to a `request` for the
   rework (to the author's session, or to the parent), then back to the review
-  with the new input. Bound the rounds (a schema or a counter in the
-  variables) so the loop ends.
+  with the new input. Bound the rounds (a schema, or a counter in the data the
+  loop carries) so the loop ends.
 
 ## 13. Follow a run
 
@@ -308,7 +308,7 @@ decision itself into the graph:
 apiVersion: pilotswarm.dev/v2-draft
 kind: Workflow
 metadata: { name: build-watch, version: "1.0.0" }
-description: Waits for a build event from the parent, polls when none arrives in time, and ends on a final state.
+description: Waits for a build event, polls when none arrives, and ends on a final state.
 inputs:
   schema: { $ref: "#/schemas/WatchInputs" }
 outputSchema: { $ref: "#/schemas/BuildEvent" }
