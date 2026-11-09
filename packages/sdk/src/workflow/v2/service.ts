@@ -20,6 +20,7 @@ import {
     WORKFLOW_V2_MAX_CORRELATION_BYTES,
     WORKFLOW_V2_NOTIFY_NAME,
     endWorkflowV2RunChats,
+    workflowV2TurnStopOf,
     workflowV2RunEndRequester,
     WORKFLOW_V2_NOTIFY_VERSION,
     WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
@@ -604,7 +605,8 @@ async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxide
  * notification is started even when a child could not be ended yet, and then the recover fails, so a later recover
  * ends the children still owed (each end is recorded once, with a stable command id).
  */
-async function finishRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, run: WorkflowRunRow, operationId: string): Promise<void> {
+async function finishRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">
+    & { catalog?: Partial<Pick<SessionCatalog, "turnControlAdd">> }, run: WorkflowRunRow, operationId: string): Promise<void> {
     if (ACTIVE_RUN_STATUSES.includes(run.status)) return;
     // Adversarial review R2-RT-2: the session row says the live run's end again, should a status read have written failed
     // over it after its controller failed.
@@ -612,7 +614,9 @@ async function finishRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxide
     let unended: unknown = null;
     try {
         // With the chats that continued across visits (chat: continue), which only a run's end ends.
-        await endWorkflowV2RunChats(host.store, host.duroxideClient, run.runId);
+        // Review G5: a child's running turn is stopped before its cancel (a session takes a command only between turns).
+        const stopTurn = workflowV2TurnStopOf(host.catalog);
+        await endWorkflowV2RunChats(host.store, host.duroxideClient, run.runId, stopTurn ? { stopTurn } : {});
     } catch (error) {
         unended = error;
     }

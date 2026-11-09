@@ -2941,6 +2941,12 @@ export async function endWorkflowV2AgentChild(store: WorkflowStore, client: Work
     const sessionInstance = `session-${invocation.childSessionId}`;
     const status = (await client.getStatus(sessionInstance)).status;
     const sent = status !== "NotFound" && !TERMINAL_ORCHESTRATION_STATUSES.includes(status);
+    // Review G5: a session takes a command only between turns, so a cancel would wait for a running turn's natural end.
+    // That turn is stopped first, with the visit's Stop (the turn-to-visit fence applies it only to a turn of this visit).
+    if (sent && end === "cancel" && options.stopTurn) {
+        await options.stopTurn(invocation.childSessionId, `The workflow ended step ${node.nodeId} (${node.outcome ?? end}).`,
+            `workflow-cycle-stop:${invocation.nodeExecutionId}`);
+    }
     if (sent) {
         // requestedBy (the child's parent, the workflow) makes this the parent's own cleanup: the child records it on the
         // workflow (session.child_cleanup_completed) instead of sending the workflow a CHILD_UPDATE prompt, which no
@@ -2969,7 +2975,8 @@ export async function endWorkflowV2AgentChild(store: WorkflowStore, client: Work
  * (workflow.agent_end_failed) and the others are still ended; then the
  * call fails, so its activity (or the next recover) tries the owed ones again.
  */
-export async function endWorkflowV2RunAgents(store: WorkflowStore, client: WorkflowV2AgentEndClient, runId: string): Promise<void> {
+export async function endWorkflowV2RunAgents(store: WorkflowStore, client: WorkflowV2AgentEndClient, runId: string,
+    options: { stopTurn?: WorkflowV2AgentTurnStop } = {}): Promise<void> {
     const failed: string[] = [];
     // Every owed invocation, page by page (RT-5): the cursor moves past each page, so one that stays owed (a state not
     // decided yet, or a child that could not be ended) is not read again in this call.
@@ -2985,7 +2992,8 @@ export async function endWorkflowV2RunAgents(store: WorkflowStore, client: Workf
                 && (invocation.spawnAttempts > 0 || workflowAgentChatContinues(invocation));
             if (invocation.endSentAt !== null && !recheck) continue;
             try {
-                await endWorkflowV2AgentChild(store, client, invocation.nodeExecutionId, recheck ? { afterSpawn: true } : {});
+                await endWorkflowV2AgentChild(store, client, invocation.nodeExecutionId, { ...(recheck ? { afterSpawn: true } : {}),
+                    ...(options.stopTurn ? { stopTurn: options.stopTurn } : {}) });
             } catch (error) {
                 failed.push(invocation.nodeExecutionId);
                 await store.recordSessionEvents(invocation.workflowSessionId, [{ eventType: "workflow.agent_end_failed", data: {
@@ -3007,10 +3015,11 @@ export async function endWorkflowV2RunAgents(store: WorkflowStore, client: Workf
  * A run's end for its agent children (the controller's endAgents and a recover): the owed ends of its visits' own
  * children, exactly as before continue mode (endWorkflowV2RunAgents), then the chats that continued across its states'
  * visits (endWorkflowV2ContinuedChats; owner decision agent-node-continue-20261106). A run with no `chat: continue`
- * state finds no such chat there.
+ * state finds no such chat there. `stopTurn` stops the running turn of a visit whose end is sent now (review G5).
  */
-export async function endWorkflowV2RunChats(store: WorkflowStore, client: WorkflowV2AgentEndClient, runId: string): Promise<void> {
-    await endWorkflowV2RunAgents(store, client, runId);
+export async function endWorkflowV2RunChats(store: WorkflowStore, client: WorkflowV2AgentEndClient, runId: string,
+    options: { stopTurn?: WorkflowV2AgentTurnStop } = {}): Promise<void> {
+    await endWorkflowV2RunAgents(store, client, runId, options);
     await endWorkflowV2ContinuedChats(store, client, runId);
 }
 
@@ -3026,10 +3035,25 @@ export const WORKFLOW_AGENT_CHAT_ENDED = "ChatEnded";
 export type WorkflowV2AgentTurnStop = (childSessionId: string, reason: string, requestId: string) => Promise<void>;
 
 /**
+ * The turn Stop of a catalog with turn controls (a worker's, or a recover's host): a refusal (no turn running, a session
+ * gone) has nothing to stop; a catalog without turn controls stops nothing (undefined).
+ */
+export function workflowV2TurnStopOf(catalog: Partial<Pick<SessionCatalog, "turnControlAdd">> | null | undefined): WorkflowV2AgentTurnStop | undefined {
+    if (typeof catalog?.turnControlAdd !== "function") return undefined;
+    return async (childSessionId, reason, requestId) => {
+        try {
+            await catalog.turnControlAdd!(childSessionId, "stop", reason, requestId, null);
+        } catch (error) {
+            if ((error as { code?: unknown } | null)?.code !== "TURN_CONTROL_UNAVAILABLE") throw error;
+        }
+    };
+}
+
+/**
  * A decided visit of a state that continues its chat (chat: continue; owner decision agent-node-continue-20261106;
  * formal Q2 and Q5; the turn-to-visit fence, review RT-1..RT-3):
- * - while the run is active, the visit's turn is stopped if it still runs (a time limit, a cancel of the visit, or the
- *   agent's own result that its turn goes on after), never the chat. The Stop names the visit (its request id); the chat's
+ * - the visit's turn is stopped if it still runs (a time limit, a cancel of the visit or of the run, the run's end, or the
+ *   agent's own result that its turn goes on after; review G5: also when the run is no longer active), never the chat. The Stop names the visit (its request id); the chat's
  *   worker applies it only to a turn of that visit, so a later visit's turn is never stopped by it, and a turn of this
  *   visit that starts later does not run (its visit is decided: the fence checked at turn start). A spawn that sent the
  *   prompt after the visit was decided (a stale send) asks again (afterSpawn);
@@ -3043,7 +3067,7 @@ async function endContinuedVisit(store: WorkflowStore, client: WorkflowV2AgentEn
     const run = await store.readRun(invocation.runId);
     const active = run !== null && ACTIVE_RUN_STATUSES.includes(run.status);
     let turnStopped = false;
-    if (active && options.stopTurn && (invocation.endSentAt === null || options.afterSpawn === true)) {
+    if (options.stopTurn && (invocation.endSentAt === null || options.afterSpawn === true)) {
         await options.stopTurn(invocation.childSessionId, `The workflow ended this cycle of step ${node.nodeId} (${node.outcome ?? end}).`,
             // A stale send's stop is another Stop: the first may have been recorded for an earlier turn.
             `workflow-cycle-stop:${invocation.nodeExecutionId}${options.afterSpawn === true ? ":sent" : ""}`);
@@ -3353,19 +3377,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * ended by its spawn when it finds the state decided. A cancel ends the
      * child's own descendants too (its graceful shutdown cascades).
      */
-    const stopChatTurn: WorkflowV2AgentTurnStop | undefined = typeof deps.catalog?.turnControlAdd === "function"
-        ? async (childSessionId, reason, requestId) => {
-            // A refusal (no turn running, a session gone) has nothing to stop; a catalog without turn controls stops nothing.
-            try {
-                await deps.catalog.turnControlAdd!(childSessionId, "stop", reason, requestId, null);
-            } catch (error) {
-                if ((error as { code?: unknown } | null)?.code !== "TURN_CONTROL_UNAVAILABLE") throw error;
-            }
-        }
-        : undefined;
+    const stopChatTurn = workflowV2TurnStopOf(deps.catalog);
     const endAgentChild = (client: WorkflowV2AgentEndClient, nodeExecutionId: string, options: { afterSpawn?: boolean } = {}) =>
         endWorkflowV2AgentChild(store, client, nodeExecutionId, { ...options, ...(stopChatTurn ? { stopTurn: stopChatTurn } : {}) });
-    const endRunAgents = (client: WorkflowV2AgentEndClient, runId: string): Promise<void> => endWorkflowV2RunChats(store, client, runId);
+    const endRunAgents = (client: WorkflowV2AgentEndClient, runId: string): Promise<void> =>
+        endWorkflowV2RunChats(store, client, runId, stopChatTurn ? { stopTurn: stopChatTurn } : {});
     /**
      * A later visit of a state that continues its chat (chat: continue; owner decision agent-node-continue-20261106): null
      * for the state's first visit in the run; for a later one, its number among the state's visits, the previous visit's

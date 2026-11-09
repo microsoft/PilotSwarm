@@ -57,6 +57,16 @@ test("a recover that ends the run ends its agent children and starts the parent'
     assert.equal(log.started.length, 1);
 });
 
+// Review G5: a session takes a command only between turns, so the child's running turn is stopped first (the visit's Stop).
+test("a recover stops a child's running turn before it sends the child's cancel", async () => {
+    const { host, log } = fakeHost();
+    const order = [];
+    host.duroxideClient.enqueueEvent = async (instance, queue, data) => { order.push(["cmd", instance, JSON.parse(data).cmd]); log.enqueued.push([instance, queue, JSON.parse(data)]); };
+    host.catalog = { turnControlAdd: async (sessionId, kind, _text, requestId) => { order.push([kind, sessionId, requestId]); return { refused: "no_turn" }; } };
+    await recoverWorkflowV2Run(host, "run-1", { requestedBy: "parent-1", operationId: "recover-1" });
+    assert.deepEqual(order, [["stop", "child-1", "workflow-cycle-stop:nx-1"], ["cmd", "session-child-1", "cancel"]]);
+});
+
 test("a test run's agent children are ended too, though no parent is told", async () => {
     const { host, log } = fakeHost({ mode: "test" });
     await recoverWorkflowV2Run(host, "run-1", { requestedBy: "parent-1", operationId: "recover-1" });

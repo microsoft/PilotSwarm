@@ -823,6 +823,30 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
         }
     });
 
+    for (const session of ["continue", "new"]) {
+        it(`G5: a cancel of the run while a visit's turn runs stops that turn before the agent session is ended (session: ${session})`, { timeout: TIMEOUT }, async () => {
+            // The test double runs no turns: the turn Stop is the one the turn waits for; what matters is that it is added,
+            // before the session's end command (a session takes a command only between turns).
+            let h = null;
+            const commandsAtStop = [];
+            h = await harness(getEnv(), { beforeStop: async ({ sessionId }) => { commandsAtStop.push((await commandsOf(h, sessionId)).length); } });
+            try {
+                const run = await started(h, CHAT_YAML({ chat: session }));
+                const first = await spawnedVisit(h, 1);
+                const child = first.childSessionId;
+                await controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-g5" });
+                expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
+                const end = await until(async () => (await commandsOf(h, child))[0] ?? null, `the end of ${child}`, 30_000);
+                expect(end).toMatchObject({ type: "cmd", cmd: "cancel" });
+                expect(h.stops.filter(stop => stop.sessionId === child))
+                    .toEqual([expect.objectContaining({ kind: "stop", requestId: `workflow-cycle-stop:${first.nodeExecutionId}` })]);
+                expect(commandsAtStop).toEqual([0]);
+            } finally {
+                await h.stop();
+            }
+        });
+    }
+
     for (const [label, finish] of [
         ["the run completes", async (h, run, chat, nx) => {
             expect(await completeAs(h, chat, { outcome: "finish", output: { fact: "one" }, operation_id: "op-1", node_execution_id: nx }))
