@@ -6175,6 +6175,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
             // Never overwrite system session titles (e.g. "Sweeper Agent")
             const session = await catalog.getSession(input.sessionId);
+            // A deleted session (its row hidden) or a missing one gets no title, and its retained conversation
+            // goes to no model: a turn refused for a deletion reaches this activity before its own delete is drained.
+            if (!session) {
+                activityCtx.traceInfo(`[summarizeSession] skipping a deleted or missing session`);
+                return "";
+            }
             if (session?.isSystem) {
                 activityCtx.traceInfo(`[summarizeSession] skipping system session`);
                 return session.title || "";

@@ -8,6 +8,11 @@
  * queues the session's own delete: the orchestration ends and the row stays deleted. The Workflow's carry is not involved
  * here (held for ever): the real session orchestration (1.0.83), the real turn activity and a scripted model; the child's
  * id and first prompt as a `session: new` visit's and as a continued replacement's.
+ *
+ * Review D3-001: the refused turn's result is followed by the orchestration's title step before its own delete is
+ * drained. A session whose title is due (its first turn armed it 60 s earlier) and whose row is deleted while its cancel
+ * has not arrived sent its retained conversation to the title model. Now its next turn and its title step both run no
+ * model: no request at all after the delete, and the session's own delete ends it.
  */
 import { describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -94,4 +99,44 @@ describe("a deleted session runs no model turn (review DR2-001)", () => {
             }
         });
     }
+});
+
+describe("a deleted session's due title goes to no model (review D3-001)", () => {
+    it("a chat deleted (row only, its cancel not yet arrived) when its title is due: the next turn and the title make no model request; it ends", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        try {
+            await withScriptedModel(env, { worker: { logLevel: "warning" } }, async ({ client, model, qualifiedModel }) => {
+                const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
+                const kept = `retained-${randomUUID()}`;
+                await chat.sendAndWait(`Remember the code ${kept} and say ok.`, 120_000);
+                const firstTurnAt = Date.now();
+                // The first turn armed the title for 60 s after it (FIRST_SUMMARIZE_DELAY); let it fall due.
+                await new Promise(resolve => setTimeout(resolve, Math.max(0, firstTurnAt + 65_000 - Date.now())));
+                expect(model.requests.filter(request => !request.session && JSON.stringify(request.body).includes(kept))).toEqual([]);
+                // A person's delete whose cancel has not reached the orchestration: the catalog row only.
+                await catalog.softDeleteSession(chat.sessionId);
+                expect(await catalog.workflowStore().isSessionDeleted(chat.sessionId)).toBe(true);
+                const before = model.requests.length;
+                const marker = `after-delete-${randomUUID()}`;
+                await chat.send(`Say ${marker}.`);
+                const orchestrationId = `session-${chat.sessionId}`;
+                const status = await until(async () => {
+                    const read = (await client._getDuroxideClient().getStatus(orchestrationId)).status;
+                    return ["Completed", "Failed", "Terminated"].includes(read) ? read : null;
+                }, "the deleted chat's orchestration to end", 90_000);
+                expect(["Completed", "Failed", "Terminated"]).toContain(status);
+                // No request after the delete: not the turn's (its prompt) and not the title's (the kept conversation).
+                const after = model.requests.slice(before).map(request => ({ session: request.session, path: request.path,
+                    turn: JSON.stringify(request.body).includes(marker), conversation: JSON.stringify(request.body).includes(kept) }));
+                expect(after).toEqual([]);
+                expect(await catalog.workflowStore().isSessionDeleted(chat.sessionId)).toBe(true);
+                const stopped = (await catalog.getSessionEvents(chat.sessionId, 0, 500, ["session.turn_stopped"])).map(event => event.data?.reason);
+                expect(stopped).toContain("This session was deleted; this turn was not run.");
+            });
+        } finally {
+            await catalog.close();
+        }
+    });
 });
