@@ -61,4 +61,99 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
             }
         });
     });
+
+    // Review DRR-3: a close that fails, or has no answer within its deadline, is not a completed eviction. The session keeps
+    // its binding, its files and its idle time, is owed and is not counted; the next sweep closes it. A close still in
+    // flight is a barrier: the session's next turn waits for it before it resumes the session.
+    it("DRR-3: a failed close is owed: the session keeps its binding and files and is not counted; the next sweep closes and evicts it", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        await withScriptedModel(env, { worker: { logLevel: "warning" } }, async ({ client, worker, model, qualifiedModel }) => {
+            const manager = worker.sessionManager;
+            const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
+            const id = chat.sessionId;
+            const dir = path.join(env.sessionStateDir, id);
+            await chat.sendAndWait(FIRST, TURN_MS);
+            const key = manager.sessionClientKeys.get(id);
+            const copilot = manager.clients.get(key);
+            const close = copilot.rpc.sessions.close;
+            const resume = copilot.resumeSession;
+            const lastTurn = () => model.sessionRequests(FIRST).at(-1).position;
+            try {
+                // 1. The close fails once.
+                const closes = [];
+                let failures = 1;
+                copilot.rpc.sessions.close = async params => {
+                    closes.push(params.sessionId);
+                    if (failures-- > 0) throw new Error("the CLI refused the close");
+                    return close.call(copilot.rpc.sessions, params);
+                };
+                manager.sessionLastTouchedAt.set(id, Date.now() - 60_000);
+                await manager.sweepIdleSessions(1_000);
+                expect(closes).toEqual([id]);
+                expect(manager.sessionClientKeys.get(id), "the binding stays").toBe(key);
+                expect(manager.cliClosesOwed.get(id), "the close is owed").toBe(key);
+                expect(manager.sessionLastTouchedAt.has(id), "it stays an eviction candidate").toBe(true);
+                expect(fs.existsSync(dir), "its files stay").toBe(true);
+                expect(copilot.sessions.has(id), "the SDK's object stays while the CLI holds the session").toBe(true);
+                // The next sweep closes it and evicts it.
+                expect(await manager.sweepIdleSessions(1_000)).toBeGreaterThanOrEqual(1);
+                expect(closes.length).toBeGreaterThanOrEqual(2);
+                expect(manager.cliClosesOwed.has(id)).toBe(false);
+                expect(manager.sessionClientKeys.has(id)).toBe(false);
+                expect(copilot.sessions.has(id)).toBe(false);
+                expect(fs.existsSync(dir)).toBe(false);
+                await chat.sendAndWait("turn 2 after an owed close", TURN_MS);
+                expect(lastTurn()).toMatchObject({ turn: 2, firstUserText: expect.stringContaining(FIRST) });
+
+            } finally {
+                copilot.rpc.sessions.close = close;
+                copilot.resumeSession = resume;
+            }
+        });
+    });
+
+    it("DRR-3: a close still in flight past its deadline holds the session's next turn: the turn resumes it only after the close settles", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        await withScriptedModel(env, { worker: { logLevel: "warning" } }, async ({ client, worker, model, qualifiedModel }) => {
+            const manager = worker.sessionManager;
+            const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
+            const id = chat.sessionId;
+            const dir = path.join(env.sessionStateDir, id);
+            await chat.sendAndWait(FIRST, TURN_MS);
+            const copilot = manager.clients.get(manager.sessionClientKeys.get(id));
+            const close = copilot.rpc.sessions.close;
+            const resume = copilot.resumeSession;
+            const lastTurn = () => model.sessionRequests(FIRST).at(-1).position;
+            try {
+                manager.cliCloseTimeoutMs = 300;
+                let release;
+                const gate = new Promise(resolve => { release = resolve; });
+                const order = [];
+                copilot.rpc.sessions.close = async params => {
+                    await gate;
+                    await close.call(copilot.rpc.sessions, params);
+                    order.push("closed");
+                };
+                copilot.resumeSession = async (...args) => {
+                    order.push("resume");
+                    return resume.apply(copilot, args);
+                };
+                manager.sessionLastTouchedAt.set(id, Date.now() - 60_000);
+                await manager.sweepIdleSessions(1_000);
+                const kept = { files: fs.existsSync(dir), owed: manager.cliClosesOwed?.has(id) ?? false };
+                const turn = chat.sendAndWait("turn 2 after a held close", TURN_MS);
+                await new Promise(resolve => setTimeout(resolve, 3_000));
+                expect(order, "the turn waits for the close").toEqual([]);
+                release();
+                await turn;
+                expect(order.slice(0, 2)).toEqual(["closed", "resume"]);
+                expect(lastTurn()).toMatchObject({ turn: 2, firstUserText: expect.stringContaining(FIRST) });
+                // The eviction whose close was not confirmed kept the files, and owed the close.
+                expect(kept).toEqual({ files: true, owed: true });
+            } finally {
+                copilot.rpc.sessions.close = close;
+                copilot.resumeSession = resume;
+            }
+        });
+    });
 });

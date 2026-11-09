@@ -74,6 +74,20 @@ const SESSION_LOCK_BACKOFF_MS = [5_000, 10_000, 20_000] as const;
 const SESSION_LOCK_MAX_WAIT_MS = 120_000;
 /** Review L1: how long a session's close in the Copilot CLI may take when the worker lets the session go. */
 export const CLI_SESSION_CLOSE_TIMEOUT_MS = 10_000;
+/** Review DRR-3: how long a turn waits for a close of its session that is still in flight before it fails (and is retried). */
+export const CLI_SESSION_CLOSE_SETTLE_MS = 60_000;
+
+/** `promise`'s value, or undefined when it has not settled within `ms` (it keeps running). Never rejects for the timeout. */
+function settledWithin<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([
+        promise,
+        new Promise<undefined>((resolve) => {
+            timer = setTimeout(() => resolve(undefined), ms);
+            timer.unref?.();
+        }),
+    ]).finally(() => { if (timer) clearTimeout(timer); });
+}
 const COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS = 10_000;
 export const SESSION_LOCK_ACQUIRE_TIMEOUT_CODE = "PILOTSWARM_SESSION_LOCK_ACQUIRE_TIMEOUT";
 
@@ -1015,6 +1029,16 @@ export class SessionManager {
      * created/resumed in `_getOrCreateUnlocked`.
      */
     private sessionClientKeys = new Map<string, string>();
+    /**
+     * Review DRR-3: a session's close in the Copilot CLI whose answer has not come yet (the client it was sent to, and its
+     * settled result: true when closed). A turn of the session waits for it before it resumes the session.
+     */
+    private cliClosesInFlight = new Map<string, { key: string; settled: Promise<boolean> }>();
+    /** Review DRR-3: sessions whose close in the Copilot CLI is not confirmed, with the client that holds them; each sweep tries again. */
+    private cliClosesOwed = new Map<string, string>();
+    /** Review DRR-3: CLI_SESSION_CLOSE_TIMEOUT_MS and CLI_SESSION_CLOSE_SETTLE_MS (a test shortens them). */
+    private cliCloseTimeoutMs = CLI_SESSION_CLOSE_TIMEOUT_MS;
+    private cliCloseSettleMs = CLI_SESSION_CLOSE_SETTLE_MS;
     private sessionStore: SessionStateStore | null = null;
     /** In-memory configs with non-serializable fields (tools, hooks). */
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
@@ -1925,6 +1949,8 @@ export class SessionManager {
             ...this.sessionLastTouchedAt.keys(),
         ]);
 
+        // Review DRR-3: the closes an earlier sweep, end or dehydrate could not confirm.
+        await this._retryOwedCliCloses();
         let reclaimed = 0;
         for (const sessionId of candidates) {
             if (this.sessionLocks.has(sessionId)) continue; // busy — never race a turn
@@ -1949,7 +1975,12 @@ export class SessionManager {
                         this._forgetWarmSession(sessionId);
                     }
                     // L1: before the files are removed or uploaded (the close flushes the session's events to them).
-                    await this._closeCliSession(sessionId);
+                    // Review DRR-3: a close that is not confirmed keeps the session here (its files, its binding, its idle
+                    // time): it is not reclaimed, and the next sweep evicts it again.
+                    if (!(await this._closeCliSession(sessionId))) {
+                        emitSessionManagerTrace(sessionId, "eviction deferred: its close in the Copilot CLI is not confirmed");
+                        return;
+                    }
                     if (!dirExists) {
                         this.sessionLastTouchedAt.delete(sessionId);
                         this._forgetTurnState(sessionId);
@@ -2121,6 +2152,9 @@ export class SessionManager {
         options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean; workflowTools?: WorkflowToolBinding },
     ): Promise<ManagedSession> {
         this.sessionLastTouchedAt.set(sessionId, Date.now());
+        // Review DRR-3: never resume into a close of this session that is still in flight.
+        const closing = this.awaitCliClose(sessionId);
+        if (closing) await closing;
         // Workflow package pins (R18): the exact earlier package
         // revision this session runs is installed here before its copy is resolved. One that cannot be served leaves the
         // binding unresolved, and the session fails as any unavailable bound package does.
@@ -3206,30 +3240,92 @@ export class SessionManager {
      * closes it in the CLI (sessions.close: flushes its events to disk, releases its lock and disposes it; idempotent;
      * files stay) and drops the SDK's object. Not deleteSession: that removes the files a dehydrate uploads and a
      * destroyed session keeps; the worker's own steps decide the files, as before. A later turn resumes from the files
-     * (hydrated, or kept), as after a worker restart. Only the client that served the session is asked (none is started
-     * for it); a close that fails or takes longer than CLI_SESSION_CLOSE_TIMEOUT_MS is logged, never thrown. The caller
-     * holds the session's lock, so no turn resumes it meanwhile.
+     * (hydrated, or kept), as after a worker restart. Only the client that served the session is asked (`key`: that
+     * client; default the session's binding; none is started for it). The caller holds the session's lock.
+     *
+     * Review DRR-3: returns whether the close is confirmed. A close that fails, or has no answer within
+     * cliCloseTimeoutMs, is owed (cliClosesOwed: the sweep tries it again; the SDK's object and the binding stay), and one
+     * still in flight is a barrier: a turn of the session waits for it before it resumes (awaitCliClose). A late answer
+     * settles it then (closed: the SDK's object is dropped and nothing is owed; failed: still owed). Never throws.
      */
-    private async _closeCliSession(sessionId: string): Promise<void> {
-        const key = this.sessionClientKeys.get(sessionId);
+    private async _closeCliSession(sessionId: string, key: string | undefined = this.sessionClientKeys.get(sessionId)): Promise<boolean> {
         const client = key != null ? this.clients.get(key) : undefined;
-        if (!client) return;
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        try {
-            await Promise.race([
-                client.rpc.sessions.close({ sessionId }),
-                new Promise<never>((_resolve, reject) => {
-                    timer = setTimeout(() => reject(new Error(`no answer within ${CLI_SESSION_CLOSE_TIMEOUT_MS} ms`)), CLI_SESSION_CLOSE_TIMEOUT_MS);
-                    timer.unref?.();
-                }),
-            ]);
-        } catch (error: unknown) {
-            const message = error instanceof Error ? error.message : String(error);
-            console.warn(`[SessionManager] closing ${sessionId} in the Copilot CLI failed: ${message}`);
-        } finally {
-            if (timer) clearTimeout(timer);
+        if (!client || key == null) {
+            if (key != null && this.cliClosesOwed.get(sessionId) === key) this.cliClosesOwed.delete(sessionId);
+            return true;
         }
-        (client as unknown as { sessions?: Map<string, unknown> }).sessions?.delete(sessionId);
+        // One close of a session at a time: one in flight to another client is waited for first (bounded).
+        const other = this.cliClosesInFlight.get(sessionId);
+        if (other && other.key !== key) await settledWithin(other.settled, this.cliCloseTimeoutMs);
+        let inFlight = this.cliClosesInFlight.get(sessionId);
+        if (!inFlight || inFlight.key !== key) {
+            const settled: Promise<boolean> = Promise.resolve().then(() => client.rpc.sessions.close({ sessionId })).then(() => true, (error: unknown) => {
+                const message = error instanceof Error ? error.message : String(error);
+                console.warn(`[SessionManager] closing ${sessionId} in the Copilot CLI failed: ${message}`);
+                return false;
+            }).then((closed) => {
+                if (this.cliClosesInFlight.get(sessionId) === entry) this.cliClosesInFlight.delete(sessionId);
+                if (closed) {
+                    (client as unknown as { sessions?: Map<string, unknown> }).sessions?.delete(sessionId);
+                    if (this.cliClosesOwed.get(sessionId) === key) this.cliClosesOwed.delete(sessionId);
+                } else {
+                    this.cliClosesOwed.set(sessionId, key);
+                }
+                return closed;
+            });
+            const entry = { key, settled };
+            this.cliClosesInFlight.set(sessionId, entry);
+            inFlight = entry;
+        }
+        const outcome = await settledWithin(inFlight.settled, this.cliCloseTimeoutMs);
+        if (outcome === true) return true;
+        if (outcome === undefined) {
+            console.warn(`[SessionManager] closing ${sessionId} in the Copilot CLI had no answer within ${this.cliCloseTimeoutMs} ms; it is tried again later`);
+        }
+        this.cliClosesOwed.set(sessionId, key);
+        return false;
+    }
+
+    /**
+     * Review DRR-3: a turn's barrier. A close of this session still in flight in the Copilot CLI is waited for before the
+     * session is resumed; one that has no answer within cliCloseSettleMs fails the turn (its orchestration retries it), so
+     * a turn never resumes into a close that may still land. Nothing in flight: returns at once, with no await.
+     */
+    private awaitCliClose(sessionId: string): Promise<void> | void {
+        const inFlight = this.cliClosesInFlight.get(sessionId);
+        if (!inFlight) return;
+        return settledWithin(inFlight.settled, this.cliCloseSettleMs).then((outcome) => {
+            if (outcome === undefined) {
+                throw new Error(`The Copilot CLI has not finished closing session ${sessionId} after ${this.cliCloseSettleMs} ms; the turn does not resume it yet.`);
+            }
+        });
+    }
+
+    /**
+     * Review DRR-3: the owed closes, tried again once per sweep, each under its session's lock (a busy session waits for the
+     * next sweep). A session that is warm again on the same client is no longer owed: its next release closes it. Returns
+     * how many were closed.
+     */
+    private async _retryOwedCliCloses(): Promise<number> {
+        let closed = 0;
+        for (const sessionId of [...this.cliClosesOwed.keys()]) {
+            if (this.sessionLocks.has(sessionId)) continue;
+            try {
+                await this._withSessionLock(sessionId, "cli-close-retry", async () => {
+                    const key = this.cliClosesOwed.get(sessionId);
+                    if (key === undefined) return;
+                    if (this.sessions.has(sessionId) && this.sessionClientKeys.get(sessionId) === key) {
+                        this.cliClosesOwed.delete(sessionId);
+                        return;
+                    }
+                    if (await this._closeCliSession(sessionId, key)) closed++;
+                });
+            } catch (error: unknown) {
+                const message = error instanceof Error ? error.message : String(error);
+                console.warn(`[SessionManager] the owed close of ${sessionId} was not tried: ${message}`);
+            }
+        }
+        return closed;
     }
 
     /**
@@ -3869,6 +3965,9 @@ export class SessionManager {
         this.clientSessionConfigs.clear();
         this.promptSectionDigests.clear();
         this.sessionClientKeys.clear();
+        // Review DRR-3: the clients stop below, and their sessions with them.
+        this.cliClosesOwed.clear();
+        this.cliClosesInFlight.clear();
         // Each process gets the same deadline concurrently; one stuck client
         // cannot block another or multiply the worker's termination budget.
         // This is final cleanup only, not the individual-session eviction path.
