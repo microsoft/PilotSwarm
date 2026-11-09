@@ -2929,8 +2929,11 @@ export interface WorkflowV2AgentEndClient {
  * its mark (session-end-mark.ts). The asker records the mark, then queues its command; when that queue write failed, or
  * its process stopped between the two, only the mark is left. Before a Workflow acts on a mark (it gives the next visit a
  * new agent session, or decides a visit unavailable), it queues the marked command itself: the mark's done or cancel,
- * with the stable id `workflow-mark-end:<mark id>`, as the session's parent (the Workflow). A session already ended or
- * gone gets nothing; one whose own end is still queued gets a second end, which it never reads (it ends at the first).
+ * with the stable id `workflow-mark-end:<mark id>`, as the session's parent (the Workflow). Only a session that already
+ * ended gets nothing; one whose own end is still queued gets a second end, which it never reads (it ends at the first).
+ * Review DR2-003: NotFound is not skipped (as carryDeletedEnd, DRR-1c): a session whose start is queued and whose first
+ * turn has not run reads NotFound, and duroxide delivers a message queued after that start in the same batch as the
+ * start; one with no start queued drops it as an orphan, which is harmless.
  * Throws (the calling attempt retries) when it cannot queue it, so a Workflow never acts on a mark it did not carry.
  */
 export async function carryMarkedEnd(client: WorkflowV2AgentEndClient | null, childSessionId: string,
@@ -2938,7 +2941,7 @@ export async function carryMarkedEnd(client: WorkflowV2AgentEndClient | null, ch
     if (!client) throw new Error(`The end asked of agent session ${childSessionId} cannot be carried: this worker has no durable client here.`);
     const instance = `session-${childSessionId}`;
     const status = (await client.getStatus(instance)).status;
-    if (status === "NotFound" || TERMINAL_ORCHESTRATION_STATUSES.includes(status)) return false;
+    if (TERMINAL_ORCHESTRATION_STATUSES.includes(status)) return false;
     const reason = mark.requestedBy === null ? "A person asked to end this session." : `Session ${mark.requestedBy} asked to end this session.`;
     await client.enqueueEvent(instance, "messages", JSON.stringify({
         type: "cmd", cmd: mark.cmd, id: `workflow-mark-end:${mark.id}`, requestedBy: workflowSessionId, args: { reason },

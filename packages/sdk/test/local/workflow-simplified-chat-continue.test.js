@@ -1107,6 +1107,61 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
             await h.stop();
         }
     });
+    // Review DR2-003: an end asked of the agent session between its create and its first send leaves a mark; its own
+    // command was never queued (the session had no orchestration). Right after the send the session reads NotFound (its
+    // start is queued, its first turn has not run). The Workflow acts on the mark (the visit is unavailable) and still
+    // carries the marked end, queued after the start, so the session receives it.
+    it("DR2-003: a marked end whose session reads NotFound right after its send is still carried, after the start", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        let gate = null;
+        let h = null;
+        const notFoundOnce = new Set();
+        h = await harness(env, {
+            realHost: true,
+            beforeSend: async spec => {
+                if (gate) {
+                    const hook = gate;
+                    gate = null;
+                    await hook(spec);
+                }
+            },
+            activityClient: own => new Proxy(own, { get(target, key) {
+                if (key === "getStatus") {
+                    return async instanceId => {
+                        const id = instanceId.startsWith("session-") ? instanceId.slice("session-".length) : null;
+                        if (id !== null && h.sentTo.has(id) && !notFoundOnce.has(id)) {
+                            notFoundOnce.add(id);
+                            return { status: "NotFound" };
+                        }
+                        return target.getStatus(instanceId);
+                    };
+                }
+                const value = Reflect.get(target, key, target);
+                return typeof value === "function" ? value.bind(target) : value;
+            } }),
+        });
+        try {
+            // A real mark, as a person's cancel records it; its own command is not queued.
+            gate = async spec => { await recordSessionEndRequested(h.catalog, spec.sessionId, { cmd: "cancel", id: "person-cancel-before-start" }); };
+            const run = await started(h, CHAT_YAML());
+            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            expect(await ended(h, run.runId)).toMatchObject({ status: "failed", terminalOutcome: "failed" });
+            expect(notFoundOnce.has(chat)).toBe(true);
+            const first = await visit(h, 1);
+            expect(await h.store.readNodeExecution(first.nodeExecutionId)).toMatchObject({ state: "completed", outcome: "unavailable", winner: "controller",
+                error: { code: "unavailable", message: expect.stringContaining(`The agent session ${chat} of this step was ended`) } });
+            // The carried cancel reached the session, after its start and first prompt.
+            const carried = await until(async () => {
+                const messages = await chatMessages(h, chat);
+                const at = messages.findIndex(message => message.type === "cmd" && message.id === "workflow-mark-end:person-cancel-before-start");
+                return at >= 0 ? { at, messages } : null;
+            }, "the carried cancel", 30_000);
+            expect(carried.messages[carried.at]).toMatchObject({ cmd: "cancel", requestedBy: run.workflowSessionId, args: { reason: "A person asked to end this session." } });
+            expect(carried.messages.findIndex(message => message.prompt === first.prompt)).toBeLessThan(carried.at);
+        } finally {
+            await h.stop();
+        }
+    });
     // Review DRR-1: an attempt created the session and stopped before recording it; a person deleted the session during the
     // retry's backoff. The retry does not create it again: a first visit, and a replacement session, are checked too.
     for (const which of ["first", "replacement"]) {
