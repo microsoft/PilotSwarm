@@ -31,6 +31,15 @@ function* listening(ctx) {
     for (;;) yield ctx.dequeueEvent("messages");
 }
 
+/** A session that ends at the first end command it reads (as a session orchestration ends at done or cancel). */
+function* endsAtCommand(ctx) {
+    for (;;) {
+        const raw = yield ctx.dequeueEvent("messages");
+        const message = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (message?.type === "cmd" && (message.cmd === "done" || message.cmd === "cancel")) return message.cmd;
+    }
+}
+
 describe("an end's mark is recorded only when its command is sent (G1 residual)", () => {
     it("a refused complete or cancel marks nothing; a live session is marked before its command", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
@@ -77,6 +86,61 @@ describe("an end's mark is recorded only when its command is sent (G1 residual)"
             await mgmt.completeSession(live, "done by a person", { wait: false });
             expect(await marks(live)).toEqual([expect.objectContaining({ cmd: "done", id: expect.any(String) })]);
         } finally {
+            await mgmt.stop();
+            await runtime.shutdown(100);
+            await catalog.close();
+        }
+    });
+
+    // Review DRR-2, condition 3: the person's done or cancel records its mark, and a Workflow that acts on that mark carries
+    // the end itself; when the carried end lands first, the person's own command meets an ended session. That is success:
+    // the call resolves (duroxide queues to an ended instance without an error, and the live check refuses only a session
+    // that never started), and the session stays ended.
+    it("a person's done or cancel whose session the Workflow's carried end ended first, between the mark and the send, succeeds", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
+        const client = new Client(provider);
+        const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
+        runtime.registerOrchestrationVersioned("end-mark-ender", "1.0.0", endsAtCommand);
+        await runtime.start();
+        const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema });
+        await mgmt.start();
+        const settle = async (instanceId, statuses) => {
+            for (let waited = 0; waited < 20_000; waited += 50) {
+                const status = (await client.getStatus(instanceId)).status;
+                if (statuses.includes(status)) return status;
+                await new Promise(r => setTimeout(r, 50));
+            }
+            return (await client.getStatus(instanceId)).status;
+        };
+        const record = mgmt._catalog.recordEvents;
+        try {
+            for (const [verb, call] of [
+                ["done", (id) => mgmt.completeSession(id, "done by a person", { wait: false })],
+                ["cancel", (id) => mgmt.cancelSession(id, "cancelled by a person")],
+            ]) {
+                const id = randomUUID();
+                await catalog.createSession(id, { owner: OWNER });
+                await client.startOrchestrationVersioned(`session-${id}`, "end-mark-ender", {}, "1.0.0");
+                expect(await settle(`session-${id}`, ["Running"])).toBe("Running");
+                // Right after the mark is recorded, the Workflow's carried end lands and the session ends.
+                mgmt._catalog.recordEvents = async (sessionId, events, ...rest) => {
+                    await record.call(mgmt._catalog, sessionId, events, ...rest);
+                    if (sessionId === id && events.some(event => event.eventType === "session.end_requested")) {
+                        await client.enqueueEvent(`session-${id}`, "messages", JSON.stringify({ type: "cmd", cmd: verb, id: `workflow-mark-end:${verb}` }));
+                        expect(await settle(`session-${id}`, ["Completed"]), verb).toBe("Completed");
+                        // As a session orchestration records its own end in the catalog.
+                        await catalog.updateSession(id, { state: verb === "done" ? "completed" : "cancelled" });
+                    }
+                };
+                await expect(call(id), verb).resolves.toBeUndefined();
+                mgmt._catalog.recordEvents = record;
+                expect((await client.getStatus(`session-${id}`)).status, verb).toBe("Completed");
+            }
+        } finally {
+            mgmt._catalog.recordEvents = record;
             await mgmt.stop();
             await runtime.shutdown(100);
             await catalog.close();
