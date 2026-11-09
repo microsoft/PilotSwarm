@@ -24,6 +24,9 @@ import { WorkflowStore, insertStopNotForTurn, workflowVisitOfStopRequestId } fro
 
 // ─── Types ───────────────────────────────────────────────────────
 
+/** Review DRR-1: the code of a create with refuseDeleted that found the row deleted (it stays deleted). */
+export const SESSION_DELETED = "SESSION_DELETED" as const;
+
 /** A persisted session event (non-ephemeral). */
 export interface SessionEvent {
     seq: number;
@@ -1189,6 +1192,11 @@ export interface SessionCatalog {
         creationConfig?: Record<string, unknown> | null;
         /** S2RT-F3: a sub-agent counted toward its parent's budget of running children, checked in this creation's transaction. */
         childBudget?: { max: number } | null;
+        /**
+         * Review DRR-1 (a Workflow agent state's session): a deleted row with this id is refused (code SESSION_DELETED) and
+         * left deleted, never brought back. Without it a create revives a deleted row, as before.
+         */
+        refuseDeleted?: boolean;
     }): Promise<void>;
     /** S2RT-F3: the parent's running children as the shared budget counts them (child-budget.ts). */
     countBudgetChildren?(parentSessionId: string, excluding?: string): Promise<number>;
@@ -1916,6 +1924,8 @@ export class PgSessionCatalog implements SessionCatalog {
          * counted again.
          */
         childBudget?: { max: number } | null;
+        /** Review DRR-1: refuse a deleted row (SESSION_DELETED) instead of reviving it; see the interface. */
+        refuseDeleted?: boolean;
     }): Promise<void> {
         const explicitGroupId = typeof opts?.groupId === "string" && opts.groupId.trim()
             ? opts.groupId.trim()
@@ -1931,6 +1941,17 @@ export class PgSessionCatalog implements SessionCatalog {
         const client = await this.pool.connect();
         try {
             await client.query("BEGIN");
+            if (opts?.refuseDeleted) {
+                // Review DRR-1: the row is locked first, so a deletion either committed before (refused here) or waits for
+                // this creation and applies after it; a deleted row is never revived by cms_create_session's upsert.
+                const { rows } = await client.query(
+                    `SELECT deleted_at FROM "${this.sql.schema}".sessions WHERE session_id = $1 FOR UPDATE`, [sessionId]);
+                if (rows[0]?.deleted_at) {
+                    await client.query("ROLLBACK");
+                    throw Object.assign(new Error(`Session ${sessionId} was deleted; it is not created again.`),
+                        { code: SESSION_DELETED, status: 409 });
+                }
+            }
             if (opts?.childBudget && opts.parentSessionId && !opts.isSystem) {
                 await this.requireChildBudgetLocked(client, opts.parentSessionId, sessionId, opts.childBudget.max);
             }

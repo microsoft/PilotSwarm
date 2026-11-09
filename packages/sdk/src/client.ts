@@ -324,6 +324,11 @@ export class PilotSwarmClient {
          * catalog counts it under the parent's lock in the creation's transaction (child-budget.ts) and refuses a full one.
          */
         childBudget?: { max: number } | null;
+        /**
+         * Review DRR-1 (a Workflow agent state's session): a deleted session with this id is refused (code SESSION_DELETED)
+         * and stays deleted; without it a create brings a deleted row back, as before.
+         */
+        refuseDeleted?: boolean;
     }): Promise<PilotSwarmSession> {
         // ── Policy enforcement (client-side) ─────────────────
         const policy = this._sessionPolicy;
@@ -410,6 +415,7 @@ export class PilotSwarmClient {
         const configForRow = fullConfig ?? this.sessionConfigs.get(sessionId);
         await this._catalog.createSession(sessionId, {
             ...(config?.childBudget && config.parentSessionId ? { childBudget: config.childBudget } : {}),
+            ...(config?.refuseDeleted ? { refuseDeleted: true } : {}),
             model: resolvedConfig.model,
             reasoningEffort: resolvedConfig.reasoningEffort ?? undefined,
             contextTier: resolvedConfig.contextTier ?? undefined,

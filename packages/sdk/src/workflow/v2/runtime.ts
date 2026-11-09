@@ -3465,15 +3465,24 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * was never created: deleted, or ended (its session orchestration ended, or is gone after the chat was created).
      */
     const chatEndedOnItsOwn = async (client: WorkflowV2AgentEndClient | null, last: WorkflowAgentInvocation): Promise<"deleted" | "ended" | null> => {
-        const deleted = await store.isSessionDeleted(last.childSessionId);
+        // Review DRR-1: a deleted row, or an end's mark, means the session was created (by this visit's spawn, perhaps one
+        // that stopped before recording it), whatever spawnedAt and its orchestration say: the next visit does not reuse it.
+        const gone = await agentSessionGone(last.childSessionId);
+        if (gone !== null) return gone;
         const status = client ? (await client.getStatus(`session-${last.childSessionId}`)).status : null;
         const created = last.spawnedAt !== null || (status !== null && status !== "NotFound");
         if (!created) return null;
-        if (deleted) return "deleted";
-        // G1 residual (TLA+ limit.cc-g1-end-during-turn): an end asked while one of its turns runs reads Running until that
-        // turn ends; the end's mark says so first (session-end-mark.ts).
-        if (await store.sessionEndRequested(last.childSessionId)) return "ended";
         return status === "NotFound" || (status !== null && TERMINAL_ORCHESTRATION_STATUSES.includes(status)) ? "ended" : null;
+    };
+    /**
+     * Whether a person (or a parent) deleted agent session `childSessionId`, or asked to end it: "deleted", "ended" (its
+     * end's mark: an end asked while one of its turns runs reads Running until that turn ends, G1 residual, TLA+
+     * limit.cc-g1-end-during-turn; session-end-mark.ts), or null. Store reads only.
+     */
+    const agentSessionGone = async (childSessionId: string): Promise<"deleted" | "ended" | null> => {
+        if (await store.isSessionDeleted(childSessionId)) return "deleted";
+        if (await store.sessionEndRequested(childSessionId)) return "ended";
+        return null;
     };
     /**
      * Review G1: whether the chat a later visit's admission chose (the chat of the state's previous visit) ended on its
@@ -5070,17 +5079,27 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             // that chat after the admission, its prompt would be dropped (an ended session reads no queue), and creating the
             // chat again would bring a deleted session back. The visit fails unavailable now, decided as the admission
             // decides an ended chat, and the state's next visit starts a new agent session.
+            const nextCycle = continues ? " The next cycle of this step starts a new agent session." : "";
             if (continues && cycle !== null && restartFrom === null) {
                 const gone = await continuedChatGone(client, run.runId, begun.node.nodeId, invocation);
                 if (gone !== null) {
                     return fail({ ...runtimeError("unavailable", `The agent session ${invocation.childSessionId} that this step continues was ${gone} `
-                        + "before this cycle's prompt was sent, so nothing was sent to it. The next cycle of this step starts a new agent session.",
+                        + `before this cycle's prompt was sent, so nothing was sent to it.${nextCycle}`,
                     { childSessionId: invocation.childSessionId }), winner: "controller" });
                 }
                 // Review G2: an earlier visit of this chat whose end was not sent (its turn's Stop failed past its retries) is
                 // ended now, before this visit's prompt, which would otherwise wait behind that visit's turn. A failure fails
                 // this attempt, and the spawn's retries try again.
                 await endEarlierVisitsOf(client, run.runId, invocation);
+            } else {
+                // Review DRR-1: a first visit, a replacement session and a retried attempt (an earlier one may have created the
+                // session before it stopped) are checked too: a session a person deleted or asked to end gets no prompt.
+                const gone = await agentSessionGone(invocation.childSessionId);
+                if (gone !== null) {
+                    return fail({ ...runtimeError("unavailable", `The agent session ${invocation.childSessionId} of this step was ${gone} `
+                        + `before its prompt was sent, so nothing was sent to it.${nextCycle}`,
+                    { childSessionId: invocation.childSessionId }), winner: "controller" });
+                }
             }
             // A stored map that cannot be read fails the node in words; the node never silently takes the chat's model.
             const stored = readStoredAgentModels(run.agentModels);
@@ -5097,6 +5116,15 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             });
             if ("refused" in spawned) {
                 return fail({ ...runtimeError(spawned.refused.code, spawned.refused.message, { childSessionId: invocation.childSessionId }), winner: "controller" });
+            }
+            // Review DRR-1, the send-side guard: a deletion or an end asked after the checks above (the create refuses only a
+            // deletion that committed before it) decides the visit unavailable now, through the visit's own compare-and-set.
+            // The prompt it was just sent waits behind that end, or in a deleted session, and is harmless: its visit is decided.
+            const goneAfterSend = await agentSessionGone(invocation.childSessionId);
+            if (goneAfterSend !== null) {
+                return fail({ ...runtimeError("unavailable", `The agent session ${invocation.childSessionId} of this step was ${goneAfterSend} `
+                    + `while its prompt was being sent, so this step does not wait for it.${nextCycle}`,
+                { childSessionId: invocation.childSessionId }), winner: "controller" });
             }
             used = spawned.used ?? null;
         }

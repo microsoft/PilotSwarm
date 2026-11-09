@@ -1,4 +1,4 @@
-import { resolveEffectiveSpawnOwner } from "../../cms.js";
+import { resolveEffectiveSpawnOwner, SESSION_DELETED } from "../../cms.js";
 import { workflowAgentModelWords } from "./agent-models.js";
 import type { SessionOwnerInfo } from "../../types.js";
 import type { MessageSender } from "../../message-sender.js";
@@ -113,7 +113,9 @@ export interface WorkflowAgentHostDeps {
     /**
      * Create the child session (an existing one with this id is reused as it
      * is) and send its first prompt with its client message id. Throws on a
-     * failure a retry may fix.
+     * failure a retry may fix. Review DRR-1: a deleted session with this id is
+     * never brought back: the create throws code SESSION_DELETED, and the
+     * host refuses the visit (unavailable).
      */
     createChild(spec: WorkflowAgentChildSpec): Promise<void>;
 }
@@ -210,9 +212,15 @@ export function createWorkflowAgentNodeHost(deps: WorkflowAgentHostDeps): Workfl
             try {
                 await deps.createChild(spec);
             } catch (error) {
+                const code = (error as { code?: unknown })?.code;
+                // Review DRR-1: a person deleted this agent session (before this attempt, or between an earlier attempt's create
+                // and its record); it stays deleted, nothing is sent, and the visit is unavailable at once.
+                if (code === SESSION_DELETED) {
+                    return { refused: { code: "unavailable" as const, message: `The agent session ${request.childSessionId} of this step was deleted, `
+                        + "so it was not created again and nothing was sent to it." } };
+                }
                 // OF-S2-7: a model chosen at start that this owner can no longer use fails the node in words; it never falls
                 // back to another model, and a retry cannot change it.
-                const code = (error as { code?: unknown })?.code;
                 if (chosen && (code === "MODEL_UNRESOLVED" || code === "MODEL_AMBIGUOUS")) {
                     return { refused: { code: "unavailable" as const, message: `Node ${request.stateId} cannot start its agent: the model chosen at start, `
                         + `${workflowAgentModelWords(chosen)}, cannot be used now: `
@@ -241,6 +249,8 @@ export interface WorkflowAgentSessionClient {
         sessionId: string; parentSessionId: string; nestingLevel: number; owner: SessionOwnerInfo | null;
         model?: string; reasoningEffort?: string; contextTier?: string; boundAgentName?: string; boundAgentPackageId?: string; agentId?: string;
         toolNames?: string[];
+        /** Review DRR-1: a deleted session with this id is refused (SESSION_DELETED), never brought back. */
+        refuseDeleted?: boolean;
     }): Promise<{ send(prompt: string, opts: { clientMessageIds: string[]; sender: MessageSender }): Promise<void> }>;
 }
 
@@ -261,6 +271,7 @@ export function clientWorkflowAgentChildCreator(
         try {
             const session = await client.createSession({
                 sessionId: spec.sessionId, parentSessionId: spec.parentSessionId, nestingLevel: spec.nestingLevel, owner: spec.owner,
+                refuseDeleted: true,
                 ...(spec.model ? { model: spec.model } : {}),
                 ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}),
                 ...(spec.contextTier ? { contextTier: spec.contextTier } : {}),

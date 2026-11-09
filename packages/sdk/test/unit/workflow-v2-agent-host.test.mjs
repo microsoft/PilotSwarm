@@ -185,7 +185,8 @@ test("the client-based creator starts a client, creates the child, titles it and
     await clientWorkflowAgentChildCreator(() => client(), catalog)(spec);
     assert.deepEqual(calls, [
         "start",
-        ["create", { sessionId: "child-1", parentSessionId: "W", nestingLevel: 2, owner: OWNER, model: "azure-openai:gpt-test",
+        // Review DRR-1: the child is never brought back from a deletion.
+        ["create", { sessionId: "child-1", parentSessionId: "W", nestingLevel: 2, owner: OWNER, refuseDeleted: true, model: "azure-openai:gpt-test",
             boundAgentName: "kit:reviewer", agentId: "reviewer", toolNames: ["read_file"] }],
         ["title", "child-1", { title: "Workflow step: review" }],
         ["send", "wrapper", { clientMessageIds: ["cm-1"], sender: spec.sender }],
@@ -195,4 +196,21 @@ test("the client-based creator starts a client, creates the child, titles it and
     await assert.rejects(clientWorkflowAgentChildCreator(() => client(true), null)(spec), /queue unavailable/);
     assert.equal(calls.at(-1), "stop");
     assert.equal(calls.some(call => Array.isArray(call) && call[0] === "title"), false);
+});
+
+test("review DRR-1: a create that finds the agent session deleted is refused unavailable at once, not retried", async () => {
+    const host = createWorkflowAgentNodeHost({
+        getSession: async id => rows()[id] ?? null,
+        resolveAgent: async () => null,
+        createChild: async () => { throw Object.assign(new Error("Session child-1 was deleted; it is not created again."), { code: "SESSION_DELETED" }); },
+    });
+    const refused = await host.spawn(request());
+    assert.equal(refused.refused.code, "unavailable");
+    assert.match(refused.refused.message, /agent session child-1 of this step was deleted/);
+    // Any other failure is thrown, so the spawn's retries try again.
+    const flaky = createWorkflowAgentNodeHost({
+        getSession: async id => rows()[id] ?? null, resolveAgent: async () => null,
+        createChild: async () => { throw new Error("connection reset"); },
+    });
+    await assert.rejects(flaky.spawn(request()), /connection reset/);
 });

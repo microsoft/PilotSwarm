@@ -36,7 +36,8 @@ import {
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 import { spawnNesting, WORKFLOW_V2_MAX_DESCENDANT_LEVEL } from "../../src/workflow/v2/input-policy.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
-import { PilotSwarmManagementClient } from "../helpers/local-workers.js";
+import { PilotSwarmManagementClient, PilotSwarmClient } from "../helpers/local-workers.js";
+import { createWorkflowAgentNodeHost } from "../../src/workflow/v2/agent-host.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
@@ -77,6 +78,37 @@ ${chat === null ? "" : `    session: ${chat}\n`}    timeoutSeconds: ${limit}
   done: { type: terminal, outcome: succeeded, output: "\${input}" }
   failed: { type: terminal, outcome: failed }
 `;
+
+// ─── The create fence (review DRR-1) ───────────────────────────
+
+describe("review DRR-1: a Workflow agent session's create never brings a deleted session back", () => {
+    it("a create with refuseDeleted makes a new session, reuses a live one and refuses a deleted one, which stays deleted; other creates are unchanged", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        const client = new PilotSwarmClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema });
+        await client.start();
+        // This test has no model providers; the create's model resolution is not what it checks.
+        client._resolveCreationModel = async () => null;
+        try {
+            const store = catalog.workflowStore();
+            const id = randomUUID();
+            await client.createSession({ sessionId: id, refuseDeleted: true });
+            expect(await catalog.getSession(id)).toBeTruthy();
+            await client.createSession({ sessionId: id, refuseDeleted: true });
+            await catalog.softDeleteSession(id);
+            await expect(client.createSession({ sessionId: id, refuseDeleted: true })).rejects.toMatchObject({ code: "SESSION_DELETED" });
+            await expect(catalog.createSession(id, { refuseDeleted: true })).rejects.toMatchObject({ code: "SESSION_DELETED" });
+            expect(await store.isSessionDeleted(id)).toBe(true);
+            // Every other caller's create keeps its behaviour: it brings the deleted row back.
+            await catalog.createSession(id, {});
+            expect(await store.isSessionDeleted(id)).toBe(false);
+        } finally {
+            await client.stop();
+            await catalog.close();
+        }
+    });
+});
 
 // ─── The store ────────────────────────────────────────────────
 
@@ -295,7 +327,7 @@ function* chatChild(ctx) {
  * records each Stop (the double runs no turns, so it answers no_turn).
  */
 async function harness(env, { storeHooks = null, storeBefore = null, beforeCreate = null, deferVisible = false, createAlways = false,
-    beforeStop = null } = {}) {
+    beforeStop = null, realHost = false } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
@@ -324,7 +356,21 @@ async function harness(env, { storeHooks = null, storeBefore = null, beforeCreat
     // deferVisible: the host creates the chat (its catalog row) and reports it spawned, but its session's orchestration
     // starts only when the test calls makeVisible (a session whose first turn has not run yet reads NotFound; formal t3).
     const unseen = new Map();
-    const agentNodes = {
+    // realHost (review DRR-1): the real host (agent-host.ts) over a child creator that does what the worker's does: the
+    // catalog create with refuseDeleted (a deleted session is never brought back), then the first prompt. `beforeCreate`
+    // gets the child's spec, after every check of the spawn and before the create.
+    const real = realHost ? createWorkflowAgentNodeHost({
+        getSession: id => catalog.getSession(id),
+        resolveAgent: async () => null,
+        createChild: async spec => {
+            if (beforeCreate) await beforeCreate(spec);
+            await catalog.createSession(spec.sessionId, { parentSessionId: spec.parentSessionId, refuseDeleted: true });
+            const instanceId = `session-${spec.sessionId}`;
+            if ((await client.getStatus(instanceId)).status === "NotFound") await client.startOrchestrationVersioned(instanceId, CHILD, {}, "1.0.0");
+            await client.enqueueEvent(instanceId, "messages", JSON.stringify({ prompt: spec.prompt, clientMessageIds: [spec.clientMessageId] }));
+        },
+    }) : null;
+    const agentNodes = real ? { async spawn(request) { spawns.push(request); return real.spawn(request); } } : {
         async spawn(request) {
             spawns.push(request);
             // A spawn that passed its open check and has not created the chat yet (a test holds it here).
@@ -822,6 +868,107 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
             await h.stop();
         }
     });
+
+    // Review DRR-1: the spawn's check is a read; the create and the send come after it. A deletion that lands between them
+    // must not be undone by the create (cms_create_session revives a deleted row; the Workflow's create refuses it), and an
+    // end asked between them must not leave the visit waiting for a prompt that sits behind that end (the send-side guard).
+    for (const label of ["deleted", "ended"]) {
+        it(`DRR-1: an agent session ${label} after the next visit's check and before its create is not brought back, and the visit fails unavailable at once`, { timeout: TIMEOUT }, async () => {
+            const env = getEnv();
+            let gate = null;
+            const h = await harness(env, { realHost: true, beforeCreate: async spec => {
+                if (gate) {
+                    const hook = gate;
+                    gate = null;
+                    await hook(spec);
+                }
+            } });
+            const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema });
+            await mgmt.start();
+            try {
+                const run = await started(h, CHAT_YAML());
+                const chat = workflowAgentChatSessionId(run.runId, "talk");
+                const first = await spawnedVisit(h, 1);
+                gate = async spec => {
+                    expect(spec.sessionId).toBe(chat);
+                    if (label === "deleted") {
+                        await h.catalog.softDeleteSession(chat);
+                        await h.client.cancelInstance(`session-${chat}`, "deleted by a person");
+                    } else {
+                        await mgmt.completeSession(chat, "ended by a person", { wait: false });
+                    }
+                };
+                expect(await completeAs(h, chat, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
+                    .toMatchObject({ ok: true });
+                const asked = Date.now();
+                expect(await ended(h, run.runId)).toMatchObject({ status: "failed", terminalOutcome: "failed" });
+                expect(Date.now() - asked).toBeLessThan(30_000);
+                expect(gate).toBeNull();
+                const second = await visit(h, 2);
+                expect(second.childSessionId).toBe(chat);
+                expect(await h.store.readNodeExecution(second.nodeExecutionId)).toMatchObject({ state: "completed", outcome: "unavailable", winner: "controller",
+                    error: { code: "unavailable", message: expect.stringContaining(`The agent session ${chat} of this step was`),
+                        details: { childSessionId: chat } } });
+                expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => data.nodeExecutionId)).toEqual([first.nodeExecutionId]);
+                if (label === "deleted") {
+                    // The create refused the deleted session: it stays deleted, and nothing was sent to it.
+                    expect(await h.store.isSessionDeleted(chat)).toBe(true);
+                    expect((await chatMessages(h, chat)).filter(message => message.prompt).map(message => message.prompt)).toEqual([first.prompt]);
+                } else {
+                    // The prompt went behind the end, which ends the session; the visit was decided as it was sent.
+                    expect(await h.store.isSessionDeleted(chat)).toBe(false);
+                    const sent = (await chatMessages(h, chat)).map(message => message.prompt ?? message.cmd);
+                    expect(sent.slice(0, 3)).toEqual([first.prompt, "done", second.prompt]);
+                }
+            } finally {
+                await mgmt.stop();
+                await h.stop();
+            }
+        });
+    }
+    // Review DRR-1: an attempt created the session and stopped before recording it; a person deleted the session during the
+    // retry's backoff. The retry does not create it again: a first visit, and a replacement session, are checked too.
+    for (const which of ["first", "replacement"]) {
+        it(`DRR-1: a ${which} visit's spawn that created its session and stopped before recording it does not bring the session back after a deletion`, { timeout: TIMEOUT }, async () => {
+            const env = getEnv();
+            let crashAt = which === "first" ? 1 : 2;
+            let records = 0;
+            let h = null;
+            h = await harness(env, { realHost: true, storeBefore: { recordAgentSpawned: async () => {
+                records += 1;
+                if (records !== crashAt) return;
+                crashAt = 0;
+                // The worker stops after the create and the send, before the record; then a person deletes the session.
+                const made = h.spawns.at(-1).childSessionId;
+                await h.catalog.softDeleteSession(made);
+                await h.client.cancelInstance(`session-${made}`, "deleted by a person");
+                throw new Error("the worker stopped before recording the spawn");
+            } } });
+            try {
+                const run = await started(h, CHAT_YAML());
+                const chat = workflowAgentChatSessionId(run.runId, "talk");
+                let target = chat;
+                if (which === "replacement") {
+                    const first = await spawnedVisit(h, 1);
+                    await h.catalog.softDeleteSession(chat);
+                    expect(await completeAs(h, chat, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
+                        .toMatchObject({ ok: true });
+                    target = workflowAgentChatSessionId(run.runId, "talk", 2);
+                }
+                expect(await ended(h, run.runId)).toMatchObject({ status: "failed", terminalOutcome: "failed" });
+                const visitOf = which === "first" ? 1 : 2;
+                const request = await visit(h, visitOf);
+                expect(request.childSessionId).toBe(target);
+                expect(await h.store.readNodeExecution(request.nodeExecutionId)).toMatchObject({ state: "completed", outcome: "unavailable", winner: "controller",
+                    error: { code: "unavailable", message: expect.stringContaining(`The agent session ${target} of this step was deleted before its prompt was sent`) } });
+                // The retry asked the host for nothing more, and the session stays deleted.
+                expect(h.spawns).toHaveLength(visitOf);
+                expect(await h.store.isSessionDeleted(target)).toBe(true);
+            } finally {
+                await h.stop();
+            }
+        });
+    }
 
     it("G2: a visit whose turn Stop failed past its retries is ended before the next visit's prompt is sent; a failure there retries the spawn", { timeout: TIMEOUT }, async () => {
         // Fault injection: the first visit's Stop fails 5 times (the controller's end of that visit gives up), and then once
