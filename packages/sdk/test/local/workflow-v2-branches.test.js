@@ -26,7 +26,7 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
@@ -36,7 +36,8 @@ import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
-const TIMEOUT = 120_000;
+// CI run 114 (HorizonDB, about ten times slower): the test's own bounds grow with the database (test/helpers/time-scale.js).
+const TIMEOUT = testTime.ms(120_000);
 const ACTOR = { kind: "system", name: "workflow-v2-branches-test" };
 const WORKER_SLOTS = 16;
 const ENDED = ["completed", "failed", "cancelled", "stopped"];
@@ -44,7 +45,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const yamlOf = doc => JSON.stringify(doc, null, 2);
 
 async function until(check, label, timeoutMs = 60_000) {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = Date.now() + testTime.ms(timeoutMs);
     let last;
     while (Date.now() < deadline) {
         last = await check();
@@ -160,7 +161,7 @@ async function withRuntime(fn) {
     }
 }
 
-describe("named branches (IR 11): controller 1.9.0 (inactive, test-only registration)", () => {
+describe("named branches (IR 11): controller 1.9.0", () => {
     it("each branch starts at its own initial with its own input; the join is { <name>: output }; branch.name binds", { timeout: TIMEOUT }, async () => {
         await withRuntime(async base => {
             const doc = branchesDoc({ input: { ms: 100 }, careful: { prepare: true, input: { ms: 300, depth: "deep" } } });
@@ -207,10 +208,19 @@ describe("named branches (IR 11): controller 1.9.0 (inactive, test-only registra
         });
     });
 
+    // CI run 114 (HorizonDB): the 3 s limit passed before the quick branch had ended and the careful one had begun its wait,
+    // so the quick one was cut and the careful one never started. The limit is scaled, and the case first waits until the
+    // quick branch has ended and the careful one is in its wait; seen only after the limit, the case is VOID.
     it("the time limit: timed_out, its details name each branch", { timeout: TIMEOUT }, async () => {
         await withRuntime(async base => {
-            const doc = branchesDoc({ timeoutSeconds: 3, careful: { wait: true } });
-            const { workflowSessionId, runId, views } = await started(base, doc);
+            const doc = branchesDoc({ timeoutSeconds: testTime.seconds(3), careful: { wait: true } });
+            const { workflowSessionId, runId, views, at } = await started(base, doc);
+            await until(async () => {
+                const [end, hold] = await Promise.all([base.store.readNodeExecution(at(0, "quick_end")), base.store.readNodeExecution(at(1, "careful_hold"))]);
+                return end?.state === "completed" && hold?.state === "pending";
+            }, "the quick branch's end and the careful branch's wait");
+            expect(Date.now(), "VOID (not a product result): the branches were seen only after the time limit; run the case again")
+                .toBeLessThan((await base.store.readNodeExecution(views)).deadlineAt.getTime());
             const run = await endedRun(base, runId);
             expect(run).toMatchObject({ status: "completed", terminalNodeId: "late" });
             const node = await base.store.readNodeExecution(views);

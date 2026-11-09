@@ -35,7 +35,7 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import {
     applyOperatorCommandToWorkflowV2, applySessionCommandToWorkflowV2, controlWorkflowV2Run, createWorkflowV2, OPERATOR_COMMAND_OPERATION_PREFIX,
@@ -50,7 +50,8 @@ import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
-const TIMEOUT = 180_000;
+// CI run 114 (HorizonDB, about ten times slower): the test's own bounds grow with the database (test/helpers/time-scale.js).
+const TIMEOUT = testTime.ms(180_000);
 const ACTOR = { kind: "system", name: "workflow-v2-command-queue-test" };
 /** More than duroxide's 100: its carry-forward and per-turn limits. */
 const WAKES = 150;
@@ -107,7 +108,7 @@ const TWO_WAITS = {
 };
 
 async function until(check, label, timeoutMs = 60_000, diagnose = async () => null) {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = Date.now() + testTime.ms(timeoutMs);
     let last;
     while (Date.now() < deadline) {
         last = await check();
@@ -242,7 +243,7 @@ const ended = (h, runId, diagnose, timeoutMs = 90_000) => until(async () => {
 
 /** The controller completed, with the run's end as its published status. */
 async function controllerFinished(h, controller, status) {
-    const done = await h.client.waitForOrchestration(controller, 30_000);
+    const done = await h.client.waitForOrchestration(controller, testTime.ms(30_000));
     expect(done.status, JSON.stringify(done)).toBe("Completed");
     const raw = done.customStatus ?? (await h.client.getStatus(controller)).customStatus;
     expect(typeof raw === "string" ? JSON.parse(raw) : raw).toMatchObject({ status });
@@ -412,7 +413,7 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
             // It ends at its deadline, or at once after the rollover when that came later.
             const endedRun = await ended(h, run.runId, diagnose, 30_000);
             expect(endedRun).toMatchObject({ runId: run.runId, status: "failed", terminalNodeId: null });
-            expect(Date.now() - Math.max(began + DEADLINE_SECONDS * 1_000, rolledAt)).toBeLessThan(25_000);
+            expect(Date.now() - Math.max(began + DEADLINE_SECONDS * 1_000, rolledAt)).toBeLessThan(testTime.ms(25_000));
             expect(pump.sent(), "wakes kept flowing after the rollover").toBeGreaterThan(atRollover);
             await pump.stop();
             pump = null;

@@ -46,7 +46,7 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import {
     compileWorkflowV2, parseWorkflowIr, WORKFLOW_V2_AGENT_IR_VERSION, WORKFLOW_V2_MILESTONE_IR_VERSION, WORKFLOW_V2_REQUEST_IR_VERSION,
@@ -65,14 +65,15 @@ import { openWorkflowStore } from "../helpers/workflow-v2-request-fixture.js";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
-const TIMEOUT = 120_000;
+// CI run 114 (HorizonDB, about ten times slower): the test's own bounds grow with the database (test/helpers/time-scale.js).
+const TIMEOUT = testTime.ms(120_000);
 const ACTOR = { kind: "system", name: "workflow-v2-agent-node-test" };
 const AGENTS = { enableRequests: true, enableAgents: true };
 const TASK = "Review the change at the given head. Do not edit source.";
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function until(check, label, timeoutMs = 60_000) {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = Date.now() + testTime.ms(timeoutMs);
     let last;
     while (Date.now() < deadline) {
         last = await check();
@@ -888,7 +889,7 @@ const lifecycleCommand = (h, childSessionId) => until(async () => {
 const completeAs = (h, childSessionId, args) => completeWorkflowNodeFromTool(args, { callerSessionId: childSessionId, store: h.store, client: h.client })
     .then(text => JSON.parse(text));
 
-describe("workflow v2 agent states: controller 1.9.0 (inactive, test-only registration)", () => {
+describe("workflow v2 agent states: controller 1.9.0", () => {
     it("creates the child with the wrapper and a stable id, routes its typed completion, and tells its session done", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
