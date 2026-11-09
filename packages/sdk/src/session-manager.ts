@@ -2469,9 +2469,15 @@ export class SessionManager {
             }
             // Review DRR-4: the previous client's session is closed in its CLI and dropped from its SDK map before the
             // binding moves (files kept), also when a workspace release already dropped the warm handle. Otherwise only the
-            // new client is ever closed and the old one keeps the session until the worker stops. A close that is not
-            // confirmed is owed to the previous client (DRR-3), and the sweep tries it again.
-            await this._closeCliSession(sessionId, previousClientKey);
+            // new client is ever closed and the old one keeps the session until the worker stops.
+            // Review DR2-004: the binding moves, and the new client touches the session, only once that close is
+            // confirmed: one still in flight is waited for (cliCloseSettleMs). One that failed, or did not settle, fails
+            // this turn (it is retried, and the retry closes it again); the old binding and its owed close stay.
+            if (!(await this._closeCliSession(sessionId, previousClientKey))
+                && !(await this._settleCliClose(sessionId, previousClientKey))) {
+                throw new Error(`The Copilot CLI has not confirmed closing session ${sessionId} on the client it leaves; `
+                    + "the turn does not resume it on another client yet.");
+            }
         }
         const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root);
         this.sessionClientKeys.set(sessionId, desiredClientKey);
@@ -3306,6 +3312,16 @@ export class SessionManager {
         }
         this._oweCliClose(sessionId, key);
         return false;
+    }
+
+    /**
+     * Review DR2-004: whether `key`'s close of `sessionId`, still in flight, is confirmed within cliCloseSettleMs. False
+     * when it is not in flight (it failed: owed), failed, or did not settle in time (it stays in flight and owed).
+     */
+    private async _settleCliClose(sessionId: string, key: string): Promise<boolean> {
+        const pending = this.cliClosesInFlight.get(sessionId)?.get(key);
+        if (!pending) return false;
+        return (await settledWithin(pending, this.cliCloseSettleMs)) === true;
     }
 
     /** Review DS2-003: `key`'s close of `sessionId` is owed, beside any other client's. */

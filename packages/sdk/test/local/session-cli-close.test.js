@@ -199,9 +199,11 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
         });
     });
 
-    // Review DS2-003: a session rebound twice, whose close fails on each client it leaves, owes both closes; a later failed
-    // close does not overwrite an earlier one. The next sweep closes it on both earlier clients and leaves the current one.
-    it("DS2-003: two failed rebind closes are both owed, and the next sweep closes both", { timeout: TIMEOUT }, async () => {
+    // Review DS2-003: the closes a session owes are kept per client: a later failed close never overwrites an earlier one.
+    // (A rebind no longer leaves a client with an unconfirmed close, DR2-004; an eviction's or an end's close still can.) A
+    // session warm on the worker's client, whose closes on two other clients fail, owes both; the next sweep closes both and
+    // leaves the current client's session.
+    it("DS2-003: failed closes on two clients are both owed, and the next sweep closes both", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         await withScriptedModel(env, { worker: { logLevel: "warning" } }, async ({ client, worker, model, qualifiedModel }) => {
             const manager = worker.sessionManager;
@@ -209,8 +211,8 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
             const id = chat.sessionId;
             await chat.sendAndWait(FIRST, TURN_MS);
             const currentKey = manager.sessionClientKeys.get(id);
-            /** A stand-in for a client the session leaves: its first close fails, later ones close. */
-            const leftClient = () => {
+            /** A stand-in for another client that holds the session: its first close fails, later ones close. */
+            const otherClient = () => {
                 const stand = { closes: 0, sessions: new Map([[id, { sessionId: id }]]), stop: async () => [], forceStop: async () => {} };
                 stand.rpc = { sessions: { close: async () => {
                     stand.closes += 1;
@@ -218,21 +220,18 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
                 } } };
                 return stand;
             };
-            const a = leftClient();
-            const b = leftClient();
+            const a = otherClient();
+            const b = otherClient();
             manager.clients.set("ds2-003-a", a);
             manager.clients.set("ds2-003-b", b);
             const owed = () => [...(manager.cliClosesOwed?.get(id) ?? [])].sort();
             try {
-                // The session's last turn ran on A; the next turn rebinds it to the worker's client, and A's close fails.
-                manager.sessionClientKeys.set(id, "ds2-003-a");
-                await chat.sendAndWait("turn 2 after leaving A", TURN_MS);
-                // Then on B; the next turn rebinds again, and B's close fails too.
-                manager.sessionClientKeys.set(id, "ds2-003-b");
-                await chat.sendAndWait("turn 3 after leaving B", TURN_MS);
+                await manager.withRunTurnLock(id, "ds2-003", async () => {
+                    expect(await manager._closeCliSession(id, "ds2-003-a")).toBe(false);
+                    expect(await manager._closeCliSession(id, "ds2-003-b")).toBe(false);
+                });
                 expect([a.closes, b.closes]).toEqual([1, 1]);
                 expect(owed()).toEqual(["ds2-003-a", "ds2-003-b"]);
-                expect(manager.sessionClientKeys.get(id)).toBe(currentKey);
                 // A sweep (nothing is idle) closes it on both A and B; the current client keeps the warm session.
                 await manager.sweepIdleSessions(60 * 60 * 1000);
                 expect([a.closes, b.closes]).toEqual([2, 2]);
@@ -241,11 +240,81 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
                 expect(owed()).toEqual([]);
                 expect(manager.sessions.has(id)).toBe(true);
                 expect(manager.sessionClientKeys.get(id)).toBe(currentKey);
-                await chat.sendAndWait("turn 4 on the current client", TURN_MS);
-                expect(model.sessionRequests(FIRST).at(-1).position).toMatchObject({ turn: 4, firstUserText: expect.stringContaining(FIRST) });
+                await chat.sendAndWait("turn 2 on the current client", TURN_MS);
+                expect(model.sessionRequests(FIRST).at(-1).position).toMatchObject({ turn: 2, firstUserText: expect.stringContaining(FIRST) });
             } finally {
                 manager.clients.delete("ds2-003-a");
                 manager.clients.delete("ds2-003-b");
+            }
+        });
+    });
+
+    // Review DR2-004: a rebind moves the binding, and the new client resumes the session, only once the close on the client
+    // it leaves is confirmed. A close held past its own deadline but settling within the settle time: the new client waits,
+    // then resumes. A close that does not settle: the turn fails with the old binding and the owed close kept, nothing
+    // resumes on the new client; once the close lands, the retried turn closes, then resumes there.
+    it("DR2-004: a rebind waits for the close on the client it leaves; a close that does not settle fails the turn, and the retry resumes after it", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        await withScriptedModel(env, { worker: { logLevel: "warning" } }, async ({ client, worker, model, qualifiedModel }) => {
+            const manager = worker.sessionManager;
+            const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
+            const id = chat.sessionId;
+            await chat.sendAndWait(FIRST, TURN_MS);
+            const currentKey = manager.sessionClientKeys.get(id);
+            const current = manager.clients.get(currentKey);
+            const resume = current.resumeSession;
+            const order = [];
+            let gate = null;
+            const previous = { sessions: new Map([[id, { sessionId: id }]]), stop: async () => [], forceStop: async () => {},
+                rpc: { sessions: { close: async () => {
+                    if (gate) await gate.promise;
+                    order.push("closed A");
+                } } } };
+            const hold = () => {
+                let release;
+                gate = { promise: new Promise(resolve => { release = resolve; }) };
+                return () => { const held = gate; gate = null; release(); return held; };
+            };
+            current.resumeSession = async (...args) => { order.push("resume B"); return resume.apply(current, args); };
+            manager.clients.set("dr2-004-a", previous);
+            manager.cliCloseTimeoutMs = 300;
+            const lastTurn = () => model.sessionRequests(FIRST).at(-1).position;
+            try {
+                // 1. A's close is held past its deadline (300 ms), and settles within the settle time.
+                manager.cliCloseSettleMs = 20_000;
+                manager.sessionClientKeys.set(id, "dr2-004-a");
+                let release = hold();
+                const turn2 = chat.sendAndWait("turn 2 after leaving A", TURN_MS);
+                await new Promise(resolve => setTimeout(resolve, 2_000));
+                expect(order, "B does not resume while A's close is held").toEqual([]);
+                release();
+                await turn2;
+                expect(order).toEqual(["closed A", "resume B"]);
+                expect(manager.sessionClientKeys.get(id)).toBe(currentKey);
+                expect(lastTurn()).toMatchObject({ turn: 2, firstUserText: expect.stringContaining(FIRST) });
+
+                // 2. A's close does not settle within the settle time (1 s): the turn fails, keeping A's binding and owed close.
+                order.length = 0;
+                previous.sessions.set(id, { sessionId: id });
+                manager.cliCloseSettleMs = 1_000;
+                manager.sessionClientKeys.set(id, "dr2-004-a");
+                release = hold();
+                const turn3 = chat.sendAndWait("turn 3 after leaving A again", TURN_MS);
+                await new Promise(resolve => setTimeout(resolve, 5_000));
+                expect(order, "nothing resumes on B").toEqual([]);
+                expect(manager.sessionClientKeys.get(id)).toBe("dr2-004-a");
+                expect([...(manager.cliClosesOwed.get(id) ?? [])]).toEqual(["dr2-004-a"]);
+                // Once the close lands, the retried turn closes A first, then resumes on B.
+                release();
+                await turn3;
+                expect(order.indexOf("closed A")).toBeGreaterThanOrEqual(0);
+                expect(order.indexOf("closed A")).toBeLessThan(order.indexOf("resume B"));
+                expect(manager.sessionClientKeys.get(id)).toBe(currentKey);
+                expect(lastTurn()).toMatchObject({ turn: 3, firstUserText: expect.stringContaining(FIRST) });
+            } finally {
+                if (gate) gate = null;
+                current.resumeSession = resume;
+                manager.clients.delete("dr2-004-a");
             }
         });
     });
