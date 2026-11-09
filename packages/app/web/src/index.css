@@ -12446,14 +12446,17 @@ textarea.ps-link-input {
 :root[data-ps-theme="win95"] .ps-wf-tab code.ps-wf-code-inline { background: #ffffff; color: var(--w95-dark); padding: 0 2px; }
 :root[data-ps-theme="win95"] .ps-wf-tab .ps-wf-result.is-error pre.ps-wf-code { color: var(--ps-wf-danger-text, var(--ps-danger)); }
 /* Its pickers and fields are win95's text wells (white, inset), as the composer is: black on the teal they took from the
-   page background read 4.4:1 (the 5482bae3 win95 screenshot: "#2 of 2"). */
+   page background read 4.4:1 (the 5482bae3 win95 screenshot: "#2 of 2"). UXP-GEM-06: their top and left edges are the
+   sunken field's dark edge (--w95-dark, 11.5:1 on the window face), not its grey shadow (#808080, 2.17:1), so a picker's
+   edge is seen on the face; the YAML box (an edit box too) has the same edges. */
 :root[data-ps-theme="win95"] .ps-wf-tab .ps-workflow-input {
   background: #ffffff;
   color: var(--w95-dark);
   border: 2px solid;
-  border-color: var(--w95-shadow) var(--w95-light) var(--w95-light) var(--w95-shadow);
+  border-color: var(--w95-dark) var(--w95-light) var(--w95-light) var(--w95-dark);
   border-radius: 0;
 }
+:root[data-ps-theme="win95"] .ps-wf-tab .ps-workflow-yaml { border-color: var(--w95-dark) var(--w95-light) var(--w95-light) var(--w95-dark); }
 :root[data-ps-theme="win95"] .ps-mobile-canvas-layer .ps-canvas-pane {
   border: 0;
   box-shadow: none;
@@ -13386,6 +13389,12 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 }
 .ps-wf-failure-toggle:focus-visible { outline: 2px solid var(--ps-accent); outline-offset: 2px; }
 .ps-wf-tab.is-phone .ps-wf-failure.is-open .ps-wf-failure-toggle { white-space: normal; overflow-wrap: anywhere; }
+/* UXP-GEM-02: in WebKit at 390 px the toggle's words on one line still widened the tab, which scrolled sideways. The
+   failure line holds them: it clips sideways only (overflow-x: clip is not a scroll container and leaves the line's
+   height alone, so the focus ring above and below the toggle is not cut; at its sides the ring sits in the line's 10 px
+   padding), and the toggle is never wider than the line. The tab itself clips nothing. */
+.ps-wf-tab.is-phone .ps-wf-failure { min-width: 0; max-width: 100%; overflow-x: clip; }
+.ps-wf-tab.is-phone .ps-wf-failure-toggle { min-width: 0; max-width: 100%; }
 .ps-wf-tab.is-phone .ps-wf-failure > .ps-wf-failure-details { flex: none; padding: 0 10px 0 0; border-bottom: 0; }
 .ps-wf-tab.is-phone .ps-wf-failure > .ps-wf-failure-details[open] { flex-basis: 100%; padding: 0 10px 6px; }
 
@@ -13422,8 +13431,12 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
   .ps-wf-tab.is-phone .ps-wf-tab-head.is-two-lines { flex-wrap: nowrap; }
   .ps-wf-tab.is-phone .ps-wf-tab-head.is-two-lines > .ps-wf-head-rest { flex: 0 1 auto; min-width: 0; }
 }
-/* UXFD-F10: on a phone the YAML box scrolls inside a capped height, and the editor's bar stays at the top of the tab. */
+/* UXFD-F10: on a phone the YAML box scrolls inside a capped height, and the editor's bar stays at the top of the tab.
+   UXP-GEM-04: the chat's editor too (ChatYamlEditor: .ps-wf-chat-editor, its bar .ps-wf-bar.is-yaml, then the box, each a
+   child of it), not only the stage-1 draft editor. */
+.ps-wf-tab.is-phone .ps-wf-chat-editor > .ps-workflow-yaml,
 .ps-wf-tab.is-phone .ps-workflow-draft-editor > .ps-workflow-yaml { max-height: 55vh; overflow: auto; }
+.ps-wf-tab.is-phone .ps-wf-chat-editor > .ps-wf-bar.is-yaml,
 .ps-wf-tab.is-phone .ps-workflow-draft-editor > .ps-workflow-yaml-strip { position: sticky; top: 0; z-index: 2; background: var(--ps-surface); }
 .ps-wf-tab.is-phone .ps-wf-head-actions { gap: 6px; }
 .ps-wf-tab.is-phone .ps-wf-picker-select { width: 100%; min-height: 44px; text-overflow: ellipsis; }
@@ -13442,9 +13455,14 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-tab.is-phone .ps-wf-tab-head .ps-mini-button.ps-workflow-tool-button,
 .ps-wf-tab.is-phone .ps-wf-bar .ps-mini-button.ps-workflow-tool-button,
 .ps-wf-tab.is-phone .ps-workflow-yaml-strip .ps-mini-button.ps-workflow-tool-button { min-width: 44px; min-height: 44px; }
-/* UX2D-F12: a phone's run bar cuts the state's label, never the time taken ("Runn… · 2:45"). */
-.ps-wf-tab.is-phone .ps-wf-bar .ps-wf-state.has-time { display: inline-flex; }
-.ps-wf-state.has-time > .ps-wf-state-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* UX2D-F12: a phone's run bar cuts the state's label, never the time taken ("Runn… · 2:45"). UXP-GEM-03: and only at the
+   label's end (WebKit at 390 px showed "leted ·… · 0:15", its start cut): the chip packs from its start and is not a
+   scroll container (clip), so nothing can scroll its start out of sight; the label takes the room left and reads left to
+   right to its ellipsis. */
+.ps-wf-tab.is-phone .ps-wf-bar .ps-wf-state.has-time { display: inline-flex; justify-content: flex-start; overflow: hidden; overflow: clip; }
+.ps-wf-state.has-time > .ps-wf-state-label {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; direction: ltr;
+}
 .ps-wf-state.has-time > .ps-wf-state-time { flex: none; white-space: pre; }
 /* UX2D-F12: a phone's list of a chat definition's Workflows: two lines per Workflow, nothing wrapped: # (both lines), its
    state and the time it took; then its revision and when it started. The column heads are read, not shown. */

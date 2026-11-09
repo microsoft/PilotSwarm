@@ -374,7 +374,10 @@ export function revisionLine(model, { writing = false, writer = null } = {}) {
     const diagnostics = (Array.isArray(revision.diagnostics) ? revision.diagnostics : []).filter(item => item && item.severity !== "warning");
     const first = diagnostics[0] ?? null;
     const where = first && Number.isSafeInteger(first.line) ? `line ${first.line}: ` : "";
-    const why = first?.message ? ` · ${where}${first.message}` : "";
+    const message = typeof first?.message === "string" ? first.message.trim() : "";
+    const why = message ? ` · ${where}${message}` : "";
+    // UXP-GEM-05: one full stop at the end; a message that already ends its sentence (". ! ? …") gets none (it read "once..").
+    const stop = /[.!?…]$/u.test(why) ? "" : ".";
     const graphRevision = Number.isSafeInteger(model?.graph?.revision) && model.graph.revision !== revision.revision ? model.graph.revision : null;
     const showing = graphRevision ? ` Showing revision ${graphRevision}.` : "";
     if (writing) {
@@ -382,7 +385,7 @@ export function revisionLine(model, { writing = false, writer = null } = {}) {
         return { calm: true, text: `${writer ?? "The chat"} is still writing this definition. Revision ${revision.revision} has `
             + `${count || "unlisted"} error${count === 1 ? "" : "s"} so far.${showing}` };
     }
-    return { calm: false, text: `Revision ${revision.revision} not valid${why}.${showing}` };
+    return { calm: false, text: `Revision ${revision.revision} not valid${why}${stop}${showing}` };
 }
 
 /**

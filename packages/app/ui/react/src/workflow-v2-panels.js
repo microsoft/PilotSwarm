@@ -1446,6 +1446,9 @@ export function CompareView({ label, from, to, compared, pickers, unparsed, kind
     `${row.kind === "added" ? "+" : row.kind === "removed" ? "-" : " "} ${row.text}`))) : null);
 }
 
+/** A marked line's tooltip in the gutter: each of its diagnostics in words, its code and path after them. */
+const markTip = mark => mark.texts.map((words, at) => (mark.codes?.[at] ? `${words} (${mark.codes[at]})` : words)).join("\n");
+
 /**
  * The draft's YAML box with its errors marked inside it (owner decision q5): a line-number column beside the text, whose
  * marked lines show "●" in the error or warning colour with the messages as their title, and below the box one button
@@ -1492,7 +1495,7 @@ export function WorkflowV2YamlBox({ value, onChange = null, marks, changed, read
                     borderRight: "1px solid var(--ps-border)", minWidth: "3.5em" } },
             Array.from({ length: lineCount }, (_, index) => {
                 const mark = byLine.get(index + 1);
-                return h("div", { key: index, ...(mark ? { "data-mark": mark.severity, title: mark.texts.join("\n"),
+                return h("div", { key: index, ...(mark ? { "data-mark": mark.severity, title: markTip(mark),
                     style: { color: mark.severity === "error" ? TONES.error : TONES.warning, fontWeight: 700 } } : {}) },
                 mark ? `● ${index + 1}` : String(index + 1));
             })),
@@ -1512,7 +1515,9 @@ export function WorkflowV2YamlBox({ value, onChange = null, marks, changed, read
             style: { margin: 0, paddingLeft: 18, display: "grid", gap: 2 } },
         marks.lines.map(mark => h("li", { key: mark.line, "data-mark": mark.severity },
             h("button", { type: "button", className: "ps-mini-button", "data-line": mark.line, onClick: () => goTo(mark.line) }, `Line ${mark.line}`),
-            " ", h("span", { style: { color: mark.severity === "error" ? TONES.error : TONES.warning } }, mark.texts.join("; "))))) : null,
+            // UXP-GEM-05: the words the diagnostics list says (the line is the button); the code and path in the tooltip.
+            " ", h("span", { title: (mark.codes ?? []).filter(Boolean).join("\n") || undefined,
+                style: { color: mark.severity === "error" ? TONES.error : TONES.warning } }, mark.texts.join("; "))))) : null,
         marks.lines.length && changed ? h("p", { style: { margin: 0, color: "var(--ps-muted)" } },
             "The marks are for the revision as saved; save to check your edits.") : null);
 }

@@ -206,9 +206,11 @@ test("the editor marks the saved revision's errors on their lines, and lists a b
         { severity: "error", code: "NO_LINE", path: "$", message: "Somewhere." },
         "not a diagnostic",
     ];
+    // UXP-GEM-05: the words are the diagnostics list's; the code and path are for the tooltip.
     assert.deepEqual(workflowV2DraftMarks(diagnostics), { unplaced: 1, lines: [
-        { line: 2, severity: "error", texts: ["STATE_UNKNOWN: No state 'nowhere'."] },
-        { line: 3, severity: "warning", texts: ["STATE_UNREACHABLE: State 'spare' is never reached.", "STYLE: Name it plainly."] },
+        { line: 2, severity: "error", texts: ["No state 'nowhere'."], codes: ["STATE_UNKNOWN · states.poll.next.changed"] },
+        { line: 3, severity: "warning", texts: ["Warning: State 'spare' is never reached.", "Warning: Name it plainly."],
+            codes: ["STATE_UNREACHABLE · states.spare", "STYLE · states.spare"] },
     ] });
     assert.deepEqual(workflowV2DraftMarks(null), { lines: [], unplaced: 0 });
     const withErrors = { ...modelOf(), revision: { revision: 2, definitionHash: "hash-2", valid: false, diagnostics } };
@@ -217,8 +219,8 @@ test("the editor marks the saved revision's errors on their lines, and lists a b
     assert.deepEqual(workflowV2DraftEditor(older).diagnostics, [], "another revision's diagnostics are not this text's");
 
     const open = main(mount({ readModel: withErrors, readModelRunId: null, mainTab: "yaml" }));
-    assert.match(open, /<div data-mark="error" title="STATE_UNKNOWN: No state &#x27;nowhere&#x27;\."[^>]*>● 2<\/div>/);
-    assert.match(open, /<div data-mark="warning" title="STATE_UNREACHABLE: State &#x27;spare&#x27; is never reached\.\nSTYLE: Name it plainly\."[^>]*>● 3<\/div>/);
+    assert.match(open, /<div data-mark="error" title="No state &#x27;nowhere&#x27;\. \(STATE_UNKNOWN · states\.poll\.next\.changed\)"[^>]*>● 2<\/div>/);
+    assert.match(open, /<div data-mark="warning" title="Warning: State &#x27;spare&#x27; is never reached\. \(STATE_UNREACHABLE · states\.spare\)\nWarning: Name it plainly\. \(STYLE · states\.spare\)"[^>]*>● 3<\/div>/);
     assert.match(open, /<div>1<\/div>/, "an unmarked line keeps its number");
     assert.match(open, /aria-describedby="wf-yaml-marks-[^"]+"/);
     assert.match(open, /<ul id="wf-yaml-marks-[^"]+" class="ps-workflow-yaml-marks" aria-label="Errors marked in the YAML"/);

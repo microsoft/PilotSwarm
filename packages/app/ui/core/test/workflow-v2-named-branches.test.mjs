@@ -212,10 +212,11 @@ test("the card, the box, a blocked join, why a visit was canceled and the replay
     // A For each's item keeps its words.
     const { name: _name, ...unnamed } = canceled("fail_fast").branch;
     assert.equal(workflowV2VisitEnding({ ...canceled("fail_fast"), branch: unnamed }).why, "Another item failed, so this one was canceled");
-    // The replay names the branch.
+    // The replay names the branch. Times are today's (local), so the label shows the clock only (workflowShortTime).
+    const today = (h, m, s) => { const at = new Date(); at.setHours(h, m, s, 0); return at.toISOString(); };
     const timed = projectWorkflowV2({ readModel: readModel({ graph, run: { status: "running" }, nodeExecutions: [
-        { ...done("views", 1, "joined", { branches: 2 }), state: "pending", outcome: null, resultKind: null, winner: null, enteredAt: "2026-11-08T01:00:00.000Z" },
-        { ...done("careful_work", 1, "ok", { nodeExecutionId: "nx-careful-work", ...branch(1) }), enteredAt: "2026-11-08T01:00:01.000Z" },
+        { ...done("views", 1, "joined", { branches: 2 }), state: "pending", outcome: null, resultKind: null, winner: null, enteredAt: today(1, 0, 0) },
+        { ...done("careful_work", 1, "ok", { nodeExecutionId: "nx-careful-work", ...branch(1) }), enteredAt: today(1, 0, 1) },
     ] }) });
     const frames = workflowV2ReplayFrames(timed.allExecutions);
     assert.deepEqual(frames.map(frame => [frame.stateId, frame.branchIndex, frame.branchName]), [["views", null, null], ["careful_work", 1, "careful"]]);

@@ -24,5 +24,5 @@ test("UX2D-F12: a chip with the time taken keeps it in a part of its own; withou
     assert.match(tab, /\? h\(StateChip, \{ state, time: took,/);
     const css = fs.readFileSync(new URL("../../../web/src/index.css", import.meta.url), "utf8");
     assert.match(css, /\.ps-wf-state\.has-time > \.ps-wf-state-time \{ flex: none;/);
-    assert.match(css, /\.ps-wf-state\.has-time > \.ps-wf-state-label \{ min-width: 0; overflow: hidden; text-overflow: ellipsis; \}/);
+    assert.match(css, /\.ps-wf-state\.has-time > \.ps-wf-state-label \{[^}]*min-width: 0; overflow: hidden; text-overflow: ellipsis;/);
 });

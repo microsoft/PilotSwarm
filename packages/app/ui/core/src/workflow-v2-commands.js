@@ -908,9 +908,12 @@ export function workflowV2DraftEditor(model, command = null) {
 
 /**
  * The draft editor's marks (owner decision q5): the diagnostics of the revision being edited that name a line, one entry
- * per line in line order ({ line, severity: "error" when any of its diagnostics is one, else "warning", texts: each
- * "CODE: message" }), and how many name no line (`unplaced`). Marks belong to the saved revision: an edit does not move
- * them, and saving checks the new text. Pure.
+ * per line in line order, and how many name no line (`unplaced`). An entry: { line, severity: "error" when any of its
+ * diagnostics is one, else "warning", texts, codes }. `texts` are the words a person reads, as the diagnostics list says
+ * them (WorkflowV2Diagnostics: "Warning: " before a warning, then the message; the line is the mark's own "Line N").
+ * UXP-GEM-05: the code is not among them; `codes` holds each one's code and path ("CODE · path", or "" when it has
+ * neither), for the tooltip only, as that list's. Marks belong to the saved revision: an edit does not move them, and
+ * saving checks the new text. Pure.
  */
 export function workflowV2DraftMarks(diagnostics) {
     const byLine = new Map();
@@ -918,9 +921,10 @@ export function workflowV2DraftMarks(diagnostics) {
     for (const item of Array.isArray(diagnostics) ? diagnostics : []) {
         if (!isRecord(item)) continue;
         if (!Number.isSafeInteger(item.line) || item.line < 1) { unplaced += 1; continue; }
-        const entry = byLine.get(item.line) ?? { line: item.line, severity: "warning", texts: [] };
+        const entry = byLine.get(item.line) ?? { line: item.line, severity: "warning", texts: [], codes: [] };
         if (item.severity !== "warning") entry.severity = "error";
-        entry.texts.push(`${text(item.code) ? `${item.code}: ` : ""}${text(item.message) ?? "No message."}`);
+        entry.texts.push(`${item.severity === "warning" ? "Warning: " : ""}${text(item.message) ?? "No message."}`);
+        entry.codes.push([text(item.code), text(item.path)].filter(Boolean).join(" · "));
         byLine.set(item.line, entry);
     }
     return { lines: [...byLine.values()].sort((a, b) => a.line - b.line), unplaced };
