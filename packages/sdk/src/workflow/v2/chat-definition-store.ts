@@ -798,7 +798,12 @@ export class ChatDefinitionStore {
      * runs under its run's notice lock, so its look and its write are not raced by another attempt of that notice).
      */
     async keepNote(ownerSessionId: string, definitionId: string, revision: number, text: string): Promise<void> {
-        await this.pool.query(
+        await this.keepNoteIn(this.pool, ownerSessionId, definitionId, revision, text);
+    }
+
+    /** keepNote on `client`, inside its caller's transaction (review R3-PA1: a run's end kept as a note and its skip record). */
+    async keepNoteIn(client: Pick<PoolClient, "query">, ownerSessionId: string, definitionId: string, revision: number, text: string): Promise<void> {
+        await client.query(
             `INSERT INTO ${this.t.notes} (owner_session_id, definition_id, revision, text)
              SELECT $1::text, $2::text, $3::int, $4::text WHERE NOT EXISTS (
                  SELECT 1 FROM ${this.t.notes} WHERE owner_session_id = $1::text AND definition_id = $2::text AND text = $4::text)`,

@@ -30,6 +30,11 @@ function harness({ inFlight = () => 0, waitMs, delivered, notStarted = false, ch
             chatRevision: chatDefinition?.revision ?? null }),
         // Deployed check DS-2: the chat's notes (a notice kept for a chat that has not started yet).
         chat: { keepNote: async (...args) => { log.push(["note", ...args]); } },
+        // R3-PA1: the note and its skip record, one write.
+        keepNoticeAsNote: async ({ ownerSessionId, definitionId, revision, text, projection }) => {
+            log.push(["note", ownerSessionId, definitionId, revision, text]);
+            for (const event of projection.events ?? []) log.push(["event", event.eventType, event.data]);
+        },
         // Recorded by this test's choice, or by a notice event any attempt recorded.
         runNoticeRecorded: async () => recorded(recordedCalls++)
             || log.some(entry => entry[0] === "event" && ["workflow.parent_notified", "workflow.parent_notification_skipped"].includes(entry[1])),

@@ -90,6 +90,7 @@ import {
     type WorkflowAgentTask,
     type WorkflowTestInterception,
     type CancelledNodeWinner,
+    type SessionEventRecord,
     commandEndOf,
     runEndedByDeletion,
     workflowTestInterceptionId,
@@ -4508,9 +4509,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             };
             // D-R1: a known refusal now is recorded as a skip, never as told; after an earlier attempt it says that the
             // attempt may have told the parent.
+            const skipEvent = (reason: string): SessionEventRecord => ({ eventType: "workflow.parent_notification_skipped",
+                data: { runId: run.runId, reason, ...(attempted ? { earlierAttempt: true } : {}) } });
             const skipped = async (reason: string): Promise<null> => {
-                await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.parent_notification_skipped",
-                    data: { runId: run.runId, reason, ...(attempted ? { earlierAttempt: true } : {}) } }]);
+                await store.recordSessionEvents(run.workflowSessionId, [skipEvent(reason)]);
                 return null;
             };
             if (!notifyParent) return await skipped("notifications are off");
@@ -4544,9 +4546,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             // DS-2: a parent chat that has not started yet keeps it as a note for its first turn, once.
             if (delivery?.delivered === false) {
                 if (delivery.notStarted === true) {
-                    await store.chat.keepNote(parentSessionId, definition.chatDefinitionId ?? run.workflowSessionId,
-                        definition.chatRevision ?? run.revision, notice);
-                    return await skipped(WORKFLOW_V2_NOTICE_KEPT_AS_NOTE);
+                    // Review R3-PA1: the note and its skip record are one write, so a retry never tells the parent again.
+                    await store.keepNoticeAsNote({ ownerSessionId: parentSessionId, definitionId: definition.chatDefinitionId ?? run.workflowSessionId,
+                        revision: definition.chatRevision ?? run.revision, text: notice,
+                        projection: { sessionId: run.workflowSessionId, events: [skipEvent(WORKFLOW_V2_NOTICE_KEPT_AS_NOTE)] } });
+                    return null;
                 }
                 return await skipped("parent is gone");
             }

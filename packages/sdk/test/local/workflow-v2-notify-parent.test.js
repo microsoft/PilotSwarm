@@ -401,6 +401,50 @@ describe("workflow v2: telling the parent when a live run ends", () => {
         }
     });
 
+    // Review R3-PA1 (formal parent.r3-told-twice): the note and its skip record are one write. Fault injection: the first
+    // delivery finds the parent chat not started, and the note's write fails right after it (as a crash would); the retry
+    // finds the chat started and delivers. The parent is told once: a pending note or a notice, never both.
+    it("R3-PA1: a failure right after the note is kept tells the parent once, as a note or as a notice, never both", { timeout: TIMEOUT }, async () => {
+        const delivered = [];
+        let deliveries = 0;
+        const h = await harness(getEnv(), { deliver: () => async (parentSessionId, text, _meta, clientMessageId) => {
+            deliveries += 1;
+            if (deliveries === 1) return { delivered: false, notStarted: true };
+            delivered.push({ parentSessionId, text, clientMessageId });
+            return { delivered: true };
+        } });
+        try {
+            const chat = h.store.chat;
+            let failed = false;
+            for (const name of ["keepNote", "keepNoteIn"]) {
+                const original = chat[name].bind(chat);
+                chat[name] = async (...args) => {
+                    const result = await original(...args);
+                    if (!failed) {
+                        failed = true;
+                        throw new Error(`injected: the attempt fails right after ${name} wrote the note`);
+                    }
+                    return result;
+                };
+            }
+            const parent = await parentOf(h);
+            const id = randomUUID();
+            const created = await createWorkflowV2(h.host, { workflowSessionId: id, parentSessionId: parent.parentId, yaml: QUICK, actor: ACTOR,
+                operationId: "create", start: { inputs: {} } });
+            const { runId } = created.receipt.run;
+            await finished(h, runId);
+            const notices = await settledNotices(h, id, runId);
+            expect(failed).toBe(true);
+            expect(deliveries).toBe(2);
+            const pending = await h.store.chat.pendingNotes(parent.parentId);
+            expect(pending.length + delivered.length, JSON.stringify({ pending, delivered, notices })).toBe(1);
+            expect(delivered).toEqual([expect.objectContaining({ parentSessionId: parent.parentId, clientMessageId: `workflow:${id}:${runId}:terminal` })]);
+            expect(notices.map(event => event.eventType)).toEqual(["workflow.parent_notified"]);
+        } finally {
+            await h.stop();
+        }
+    });
+
     it("s-4/w-2: a run that fails at a step's input tells the parent the step, the error and its first problem", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {

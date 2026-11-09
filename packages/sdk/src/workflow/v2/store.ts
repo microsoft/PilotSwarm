@@ -3310,6 +3310,19 @@ export class WorkflowStore {
         });
     }
 
+    /**
+     * Review R3-PA1 (formal parent.r3-told-twice): a run's end notice kept as a note for a parent chat that has not
+     * started (deployed check DS-2) and its skip record, in one transaction. A failure between the two wrote neither,
+     * so a retry never finds the note without its skip and tells the parent a second time.
+     */
+    async keepNoticeAsNote(input: { ownerSessionId: string; definitionId: string; revision: number; text: string; projection: SessionProjection })
+        : Promise<void> {
+        await this.transaction(async client => {
+            await this.chat.keepNoteIn(client, input.ownerSessionId, input.definitionId, input.revision, input.text);
+            await this.project(client, input.projection);
+        });
+    }
+
     async recordSessionEvents(sessionId: string, events: SessionEventRecord[]): Promise<void> {
         if (events.length === 0) return;
         // SF-6: the secrets in an event's error fields are hidden before it is stored.
