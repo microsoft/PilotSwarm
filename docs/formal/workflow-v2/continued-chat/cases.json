@@ -1,0 +1,538 @@
+[
+ {
+  "id": "cc.safety",
+  "module": "WfContinuedChat",
+  "config": "cc.safety.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "a1772a01: three visits, stop and cancel, no person action, no failure (the run-end Stop of G5 assumed): one agent session goes on at a time, results bind to their own visit, ends are sent once."
+ },
+ {
+  "id": "cc.live",
+  "module": "WfContinuedChat",
+  "config": "cc.live.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "a1772a01: every visit is decided; after the run ends every agent session is ended; an owed end is sent."
+ },
+ {
+  "id": "cc.stop",
+  "module": "WfContinuedChat",
+  "config": "cc.stop.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "a1772a01: a graceful stop: started visits finish, idle agent sessions are ended, then the run ends."
+ },
+ {
+  "id": "cc.cancel",
+  "module": "WfContinuedChat",
+  "config": "cc.cancel.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "a1772a01: a cancel decides pending visits; an agent session being created is owed and ended later."
+ },
+ {
+  "id": "cc.person-rest",
+  "module": "WfContinuedChat",
+  "config": "cc.person-rest.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "a1772a01: a person ends or deletes the agent session: one goes on at a time, a replacement only after it ended, results bind to their own visit."
+ },
+ {
+  "id": "cc.person-live",
+  "module": "WfContinuedChat",
+  "config": "cc.person-live.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "a1772a01: with a person's end or delete, every visit is still decided and every agent session ended."
+ },
+ {
+  "id": "cc.late-reply-binding",
+  "module": "WfContinuedChat",
+  "config": "cc.late-reply-binding.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "a1772a01: a visit's turn runs on after its visit was decided (time limit, Stop not sent): its result is refused, never taken by the next visit."
+ },
+ {
+  "id": "finding.g1-silent",
+  "module": "WfContinuedChat",
+  "config": "finding.g1-silent.cfg",
+  "mode": "reviewed",
+  "meaning": "finding",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_PromptNotDropped"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "G1 at a1772a01: the visit's agent session is chosen at admission and frozen; deleted before the spawn, it is brought back as a row that says running and the prompt is dropped; the visit waits out its time limit."
+ },
+ {
+  "id": "finding.g1-loud",
+  "module": "WfContinuedChat",
+  "config": "finding.g1-loud.cfg",
+  "mode": "reviewed",
+  "meaning": "finding",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoLoudFail"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "G1 at a1772a01: ended before the spawn, the agent session refuses the prompt; the spawn retries about 31 minutes, then the visit fails unavailable."
+ },
+ {
+  "id": "fix.g1-recheck",
+  "module": "WfContinuedChat",
+  "config": "fix.g1-recheck.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "G1 fix: the spawn checks the frozen agent session before it sends; an ended or deleted one fails the visit at once."
+ },
+ {
+  "id": "finding.g2-stale-turn",
+  "module": "WfContinuedChat",
+  "config": "finding.g2-stale-turn.cfg",
+  "mode": "reviewed",
+  "meaning": "finding",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoPromptBehindStaleTurn"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "G2 at a1772a01: a visit's cycle Stop fails past its retries; nothing sends it again during the run; the next visit's prompt waits behind the old turn."
+ },
+ {
+  "id": "fix.g2-stop-before-spawn",
+  "module": "WfContinuedChat",
+  "config": "fix.g2-stop-before-spawn.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "G2 fix: the next visit's spawn first sends the earlier visit's Stop again."
+ },
+ {
+  "id": "finding.g3-other-chat",
+  "module": "WfContinuedChat",
+  "config": "finding.g3-other-chat.cfg",
+  "mode": "reviewed",
+  "meaning": "finding",
+  "spec": "LiveSpec",
+  "expected": "liveness",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_OthersEnded"
+  ],
+  "deadlock": false,
+  "note": "G3 at a1772a01: the first agent session's end fails past every retry; the loop stops there, so the replacement session is never ended."
+ },
+ {
+  "id": "limit.g3-failed-chat",
+  "module": "WfContinuedChat",
+  "config": "limit.g3-failed-chat.cfg",
+  "mode": "reviewed",
+  "meaning": "design-limit",
+  "spec": "LiveSpec",
+  "expected": "liveness",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_AllEnded"
+  ],
+  "deadlock": false,
+  "note": "The agent session whose end fails past every retry stays open until a person runs recover (recover is on request)."
+ },
+ {
+  "id": "fix.g3-per-chat",
+  "module": "WfContinuedChat",
+  "config": "fix.g3-per-chat.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_OthersEnded",
+   "Prop_AllEnded"
+  ],
+  "deadlock": true,
+  "note": "G3 fix: each agent session's end is tried on its own; the others are ended; a recover ends the failed one."
+ },
+ {
+  "id": "finding.g5-no-stop-at-end",
+  "module": "WfContinuedChat",
+  "config": "finding.g5-no-stop-at-end.cfg",
+  "mode": "reviewed",
+  "meaning": "finding",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_StopAtRunEnd"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "G5 at a1772a01: a run cancelled during a visit's turn sends no Stop; the end command waits for the turn's natural end."
+ },
+ {
+  "id": "fix.g5-stop-at-end",
+  "module": "WfContinuedChat",
+  "config": "fix.g5-stop-at-end.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "G5 fix: the visit's end at the run's end also stops its running turn."
+ },
+ {
+  "id": "fix.all",
+  "module": "WfContinuedChat",
+  "config": "fix.all.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "Every proposed fix together, with a person's action and failing Stops."
+ },
+ {
+  "id": "fault.bind-newest",
+  "module": "WfContinuedChat",
+  "config": "fault.bind-newest.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_ResultOwnVisit"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "A result bound to the newest pending visit instead of its own: an old turn decides the next visit."
+ },
+ {
+  "id": "fault.replace-without-check",
+  "module": "WfContinuedChat",
+  "config": "fault.replace-without-check.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_OneLive"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "A replacement agent session while the previous one goes on: two at once."
+ },
+ {
+  "id": "fault.no-owed-mark",
+  "module": "WfContinuedChat",
+  "config": "fault.no-owed-mark.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "LiveSpec",
+  "expected": "liveness",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_AllEnded"
+  ],
+  "deadlock": false,
+  "note": "An agent session not visible yet at the run's end is marked ended instead of owed: it starts later and is never ended."
+ },
+ {
+  "id": "fault.end-without-lock",
+  "module": "WfContinuedChat",
+  "config": "fault.end-without-lock.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_EndOnce"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Two lookers end the same agent session without the end lock: two end commands."
+ },
+ {
+  "id": "fault.run-decided",
+  "module": "WfContinuedChat",
+  "config": "fault.run-decided.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoTurnForDecided"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "A turn starts for a visit already decided (no visit check at turn start)."
+ },
+ {
+  "id": "wit.replacement",
+  "module": "WfContinuedChat",
+  "config": "wit.replacement.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoReplacement"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A replacement agent session after a person ended the previous one."
+ },
+ {
+  "id": "wit.owed-end",
+  "module": "WfContinuedChat",
+  "config": "wit.owed-end.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoOwedEnd"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "An agent session not visible yet at the run's end is owed."
+ },
+ {
+  "id": "wit.cycle-stop",
+  "module": "WfContinuedChat",
+  "config": "wit.cycle-stop.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoCycleStop"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A cycle Stop ends a decided visit's running turn."
+ },
+ {
+  "id": "wit.skip-decided",
+  "module": "WfContinuedChat",
+  "config": "wit.skip-decided.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoSkip"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A queued prompt of a decided visit is skipped at turn start."
+ }
+]
