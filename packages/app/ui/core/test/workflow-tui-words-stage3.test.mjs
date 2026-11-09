@@ -78,8 +78,8 @@ test("no ids: a received message, a send and an agent node's chat say the sessio
         { sessionId: "helper-2", title: null, status: "idle", parentSessionId: "child-1" },
     ] }).lines;
     assert.ok(chats.includes("▸ visit 1 · ● running · review · agent"), chats.join("\n"));
-    // C: "2 sessions under this chat:", each by its title and its status in one word.
-    assert.ok(chats.includes("2 sessions under this chat:"), chats.join("\n"));
+    // C: "2 sessions under this agent session:", each by its title and its status in one word.
+    assert.ok(chats.includes("2 sessions under this agent session:"), chats.join("\n"));
     assert.ok(chats.includes("Helper · Canceled"), chats.join("\n"));
     assert.ok(chats.includes("untitled session · Waiting"), chats.join("\n"));
     assert.ok(!chats.some(line => /child-1|helper-2/.test(line)), "no session id");

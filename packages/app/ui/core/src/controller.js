@@ -10345,7 +10345,7 @@ export class PilotSwarmUiController {
             type: "ui/modal",
             modal: { type: "workflowView", sessionId, selectedNodeId, occurrenceIndex: 0, previousFocus: state.ui.focusRegion },
         });
-        this.dispatch({ type: "ui/status", text: "Workflow — ↑↓ node · PgUp/PgDn details · Tab agent chat · Enter open · Esc back to the chat" });
+        this.dispatch({ type: "ui/status", text: "Workflow — ↑↓ node · PgUp/PgDn details · Tab agent session · Enter open · Esc back to the chat" });
     }
 
     /** Stop keeping the Workflow pane's Workflow live (openWorkflowViewModal), if it was. */
@@ -10561,14 +10561,14 @@ export class PilotSwarmUiController {
         const occurrence = selection.occurrence;
         if (!occurrence?.childSessionId) {
             this.dispatch({ type: "ui/status", text: selection.selected
-                ? `Node ${selection.selected.id} has no agent chat to open`
+                ? `Node ${selection.selected.id} has no agent session to open`
                 : "No node is selected" });
             return;
         }
         this.dispatch({ type: "ui/modal", modal: null });
         this.releaseWorkflowPaneWatch();
         if (selection.modal.previousFocus) this.setFocus(selection.modal.previousFocus);
-        this.dispatch({ type: "ui/status", text: `Opened the agent chat of ${selection.selected.id}`
+        this.dispatch({ type: "ui/status", text: `Opened the agent session of ${selection.selected.id}`
             + `${occurrence.ordinal === null ? "" : ` (visit ${occurrence.ordinal})`}: people can read it; the server refuses their input to it` });
         await this.loadSession(occurrence.childSessionId);
     }

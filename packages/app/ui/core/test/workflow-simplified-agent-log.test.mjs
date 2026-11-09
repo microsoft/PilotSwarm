@@ -79,12 +79,12 @@ test("one group per visit, newest first; each visit's chat rows and Workflow row
     assert.deepEqual(first.rows.map(row => [row.kind, row.label, row.text.split("\n")[0]]), [
         ["workflow", "Workflow", "● talk started"],
         ["prompt", "Prompt", "[SYSTEM: WORKFLOW NODE INVOCATION.]"],
-        ["workflow", "Workflow", "Chat started"],
+        ["workflow", "Workflow", "Agent session started"],
         ["agent", "Tool", "read_facts — facts/%"],
         ["agent", "Agent", "PostgreSQL uses MVCC."],
         ["result", "Result", "again · {\"fact\":\"MVCC\"}"],
         ["workflow", "Workflow", "✓ talk · again"],
-        ["workflow", "Workflow", "talk · visit ended · chat kept for the next visit · turn stopped"],
+        ["workflow", "Workflow", "talk · visit ended · agent session kept for the next visit · turn stopped"],
     ]);
     const tool = first.rows.find(row => row.label === "Tool");
     assert.match(tool.detail, /^Arguments\n\{\n {2}"key_pattern": "facts\/%"\n\}\n\nResult\n\{\n {2}"count": 0\n\}$/);
@@ -115,7 +115,7 @@ test("the portal draws each row with its label, folds long text and expands a to
     assert.ok(!html.includes(LONG), "the long answer is folded");
     const failed = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, {
         log: workflowAgentNodeLog({ node, events, chats: new Map(), runId: "run-1", now: NOW }), failed: new Set([CHAT]) }));
-    assert.ok(failed.includes("Could not read the chat."));
+    assert.ok(failed.includes("Could not read the agent session."));
 });
 
 // The base instructions (finding 8, "show the base prompts"): the runtime records a summary of the SDK's echo of the
@@ -268,13 +268,13 @@ test("UI-D5: a prompt-free window of a continued chat is shown apart, never unde
     assert.equal(log.earlier.length, 1);
     const [part] = log.earlier;
     assert.equal(part.chatId, CHAT);
-    assert.equal(part.header, "Earlier in this chat · run not loaded");
+    assert.equal(part.header, "Earlier in this agent session · run not loaded");
     assert.equal(part.hasOlder, true);
     assert.deepEqual(part.rows.map(row => row.label), ["Tool", "Agent", "Result"]);
     const asked = [];
     const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { openBodies: true, log, nodeId: "talk", onOlderChat: id => asked.push(id) }));
-    assert.ok(html.includes("data-earlier=\"\"") && html.includes("Earlier in this chat · run not loaded"), html);
-    assert.ok(html.indexOf("Run 1") < html.indexOf("Earlier in this chat"), "after the visits, oldest last");
+    assert.ok(html.includes("data-earlier=\"\"") && html.includes("Earlier in this agent session · run not loaded"), html);
+    assert.ok(html.indexOf("Run 1") < html.indexOf("Earlier in this agent session"), "after the visits, oldest last");
     // Load older reaches visit 1's prompt: the lines are visit 1's, in place; nothing is shown apart.
     const placed = workflowAgentNodeLog({ node: continued, events, chats: new Map([[CHAT, chat.slice(1, 7)]]), coverage, runId: "run-1", now: NOW });
     assert.deepEqual(placed.earlier, []);
@@ -301,7 +301,7 @@ test("UI-D6: an older-page read failure shows with Retry; at the 3,000-event lim
     assert.deepEqual(workflowAgentLogOlder({ hasOlder: true, error: "HTTP 503 Service Unavailable" }),
         { action: "retry", text: "Older lines could not be read: HTTP 503 Service Unavailable" });
     assert.deepEqual(workflowAgentLogOlder({ hasOlder: true, cap: 3000, error: "HTTP 503" }),
-        { action: null, text: "Older lines not shown: the Log reads the newest 3,000 events of a chat." });
+        { action: null, text: "Older lines not shown: the Log reads the newest 3,000 events of an agent session." });
     const window = chat.slice(2);
     const render = entry => {
         const log = workflowAgentNodeLog({ node, events, chats: new Map([[CHAT, window]]), coverage: new Map([[CHAT, entry]]), runId: "run-1", now: NOW });
@@ -311,7 +311,7 @@ test("UI-D6: an older-page read failure shows with Retry; at the 3,000-event lim
     assert.ok(failed.includes("Older lines could not be read: HTTP 503 Service Unavailable") && failed.includes('data-older="failed"'), failed);
     assert.ok(/data-action="older-chat"[^>]*>Retry</.test(failed), failed);
     const capped = render({ hasOlder: true, cap: 3000 });
-    assert.ok(capped.includes("Older lines not shown: the Log reads the newest 3,000 events of a chat."), capped);
+    assert.ok(capped.includes("Older lines not shown: the Log reads the newest 3,000 events of an agent session."), capped);
     assert.ok(!capped.includes('data-action="older-chat"'), "no Load older at the limit");
     const open = render({ hasOlder: true });
     assert.ok(/data-action="older-chat"[^>]*>Load older</.test(open) && !open.includes("data-older="), open);
@@ -367,10 +367,10 @@ test("UI-10: a continued chat's later visit carries the base instructions an ear
     const [second, first] = log.groups;
     assert.equal(first.rows.filter(row => row.label === "Base instructions").length, 1);
     const carried = second.rows.find(row => row.label === "Base instructions");
-    assert.deepEqual({ text: carried.text, from: carried.carriedFrom, ref: carried.instructions }, { text: "Same as visit 1 · same chat", from: 1, ref: null });
+    assert.deepEqual({ text: carried.text, from: carried.carriedFrom, ref: carried.instructions }, { text: "Same as visit 1 · same agent session", from: 1, ref: null });
     assert.ok(second.rows.indexOf(carried) < second.rows.findIndex(row => row.label === "Prompt"), "before the visit's prompt");
     const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { openBodies: true, log, nodeId: "talk" }));
-    assert.ok(html.includes('data-carried-from="1"') && html.includes("Same as visit 1 · same chat"));
+    assert.ok(html.includes('data-carried-from="1"') && html.includes("Same as visit 1 · same agent session"));
 });
 
 // Review UI-D9: every Base instructions row of a visit counts, in order. Visit 1 records body A, then a changed body B;
@@ -392,7 +392,7 @@ test("UI-D9: the carried instructions are the visit's last; each distinct body i
     const bases = group => group.rows.filter(row => row.label === "Base instructions");
     assert.deepEqual(bases(first).map(row => row.instructions?.sha256), [SHA, SHA_B], "visit 1 shows both in full, in order");
     assert.deepEqual(bases(second).map(row => [row.text, row.carriedFrom, row.carriedNumber, row.instructions]),
-        [["Same as visit 1 · instructions 2/2 · same chat", 1, 2, null]], "visit 2 carries B, the last");
+        [["Same as visit 1 · instructions 2/2 · same agent session", 1, 2, null]], "visit 2 carries B, the last");
     assert.deepEqual(bases(third).map(row => [row.text, row.carriedFrom, row.carriedNumber, row.instructions]), [
         ["Same as visit 1 · instructions 1/2", 1, 1, null],
         ["Same as visit 1 · instructions 2/2", 1, 2, null],
@@ -418,7 +418,7 @@ test("UI-F5: A/B/A carries A; each body is shown in full once; an unchanged echo
     assert.deepEqual(bases(first).map(row => [row.instructions?.sha256 ?? null, row.carriedFrom ?? null, row.carriedNumber ?? null]),
         [[SHA, null, null], [SHA_B, null, null], [null, 1, 1]], "A in full, B in full, A again as a reference; the echo adds none");
     assert.deepEqual(bases(second).map(row => [row.text, row.carriedNumber]),
-        [["Same as visit 1 · instructions 1/2 · same chat", 1]], "the next visit carries A, the last");
+        [["Same as visit 1 · instructions 1/2 · same agent session", 1]], "the next visit carries A, the last");
     const full = result.groups.flatMap(bases).filter(row => row.instructions);
     assert.deepEqual(full.map(row => row.instructions.sha256), [SHA, SHA_B]);
 });

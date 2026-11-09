@@ -35,6 +35,7 @@ import { readStoredAgentModels, readWorkflowAgentModels } from "../../src/workfl
 import { createWorkflowAgentNodeHost } from "../../src/workflow/v2/agent-host.ts";
 import { readWorkflowV2 } from "../../src/workflow/v2/tools.ts";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
+import { canonicalJson, sha256Hex } from "../../src/workflow/v2/json.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -581,10 +582,10 @@ states:
             await h.stop();
         }
     });
-    // Owner 2026-11-09T05:38Z: an agent state that sets no chat continues its agent session by default. A revision saved before
-    // that keeps the mode it was compiled with at its Start and Run again (its stored IR, not a new compile of its YAML); a
-    // re-save of the same YAML compiles to continue.
-    it("continue default: a revision saved before keeps a new chat each visit at Start and Run again; a re-save of its YAML continues", { timeout: TIMEOUT }, async () => {
+    // Owner 2026-11-09T05:38Z: an agent state that sets no session continues its agent session by default; 07:03Z, (a): a revision
+    // saved before that, without the key, starts with continue (a Start compiles its YAML again), and the definition's graph
+    // says so; a re-save compiles to continue. 06:30Z: a revision saved with the old key `chat` no longer starts; it says why.
+    it("continue default: a revision saved before without session starts continued, and its graph says so; one saved with chat: is refused in words", { timeout: TIMEOUT }, async () => {
         const { h, host, chat } = await harness();
         const AGENTS = `
 apiVersion: pilotswarm.dev/v2-draft
@@ -603,28 +604,42 @@ states:
 `;
         const agentsHost = { ...host, requests: true };
         const FLAGS = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true };
-        const chatOf = async workflowId => (await readWorkflowV2(agentsHost, workflowId, {}, "tool")).graph.states.find(state => state.id === "classify").chat ?? "new";
+        const modeOf = graph => graph.states.find(state => state.id === "classify").chat ?? "new";
+        const workflowMode = async workflowId => modeOf((await readWorkflowV2(agentsHost, workflowId, {}, "tool")).graph);
+        /** `yaml` as a build before the default changed stored it: its IR with no session mode (a new session each visit). */
+        const storedBefore = (yaml, compiledFrom = yaml) => {
+            const fresh = compileWorkflowV2(compiledFrom, FLAGS);
+            const ir = JSON.parse(JSON.stringify(fresh.ir));
+            delete ir.nodes.classify.chat;
+            return { ...fresh, ir, irSha256: sha256Hex(canonicalJson(ir)), yamlSha256: sha256Hex(yaml) };
+        };
         try {
-            // Revision 1 as a build before the default changed compiled it: no chat mode in its IR (a new chat each visit).
-            const before = compileWorkflowV2(AGENTS, { ...FLAGS, storedContinuedChats: [] });
-            expect(Object.hasOwn(before.ir.nodes.classify, "chat")).toBe(false);
+            const before = storedBefore(AGENTS);
             const old = (await saveChatWorkflowDefinition(agentsHost, { ownerSessionId: chat, name: "triage", yaml: AGENTS, expected: null, compiled: before,
                 actor: { kind: "chat", sessionId: chat }, operationId: `save-${randomUUID()}`, by: "chat" })).receipt;
-            expect(old).toMatchObject({ revision: 1, valid: true });
+            expect(old).toMatchObject({ revision: 1, valid: true, irSha256: before.irSha256 });
+            // Its graph is compiled as a Start compiles it: the agent session continues (its Agent session line says so).
+            expect(modeOf((await readChatWorkflowDefinition(agentsHost, chat, { definitionId: old.definitionId, revision: 1 }, { graph: true })).graph))
+                .toBe("continue");
+            // A Start, and a Run again, of that revision continue one agent session across the step's visits.
             const first = await start(agentsHost, chat, old.definitionId, { revision: 1 });
-            expect(await chatOf(first.workflowId)).toBe("new");
-            const again = await start(agentsHost, chat, old.definitionId, { runAgainOf: first.workflowId });
-            expect(again.revision).toBe(1);
-            expect(await chatOf(again.workflowId)).toBe("new");
-            // The same YAML saved again (revision 2) compiles to continue; its Start continues one agent session.
+            expect(await workflowMode(first.workflowId)).toBe("continue");
+            expect(await workflowMode((await start(agentsHost, chat, old.definitionId, { runAgainOf: first.workflowId })).workflowId)).toBe("continue");
+            // The same YAML saved again (revision 2) compiles to continue.
             const resaved = (await save(agentsHost, chat, AGENTS, { definitionId: old.definitionId, revision: 1 }, { name: "triage" })).receipt;
             expect(resaved).toMatchObject({ revision: 2, valid: true });
-            expect(resaved.irSha256).not.toBe(before.irSha256);
             expect(resaved.irSha256).toBe(compileWorkflowV2(AGENTS, FLAGS).irSha256);
-            const now = await start(agentsHost, chat, old.definitionId, { revision: 2 });
-            expect(await chatOf(now.workflowId)).toBe("continue");
-            // Revision 1 still starts as it was compiled.
-            expect(await chatOf((await start(agentsHost, chat, old.definitionId, { revision: 1 })).workflowId)).toBe("new");
+            expect(resaved.irSha256).not.toBe(before.irSha256);
+            // A revision a build before the rename stored with `chat: new` does not start now: its words say what to write.
+            const OLD_KEY = AGENTS.replace("    timeoutSeconds: 600", "    chat: new\n    timeoutSeconds: 600");
+            const keyed = (await saveChatWorkflowDefinition(agentsHost, { ownerSessionId: chat, name: "triage", yaml: OLD_KEY,
+                expected: { definitionId: old.definitionId, revision: 2 }, compiled: storedBefore(OLD_KEY, AGENTS),
+                actor: { kind: "chat", sessionId: chat }, operationId: `save-${randomUUID()}`, by: "chat" })).receipt;
+            expect(keyed).toMatchObject({ revision: 3, valid: true });
+            const refusal = await start(agentsHost, chat, old.definitionId, { revision: 3 }).then(() => null, error => error);
+            expect(refusal?.message).toContain("`chat` is now `session`: write `session: continue` or `session: new`.");
+            // Its graph is the stored one (its YAML no longer compiles).
+            expect(modeOf((await readChatWorkflowDefinition(agentsHost, chat, { definitionId: old.definitionId, revision: 3 }, { graph: true })).graph)).toBe("new");
         } finally {
             await h.stop();
         }

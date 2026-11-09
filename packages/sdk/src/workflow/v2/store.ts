@@ -6108,7 +6108,7 @@ export class WorkflowStore {
                 + "complete a cycle in the turn that received its prompt.");
         }
         if (nodeExecutionId === undefined) {
-            throw new WorkflowStoreError("AGENT_NODE_NOT_FOUND", "This chat continues across the visits of its workflow state, so a completion must "
+            throw new WorkflowStoreError("AGENT_NODE_NOT_FOUND", "This agent session continues across the visits of its workflow state, so a completion must "
                 + "name the cycle it finishes: give node_execution_id, the id in this cycle's prompt.");
         }
         const { rows: own } = !storableId(nodeExecutionId) ? { rows: [] as Row[] } : await client.query(

@@ -80,7 +80,7 @@ function reviewer(invoke) {
         schemas: { Review: { type: "object", required: ["verdict"], properties: { verdict: { type: "string" } }, additionalProperties: false } },
         states: {
             review: {
-                type: "agent", invoke, chat: "new", outputSchema: { $ref: "#/schemas/Review" }, timeoutSeconds: 600,
+                type: "agent", invoke, session: "new", outputSchema: { $ref: "#/schemas/Review" }, timeoutSeconds: 600,
                 transition: { next: { accepted: "done", timed_out: "late", failure: "failed" } },
             },
             done: { type: "terminal", outcome: "succeeded", output: "${input}" },

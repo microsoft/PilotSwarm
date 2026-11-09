@@ -62,8 +62,8 @@ test("the Log of the dump: each visit has its base instructions (shown once), it
     assert.match(chatRows(visit1)[2].text, /^success · \{"fact":"PostgreSQL uses multiversion concurrency control/);
     assert.ok(!shown.groups.some(group => group.rows.some(row => row.label === "Note to the agent")), "no echo or prompt reads as a note");
     // Its Workflow lines, in the Log's words.
-    assert.ok(visit1.rows.some(row => row.kind === "workflow" && /^Chat started · limit 17:04:40/.test(row.text)));
-    assert.ok(visit2.rows.some(row => row.kind === "workflow" && /^Visit 2 · same chat · limit /.test(row.text)));
+    assert.ok(visit1.rows.some(row => row.kind === "workflow" && /^Agent session started · limit 17:04:40/.test(row.text)));
+    assert.ok(visit2.rows.some(row => row.kind === "workflow" && /^Visit 2 · same agent session · limit /.test(row.text)));
     // Without coverage the answer is the same: the window starts at visit 1's prompt.
     assert.deepEqual(log(true, new Map()).earlier, []);
 });

@@ -60,9 +60,9 @@ test("a Workflow row keeps its session's chat; w opens that Workflow's pane, kep
     await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     assert.equal(modal(store).type, "workflowView");
     assert.equal(modal(store).sessionId, "wf1");
-    assert.equal(status(store), "Workflow — ↑↓ node · PgUp/PgDn details · Tab agent chat · Enter open · Esc back to the chat");
+    assert.equal(status(store), "Workflow — ↑↓ node · PgUp/PgDn details · Tab agent session · Enter open · Esc back to the chat");
     const view = selectWorkflowViewModal(store.getState(), 100, 40);
-    assert.match(view.detailsTitle, /^Node fetch — ↑↓ node · Tab agent chat · Enter open · Esc back to the chat$/);
+    assert.match(view.detailsTitle, /^Node fetch — ↑↓ node · Tab agent session · Enter open · Esc back to the chat$/);
     assert.ok(!/step/i.test(view.detailsTitle));
     assert.deepEqual(subscriptions.map(entry => [entry.sessionId, entry.closed]), [["wf1", false]], "the shown Workflow is kept live");
     await controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);

@@ -96,7 +96,7 @@ states:
   review:
     type: agent
     invoke: ${invoke}
-    chat: new
+    session: new
     inputSchema: { $ref: "#/schemas/ReviewInput" }
     outputSchema: { $ref: "#/schemas/ReviewResult" }
     timeoutSeconds: ${timeoutSeconds}
@@ -1499,7 +1499,7 @@ states:
   review:
     type: agent
     invoke: { prompt: "${TASK}" }
-    chat: new
+    session: new
     outputSchema: { $ref: "#/schemas/ReviewResult" }
     outcomes: [accepted]
     timeoutSeconds: 3600

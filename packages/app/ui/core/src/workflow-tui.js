@@ -1768,20 +1768,20 @@ function detailLines(selection, width) {
     }
     if (occurrences.length) {
         // Review 19:27Z (row 10): each chat by its visit, its state in marks and words, and its title (never its id).
-        add("Agent chats · Tab choose · Enter open:", "cyan");
+        add("Agent sessions · Tab choose · Enter open:", "cyan");
         occurrences.forEach((occurrence, index) => {
             const chosen = index === occurrenceIndex;
             const visit = occurrence.ordinal === null ? "visit —" : `visit ${occurrence.ordinal}`;
             const result = occurrence.status === "pending" ? `${STATE_GLYPHS.running} running` : visitResultWords(occurrence, "agent");
-            const title = projection.sessionName?.(occurrence.childSessionId) ?? "chat not loaded";
+            const title = projection.sessionName?.(occurrence.childSessionId) ?? "agent session not loaded";
             add(`${chosen ? "▸" : " "} ${visit} · ${result} · ${title}`, chosen ? "white" : "gray", chosen ? { bold: true } : {});
         });
-        add("People can read these chats; the server refuses their prompts, answers and instructions.", "gray");
+        add("People can read these agent sessions; the server refuses their prompts, answers and instructions.", "gray");
         // The sessions the chosen chat started (owner decision q14; mock M14 "View owned subtree"), as loaded here.
         const under = selection.occurrence?.childSessionId
             ? workflowV2SessionSubtree(selection.sessionsById, selection.occurrence.childSessionId).filter(entry => entry.depth > 0) : [];
         if (under.length) {
-            add(`${under.length === 1 ? "1 session" : `${under.length} sessions`} under this chat:`, "cyan");
+            add(`${under.length === 1 ? "1 session" : `${under.length} sessions`} under this agent session:`, "cyan");
             for (const entry of under.slice(0, SUBTREE_ROWS)) add(`${"  ".repeat(entry.depth)}${entry.title ?? "untitled session"} · ${sessionStatusWord(entry.status)}`, "gray");
             if (under.length > SUBTREE_ROWS) add(`  … ${under.length - SUBTREE_ROWS} more · the portal lists them all`, "gray");
         }
@@ -1865,7 +1865,7 @@ export function selectWorkflowViewModal(state, maxWidth = 100, viewportHeight = 
         selectedRowIndex: rowOf[selection.selectedIndex] ?? 0,
         // Workflow Simplified words (03): a node, not a step; Esc goes back to the chat the pane belongs to.
         detailsTitle: selection.selected
-            ? `Node ${bounded(selection.selected.id, 30)} — ↑↓ node · Tab agent chat · Enter open · Esc back to the chat` : "Workflow",
+            ? `Node ${bounded(selection.selected.id, 30)} — ↑↓ node · Tab agent session · Enter open · Esc back to the chat` : "Workflow",
         detailsLines,
         listHeight,
         detailsHeight,

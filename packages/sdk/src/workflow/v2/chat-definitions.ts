@@ -236,16 +236,6 @@ export async function storedStartPin(host: Pick<WorkflowV2Host, "store" | "catal
         ? { definitionId: pin.definitionId, revision: Number(pin.revision) } : null;
 }
 
-/**
- * Owner 2026-11-09T05:38Z: the agent states a stored revision's IR continues (its compile then), so a Start, Run again or
- * test compiles the revision's YAML as it was compiled when it was saved (a revision saved before continue became the
- * default keeps a new chat each visit).
- */
-export async function storedContinuedChatsOf(host: Pick<WorkflowV2Host, "store">, definitionId: string, revision: number): Promise<string[]> {
-    const ir = await host.store.chat.readRevisionIr(definitionId, revision, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION });
-    return Object.values(ir.nodes).flatMap(node => node.type === "agent" && node.chat === "continue" ? [node.id] : []);
-}
-
 /** A Start operation that already ran: its pinned revision again (refused when the request names another), then its receipt. */
 async function replayChatStart(host: WorkflowV2Host, request: Parameters<typeof startChatWorkflowDefinition>[1], workflowSessionId: string,
     prior: { definitionId: string; revision: number }): Promise<ChatStartReceipt> {
@@ -272,7 +262,6 @@ async function replayChatStart(host: WorkflowV2Host, request: Parameters<typeof 
         start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}), ...(agentModels ? { agentModels } : {}) },
         notifyParent: request.notifyParent !== false, ...(binding ? { binding } : {}),
         chatPin: { ownerSessionId: request.ownerSessionId, definitionId: prior.definitionId, revision: prior.revision },
-        storedContinuedChats: await storedContinuedChatsOf(host, prior.definitionId, prior.revision),
     });
     return { operation: "start", definitionId: prior.definitionId, name: pinned.name, revision: prior.revision, workflowId: stored.receipt.workflowSessionId,
         runId: stored.receipt.run?.runId ?? null, replayed: stored.replayed, ...(agentModels ? { agentModels } : {}) };
@@ -326,6 +315,14 @@ export async function startChatWorkflowDefinition(host: WorkflowV2Host, request:
     if (!saved.valid) {
         throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} of ${definition.name} is not valid, so it cannot start. Save a fixed revision first.`);
     }
+    // Owner 2026-11-09T06:30Z: a Start compiles the revision's YAML again. One this build no longer compiles (an agent state's
+    // `chat:`, now `session:`) is refused with its first error, so the one save it needs is plain.
+    const again = compileWorkflowV2ForHost(host, saved.yaml);
+    if (!again.valid) {
+        const first = again.diagnostics.find(item => item.severity !== "warning");
+        throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} of ${definition.name} does not compile in this version`
+            + `${first ? ` (${first.path}): ${first.message}` : "."} Save it again with that change. Nothing was started.`, { revision });
+    }
     if (host.scripts === false) {
         requireWorkflowScripts(host, await host.store.chat.readRevisionIr(definition.definitionId, revision, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION }), "start");
     }
@@ -341,7 +338,6 @@ export async function startChatWorkflowDefinition(host: WorkflowV2Host, request:
         start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}), ...(agentModels ? { agentModels } : {}) },
         notifyParent: request.notifyParent !== false, ...(binding ? { binding } : {}),
         chatPin: { ownerSessionId: request.ownerSessionId, definitionId: definition.definitionId, revision },
-        storedContinuedChats: await storedContinuedChatsOf(host, definition.definitionId, revision),
         // S2RT-F3: the budget again, under the chat's exclusive lock, in the claim's transaction.
         childBudget: { max: WORKFLOW_START_MAX_RUNNING_CHILDREN },
     });
@@ -382,7 +378,7 @@ export async function listChatWorkflowDefinitions(host: Pick<WorkflowV2Host, "st
  * `graph` (the screens' read, stage 2.1b): the revision's graph as a Workflow's view draws it (workflowV2GraphJson), for a
  * valid revision; null for one with errors.
  */
-export async function readChatWorkflowDefinition(host: Pick<WorkflowV2Host, "store">, ownerSessionId: string,
+export async function readChatWorkflowDefinition(host: Pick<WorkflowV2Host, "store" | "requests">, ownerSessionId: string,
     ref: { definitionId?: string | null; name?: string | null }, options: { revision?: number | null; forChat?: boolean; graph?: boolean } = {})
     : Promise<ChatDefinitionView & { revision: ChatRevisionRow | null; graph?: { [key: string]: JsonValue } | null }> {
     const definition = ref.definitionId ? await host.store.chat.readDefinition(ref.definitionId)
@@ -398,7 +394,11 @@ export async function readChatWorkflowDefinition(host: Pick<WorkflowV2Host, "sto
         await host.store.chat.markSeen(ownerSessionId, [{ definitionId: definition.definitionId, revision: definition.currentRevision }]);
     }
     if (!options.graph) return { ...view, revision };
-    const ir = revision?.valid && revision.irSha256
+    // Owner 2026-11-09T07:03Z: the graph shows what a Start runs. A Start compiles the revision's YAML again, so a revision
+    // saved before an agent session's default changed shows it as a Start runs it. A YAML this build no longer compiles
+    // (one with `chat:`, now `session:`) shows the graph stored with it; its Start is refused in words.
+    const again = revision?.valid && typeof revision.yaml === "string" ? compileWorkflowV2ForHost(host, revision.yaml) : null;
+    const ir = again?.valid && again.ir ? again.ir : revision?.valid && revision.irSha256
         ? await host.store.chat.readRevisionIr(definition.definitionId, revision.revision, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION }) : null;
     return { ...view, revision, graph: ir ? workflowV2GraphJson(ir, revision!.revision) : null };
 }

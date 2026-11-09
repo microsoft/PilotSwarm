@@ -5,7 +5,7 @@
  *   own graph (its routes stay in it), state ids unique across the Workflow (so agentModels works per branch), concurrency
  *   defaulting to the number of branches; the same joins, failFast and time limit; IR 11 only for a Workflow with one.
  * - Refused: forEach or body with branches, an empty map, a bad name, a missing or foreign initial, a route into another
- *   branch, k above the branches, branch.name in a For each, `branch` in a branch's input template, a continued chat in a
+ *   branch, k above the branches, branch.name in a For each, `branch` in a branch's input template, a continued agent session in a
  *   branch, a state id used twice; and a route with a list of targets says how to run several nodes at once.
  * - The stored IR reads back as compiled (only by a reader of IR 11), and malformed branches are refused.
  * - The joined output is { <name>: output } (for a join of the first k, its winners only); a report names each branch.
@@ -132,8 +132,8 @@ test("named branches are refused in words: with forEach or body, empty, misnamed
         ["an unknown branch field", (_, v) => { v.branches.quick.forEach = [1]; }, "WORKFLOW_FIELD_UNKNOWN", "states.views.branches.quick.forEach", /./],
         ["branch in a branch's input", (_, v) => { v.branches.careful.input = "${branch.name}"; }, "WORKFLOW_BINDING_INVALID",
             "states.views.branches.careful.input", /branch is bound only/],
-        ["a continued chat", (_, v) => { v.branches.quick.states.quick_summary.chat = "continue"; }, "WORKFLOW_FIELD_INVALID",
-            "states.views.branches.quick.states.quick_summary.chat", /inside branch 'quick' of parallel state 'views'/],
+        ["a continued agent session", (_, v) => { v.branches.quick.states.quick_summary.session = "continue"; }, "WORKFLOW_FIELD_INVALID",
+            "states.views.branches.quick.states.quick_summary.session", /inside branch 'quick' of parallel state 'views'/],
         ["a state id used twice", (_, v) => { v.branches.careful.states.quick_end = v.branches.careful.states.careful_end;
             v.branches.careful.states.careful_summary.transition.next.done = "quick_end"; delete v.branches.careful.states.careful_end; },
         "WORKFLOW_STATE_ID", "states.views.branches.careful.states.quick_end", /used twice/],

@@ -58,7 +58,7 @@ function reviewer(agent, { prompt = null } = {}) {
         schemas: { Review: { type: "object", required: ["verdict"], properties: { verdict: { type: "string" } }, additionalProperties: false } },
         states: {
             review: {
-                type: "agent", invoke: prompt !== null ? { prompt } : { agent }, chat: "new", outputSchema: { $ref: "#/schemas/Review" }, timeoutSeconds: 3600,
+                type: "agent", invoke: prompt !== null ? { prompt } : { agent }, session: "new", outputSchema: { $ref: "#/schemas/Review" }, timeoutSeconds: 3600,
                 transition: { next: { accepted: "done", failure: "failed" } },
             },
             done: { type: "terminal", outcome: "succeeded", output: "${input}" },

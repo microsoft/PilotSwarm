@@ -9911,7 +9911,7 @@ const KEYBINDING_HELP = [
         ["n / r", "new session / refresh"],
         ["a", "linked items — artifacts to download, links to open"],
         ["m", "cycle inspector tab"],
-        ["w", "Workflow pane for this chat: its selected Workflow, else its newest (↑↓ node · PgUp/PgDn details · Tab agent chat · Enter open its chat · Esc back to the chat)"],
+        ["w", "Workflow pane for this chat: its selected Workflow, else its newest (↑↓ node · PgUp/PgDn details · Tab agent session · Enter open it · Esc back to the chat)"],
         ["p r s c  d", "workflow view: pause / resume / stop / cancel the shown run where the deployment takes people's workflow commands (stop and cancel ask first) · dismiss a notice"],
         ["v", "workflow view: the shown run's variables — set a name to a JSON value or remove one (Tab name/value · ↑↓ copy a listed one · Enter set · ctrl-r remove · Esc back)"],
         ["V", "workflow view: several of the shown run's variables in one update — Set a JSON object of names and values, Remove a JSON list of names; every other variable stays (Tab set/remove · Enter send, a removal asks first · Esc back)"],

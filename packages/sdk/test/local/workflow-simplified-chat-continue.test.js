@@ -1,6 +1,7 @@
 /**
  * Workflow Simplified: an agent node that continues its chat (owner decision agent-node-continue-20261106; the
- * parent's design verdict: YAML key `chat: new | continue`, migration 0106, and the formal answers Q1 to Q5).
+ * parent's design verdict: YAML key `session: new | continue` (owner 2026-11-09T06:30Z renamed it from `chat`), migration 0106, and
+ * the formal answers Q1 to Q5).
  *
  * - The store: migration 0106 applies on a 0105 database (the UNIQUE on a child session is dropped, an index added);
  *   two visits share one chat; a completion of a continued chat binds ONLY by the node execution id it gives (none, or
@@ -56,7 +57,7 @@ async function until(check, label, timeoutMs = 60_000) {
 }
 
 /**
- * One agent node that continues its chat, visited again after a wait until it says finish. `chat`: what the state sets
+ * One agent node that continues its agent session, visited again after a wait until it says finish. `chat`: its `session`
  * (null: nothing, the default; owner 2026-11-09T05:38Z: continue outside a parallel body).
  */
 const CHAT_YAML = ({ limit = "3600", wait = 1, chat = "continue" } = {}) => `
@@ -69,7 +70,7 @@ states:
   talk:
     type: agent
     invoke: { prompt: "${TASK}" }
-${chat === null ? "" : `    chat: ${chat}\n`}    timeoutSeconds: ${limit}
+${chat === null ? "" : `    session: ${chat}\n`}    timeoutSeconds: ${limit}
     transition: { next: { again: pause, finish: done, timed_out: pause, failure: failed } }
   pause: { type: wait, seconds: ${wait}, transition: { next: { elapsed: talk } } }
   done: { type: terminal, outcome: succeeded, output: "\${input}" }
@@ -445,7 +446,7 @@ const completeAs = (h, chat, args) => completeWorkflowNodeFromTool(args, { calle
 const eventsOf = async (h, workflowSessionId, type) => (await h.catalog.getSessionEvents(workflowSessionId, 0, 500))
     .filter(event => event.eventType === type).map(event => event.data);
 
-/** A For each over two items whose body's agent state sets no chat (owner 2026-11-09T05:38Z: new, the only choice there). */
+/** A For each over two items whose body's agent state sets no session (owner 2026-11-09T05:38Z: new, the only choice there). */
 const FOR_EACH_YAML = `
 apiVersion: pilotswarm.dev/v2-draft
 kind: Workflow
@@ -472,17 +473,17 @@ states:
   failed: { type: terminal, outcome: failed }
 `;
 
-// Owner 2026-11-09T05:38Z: an agent state that sets no chat continues one agent session across its visits where it may (a
-// loop of the outer graph); inside a For each each item's visit has its own; an explicit `chat: new` still gets one each visit.
+// Owner 2026-11-09T05:38Z: an agent state that sets no session continues one agent session across its visits where it may (a
+// loop of the outer graph); inside a For each each item's visit has its own; an explicit `session: new` still gets one each visit.
 describe("the default chat mode on controller 1.9.0 (test-only registration)", () => {
-    it("a loop's agent state that sets no chat keeps one agent session across its visits", { timeout: TIMEOUT }, async () => {
+    it("a loop's agent state that sets no session keeps one agent session across its visits", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             const run = await started(h, CHAT_YAML({ chat: null }));
             const chat = workflowAgentChatSessionId(run.runId, "talk");
             const first = await spawnedVisit(h, 1);
             expect(first.childSessionId).toBe(chat);
-            expect(first.prompt.split("\n")[0]).toContain("This chat continues");
+            expect(first.prompt.split("\n")[0]).toContain("This agent session continues");
             expect(await completeAs(h, chat, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
                 .toMatchObject({ ok: true, outcome: "again" });
             const second = await spawnedVisit(h, 2);
@@ -499,13 +500,13 @@ describe("the default chat mode on controller 1.9.0 (test-only registration)", (
         }
     });
 
-    it("an explicit chat: new gets a new agent session each visit", { timeout: TIMEOUT }, async () => {
+    it("an explicit session: new gets a new agent session each visit", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             const run = await started(h, CHAT_YAML({ chat: "new" }));
             const first = await spawnedVisit(h, 1);
             expect(first.childSessionId).toBe(workflowAgentChildSessionId(first.nodeExecutionId));
-            expect(first.prompt.split("\n")[0]).not.toContain("This chat continues");
+            expect(first.prompt.split("\n")[0]).not.toContain("This agent session continues");
             expect(await completeAs(h, first.childSessionId, { outcome: "again", output: { fact: "one" }, operation_id: "op-1" })).toMatchObject({ ok: true });
             const second = await spawnedVisit(h, 2);
             expect(second.childSessionId).toBe(workflowAgentChildSessionId(second.nodeExecutionId));
@@ -519,7 +520,7 @@ describe("the default chat mode on controller 1.9.0 (test-only registration)", (
         }
     });
 
-    it("a For each body's agent state that sets no chat gets a new agent session for each item", { timeout: TIMEOUT }, async () => {
+    it("a For each body's agent state that sets no session gets a new agent session for each item", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             const run = await started(h, FOR_EACH_YAML);
@@ -547,7 +548,7 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
             const first = await spawnedVisit(h, 1);
             expect(first.childSessionId).toBe(chat);
             const [system1, json1] = first.prompt.split("\n");
-            expect(system1).toContain("This chat continues");
+            expect(system1).toContain("This agent session continues");
             expect(system1).toContain(`(this one's is ${first.nodeExecutionId})`);
             expect(JSON.parse(json1)).not.toHaveProperty("cycle");
             // Q1: without node_execution_id, the completion is refused in words and decides nothing.
@@ -709,8 +710,8 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
             expect(second.childSessionId).toBe(replacement);
             expect(replacement).not.toBe(chat);
             const [system2, json2] = second.prompt.split("\n");
-            expect(system2).toContain("This chat continues");
-            expect(system2).toContain(`The chat of its earlier cycles ended (session ${chat})`);
+            expect(system2).toContain("This agent session continues");
+            expect(system2).toContain(`The agent session of its earlier cycles ended (session ${chat})`);
             expect(JSON.parse(json2)).toMatchObject({ cycle: 2, nodeExecutionId: second.nodeExecutionId, previousResult: { outcome: "again", output: { fact: "one" } } });
             expect(await eventsOf(h, run.workflowSessionId, "workflow.agent_chat_restarted"))
                 .toEqual([expect.objectContaining({ endedChatSessionId: chat, childSessionId: replacement, cycle: 2, stateId: "talk" })]);

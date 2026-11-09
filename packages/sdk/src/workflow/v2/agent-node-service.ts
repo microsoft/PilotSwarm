@@ -50,8 +50,8 @@ export const COMPLETE_WORKFLOW_NODE_TOOL_SPEC = {
             operation_id: { type: "string", description: "Your idempotency id for this completion." },
             node_execution_id: {
                 type: "string",
-                description: "The node execution your prompt names. Required when your prompt says this chat continues across cycles: give "
-                    + "the id in the cycle's prompt. A missing id there, or one that is not this chat's, is refused AGENT_NODE_NOT_FOUND.",
+                description: "The node execution your prompt names. Required when your prompt says this agent session continues across cycles: "
+                    + "give the id in the cycle's prompt. A missing id there, or one that is not this session's, is refused AGENT_NODE_NOT_FOUND.",
             },
         },
         required: ["operation_id"],

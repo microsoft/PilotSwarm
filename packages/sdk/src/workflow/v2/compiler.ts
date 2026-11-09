@@ -322,11 +322,13 @@ export interface WorkflowIRAgent {
     /** Route label -> target node: the outcomes, and runtime routes (timed_out, needs_input and the others). */
     next: Record<string, string>;
     /**
-     * Owner decision agent-node-continue-20261106: `continue` keeps ONE agent chat for this state across its visits in a
-     * run (each later visit is a new cycle prompt in the same chat); absent for `new` (a new chat each visit). Owner
-     * 2026-11-09T05:38Z: `continue` is the default where it is allowed, so a compile writes it for an agent state outside a
-     * parallel state's body (a For each body or a named branch) that does not set `chat`; in a body an unset `chat` is
-     * `new`. The IR's meaning is unchanged (absent is still `new`): a stored revision runs as it was compiled.
+     * The YAML's `session` (owner decision agent-node-continue-20261106; owner 2026-11-09T06:30Z renamed the YAML key from
+     * `chat`; this stored field keeps its name): `continue` keeps ONE agent session for this state across its visits in a
+     * run (each later visit is a new cycle prompt in the same session); absent for `new` (a new agent session each visit).
+     * Owner 2026-11-09T05:38Z: `continue` is the default where it is allowed, so a compile writes it for an agent state
+     * outside a parallel state's body (a For each body or a named branch) that does not set `session`; in a body an unset
+     * `session` is `new`. Absent is still `new`, so a stored IR means what it meant; a Start compiles the revision's YAML
+     * again, so a revision saved without `session` before the default changed starts with `continue`.
      */
     chat?: "continue";
     /**
@@ -481,13 +483,6 @@ export interface WorkflowCompileOptions {
      * host does, sets it). Off by default: `at` is refused with WORKFLOW_FEATURE_UNSUPPORTED.
      */
     enableClockWaits?: boolean;
-    /**
-     * Owner 2026-11-09T05:38Z (continue is the default where it is allowed): the agent states of the outer graph whose stored
-     * IR continues its chat, when this compiles a revision compiled before (a chat definition's revision at its Start, Run
-     * again or test). An agent state that sets no `chat` then takes its stored mode (continue when listed, else new) instead
-     * of the default, so a revision saved before the default changed runs as it was compiled. Absent: the default.
-     */
-    storedContinuedChats?: readonly string[] | null;
 }
 
 /** True when the text declares the v2 apiVersion (used to route spawn_workflow; legacy YAML keeps its path). */
@@ -1044,12 +1039,16 @@ export function parseWorkflowInterfaceRef(text: unknown): { name: string; versio
 function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, schemas: SchemaCollector, hasCatchAll: boolean,
     diagnostics: Diagnostics): WorkflowIRAgent | null {
     const path = `states.${id}`;
-    checkKeys(raw, ["type", "description", "invoke", "input", "inputSchema", "outputSchema", "outcomes", "timeoutSeconds", "transition", "chat", "tools"], path,
-        diagnostics);
+    checkKeys(raw, ["type", "description", "invoke", "input", "inputSchema", "outputSchema", "outcomes", "timeoutSeconds", "transition", "session", "chat",
+        "tools"], path, diagnostics);
+    // Owner 2026-11-09T06:30Z: the agent session's key is `session`; `chat` is not a field (no alias: unreleased).
+    if (raw.chat !== undefined) {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.chat`, "`chat` is now `session`: write `session: continue` or `session: new`.");
+    }
     let chat: "continue" | null = null;
-    if (raw.chat !== undefined && raw.chat !== "new") {
-        if (raw.chat === "continue") chat = "continue";
-        else diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.chat`, "chat must be continue (one agent session across the state's visits, the default) "
+    if (raw.session !== undefined && raw.session !== "new") {
+        if (raw.session === "continue") chat = "continue";
+        else diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.session`, "session must be continue (one agent session across the state's visits, the default) "
             + "or new (a new agent session for each visit, the only choice inside a For each or a parallel branch).");
     }
     // FU-17: `tools: none` or a list of tool names limits what the state's agent may use; absent, it has its session's tools.
@@ -1373,15 +1372,15 @@ function checkGraph(ir: { initial: string; catchAll: string | null; nodes: Recor
             ? node.branches.map(branch => ({ id: node.id, initial: branch.initial, states: new Set(branch.states), branch: branch.name as string | null }))
             : [{ id: node.id, initial: node.body.initial, states: new Set(node.body.states), branch: null as string | null }]);
     const inBody = new Set(bodies.flatMap(body => [...body.states]));
-    // Owner decision agent-node-continue-20261106: items of a For each run side by side, so they cannot share one chat.
+    // Owner decision agent-node-continue-20261106: items of a For each run side by side, so they cannot share one agent session.
     for (const body of bodies) {
         for (const member of body.states) {
             const node = ir.nodes[member];
             if (node?.type === "agent" && node.chat === "continue") {
-                diagnostics.error("WORKFLOW_FIELD_INVALID", body.branch !== null ? `states.${body.id}.branches.${body.branch}.states.${member}.chat`
-                    : `states.${body.id}.body.states.${member}.chat`, body.branch !== null
-                    ? `state '${member}' cannot continue its chat: it runs inside branch '${body.branch}' of parallel state '${body.id}'. Use chat: new.`
-                    : `state '${member}' cannot continue its chat: it runs inside For each state '${body.id}', whose items run side by side and cannot share one chat. Use chat: new.`);
+                diagnostics.error("WORKFLOW_FIELD_INVALID", body.branch !== null ? `states.${body.id}.branches.${body.branch}.states.${member}.session`
+                    : `states.${body.id}.body.states.${member}.session`, body.branch !== null
+                    ? `state '${member}' cannot continue its agent session: it runs inside branch '${body.branch}' of parallel state '${body.id}'. Use session: new.`
+                    : `state '${member}' cannot continue its agent session: it runs inside For each state '${body.id}', whose items run side by side and cannot share one agent session. Use session: new.`);
             }
         }
     }
@@ -1631,10 +1630,9 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
             if (node) nodes[id] = node;
         } else if (type === "agent" && enableAgents) {
             const node = compileAgent(id, rawNode, nodeIds, schemas, catchAllApplies, into);
-            // Owner 2026-11-09T05:38Z: an agent state that does not set `chat` continues its agent session across its visits,
-            // where it may: outside a parallel state's body. In a body (For each items, named branches) it is `new`.
-            const stored = options.storedContinuedChats;
-            if (node && body === null && rawNode.chat === undefined && (stored ? stored.includes(id) : true)) node.chat = "continue";
+            // Owner 2026-11-09T05:38Z: an agent state that does not set `session` continues its agent session across its
+            // visits, where it may: outside a parallel state's body. In a body (For each items, named branches) it is `new`.
+            if (node && body === null && rawNode.session === undefined) node.chat = "continue";
             if (node) nodes[id] = node;
         } else if (type === "parallel" && enableParallel && body !== null) {
             into.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.type`, "a parallel state's body cannot hold another parallel state.");

@@ -86,12 +86,12 @@ test("the shared Ink app draws the view: the states, the selected one's details 
     assert.match(html, /data-title="Workflow: review-once · Running"/);
     assert.match(html, /▶ ● review\s+Agent · code-reviewer\s+Running · until its result/);
     assert.match(html, /○ done\s+End · succeeded/);
-    assert.match(html, /data-title="Node review — ↑↓ node · Tab agent chat · Enter open · Esc back to the chat"/);
+    assert.match(html, /data-title="Node review — ↑↓ node · Tab agent session · Enter open · Esc back to the chat"/);
     assert.match(html, /  accepted → done/);
     // Stage 3 (review 19:27Z row 10): the chat by its visit, its state and its name; never its id.
-    assert.match(html, /▸ visit 1 · ● running · chat not loaded/);
+    assert.match(html, /▸ visit 1 · ● running · agent session not loaded/);
     assert.doesNotMatch(html, /child-1/);
-    assert.match(html, /People can read these chats; the server refuses their prompts, answers and instructions\./);
+    assert.match(html, /People can read these agent sessions; the server refuses their prompts, answers and instructions\./);
     assert.deepEqual(calls.map(call => call[0]), ["readWorkflow"], "it reads the workflow and nothing else");
 });
 

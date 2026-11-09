@@ -111,7 +111,7 @@ test("a parallel step's details: For each, Branch steps, Branches with deadlines
     assert.ok(html.includes("reviewed · Item ends · succeeded"), html);
     assert.match(html, /aria-label="Items"><h3>Items<\/h3><p[^>]*>0\/3 ok · 2 running · 1 waiting<\/p>/);
     // People read branches from 1; the data attributes keep the index from 0.
-    assert.match(html, /<tr data-branch="0" data-status="running"><td>1<\/td><td>review<\/td><td>running<\/td><td[^>]*>2026-11-04 18:20:00<\/td><td>—<\/td><td><button[^>]*data-action="open-branch-chat" data-session="child-0"[^>]*>Open chat<\/button><\/td><\/tr>/);
+    assert.match(html, /<tr data-branch="0" data-status="running"><td>1<\/td><td>review<\/td><td>running<\/td><td[^>]*>2026-11-04 18:20:00<\/td><td>—<\/td><td><button[^>]*data-action="open-branch-chat" data-session="child-0"[^>]*>Open<\/button><\/td><\/tr>/);
     assert.match(html, /<tr data-branch="1" data-status="running"><td>2<\/td><td>review<\/td><td>running<\/td><td[^>]*>2026-11-04 18:10:00<\/td><td>—<\/td><td>—<\/td><\/tr>/);
     assert.match(html, /<tr data-branch="2" data-status="waiting"><td>3<\/td><td>—<\/td><td>waiting<\/td>/);
     assert.ok(html.includes("<h3>Next steps from the join</h3>"), html);

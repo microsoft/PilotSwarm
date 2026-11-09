@@ -250,12 +250,12 @@ function agentLogWorkflowLine(event, data, now) {
     const limit = data.deadline ? workflowNodeClock(data.deadline, now) : null;
     if (event.eventType === "workflow.agent_spawned") {
         const later = data.chat === "continue" && Number.isSafeInteger(data.cycle) && data.cycle > 1;
-        const words = later ? "same chat" : "Chat";
+        const words = later ? "same agent session" : "Agent session";
         return { text: `${later ? `Visit ${data.cycle} · ${words}` : `${words} started`}${limit ? ` · limit ${limit}` : ""}`,
             ...(chatId ? { chat: { sessionId: chatId, words } } : {}) };
     }
     if (event.eventType === "workflow.agent_chat_restarted") {
-        const words = "new chat";
+        const words = "new agent session";
         return { text: `${Number.isSafeInteger(data.cycle) ? `Visit ${data.cycle}` : "This visit"} · ${words} · the earlier one had ended`, level: "warning",
             ...(chatId ? { chat: { sessionId: chatId, words } } : {}) };
     }
@@ -285,7 +285,7 @@ function workflowRows(events, runId, visitId, now = Date.now()) {
 export function workflowAgentLogOlder(entry) {
     if (!isRecord(entry) || entry.hasOlder !== true) return null;
     if (Number.isSafeInteger(entry.cap) && entry.cap > 0) {
-        return { action: null, text: `Older lines not shown: the Log reads the newest ${entry.cap.toLocaleString("en-US")} events of a chat.` };
+        return { action: null, text: `Older lines not shown: the Log reads the newest ${entry.cap.toLocaleString("en-US")} events of an agent session.` };
     }
     if (typeof entry.error === "string" && entry.error.trim()) return { action: "retry", text: `Older lines could not be read: ${entry.error.trim()}` };
     return { action: "load", text: null };
@@ -435,7 +435,7 @@ export function workflowAgentNodeLog({ node, events = [], chats = new Map(), cov
         if (!earlier || group.loading) continue;
         const prompt = group.rows.findIndex(row => row.label === "Prompt");
         const carried = { key: `carried:${group.visitId}`, kind: "prompt", label: "Base instructions", at: null, time: null,
-            text: `Same as ${where(earlier.from)} · same chat`, carriedFrom: earlier.from.ordinal ?? null,
+            text: `Same as ${where(earlier.from)} · same agent session`, carriedFrom: earlier.from.ordinal ?? null,
             carriedNumber: earlier.from.number, instructions: null, instructionsKept: earlier.row.instructionsKept === true };
         group.rows.splice(prompt >= 0 ? prompt : 0, 0, carried);
     }
@@ -443,7 +443,7 @@ export function workflowAgentNodeLog({ node, events = [], chats = new Map(), cov
     // apart, oldest last, until Load older reaches a prompt. { chatId, header, rows, hasOlder }.
     const earlier = [...cut.entries()].flatMap(([chatId, byVisit]) => {
         const rows = byVisit.has(EARLIER) ? chatRows(byVisit.get(EARLIER), null) : [];
-        return rows.length ? [{ chatId, header: "Earlier in this chat · run not loaded", hasOlder: covered.get(chatId)?.hasOlder === true,
+        return rows.length ? [{ chatId, header: "Earlier in this agent session · run not loaded", hasOlder: covered.get(chatId)?.hasOlder === true,
             older: workflowAgentLogOlder(covered.get(chatId)),
             rows: rows.map(row => ({ ...row, time: row.at === null ? null : workflowNodeClock(row.at, now) })) }] : [];
     });

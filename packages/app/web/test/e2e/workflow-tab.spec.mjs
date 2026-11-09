@@ -5708,7 +5708,7 @@ test("agent node: the Node panel says what it does and the Log shows its chat, v
     await expect(details.locator('[data-fact="chat"]')).toContainText("Same each visit");
     await expect(details.locator('[data-fact="result"] pre')).toHaveText("PostgreSQL keeps old row versions (MVCC).");
     await expect(details.getByText("Prompt", { exact: true })).toBeVisible();
-    await expect(details.getByRole("button", { name: "Open chat", exact: true })).toBeVisible();
+    await expect(details.getByRole("button", { name: "Open agent session", exact: true })).toBeVisible();
     await expect(details.locator('[data-route="produced"]')).toHaveText("produced → pause");
     await expect(details.locator('[data-route="timed_out"]')).toHaveText("✕ limit → pause");
     await expect(details).not.toContainText("runtime error route");
@@ -5788,11 +5788,11 @@ test("agent node: a chat: continue node's Log shows one chat across two visits",
     await expect(second.locator('[data-kind="agent"]')).toContainText("Looking for a fact I have not given yet.");
     await expect(first.locator('[data-kind="prompt"]').filter({ hasText: "CYCLE 2" })).toHaveCount(0);
     // Visit 2 continues visit 1's chat: its base instructions are visit 1's, named, not repeated.
-    await expect(second.locator('[data-carried-from="1"]')).toHaveText("Same as visit 1 · same chat");
+    await expect(second.locator('[data-carried-from="1"]')).toHaveText("Same as visit 1 · same agent session");
     await expect(first.locator(".ps-wf-alog-base summary")).toContainText("48,210 characters");
     // The Workflow's own rows say the same chat got visit 2, in the Log's words (r4 C04: no node name, no raw id), the chat linked.
-    await expect(second.locator('[data-kind="workflow"]').filter({ hasText: "Visit 2 · same chat" })).toHaveCount(1);
-    await expect(first.locator('[data-kind="workflow"]').filter({ hasText: "Chat started" })).toHaveCount(1);
+    await expect(second.locator('[data-kind="workflow"]').filter({ hasText: "Visit 2 · same agent session" })).toHaveCount(1);
+    await expect(first.locator('[data-kind="workflow"]').filter({ hasText: "Agent session started" })).toHaveCount(1);
     await expect(log.locator('[data-kind="workflow"]').filter({ hasText: "abababab" })).toHaveCount(0);
     await expect(first.locator('[data-kind="workflow"] [data-action="open-agent-chat"]')).toHaveAttribute("data-session", AGENT_CHAT);
     await second.scrollIntoViewIfNeeded();

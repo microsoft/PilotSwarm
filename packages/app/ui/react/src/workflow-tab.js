@@ -408,7 +408,7 @@ export function NodeFacts({ node, yaml = null, pending = false, hidden = null })
         h("div", { className: "ps-wf-facts" },
             row("Input", input),
             row("Limit", Number.isFinite(node.timeoutSeconds) ? formatSeconds(node.timeoutSeconds) : null, "Time limit"),
-            summary.agent ? row("Chat", summary.agent.chatMode) : null,
+            summary.agent ? row("Agent session", summary.agent.chatMode) : null,
             summary.agent ? row("Tools", summary.agent.tools, summary.agent.toolsTitle) : null),
         summary.agent?.told ? h("details", { className: "ps-wf-told" }, h("summary", null, "Prompt"), h("pre", null, summary.agent.told))
             : summary.agent?.toldWords ? h("p", { className: "ps-wf-muted" }, summary.agent.toldWords) : null,

@@ -85,9 +85,9 @@ test("an agent state's node names its child session and opens its actual chat; a
     const html = renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, {
         tab: "details", selected: review, nodes: projection.nodes, select: () => {}, openSession: id => opened.push(id),
     }));
-    assert.ok(html.includes("Open the agent&#x27;s chat (read-only)"));
+    assert.ok(html.includes("Open the agent session (read-only)"));
     assert.ok(html.includes("code-reviewer · review-kit 1.2.0"));
-    assert.ok(html.includes("People can read this chat"));
+    assert.ok(html.includes("People can read this agent session"));
     assert.equal(html.split("child-1").length - 1, 1, "the child session id is shown once");
     assert.equal(html.split("result completes this node").length - 1, 1, "how the node completes is said once");
     // Deadline at reads like the activity list, not raw ISO.
@@ -98,7 +98,7 @@ test("an agent state's node names its child session and opens its actual chat; a
         { agent: { childSessionId: "child-1", spawned: true, spawnAttempts: 1, end: "done", endSent: true } })] }) });
     const endedHtml = renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, {
         tab: "details", selected: byId(ended, "review"), nodes: ended.nodes, select: () => {} }));
-    assert.match(endedHtml, /<span>Agent chat<\/span><strong>child-1<\/strong>/);
+    assert.match(endedHtml, /<span>Session<\/span><strong>child-1<\/strong>/);
     assert.match(endedHtml, /<span>Status<\/span><strong>Ended \(result taken\)<\/strong>/);
     assert.ok(!endedHtml.includes("Child session") && !endedHtml.includes("Lifecycle"), endedHtml);
 
@@ -212,7 +212,7 @@ test("the portal's Details: a transition selects its state, the agent child open
     assert.deepEqual(opened, [], "no transition opens a session");
     const child = elementsOf(tree, element => element.type === "button" && element.props["data-action"] === "open-agent-chat");
     assert.equal(child.length, 1);
-    assert.equal(child[0].props.children, "Open the agent's chat (read-only)");
+    assert.equal(child[0].props.children, "Open the agent session (read-only)");
     child[0].props.onClick();
     assert.deepEqual(opened, ["child-1"]);
     const html = renderToStaticMarkup(tree);

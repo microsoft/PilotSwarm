@@ -227,7 +227,7 @@ function kindProperties(node, current) {
     }
     if (node.kind === "agent") {
         // The workflow interface the state names and what the shown run pins it to (package revision, interface digest).
-        rows.push(["Agent", workflowV2AgentTask(node)], ["Chat", workflowV2AgentChatMode(node)], ...workflowV2AgentBindingRows(node.binding), ["Outcomes", (node.outcomes || []).join(", ") || "—"]);
+        rows.push(["Agent", workflowV2AgentTask(node)], ["Agent session", workflowV2AgentChatMode(node)], ...workflowV2AgentBindingRows(node.binding), ["Outcomes", (node.outcomes || []).join(", ") || "—"]);
         // FU-17: a state that limits its agent's tools says which.
         if (workflowV2AgentTools(node)) rows.push(["Tools", workflowV2AgentTools(node)]);
         if (node.timeoutSeconds !== undefined) rows.push(["Deadline", typeof node.timeoutSeconds === "number" ? formatSeconds(node.timeoutSeconds) : String(node.timeoutSeconds)]);
@@ -249,13 +249,13 @@ function AgentChild({ agent, openSession, subtree = [] }) {
     const under = subtree.filter(entry => entry.depth > 0);
     return h("div", { className: "ps-workflow-agent-child" },
         h("h3", null, "Agent session"),
-        h("div", { className: "ps-workflow-property" }, h("span", null, "Agent chat"), h("strong", null, agent.childSessionId)),
+        h("div", { className: "ps-workflow-property" }, h("span", null, "Session"), h("strong", null, agent.childSessionId)),
         h("div", { className: "ps-workflow-property" }, h("span", null, "Status"),
             h("strong", null, agent.end ? `Ended (${workflowV2AgentEndText(agent.end) ?? agent.end})` : agent.spawned ? "Created" : "Not created yet")),
         openSession && agent.spawned ? h("button", { type: "button", className: "ps-workflow-transition", "data-action": "open-agent-chat",
-            onClick: () => openSession(agent.childSessionId) }, "Open the agent's chat (read-only)") : null,
+            onClick: () => openSession(agent.childSessionId) }, "Open the agent session (read-only)") : null,
         // While the step waits, its description already says only the typed result completes it.
-        h("p", null, "People can read this chat. Only the workflow's parent agent can message it."),
+        h("p", null, "People can read this agent session. Only the workflow's parent agent can message it."),
         under.length ? h("div", { className: "ps-workflow-subtree", "aria-label": "Sessions under this step" },
             h("h3", null, `Sessions under this step (${under.length})`),
             h("ul", { style: { margin: 0, paddingLeft: 16 } }, under.map(entry => h("li", { key: entry.sessionId, "data-session": entry.sessionId,
@@ -291,13 +291,13 @@ function BranchEvidence({ evidence, openSession = null }) {
         evidence.joinedAfterLimit ? h("p", { role: "status", "data-joined-after-limit": "true", style: { margin: 0 } },
             `The limit passed after enough ${noun} succeeded: the join used them; running ${noun} canceled.`) : null,
         evidence.rows.length ? h("table", null,
-            h("thead", null, h("tr", null, [evidence.names ? "Branch" : "#", "Node", "State", "Limit", "Result", "Chat"].map(label => h("th", { key: label }, label)))),
+            h("thead", null, h("tr", null, [evidence.names ? "Branch" : "#", "Node", "State", "Limit", "Result", "Agent session"].map(label => h("th", { key: label }, label)))),
             h("tbody", null, evidence.rows.map(row => h("tr", { key: row.index, "data-branch": row.index, "data-status": row.status },
                 h("td", null, row.name ?? String(workflowV2BranchNumber(row.index))), h("td", null, row.step ?? "—"), h("td", null, row.status),
                 h("td", { title: row.deadline ? workflowTimeTitle(row.deadline) ?? undefined : undefined }, row.deadline ? workflowShortTime(row.deadline) ?? row.deadline : "—"),
                 h("td", null, row.why ?? row.result ?? (row.outcome ? workflowV2OutcomeWord(row.outcome) : "—")),
                 h("td", null, !row.agent ? "—" : openSession ? h("button", { type: "button", className: "ps-mini-button", "data-action": "open-branch-chat",
-                    "data-session": row.agent, onClick: () => openSession(row.agent) }, "Open chat") : row.agent))))) : null);
+                    "data-session": row.agent, onClick: () => openSession(row.agent) }, "Open") : row.agent))))) : null);
 }
 
 /**
@@ -518,7 +518,7 @@ export function WorkflowV2AgentLog({ log, failed = null, onMore = null, nodeId =
             // OF-S2-7: the model this visit's chat used.
             group.model ? h("p", { className: "ps-wf-muted ps-wf-alog-model", "data-model": group.modelNow ? "now" : "used" },
                 `${group.modelNow ? "Model now" : "Model"}: ${group.model}`) : null,
-            group.loading ? h("p", { className: "ps-wf-muted" }, failed?.has?.(group.chatId) ? "Could not read the chat." : "Reading the chat…") : null,
+            group.loading ? h("p", { className: "ps-wf-muted" }, failed?.has?.(group.chatId) ? "Could not read the agent session." : "Reading the agent session…") : null,
             // Review UI-10: the start of this visit's chat is not loaded; it is not shown as complete.
             group.truncated ? h("p", { className: "ps-wf-muted", "data-truncated": "" }, "This visit's start is not loaded. ",
                 h(OlderChat, { older: group.older, chatId: group.chatId, onOlderChat, olderChatLoading })) : null,
@@ -562,7 +562,7 @@ export function WorkflowV2NodeSummary({ selected, nodes, select, openSession = n
         h("div", { className: "ps-wf-facts" },
             fact("Now", summary.now, { "data-fact": "now" }),
             fact("Visits", summary.runs, { "data-fact": "runs", title: summary.runsTitle }),
-            summary.agent ? fact("Chat", summary.agent.chatMode, { "data-fact": "chat" }) : null,
+            summary.agent ? fact("Agent session", summary.agent.chatMode, { "data-fact": "chat" }) : null,
             summary.agent?.tools ? fact("Tools", summary.agent.tools, { "data-fact": "tools", title: summary.agent.toolsTitle }) : null,
             // OF-S2-7: the model it uses, chosen at start or from the chat.
             summary.agent?.model ? fact("Model", summary.agent.model, { "data-fact": "model" }) : null),
@@ -580,7 +580,7 @@ export function WorkflowV2NodeSummary({ selected, nodes, select, openSession = n
                 : summary.agent.toldWords ? h("p", { className: "ps-wf-muted" }, summary.agent.toldWords) : null,
             ...workflowV2AgentBindingRows(selected.binding).map(([label, value, title]) => fact(label, value, title ? { title } : {})),
             openSession && summary.agent.chatSessionId ? h("button", { type: "button", className: "ps-mini-button", "data-action": "open-agent-chat",
-                "data-session": summary.agent.chatSessionId, onClick: () => openSession(summary.agent.chatSessionId) }, "Open chat") : null) : null,
+                "data-session": summary.agent.chatSessionId, onClick: () => openSession(summary.agent.chatSessionId) }, "Open agent session") : null) : null,
         selected.kind === "parallel" ? h(ParallelSections, { selected, current, nodes, select, openSession }) : null,
         // OF-S2-8: the script and sample input and output (NodeCodeSections), before where it goes next.
         sections,

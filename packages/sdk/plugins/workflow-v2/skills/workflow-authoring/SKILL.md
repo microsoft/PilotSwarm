@@ -158,11 +158,11 @@ for its typed result.
   outcomes, deadline and controlling parent agent (you). Only its
   `complete_workflow_node` call finishes the state: one of the declared
   outcomes with a valid output, or `needs_input` or `execution_failed`. Its
-  final chat text does not. Three invalid completions fail the state with
+  final message does not. Three invalid completions fail the state with
   `invalid_output`.
 - `timeoutSeconds` (1 to 86,400) is the outer deadline (`timed_out`).
-- `chat: continue` (default): one agent session keeps the step's memory
-  across visits. `chat: new` (a new agent session each visit) only if the
+- `session: continue` (default): one agent session keeps the step's memory
+  across visits. `session: new` (a fresh one each visit) only if the
   person asks; For each and branches: `new`. Session lifecycle:
   workflow-reference. Limit: after a visit times out, the next visit's
   prompt can wait behind the old turn until its abort lands, and the next
@@ -176,7 +176,7 @@ for its typed result.
   reminded to call `complete_workflow_node`, at most 3 times per state.
 - You may message the child with `message_agent` (it neither completes the
   state nor moves the deadline), and the child may message you.
-- People can read the child's chat. They cannot prompt, answer or steer it,
+- People can read the agent session. They cannot prompt, answer or steer it,
   and the child cannot use `ask_user`: it consults you or completes with
   `needs_input`. Route `needs_input` to a state that asks the parent.
 - The child may delegate; its own children are level 3, the deepest.

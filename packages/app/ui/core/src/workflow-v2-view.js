@@ -1013,7 +1013,7 @@ export function describeWorkflowV2Execution(node, execution, sessionName = null)
         else if (execution.outcome === "declined") lines.push(`${who} declined the request.`);
     } else if (kind === "agent") {
         // Its agent chat (open, who may write) is shown once, beside the node: the portal's Agent session, the terminal's Agent chats.
-        if (pending) lines.push("Only the agent's result completes this node; its chat messages do not.");
+        if (pending) lines.push("Only the agent's result completes this node; its messages in the agent session do not.");
     } else if (kind === "parallel" && Array.isArray(node.namedBranches)) {
         // IR 11: named branches, each from its own first node.
         lines.push(`Branches: ${node.namedBranches.map(item => item.name).join(", ")}.`);
@@ -2162,29 +2162,29 @@ const WORKFLOW_EVENT_TEXT = {
         // chat: continue (owner decision agent-node-continue-20261106): a later visit's prompt goes to the same chat.
         // Review 18:45Z: the agent node Log's own words, with the node first; no raw session id.
         short: data => ({ text: (data.chat === "continue" && Number.isSafeInteger(data.cycle) && data.cycle > 1
-            ? `${nodeOf(data)} · visit ${data.cycle} · same chat` : `${nodeOf(data)} · chat started`)
+            ? `${nodeOf(data)} · visit ${data.cycle} · same agent session` : `${nodeOf(data)} · agent session started`)
             + `${text(data.deadline) ? ` · limit ${logTime(data.deadline)}` : ""}` }),
     },
     "workflow.agent_ended": {
-        short: data => ({ text: `${nodeOf(data)} · chat ended${workflowV2AgentEndText(data.end) ? ` · ${workflowV2AgentEndText(data.end)}` : ""}`
+        short: data => ({ text: `${nodeOf(data)} · agent session ended${workflowV2AgentEndText(data.end) ? ` · ${workflowV2AgentEndText(data.end)}` : ""}`
             + (data.chat === "continue" ? " · no more visits" : "") }),
     },
     "workflow.agent_cycle_ended": {
-        short: data => ({ text: `${nodeOf(data)} · visit ended · chat kept for the next visit`
+        short: data => ({ text: `${nodeOf(data)} · visit ended · agent session kept for the next visit`
             + (data.turnStopped === true ? " · turn stopped" : "") }),
     },
     "workflow.agent_chat_restarted": {
         // Review 18:45Z: the same words as the agent node Log's line, after the node.
-        short: data => ({ text: `${nodeOf(data)} · ${Number.isSafeInteger(data.cycle) ? `visit ${data.cycle}` : "this visit"} · new chat`
+        short: data => ({ text: `${nodeOf(data)} · ${Number.isSafeInteger(data.cycle) ? `visit ${data.cycle}` : "this visit"} · new agent session`
             + " · the earlier one had ended", level: "warning" }),
     },
     // A continued chat's owed end (formal t3): its last look found the chat never seen, or another look holding its end (O2).
     "workflow.agent_end_failed": {
         short: data => (data.reason === "held_elsewhere"
-            ? { text: `${nodeOf(data)} · chat ending` }
+            ? { text: `${nodeOf(data)} · agent session ending` }
             : data.reason === "not_visible"
-                ? { text: `${nodeOf(data)} · chat not found, so it was not ended · checked again later`, level: "warning" }
-                : { text: `${nodeOf(data)} · ending the chat failed · trying again`, level: "warning" }),
+                ? { text: `${nodeOf(data)} · agent session not found, so it was not ended · checked again later`, level: "warning" }
+                : { text: `${nodeOf(data)} · ending the agent session failed · trying again`, level: "warning" }),
     },
     // Owner decision Q2: the agent chat ended its turn without finishing its step, and was reminded to finish it.
     "workflow.agent_reminded": {
@@ -2524,7 +2524,7 @@ export function workflowV2VisitEnding(execution) {
     else why = "Outcome not recorded";
     const detail = !byWinner && execution.resultKind === "runtime_error" && text(error?.message) ? clipped(error.message) : null;
     const end = isRecord(execution.agent) ? workflowV2AgentEndText(execution.agent.end) : null;
-    const agent = end ? `Chat ended · ${end}.` : null;
+    const agent = end ? `Agent session ended · ${end}.` : null;
     const said = `${why}${detail ? `: ${detail}` : ""}`;
     return { why, detail, agent, text: `${/[.!?]$/.test(said) ? said : `${said}.`}${agent ? ` ${agent}` : ""}` };
 }

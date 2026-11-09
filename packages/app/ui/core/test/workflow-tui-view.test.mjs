@@ -115,12 +115,12 @@ test("w opens the view on the pending agent state: its state, transitions with t
     // Finding 7: an error route in words, as the portal's Node panel says it.
     assert.ok(details.includes("  ✕ limit → failed"), details.join("\n"));
     assert.ok(!details.some(line => line.includes("runtime error route")));
-    assert.ok(details.includes("Agent chats · Tab choose · Enter open:"));
+    assert.ok(details.includes("Agent sessions · Tab choose · Enter open:"));
     // Review 19:27Z (row 10): each chat by its visit, its state in marks and words, and its name (never its id).
-    assert.ok(details.includes("▸ visit 3 · ● running · chat not loaded"), details.join("\n"));
-    assert.ok(details.includes("  visit 1 · ✓ rework · chat not loaded"), details.join("\n"));
+    assert.ok(details.includes("▸ visit 3 · ● running · agent session not loaded"), details.join("\n"));
+    assert.ok(details.includes("  visit 1 · ✓ rework · agent session not loaded"), details.join("\n"));
     assert.ok(!details.some(line => /child-r/.test(line)), "no session id");
-    assert.ok(details.includes("People can read these chats; the server refuses their prompts, answers and instructions."));
+    assert.ok(details.includes("People can read these agent sessions; the server refuses their prompts, answers and instructions."));
     // It read the workflow as the portal's pane does, and called nothing that changes anything.
     assert.ok(calls.some(call => call[0] === "readWorkflow" && call[1] === "wf"));
     assert.deepEqual(calls.filter(call => WRITES.test(call[0])), []);
@@ -202,14 +202,14 @@ test("Tab chooses an occurrence and Enter opens that occurrence's actual chat; n
     await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     await controller.handleCommand(UI_COMMANDS.MODAL_PANE_NEXT);
     assert.equal(selectWorkflowViewSelection(store.getState()).occurrence.childSessionId, "child-r1");
-    assert.ok(lineTexts(selectWorkflowViewModal(store.getState(), 110)).includes("▸ visit 1 · ✓ rework · chat not loaded"));
+    assert.ok(lineTexts(selectWorkflowViewModal(store.getState(), 110)).includes("▸ visit 1 · ✓ rework · agent session not loaded"));
     await controller.handleCommand(UI_COMMANDS.MODAL_PANE_NEXT);
     assert.equal(selectWorkflowViewSelection(store.getState()).occurrence.childSessionId, "child-r2", "Tab cycles");
     await controller.handleCommand(UI_COMMANDS.MODAL_PANE_PREV);
     await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
     assert.deepEqual(opened, ["child-r1"], "the first visit's own child, not the latest one");
     assert.equal(store.getState().ui.modal, null);
-    assert.match(store.getState().ui.statusText, /Opened the agent chat of review \(visit 1\): people can read it; the server refuses their input to it/);
+    assert.match(store.getState().ui.statusText, /Opened the agent session of review \(visit 1\): people can read it; the server refuses their input to it/);
     // The latest visit, by default.
     await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
@@ -224,7 +224,7 @@ test("a state without an agent chat keeps the view open; another kind of session
     await controller.handleCommand(UI_COMMANDS.MODAL_PANE_NEXT);
     await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
     assert.equal(store.getState().ui.modal?.type, "workflowView");
-    assert.equal(store.getState().ui.statusText, "Node fix has no agent chat to open");
+    assert.equal(store.getState().ui.statusText, "Node fix has no agent session to open");
     assert.deepEqual(opened, []);
     await controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
     assert.equal(store.getState().ui.modal, null);

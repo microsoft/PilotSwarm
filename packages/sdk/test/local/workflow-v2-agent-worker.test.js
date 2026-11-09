@@ -132,7 +132,7 @@ function workflowNaming(agent) {
         schemas: { Review: { type: "object", required: ["verdict"], properties: { verdict: { type: "string" } }, additionalProperties: false } },
         states: {
             review: {
-                type: "agent", invoke: { agent }, chat: "new", outputSchema: { $ref: "#/schemas/Review" }, timeoutSeconds: 600,
+                type: "agent", invoke: { agent }, session: "new", outputSchema: { $ref: "#/schemas/Review" }, timeoutSeconds: 600,
                 transition: { next: { accepted: "done", failure: "failed" } },
             },
             done: { type: "terminal", outcome: "succeeded", output: "${input}" },
@@ -191,7 +191,7 @@ function contractedWorkflow(agent, contract) {
         schemas: { ...(contract.inputSchema ? { ReviewInput: contract.inputSchema } : {}), ReviewResult: contract.outputSchema },
         states: {
             review: {
-                type: "agent", invoke: { agent }, chat: "new", ...(contract.inputSchema ? { inputSchema: { $ref: "#/schemas/ReviewInput" } } : {}),
+                type: "agent", invoke: { agent }, session: "new", ...(contract.inputSchema ? { inputSchema: { $ref: "#/schemas/ReviewInput" } } : {}),
                 outputSchema: { $ref: "#/schemas/ReviewResult" }, timeoutSeconds: 600,
                 transition: { next: { ...Object.fromEntries(contract.outcomes.map(outcome => [outcome, "done"])), failure: "failed" } },
             },
@@ -304,7 +304,7 @@ const proseWorkflow = (timeoutSeconds) => JSON.stringify({
     apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "prose-step", version: "1.0.0" }, initial: "summarize",
     states: {
         summarize: {
-            type: "agent", invoke: { prompt: "Summarize the change in one line." }, chat: "new", outcomes: ["success"], timeoutSeconds,
+            type: "agent", invoke: { prompt: "Summarize the change in one line." }, session: "new", outcomes: ["success"], timeoutSeconds,
             transition: { next: { success: "done" } },
         },
         done: { type: "terminal", outcome: "succeeded" },

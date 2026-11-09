@@ -20,7 +20,7 @@ typed messages, requests for an answer, agent steps and fan-out.
 | Type | What it does |
 |---|---|
 | `script` | Runs a Node ES module on the worker. It calls the chat's permitted tools and reports an outcome. It can run more than once, so make it safe to repeat. |
-| `agent` | Runs an ordinary child chat for one task. Only the chat's `complete_workflow_node` call, with a result that matches the state's schema, ends the step. |
+| `agent` | Runs an agent session for one task. Only the agent session's `complete_workflow_node` call, with a result that matches the state's schema, ends the step. |
 | `wait` | A durable timer: a number of seconds, or the next clock time (`at`). |
 | `messaging` | `send` a typed message, `receive` one (optionally with a time limit), or `request` a typed answer from a chat before a deadline. |
 | `parallel` | Runs a body for each item of a list, or named branches, and joins the results. |
@@ -74,13 +74,13 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
 - **Session list.** A Workflow is a row under its session, like a sub-agent
   (same listing, collapse and order), titled by its definition and number
   (`check-items #3`) with its state. A definition that never started has no
-  row. An agent node's chat is a row under its Workflow (`summarize · agent`)
+  row. An agent node's agent session is a row under its Workflow (`summarize · agent`)
   and is read-only: its note gives the server's reason, then `To change this,
   message <the session>.` (with no reason: `Read-only. To change this, message
   <the session>.`). The portal and the terminal show the same words.
 - **Selecting a Workflow row keeps the chat.** The session's chat stays in
   the middle, and the right block switches to its **Workflow** tab on that
-  Workflow. Selecting an agent node's chat shows that chat and its Workflow
+  Workflow. Selecting an agent node's agent session shows that session and its Workflow
   with the node selected. A link to a Workflow opens the same way.
 - **The Workflow tab** sits beside the Canvas in the right block (the
   **Workflow** button in the toolbar, between Canvas and Diagnostics; one of
@@ -148,54 +148,57 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
 - **The Node panel** says what the node does in one sentence; **Now**
   (`Running · since 17:43:01 · limit 17:44:34`, `Done · produced · 17:42:05`);
   **Runs** (`3 · last 4 s at 17:42:01`); its **Result** as readable text; for
-  an agent node its chat mode (`Same each run`, `New each run`), its
-  **Prompt** (folded) and **Open chat**; and **Next**, one line per outcome
+  an agent node its **Agent session** (`Same each visit`, `New each visit`),
+  its **Prompt** (folded) and **Open agent session**; and **Next**, one line per outcome
   naming the next node, error routes with the edges' mark (`✕ time limit →
   retry`), then what happens when it fails (`✕ error → Workflow stops`). It
   has no tabs of its own; the Log has the runs. The read model gives each graph
   state its `about` (description, inline prompt) and each visit its
   `enteredAt` and `endedAt` for this.
-- **Agent node chats: `chat: continue | new`.** `continue` (the default
-  since 1.0.83, owner 2026-11-09) keeps one agent session per Workflow and
-  node (its id derived from the run and the node): each later
-  visit's prompt arrives in that chat as cycle N, with the input, the
-  variables now, which changed and the previous result. `new` gives each
-  visit of an agent node a new chat; inside a For each or a parallel branch
-  it is the default and the only choice (`continue` is refused there). The
-  compiler writes the default into the IR: an agent state outside a parallel
-  state's body that does not set `chat` compiles to `chat: "continue"`; the
-  IR's meaning is unchanged (absent is `new`). A revision stored before keeps
-  its compiled IR and runs as before: a chat definition's Start, Run again and
-  test compile the revision's YAML again with the modes of its stored IR
-  (`storedContinuedChats`). Only a new compile (a save, a re-save of a draft,
-  a package's definition attached to a chat) gets the new default. Every completion of
-  a continued chat must name its visit (`node_execution_id`); a missing or
-  foreign id is refused. A decided visit stops the chat's running turn, not
-  the chat; the chat ends when the run ends, and a graceful stop ends an
-  idle chat at once. If the chat ended on its own, the next open visit starts
-  a new chat and says so. Migration
-  0106 drops the UNIQUE on `workflow_agent_invocations.child_session_id`.
-  Each turn of a continued chat works for one visit, its turn visit: the
-  open visit its prompt names, or, for a turn a timer or a sub-agent's update
-  starts, the visit of the chat's newest visit prompt. A turn whose visit is
-  already decided does not run (no model call). A decided visit's Stop
-  (request id `workflow-cycle-stop:<visit>`) is applied only to a turn of that
-  visit; a person's Stop applies as always. The step reminder and the
+- **Agent sessions: `session: continue | new`** (owner 2026-11-09; the YAML
+  key was `chat` before 1.0.83 shipped, and `chat:` is now refused: "`chat` is
+  now `session`: write `session: continue` or `session: new`."). `continue`
+  (the default) keeps one agent session per Workflow and node (its id derived
+  from the run and the node): each later visit's prompt arrives in that
+  session as cycle N, with the input, the variables now, which changed and the
+  previous result. `new` gives each visit of an agent node a new agent
+  session; inside a For each or a parallel branch it is the default and the
+  only choice (`session: continue` is refused there). The compiler writes the
+  default into the IR (the stored field is still named `chat`: an agent state
+  outside a parallel state's body that does not set `session` compiles to
+  `chat: "continue"`; absent is `new`). A Start, Run again or test compiles
+  the revision's YAML again, so a revision saved without the key before the
+  default changed starts with `continue`, and the Definition view's graph is
+  compiled the same way, so its **Agent session** line says what a Start
+  does. A revision saved with `chat:` does not compile now: it needs one save
+  with `session:`. Session lifecycle: every completion of a continued agent
+  session must name its visit (`node_execution_id`); a missing or foreign id
+  is refused. A decided visit stops the session's running turn, not the
+  session; the session ends when the run ends, and a graceful stop ends an
+  idle one at once. If the session ended on its own, the next open visit
+  starts a new agent session and says so. Migration 0106 drops the UNIQUE on
+  `workflow_agent_invocations.child_session_id`.
+  Each turn of a continued agent session works for one visit, its turn visit:
+  the open visit its prompt names, or, for a turn a timer or a sub-agent's
+  update starts, the visit of the session's newest visit prompt. A turn whose
+  visit is already decided does not run (no model call). A decided visit's
+  Stop (request id `workflow-cycle-stop:<visit>`) is applied only to a turn of
+  that visit; a person's Stop applies as always. The step reminder and the
   completion name only the turn's own visit. When the run ends before the
-  chat exists, but a spawn attempt began, the chat's end stays owed; the next
-  check that finds the chat (the spawn's own, the run's cleanup, recovery)
-  ends it.
+  agent session exists, but a spawn attempt began, the session's end stays
+  owed; the next check that finds the session (the spawn's own, the run's
+  cleanup, recovery) ends it.
   **Known limits:** after a visit times out, the next visit's prompt can wait
   behind the old turn until its abort lands, and the next visit's time limit
   runs during that wait. Results stay correct: each binds to its own visit.
   An update from a sub-agent or a timer that arrives between visits is
-  recorded in the chat but is not given to the model; the next visit's prompt
-  carries the current state.
+  recorded in the agent session but is not given to the model; the next
+  visit's prompt carries the current state.
 - **Agent node tool limit: `tools: none | [names]`** (stage 2.1). Absent, an
-  agent node's chat has its session's tools. `tools: none` leaves it only
+  agent node's agent session has its session's tools. `tools: none` leaves it only
   `complete_workflow_node`; a list (1 to 64 distinct tool names, as the agent
   sees them) leaves it those and `complete_workflow_node`. The limit applies
-  to the node's chat and every session it starts. Each turn reads it from the
+  to the node's agent session and every session it starts. Each turn reads it from the
   node's run revision (a later revision never changes a running visit) and
   offers the Copilot session only those tools (`availableTools`). The CLI's
   `availableTools` cuts only its own tools and MCP tools (Copilot CLI
@@ -222,10 +225,10 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   gives them beside each failed visit and the failed run. The portal and the
   terminal show them; for an event or a read of an earlier build they read
   the words from the error preview, as before.
-- **The Log of an agent node** shows its chat visit by visit and says what is
-  loaded: a visit whose chat start is not loaded says so, with **Load older**
-  (that chat's older page); **Load older visits** reads the run's older
-  history. A later visit of a continued chat names the visit whose base
+- **The Log of an agent node** shows its agent session visit by visit and says
+  what is loaded: a visit whose session start is not loaded says so, with
+  **Load older** (that session's older page); **Load older visits** reads the
+  run's older history. A later visit of a continued agent session names the visit whose base
   instructions it carries instead of repeating them.
 - **Removed** from the Workflow tab, the session list and the terminal UI:
   the Notices bell and the Publish review (and the draft and publish words of
@@ -239,14 +242,14 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   the row still cannot hold them, the run's buttons move to a line of their
   own. Fitting the graph keeps it clear of its zoom controls at the bottom.
 - **Terminal UI:** the same model. `w` opens the Workflow pane for the chat
-  (its selected Workflow, an agent node chat's own Workflow at that node, else
+  (its selected Workflow, an agent session's own Workflow at that node, else
   its newest Workflow); Esc goes back to the chat. In the session list, `c`,
   `d` and `D` act on the highlighted Workflow row (`c` and `d` open its
   Stop, Cancel or Delete choices, `D` asks to delete it), never on the chat
   that owns it; the portal's keys do the same. In the Workflow pane, `S`
   opens the Start form for the revision shown (a definition being edited is
   saved and started in one step); publishing alone has no key.
-- **Inside a Workflow** (an agent node's chat and its sub-agents), sessions
+- **Inside a Workflow** (an agent node's agent session and its sub-agents), sessions
   get no definition tools: `workflow_definition` and `update_workflow` are not
   declared, and the server refuses them and `spawn_workflow`
   (`WORKFLOW_DEFINITION_TOOLS_REFUSED`).
@@ -328,12 +331,12 @@ as `run.agentModels`; **Run again** reuses it, unless the start gives its
 own (an empty map clears it). When a chosen model cannot be used any more at
 spawn, that node fails in words; it never falls back to another model. A
 stored map that cannot be read fails the node in words too, never taking the
-chat's model. Each visit's spawn records what its chat runs on
+chat's model. Each visit's spawn records what its agent session runs on
 (`workflow.agent_spawned` `model`: model, effort, tier, chosen at start or
 from the chat). The Node panel and the node's tooltip show it
 (`Model: … · chosen at start` or `· from the chat`); before a visit has run,
 an inherited model reads `from the chat · now …`, the chat's current one.
-The agent's Log shows the model each visit's chat used (`Model now: …` when
+The agent's Log shows the model each visit's agent session used (`Model now: …` when
 only the chat's current one is known), the TUI's node details have a
 `Model:` line, the start receipt names the chosen models, and a person's
 Start dialog lists what each agent node will use (a person does not choose
@@ -426,7 +429,7 @@ lists them; a connection without them keeps the stage 1 grouping above):
     when that visit began (a visit that ended later is shown running, one that
     began later is not reached, and a send's delivery and the recipient's check
     show only from when they happened), and the Node panel follows that visit:
-    for a visit in a branch it shows that branch and its agent chat. The run
+    for a visit in a branch it shows that branch and its agent session. The run
     keeps running meanwhile: the timeline is kept by visit, so new visits
     lengthen the slider while the visit shown stays, and history never returns
     to Live by itself.
@@ -525,7 +528,7 @@ an interaction id, 55,151 characters each turn in one live dump, whatever its
 first words. The runtime recognizes it by that shape (or by its known first
 words) and stores only its summary in every transcript: fixed words and its
 length, none of its text, because anyone who can read the session reads its
-transcript. A workflow agent node's chat still keeps the whole text, with its
+transcript. A workflow agent node's agent session still keeps the whole text, with its
 secrets hidden, as an artifact of its Workflow that only the Workflow's owner
 reads.
 
@@ -984,7 +987,7 @@ and a person can send workflow commands.
   its base instructions carry the Workflow guidance. `spawn_workflow` is no
   longer declared. The exceptions are unchanged: the tuner gets no workflow
   tool; a session inside a Workflow gets no definition tools
-  (`workflow_definition`, `update_workflow`); an agent node's chat also gets
+  (`workflow_definition`, `update_workflow`); an agent node's agent session also gets
   `complete_workflow_node` and its node's tool limit.
 - The guidance teaches the full engine in about 1,600 characters and names
   the Workflow skills, which every worker loads: `workflow-authoring`,
@@ -1241,10 +1244,10 @@ the order it saved them, and a time limit is still decided by the store's
 clock. But scheduling can change what is saved before a deadline: with too
 few slots the decision comes later, and a branch that would have been
 cancelled can finish first (it keeps its result and is not a winner). If a
-cancelled branch's script or agent chat cannot be stopped at once, the
+cancelled branch's script or agent session cannot be stopped at once, the
 controller goes on and tries again at most once per wake period, also while
 the run is busy with other steps and after it continues as new; the run's
-end ends any agent chat still owed.
+end ends any agent session still owed.
 
 A version 2 run's controller is one duroxide orchestration, and these
 duroxide limits shape it:
@@ -1339,7 +1342,7 @@ deadlines.
   (`PILOTSWARM_WORKER_LOCK_TIMEOUT_MS`, renewed while it runs), another worker
   runs the script again from its start, and `context.attempt` goes up. Write
   scripts so that running one twice is safe.
-- An agent step's chat has a stable id. A retry finds the same chat and does
+- An agent step's agent session has a stable id. A retry finds the same session and does
   not give it its prompt twice.
 - A message to an agent session, a request and the end notice are queued with
   a stable client message id: at least once, not exactly once.

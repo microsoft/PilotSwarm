@@ -132,18 +132,18 @@ deadline is `timed_out`. The recipient answers with
 | `input` | Optional template; checked against `inputSchema`. |
 | `inputSchema`, `outputSchema` | Optional. |
 | `outcomes` | Optional list of business outcomes; default: its routes that are not runtime routes. |
-| `chat` | Optional. `continue` (default) or `new`. In a parallel body (For each or branch) only `new`, its default there. |
+| `session` | Optional. `continue` (default) or `new`. In a parallel body (For each or branch) only `new`, its default there. (`chat` is no longer a field.) |
 | `tools` | Optional. `none` or tool names: all the agent and its sub-agents get (plus `complete_workflow_node`). |
 
 Output: the agent's validated output. The agent may report `needs_input` or
 `execution_failed`. The workflow decides `timed_out`, `invalid_output` (three
 invalid completions), `unavailable`, `forbidden` and `cancelled`.
 
-`chat: continue` (the default) keeps one agent session across the state's
+`session: continue` (the default) keeps one agent session across the state's
 visits in a Workflow: each later visit arrives as "cycle N" with the input,
 the variables now, which changed, and the previous result. The step
 remembers earlier cycles (no repeats, incremental work); its context grows,
-so it costs more. Use `chat: new` (a fresh agent session each visit: clean,
+so it costs more. Use `session: new` (a fresh agent session each visit: clean,
 cheaper, no drift) only when the person asks for it, or the visits are
 independent and the person wants that. In a For each or a parallel branch
 each visit has its own agent session: `new` is the default there and
@@ -243,7 +243,7 @@ What the engine guarantees. Do not rely on more.
 | Effect | On a retry or a worker restart |
 |---|---|
 | script | Runs again from its start (`context.attempt` above 1), tool calls too: make it safe to repeat. |
-| agent | Keeps the same child chat; its prompt is not given twice. The first accepted `complete_workflow_node` decides; later ones are refused. |
+| agent | Keeps the same agent session; its prompt is not given twice. The first accepted `complete_workflow_node` decides; later ones are refused. |
 | send | An agent session may get it twice (a repeat is dropped while its id is recent). A workflow takes it once. |
 | request | Reaches the responder at least once, under one id. The first answer decides; none after the deadline. |
 | receive | Takes each message once, in the order the run accepted it. |
@@ -263,7 +263,7 @@ What the engine guarantees. Do not rely on more.
 - **Stop.** Nothing new starts; started work settles. The run ends `stopped`
   when nothing is pending, or at the end of its grace, cancelling the rest.
 - **Cancel, delete.** The run ends when it is accepted: pending visits are
-  cancelled, then scripts are stopped and agent chats ended. A delete tells
+  cancelled, then scripts are stopped and agent sessions ended. A delete tells
   no one.
 - **Run deadline.** Pending work is cancelled and the run fails `timed_out`,
   paused or not.

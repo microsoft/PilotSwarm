@@ -73,8 +73,8 @@ test("the activity lists who did what, newest first, for one run and one visit",
     assert.equal(workflowV2Activity([event(1, "workflow.cancelled", {})], { runId: RUN })[0].title, "Canceled at once");
     assert.equal(one("workflow.cancelled", { command: "delete", deleted: true }), "⊘ Canceled · deleted");
     assert.equal(one("workflow.agent_spawned", { stateId: "review", childSessionId: "child-1234567890", deadline: "2026-11-03T10:00:00Z" }),
-        "review · chat started · limit 2026-11-03 10:00:00");
-    assert.equal(one("workflow.agent_ended", { stateId: "review", end: "cancel" }), "review · chat ended · canceled");
+        "review · agent session started · limit 2026-11-03 10:00:00");
+    assert.equal(one("workflow.agent_ended", { stateId: "review", end: "cancel" }), "review · agent session ended · canceled");
     assert.equal(one("workflow.request_delivered", { contract: "Review@1", responderSessionId: "reviewer-1", deadlineAt: "2026-11-03T10:00:00Z" }),
         "Ask Review@1 sent · answer by 2026-11-03 10:00:00");
     assert.equal(one("workflow.response_wake_abandoned", {}), "Answer arrived · the Workflow takes it next");
@@ -162,11 +162,11 @@ test("a visit that ended says why, and how its agent chat ended", () => {
     assert.equal(workflowV2VisitEnding({ status: "pending" }), null);
     assert.equal(workflowV2VisitEnding({ status: "completed", outcome: "timed_out", resultKind: "runtime_error", winner: "controller",
         errorPreview: JSON.stringify({ code: "timed_out", message: "The agent did not finish in 600 s." }), agent: { end: "cancel" } }).text,
-    "Its limit passed: The agent did not finish in 600 s. Chat ended · canceled.");
+    "Its limit passed: The agent did not finish in 600 s. Agent session ended · canceled.");
     assert.equal(workflowV2VisitEnding({ status: "completed", outcome: "cancelled", resultKind: "runtime_error", winner: "cancel",
         errorPreview: JSON.stringify({ code: "cancelled", message: "The workflow run was cancelled." }) }).text, "The Workflow was canceled while it ran.");
     assert.equal(workflowV2VisitEnding({ status: "completed", outcome: "accepted", resultKind: "business", winner: "agent", agent: { end: "done" } }).text,
-        "Done · accepted. Chat ended · result taken.");
+        "Done · accepted. Agent session ended · result taken.");
     assert.equal(workflowV2VisitEnding({ status: "completed", outcome: "crashed", resultKind: "runtime_error", winner: "controller",
         errorPreview: JSON.stringify({ code: "crashed", message: "exit code 1" }) }).text, "Error · crashed: exit code 1.");
     assert.equal(workflowV2VisitEnding({ status: "completed", outcome: "cancelled", resultKind: "runtime_error", winner: "fail_fast" }).why,

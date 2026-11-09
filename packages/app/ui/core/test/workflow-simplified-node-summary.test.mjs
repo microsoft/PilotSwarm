@@ -116,7 +116,7 @@ test("the portal's Node panel: one view, in words, with the agent's prompt folde
     const html = renderToStaticMarkup(React.createElement(WorkflowV2NodeSummary, { selected, nodes: projection.nodes, select: () => {},
         openSession: () => {}, runId: projection.runId }));
     for (const words of ["Asks an agent: “Tell one new fact about PostgreSQL.”", "Now", "Running · since ", "17:43:01", "Visits", "<strong>3</strong>",
-        "Result", "VACUUM frees dead rows.", "Chat", "Same each visit", "Prompt", "Open chat",
+        "Result", "VACUUM frees dead rows.", "Agent session", "Same each visit", "Prompt", "Open agent session",
         "produced → relay_to_chat", "✕ limit → relay_to_chat", "✕ other errors → Workflow fails"]) {
         assert.ok(html.includes(words), words);
     }

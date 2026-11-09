@@ -56,24 +56,24 @@ test("the TUI's node details say the chat mode as the portal does", async () => 
 test("the Workflow log says a later visit reuses the chat, a visit ended with its chat open, the chat ended, and a chat was replaced", () => {
     const short = (type, data) => workflowEventText(type, data, "short").text;
     assert.equal(short("workflow.agent_spawned", { stateId: "talk", childSessionId: "chat-1234567890", deadline: "2026-11-06T03:00:00Z" }),
-        "talk · chat started · limit 2026-11-06 03:00:00");
+        "talk · agent session started · limit 2026-11-06 03:00:00");
     assert.equal(short("workflow.agent_spawned", { stateId: "talk", childSessionId: "chat-1234567890", chat: "continue", cycle: 1 }),
-        "talk · chat started");
+        "talk · agent session started");
     assert.equal(short("workflow.agent_spawned", { stateId: "talk", childSessionId: "chat-1234567890", chat: "continue", cycle: 3,
-        deadline: "2026-11-06T03:00:00Z" }), "talk · visit 3 · same chat · limit 2026-11-06 03:00:00");
+        deadline: "2026-11-06T03:00:00Z" }), "talk · visit 3 · same agent session · limit 2026-11-06 03:00:00");
     assert.equal(short("workflow.agent_cycle_ended", { stateId: "talk", turnStopped: true }),
-        "talk · visit ended · chat kept for the next visit · turn stopped");
-    assert.equal(short("workflow.agent_cycle_ended", { stateId: "talk" }), "talk · visit ended · chat kept for the next visit");
+        "talk · visit ended · agent session kept for the next visit · turn stopped");
+    assert.equal(short("workflow.agent_cycle_ended", { stateId: "talk" }), "talk · visit ended · agent session kept for the next visit");
     assert.equal(short("workflow.agent_ended", { stateId: "talk", end: "done", chat: "continue" }),
-        `talk · chat ended${short("workflow.agent_ended", { stateId: "talk", end: "done" }).slice("talk · chat ended".length)}`
+        `talk · agent session ended${short("workflow.agent_ended", { stateId: "talk", end: "done" }).slice("talk · agent session ended".length)}`
         + " · no more visits");
     const restarted = workflowEventText("workflow.agent_chat_restarted", { stateId: "talk", endedChatSessionId: "old-chat-123456", cycle: 2 }, "short");
-    assert.deepEqual(restarted, { text: "talk · visit 2 · new chat · the earlier one had ended", level: "warning" });
+    assert.deepEqual(restarted, { text: "talk · visit 2 · new agent session · the earlier one had ended", level: "warning" });
     // A continued chat's owed end, its last look (formal t3; review O2): another look holds it, or the chat was never seen.
     assert.deepEqual(workflowEventText("workflow.agent_end_failed", { stateId: "talk", reason: "held_elsewhere" }, "short"),
-        { text: "talk · chat ending" });
+        { text: "talk · agent session ending" });
     assert.deepEqual(workflowEventText("workflow.agent_end_failed", { stateId: "talk", reason: "not_visible" }, "short"),
-        { text: "talk · chat not found, so it was not ended · checked again later", level: "warning" });
+        { text: "talk · agent session not found, so it was not ended · checked again later", level: "warning" });
     assert.deepEqual(workflowEventText("workflow.agent_end_failed", { stateId: "talk", error: "x" }, "short"),
-        { text: "talk · ending the chat failed · trying again", level: "warning" });
+        { text: "talk · ending the agent session failed · trying again", level: "warning" });
 });

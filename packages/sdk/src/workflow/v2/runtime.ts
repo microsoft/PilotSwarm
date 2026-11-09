@@ -5776,17 +5776,17 @@ export function workflowAgentPrompt(invocation: {
     return `[SYSTEM: WORKFLOW NODE INVOCATION. You are an ordinary agent session running one state of a workflow. Use your normal tools, `
         + "and delegate within your real limits. Finish the state only with the " + COMPLETE_WORKFLOW_NODE_TOOL + " tool: give outcome (one of "
         + "the outcomes below) and output (a value that matches outputSchema, when one is given), or error with code needs_input or "
-        + "execution_failed and a message; give an operation_id you choose, and repeat it to retry the same completion. Final chat text does not "
+        + "execution_failed and a message; give an operation_id you choose, and repeat it to retry the same completion. A final message does not "
         + "finish the state. The controlling parent agent named below may message you, and you may message it; that conversation does not "
         + "finish the state either. Humans cannot send you prompts, answers or steers: do not ask them. When you need a decision, consult "
         + "the controlling parent agent, or complete with error code needs_input. "
         + (invocation.continues === true
-            ? "This chat continues: each later visit of this state in this run comes to this same chat as a new cycle, and the workflow "
-                + "ends this chat when the run ends. Every completion must also give node_execution_id, the id of the cycle it finishes "
+            ? "This agent session continues: each later visit of this state in this run comes to this same session as a new cycle, and the "
+                + "workflow ends this session when the run ends. Every completion must also give node_execution_id, the id of the cycle it finishes "
                 + `(this one's is ${invocation.nodeExecutionId}). The workflow ends this cycle at its deadline. `
                 + (restart
-                    ? `This is cycle ${restart.cycle} of this state in this run. The chat of its earlier cycles ended (session `
-                        + `${restart.endedChatSessionId}), so this is a new chat and their work is not here: previousResult, `
+                    ? `This is cycle ${restart.cycle} of this state in this run. The agent session of its earlier cycles ended (session `
+                        + `${restart.endedChatSessionId}), so this is a new agent session and their work is not here: previousResult, `
                         + "variables and changedVariables in the JSON say where they ended. "
                     : "")
             : "The workflow cancels this session at the deadline. ")
@@ -5825,12 +5825,12 @@ export function workflowAgentCyclePrompt(invocation: Parameters<typeof workflowA
     const task = invocation.task.source === "prompt" ? invocation.task.prompt
         : `Apply your role (agent ${invocation.task.name}${invocation.task.package ? ` from package ${invocation.task.package}` : ""}) to the input above.`;
     return `[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE ${invocation.cycle}. This is cycle ${invocation.cycle} of the same workflow state in this run, `
-        + "in this same chat: what you did in earlier cycles is above. Work on this cycle's input and the variables as they are now; "
+        + "in this same agent session: what you did in earlier cycles is above. Work on this cycle's input and the variables as they are now; "
         + "changedVariables names the variables that changed since your last cycle. Do not repeat earlier work unless the task asks for it. "
         + "Finish this cycle only with the " + COMPLETE_WORKFLOW_NODE_TOOL + " tool, as before: give outcome and output, or error with code "
         + "needs_input or execution_failed, a new operation_id, and node_execution_id " + invocation.nodeExecutionId + " (this cycle's). "
-        + "Final chat text does not finish it. Humans cannot send you prompts, answers or steers. The workflow ends this cycle at its deadline; "
-        + "this chat stays open for the next cycle until the run ends. " + WORKFLOW_AGENT_CYCLE_INPUT_WORDS + "]\n"
+        + "A final message does not finish it. Humans cannot send you prompts, answers or steers. The workflow ends this cycle at its deadline; "
+        + "this agent session stays open for the next cycle until the run ends. " + WORKFLOW_AGENT_CYCLE_INPUT_WORDS + "]\n"
         + json + "\n[SYSTEM: The task of this state, from the workflow's definition:]\n" + task;
 }
 

@@ -152,7 +152,7 @@ test("the portal shows a parallel step's branches and the three ways to ask the 
     // 1; the data attributes keep the index from 0.
     assert.match(html, /aria-label="Items"><h3>Items<\/h3><p[^>]*>1\/3 ok<\/p>/);
     assert.match(html, /<p role="status" data-blocking="1,2"[^>]*>Blocked by items 2, 3<\/p>/);
-    assert.match(html, /<th>#<\/th><th>Node<\/th><th>State<\/th><th>Limit<\/th><th>Result<\/th><th>Chat<\/th>/);
+    assert.match(html, /<th>#<\/th><th>Node<\/th><th>State<\/th><th>Limit<\/th><th>Result<\/th><th>Agent session<\/th>/);
     assert.match(html, /<tr data-branch="1" data-status="failed"><td>2<\/td><td>work<\/td><td>failed<\/td><td>—<\/td><td>Error · crashed: exit code 1<\/td><td>—<\/td><\/tr>/);
     assert.match(html, /<tr data-branch="0" data-status="ok"><td>1<\/td><td>branch_done<\/td><td>ok<\/td><td>—<\/td><td>\{&quot;ok&quot;:true\}<\/td><td>—<\/td><\/tr>/);
     assert.match(html, /<tr data-branch="2" data-status="not started"><td>3<\/td><td>—<\/td><td>not started<\/td><td>—<\/td><td>—<\/td><td>—<\/td><\/tr>/);
