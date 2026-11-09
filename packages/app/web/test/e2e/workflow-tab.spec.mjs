@@ -19,6 +19,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { startStubServer } from "./stub-server.mjs";
+import { collectPageErrors } from "./page-errors.mjs";
 import { listThemes } from "../../../ui/core/src/themes/index.js";
 import { buildWorkflowCanvasHtml, compileWorkflow, foldWorkflowCanvasState } from "../../../../sdk/dist/workflow/index.js";
 
@@ -134,7 +135,7 @@ async function routeApi(page, { onCreate, workflowEvents = WORKFLOW_EVENTS, onSo
 test("the new-session dialog offers no workflow start: an agent starts workflows (flow-05)", async ({ page }) => {
     const errors = [];
     const created = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeApi(page, {
         onCreate: (route, body) => {
             created.push(body);
@@ -303,7 +304,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     test(`the graph zooms, fits and moves with the hand, and stays still without it, at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         await routeApi(page, { workflowEvents: QUALITY_EVENTS,
             workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
@@ -367,7 +368,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     test(`edges stay drawn and a step answers a click or tap with the hand on, at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         await routeApi(page, { workflowEvents: QUALITY_EVENTS,
             workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
@@ -398,7 +399,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     test(`a drag that starts on a step moves the step, not the graph, and does not select it, at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         await routeApi(page, { workflowEvents: QUALITY_EVENTS,
             workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
@@ -476,7 +477,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
 test("mobile: the Workflow pane maximizes and restores as the canvas does, has no zen entry or composer bar, and node details are reachable", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeApi(page, { workflowEvents: QUALITY_EVENTS,
         workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
@@ -540,7 +541,7 @@ test("the main workflow graph follows live ticks and selection drives canvas nod
     // A desktop's layout: one click opens a node's details (a phone's first tap only selects; its own test covers that).
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const graph = compileWorkflow(LIVE_YAML);
     const html = buildWorkflowCanvasHtml(graph, foldWorkflowCanvasState([], graph));
     const log = [
@@ -636,7 +637,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     test(`workflow graph, its Log and Node panels in the bottom panel and node detail navigation at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
         const errors = [];
-        page.on("pageerror", error => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         await routeApi(page);
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
         const main = workflowTab(page);
@@ -728,7 +729,7 @@ async function dragSeam(page, seam, dx, check = null) {
 test("of-03: the Workflow tab's right block resizes by drag, keys and double-click at 1440px, and keeps its width after a reload", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeApi(page);
     const profile = await routeProfile(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
@@ -789,7 +790,7 @@ test("of-03: with Diagnostics open on a narrow window the seam beside the Workfl
     // widths: Diagnostics opens at about 190px. (At 1100px it is squeezed to 0px, the documented squeeze below the snap.)
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeApi(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     await workflowTab(page).getByRole("button", { name: "Inspect collect", exact: true }).click();
@@ -821,7 +822,7 @@ test("of-03: Diagnostics squeezed by a narrower window gets its width back first
     // Wide enough for both opening widths beside the session list, which keeps its width (0.8.9).
     await page.setViewportSize({ width: 1700, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeApi(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     await workflowTab(page).getByRole("button", { name: "Inspect collect", exact: true }).click();
@@ -844,7 +845,7 @@ test("of-03: Diagnostics squeezed by a narrower window gets its width back first
 test("of-03: the zen chat rail resizes by drag and a double-click puts it back at 380px", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeApi(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     await expect(workflowTab(page).getByRole("group", { name: "Workflow graph" })).toBeVisible();
@@ -886,7 +887,7 @@ const V2_READ_MODEL = {
 
 test("a v2 workflow's read model failure is shown beside its graph, and Retry reads it again", async ({ page }) => {
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     let failReads = true;
     let reads = 0;
     await routeApi(page, {
@@ -970,7 +971,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     test(`v2 commands: the Stop… dialog sends one stop, keeps a refusal's reason and re-reads; Pause needs none, at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         const { reads, commands } = await routeV2(page, {
             onCommand: (route, command) => command.operation === "stop"
                 ? refuse(route, 409, "RUN_NOT_ACTIVE", "The run already ended.")
@@ -1039,7 +1040,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
 // ------------------------------------------------------------------------------------------------------------
 test("v2 commands: an unconfirmed pause is retried with the same operation id, never as a second command", async ({ page }) => {
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     let release;
     const held = new Promise((resolve) => { release = resolve; });
     const { commands } = await routeV2(page, {
@@ -1091,7 +1092,7 @@ const V2_TEST_MODEL = {
 };
 test("v2 commands: the virtual clock refuses an invalid advance locally and sends one exact advance", async ({ page }) => {
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const { commands } = await routeV2(page, {
         events: V2_TEST_EVENTS,
         readModel: () => V2_TEST_MODEL,
@@ -1148,7 +1149,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     test(`the Workflow tab opens with the graph only, and each bottom panel opens from its own tab, at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         let model = V2_WITH_VARIABLES;
         await routeApi(page, {
             workflowEvents: V2_EVENTS,
@@ -1208,7 +1209,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     test(`with no Workflow 'No Workflows yet.' is said once, and the Definition view shows the graph without run status, at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         await routeV2(page, { events: [], readModel: () => NO_RUN_MODEL, onCommand: (route, command) => accept(route, command) });
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
         const main = workflowTab(page);
@@ -1235,7 +1236,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
 // ------------------------------------------------------------------------------------------------------------
 test("v2 commands: the workflow screen's edit boxes share one theme style and mark invalid JSON under the box (of-07)", async ({ page }) => {
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const { commands } = await routeV2(page, {
         readModel: () => ({ ...V2_WITH_CONTROLS,
             personCommands: { ...V2_WITH_CONTROLS.personCommands, operations: [...V2_WITH_CONTROLS.personCommands.operations, "set_vars"] } }),
@@ -1306,7 +1307,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     test(`v2 commands: a workflow agent state's chat is read-only with the server's reason; an ordinary chat is not, at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         await routeApi(page);
         const child = { sessionId: CHILD_ID, title: "Workflow step: review", status: "idle", model: "test:test-model",
             parentSessionId: WORKFLOW_ID, createdAt: now - 10_000, updatedAt: now - 10_000 };
@@ -1352,7 +1353,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
 // it could not check, with Retry, and no message box; Retry reads again and the server's answer decides.
 test("v2 commands: a failed access check says it could not check, with Retry, and no message box until the server answers", async ({ page }) => {
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeApi(page);
     const child = { sessionId: CHILD_ID, title: "Workflow step: review", status: "idle", model: "test:test-model",
         parentSessionId: WORKFLOW_ID, createdAt: now - 10_000, updatedAt: now - 10_000 };
@@ -1412,7 +1413,7 @@ const draftModel = (revision, yaml) => ({
 });
 test("v2 commands: a draft save whose answer is lost keeps the edit and Retry sends the same replace_definition", async ({ page }) => {
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     let saved = false;
     const { commands } = await routeV2(page, {
         readModel: () => saved ? draftModel(2, DRAFT_YAML_2) : draftModel(1, DRAFT_YAML_1),
@@ -1519,7 +1520,7 @@ const REV2_STATES = [
 test("f-03: a moved step is saved once in the profile, comes back after a reload, and Reset layout puts it back", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     let model = V2_READ_MODEL;
     await routeV2(page, { readModel: () => model, onCommand: (route, command) => accept(route, command) });
     const profile = await routeProfileSaves(page);
@@ -1602,7 +1603,7 @@ test("f-03: a moved step is saved once in the profile, comes back after a reload
 test("f-03: a new revision keeps the places of the steps it still has; a removed step's place is dropped on the next save", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     let model = V2_READ_MODEL;
     await routeV2(page, { readModel: () => model, onCommand: (route, command) => accept(route, command) });
     const profile = await routeProfileSaves(page);
@@ -1692,7 +1693,7 @@ async function openSession(page, title) {
 test("r-1: the Definition view's YAML button shows the YAML and back, and the graph keeps its view", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeV2Revisions(page, () => V2_READ_MODEL);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = workflowTab(page);
@@ -1725,7 +1726,7 @@ test("r-1: the Definition view's YAML button shows the YAML and back, and the gr
 test("r-2: a definition is edited in the Definition view's YAML, and an unsaved edit is kept until saved (D5)", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     let saved = false;
     await routeV2(page, {
         readModel: () => saved ? draftModel(2, DRAFT_YAML_2) : draftModel(1, DRAFT_YAML_1),
@@ -1773,7 +1774,7 @@ test("r-2: a definition is edited in the Definition view's YAML, and an unsaved 
 test("r-2: a revision's YAML is read-only where it cannot change, and a person who may not change it is told who sees it", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     let allowed = true;
     const reads = await routeV2Revisions(page, () => ({ ...V2_READ_MODEL,
         personCommands: { operations: ["pause", "resume", "stop", "cancel"], viewer: allowed ? { allowed: true } : { allowed: false, reason: "Not yours." },
@@ -1810,7 +1811,7 @@ test("r-2: a revision's YAML is read-only where it cannot change, and a person w
 test("r-3: the Log fills the bottom panel, a node on the graph shows the Node panel in its place, and a refusal shows over the graph", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeV2(page, { onCommand: (route) => refuse(route, 409, "RUN_NOT_ACTIVE", "The run already ended.") });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = workflowTab(page);
@@ -1854,7 +1855,7 @@ test("zen and full screen: the Workflow tab has the canvas's buttons, keeps the 
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeApi(page, { workflowEvents: QUALITY_EVENTS, workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
     const profile = await routeProfile(page);
     const side = page.getByRole("region", { name: "Session canvas" });
@@ -1949,7 +1950,7 @@ for (const width of [1440, 2000]) {
     test(`owner 19:40Z F7: in full screen the Workflow tab's header has a framed Exit full screen where Full screen was, at ${width}px`, async ({ page }) => {
         await page.setViewportSize({ width, height: 900 });
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         await routeApi(page, { workflowEvents: QUALITY_EVENTS, workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
         const head = page.locator(".ps-wf-tab-head").filter({ visible: true });
@@ -2003,7 +2004,7 @@ test("owner 19:40Z F8: zen, full screen and normal fit the graph again, until th
     test.setTimeout(90_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeApi(page, { workflowEvents: QUALITY_EVENTS, workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const head = page.locator(".ps-wf-tab-head").filter({ visible: true });
@@ -2083,7 +2084,7 @@ test("owner 19:40Z F8: zen, full screen and normal fit the graph again, until th
 test("owner 19:40Z F9: a chat's new draft of a running definition is named, marked draft, and reachable from the Workflows view", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const DRAFT = OWNED.unstarted;
     const models = {
         [OWNED.running]: { ...V2_READ_MODEL, workflowId: OWNED.running },
@@ -2134,7 +2135,7 @@ test("owner 19:40Z F9: a chat's new draft of a running definition is named, mark
 test("owner 00:03Z versions: each version is its own option, the Definition view and Compare follow it, every Workflow says its version", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const V1 = OWNED.running, V2 = OWNED.failed;
     const versioned = (workflowId, semver, status, outcome, runId) => ({ ...V2_READ_MODEL, workflowId,
         definition: { ...V2_READ_MODEL.definition, semver }, runs: [{ runId, mode: "live", status, revision: 1, outcome }],
@@ -2203,7 +2204,7 @@ test("owner 00:03Z versions: each version is its own option, the Definition view
 test("UI3-F9: one version with different YAML: separate options by their Workflows; a run's Definition and YAML are its own", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const [A1, B, A2] = [OWNED.running, OWNED.failed, OWNED.unstarted];
     const of = (workflowId, hash, runId) => ({ ...V2_READ_MODEL, workflowId, definition: { ...V2_READ_MODEL.definition, semver: "1.1.3" },
         revision: { ...V2_READ_MODEL.revision, irSha256: `ir-${hash}`, definitionHash: `hash-${hash}` },
@@ -2242,7 +2243,7 @@ test("UI3-F9: one version with different YAML: separate options by their Workflo
 test("UI3-F7, UI3-F8: at 390 px many drafts scroll in their own area, the oldest opens, the started list stays, targets are 44 px", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const draftIds = Array.from({ length: 24 }, (_, index) => `d${String(index + 1).padStart(7, "0")}-2222-3333-4444-555555555555`);
     const draftOf = (workflowId, semver) => ({ ...V2_READ_MODEL, workflowId, definition: { state: "draft", semver, currentRevision: 1, publishedRevision: null },
         revision: { ...V2_READ_MODEL.revision, definitionHash: `hash-${workflowId}`, irSha256: `ir-${semver}` }, runs: [], run: null });
@@ -2289,7 +2290,7 @@ test("UI3-F7, UI3-F8: at 390 px many drafts scroll in their own area, the oldest
 test("UI4-F1: a draft chosen in the picker stays shown through its new revisions (another hash), by mouse and keyboard", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const [A, B] = [OWNED.running, OWNED.unstarted];
     const draft = revision => ({ ...V2_READ_MODEL, workflowId: B,
         definition: { state: "draft", semver: "1.1.0", currentRevision: revision, publishedRevision: null },
@@ -2353,7 +2354,7 @@ test("UI4-F1: a draft chosen in the picker stays shown through its new revisions
 test("UI4-F2: after Show it on a draft, selecting a Workflow row in the session list shows that Workflow's definition, by mouse and keyboard", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const [A, B] = [OWNED.running, OWNED.unstarted];
     const models = {
         [A]: { ...V2_READ_MODEL, workflowId: A, runs: [{ runId: "run-a", mode: "live", status: "completed", revision: 1, outcome: "succeeded" }],
@@ -2414,7 +2415,7 @@ test("UI4-F2: after Show it on a draft, selecting a Workflow row in the session 
 test("UI5-F1: a newer equivalent draft the view follows stays shown, in YAML mode and in the Start form, when it is revised", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const [A, B, C] = [OWNED.running, OWNED.unstarted, "aaaaaaa4-2222-3333-4444-555555555555"];
     const yamlOf = (id, revision = 1) => `apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: watch-v2, version: "${id === A ? "1.0.0" : "1.1.0"}" }\n`
         + `initial: poll\n# ${id === C ? `c revision ${revision}` : "b"}\n`;
@@ -2518,7 +2519,7 @@ test("f-06: the graph is fitted once and keeps its view through the bottom panel
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     let model = V2_READ_MODEL;
     await routeV2Revisions(page, () => model);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
@@ -2621,7 +2622,7 @@ const detailValue = (page, label) => page.locator(".ps-session-detail-field").fi
 test("d-1: a workflow's session details say what it runs, link its parent, and fold to its run", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeV2(page, { onCommand: (route, command) => accept(route, command) });
     // A third session: an agent running one of the workflow's steps.
     const step = { sessionId: STEP_ID, title: "Workflow step: review", status: "idle", model: "test:test-model", parentSessionId: WORKFLOW_ID,
@@ -2665,7 +2666,7 @@ test("d-1: a workflow's session details say what it runs, link its parent, and f
 test("d-1: a Workflow shown on its own has its own details rows, and they fold to its run", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeApi(page, {
         workflowEvents: V2_EVENTS,
         workflowState: { title: "Workflow: watch-v2", status: "running", parentSessionId: "00000000-2222-3333-4444-555555555555" },
@@ -2745,7 +2746,7 @@ const DRAFT_TEST_MODEL = { ...PUBLISH_MODEL,
 test("f-05: Start shows one field per input, filled from the schema, and Edit as JSON shows the same values", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const { commands } = await routeV2(page, { events: [], readModel: () => withSchema(PUBLISHED_START_MODEL), onCommand: (route, command) => accept(route, command) });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = workflowTab(page);
@@ -2774,7 +2775,7 @@ test("f-05: Start shows one field per input, filled from the schema, and Edit as
 test("f-05 (test mode kept, 16): the Test review shows the Inputs sample from the schema; typing stops the refill and Sample fills it again", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const { commands } = await routeV2(page, { events: V2_EVENTS, readModel: () => withSchema(DRAFT_TEST_MODEL), onCommand: (route, command) => accept(route, command) });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = workflowTab(page);
@@ -2816,7 +2817,7 @@ test("f-05: without inputs Start says 'Takes no inputs.' and has no JSON box (F-
 test("n-2: the Log says the session was not told when notifications are off", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const ended = { ...V2_READ_MODEL,
         runs: [{ runId: "run-1", mode: "live", status: "completed", revision: 1, outcome: "succeeded" }],
         run: { ...V2_READ_MODEL.run, status: "completed", outcome: "succeeded", terminalState: "done" } };
@@ -2870,7 +2871,7 @@ test("f-03: a moved step's own loop curves beside it", async ({ page }) => {
 test("UI-6: saved places that arrive after the first fit are fitted once", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeV2(page, { onCommand: (route, command) => accept(route, command) });
     // Far, yet within what the Workflow tab's right block shows at the smallest zoom (0.2).
     const saved = { workflowLayouts: { [LAYOUT_KEY]: { at: Date.now(), steps: { done: [2400, 1600] } } } };
@@ -2903,7 +2904,7 @@ const WORKFLOW_B = "77777777-2222-3333-4444-555555555556";
 test("M-13: switching A -> B -> A at equal revisions never shows or saves one workflow's YAML in the other", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const yamlA = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: watch-a, version: 1.0.0 }\n# A\n";
     const yamlB = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: watch-b, version: 1.0.0 }\n# B\n";
     // Two definitions of one session (their names differ, so each is its own definition in the Workflow tab, O5).
@@ -3029,7 +3030,7 @@ async function offScreen(graph, id) {
 test("M-17 (UI-6): saved places that arrive after the person zoomed are taken without a refit", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeV2(page, { onCommand: (route, command) => accept(route, command) });
     const profile = await heldProfile(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
@@ -3050,7 +3051,7 @@ test("M-17 (UI-6): saved places that arrive after the person zoomed are taken wi
 test("M-17 (UI-6): a remembered view is where the graph starts again, and saved places that arrive later do not refit it", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeV2(page, { onCommand: (route, command) => accept(route, command) });
     const profile = await heldProfile(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
@@ -3082,7 +3083,7 @@ test("M-17 (UI-6): a remembered view is where the graph starts again, and saved 
 test("M-17 (UI-7): the Stop… dialog keeps Tab inside, skips disabled, hidden, inert and undisplayed controls, closes on Keep running and on Escape, stops on Stop", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const { commands } = await routeV2(page, { onCommand: (route, command) => accept(route, command, { status: "stopping" }) });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const stop = workflowTab(page).locator(".ps-wf-bar").first().getByRole("button", { name: "Stop…", exact: true });
@@ -3176,7 +3177,7 @@ test("M-17 (UI-7): the Stop… dialog keeps Tab inside, skips disabled, hidden, 
 test("M-18 (UI-8): the Log shows the Workflow's own entries only, never a test run's, through live appends and a reload", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     let seqs = 0;
     const event = (eventType, data) => ({ sessionId: WORKFLOW_ID, seq: ++seqs, eventType, createdAt: new Date().toISOString(), data });
     const step = (runId, n, outcome) => [
@@ -3271,7 +3272,7 @@ function replayFixture() {
 test("FU-26 replay: a finished Workflow's visits replay under the graph by buttons, slider keys and Play, and the Log and the replay follow each other", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const { events, model } = replayFixture();
     await routeApi(page, {
         workflowEvents: events,
@@ -3346,7 +3347,7 @@ test("FU-26 replay: a finished Workflow's visits replay under the graph by butto
 
 test("FU-26 replay: a running Workflow has no replay; on a phone a finished one's slider and Log lines are 44 px targets", async ({ page }) => {
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const { events, model } = replayFixture();
     let finished = false;
     const running = { ...model, runs: [{ ...model.runs[0], status: "running", outcome: null }],
@@ -3418,7 +3419,7 @@ test.describe("FUI-F1: a phone held sideways (844 x 390, touch)", () => {
     test("FUI-F1 sideways: the Stop… dialog's buttons and its Close are 44 px targets", async ({ page }) => {
         await page.setViewportSize(SIDEWAYS);
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         await routeV2(page, { onCommand: (route, command) => accept(route, command, { status: "stopping" }) });
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
         const main = await sidewaysTab(page);
@@ -3437,7 +3438,7 @@ test.describe("FUI-F1: a phone held sideways (844 x 390, touch)", () => {
     test("FUI-F1 sideways: a finished Workflow's replay slider and buttons are 44 px targets", async ({ page }) => {
         await page.setViewportSize(SIDEWAYS);
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         const { events, model } = replayFixture();
         await routeApi(page, { workflowEvents: events, workflowState: { title: "Workflow: watch-v2", status: "completed" },
             onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: model } }) });
@@ -3456,7 +3457,7 @@ test.describe("FUI-F1: a phone held sideways (844 x 390, touch)", () => {
     test("FUI-F1 sideways: the drafts' Show it and Start… are 44 px targets", async ({ page }) => {
         await page.setViewportSize(SIDEWAYS);
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         const draftIds = Array.from({ length: 3 }, (_, index) => `d${String(index + 1).padStart(7, "0")}-2222-3333-4444-555555555555`);
         const draftOf = (workflowId, semver) => ({ ...V2_READ_MODEL, workflowId, definition: { state: "draft", semver, currentRevision: 1, publishedRevision: null },
             revision: { ...V2_READ_MODEL.revision, definitionHash: `hash-${workflowId}`, irSha256: `ir-${semver}` }, runs: [], run: null });
@@ -3487,7 +3488,7 @@ test.describe("FUI-F1: a phone held sideways (844 x 390, touch)", () => {
 test("S2UI-F5 replay: a replayed branch visit's Node details show its own branch and agent chat", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const states = [
         { id: "fan", type: "parallel", forEach: "${input.items}", concurrency: 2, join: "all_required", failFast: false,
             body: { initial: "work", states: ["work", "end"] }, outcomes: ["joined", "blocked"], next: { joined: "done", blocked: "failed" } },
@@ -3559,7 +3560,7 @@ test("S2UI-F5 replay: a replayed branch visit's Node details show its own branch
 test("S2UI-F7 replay: an early visit of a long run gets its Log line, read from older events, and the line moves the replay", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     // 160 visits, poll and pause in turn, each a start and an end line: 322 events with the start and the end.
     const events = [{ sessionId: WORKFLOW_ID, seq: 1, eventType: "workflow.started", createdAt: replayAt(0), data: { ...V2_EVENTS[0].data } }];
     const rows = [];
@@ -3671,7 +3672,7 @@ const PARALLEL_MODEL = {
 test("parallel fixture: a parallel step mounts in React Flow with its branch box, join bar and edges, and is worked with the keyboard", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeV2(page, { events: PARALLEL_EVENTS, readModel: () => PARALLEL_MODEL, onCommand: (route, command) => accept(route, command) });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const graph = workflowTab(page).getByRole("group", { name: "Workflow graph" });
@@ -3738,7 +3739,7 @@ test("parallel fixture: a parallel step mounts in React Flow with its branch box
 test("parallel fixture: the same graph mounts on a phone, its join bar selects the parallel step", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeV2(page, { events: PARALLEL_EVENTS, readModel: () => PARALLEL_MODEL, onCommand: (route, command) => accept(route, command) });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = workflowTab(page);
@@ -3802,7 +3803,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     test(`named branches fixture: the branches are lanes in one box, each entered by an edge with its name (${viewport.width} px)`, async ({ page }) => {
         await page.setViewportSize(viewport);
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         await routeV2(page, { events: NAMED_EVENTS, readModel: () => NAMED_MODEL, onCommand: (route, command) => accept(route, command) });
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
         const graph = workflowTab(page).getByRole("group", { name: "Workflow graph" });
@@ -3931,7 +3932,7 @@ const sessionRow = (page, text) => page.locator(".ps-session-row-content", { has
 test("layout: Workflow rows read 'name #n' with a state, an unstarted child has no row, and the Workflow button sits between Canvas and Diagnostics with a count", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeOwned(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
 
@@ -4027,7 +4028,7 @@ test("UI-D3: the Workflow shown under its parent, the tab's definition and view 
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeOwned(page);
     const profile = await routeProfileSaves(page);
     // Back/Forward history is kept per signed-in person: the stub's bootstrap names none, so name one (as the view
@@ -4088,7 +4089,7 @@ test("UI-F2: a reload whose session list arrives after the profile still shows t
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeOwned(page);
     const profile = await routeProfileSaves(page);
     // A reload's profile carries the parent's own desktop view (columns are kept per session, and selecting a session applies
@@ -4172,7 +4173,7 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
         await page.setViewportSize(viewport);
         const phone = viewport.width <= 600;
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         await routeOwned(page, { models: OWNED_MODELS_WITH_CONTROLS });
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${OWNED.running}`);
         const main = workflowTab(page);
@@ -4318,7 +4319,7 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
         await page.setViewportSize(viewport);
         const phone = viewport.width <= 600;
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         const later = "aaaaaaa5-2222-3333-4444-555555555555";
         const { rows } = await routeOwned(page, { models: { ...OWNED_MODELS, [later]: { ...OWNED_MODELS[OWNED.failed], workflowId: later } } });
         const profile = await routeProfileSaves(page);
@@ -4374,7 +4375,7 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
 test("UI2-F7: one tooltip at a time across focus and hover; Escape closes the one shown and focus stays", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeOwned(page, { models: OWNED_MODELS_WITH_CONTROLS });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${OWNED.running}`);
     const main = workflowTab(page);
@@ -4413,7 +4414,7 @@ test("UI2-F7: one tooltip at a time across focus and hover; Escape closes the on
 test("UI2-F1: a Workflow shown once fails in the background, the panel closed: the dot comes back", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const models = { ...OWNED_MODELS };
     const { rows } = await routeOwned(page, { models });
     const profile = await routeProfileSaves(page);
@@ -4580,7 +4581,7 @@ for (const theme of listThemes()) {
 test("r3 C02 phone: a failed Workflow's failure is one line with Details beside it, each a 44 px target, and the graph starts within 156 px", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeOwned(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${OWNED.failed}`);
     const main = workflowTab(page);
@@ -4630,7 +4631,7 @@ test("r3 C02 phone: a failed Workflow's failure is one line with Details beside 
 test("r3 C09: a reload with a Workflow row selected and the session list late keeps the chat, the Workflow tab and zen", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeOwned(page);
     const profile = await routeProfileSaves(page);
     profile.stored = { sessionOwnerFilter: { all: true }, activeSessionId: OWNED.failed, rightPaneMode: "canvas",
@@ -4653,7 +4654,7 @@ test("r3 C09: a reload with a Workflow row selected and the session list late ke
 test("layout: on a phone the Workflow pane lies over the chat, a panel opens as a sheet, and Back closes the sheet first", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeOwned(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${OWNED.running}`);
     // A link to a Workflow on a phone: the session's chat with the Workflow pane over it (S4, 12).
@@ -4686,7 +4687,7 @@ test("layout: on a phone the Workflow pane lies over the chat, a panel opens as 
 test("Run again: Start another… asks the chat once to start the same definition, and the new Workflow is listed under it as #3", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const another = "aaaaaaa4-2222-3333-4444-555555555555";
     const { messages } = await routeOwned(page, {
         // The chat spawns the same YAML: a third child with the same name.
@@ -4746,7 +4747,7 @@ test("the right block stays on the Workflow tab through profile reads, and the p
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeV2(page, { onCommand: (route, command) => accept(route, command) });
     const profile = await routeProfileSaves(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
@@ -4779,7 +4780,7 @@ test("the right block stays on the Workflow tab through profile reads, and the p
 test("after a Workflow row, a click on its session's row selects the session alone", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeOwned(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${OWNED.running}`);
     const ownerRow = page.locator(`.ps-session-list-button[data-session-id="${AGENT_ID}"]`);
@@ -4831,7 +4832,7 @@ test("the bottom panel keeps one height across its tabs, resizes by drag and key
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeV2(page, { onCommand: (route, command) => accept(route, command) });
     const profile = await routeProfileSaves(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
@@ -4872,7 +4873,7 @@ test("the bottom panel keeps one height across its tabs, resizes by drag and key
 test("on a phone the bottom panel's sheet keeps one height across its tabs", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeV2(page, { onCommand: (route, command) => accept(route, command) });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = workflowTab(page);
@@ -4947,7 +4948,7 @@ async function expectBesideGraph(tab, panel, { width = 400 } = {}) {
 test("OF-S2-1: in full screen and zen the panel is a column right of the graph at 1440 and 2000; both tab sets; the strip opens it; normal mode keeps it under", async ({ page }) => {
     test.setTimeout(180_000);
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeV2(page, { readModel: () => V2_WITH_VARIABLES, onCommand: (route, command) => accept(route, command) });
     const profile = await routeProfileSaves(page);
     for (const width of [1440, 2000]) {
@@ -5011,7 +5012,7 @@ test("OF-S2-1: full screen entered from zen returns to zen with the panel still 
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeV2(page, { onCommand: (route, command) => accept(route, command) });
     const profile = await routeProfileSaves(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
@@ -5043,7 +5044,7 @@ test("OF-S2-1: full screen entered from zen returns to zen with the panel still 
 test("OF-S2-1: the side panel's width resizes by drag and keys, is kept after a reload, and a double-click puts 400 px back", async ({ page }) => {
     test.setTimeout(180_000);
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeV2(page, { onCommand: (route, command) => accept(route, command) });
     const profile = await routeProfileSaves(page);
     for (const width of [1440, 2000]) {
@@ -5102,7 +5103,7 @@ test("OF-S2-1: the side panel's width resizes by drag and keys, is kept after a 
 test("OF-S2-1: a phone's maximize keeps the bottom sheet (390 px)", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeV2(page, { onCommand: (route, command) => accept(route, command) });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = workflowTab(page);
@@ -5129,7 +5130,7 @@ test("OF-S2-1: a phone's maximize keeps the bottom sheet (390 px)", async ({ pag
 test("OF-S2-2: node cards are two crisp rows with their words in the tooltip; error routes are one '✕ error' label", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const states = [
         { id: "generate_joke", type: "agent", invoke: { source: "prompt" }, timeoutSeconds: 120, outcomes: ["generated"],
             next: { generated: "send_joke", execution_failed: "done", timed_out: "done" } },
@@ -5300,7 +5301,7 @@ test("agent node: the Node panel says what it does and the Log shows its chat, v
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeAgentNode(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = workflowTab(page);
@@ -5363,7 +5364,7 @@ test("agent node: a chat: continue node's Log shows one chat across two visits",
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 1100 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeAgentNode(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = workflowTab(page);
@@ -5414,7 +5415,7 @@ test("agent node: r4 C04 the Log shown again reads the chat lines of a visit tha
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 1100 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const served = await routeAgentNode(page, { done: true });
     served.count = 6; // visit 1's lines only: visit 2 has not run in the chat yet
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
@@ -5449,7 +5450,7 @@ test("OF-S2-3b: full screen and zen survive choosing another definition, another
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeOwned(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
     await page.getByRole("button", { name: /^Workflow( —|$)/ }).click();

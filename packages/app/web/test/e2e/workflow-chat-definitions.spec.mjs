@@ -17,6 +17,7 @@ import { test, expect } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { startStubServer } from "./stub-server.mjs";
+import { collectPageErrors } from "./page-errors.mjs";
 import { listThemes } from "../../../ui/core/src/themes/index.js";
 
 const AGENT_ID = "11111110-2222-3333-4444-555555555551";
@@ -243,7 +244,7 @@ async function openTab(page) {
 test("chat definitions: one option per definition; each revision says who saved it; a revision with errors says why Start refuses it; a valid one draws and starts", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await routeChat(page);
     const main = await openTab(page);
     // The definition picker: one option per definition, by name (no versions); OF-S2-8: no option asks the chat for a new one.
@@ -294,7 +295,7 @@ test("chat definitions: one option per definition; each revision says who saved 
 test("save: the editor names the revision it edited; a newer one saved meanwhile is refused with who and when, Reload shows it, and the next save goes through", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await routeChat(page);
     const main = await openTab(page);
     await main.getByRole("button", { name: "YAML", exact: true }).click();
@@ -346,7 +347,7 @@ test("save: the editor names the revision it edited; a newer one saved meanwhile
 test("S2UI-F1: typing while a save is pending: the later edit stays unsaved on the saved revision, and Save saves it", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await routeChat(page);
     const main = await openTab(page);
     await main.getByRole("button", { name: "YAML", exact: true }).click();
@@ -382,7 +383,7 @@ test("S2UI-F1: typing while a save is pending: the later edit stays unsaved on t
 test("S2UI-F4: an empty definitions list with Workflow children shows them grouped by name", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeChat(page, { emptyList: true });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
     const main = await showPanel(page);
@@ -395,7 +396,7 @@ test("S2UI-F4: an empty definitions list with Workflow children shows them group
 test("compare: any two revisions side by side (E2-8), chosen by mouse and by keyboard", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeChat(page);
     const main = await openTab(page);
     await main.getByRole("button", { name: "Compare", exact: true }).click();
@@ -422,7 +423,7 @@ test("compare: any two revisions side by side (E2-8), chosen by mouse and by key
 test("a Workflow says the revision it runs; Run again… starts that revision; Delete… asks, shows the refusal while one runs, then deletes", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await routeChat(page);
     const main = await openTab(page);
     await viewSwitch(main, "Workflows").click();
@@ -488,7 +489,7 @@ test("a Workflow says the revision it runs; Run again… starts that revision; D
 test("UX2D-F2: after a refused Delete the keyboard keeps the dialog: focus stays, Escape closes it; with focus on the page too, and Start's", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await routeChat(page);
     const main = await openTab(page);
     const confirm = page.getByRole("dialog", { name: "Delete hn-top-watch", exact: true });
@@ -530,7 +531,7 @@ test("UX2D-F2: after a refused Delete the keyboard keeps the dialog: focus stays
 test("a person who can read the chat but not change it sees no YAML, and Start, Delete and Run again say why they are off", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await routeChat(page, { reader: true });
     const main = await openTab(page);
     const revisions = main.getByRole("combobox", { name: "Revision", exact: true });
@@ -559,7 +560,7 @@ test("a person who can read the chat but not change it sees no YAML, and Start, 
 test("stage 2.2: the revision the chat tested says its last test; others say nothing; the test is neither a row nor a Workflow", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeChat(page, { tested: true });
     const main = await openTab(page);
     const lastTest = main.locator("[data-last-test]");
@@ -697,7 +698,7 @@ async function routePackages(page) {
 test("stage 2.3: the new-session picker lists a package's Workflow with its card; choosing it makes a chat with the Workflow badge", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await routePackages(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
     await expect(page.locator(".ps-prompt-input")).toBeVisible();
@@ -733,7 +734,7 @@ test("stage 2.3: the new-session picker lists a package's Workflow with its card
 // Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "picker card's safety" (from packages/app/web, after build).
 test("the picker card's safety words are wholly visible as the details open, at 1024 and 1440 px", async ({ page }) => {
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routePackages(page);
     const checked = "Checked from the definition: it runs scripts (steps poll, notify). A script runs code on a worker: it can reach the network, "
         + "and use the tools of the chat that starts it, which can read and write files and run processes. It has agent steps (summarize): each one asks a model.";
@@ -766,7 +767,7 @@ test("the picker card's safety words are wholly visible as the details open, at 
 test("S2UI-F8: at 390 px the locked definition's Make a copy and Use it for the next Workflow are 44 px targets", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await routePackages(page);
     state.made = true;
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${COORD_ID}`);
@@ -799,7 +800,7 @@ test.describe("FUI-F1: a chat's definition on a phone held sideways (844 x 390, 
     test("FUI-F1 sideways: the Start dialog's controls and Delete… are 44 px targets", async ({ page }) => {
         await page.setViewportSize({ width: 844, height: 390 });
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         await routeChat(page);
         const main = await openTab(page);
         await main.getByRole("combobox", { name: "Revision", exact: true }).selectOption("2");
@@ -819,7 +820,7 @@ test.describe("FUI-F1: a chat's definition on a phone held sideways (844 x 390, 
     test("FUI-F1 sideways: a locked definition's Make a copy and Use it for the next Workflow are 44 px targets", async ({ page }) => {
         await page.setViewportSize({ width: 844, height: 390 });
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         const state = await routePackages(page);
         state.made = true;
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${COORD_ID}`);
@@ -838,7 +839,7 @@ test.describe("FUI-F1: a chat's definition on a phone held sideways (844 x 390, 
 test("UX2D-F6: a revision saved from another page is known when this page is shown again or takes focus", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await routeChat(page);
     const main = await openTab(page);
     await main.getByRole("button", { name: "YAML", exact: true }).click();
@@ -871,7 +872,7 @@ test("UX2D-F6: a revision saved from another page is known when this page is sho
 test("UX2D-F3, F4, F5: at 390 px the panel tabs, Compare pickers, dialog buttons, Close, Add, Maximize and graph controls are 44 px targets", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeChat(page);
     const main = await openTab(page);
     const target = async (locator, label) => {
@@ -943,7 +944,7 @@ async function headParts(main, { phone = false } = {}) {
 test("OF-S2-8: at 1440 px Definition, Rev, the view icons, YAML, Compare and Start… are one labelled row; the detail is the line under it", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeChat(page);
     const main = await openTab(page);
     const parts = await headParts(main);
@@ -999,7 +1000,7 @@ test("OF-S2-8: at 1440 px Definition, Rev, the view icons, YAML, Compare and Sta
 test("OF-S2-8: at 390 px the row wraps to two lines, Definition with full screen, then Rev, the icons and Start…; not valid stays in view", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeChat(page);
     const main = await openTab(page);
     const parts = await headParts(main, { phone: true });
@@ -1102,7 +1103,7 @@ async function checkNodeSections(page, panel) {
 test("OF-S2-8: a script node's Node panel shows its script and sample input and output, each closed until opened, highlighted", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await routeChat(page);
     state.yamls.set(2, SCRIPT_YAML);
     state.workflowYaml = SCRIPT_YAML;
@@ -1128,7 +1129,7 @@ test("OF-S2-8: a script node's Node panel shows its script and sample input and 
 test("OF-S2-8: the YAML viewer and editor are highlighted; the editor stays a plain textarea for typing and undo, in step when scrolled", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await routeChat(page);
     state.yamls.set(2, SCRIPT_YAML);
     const main = await openTab(page);
@@ -1275,7 +1276,7 @@ for (const theme of listThemes()) {
     test(`OF-S2-8 contrast: the Workflow viewer's text reads 4.5:1 and its parts 3:1 or more, ${theme.id}`, async ({ page }) => {
         await page.setViewportSize({ width: 1440, height: 900 });
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         const state = await routeChat(page);
         state.yamls.set(2, SCRIPT_YAML);
         state.workflowYaml = SCRIPT_YAML;
@@ -1327,7 +1328,7 @@ for (const theme of listThemes()) {
     test(`FUI-F2 contrast: a failed Workflow's danger words and error result read 4.5:1 or more, ${theme.id}`, async ({ page }) => {
         await page.setViewportSize({ width: 1440, height: 900 });
         const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("pageerror", collectPageErrors(errors));
         const state = await routeChat(page, { tested: true });
         state.hn.revisions[1].lastTest.verdict = "failed";
         state.hn.workflows[0].runStatus = "failed";
@@ -1387,7 +1388,7 @@ for (const theme of listThemes()) {
 test("UX2D-F11: at 1024 px a Workflow row in the session list keeps its name and number; the state chip gives way first", async ({ page }) => {
     await page.setViewportSize({ width: 1024, height: 768 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeChat(page);
     await openTab(page);
     await expect(page.locator(".ps-workspace-main-grid")).toHaveClass(/is-session-wrap/);
@@ -1421,7 +1422,7 @@ test("UX2D-F11: at 1024 px a Workflow row in the session list keeps its name and
 test("UX2D-F12: at 390 px the Workflows list wraps nothing, and the run bar's pill keeps the time taken", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeChat(page);
     // #2 has run for 2 h 03 min 04 s: its start event.
     const startedAt = new Date(Date.now() - (2 * 3600 + 3 * 60 + 4) * 1000).toISOString();
@@ -1464,7 +1465,7 @@ test("UX2D-F12: at 390 px the Workflows list wraps nothing, and the run bar's pi
 test("S2UI-F3: Make a copy with the package Workflow's own row selected opens the editable copy", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await routePackages(page);
     state.made = true;
     state.withWorkflow = true;
@@ -1486,7 +1487,7 @@ test("S2UI-F3: Make a copy with the package Workflow's own row selected opens th
 test("stage 2.3: a package's definition is locked: where it comes from, read-only YAML, Make a copy, and its newer version for the next Workflow", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await routePackages(page);
     state.made = true;
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${COORD_ID}`);
@@ -1565,7 +1566,7 @@ test("OF-S2-4: the chat's first definition opens the panel; closed, every lifecy
     test.setTimeout(120_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await lifecycleChat(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
     const button = page.getByRole("button", { name: /^(Workflow|Workflow — needs attention|Hide the Workflow tab)$/ });
@@ -1631,7 +1632,7 @@ test("OF-S2-4: on a phone the chat's first definition brings the Workflow pane u
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await lifecycleChat(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
     await expect.poll(() => state.listReads, { timeout: 15_000 }).toBeGreaterThan(0);
@@ -1657,7 +1658,7 @@ test("OF-S2-4d: a definition saved while the person is in another chat opens the
     test.setTimeout(120_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await lifecycleChat(page);
     state.others.push(OTHER);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${OTHER_ID}`);
@@ -1700,7 +1701,7 @@ test("OF-S2-4d: a page load onto a chat whose panel never showed, with a definit
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await routeChat(page);
     state.others.push(OTHER);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${OTHER_ID}`);
@@ -1717,7 +1718,7 @@ test("OF-S2-4d: on a phone, arriving at a chat whose panel never showed brings t
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeChat(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
     await expect(workflowTab(page)).toHaveAttribute("data-chat-definitions", "true", { timeout: 15_000 });
@@ -1738,7 +1739,7 @@ test("OF-S2-5: a sub-agent row shows the Workflow mark after its first save, uno
     test.setTimeout(90_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await routeChat(page);
     const helper = { sessionId: HELPER_ID, title: "Release helper", status: "idle", model: "test:test-model", parentSessionId: OTHER_ID,
         createdAt: now - 800_000, updatedAt: now - 40_000, hasWorkflowDefinitions: false };
@@ -1777,7 +1778,7 @@ test("OF-S2-5: a sub-agent row shows the Workflow mark after its first save, uno
 test("OF-S2-5: the open chat's title wears the mark when it has grown Workflows", async ({ page }) => {
     test.setTimeout(60_000);
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await routeChat(page);
     state.others.push({ ...OTHER, hasWorkflowDefinitions: true });
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -1804,7 +1805,7 @@ test("OF-S2-5: the open chat's title wears the mark when it has grown Workflows"
 test("UX2R-F1: the tab opened on the Definition view names the newest Workflow and its state; View it shows it", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeChat(page);
     const main = await openTab(page);
     await expect(main).toHaveAttribute("data-view", "definition");
@@ -1823,7 +1824,7 @@ test("UX2R-F1: the tab opened on the Definition view names the newest Workflow a
 test("UX2P-F3: the bar's and the header's tooltips show above their buttons, never over the lines under the bar", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     await routeChat(page);
     const main = await openTab(page);
     for (const name of ["YAML", "Compare", "Definition"]) {
@@ -1893,7 +1894,7 @@ async function markInsideRow(page, scope, id) {
 test("OF-S2-5-F1: the mark stays on screen right after a long title and an untitled row's id, at 1440 and 390 px", async ({ page }) => {
     test.setTimeout(90_000);
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", collectPageErrors(errors));
     const state = await routeChat(page);
     state.others.push(
         { sessionId: LONG_ID, title: "Quarterly release readiness review for the storage and networking teams, with every follow-up",
