@@ -10,6 +10,17 @@ not a proof of the code. Results are in the section "Results" below.
 `R` is `runtime.ts`, `S` is `store.ts`, `A` is `agent-node-service.ts`,
 `Q` is `orchestration_1_0_83/queue.ts`, `W` is `worker.ts`.
 
+## Status at 9a8d0f66 (2026-11-09)
+
+Controller 1.9.0 is every run's controller in this release. The bindings were checked function by function against
+`9a8d0f66` (the earlier pins reach it through the squash commit `d7c3ca68`, which equals `0424a3f8` for these files):
+
+| Module | At 9a8d0f66 |
+|---|---|
+| `WfGraph`, `WfParent`, `WfPaused`, `WfExecShare` | Revised and bound to `9a8d0f66` (section "r3" below). |
+| `WfAgent`, `WfRecover`, `WfPaging` | Results stand for an agent state whose session lifecycle is `new` (a For each body, a named branch, or `session: new`). An agent session that continues across visits, the default elsewhere, is modelled by `../continued-chat/` (`WfContinuedChat`). Their code changed only for continued sessions, plus the recheck of an owed end that `WfAgent` already models (WFO-2). |
+| `WfExecutor`, `WfExecLease` | History: the code they describe (the share at `1c117a47`, the exclusive lease at `0c3b4ceb`) was replaced by the share that `WfExecShare` models. |
+
 | Module | Checks |
 |---|---|
 | `WfGraph.tla` | The controller loop of `controlRequestRun` (`R` 1156-1569): admission of every cursor (step limit, the store's ended/deadline/stopping/paused answers, deterministic node ids), routing (`selectRoute`, failure routes, the catch-all state once), root and branch terminals, parallel fan-out with concurrency, failFast cancellation and its dropped results, the all-required join, collection, a graceful stop with its grace deadline, the run's deadline, pause, cancel commands, deletion, results decided by other processes. |
@@ -249,7 +260,9 @@ The command is still queued, as a hint (`cmdq`); `AllowLoseHint` may drop it
 (continue-as-new carries at most 100 unread messages; the drain was removed).
 The controller finds the ended run at its next admission, collection or stop
 end (`endedElsewhere`) and tells the parent after a command's end
-(`ReportIfCommand`). 1.9.0's collect reports an ended run before any result.
+(`ReportIfCommand`). 1.9.0's collect reports an ended run before any result. From `9a8d0f66` (S7-DX3) a terminal's finish that finds the
+run ended answers `elsewhere`, and the controller reconciles it (`endedElsewhere`): every end but a deletion is
+reported (section r3).
 Delete stays a direct store end. The first run-ending commit wins (Q1): a
 terminal's finish that finds the run ended only reports. `Cmd = "queue"` is
 the behaviour before S7-DX2, the setting of every earlier case.
@@ -269,6 +282,54 @@ run ended before it began (cancelBeforeBegin), 1.8.0 (this module is 1.9.0).
 3c93f3c6, the management API and the agent manager (applyOperatorCommandToWorkflowV2,
 the same store end under the same locks). Only a command an older build queued
 can still be lost at continue-as-new; that is the queue setting.
+
+## r3 (2026-11-09): WfGraph, WfParent, WfPaused and WfExecShare bound to 9a8d0f66
+
+Each revision is a new constant (or a new `Code` value) whose default keeps the earlier behaviour, so every earlier
+case keeps its meaning; their settings files only gain the new constants. `gen-cases.py` reads the r3 cases from
+`r3-graph.py`, `r3-parent.py`, `r3-paused.py` and `r3-execshare.py`.
+
+| Module | What changed in the code | Model |
+|---|---|---|
+| `WfGraph` | S7-DX3 (`3dec2dca`): a run another writer ended is reconciled by `endedElsewhere`, which ends its agent children and tells the parent for every end but a deletion; a terminal's finish that finds the run ended answers `elsewhere`. New end sources: the owning chat's end cancels the run; a deletion after the run ended. | `Elsewhere` (`"command"` = `1ef53967`, `"any"` = `9a8d0f66`), `OtherEnds`; the controller's own end in three steps (end, agent children, parent notice). Named forks are in `../fork-join/`. |
+| `WfParent` | DS-2 (`b3c58aa9`): a parent whose session has not started keeps the run's end notice as a chat note, read by its next turn, and the notice is recorded as a skip. | `Code = "9a8d0f66"`, `AllowLateStart`; `Inv_ToldOnce`, `Prop_ParentToldEnd`, `Inv_NoNoteAfterGone`, `Inv_NoteIsLast`. |
+| `WfPaused` | S-RT1 (`07c29b05`): the pause is also found at collection; an ended run found at collection is reconciled; a parallel state's time limit is applied while paused (its branches cut, its route after the resume); owed branch cuts retried while paused. | `Code = "9a8d0f66"`, `TimedJoin`, `AllowEndElsewhere`, `AllowCutFail`, `AllowPause`; `ResumeSpec`. |
+| `WfExecShare` | E1c-R2 and E1d (`2a372b5a`): a task a listing gives to an owner that has closed is cancelled at once (a failed cancel raises the barrier); the barrier is a set of causes. | `Code = "9a8d0f66"`, `AllowLate`, `ListingRace`. |
+
+### Results (2026-11-09)
+
+One run of the 202 cases of the four revised modules (the 138 earlier ones with the new constants at their earlier
+behaviour, and the 64 of r3), TLC 2.19, two workers, 300 s per case, then the liveness cases that did not finish
+within 300 s again at 1,800 s, with smaller settings beside them:
+
+| Outcome | Cases |
+|---|---|
+| As expected | 196 of 202 in the first run; with the second, every case that finished |
+| Expected values corrected | 2: `parent.told-by-earlier-e3` (a proposal's case that keeps the WFO-3 status-read race; its `-norace` variant passes) and `parent.zombie-holder-recover-a10` (the recover bound spent while the holder still holds the lock, the code's limit at `a10c2e07`). Both gave these verdicts in r2-final too (section "Results" below). |
+| Not checked (no verdict within 1,800 s) | `parent.r3-live-request` and `parent.r3-live-request-nozombie` (about 3.5 million distinct states each); `parent.r3-live-request-n1` (one notifier) and `parent.r3-live-send` pass. |
+| Not run | `exec.e1c-live` (code replaced; `exec.e1c-live-n2` passes) |
+
+The 28 cases that had no recorded result (r2f, r2g, o3, o4, o5) all gave their expected verdicts, except `exec.e1c-live`
+(above); `exec.e1b-8dd-live` and `parent.live-e3b` passed at 1,800 s.
+
+Findings at `9a8d0f66` (runtime behaviour; each fix is decided by the owner before any code):
+
+- `WfPaused`: when a parallel state's time limit cuts its branches, an agent state of a cut branch that was already
+  decided, but whose child's end was never recorded, keeps its child running (until the resume, or until the run ends).
+  The cut lists only the work it cancelled (`S` `cancelBranchScopes`) and removes the branch's cursor (`R` 1554-1556);
+  without a pause, the timed joins are asked before the collection (`R` 1933, 1944), so a completed state not yet
+  collected is dropped the same way (`paused.r3-cut-done-child`, `paused.r3-cut-timedout-endfail`,
+  `paused.r3-cut-done-running`; the proposed fix, `cmp.paused-r3-fix-*`, passes).
+- `WfGraph`: a deletion after another end (a person's cancel or done, the chat's end, or the controller's own end
+  retried after a crash) drops that end's parent notice: `observeEnd` (`R` 4273) decides "deleted" from the deletion
+  mark at the time it runs, not from what ended the run (`graph.r3-delete-after-cmd`, `graph.r3-delete-after-retry`;
+  `cmp.graph-r3-delete-after-cmd-1ef` passes at `1ef53967`).
+- `WfParent`: the parent can be told the run's end twice, as a chat note and as a notice, when the note and the skip
+  record (`R` 4460, 4462) are separated by a crash or a failed write (`parent.r3-told-twice`; the proposed fix of one
+  transaction, `cmp.parent-r3-fix-*`, passes).
+
+`WfExecShare` has no finding; `exec.r3-unlisted` (a task no listing claimed is left to the last owner's teardown) and
+`exec.r3-barrier-stays` (a cause "a call did not end" is lifted only by a worker restart) are its documented limits.
 
 ## Case taxonomy
 
@@ -330,9 +391,10 @@ the number of distinct states, all in cases that stop at a violation, where the
 count depends on the order of the two TLC workers. Cases that explore the full
 state space showed no difference.
 
-`cases.tsv` lists 188 cases: the 160 above and 28 that were added after the
-packet (the batches r2f and r2g, and the S7-DX2 cases for `WfGraph`). No result of those 28 cases is recorded in this
-folder.
+`cases.tsv` lists the 160 cases above, 28 that were added after that packet and 64 of batch r3. The 28 are r2f
+(`WfExecShare`, `412f7b00`), r2g (`WfParent`, `fc6d7a65`, `a10c2e07`), o3 (`WfGraph`, `8d568890`), o4 (`WfGraph`,
+`07c29b05`, `c4481682`) and o5 (`WfGraph`, `1ef53967`, `dbf99086`); `cases.json` gives each its batch and head. Their
+first run is recorded in section r3.
 
 ## How to run
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generates every TLC settings file and cases.tsv from one table (no TLC is run here)."""
-import json
+import json, os
 
 G_INV = ["TypeOK", "Inv_StepsBound", "Inv_EndedNothingPending", "Inv_ControllerEndsOnlyEndedRun", "Inv_CatchAllOnce",
          "Inv_JoinAccountsAll", "Inv_JoinedOnlyAllSucceeded", "Inv_NoProtocolFault", "Inv_BranchConfined",
@@ -54,6 +54,12 @@ E2 = "a99cd382"    # RT-6 paused path collects and ends children (E2)
 E1B = "8dd3eae1"   # E1b as committed
 E1C = "412f7b00"   # E1c: ownership by task id, check before execute, lease per share
 E3B = "fc6d7a65"   # E3b: a held notice lock fails the attempt; the activity retries
+
+# r3 (2026-11-09): WfGraph, WfParent, WfPaused and WfExecShare bound to 9a8d0f66. Each file replaces its helper
+# (new constants default to the earlier behaviour) and defines its new cases.
+HERE = os.path.dirname(os.path.abspath(__file__))
+for _m in ("graph", "parent", "paused", "execshare"):
+    exec(open(os.path.join(HERE, f"r3-{_m}.py")).read())
 
 # id, module, mode, spec, constants, invariants, properties, expected, note
 CASES = [
@@ -154,7 +160,7 @@ CASES = [
  ("parent.zombie-E3", "WfParent", "reviewed", "Spec", p(ext=True, head=E3, zombie=True), ["Inv_EndedIsLast"], [], "PASS", "proposedE3: rows decided after a recent attempt are counted; the zombie enqueue lands within the bound."),
  ("parent.zombie-E3-timeout", "WfParent", "reviewed", "Spec", p(ext=True, head=E3, zombie=True, wait=True), ["Inv_EndedIsLast"], [], "safety", "proposedE3: a zombie enqueue slower than the 15 s bound still lands after the end (documented bound)."),
  ("parent.concurrent-E3", "WfParent", "reviewed", "Spec", p(pend=True, head=E3, notifiers=2), ["Inv_SkipMeansNotGiven", "Inv_NotifiedXorSkipped"], [], "PASS", "proposedE3: the per-run lock serializes the two notifier instances."),
- ("parent.told-by-earlier-E3", "WfParent", "reviewed", "Spec", p(pend=True, head=E3), ["Inv_ToldMeansAccepted"], [], "PASS", "D-R1 under proposedE3: a marker plus a refusal records a skip with earlierAttempt, not told."),
+ ("parent.told-by-earlier-E3", "WfParent", "reviewed", "Spec", p(pend=True, head=E3), ["Inv_ToldMeansAccepted"], [], "safety", "D-R1 under proposedE3 (a proposal, never code): the case keeps the WFO-3 status-read race, so the parent can end between the status read and the enqueue and the notice is recorded as told; expected corrected from PASS (the README's prediction correction; parent.told-by-earlier-e3-norace isolates D-R1)."),
  ("parent.notified-lost-E3", "WfParent", "reviewed", "Spec", p(pend=True, head=E3), ["Inv_NotifiedAccepted"], [], "safety", "proposedE3 leaves the status-read race of WFO-3 as it is."),
  ("parent.safety-E3", "WfParent", "reviewed", "Spec", p("request", ext=True, pend=True, back=True, head=E3, zombie=True, notifiers=2), ["TypeOK", "Inv_EndedIsLast", "Inv_GivenOnce", "Inv_SkipMeansNotGiven", "Inv_NotifiedXorSkipped", "Inv_NoDecisionAfterExpiry"], [], "PASS", "Every parent rule but the accepted-copy rules under proposedE3, with a zombie enqueue and two notifier instances."),
  ("parent.live-E3", "WfParent", "reviewed", "LiveSpec", p("request", ext=True, pend=True, head=E3, wait=True, zombie=True, notifiers=2), [], ["Prop_ParentLearnsEnd"], "PASS", "The parent still learns the end under proposedE3."),
@@ -207,7 +213,7 @@ CASES = [
  # ======== r2e (after r2d): batch E3, E2 and E1b as committed ========
  # ---- WfParent a10c2e07 (batch E3 as committed: 181daa7c) ----
  ("parent.zombie-holder-a10", "WfParent", "reviewed", "LiveSpec", p(pcancel=False, head=A10, ntzombie=True), [], ["Prop_ParentLearnsEnd"], "liveness", "a10c2e07: an attempt that timed out holds the lock; the retry returns at the lock; the holder fails before its enqueue; no recover."),
- ("parent.zombie-holder-recover-a10", "WfParent", "reviewed", "LiveSpec", p(pcancel=False, head=A10, ntzombie=True, notifiers=2, recover=True, maxrec=3), [], ["Prop_ParentLearnsEnd"], "PASS", "a10c2e07: the same, and recover starts the notifier again while the notice is owed."),
+ ("parent.zombie-holder-recover-a10", "WfParent", "reviewed", "LiveSpec", p(pcancel=False, head=A10, ntzombie=True, notifiers=2, recover=True, maxrec=3), [], ["Prop_ParentLearnsEnd"], "liveness", "a10c2e07: the same, and recover starts the notifier again while the notice is owed. Expected corrected from PASS: all three recovers can be spent while the timed-out holder still holds the notice lock, so no later attempt pays the notice (the code's limit at a10c2e07; r2g's parent.zombie-holder-recover-late-a10 recovers after the holder failed)."),
  ("parent.safety-a10", "WfParent", "reviewed", "Spec", p("request", ext=True, pend=True, back=True, zombie=True, notifiers=2, ntzombie=True, head=A10), P_INV_D1, [], "PASS", "Every parent rule but notified-accepted at a10c2e07: a delivery zombie, a concurrent notifier, a timed-out lock holder, other ends, the parent's end, clock steps."),
  ("parent.live-a10", "WfParent", "reviewed", "LiveSpec", p("request", ext=True, pend=True, wait=True, zombie=True, notifiers=2, head=A10), [], ["Prop_ParentLearnsEnd"], "PASS", "a10c2e07: the parent learns the end, with a concurrent notifier, crashes and the wait's bound."),
  ("parent.concurrent-a10", "WfParent", "reviewed", "Spec", p(pend=True, notifiers=2, head=A10), ["Inv_SkipMeansNotGiven", "Inv_NotifiedXorSkipped"], [], "PASS", "a10c2e07: two notifier instances; the try-lock lets one tell the parent."),
@@ -309,13 +315,32 @@ CASES = [
   "Before S7-DX2: 1.9.0's collect did not report an ended run, so a deleted run's results were collected for routing."),
 ]
 R2E_IDS = None
+R3_START = len(CASES)
+CASES = r3_paused_patch(CASES + R3_GRAPH + R3_PARENT + R3_PAUSED + R3_EXECSHARE)
 
 def val(v):
     if isinstance(v, bool): return "TRUE" if v else "FALSE"
     return str(v)
 
 import os
-R2E_START = [c[0] for c in CASES].index("parent.zombie-holder-a10")
+IDS = [c[0] for c in CASES]
+R2E_START = IDS.index("parent.zombie-holder-a10")
+STARTS = [(R2E_START, "r2e"), (IDS.index("exec.e1c-safety"), "r2f"), (IDS.index("parent.zombie-holder-recover-late-a10"), "r2g"),
+          (IDS.index("graph.pause-pending-par"), "o3"), (IDS.index("graph.srt1-par"), "o4"), (IDS.index("graph.dx2-linear"), "o5"),
+          (R3_START, "r3")]
+def batch_of(n):
+    b = "r2d"
+    for start, name in STARTS:
+        if n >= start: b = name
+    return b
+def head_of(cid, mod, consts, b):
+    if "Code" in consts: return str(consts["Code"]).strip('"')
+    if mod != "WfGraph": return "efe44835"
+    if b == "o3" or cid == "cmp.graph-limit-paused-8d5": return "8d568890"
+    if b == "o4": return "c4481682" if cid.startswith("graph.srt1b") else "07c29b05"
+    if b == "o5": return "dbf99086" if cid.startswith("cmp.graph-queue") else "1ef53967"
+    if b == "r3": return "9a8d0f66" if str(consts.get("Elsewhere", '"command"')).strip('"') == "any" else "1ef53967"
+    return "efe44835"
 out = []
 for n, (cid, mod, mode, spec, consts, invs, props, expected, note) in enumerate(CASES):
     cid = cid.lower()   # the runner accepts ^[a-z0-9.-]+$ only
@@ -325,9 +350,10 @@ for n, (cid, mod, mode, spec, consts, invs, props, expected, note) in enumerate(
     if props: lines += ["PROPERTIES"] + [f"    {x}" for x in props]
     lines += ["CHECK_DEADLOCK TRUE"]
     with open(f"{cid}.cfg", "w") as f: f.write("\n".join(lines) + "\n")
-    head = str(consts.get("Code", '"efe44835"')).strip('"')
+    b = batch_of(n)
+    head = head_of(cid, mod, consts, b)
     out.append({"id": cid, "module": mod, "mode": mode, "spec": spec, "config": f"{cid}.cfg", "head": head,
-                "properties": invs + props, "expected": expected, "note": note, "batch": "r2e" if n >= R2E_START else "r2d"})
+                "properties": invs + props, "expected": expected, "note": note, "batch": b})
 with open("cases.tsv", "w") as f:
     for c in out:
         only = [x for x in os.environ.get("ONLY", "").split(",") if x]

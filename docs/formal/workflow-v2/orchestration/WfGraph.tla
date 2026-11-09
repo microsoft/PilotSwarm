@@ -22,6 +22,26 @@
 (* A node execution's id is the admission's step number: the code        *)
 (* derives it from (scope, node, ordinal), one-to-one with that number   *)
 (* in a deterministic controller.                                        *)
+(*                                                                         *)
+(* r3 (S7-DX3): the controller's end is three steps, as reportEnded runs  *)
+(* them: the end (one store activity), afterEnd (endAgents: the agent      *)
+(* children of decided states are ended) and notifyParent. A store call  *)
+(* that finds the run ended by another writer goes through endedElsewhere *)
+(* (pc "observe": observeEnd, then afterEnd, then the notice or not).     *)
+(* Elsewhere selects its rule: "command" is 1ef53967 (S7-DX2: the notice *)
+(* only after an accepted command's end; a finish or a command's cancel  *)
+(* that finds the run ended reports as its own end would), "any" is      *)
+(* 9a8d0f66 (S7-DX3 3dec2dca, in the squash d7c3ca68: every end but a     *)
+(* deletion is reported; a finish, finishRun or cancel answer `elsewhere` *)
+(* goes to endedElsewhere; observeEnd's `deleted` is the session's        *)
+(* deletion mark when it runs). OtherEnds adds writers and faults:        *)
+(* "chat" (the owning chat ended: migrations 0107/0109 cancel the run,   *)
+(* no command, no deletion), "delete_after" (the workflow is deleted     *)
+(* after its run ended), "retry" (an end activity's commit is followed by *)
+(* a worker crash; its retry answers `elsewhere`; only finish, finishRun  *)
+(* and cancel answer so, expire and stop report their own end again).     *)
+(* Named branches and named forks (66842522, 571ed468) are not modeled    *)
+(* here (the fork-join folder covers them).                               *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -34,7 +54,9 @@ CONSTANTS
     AllowCancel, AllowStop, AllowPause, AllowDeadline, AllowDelete,
     Cmd,            \* lifecycle commands: "queue" (queued, applied by the controller) or "direct" (S7-DX2 1ef53967: acceptance ends the run)
     AllowLoseHint,  \* a queued command may be lost (continue-as-new behind 100 unread messages, or never read)
-    Fault           \* "none" or a deliberate fault
+    Fault,          \* "none" or a deliberate fault
+    Elsewhere,      \* r3: endedElsewhere's rule: "command" (1ef53967) or "any" (9a8d0f66, S7-DX3)
+    OtherEnds       \* r3: subset of {"chat", "delete_after", "retry"} (see the header)
 
 Faults == {"none", "no_limit", "branch_catchall", "join_early", "no_dropped",
            "catchall_twice", "store_admits_stopping", "fix_pause_on_collect", "srt1", "srt1b"}
@@ -42,12 +64,14 @@ ASSUME Fault \in Faults
 ASSUME Cmd \in {"queue", "direct"} /\ AllowLoseHint \in BOOLEAN
 ASSUME Limit \in Nat \ {0} /\ K \in Nat \ {0} /\ Conc \in 1..K
 ASSUME Plan \in {"linear", "catch", "catchf", "loop", "par", "parc"}
+ASSUME Elsewhere \in {"command", "any"} /\ OtherEnds \subseteq {"chat", "delete_after", "retry"}
 
 NONE == "none"
 Ids == 1..(Limit + 1)
 Branches == 1..K
 Scopes == 0..K
-Ended == {"completed", "failed", "cancelled", "stopped", "deleted"}
+\* "chat_cancelled": the store's status is cancelled; the model tells it from a command's end
+Ended == {"completed", "failed", "cancelled", "stopped", "deleted", "chat_cancelled"}
 Live == {"running", "paused"}
 
 ----------------------------------------------------------------------------
@@ -98,7 +122,8 @@ VARIABLES
     cmdq,      \* the controller's command queue: NONE or "cancel"
     pauses,    \* pauses the environment made (at most one)
     \* controller
-    pc,        \* "loop", "collect", "settle", "route", "endbranch", "cancelbr", "join", "finish", "wait", "paused", "ended"
+    pc,        \* "loop", "collect", "settle", "route", "endbranch", "cancelbr", "join", "finish", "wait", "paused", "ended";
+               \* r3: "observe" (endedElsewhere), "children" (afterEnd, then the notice), "childrenonly", "notify"
     cur,       \* cursors: [Scopes -> [on, node, pend, pred]]; scope 0 is the root, b the branch of item b
     par,       \* the running parallel state: [ne, next, res, cancelled]
     steps, caEntered, stopping,
@@ -113,13 +138,18 @@ VARIABLES
     accepted,    \* a lifecycle command (cancel or done) was accepted
     cmdEnd,      \* a lifecycle command's transaction ended the run (status cancelled)
     admittedAfterAccept, \* a node execution was admitted after a command was accepted
-    collectedAfterEnd    \* a collection returned results of a run that had already ended
+    collectedAfterEnd,   \* a collection returned results of a run that had already ended
+    \* r3 (S7-DX3)
+    wfDel,       \* the workflow session is deleted (observeEnd reads this mark)
+    childEnded,  \* afterEnd (endAgents) ran after the run's end
+    loserNotice  \* history: a notice was decided by the requester of a command that did not end the run (N-2)
 
 storeVars == <<ne, runSt, stopReq, stopDue, runDue, cmdq, pauses>>
 ctlVars == <<pc, cur, par, steps, caEntered, stopping, batch, dropped, ctx>>
 histVars == <<caCount, fault, joinBad, escaped, admittedStopping, notified, pausedRoute, pausedEnd>>
 cmdVars == <<accepted, cmdEnd, admittedAfterAccept, collectedAfterEnd>>
-vars == <<storeVars, ctlVars, histVars, cmdVars>>
+r3Vars == <<wfDel, childEnded, loserNotice>>
+vars == <<storeVars, ctlVars, histVars, cmdVars, r3Vars>>
 
 NoNe == [st |-> "free", node |-> NONE, scope |-> 0, out |-> NONE, win |-> NONE]
 NoCur == [on |-> FALSE, node |-> NONE, pend |-> 0, pred |-> 0]
@@ -138,6 +168,7 @@ Init ==
     /\ batch = {} /\ dropped = {} /\ ctx = NoCtx
     /\ caCount = 0 /\ fault = NONE /\ joinBad = FALSE
     /\ escaped = FALSE /\ admittedStopping = FALSE /\ notified = 0
+    /\ wfDel = FALSE /\ childEnded = FALSE /\ loserNotice = FALSE
 
 ----------------------------------------------------------------------------
 (* Every end of the run: the run's status and every pending node          *)
@@ -149,13 +180,26 @@ EndRunTx(status) ==
                                THEN [ne[i] EXCEPT !.st = "done", !.out = "cancel", !.win = "end"]
                                ELSE ne[i]]
 
-(* reportEnded: the children of decided agent states are ended, then the  *)
-(* notifyParent activity runs (WfParent models what it does).            *)
+(* reportEnded: the children of decided agent states are ended (pc       *)
+(* "children": afterEnd), then the notifyParent activity runs (pc         *)
+(* "notify"; WfParent models what it does). `notified` counts the         *)
+(* notifyParent activities this controller schedules.                     *)
 Report == notified' = notified + 1
-(* S7-DX2 endedElsewhere: after an accepted command's end, the controller  *)
-(* that finds the run ended tells the parent (notifyParent); after any    *)
-(* other end (a deletion) it does not.                                     *)
-ReportIfCommand == IF Cmd = "direct" /\ cmdEnd THEN Report ELSE UNCHANGED notified
+(* The pc after the controller's own end committed: reportEnded. r3      *)
+(* "retry": the activity's result was lost after its commit; the retry   *)
+(* answers `elsewhere` (finish, finishRun, cancel at 9a8d0f66), so the    *)
+(* controller goes to endedElsewhere instead. At 1ef53967 those answers   *)
+(* carried no such flag and the retry reported as the first attempt.      *)
+OwnEndPcs == IF "retry" \in OtherEnds /\ Elsewhere = "any" THEN {"children", "observe"} ELSE {"children"}
+(* A finish, finishRun or cancel that finds the run already ended:       *)
+(* 1ef53967 reports it as its own end (reportEnded, or applyCommand's    *)
+(* notice with the command's requester); 9a8d0f66 goes to endedElsewhere *)
+(* (S7-DX3 N-1, N-2).                                                     *)
+FoundEndedPc == IF Elsewhere = "any" THEN "observe" ELSE "children"
+(* endedElsewhere's rule after observeEnd. 1ef53967 (S7-DX2): the notice  *)
+(* only after an accepted command's end (commandEndOf). 9a8d0f66          *)
+(* (S7-DX3): unless the workflow session is deleted when observeEnd runs. *)
+ObservedReports == IF Elsewhere = "any" THEN ~wfDel ELSE (Cmd = "direct" /\ cmdEnd)
 
 PendingIds == {cur[s].pend : s \in {t \in Scopes : cur[t].on}} \ {0}
 Owner(i) == {s \in Scopes : cur[s].on /\ cur[s].pend = i}
@@ -163,17 +207,26 @@ Owner(i) == {s \in Scopes : cur[s].on /\ cur[s].pend = i}
 ----------------------------------------------------------------------------
 (* Step 0: a lifecycle command already queued (takeQueuedCommand, only    *)
 (* when some cursor waits on no work), or one that ends a wait (the       *)
-(* race). applyCommand: the cancel transaction, then the parent is told.  *)
+(* race). applyCommand: the cancel transaction, then afterEnd and the    *)
+(* parent's notice. On a run another writer ended: 1ef53967 still tells   *)
+(* the parent, with the queued command's requester (loserNotice when that *)
+(* command did not end the run: only a queued, older build's command can  *)
+(* lose here); 9a8d0f66 follows the stored end (endedElsewhere, N-2).     *)
 TakeCommand ==
     /\ cmdq = "cancel"
     /\ \/ pc = "loop" /\ \E s \in Scopes : cur[s].on /\ cur[s].pend = 0
        \/ pc \in {"wait", "paused"}
     /\ cmdq' = NONE
-    /\ IF runSt \in Live THEN EndRunTx("cancelled") ELSE UNCHANGED <<runSt, ne>>
-    /\ Report
-    /\ pc' = "ended"
+    /\ IF runSt \in Live
+         THEN /\ EndRunTx("cancelled")
+              /\ pc' \in OwnEndPcs
+              /\ UNCHANGED loserNotice
+         ELSE /\ UNCHANGED <<runSt, ne>>
+              /\ pc' = FoundEndedPc
+              /\ loserNotice' = (loserNotice \/ (Elsewhere = "command" /\ Cmd = "queue"))
     /\ UNCHANGED <<stopReq, stopDue, runDue, pauses, cur, par, steps, caEntered, stopping, batch,
-                   dropped, ctx, caCount, fault, joinBad, escaped, admittedStopping, pausedRoute, pausedEnd>>
+                   dropped, ctx, caCount, fault, joinBad, escaped, admittedStopping, pausedRoute, pausedEnd,
+                   notified, wfDel, childEnded>>
 
 (* Branches of p start while fewer than Conc run (startBranches).         *)
 Room(c) == Conc - Cardinality({b \in Branches : c[b].on})
@@ -198,24 +251,25 @@ Admit(s) ==
     \* S-RT1 (07c29b05): at its limit, 1.9.0 reads the run first; an ended, expired, stopping or paused run is not ended by it
     /\ IF steps >= Limit /\ Fault # "no_limit"
           /\ ~(Fault = "srt1" /\ (runSt \notin Live \/ runDue \/ stopReq \/ runSt = "paused"))
-         THEN \* limit_exceeded: finishRun ends the run failed, then reportEnded.
-              /\ IF runSt \in Live THEN EndRunTx("failed") ELSE UNCHANGED <<runSt, ne>>
-              /\ Report /\ pc' = "ended"
+         THEN \* limit_exceeded: finishRun ends the run failed, then reportEnded; an ended run is its answer `elsewhere` (r3).
+              /\ IF runSt \in Live
+                   THEN EndRunTx("failed") /\ pc' \in OwnEndPcs
+                   ELSE UNCHANGED <<runSt, ne>> /\ pc' = FoundEndedPc
               /\ UNCHANGED <<cur, par, steps, caEntered, stopping, ctx, caCount, admittedStopping, escaped>>
        ELSE IF runSt \notin Live
-         THEN \* another end decided the run: its agents are ended (S7-DX2: endedElsewhere, which tells the parent after a command's end).
-              /\ pc' = "ended" /\ ReportIfCommand
+         THEN \* another end decided the run: endedElsewhere (r3: pc "observe").
+              /\ pc' = "observe"
               /\ UNCHANGED <<runSt, ne, cur, par, steps, caEntered, stopping, ctx, caCount, admittedStopping, escaped>>
        ELSE IF runDue
-         THEN \* expireRun: the store ends the run failed (timed_out), then reportEnded.
-              /\ EndRunTx("failed") /\ Report /\ pc' = "ended"
+         THEN \* expireRun: the store ends the run failed (timed_out), then reportEnded (a retry reports it too: byDeadline).
+              /\ EndRunTx("failed") /\ pc' = "children"
               /\ UNCHANGED <<cur, par, steps, caEntered, stopping, ctx, caCount, admittedStopping, escaped>>
        ELSE IF stopReq /\ Fault # "store_admits_stopping"
          THEN /\ stopping' = TRUE /\ pc' = "collect"
-              /\ UNCHANGED <<runSt, ne, notified, cur, par, steps, caEntered, ctx, caCount, admittedStopping, escaped>>
+              /\ UNCHANGED <<runSt, ne, cur, par, steps, caEntered, ctx, caCount, admittedStopping, escaped>>
        ELSE IF runSt = "paused"
          THEN /\ pc' = "paused"
-              /\ UNCHANGED <<runSt, ne, notified, cur, par, steps, caEntered, stopping, ctx, caCount, admittedStopping, escaped>>
+              /\ UNCHANGED <<runSt, ne, cur, par, steps, caEntered, stopping, ctx, caCount, admittedStopping, escaped>>
        ELSE LET id == steps + 1
                 n == cur[s].node
             IN /\ steps' = id
@@ -224,7 +278,7 @@ Admit(s) ==
                /\ admittedStopping' = (admittedStopping \/ stopReq)
                /\ escaped' = (escaped \/ (s # 0 /\ n \notin BodyNodes))
                /\ ne' = [ne EXCEPT ![id] = [st |-> "pending", node |-> n, scope |-> s, out |-> NONE, win |-> NONE]]
-               /\ UNCHANGED <<runSt, notified, stopping>>
+               /\ UNCHANGED <<runSt, stopping>>
                /\ CASE Kind(n) = "work" ->
                          /\ cur' = [cur EXCEPT ![s].pend = id]
                          /\ UNCHANGED <<par, pc, ctx>>
@@ -244,7 +298,8 @@ Admit(s) ==
                          IN /\ cur' = StartBranches(p0, c0)
                             /\ par' = [p0 EXCEPT !.next = NextAfterStart(p0, c0)]
                             /\ UNCHANGED <<pc, ctx>>
-    /\ UNCHANGED <<stopReq, stopDue, runDue, cmdq, pauses, batch, dropped, fault, joinBad, pausedRoute>>
+    /\ UNCHANGED <<stopReq, stopDue, runDue, cmdq, pauses, batch, dropped, fault, joinBad, pausedRoute,
+                   notified, wfDel, childEnded, loserNotice>>
     \* the node limit's end only: the run's deadline still ends a paused run (expireRun), as the design says
     /\ pausedEnd' = (pausedEnd \/ (runSt = "paused" /\ runSt' = "failed" /\ steps >= Limit /\ ~runDue))
 
@@ -253,12 +308,14 @@ PassDone ==
     /\ pc = "loop"
     /\ (stopping \/ \A s \in Scopes : ~cur[s].on \/ cur[s].pend # 0)
     /\ pc' = "collect"
-    /\ UNCHANGED <<storeVars, cur, par, steps, caEntered, stopping, batch, dropped, ctx, histVars>>
+    /\ UNCHANGED <<storeVars, cur, par, steps, caEntered, stopping, batch, dropped, ctx, histVars, r3Vars>>
 
 ----------------------------------------------------------------------------
 (* A root terminal: finish. An invalid output goes to the catch-all      *)
 (* state while it has not run (routeOutputErrors); otherwise the run      *)
-(* ends, and a run another end decided first is reported as it ended.     *)
+(* ends. A run another end decided first: 1ef53967 reports it as its own *)
+(* end (Q1); 9a8d0f66's finish answers `elsewhere` and the controller    *)
+(* reconciles it (endedElsewhere, S7-DX3 N-1).                            *)
 Finish ==
     /\ pc = "finish"
     /\ LET s == ctx.scope
@@ -268,8 +325,9 @@ Finish ==
                        /\ ne' = [i \in Ids |-> IF i = id THEN [ne[i] EXCEPT !.st = "done", !.out = "ok", !.win = "controller"]
                                                ELSE IF ne[i].st = "pending" THEN [ne[i] EXCEPT !.st = "done", !.out = "cancel", !.win = "end"]
                                                ELSE ne[i]]
-                  ELSE UNCHANGED <<runSt, ne>>
-             /\ Report /\ pc' = "ended"
+                       /\ pc' \in OwnEndPcs
+                  ELSE /\ UNCHANGED <<runSt, ne>>
+                       /\ pc' = FoundEndedPc
              /\ UNCHANGED <<cur, caEntered>>
           \/ /\ runSt \in Live /\ ne[id].st = "pending"
              /\ IF CatchAll # NONE /\ ~caEntered
@@ -277,12 +335,13 @@ Finish ==
                        /\ cur' = [cur EXCEPT ![s] = [on |-> TRUE, node |-> CatchAll, pend |-> 0, pred |-> id]]
                        /\ caEntered' = TRUE
                        /\ pc' = "loop"
-                       /\ UNCHANGED <<runSt, notified>>
-                  ELSE /\ EndRunTx("failed") /\ Report /\ pc' = "ended"
+                       /\ UNCHANGED runSt
+                  ELSE /\ EndRunTx("failed") /\ pc' \in OwnEndPcs
                        /\ UNCHANGED <<cur, caEntered>>
     /\ ctx' = NoCtx
     /\ UNCHANGED <<stopReq, stopDue, runDue, cmdq, pauses, par, steps, stopping, batch, dropped,
-                   caCount, fault, joinBad, escaped, admittedStopping, pausedRoute, pausedEnd>>
+                   caCount, fault, joinBad, escaped, admittedStopping, pausedRoute, pausedEnd,
+                   notified, wfDel, childEnded, loserNotice>>
 
 ----------------------------------------------------------------------------
 (* A branch ended (endBranch in the controller): record how and drop its *)
@@ -325,7 +384,7 @@ EndBranchAt ==
                       /\ good = FALSE
             /\ BranchEnd(s, IF good THEN "t_ok" ELSE "t_bad", good, ctx.ret)
     /\ UNCHANGED <<runSt, stopReq, stopDue, runDue, cmdq, pauses, steps, caEntered, stopping, batch,
-                   histVars>>
+                   histVars, r3Vars>>
 
 (* cancelBranches: the other branches' pending states are decided         *)
 (* cancelled (winner fail_fast); a result stored first is kept.           *)
@@ -336,7 +395,7 @@ CancelBranches ==
                                ELSE ne[i]]
     /\ pc' = IF AllEnded(par) \/ Fault = "join_early" THEN "join" ELSE ctx.ret
     /\ UNCHANGED <<runSt, stopReq, stopDue, runDue, cmdq, pauses, cur, par, steps, caEntered, stopping,
-                   batch, dropped, ctx, histVars>>
+                   batch, dropped, ctx, histVars, r3Vars>>
 
 (* join (all_required): when every branch ended, the parallel state is   *)
 (* decided once: joined when every branch ended at its terminal with      *)
@@ -353,7 +412,7 @@ Join ==
     /\ par' = NoPar
     /\ pc' = ctx.ret
     /\ UNCHANGED <<runSt, stopReq, stopDue, runDue, cmdq, pauses, cur, steps, caEntered, stopping, batch,
-                   dropped, ctx, caCount, fault, escaped, admittedStopping, notified, pausedRoute, pausedEnd>>
+                   dropped, ctx, caCount, fault, escaped, admittedStopping, notified, pausedRoute, pausedEnd, r3Vars>>
 
 ----------------------------------------------------------------------------
 (* Step 2: collect the stored results of every pending node execution,   *)
@@ -362,33 +421,33 @@ Join ==
 Collect ==
     /\ pc = "collect"
     /\ LET got == {i \in PendingIds : ne[i].st = "done"}
-       IN IF Cmd = "direct" /\ runSt \notin Live
+       IN IF (Cmd = "direct" \/ Elsewhere = "any") /\ runSt \notin Live
             THEN \* S7-DX2: 1.9.0's collect reports an ended run first; none of its results is routed (endedElsewhere)
-                 /\ pc' = "ended" /\ ReportIfCommand
+                 /\ pc' = "observe"
                  /\ UNCHANGED <<batch, stopping, dropped, runSt, ne, pausedRoute>>
           ELSE IF runSt \in Live /\ runDue
-            THEN /\ EndRunTx("failed") /\ Report /\ pc' = "ended"
+            THEN /\ EndRunTx("failed") /\ pc' = "children"
                  /\ UNCHANGED <<batch, stopping, dropped, pausedRoute>>
           ELSE IF runSt = "paused" /\ ~stopping /\ ~stopReq /\ Fault \in {"fix_pause_on_collect", "srt1"}
             THEN \* the fix of R2-RT-1 (batch S, not yet in code): the collection reads the paused status
                  /\ pc' = "paused"
-                 /\ UNCHANGED <<batch, stopping, dropped, runSt, ne, notified, pausedRoute>>
+                 /\ UNCHANGED <<batch, stopping, dropped, runSt, ne, pausedRoute>>
           ELSE IF runSt = "paused" /\ Fault = "srt1b"
             THEN \* S-RT1b (c4481682), 1.8.0: a paused run's collection returns no result; the loop is unchanged
                  /\ batch' = {}
                  /\ stopping' = (stopping \/ (runSt \in Live /\ stopReq))
                  /\ dropped' = {}
                  /\ pc' = IF stopping' THEN "settle" ELSE "wait"
-                 /\ UNCHANGED <<runSt, ne, notified, pausedRoute>>
+                 /\ UNCHANGED <<runSt, ne, pausedRoute>>
             ELSE /\ batch' = got
                  /\ stopping' = (stopping \/ (runSt \in Live /\ stopReq))
                  /\ dropped' = {}
                  /\ pc' = IF stopping' THEN "settle" ELSE IF got # {} THEN "route" ELSE "wait"
                  \* 8d568890: the collection does not read the paused status; these results are routed now
                  /\ pausedRoute' = (pausedRoute \/ (runSt = "paused" /\ ~stopping' /\ got # {}))
-                 /\ UNCHANGED <<runSt, ne, notified>>
+                 /\ UNCHANGED <<runSt, ne>>
     /\ UNCHANGED <<stopReq, stopDue, runDue, cmdq, pauses, cur, par, steps, caEntered, ctx,
-                   caCount, fault, joinBad, escaped, admittedStopping, pausedEnd>>
+                   caCount, fault, joinBad, escaped, admittedStopping, pausedEnd, notified, r3Vars>>
 
 (* 2a. Stopping: collected results settle their cursors and go nowhere.   *)
 (* When no work (other than a parallel state's own join) is pending, or  *)
@@ -401,13 +460,14 @@ Settle ==
        IN /\ cur' = c1
           /\ batch' = {}
           /\ IF idle \/ stopDue
-               THEN /\ IF runSt \in Live THEN EndRunTx("stopped") /\ Report
-                          ELSE UNCHANGED <<runSt, ne>> /\ ReportIfCommand
-                    /\ pc' = "ended"
+               THEN \* the stop's end; one that finds another end goes to endedElsewhere (a retry finds "stopped" and reports)
+                    /\ IF runSt \in Live
+                         THEN EndRunTx("stopped") /\ pc' = "children"
+                         ELSE UNCHANGED <<runSt, ne>> /\ pc' = "observe"
                ELSE /\ pc' = "wait"
-                    /\ UNCHANGED <<runSt, ne, notified>>
+                    /\ UNCHANGED <<runSt, ne>>
     /\ UNCHANGED <<stopReq, stopDue, runDue, cmdq, pauses, par, steps, caEntered, stopping, dropped, ctx,
-                   caCount, fault, joinBad, escaped, admittedStopping, pausedRoute, pausedEnd>>
+                   caCount, fault, joinBad, escaped, admittedStopping, pausedRoute, pausedEnd, notified, r3Vars>>
 
 (* Route one collected result; the code routes the batch in its order.   *)
 (* In a branch, an error no route takes ends the branch, never at the    *)
@@ -426,11 +486,13 @@ Route(i) ==
                       THEN \* a branch a failFast cancellation dropped: its result goes nowhere
                            /\ batch' = batch \ {i}
                            /\ pc' = AfterRoute
-                           /\ UNCHANGED <<runSt, ne, notified, fault>>
-                      ELSE \* expect(owner !== undefined) fails: failRun ends the run
+                           /\ UNCHANGED <<runSt, ne, fault>>
+                      ELSE \* expect(owner !== undefined) fails: failRun ends the run (finishRun)
                            /\ fault' = "unowned_result"
-                           /\ IF runSt \in Live THEN EndRunTx("failed") ELSE UNCHANGED <<runSt, ne>>
-                           /\ Report /\ pc' = "ended" /\ batch' = {}
+                           /\ IF runSt \in Live
+                                THEN EndRunTx("failed") /\ pc' \in OwnEndPcs
+                                ELSE UNCHANGED <<runSt, ne>> /\ pc' = FoundEndedPc
+                           /\ batch' = {}
                  /\ UNCHANGED <<cur, par, caEntered, dropped, ctx, escaped>>
           ELSE LET s == CHOOSE x \in own : TRUE
                    n == cur[s].node
@@ -442,29 +504,33 @@ Route(i) ==
                                      THEN /\ cur' = [cur EXCEPT ![s] = Advance(s, CatchAll, i)]
                                           /\ batch' = batch \ {i}
                                           /\ pc' = AfterRoute
-                                          /\ UNCHANGED <<runSt, ne, notified, par, caEntered, dropped, ctx>>
+                                          /\ UNCHANGED <<runSt, ne, par, caEntered, dropped, ctx>>
                                      ELSE /\ batch' = batch \ {i}
                                           /\ BranchEnd(s, "error", FALSE, AfterRoute)
-                                          /\ UNCHANGED <<runSt, ne, notified, caEntered>>
+                                          /\ UNCHANGED <<runSt, ne, caEntered>>
                               ELSE /\ cur' = [cur EXCEPT ![s] = Advance(s, Target(n, r), i)]
                                    /\ batch' = batch \ {i}
                                    /\ pc' = AfterRoute
-                                   /\ UNCHANGED <<runSt, ne, notified, par, caEntered, dropped, ctx>>
+                                   /\ UNCHANGED <<runSt, ne, par, caEntered, dropped, ctx>>
                        ELSE LET tgt == IF r # NONE THEN Target(n, r)
                                        ELSE IF out \notin BusinessOuts /\ CatchAll # NONE
                                                /\ (~caEntered \/ Fault = "catchall_twice")
                                          THEN CatchAll ELSE NONE
                             IN IF tgt = NONE \/ (tgt = CatchAll /\ caEntered /\ Fault # "catchall_twice")
-                                 THEN /\ IF runSt \in Live THEN EndRunTx("failed") ELSE UNCHANGED <<runSt, ne>>
-                                      /\ Report /\ pc' = "ended" /\ batch' = {}
+                                 THEN \* finishRun; an ended run is its answer `elsewhere` (r3)
+                                      /\ IF runSt \in Live
+                                           THEN EndRunTx("failed") /\ pc' \in OwnEndPcs
+                                           ELSE UNCHANGED <<runSt, ne>> /\ pc' = FoundEndedPc
+                                      /\ batch' = {}
                                       /\ UNCHANGED <<cur, par, caEntered, dropped, ctx>>
                                  ELSE /\ cur' = [cur EXCEPT ![0] = Advance(0, tgt, i)]
                                       /\ caEntered' = (caEntered \/ tgt = CatchAll)
                                       /\ batch' = batch \ {i}
                                       /\ pc' = AfterRoute
-                                      /\ UNCHANGED <<runSt, ne, notified, par, dropped, ctx>>
+                                      /\ UNCHANGED <<runSt, ne, par, dropped, ctx>>
                   /\ escaped' = (escaped \/ (s # 0 /\ cur'[s].on /\ cur'[s].node \notin BodyNodes))
-    /\ UNCHANGED <<stopReq, stopDue, runDue, cmdq, pauses, steps, stopping, caCount, joinBad, admittedStopping, pausedRoute, pausedEnd>>
+    /\ UNCHANGED <<stopReq, stopDue, runDue, cmdq, pauses, steps, stopping, caCount, joinBad, admittedStopping, pausedRoute, pausedEnd,
+                   notified, r3Vars>>
 
 (* Step 3: nothing is ready: wait for a wake, a command or the nearest   *)
 (* deadline (one durable race; the backstop timer always ends it). At or *)
@@ -472,20 +538,56 @@ Route(i) ==
 WaitEnds ==
     /\ pc = "wait"
     /\ IF runSt \in Live /\ runDue
-         THEN /\ EndRunTx("failed") /\ Report /\ pc' = "ended"
-         ELSE /\ pc' = "loop" /\ UNCHANGED <<runSt, ne, notified>>
+         THEN /\ EndRunTx("failed") /\ pc' = "children"
+         ELSE /\ pc' = "loop" /\ UNCHANGED <<runSt, ne>>
     /\ UNCHANGED <<stopReq, stopDue, runDue, cmdq, pauses, cur, par, steps, caEntered, stopping, batch,
-                   dropped, ctx, caCount, fault, joinBad, escaped, admittedStopping, pausedRoute, pausedEnd>>
+                   dropped, ctx, caCount, fault, joinBad, escaped, admittedStopping, pausedRoute, pausedEnd,
+                   notified, r3Vars>>
 
 (* 1a. Paused: wait for a command, the backstop or the run's deadline,   *)
 (* then try the admission again.                                          *)
 PausedWakes ==
     /\ pc = "paused"
     /\ IF runSt \in Live /\ runDue
-         THEN /\ EndRunTx("failed") /\ Report /\ pc' = "ended"
-         ELSE /\ pc' = "loop" /\ UNCHANGED <<runSt, ne, notified>>
+         THEN /\ EndRunTx("failed") /\ pc' = "children"
+         ELSE /\ pc' = "loop" /\ UNCHANGED <<runSt, ne>>
     /\ UNCHANGED <<stopReq, stopDue, runDue, cmdq, pauses, cur, par, steps, caEntered, stopping, batch,
-                   dropped, ctx, caCount, fault, joinBad, escaped, admittedStopping, pausedRoute, pausedEnd>>
+                   dropped, ctx, caCount, fault, joinBad, escaped, admittedStopping, pausedRoute, pausedEnd,
+                   notified, r3Vars>>
+
+----------------------------------------------------------------------------
+(* r3 (S7-DX3): the post-end steps.                                        *)
+(* endedElsewhere: observeEnd (it asks the cancelled effects to stop, not *)
+(* modeled) reads the run and, at 9a8d0f66, the session's deletion mark;  *)
+(* then reportEnded (afterEnd, the notice) or afterEnd only.              *)
+CtlKeep == <<storeVars, cur, par, steps, caEntered, stopping, batch, dropped, ctx>>
+Observe ==
+    /\ pc = "observe"
+    /\ pc' = IF ObservedReports THEN "children" ELSE "childrenonly"
+    /\ UNCHANGED <<CtlKeep, histVars, r3Vars>>
+
+(* afterEnd: endAgents ends the children of the decided agent states      *)
+(* (repeat-safe; a child it cannot end is traced, not retried here).       *)
+AfterEnd ==
+    /\ pc = "children"
+    /\ childEnded' = TRUE
+    /\ pc' = "notify"
+    /\ UNCHANGED <<CtlKeep, histVars, wfDel, loserNotice>>
+
+AfterEndOnly ==
+    /\ pc = "childrenonly"
+    /\ childEnded' = TRUE
+    /\ pc' = "ended"
+    /\ UNCHANGED <<CtlKeep, histVars, wfDel, loserNotice>>
+
+(* notifyParent (its own checks, its idempotence and its delivery are     *)
+(* WfParent's), then the final status is published and the controller    *)
+(* returns.                                                                *)
+Notify ==
+    /\ pc = "notify"
+    /\ Report
+    /\ pc' = "ended"
+    /\ UNCHANGED <<CtlKeep, caCount, fault, joinBad, escaped, admittedStopping, pausedRoute, pausedEnd, r3Vars>>
 
 ----------------------------------------------------------------------------
 (* The environment.                                                        *)
@@ -495,7 +597,7 @@ Decide(i) ==
     /\ ne[i].st = "pending" /\ Kind(ne[i].node) = "work"
     /\ \E out \in {"ok", "alt", "boom"} :
          ne' = [ne EXCEPT ![i] = [@ EXCEPT !.st = "done", !.out = out, !.win = "effect"]]
-    /\ UNCHANGED <<runSt, stopReq, stopDue, runDue, cmdq, pauses, ctlVars, histVars>>
+    /\ UNCHANGED <<runSt, stopReq, stopDue, runDue, cmdq, pauses, ctlVars, histVars, r3Vars>>
 
 (* A cancel or done is accepted (an accepted done also ends the run       *)
 (* cancelled, reason Stopped). "queue": it is only queued for the         *)
@@ -509,44 +611,63 @@ SendCancel ==
     /\ Cmd = "queue" => pc # "ended"
     /\ cmdq' = "cancel"
     /\ IF Cmd = "direct" THEN EndRunTx("cancelled") ELSE UNCHANGED <<ne, runSt>>
-    /\ UNCHANGED <<stopReq, stopDue, runDue, pauses, ctlVars, histVars>>
+    /\ UNCHANGED <<stopReq, stopDue, runDue, pauses, ctlVars, histVars, r3Vars>>
 
 (* A queued message is lost: continue-as-new carries at most 100 unread  *)
 (* messages (S7-DX2 dropped the drain), or it is never read in time.      *)
 LoseHint ==
     /\ AllowLoseHint /\ cmdq # NONE
     /\ cmdq' = NONE
-    /\ UNCHANGED <<ne, runSt, stopReq, stopDue, runDue, pauses, ctlVars, histVars>>
+    /\ UNCHANGED <<ne, runSt, stopReq, stopDue, runDue, pauses, ctlVars, histVars, r3Vars>>
 
 RequestStop ==
     /\ AllowStop /\ runSt \in Live /\ ~stopReq
     /\ stopReq' = TRUE
-    /\ UNCHANGED <<ne, runSt, stopDue, runDue, cmdq, pauses, ctlVars, histVars>>
+    /\ UNCHANGED <<ne, runSt, stopDue, runDue, cmdq, pauses, ctlVars, histVars, r3Vars>>
 
 StopGraceEnds ==
     /\ stopReq /\ ~stopDue
     /\ stopDue' = TRUE
-    /\ UNCHANGED <<ne, runSt, stopReq, runDue, cmdq, pauses, ctlVars, histVars>>
+    /\ UNCHANGED <<ne, runSt, stopReq, runDue, cmdq, pauses, ctlVars, histVars, r3Vars>>
 
 RunDeadline ==
     /\ AllowDeadline /\ ~runDue
     /\ runDue' = TRUE
-    /\ UNCHANGED <<ne, runSt, stopReq, stopDue, cmdq, pauses, ctlVars, histVars>>
+    /\ UNCHANGED <<ne, runSt, stopReq, stopDue, cmdq, pauses, ctlVars, histVars, r3Vars>>
 
 Pause ==
     /\ AllowPause /\ runSt = "running" /\ pauses = 0
     /\ runSt' = "paused" /\ pauses' = 1
-    /\ UNCHANGED <<ne, stopReq, stopDue, runDue, cmdq, ctlVars, histVars>>
+    /\ UNCHANGED <<ne, stopReq, stopDue, runDue, cmdq, ctlVars, histVars, r3Vars>>
 
 Resume ==
     /\ runSt = "paused"
     /\ runSt' = "running"
-    /\ UNCHANGED <<ne, stopReq, stopDue, runDue, cmdq, pauses, ctlVars, histVars>>
+    /\ UNCHANGED <<ne, stopReq, stopDue, runDue, cmdq, pauses, ctlVars, histVars, r3Vars>>
 
 Delete ==
     /\ AllowDelete /\ runSt \in Live
     /\ EndRunTx("deleted")
-    /\ UNCHANGED <<stopReq, stopDue, runDue, cmdq, pauses, ctlVars, histVars>>
+    /\ wfDel' = TRUE
+    /\ UNCHANGED <<stopReq, stopDue, runDue, cmdq, pauses, ctlVars, histVars, childEnded, loserNotice>>
+
+(* r3 "chat": the chat that owns the workflow completed, was cancelled or *)
+(* failed (migrations 0107, 0109): its trigger ends the active run        *)
+(* cancelled (pending work winner delete), with no command and no         *)
+(* deletion. A deleted test definition ends its test runs the same way.  *)
+ChatEnds ==
+    /\ "chat" \in OtherEnds /\ runSt \in Live
+    /\ EndRunTx("chat_cancelled")
+    /\ UNCHANGED <<stopReq, stopDue, runDue, cmdq, pauses, ctlVars, histVars, r3Vars>>
+
+(* r3 "delete_after": the workflow is deleted after its run ended (a       *)
+(* delete on an ended run soft-deletes the session and keeps the run's    *)
+(* result; the chat's deletion soft-deletes its workflows, 0109).         *)
+DeleteEnded ==
+    /\ AllowDelete /\ "delete_after" \in OtherEnds
+    /\ runSt \in Ended /\ ~wfDel
+    /\ wfDel' = TRUE
+    /\ UNCHANGED <<ne, runSt, stopReq, stopDue, runDue, cmdq, pauses, ctlVars, histVars, childEnded, loserNotice>>
 
 (* The controller ended: stutter (a terminal state, not a deadlock).      *)
 Done == pc = "ended" /\ UNCHANGED vars
@@ -554,14 +675,17 @@ Done == pc = "ended" /\ UNCHANGED vars
 Controller ==
     \/ TakeCommand \/ PassDone \/ Finish \/ EndBranchAt \/ CancelBranches \/ Join
     \/ Collect \/ Settle \/ WaitEnds \/ PausedWakes
+    \/ Observe \/ AfterEnd \/ AfterEndOnly \/ Notify
     \/ \E s \in Scopes : Admit(s)
     \/ \E i \in Ids : Route(i)
 Environment ==
     \/ \E i \in Ids : Decide(i)
     \/ SendCancel \/ LoseHint \/ RequestStop \/ StopGraceEnds \/ RunDeadline \/ Pause \/ Resume \/ Delete
+    \/ ChatEnds \/ DeleteEnded
 
 (* The S7-DX2 history of every step. A command's end is the only end with *)
-(* status cancelled (applyCommand or an accepted command's store end).     *)
+(* status cancelled (applyCommand or an accepted command's store end); r3  *)
+(* names the owning chat's end "chat_cancelled".                           *)
 H ==
     /\ accepted' = (accepted \/ (AllowCancel /\ cmdq = NONE /\ cmdq' = "cancel"))
     /\ cmdEnd' = (cmdEnd \/ (runSt \in Live /\ runSt' = "cancelled"))
@@ -578,6 +702,7 @@ Fairness ==
     /\ WF_vars(TakeCommand /\ H) /\ WF_vars(PassDone /\ H) /\ WF_vars(Finish /\ H) /\ WF_vars(EndBranchAt /\ H)
     /\ WF_vars(CancelBranches /\ H) /\ WF_vars(Join /\ H) /\ WF_vars(Collect /\ H) /\ WF_vars(Settle /\ H)
     /\ WF_vars(WaitEnds /\ H) /\ WF_vars(PausedWakes /\ H)
+    /\ WF_vars(Observe /\ H) /\ WF_vars(AfterEnd /\ H) /\ WF_vars(AfterEndOnly /\ H) /\ WF_vars(Notify /\ H)
     /\ \A s \in Scopes : WF_vars(Admit(s) /\ H)
     /\ \A i \in Ids : WF_vars(Route(i) /\ H) /\ WF_vars(Decide(i) /\ H)
     /\ WF_vars(Resume /\ H) /\ WF_vars(StopGraceEnds /\ H)
@@ -588,11 +713,13 @@ LiveSpec == Spec /\ Fairness
 ----------------------------------------------------------------------------
 TypeOK ==
     /\ runSt \in Live \cup Ended
-    /\ pc \in {"loop", "collect", "settle", "route", "endbranch", "cancelbr", "join", "finish", "wait", "paused", "ended"}
+    /\ pc \in {"loop", "collect", "settle", "route", "endbranch", "cancelbr", "join", "finish", "wait", "paused", "ended",
+              "observe", "children", "childrenonly", "notify"}
     /\ steps \in 0..(Limit + 1)
     /\ batch \subseteq Ids /\ dropped \subseteq Ids
     /\ notified \in Nat
     /\ {accepted, cmdEnd, admittedAfterAccept, collectedAfterEnd} \subseteq BOOLEAN
+    /\ {wfDel, childEnded, loserNotice} \subseteq BOOLEAN
 
 (* Safety rules.                                                           *)
 Inv_StepsBound == steps <= Limit
@@ -623,6 +750,13 @@ Inv_NoCollectAfterEnd == ~collectedAfterEnd
 (* MF-O5: "[runSt \in Ended ..." parses as a function constructor; the    *)
 (* parenthesis makes the action explicit.                                  *)
 Prop_FirstEndWins == [][(runSt \in Ended) => (runSt' = runSt)]_runSt
+(* r3 (S7-DX3). The parent is told only of an ended run, after its agent  *)
+(* children were ended, and never of a run whose end was its deletion;    *)
+(* a notice is never decided by a command that lost (N-2).                *)
+Inv_ReportOnlyEnded == notified > 0 => runSt \in Ended
+Inv_ReportAfterChildren == notified > 0 => childEnded
+Inv_DeletedNotReported == runSt = "deleted" => notified = 0
+Inv_NoticeFollowsWinner == ~loserNotice
 
 (* Liveness.                                                               *)
 Prop_ControllerEnds == <>(pc = "ended")
@@ -631,6 +765,18 @@ Prop_RunEnds == <>(runSt \in Ended)
 (* the controller then ends and tells the parent.                          *)
 Prop_CommandEnds == accepted ~> (cmdEnd /\ pc = "ended")
 Prop_CommandTold == cmdEnd ~> (notified >= 1)
+(* r3 (S7-DX3): an end by another writer that is not a deletion (an       *)
+(* accepted command's, the owning chat's) is reconciled: the children are *)
+(* ended and the parent is told (once: Inv_OneReport).                    *)
+ElsewhereEnd == runSt = "chat_cancelled" \/ (runSt = "cancelled" /\ Cmd = "direct")
+Prop_EndedElsewhereReported == ElsewhereEnd ~> (notified = 1 /\ childEnded)
+(* Every end but a deletion is told to the parent ("whatever ended the    *)
+(* run first decides who is told"; the requester is WfParent's).          *)
+Prop_EndReported == (runSt \in Ended \ {"deleted"}) ~> (notified >= 1)
+(* Every end, a deletion's too, ends the agent children; a deletion's     *)
+(* only that.                                                              *)
+Prop_ChildrenEnded == (runSt \in Ended) ~> childEnded
+Prop_DeletedChildrenEnded == (runSt = "deleted") ~> (childEnded /\ pc = "ended" /\ notified = 0)
 
 (* Witnesses, EXPECTED to be violated (reachable).                        *)
 Wit_FailFastCancels == ~(par.cancelled /\ pc = "cancelbr")
@@ -641,4 +787,6 @@ Wit_CatchAllEntered == ~caEntered
 Wit_StoppedWithWork == ~(runSt = "stopped" /\ \E i \in Ids : ne[i].win = "end")
 Wit_DroppedResultSkipped == ~(pc = "route" /\ \E i \in batch : i \in dropped)
 Wit_CommandEndsBusyRun == ~(cmdEnd /\ pc = "ended" /\ steps > 0 /\ notified = 1)
+Wit_ChatEndReported == ~(runSt = "chat_cancelled" /\ pc = "ended" /\ notified = 1)
+Wit_RetryObserved == ~(pc = "observe" /\ runSt \in {"completed", "failed"})
 =============================================================================

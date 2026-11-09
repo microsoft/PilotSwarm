@@ -31,6 +31,18 @@
 (* and the activity runs again (it no longer returns), and                *)
 (* RecoverAfterRelease (a recover is made only while no attempt holds the *)
 (* lock: after a holder failed).                                           *)
+(* r3 adds "9a8d0f66" (fc6d7a65's notice path plus deployed check DS-2,   *)
+(* b3c58aa9 in the squash d7c3ca68): the worker's parent notifier says    *)
+(* notStarted when the parent's session orchestration is NotFound; the    *)
+(* notice is then kept as a chat note (keepNote, once per text) and a     *)
+(* skip is recorded (reason "kept as a note", evNoted). The parent's next *)
+(* turn reads its pending notes at the start of its prompt; they are      *)
+(* consumed only when that turn succeeds. AllowLateStart: the parent's    *)
+(* session has not started when the run begins (a chat made without a     *)
+(* first message); it starts later (its first turn), or is deleted first. *)
+(* A started parent that is deleted may have its orchestration deleted    *)
+(* too (pPurged): NotFound again. "proposedNoteTx" is 9a8d0f66 with the   *)
+(* note and the skip in one transaction (the r3 finding's fix).           *)
 (*                                                                         *)
 (* Only the prompt path is live: a send is a WORKFLOW_UPDATE prompt        *)
 (* (legacy_window). The durable intake (claim, bind, expose, settle) is  *)
@@ -66,20 +78,26 @@ CONSTANTS
     AllowRecover,      \* a10c2e07: recover starts the notifier again (instance 2) while the notice is owed
     MaxRecovers,
     RecoverAfterRelease, \* a recover is made only while no attempt holds the run's notice lock
-    Code               \* "efe44835", "1c117a47", "1f7bdc77", "proposedD", "proposedE3", "a10c2e07", "fc6d7a65"
+    AllowLateStart,    \* r3: the parent's session has not started (NotFound) when the run begins; it may start later
+    Code               \* "efe44835", "1c117a47", "1f7bdc77", "proposedD", "proposedE3", "a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx"
 
 ASSUME MKind \in {"send", "request"} /\ StartFlag \in {"omitted", "true", "false"}
 ASSUME Fault \in {"none", "no_prior_check", "no_window", "no_durable_expiry"}
-ASSUME Code \in {"efe44835", "1c117a47", "1f7bdc77", "proposedD", "proposedE3", "a10c2e07", "fc6d7a65"} /\ NumNotifiers \in {1, 2}
-ASSUME AllowRecover => (Code \in {"a10c2e07", "fc6d7a65"} /\ NumNotifiers = 2)
-ASSUME AllowNtZombie => Code \in {"a10c2e07", "fc6d7a65"}
+ASSUME Code \in {"efe44835", "1c117a47", "1f7bdc77", "proposedD", "proposedE3", "a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx"}
+       /\ NumNotifiers \in {1, 2}
+ASSUME AllowRecover => (Code \in {"a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx"} /\ NumNotifiers = 2)
+ASSUME AllowNtZombie => Code \in {"a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx"}
+ASSUME AllowLateStart \in BOOLEAN /\ (AllowLateStart => Code \in {"a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx"})
 NONE == "none"
-Ids == {"M", "E"}   \* the state's message (its exchange id) and the run's end ("...:terminal")
+\* the state's message (its exchange id), the run's end ("...:terminal") and (r3) the run's end read from a chat note
+Ids == {"M", "E", "N"}
 FixD == Code = "proposedD"
 D1 == Code \in {"1f7bdc77", "proposedE3"}   \* group D as committed (E3 builds on it)
 E3 == Code = "proposedE3"
-A10 == Code \in {"a10c2e07", "fc6d7a65"}   \* batch E3 as committed (and E3b on top of it)
-E3B == Code = "fc6d7a65"                    \* E3b: a held lock fails the attempt, which runs again
+A10 == Code \in {"a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx"}   \* batch E3 as committed (and E3b on top of it)
+E3B == Code \in {"fc6d7a65", "9a8d0f66", "proposedNoteTx"}               \* E3b: a held lock fails the attempt, which runs again
+DS2 == Code \in {"9a8d0f66", "proposedNoteTx"}   \* r3: a NotFound parent keeps the notice as a chat note
+NoteTx == Code = "proposedNoteTx"               \* r3 fix: the note and its skip are one transaction
 E3L == E3 \/ A10                            \* the count of failed rows; the skip with earlierAttempt
 NI == 1..NumNotifiers
 Procs == IF AllowNtZombie THEN NI \cup {3} ELSE NI   \* 3: an attempt that timed out and keeps running
@@ -92,7 +110,7 @@ VARIABLES
     expiredBound,\* an answer was refused REQUEST_EXPIRED: every later answer is expired too
     dl,          \* the delivery activity: "start", "begun", "enqueued", "done"
     dlCrashes,
-    nt,          \* per notifier instance: "idle", "check", "authorize", "wait", "attempt", "status", "enqueue", "record", "done"
+    nt,          \* per notifier instance: "idle", "check", "authorize", "wait", "lock", "attempt", "status", "enqueue", "note" (r3), "record", "done"
     ntCrashes,
     ntAttempted, \* proposedD and 1f7bdc77: an enqueue attempt is recorded before the enqueue (WFO-4; 1f7bdc77 parent_notifying)
     ntSaw,       \* per instance, 1f7bdc77: its attempt found an earlier attempt recorded (runNoticeAttempted, read at its start)
@@ -114,12 +132,20 @@ VARIABLES
     lateAnswer,  \* NONE, "expired" or "closed": why the parent's answer was refused
     answeredEarly,\* the answer was accepted before the delivery was recorded
     holder,      \* a10c2e07: the process that holds the run's notice lock (0: none)
-    recovers     \* a10c2e07: recover calls
+    recovers,    \* a10c2e07: recover calls
+    \* r3 (DS-2)
+    pStarted,    \* the parent's session orchestration was ever started (FALSE: NotFound, a chat with no first message yet)
+    pPurged,     \* the ended parent's orchestration was deleted too (a forced delete): its status reads NotFound
+    pAsk,        \* a turn of the started parent is due (its first message, or a later message after a note was kept)
+    note,        \* the end's chat note: "none", "kept" (pending), "consumed" (a turn that read it succeeded)
+    evNoted,     \* the skip was recorded with the reason "kept as a note"
+    noteForGone  \* history: the note was kept while the parent had ended or was deleted
 
 vars == <<runSt, endBy, mNode, storeLate, expiredBound, dl, dlCrashes, nt, ntCrashes, ntAttempted, ntSaw, ob, obAttempted, obRecent, zombie,
           evNotified, evSkipped, evUnconfirmed, evByEarlier, evSkipEarlier, pLive, pRow, pq, fifo, window, seen, turnFails,
-          lost, eAccepted, lateAnswer, answeredEarly, holder, recovers>>
+          lost, eAccepted, lateAnswer, answeredEarly, holder, recovers, pStarted, pPurged, pAsk, note, evNoted, noteForGone>>
 lockVars == <<holder, recovers>>
+dsVars == <<pStarted, pPurged, pAsk, note, evNoted, noteForGone>>
 clockVars == <<storeLate, expiredBound>>
 obVars == <<ob, obAttempted, obRecent, zombie>>
 evVars == <<evNotified, evSkipped, evUnconfirmed, evByEarlier, evSkipEarlier>>
@@ -137,9 +163,10 @@ Init ==
     /\ ntSaw = [i \in Procs |-> FALSE] /\ holder = 0 /\ recovers = 0
     /\ ob = "pending" /\ obAttempted = FALSE /\ obRecent = FALSE /\ zombie = FALSE
     /\ evNotified = FALSE /\ evSkipped = FALSE /\ evUnconfirmed = FALSE /\ evByEarlier = FALSE /\ evSkipEarlier = FALSE
-    /\ pLive = TRUE /\ pRow = TRUE
+    /\ pLive = ~AllowLateStart /\ pRow = TRUE
     /\ pq = <<>> /\ fifo = <<>> /\ window = {} /\ seen = <<>> /\ turnFails = 0
     /\ lost = {} /\ eAccepted = FALSE /\ lateAnswer = NONE /\ answeredEarly = FALSE
+    /\ pStarted = ~AllowLateStart /\ pPurged = FALSE /\ pAsk = FALSE /\ note = "none" /\ evNoted = FALSE /\ noteForGone = FALSE
 
 (* An enqueue to the parent's session orchestration: queued only while it *)
 (* runs; queued to an ended one, the copy is never stored.                *)
@@ -160,7 +187,7 @@ DlBegin ==
          ELSE /\ dl' = "done" /\ UNCHANGED <<mNode, obAttempted>>
               /\ ob' = IF ob = "pending" THEN "failed" ELSE ob
               /\ obRecent' = (obRecent \/ (ob = "pending" /\ obAttempted))
-    /\ UNCHANGED <<runSt, endBy, clockVars, dlCrashes, zombie, nt, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<runSt, endBy, clockVars, dlCrashes, zombie, nt, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars, dsVars>>
 
 (* The enqueue (stable client message id), outside the begin's transaction.*)
 DlEnqueue ==
@@ -168,7 +195,7 @@ DlEnqueue ==
     /\ Enqueue("M")
     /\ dl' = "enqueued"
     /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars,
-                   pLive, pRow, fifo, window, seen, turnFails, eAccepted, lateAnswer, answeredEarly, lockVars>>
+                   pLive, pRow, fifo, window, seen, turnFails, eAccepted, lateAnswer, answeredEarly, lockVars, dsVars>>
 
 (* recordDelivery: a send is decided sent; a request awaits its response. *)
 DlRecord ==
@@ -177,26 +204,26 @@ DlRecord ==
     /\ ob' = IF ob = "pending" THEN "delivered" ELSE ob
     /\ obRecent' = (obRecent \/ ob = "pending")
     /\ dl' = "done"
-    /\ UNCHANGED <<runSt, endBy, clockVars, dlCrashes, obAttempted, zombie, nt, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<runSt, endBy, clockVars, dlCrashes, obAttempted, zombie, nt, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars, dsVars>>
 
 DlCrash ==
     /\ dl \in {"begun", "enqueued"} /\ dlCrashes < MaxCrashes
     /\ dl' = "start" /\ dlCrashes' = dlCrashes + 1
-    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars, dsVars>>
 
 (* An attempt still inside its (slow) enqueue while the runtime retries   *)
 (* the activity: its enqueue of M lands later (once).                     *)
 DlZombie ==
     /\ AllowZombie /\ dl = "begun" /\ ~zombie /\ dlCrashes < MaxCrashes
     /\ zombie' = TRUE /\ dl' = "start" /\ dlCrashes' = dlCrashes + 1
-    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, ob, obAttempted, obRecent, nt, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, ob, obAttempted, obRecent, nt, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars, dsVars>>
 
 ZombieLands ==
     /\ zombie
     /\ Enqueue("M")
     /\ zombie' = FALSE
     /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, ob, obAttempted, obRecent, nt, ntCrashes, ntAttempted, ntSaw, evVars,
-                   pLive, pRow, fifo, window, seen, turnFails, eAccepted, lateAnswer, answeredEarly, lockVars>>
+                   pLive, pRow, fifo, window, seen, turnFails, eAccepted, lateAnswer, answeredEarly, lockVars, dsVars>>
 
 (* proposedE3: a decided row stops being counted when its attempt is no  *)
 (* longer recent. Within the bound (no AllowWaitTimeout) an enqueue still *)
@@ -204,26 +231,26 @@ ZombieLands ==
 AgeOut ==
     /\ obRecent /\ (~zombie \/ AllowWaitTimeout)
     /\ obRecent' = FALSE
-    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, ob, obAttempted, zombie, nt, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, ob, obAttempted, zombie, nt, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars, dsVars>>
 
 (* The store's clock passes the request's deadline; it can step back     *)
 (* (clock_timestamp() is not monotonic); a bound expiry stands.           *)
 RequestClock ==
     /\ MKind = "request" /\ ~storeLate
     /\ storeLate' = TRUE
-    /\ UNCHANGED <<runSt, endBy, mNode, expiredBound, dl, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<runSt, endBy, mNode, expiredBound, dl, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars, dsVars>>
 
 ClockBack ==
     /\ AllowClockBack /\ storeLate /\ mNode \in {"pending", "awaiting"}
     /\ storeLate' = FALSE
-    /\ UNCHANGED <<runSt, endBy, mNode, expiredBound, dl, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<runSt, endBy, mNode, expiredBound, dl, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars, dsVars>>
 
 (* The controller's elapse: the store decides timed_out by its clock.     *)
 RequestDeadline ==
     /\ MKind = "request" /\ runSt = "running" /\ mNode \in {"pending", "awaiting"}
     /\ storeLate \/ expiredBound
     /\ mNode' = "timed_out"
-    /\ UNCHANGED <<runSt, endBy, clockVars, dl, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<runSt, endBy, clockVars, dl, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars, dsVars>>
 
 ----------------------------------------------------------------------------
 (* The run's ends: a pending state is cancelled; notifyParent starts.     *)
@@ -236,17 +263,17 @@ EndRun(by) ==
 ControllerEnds ==
     /\ Decided /\ mNode # "cancel"
     /\ EndRun("controller")
-    /\ UNCHANGED <<clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars, dsVars>>
 
 ExternalEnd ==
     /\ AllowExternalEnd
     /\ EndRun("other")
-    /\ UNCHANGED <<clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars, dsVars>>
 
 ParentCancels ==
     /\ AllowParentCancel /\ pLive
     /\ EndRun("parent")
-    /\ UNCHANGED <<clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars, dsVars>>
 
 ----------------------------------------------------------------------------
 (* notifyParent: nothing for the parent's own end; once per run (a prior  *)
@@ -281,7 +308,7 @@ SetNt(i, v) == nt' = [nt EXCEPT ![i] = v]
 NtStart2 ==
     /\ NumNotifiers = 2 /\ ~AllowRecover /\ runSt = "ended" /\ nt[2] = "idle"
     /\ SetNt(2, "check")
-    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars, dsVars>>
 
 NtCheck(i) ==
     /\ ~A10 /\ nt[i] = "check" /\ ~Locked(i)
@@ -293,7 +320,7 @@ NtCheck(i) ==
        ELSE IF ~NotifyOn
          THEN SetNt(i, "done") /\ Skip(ntAttempted)
        ELSE SetNt(i, "authorize") /\ UNCHANGED evVars
-    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, parentVars, histVars, lockVars, dsVars>>
 
 NtAuthorize(i) ==
     /\ ~A10 /\ nt[i] = "authorize"
@@ -302,7 +329,7 @@ NtAuthorize(i) ==
        ELSE IF FixD /\ ntAttempted
          THEN SetNt(i, "done") /\ evUnconfirmed' = TRUE /\ UNCHANGED <<evNotified, evSkipped, evByEarlier, evSkipEarlier>>
        ELSE SetNt(i, "done") /\ Skip(ntSaw[i])
-    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, parentVars, histVars, lockVars, dsVars>>
 
 (* 1f7bdc77, WFO-1: store.runDeliveriesInFlight counts the run's sends    *)
 (* and requests to the parent with state pending, attempts > 0 and a     *)
@@ -314,12 +341,12 @@ NtWait(i) ==
     /\ ~A10 /\ nt[i] = "wait"
     /\ ~InFlight \/ AllowWaitTimeout
     /\ SetNt(i, "attempt")
-    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, evVars, parentVars, histVars, lockVars, dsVars>>
 
 NtAttempt(i) ==
     /\ ~A10 /\ nt[i] = "attempt"
     /\ ntAttempted' = TRUE /\ SetNt(i, IF D1 THEN "status" ELSE "enqueue")
-    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, ntSaw, evVars, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, ntSaw, evVars, parentVars, histVars, lockVars, dsVars>>
 
 (* 1f7bdc77, WFO-3: the worker reads the parent orchestration's status;   *)
 (* NotFound, Completed, Failed or Terminated: nothing is queued.          *)
@@ -327,7 +354,7 @@ NtStatus(i) ==
     /\ ~A10 /\ nt[i] = "status"
     /\ IF pLive THEN SetNt(i, "enqueue") /\ UNCHANGED evVars
        ELSE SetNt(i, "done") /\ Skip(ntSaw[i])
-    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, parentVars, histVars, lockVars, dsVars>>
 
 NtEnqueue(i) ==
     /\ ~A10 /\ nt[i] = "enqueue"
@@ -335,7 +362,7 @@ NtEnqueue(i) ==
     /\ eAccepted' = (eAccepted \/ pLive)
     /\ SetNt(i, "record")
     /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, evVars,
-                   pLive, pRow, fifo, window, seen, turnFails, lateAnswer, answeredEarly, lockVars>>
+                   pLive, pRow, fifo, window, seen, turnFails, lateAnswer, answeredEarly, lockVars, dsVars>>
 
 Told == IF FixD /\ ~pLive
           THEN evUnconfirmed' = TRUE /\ UNCHANGED <<evNotified, evSkipped, evByEarlier, evSkipEarlier>>
@@ -345,7 +372,7 @@ NtRecord(i) ==
     /\ ~A10 /\ nt[i] = "record"
     /\ Told
     /\ SetNt(i, "done")
-    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, parentVars, histVars, lockVars, dsVars>>
 
 (* A crash before the next step, or after the record committed and      *)
 (* before the activity's completion was recorded: the activity runs again *)
@@ -354,14 +381,19 @@ NtCrash(i) ==
     /\ ~A10 /\ nt[i] \in Mid /\ ntCrashes < MaxCrashes
     /\ SetNt(i, IF i = 1 THEN "check" ELSE "done") /\ ntCrashes' = ntCrashes + 1
     /\ \E committed \in BOOLEAN : IF nt[i] = "record" /\ committed THEN Told ELSE UNCHANGED evVars
-    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntAttempted, ntSaw, parentVars, histVars, lockVars>>
+    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntAttempted, ntSaw, parentVars, histVars, lockVars, dsVars>>
 
 (* a10c2e07 (batch E3 as committed). The other variables of each step.  *)
-NtOther == <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, parentVars, histVars, recovers>>
+NtOtherBase == <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, parentVars, histVars, recovers>>
+NtOther == <<NtOtherBase, dsVars>>
 NtOtherE == <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, pLive, pRow, fifo, window, seen,
-              turnFails, lateAnswer, answeredEarly, recovers>>
-MidA == {"wait", "lock", "authorize", "attempt", "status", "enqueue", "record"}
-Held == {"authorize", "attempt", "status", "enqueue", "record"}
+              turnFails, lateAnswer, answeredEarly, recovers, dsVars>>
+MidA == {"wait", "lock", "authorize", "attempt", "status", "enqueue", "note", "record"}
+Held == {"authorize", "attempt", "status", "enqueue", "note", "record"}
+\* r3: the parent's orchestration reads NotFound (never started, or deleted with its orchestration).
+NotFound == ~pStarted \/ pPurged
+\* r3: the parent has ended or was deleted (a parent that has not started yet is not gone).
+Gone == ~pLive /\ (pStarted \/ ~pRow)
 Release(i) == holder' = IF holder = i THEN 0 ELSE holder
 
 (* Nothing for the parent's own end; told or skipped already: nothing.   *)
@@ -401,11 +433,33 @@ NtAttemptA(i) ==
     /\ ntAttempted' = TRUE /\ SetNt(i, "status")
     /\ UNCHANGED <<NtOther, ntSaw, evVars, holder>>
 
+(* r3, 9a8d0f66 (DS-2): workflowParentNotifier reads NotFound as         *)
+(* notStarted: the notice is kept as the parent chat's note (keepNote:    *)
+(* once per chat, definition and text, consumed or not), then the skip    *)
+(* "kept as a note" is recorded (with earlierAttempt after a marker): two *)
+(* writes, step "note" between them. proposedNoteTx: one transaction.     *)
+(* Completed, Failed, Terminated: the skip "parent is gone", as before.   *)
 NtStatusA(i) ==
     /\ A10 /\ nt[i] = "status"
-    /\ IF pLive THEN SetNt(i, "enqueue") /\ UNCHANGED <<evVars, holder>>
-       ELSE SetNt(i, "done") /\ Skip(ntSaw[i]) /\ Release(i)
-    /\ UNCHANGED <<NtOther, ntAttempted, ntSaw>>
+    /\ IF pLive
+         THEN /\ SetNt(i, "enqueue")
+              /\ UNCHANGED <<evVars, holder, note, evNoted, noteForGone>>
+       ELSE IF DS2 /\ NotFound
+         THEN /\ note' = IF note = "none" THEN "kept" ELSE note
+              /\ noteForGone' = (noteForGone \/ (note = "none" /\ Gone))
+              /\ IF NoteTx
+                   THEN SetNt(i, "done") /\ Skip(ntSaw[i]) /\ Release(i) /\ evNoted' = TRUE
+                   ELSE SetNt(i, "note") /\ UNCHANGED <<evVars, holder, evNoted>>
+       ELSE /\ SetNt(i, "done") /\ Skip(ntSaw[i]) /\ Release(i)
+            /\ UNCHANGED <<note, evNoted, noteForGone>>
+    /\ UNCHANGED <<NtOtherBase, ntAttempted, ntSaw, pStarted, pPurged, pAsk>>
+
+(* r3, 9a8d0f66: the skip after the note (WORKFLOW_V2_NOTICE_KEPT_AS_NOTE). *)
+NtNoteA(i) ==
+    /\ A10 /\ nt[i] = "note"
+    /\ Skip(ntSaw[i]) /\ evNoted' = TRUE
+    /\ SetNt(i, "done") /\ Release(i)
+    /\ UNCHANGED <<NtOtherBase, ntAttempted, ntSaw, pStarted, pPurged, pAsk, note, noteForGone>>
 
 NtEnqueueA(i) ==
     /\ A10 /\ nt[i] = "enqueue"
@@ -431,7 +485,7 @@ NtCrashA(i) ==
          IF nt[i] = "record" /\ committed
            THEN evNotified' = TRUE /\ UNCHANGED <<evSkipped, evUnconfirmed, evByEarlier, evSkipEarlier>>
            ELSE UNCHANGED evVars
-    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntAttempted, ntSaw, parentVars, histVars, recovers>>
+    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntAttempted, ntSaw, parentVars, histVars, recovers, dsVars>>
 
 (* The activity attempt of instance 1 times out while it holds the lock: *)
 (* it keeps running as process 3, and the runtime retries the activity.  *)
@@ -449,10 +503,11 @@ RecoverA ==
     /\ nt[1] = "done" /\ nt[2] \in {"idle", "done"} /\ recovers < MaxRecovers
     /\ SetNt(2, "check") /\ recovers' = recovers + 1
     /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, ntCrashes, ntAttempted, ntSaw, evVars,
-                   parentVars, histVars, holder>>
+                   parentVars, histVars, holder, dsVars>>
 
 NtStep(i) == NtCheck(i) \/ NtAuthorize(i) \/ NtWait(i) \/ NtAttempt(i) \/ NtStatus(i) \/ NtEnqueue(i) \/ NtRecord(i)
             \/ NtCheckA(i) \/ NtWaitA(i) \/ NtLockA(i) \/ NtAuthA(i) \/ NtAttemptA(i) \/ NtStatusA(i) \/ NtEnqueueA(i) \/ NtRecordA(i)
+            \/ NtNoteA(i)
 
 ----------------------------------------------------------------------------
 (* The parent session: its turn loop stores the next queued item (a       *)
@@ -466,21 +521,21 @@ ParentStores ==
             THEN UNCHANGED <<fifo, window>>
             ELSE /\ fifo' = Append(fifo, id) /\ window' = window \cup {id}
     /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars,
-                   pLive, pRow, seen, turnFails, histVars, lockVars>>
+                   pLive, pRow, seen, turnFails, histVars, lockVars, dsVars>>
 
 ParentFifoFull ==
     /\ AllowFifoFull /\ pLive /\ pq # <<>>
     /\ lost' = lost \cup {Head(pq)}
     /\ pq' = Tail(pq)
     /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars,
-                   pLive, pRow, fifo, window, seen, turnFails, eAccepted, lateAnswer, answeredEarly, lockVars>>
+                   pLive, pRow, fifo, window, seen, turnFails, eAccepted, lateAnswer, answeredEarly, lockVars, dsVars>>
 
 (* A turn fails or is regenerated before its model call: its items stay. *)
 ParentTurnFails ==
-    /\ pLive /\ fifo # <<>> /\ turnFails < MaxTurnFails
+    /\ pLive /\ (fifo # <<>> \/ (pAsk /\ note = "kept")) /\ turnFails < MaxTurnFails
     /\ turnFails' = turnFails + 1
     /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars,
-                   pLive, pRow, pq, fifo, window, seen, histVars, lockVars>>
+                   pLive, pRow, pq, fifo, window, seen, histVars, lockVars, dsVars>>
 
 (* The model is given the next stored item. A request it is given is      *)
 (* answered: the store accepts while the state is pending (whether or not *)
@@ -506,28 +561,70 @@ ParentExposes ==
                                   /\ UNCHANGED <<mNode, expiredBound, answeredEarly>>
                       ELSE UNCHANGED <<mNode, expiredBound, lateAnswer, answeredEarly>>
     /\ UNCHANGED <<runSt, endBy, storeLate, dl, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars,
-                   pLive, pRow, pq, window, turnFails, lost, eAccepted, lockVars>>
+                   pLive, pRow, pq, window, turnFails, lost, eAccepted, lockVars, dsVars>>
 
 ParentForgets ==
     /\ AllowEvict /\ \E id \in window : window' = window \ {id}
     /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars,
-                   pLive, pRow, pq, fifo, seen, turnFails, histVars, lockVars>>
+                   pLive, pRow, pq, fifo, seen, turnFails, histVars, lockVars, dsVars>>
 
 (* The parent session ends: queued and stored items are never exposed.    *)
+(* r3, 9a8d0f66: a forced delete also deletes the orchestration (pPurged; *)
+(* its catalog row is deleted first): its status reads NotFound.          *)
 ParentEnds ==
     /\ AllowParentEnd /\ pLive
     /\ (AllowStatusRace \/ \A i \in Procs : nt[i] # "enqueue")
     /\ pLive' = FALSE
     /\ lost' = lost \cup Range(pq)
     /\ pq' = <<>> /\ fifo' = <<>>
+    /\ \E purged \in (IF DS2 THEN BOOLEAN ELSE {FALSE}) :
+         /\ pPurged' = purged
+         /\ pRow' = (pRow /\ ~purged)
     /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars,
-                   pRow, window, seen, turnFails, eAccepted, lateAnswer, answeredEarly, lockVars>>
+                   window, seen, turnFails, eAccepted, lateAnswer, answeredEarly, lockVars,
+                   pStarted, pAsk, note, evNoted, noteForGone>>
 
 ParentRowEnds ==
-    /\ ~pLive /\ pRow
+    /\ pStarted /\ ~pLive /\ pRow
     /\ pRow' = FALSE
     /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars,
-                   pLive, pq, fifo, window, seen, turnFails, histVars, lockVars>>
+                   pLive, pq, fifo, window, seen, turnFails, histVars, lockVars, dsVars>>
+
+----------------------------------------------------------------------------
+(* r3: a parent chat that has not started (no first message): its first  *)
+(* message starts its orchestration and its first turn (pAsk). A person's *)
+(* action never makes the chat take a turn on its own; PersonAsks is a    *)
+(* later message (a person's, or any item queued to it) given while the   *)
+(* note is pending. A turn reads the pending notes at the start of its    *)
+(* prompt (a turn for a queued item too) and consumes them when it        *)
+(* succeeds; a turn that fails before its model call (ParentTurnFails)     *)
+(* keeps them. A deleted chat takes no turn.                               *)
+ParentStarts ==
+    /\ AllowLateStart /\ ~pStarted /\ pRow
+    /\ pStarted' = TRUE /\ pLive' = TRUE /\ pAsk' = TRUE
+    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars,
+                   pRow, pq, fifo, window, seen, turnFails, histVars, lockVars, pPurged, note, evNoted, noteForGone>>
+
+ParentDeletedEarly ==
+    /\ AllowLateStart /\ AllowParentEnd /\ ~pStarted /\ pRow
+    /\ pRow' = FALSE
+    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars,
+                   pLive, pq, fifo, window, seen, turnFails, histVars, lockVars, dsVars>>
+
+PersonAsks ==
+    /\ pLive /\ ~pAsk /\ note = "kept"
+    /\ pAsk' = TRUE
+    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars,
+                   parentVars, histVars, lockVars, pStarted, pPurged, note, evNoted, noteForGone>>
+
+ParentTurn ==
+    /\ pLive /\ (pAsk \/ (fifo # <<>> /\ note = "kept"))
+    /\ pAsk' = FALSE
+    /\ IF note = "kept"
+         THEN seen' = Append(seen, "N") /\ note' = "consumed"
+         ELSE UNCHANGED <<seen, note>>
+    /\ UNCHANGED <<runSt, endBy, mNode, clockVars, dl, dlCrashes, obVars, nt, ntCrashes, ntAttempted, ntSaw, evVars,
+                   pLive, pRow, pq, fifo, window, turnFails, histVars, lockVars, pStarted, pPurged, evNoted, noteForGone>>
 
 Done ==
     /\ runSt = "ended" /\ dl = "done" /\ ~zombie /\ nt[1] = "done" /\ (\A i \in Procs : nt[i] \in {"idle", "done"})
@@ -540,6 +637,7 @@ Next ==
     \/ NtStart2 \/ NtSplitA \/ RecoverA \/ (\E i \in Procs : NtStep(i) \/ NtCrash(i) \/ NtCrashA(i))
     \/ ParentStores \/ ParentFifoFull \/ ParentTurnFails \/ ParentExposes \/ ParentForgets
     \/ ParentEnds \/ ParentRowEnds \/ Done
+    \/ ParentStarts \/ ParentDeletedEarly \/ PersonAsks \/ ParentTurn
 
 (* Fairness: workers run the activities; the controller ends the run once *)
 (* its state is decided; the store's clock passes a request's deadline    *)
@@ -555,6 +653,9 @@ Fairness ==
     /\ WF_vars(RecoverA)
     /\ WF_vars(ZombieLands) /\ WF_vars(AgeOut)
     /\ WF_vars(ParentStores) /\ WF_vars(ParentExposes) /\ WF_vars(ParentRowEnds)
+    \* r3: a parent that is not deleted starts; a started parent takes its due turns; while the end's
+    \* note is pending, the parent is given another turn (an assumption: a person or a queued item).
+    /\ WF_vars(ParentStarts) /\ WF_vars(ParentTurn) /\ WF_vars(PersonAsks)
 
 Spec == Init /\ [][Next]_vars
 LiveSpec == Spec /\ Fairness
@@ -568,7 +669,7 @@ TypeOK ==
     /\ mNode \in {"pending", "awaiting", "sent", "answered", "refused", "timed_out", "cancel"}
     /\ storeLate \in BOOLEAN /\ expiredBound \in BOOLEAN
     /\ dl \in {"start", "begun", "enqueued", "done"}
-    /\ nt \in [Procs -> {"idle", "check", "authorize", "wait", "lock", "attempt", "status", "enqueue", "record", "done"}]
+    /\ nt \in [Procs -> {"idle", "check", "authorize", "wait", "lock", "attempt", "status", "enqueue", "note", "record", "done"}]
     /\ holder \in {0} \cup Procs /\ recovers \in 0..MaxRecovers
     /\ ob \in {"pending", "delivered", "failed"} /\ obAttempted \in BOOLEAN /\ obRecent \in BOOLEAN /\ zombie \in BOOLEAN
     /\ ntSaw \in [Procs -> BOOLEAN] /\ evByEarlier \in BOOLEAN /\ evSkipEarlier \in BOOLEAN
@@ -578,21 +679,31 @@ TypeOK ==
     /\ Range(pq) \subseteq Ids /\ Range(fifo) \subseteq Ids /\ Range(seen) \subseteq Ids
     /\ lost \subseteq Ids /\ window \subseteq Ids
     /\ eAccepted \in BOOLEAN /\ lateAnswer \in {NONE, "expired", "closed"} /\ answeredEarly \in BOOLEAN
+    /\ pStarted \in BOOLEAN /\ pPurged \in BOOLEAN /\ pAsk \in BOOLEAN /\ note \in {"none", "kept", "consumed"}
+    /\ evNoted \in BOOLEAN /\ noteForGone \in BOOLEAN
 
 (* Safety rules (desired contracts; PI-7).                                *)
-(* The parent's model is never given a message of the run after its end. *)
-Inv_EndedIsLast == \A i, j \in 1..Len(seen) : (seen[i] = "E" /\ seen[j] = "M") => j < i
+(* The parent's model is never given a message of the run after its end  *)
+(* (r3: its end as a queued notice, E, or as a chat note, N).             *)
+Inv_EndedIsLast == \A i, j \in 1..Len(seen) : (seen[i] \in {"E", "N"} /\ seen[j] = "M") => j < i
 (* The parent's model is given each message once.                          *)
 Inv_GivenOnce == \A id \in Ids : Count(id) <= 1
 (* A notified event means a copy of the end was queued to a running      *)
 (* parent orchestration (accepted for reading, not yet read: FR-17).     *)
 Inv_NotifiedAccepted == evNotified => eAccepted
 (* A skip is recorded only for a parent that was not given the end.       *)
+(* r3 (9a8d0f66): a skip, whatever its reason, means that no copy of the  *)
+(* end was given through the parent's queue (E); a skip "kept as a note"  *)
+(* (evNoted) may still be followed by the note (N), which is not a queued *)
+(* copy. The formula is unchanged.                                         *)
 Inv_SkipMeansNotGiven == evSkipped => Count("E") = 0
 (* At most one of told (notified, or 1f7bdc77's byEarlierAttempt),        *)
 (* skipped and unconfirmed.                                                *)
 ToldEv == evNotified \/ evByEarlier
 SkipEv == evSkipped \/ evSkipEarlier
+(* r3: the run records one outcome of its notice; a skip "kept as a note" *)
+(* is a skip (parent_notification_skipped), so it excludes notified. It   *)
+(* says nothing about the note: see Inv_ToldOnce.                          *)
 Inv_NotifiedXorSkipped == ~(ToldEv /\ SkipEv) /\ ~(ToldEv /\ evUnconfirmed) /\ ~(SkipEv /\ evUnconfirmed) /\ ~(evSkipped /\ evSkipEarlier)
 (* Diagnostic (1f7bdc77, WFO-4): a byEarlierAttempt record also means a  *)
 (* copy was accepted. Expected to break: parent_notifying is recorded    *)
@@ -602,10 +713,37 @@ Inv_ToldMeansAccepted == ToldEv => eAccepted
 (* No answer is accepted once an expiry was bound (durable expiry).       *)
 Inv_NoDecisionAfterExpiry == expiredBound => mNode # "answered"
 
+(* r3 (DS-2). The parent's model is given the run's end at most once, as  *)
+(* the queued notice or as the chat note, never both.                      *)
+Inv_ToldOnce == Count("E") + Count("N") <= 1
+(* A skip "kept as a note" is recorded only after the note was kept.       *)
+Inv_NotedMeansKept == evNoted => note # "none"
+(* A note kept for a parent that had ended or was deleted is never given. *)
+Inv_NoNoteAfterGone == noteForGone => Count("N") = 0
+(* The note is given only through a turn that consumed it.                 *)
+Inv_NoteGivenConsumed == Count("N") > 0 <=> note = "consumed"
+(* The note never comes before a message of the run (Inv_EndedIsLast for  *)
+(* N alone; it is checked also beyond the wait's bound, where E may).     *)
+Inv_NoteIsLast == \A i, j \in 1..Len(seen) : (seen[i] = "N" /\ seen[j] = "M") => j < i
+
 (* Liveness: the parent's model is given the run's end, or the end is the *)
 (* parent's own, or a skip is recorded, or the parent session ended.      *)
 Prop_ParentLearnsEnd ==
     <>(runSt = "ended" /\ (endBy = "parent" \/ evSkipped \/ evSkipEarlier \/ Count("E") > 0 \/ ~pLive))
+
+(* r3: the parent's model is given the end (the notice or the note), or   *)
+(* the end is the parent's own, or notifications are off and a skip is    *)
+(* recorded, or the parent ended or was deleted. A skip is no longer an   *)
+(* answer by itself, and a parent that has not started is not gone: under *)
+(* LiveSpec it starts unless it is deleted, and takes a turn after a note *)
+(* was kept.                                                               *)
+Prop_ParentToldEnd ==
+    <>(runSt = "ended" /\ (endBy = "parent" \/ (~NotifyOn /\ (evSkipped \/ evSkipEarlier))
+                          \/ Count("E") > 0 \/ Count("N") > 0 \/ Gone))
+(* r3: a pending note is given at the parent's next due turn (whatever    *)
+(* made it due), unless the parent ends first.                             *)
+Prop_NoteGivenAtTurn ==
+    [](note = "kept" /\ pAsk /\ pLive => <>(note = "consumed" \/ ~pLive))
 
 (* Witnesses, EXPECTED to be violated (reachable).                        *)
 Wit_GivenMessageThenEnd == ~(Len(seen) = 2 /\ seen[1] = "M" /\ seen[2] = "E")
@@ -617,4 +755,8 @@ Wit_AnswerAfterTimeout == ~(lateAnswer = "closed" /\ mNode = "timed_out")
 Wit_ToldByEarlier == ~evByEarlier
 (* r2e: a10c2e07 records a skip with earlierAttempt.                       *)
 Wit_SkipEarlier == ~evSkipEarlier
+(* r3: 9a8d0f66 gives a parent that started late the end through its note; *)
+(* a note can be kept for a parent that was deleted.                       *)
+Wit_NoteGiven == ~(Count("N") > 0 /\ evNoted)
+Wit_NoteForGone == ~noteForGone
 =============================================================================
