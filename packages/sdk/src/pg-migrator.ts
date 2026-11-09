@@ -129,6 +129,11 @@ export async function runMigrations(
     validateMigrationEntries(migrations);
     const lockKey = hashSchemaName(schema, lockSeed);
     const client = await pool.connect();
+    // Review CI-114: a ROLLBACK or the unlock that fails (HorizonDB answered a ROLLBACK after a lock timeout with a server
+    // error) leaves this connection in an aborted transaction, and maybe still holding the migration lock. It is then
+    // discarded, never handed back to the pool, so no later query gets it and its session lock goes with it.
+    let unusable: unknown = null;
+    const rollback = () => client.query("ROLLBACK").catch((error: unknown) => { unusable ??= error; });
     try {
         // Acquire the migration lock by POLLING pg_try_advisory_lock rather
         // than blocking on pg_advisory_lock. A worker blocked inside
@@ -174,7 +179,7 @@ export async function runMigrations(
                     }
                     await client.query("COMMIT");
                 } catch (err) {
-                    await client.query("ROLLBACK").catch(() => {});
+                    await rollback();
                     throw err;
                 }
             }
@@ -199,7 +204,7 @@ export async function runMigrations(
                         // A failed step can leave the connection inside an
                         // aborted explicit transaction (a step's own BEGIN);
                         // roll it back so the pooled connection stays usable.
-                        await client.query("ROLLBACK").catch(() => {});
+                        await rollback();
                         throw err;
                     }
                 }
@@ -219,13 +224,16 @@ export async function runMigrations(
                 );
                 await client.query("COMMIT");
             } catch (err) {
-                await client.query("ROLLBACK").catch(() => {});
+                await rollback();
                 throw err;
             }
         }
     } finally {
-        await client.query("SELECT pg_advisory_unlock($1)", [lockKey]).catch(() => {});
-        client.release();
+        if (unusable === null) {
+            await client.query("SELECT pg_advisory_unlock($1)", [lockKey]).catch((error: unknown) => { unusable = error; });
+        }
+        // node-postgres: release(error) closes the connection instead of returning it to the pool.
+        client.release(unusable === null ? undefined : (unusable instanceof Error ? unusable : new Error(String(unusable))));
     }
 }
 
