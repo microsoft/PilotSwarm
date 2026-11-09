@@ -13,7 +13,9 @@ live in worker activities and the session manager.
 Primary source: [`packages/sdk/src/orchestration/`](../../../packages/sdk/src/orchestration).
 The current latest version is `1.0.83`: 1.0.82 plus the durable workflow
 intake (design `docs/proposals/workflow-durable-intake.md`; its turns are
-workflow request turns). Frozen prior versions live as siblings (single files
+workflow request turns). The intake ships switched off: no worker sets the
+`workflowIntake` capability, so no send creates a durable exchange, and a
+Workflow's messages reach a chat through the session queue as before. Frozen prior versions live as siblings (single files
 `packages/sdk/src/orchestration_1_0_47.ts` … `_1_0_51.ts`, then directories
 `orchestration_1_0_52/` … `orchestration_1_0_82/`) and run unchanged for any
 in-flight execution that started against them. The sections below describe
@@ -554,8 +556,9 @@ existing continue-as-new mechanism. Disabling Steer is not an orchestration
 rollback. Retain V4-capable workers until 1.0.81 sessions drain, unless a
 separately authorized coordinated rollback restores both code and durable state.
 
-1.0.83 (the durable workflow intake, released with the Workflow work) keeps
-the same version pattern. 1.0.82 is frozen in `orchestration_1_0_82/` and
+1.0.83 (the durable workflow intake, released with the Workflow work and
+switched off: no worker sets the `workflowIntake` capability) keeps the same
+version pattern. 1.0.82 is frozen in `orchestration_1_0_82/` and
 stays registered: in-flight 1.0.82 histories replay on it, and each such
 session moves to 1.0.83 at its next continue-as-new, which carries its queued
 prompts (the KV FIFO), its pending child digest, its rehydration notice and

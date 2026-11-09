@@ -1,8 +1,8 @@
 /**
  * Migration 0100 — workflow v2 graceful stop and each run's controller version.
  *
- * Only controller 1.9.0 stops a run (design 02 run lifecycle, D03; INACTIVE:
- * only tests start runs at 1.9.0), so a run records the controller version
+ * Only controller 1.9.0 stops a run (design 02 run lifecycle, D03; every new
+ * run starts at 1.9.0), so a run records the controller version
  * that its admission chose, and the stop is accepted only for a version
  * that runs it:
  *

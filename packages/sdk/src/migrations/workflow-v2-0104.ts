@@ -1,7 +1,7 @@
 /**
  * Migration 0104 — workflow v2 run deadlines (design 02 run lifecycle and
- * the canonical `limits: { timeoutSeconds, onExceeded }`; INACTIVE: only
- * controller 1.9.0 sets or enforces one).
+ * the canonical `limits: { timeoutSeconds, onExceeded }`; controller 1.9.0
+ * sets and enforces one, and every new run starts at 1.9.0).
  *
  * - workflow_runs.deadline_at: when a run whose pinned definition declares
  *   limits.timeoutSeconds must have ended: the run's clock when it began

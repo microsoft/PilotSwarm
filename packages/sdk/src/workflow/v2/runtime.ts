@@ -1742,6 +1742,11 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
 
         // 1. Admit the next node of every cursor that is not waiting on work (none while the run is stopping). A branch's
         // end may add or drop cursors: this pass goes over the cursors it started with that are still there.
+        // Invariant (duroxide issue 78, microsoft/duroxide#78): duroxide does not start the detached orchestrations started in
+        // a turn that ends in continue-as-new (its ContinueAsNew branch does not enqueue them). Every detached start below (an
+        // effect, a send, a request or an agent helper) is followed by a store activity before any continueAsNew: the next
+        // cursor's enter, or this pass's collection (step 2), which every continueAsNew of this loop follows. So a helper is
+        // always started in a turn that does not continue as new. Keep it so when this loop changes.
         let rerouted = false;
         let paused = false;
         dropped.clear();
@@ -3375,7 +3380,7 @@ export const WORKFLOW_V2_OWED_AGENT_PAGE = 200;
 
 export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: WorkflowV2RuntimeDeps): void {
     const { store } = deps;
-    // Request states (design workflow-messaging-request.md 8): only a test, or the test-only milestone worker, sets workflowRequests.
+    // Request states (design workflow-messaging-request.md 8): every worker sets workflowRequests (worker.ts); a test may leave it off.
     const requestsEnabled = deps.workflowRequests === true;
     // duroxide accepts an orchestration's versions only in ascending order:
     // the fenced pre-release versions first, the version new runs use last.

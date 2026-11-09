@@ -1,15 +1,15 @@
-# Workflow v2 milestone: implementation notes (inactive)
+# Workflow v2 milestone: implementation notes
 
-Status: **inactive**. Everything in this note runs only on controller 1.9.0
-and the orchestrations it starts, which only tests and an isolated test
-environment register (the worker option `workflowRequests`; "The test
-environment switch" below) and only such a host starts runs at
-(`WorkflowV2Host.requests`). Production workers keep controller 1.8.0, its
-activities and its tool surface unchanged. One exception applies on every
-worker: the names of the two workflow turn tools are reserved, so packages
-and capabilities cannot export them ("The agent tools on a turn of a 1.9.0
-worker" below). Nothing here is an activation, a deployment or a
-qualification result.
+Status: **live** with session orchestration 1.0.83. Every worker registers
+controller 1.9.0 and the orchestrations it starts (the worker option
+`workflowRequests` is always set), and every new run starts at 1.9.0
+(`WorkflowV2Host.requests`). Controller 1.8.0 stays registered for replay
+only; no run reaches it. The durable recipient intake ships switched off: no
+worker sets the `workflowIntake` capability, so a Workflow's messages to a
+chat use the session queue. "The test environment switch" below is history:
+`PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` is retired and ignored. The names
+of the two workflow turn tools stay reserved, so packages and capabilities
+cannot export them ("The agent tools on a turn of a 1.9.0 worker" below).
 
 The approved design is the execution package of 31 October 2026 (documents
 01 to 11, requirements R01 to R28). Request states have their own design

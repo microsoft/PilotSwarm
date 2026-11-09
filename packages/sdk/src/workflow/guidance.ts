@@ -112,7 +112,7 @@ export function workflowSessionGuidance(testMode: boolean,
  * `workflow-tools` (every tool argument) and `workflow-patterns` (one Workflow that runs different nodes per branch), in
  * the SDK package's plugins/workflow-v2/skills (`workflow-testing` is apart, hidden with test mode:
  * WORKFLOW_V2_TEST_MODE_SKILLS_DIR). Every worker loads this directory with the SDK's system skills (worker.ts), so every
- * chat can load them; the Workflow guidance names them.
+ * chat can load them; the Workflow guidance names the first three.
  */
 export const WORKFLOW_V2_SKILLS_DIR = fileURLToPath(new URL("../../plugins/workflow-v2/skills", import.meta.url));
 export const WORKFLOW_AUTHORING_SKILL = "workflow-authoring";

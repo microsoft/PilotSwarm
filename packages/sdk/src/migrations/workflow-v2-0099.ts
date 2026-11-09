@@ -2,10 +2,11 @@
  * Migration 0099 — workflow v2 durable recipient intake: the possible-exposure
  * record.
  *
- * Nothing writes it yet (design docs/proposals/workflow-durable-intake.md;
- * exposure protocol revision 2; decision intake-exposure-r2-implementation):
- * only tests call the store's admission, as only tests register orchestration
- * 1.0.83 and its turn activities.
+ * Design docs/proposals/workflow-durable-intake.md (exposure protocol
+ * revision 2; decision intake-exposure-r2-implementation). Every worker
+ * registers orchestration 1.0.83 and its intake activities, but the durable
+ * intake ships switched off (no worker sets the workflowIntake capability), so
+ * no send creates an exchange that writes here; only tests do.
  *
  * - workflow_intake_exposures: at most one row per invocation (key, and a
  *   foreign key to workflow_intake_invocations that does not cascade),

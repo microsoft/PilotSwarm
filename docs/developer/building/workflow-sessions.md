@@ -158,8 +158,8 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
 - **Agent sessions: `session: continue | new`** (owner 2026-11-09; the YAML
   key was `chat` before 1.0.83 shipped, and `chat:` is now refused: "`chat` is
   now `session`: write `session: continue` or `session: new`."). `continue`
-  (the default) keeps one agent session per Workflow and node (its id derived
-  from the run and the node): each later visit's prompt arrives in that
+  (the default) keeps one agent session per run and state (its id derived
+  from the run and the state): each later visit's prompt arrives in that
   session as cycle N, with the input, the variables now, which changed and the
   previous result. `new` gives each visit of an agent node a new agent
   session; inside a For each or a parallel branch it is the default and the
@@ -764,8 +764,8 @@ policy could also run Python (`call_tool`, `set_result`) or PowerShell 7
 ## Tools a script can call
 
 Scripts call tools **as the workflow session**: facts are stored on that
-session and are visible across its spawn tree, inspect tools act as its
-owner, and messages are sent from it, exactly as for an agent session. The
+session and are visible across its spawn tree, and inspect tools act as its
+owner, exactly as for an agent session. The
 set is captured from the actual parent's effective tool catalog, excluding
 durable scheduling, delegation, lifecycle and capability-changing operations.
 The worker creates a separate CLI execution handle; it does not borrow the
@@ -776,12 +776,17 @@ live parent handle or send a model prompt.
 | Native Copilot tools | Actual shell, file, search and edit implementations through `session.rpc.tools.execute`, subject to normal permissions and workspace scope |
 | Registered application and package tools | Only the captured parent-authorized binding; package access is not replaced with generic defaults |
 | Fact tools, and graph tools when a graph store is configured | `store_fact`, `read_facts`, `facts_search`, ... |
-| Session tools | `list_sessions` and `read_agent_events` (and the usage reads). `send_session_message` is one-way: a workflow session cannot receive replies. `reply_session_message` answers a request another session sent. These return JSON, not the text an agent sees. |
+| Session tools | `list_sessions` and `read_agent_events` (and the usage reads). These return JSON, not the text an agent sees. |
 | MCP servers | Captured parent-authorized servers/tools through the CLI; `<server>/<tool>` aliases must resolve uniquely |
 
 Not available: turn-control tools (`wait`, `cron`, `ask_user`, `spawn_agent`,
-`spawn_workflow`, native `task`), lifecycle and capability-changing tools, and
-`context_health`. Existing approved application tools retain their authority;
+`spawn_workflow`, native `task`), lifecycle and capability-changing tools,
+`context_health`, the Workflow tools (`workflow_definition`,
+`respond_session_request`, `complete_workflow_node`), and session messaging
+(`send_session_message`, `reply_session_message`, `message_agent`): a Workflow
+messages sessions through its own send and request states, never as its
+parent. Such a tool is never captured in the grant, and a call of one is
+refused. Existing approved application tools retain their authority;
 a generated confirmation flag is not human approval. Parent capability
 removal or a changed source binding can stop later calls, but newly added
 parent tools do not enlarge an admitted run.
@@ -994,10 +999,12 @@ and a person can send workflow commands.
 - The guidance teaches the full engine in about 2,200 characters, names
   every state type (`script`, `wait`, `messaging` with `mode: send`,
   `request` or `receive`, `agent`, `parallel`, `terminal`; "there is no
-  other"), and names the Workflow skills, which every worker loads: `workflow-authoring`,
-  `workflow-reference` (every field), `workflow-tools` (every tool argument)
-  and `workflow-patterns`; `workflow-testing` with test mode. `load_skill`
-  serves them to every chat; the skills index does not list them.
+  other"), and names three of the Workflow skills: `workflow-authoring`,
+  `workflow-reference` (every field) and `workflow-tools` (every tool
+  argument). Every worker loads those and `workflow-patterns`;
+  `workflow-testing` only with test mode. `load_skill` serves them to every
+  chat. The skills index lists them where Workflows are on in the chat (a
+  Base V1 chat's index, and Base V2's), and not while they are off.
 - The portal and the terminal UI always show the Workflow button, tab, pane,
   `w` key and Workflow rows.
 - MCP always registers `read_workflow` and `update_workflow`; the portal and
@@ -1016,8 +1023,8 @@ Sessions of the previous release (orchestration 1.0.82) keep running on the
 frozen 1.0.82 and move to 1.0.83 at their next continue-as-new, which carries
 their queued prompts, pending child updates, notices and model. Until then a
 turn of such a session runs on 1.0.82. Its Workflows run on controller 1.9.0
-like every other, but that turn is not offered the `test` operation, the
-clock-wait line or `respond_session_request`, and a Workflow's request to the
+like every other, and that turn is offered `workflow_definition`'s `test`
+operation, but not the clock-wait line or `respond_session_request`, and a Workflow's request to the
 session is refused until it continues as new. Upgrade by stopping every
 worker, deploying, then starting them (`deploy/scripts/README.md`, "Upgrading
 to this release: stop, deploy, start"); do not roll the workers.

@@ -1,8 +1,8 @@
 /**
  * Migration 0103 — workflow v2 publication pins and test scenarios (design
  * 02 publication record, 03 package agents; R18, R28, T011, T018, T070;
- * INACTIVE: only a host that starts runs at controller 1.9.0 compiles agent
- * states and starts test runs).
+ * every host starts runs at controller 1.9.0, compiles agent states and
+ * starts test runs).
  *
  * - workflow_definitions.published_agent_pins: what each named agent state
  *   of the published revision was resolved to when it was published (its

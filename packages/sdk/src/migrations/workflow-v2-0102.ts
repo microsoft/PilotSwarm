@@ -1,7 +1,7 @@
 /**
  * Migration 0102 — workflow v2 test runs (design 05 tool-mocked testing;
- * R19, R20, R28; INACTIVE: only controller 1.9.0 runs them, and only a test
- * host starts them).
+ * R19, R20, R28; controller 1.9.0 runs them; an agent starts one with
+ * workflow_definition test).
  *
  * - workflow_runs.virtual_now: a test run's virtual clock; null for a live
  *   run. It starts at the test epoch (9000-01-01T00:00:00Z), after any real

@@ -1,9 +1,8 @@
 /**
  * Migration 0097 — workflow v2 messaging request states: storage only.
  *
- * Nothing runs a request state yet (design workflow-messaging-request.md,
- * section 8.4): these tables are written only by store methods that no
- * published definition reaches. The design's records:
+ * Controller 1.9.0 runs request states on every worker (design
+ * workflow-messaging-request.md, section 8.4). The design's records:
  *
  * - workflow_outbox.mode admits 'request': a request state's message intent,
  *   as a send's. Existing 'send' rows are unchanged.

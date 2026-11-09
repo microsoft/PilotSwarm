@@ -1,7 +1,7 @@
 /**
  * Migration 0105 — workflow v2 real-agent test runs' agent pins (design 05
  * agentMode real: "pin package/contract identities just as a live run
- * would"; R18, R19; INACTIVE: only controller 1.9.0 runs test runs).
+ * would"; R18, R19; controller 1.9.0 runs test runs).
  *
  * - workflow_runs.test_agent_pins: what a real-agent test run's named agent
  *   states were pinned to when the test was admitted (canonical JSON, the

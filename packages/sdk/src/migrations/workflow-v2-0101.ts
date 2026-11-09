@@ -1,6 +1,6 @@
 /**
- * Migration 0101 — workflow v2 agent states (IR 8; INACTIVE: only
- * controller 1.9.0 runs them, and only tests start runs there).
+ * Migration 0101 — workflow v2 agent states (IR 8; controller 1.9.0 runs
+ * them, and every new run starts at 1.9.0).
  *
  * - workflow_agent_invocations: one row per agent state's node execution,
  *   written once by the transaction that admits it pending: its child agent

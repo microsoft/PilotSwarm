@@ -74,7 +74,10 @@ export const WORKFLOW_V2_BRANCHES_IR_VERSION = 11;
  * clock waits and named branches).
  */
 export const WORKFLOW_V2_MILESTONE_IR_VERSION = WORKFLOW_V2_BRANCHES_IR_VERSION;
-/** The newest IR version a worker reads unless asked for more: request states are not run yet. */
+/**
+ * The newest IR version a reader takes unless asked for more (parseWorkflowIr's default; a host that runs controller
+ * 1.9.0, as every worker, portal and MCP server does, asks for WORKFLOW_V2_MILESTONE_IR_VERSION).
+ */
 export const WORKFLOW_V2_RUNNABLE_IR_VERSION = 6;
 /** A wait state's seconds: an integer in this range, literal or bound. */
 export const WAIT_MAX_SECONDS = 86_400;
