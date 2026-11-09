@@ -40,6 +40,7 @@ import { workflowChatDefinitionsMigration } from "./migrations/workflow-v2-0107.
 import { workflowPackageDefinitionsMigration } from "./migrations/workflow-v2-0108.js";
 import { workflowChatEndedLockOrderMigration } from "./migrations/workflow-v2-0109.js";
 import { workflowRunAgentModelsMigration } from "./migrations/workflow-v2-0110.js";
+import { sessionsParentSessionIndexMigration } from "./migrations/workflow-v2-0111.js";
 
 function workflowSessionKindMigration(schema: string): string {
     const s = `"${schema}"`;
@@ -484,6 +485,8 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0109", name: "workflow_chat_ended_lock_order", sql: workflowChatEndedLockOrderMigration(schema) },
         // OF-S2-7: per-node models chosen at start, stored with the run.
         { version: "0110", name: "workflow_run_agent_models", sql: workflowRunAgentModelsMigration(schema) },
+        // Release safety: the Workflow triggers' and the child budget's lookups by parent_session_id use an index.
+        { version: "0111", name: "sessions_parent_session_index", steps: sessionsParentSessionIndexMigration(schema) },
     ];
 }
 
