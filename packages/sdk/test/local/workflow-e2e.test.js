@@ -174,6 +174,8 @@ describe("previously admitted script workflow sessions (worker + client + Postgr
                 const { sessionId } = await startLegacyAdmission(client, { yaml: WORKFLOW, inputs: { run: "off" } });
                 const view = await waitForTerminal(mgmt, sessionId);
                 expect(view.status).toBe("failed");
+                // The end event is written after the view's status: read it once the orchestration has ended.
+                await client.duroxideClient.waitForOrchestration(`session-${sessionId}`, 30_000);
                 const events = await mgmt.getSessionEvents(sessionId);
                 const failed = events.find((event) => event.eventType === "workflow.failed");
                 expect(failed.data.error).toMatch(/Workflow scripts are turned off on this worker: an operator turned them off with PILOTSWARM_WORKFLOW_SCRIPTS=0/);
@@ -268,6 +270,10 @@ states:
             try {
                 const { sessionId } = await startLegacyAdmission(client, { yaml });
                 const view = await waitForTerminal(mgmt, sessionId);
+                // As the first case: the view's status comes before the finish activity writes the end event (CI run 114 on
+                // HorizonDB read none), so wait until the orchestration itself has completed, then read it.
+                const native = await client.duroxideClient.waitForOrchestration(`session-${sessionId}`, 30_000);
+                expect(native.status, JSON.stringify(native)).toBe("Completed");
                 const done = (await mgmt.getSessionEvents(sessionId, 0, 200, ["workflow.completed", "workflow.failed"]))[0];
                 expect(view.status, JSON.stringify(done?.data)).toBe("completed");
                 const output = JSON.parse(done.data.outputPreview);
