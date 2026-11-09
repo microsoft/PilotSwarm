@@ -282,7 +282,9 @@ function startDawn(ctx, output, cache) {
 // send: two rising notes. done: one low, warm chime.
 function playCue(ctx, output, name, wet, track = null) {
     const at = ctx.currentTime + 0.005;
-    if (name === "tick") {
+    if (name === "accent") {
+        bell(ctx, output, at, 1760, 0.05, 0.35, 2.4, track);
+    } else if (name === "tick") {
         bell(ctx, output, at, 2300 + Math.random() * 500, 0.07, 0.07, 2.4, track);
     } else if (name === "send") {
         bell(ctx, output, at, 880, 0.09, 0.45, 2.76, track);
@@ -509,6 +511,7 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
         cue(name) {
             const gap = THEME_SOUND_CUES[name];
             if (gap === undefined || !enabled || !sound?.cues || !doc || doc.hidden) return false;
+            if (name === "accent" && sound.id !== "dawn") return false;
             if (!ctx || ctx.state !== "running") return false;
             const now = Date.now();
             if (now - (lastCue[name] ?? -Infinity) < gap) return false;

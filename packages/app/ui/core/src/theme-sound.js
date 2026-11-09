@@ -112,4 +112,4 @@ export function nextDawnStarGapMs(random = Math.random) {
 }
 
 /** Cue names a theme with `cues: true` answers, and the least gap between two of a kind. */
-export const THEME_SOUND_CUES = Object.freeze({ tick: 45, send: 250, done: 800 });
+export const THEME_SOUND_CUES = Object.freeze({ tick: 45, send: 250, done: 800, accent: 30_000 });

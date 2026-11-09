@@ -39,6 +39,13 @@ rev/dataRev, and dismissal opt-outs) merged max-wins across devices. A catalog
 cache records slot names and latest revisions for efficient cold loads; the
 durable event stream remains authoritative.
 
+When several canvases are drawn, the portal shows a native slot picker and
+previous/next arrows. If the picker has 88 px or less of available width, its
+face folds to a down-chevron with a minimum 44 px width. The native menu
+retains full names, selection and unseen markers; widening it restores the
+label without changing the selected slot. This depends on the control's
+available width, not the screen width.
+
 ## Tools
 
 All four tools accept `slot` 1–5 and default to slot 1.

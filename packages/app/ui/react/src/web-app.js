@@ -1288,16 +1288,29 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     React.useLayoutEffect(() => {
         const node = ref.current;
         if (!node || typeof ResizeObserver === "undefined") return;
-        viewportSizeRef.current = { width: node.clientWidth, height: node.clientHeight };
+        viewportSizeRef.current = { width: node.clientWidth, height: node.clientHeight, contentHeight: node.scrollHeight };
         const observer = new ResizeObserver(() => {
-            const next = { width: node.clientWidth, height: node.clientHeight };
+            const next = { width: node.clientWidth, height: node.clientHeight, contentHeight: node.scrollHeight };
             const previous = viewportSizeRef.current;
-            if (next.width === previous.width && next.height === previous.height) return;
+            if (next.width === previous.width && next.height === previous.height
+                && next.contentHeight === previous.contentHeight) return;
             viewportSizeRef.current = next;
             setViewportRevision((revision) => revision + 1);
         });
         observer.observe(node);
-        return () => observer.disconnect();
+        const observed = new Set();
+        const observeContent = () => {
+            for (const child of observed) {
+                if (child.parentElement !== node) { observer.unobserve(child); observed.delete(child); }
+            }
+            for (const child of node.children) {
+                if (!observed.has(child)) { observer.observe(child); observed.add(child); }
+            }
+        };
+        observeContent();
+        const mutations = new MutationObserver(observeContent);
+        mutations.observe(node, { childList: true });
+        return () => { mutations.disconnect(); observer.disconnect(); };
     }, [ref]);
 
     React.useLayoutEffect(() => {
@@ -1363,6 +1376,8 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         if (
             !pageArrived && !prependedWhilePaused
             && interacting
+            && !(stickyBottom && scrollMode === "bottom" && !interaction.touching
+                && previousContent && previousContent.scrollHeight !== node.scrollHeight)
             && scrollMode === previousViewportState?.scrollMode
             && (scrollOffset === previousViewportState?.scrollOffset || isEchoOffset)
         ) {
@@ -1674,8 +1689,8 @@ function SystemNoticeLine({ line, theme }) {
 function ChatActivityRun({ calls }) {
     const latest = calls[calls.length - 1] || {};
     const active = latest.status === "Called" || latest.status === "Started";
-    const failed = calls.some((call) => call.status === "Failed");
-    const [open, setOpen] = React.useState(active);
+    const failed = latest.status === "Failed";
+    const [open, setOpen] = React.useState(false);
     const viewportRef = React.useRef(null);
     const followRef = React.useRef(true);
     const categories = new Set(calls.map((call) => call.category || "Tool"));
@@ -1696,7 +1711,7 @@ function ChatActivityRun({ calls }) {
     return React.createElement("details", {
         className: `ps-native-tasks ps-activity-run${failed ? " is-failed" : active ? " is-working" : " is-done"}`,
         open,
-        onToggle: (event) => setOpen(event.currentTarget.open),
+        onToggle: (event) => { if (event.target === event.currentTarget) setOpen(event.currentTarget.open); },
     },
     React.createElement("summary", { className: "ps-native-tasks-header ps-activity-run-summary" },
         React.createElement("span", { className: "ps-native-tasks-title" },
@@ -8324,13 +8339,15 @@ function CanvasSlotControls({ controller, view, compact = false }) {
             type: "button", className: "ps-artifact-pane-btn",
             onClick: () => go(-1), title: "Previous canvas", "aria-label": "Previous canvas",
         }, "\u2039"),
-        React.createElement("select", {
-            className: "ps-canvas-slot-select",
-            value: view.slot,
-            onChange: (e) => controller.dispatch({ type: "ui/canvasSlot", slot: Number(e.target.value) }),
-            "aria-label": "Choose canvas",
-            title: "Choose canvas",
-        }, slots.map((s2) => React.createElement("option", { key: s2.slot, value: s2.slot }, labelFor(s2)))),
+        React.createElement("span", { className: "ps-canvas-slot-picker" },
+            React.createElement("select", {
+                className: "ps-canvas-slot-select",
+                value: view.slot,
+                onChange: (e) => controller.dispatch({ type: "ui/canvasSlot", slot: Number(e.target.value) }),
+                "aria-label": "Choose canvas",
+                title: `Choose canvas: ${labelFor(slots[at])}`,
+            }, slots.map((s2) => React.createElement("option", { key: s2.slot, value: s2.slot }, labelFor(s2)))),
+            React.createElement("span", { className: "ps-canvas-slot-chevron", "aria-hidden": "true" }, "\u2304")),
         React.createElement("button", {
             type: "button", className: "ps-artifact-pane-btn",
             onClick: () => go(1), title: "Next canvas", "aria-label": "Next canvas",

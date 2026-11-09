@@ -9122,7 +9122,7 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
      heading, and paint straight under the actions cluster — the zoom's
      "100%" rendered inside the select pill. The arrows stay fixed; the
      select gives. */
-  min-width: 0;
+  min-width: 100px;
   flex: 0 1 auto;
 }
 
@@ -9139,6 +9139,46 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   padding: 0 4px;
   height: 20px;
   text-overflow: ellipsis;
+}
+
+.ps-canvas-slot-picker {
+  container: canvas-picker / inline-size;
+  position: relative;
+  display: inline-flex;
+  flex: 0 1 140px;
+  width: 140px;
+  min-width: 44px;
+  max-width: 140px;
+  /* WebKit's native option text must not scroll the surrounding heading
+     when focus moves from the transparent select to an arrow button. */
+  overflow: clip;
+  color: var(--ps-foreground);
+  border-radius: 5px;
+}
+
+.ps-canvas-slot-picker > .ps-canvas-slot-select {
+  width: 100%;
+  max-width: none;
+}
+
+.ps-canvas-slot-chevron {
+  display: none;
+  position: absolute;
+  inset: 0;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+/* Keep the native picker and its full option labels; only fold its face. */
+@container canvas-picker (max-width: 88px) {
+  .ps-canvas-slot-picker > .ps-canvas-slot-select { opacity: 0; }
+  .ps-canvas-slot-chevron { display: flex; }
+}
+
+.ps-canvas-slot-picker:focus-within {
+  outline: 2px solid var(--ps-selection-background);
+  outline-offset: 2px;
 }
 
 /* The canvas marker on a session row.
@@ -9236,15 +9276,15 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
 
 /* The header's left side is narrow. When the controls do not fit, the
    canvas name gives way first (the picker names the canvas too), then the
-   picker's drop-down, down to 40px. Its arrows never shrink, so nothing
+   picker's drop-down, down to its chevron trigger. Its arrows never shrink, so nothing
    slides under the zoom control or out of the header's left side. */
 .ps-toolbar-canvas-slot .ps-toolbar-canvas-rev { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* The controls stay inside their flank: the flank is sized to keep Back /
    Forward on the screen's centre, and the controls shrink to fit it. */
 .ps-toolbar-side.is-left > .ps-toolbar-canvas-slot { min-width: 0; max-width: 100%; }
-.ps-toolbar-canvas-slot .ps-canvas-slot-controls { flex: 0 1 auto; min-width: 96px; /* two arrows and a 40px drop-down */ }
+.ps-toolbar-canvas-slot .ps-canvas-slot-controls { flex: 0 1 auto; min-width: 100px; /* two arrows and a 44px picker */ }
 .ps-toolbar-canvas-slot .ps-canvas-slot-controls > button { flex-shrink: 0; }
-.ps-toolbar-canvas-slot .ps-canvas-slot-select { flex: 0 1 96px; min-width: 40px; max-width: 96px; }
+.ps-toolbar-canvas-slot .ps-canvas-slot-picker { flex-basis: 96px; width: 96px; max-width: 96px; }
 .ps-toolbar-canvas-slot .ps-side-pane-tab { padding: 0 7px; }
 
 /* The line between the canvas controls and the standing tools. */
@@ -12243,6 +12283,57 @@ textarea.ps-link-input {
 }
 
 /* The header: sky, Orion and mountains, back to front. */
+.portal-header-accent {
+  display: none;
+  pointer-events: none;
+}
+:root[data-ps-theme="horizon-dawn"] .portal-header-accent {
+  display: block;
+  position: absolute;
+  inset: auto 0 0;
+  height: 10px;
+  overflow: hidden;
+  z-index: 2;
+  pointer-events: none;
+}
+.portal-header-accent-pass {
+  position: absolute;
+  left: 0;
+  bottom: 1px;
+  width: 100%;
+  height: 5px;
+  opacity: 0;
+}
+.portal-header-accent[data-active="true"] .portal-header-accent-pass {
+  animation: portal-header-accent-cross 5.5s linear both;
+}
+.portal-header-accent-dot {
+  position: absolute;
+  left: 0;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #c9faff;
+  box-shadow: 0 0 2px #79e7f2, 0 0 5px #79e7f25c, 0 0 8px #79e7f21a;
+}
+.portal-header-accent-trail {
+  position: absolute;
+  left: -118px;
+  top: 2px;
+  width: 120px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #79e7f214 20%, #79e7f259 66%, #79e7f2);
+  box-shadow: 0 0 3px #79e7f22e;
+}
+@keyframes portal-header-accent-cross {
+  0% { transform: translateX(-8px); opacity: 0; }
+  4% { opacity: 1; }
+  96% { opacity: 1; }
+  100% { transform: translateX(calc(100% + 120px)); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-ps-theme="horizon-dawn"] .portal-header-accent { display: none; }
+}
 :root[data-ps-theme="horizon-dawn"] .portal-header {
   position: relative;
   isolation: isolate;
@@ -12372,10 +12463,11 @@ textarea.ps-link-input {
   background: #1c4865;
   border-color: #5cc8f2;
 }
-:root[data-ps-theme="horizon-dawn"] .ps-list-button.is-selected {
-  background: linear-gradient(90deg, #1c4865, #153d59);
+:root[data-ps-theme="horizon-dawn"] .ps-list-button.is-selected,
+:root[data-ps-theme="horizon-dawn"] .ps-session-pane .ps-session-list-button.is-selected {
+  background: linear-gradient(90deg, #21465f, #18384f);
   border-color: #5cc8f28c;
-  box-shadow: inset 3px 0 0 #5cc8f2;
+  box-shadow: inset 0 0 0 1px #5cc8f273, inset 3px 0 0 #79e7f2;
 }
 :root[data-ps-theme="horizon-dawn"] .ps-session-list-button { border-radius: 8px; }
 /* State signals survive the theme's resting styles: the focused pane, the
@@ -12417,7 +12509,7 @@ textarea.ps-link-input {
   :root[data-ps-theme="horizon-dawn"] .portal-header::before {
     background-image: var(--dawn-mountains-front), var(--dawn-mountains-back), var(--dawn-orion-phone), var(--dawn-sky);
     background-size: 100% 26px, 100% 46px, 120px 100px, 2000px 100px;
-    background-position: center bottom, center bottom, center top, center top;
+    background-position: center bottom, center bottom, calc(50% + 28px) top, center top;
     background-repeat: no-repeat, no-repeat, no-repeat, repeat;
   }
   :root[data-ps-theme="horizon-dawn"] .ps-panel { border-radius: 12px; background: #101d31; }

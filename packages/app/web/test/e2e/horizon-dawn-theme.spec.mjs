@@ -15,17 +15,22 @@ let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 2, transcriptTurns: 1 }); });
 test.afterAll(async () => { if (stub) await new Promise(resolve => stub.server.close(resolve)); });
 
-async function openTheme(page, viewport) {
+async function openTheme(page, viewport, soundOn = true, activeSessionId = sessionId) {
+    const soundSettings = typeof soundOn === "boolean"
+        ? { themeSound: { on: soundOn, volume: 40 }, themeSoundMobile: { on: soundOn, volume: 40 } }
+        : soundOn;
     const failed = [];
     page.on("requestfailed", request => failed.push(request.url()));
     page.on("response", response => { if (response.status() >= 400 && /horizon-dawn|sora|\.svg|\.woff2/i.test(response.url())) failed.push(`${response.status()} ${response.url()}`); });
     await page.route("**/api/v1/**", route => {
         const url = new URL(route.request().url());
-        if (url.pathname.endsWith("/me/profile")) return route.fulfill({ json: { ok: true, result: { profileSettings: { themeId: "horizon-dawn" } } } });
+        if (url.pathname.endsWith("/me/profile")) return route.fulfill({ json: { ok: true, result: { profileSettings: {
+            themeId: "horizon-dawn", ...soundSettings,
+        } } } });
         return route.fallback();
     });
     await page.setViewportSize(viewport);
-    await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${activeSessionId}`);
     await expect(page.locator("html")).toHaveAttribute("data-ps-theme", "horizon-dawn");
     await page.evaluate(() => document.fonts.ready);
     return failed;
@@ -36,6 +41,155 @@ const layers = page => page.locator(".portal-header").evaluate(header => getComp
 // the large ones as hashed files, so a layer is found by either form.
 const art = name => new RegExp(`hd-${name}(?![-a-z])|/${name}-[A-Za-z0-9_-]{8}\\.svg`);
 const where = (images, name) => images.search(art(name));
+
+test("selected session: the stronger theme fill survives pinned and hovered row styles", async ({ page }) => {
+    await openTheme(page, { width: 1440, height: 900 }, true, "11111110-2222-3333-4444-555555555550");
+    const row = page.locator(".ps-session-list-button.is-selected").first();
+    await expect(row).toBeVisible();
+    const before = await row.boundingBox();
+    const style = () => row.evaluate(el => {
+        const s = getComputedStyle(el);
+        return { fill: s.backgroundImage, shadow: s.boxShadow, color: s.color };
+    });
+    const selected = await style();
+    expect(selected.fill).toContain("rgb(33, 70, 95)");
+    expect(selected.fill).toContain("rgb(24, 56, 79)");
+    expect(selected.shadow).toContain("rgb(121, 231, 242)");
+    await row.evaluate(el => el.classList.add("is-pinned"));
+    await row.hover();
+    expect(await style()).toEqual(selected);
+    expect(await row.boundingBox()).toEqual(before);
+    const other = page.locator(".ps-session-list-button:not(.is-selected)").first();
+    expect(await other.evaluate(el => getComputedStyle(el).backgroundImage)).not.toBe(selected.fill);
+});
+
+async function trackAccentDings(page) {
+    await page.addInitScript(() => {
+        Math.random = () => 0;
+        window.accentDings = 0;
+        const create = AudioContext.prototype.createOscillator;
+        AudioContext.prototype.createOscillator = function () {
+            const osc = create.call(this);
+            const start = osc.start.bind(osc);
+            osc.start = (...args) => {
+                if (osc.type === "sine" && osc.frequency.value === 1760) window.accentDings += 1;
+                return start(...args);
+            };
+            return osc;
+        };
+    });
+    await page.clock.install();
+}
+
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }])
+for (const soundOn of [true, false]) test(`cyan accent ${viewport.width}px: appearance cue respects sounds ${soundOn ? "on" : "off"}`, async ({ page }) => {
+    await trackAccentDings(page);
+    await openTheme(page, viewport, soundOn);
+    await page.locator(".portal-header-brand").click();
+    await page.clock.runFor(500);
+    await page.clock.fastForward(30_001);
+    await expect(page.locator(".portal-header-accent")).toHaveAttribute("data-active", "true");
+    expect(await page.evaluate(() => window.accentDings)).toBe(soundOn ? 1 : 0);
+});
+
+for (const mode of ["keyboard takeover", "hidden page chrome"])
+for (const active of [false, true]) test(`cyan accent: ${mode} stops ${active ? "an active pass" : "a waiting pass"} and its cue`, async ({ page }) => {
+    await trackAccentDings(page);
+    await openTheme(page, mode === "keyboard takeover" ? { width: 390, height: 844 } : { width: 1440, height: 900 });
+    await page.locator(".portal-header-brand").click();
+    await page.clock.runFor(500);
+    const accent = page.locator(".portal-header-accent");
+    await expect(accent).toHaveAttribute("data-enabled", "true");
+    if (active) {
+        await page.clock.fastForward(30_001);
+        await expect(accent).toHaveAttribute("data-active", "true");
+    }
+    const count = await page.evaluate(() => window.accentDings);
+    await page.evaluate(mode => {
+        if (mode === "keyboard takeover") document.body.classList.add("ps-kb-takeover");
+        else document.querySelector(".portal-app-shell").classList.add("is-chromeless");
+    }, mode);
+    await page.clock.runFor(100);
+    await expect(page.locator(".portal-header")).toBeHidden();
+    await expect(accent).toHaveAttribute("data-enabled", "false");
+    await expect(accent).toHaveAttribute("data-active", "false");
+    await page.clock.fastForward(65_000);
+    expect(await page.evaluate(() => window.accentDings)).toBe(count);
+    await page.evaluate(mode => {
+        if (mode === "keyboard takeover") document.body.classList.remove("ps-kb-takeover");
+        else document.querySelector(".portal-app-shell").classList.remove("is-chromeless");
+    }, mode);
+    await page.clock.runFor(100);
+    await expect(accent).toHaveAttribute("data-enabled", "true");
+    await page.clock.fastForward(29_000);
+    await expect(accent).not.toHaveAttribute("data-active", "true");
+    await page.clock.runFor(1_500);
+    await expect(accent).toHaveAttribute("data-active", "true");
+    expect(await page.evaluate(() => window.accentDings)).toBe(count + 1);
+});
+
+for (const width of [390, 1440]) test(`cyan accent ${width}px: cue uses this device's sound preference`, async ({ page }) => {
+    await trackAccentDings(page);
+    await openTheme(page, { width, height: 900 }, {
+        themeSound: { on: width === 390, volume: 40 },
+        themeSoundMobile: { on: width !== 390, volume: 40 },
+    });
+    await page.locator(".portal-header-brand").click();
+    await page.clock.runFor(500);
+    await page.clock.fastForward(30_001);
+    await expect(page.locator(".portal-header-accent")).toHaveAttribute("data-active", "true");
+    expect(await page.evaluate(() => window.accentDings)).toBe(0);
+});
+
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    test(`cyan accent ${viewport.width}px: solid dot and fading trail stay in the header without changing geometry`, async ({ page }) => {
+        await openTheme(page, viewport);
+        const accent = page.locator(".portal-header-accent");
+        await expect(accent).toHaveAttribute("aria-hidden", "true");
+        const before = await page.locator(".portal-header").boundingBox();
+        await accent.evaluate(el => { el.dataset.active = "true"; });
+        const look = await accent.evaluate(el => {
+            const style = node => getComputedStyle(node);
+            const box = el.getBoundingClientRect(), header = el.parentElement.getBoundingClientRect();
+            const dot = el.querySelector(".portal-header-accent-dot"), tail = el.querySelector(".portal-header-accent-trail");
+            return {
+                pointerEvents: style(el).pointerEvents, inside: box.top >= header.top && box.bottom <= header.bottom,
+                dotWidth: style(dot).width, dotHeight: style(dot).height, color: style(dot).backgroundColor,
+                trailWidth: style(tail).width, animation: style(el.querySelector(".portal-header-accent-pass")).animationName,
+            };
+        });
+        expect(look).toEqual({
+            pointerEvents: "none", inside: true, dotWidth: "5px", dotHeight: "5px",
+            color: "rgb(201, 250, 255)", trailWidth: "120px", animation: "portal-header-accent-cross",
+        });
+        expect(await page.locator(".portal-header").boundingBox()).toEqual(before);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
+    });
+}
+
+test("cyan accent: no early pass or immediate repeat, and reduced motion cancels it", async ({ page }) => {
+    await page.addInitScript(() => { Math.random = () => 0; });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.clock.install({ time: new Date("2026-01-01T00:00:00Z") });
+    await page.clock.pauseAt(new Date("2026-01-01T00:00:01Z"));
+    await openTheme(page, { width: 1440, height: 900 });
+    const accent = page.locator(".portal-header-accent");
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await expect(accent).toHaveAttribute("data-enabled", "true");
+    await page.clock.fastForward(29_000);
+    await expect(accent).not.toHaveAttribute("data-active", "true");
+    await page.clock.runFor(1_500);
+    await expect(accent).toHaveAttribute("data-active", "true");
+    await page.clock.runFor(5_500);
+    await expect(accent).toHaveAttribute("data-active", "false");
+    await page.clock.fastForward(29_000);
+    await expect(accent).not.toHaveAttribute("data-active", "true");
+    await page.clock.runFor(1_500);
+    await expect(accent).toHaveAttribute("data-active", "true");
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await expect(accent).toBeHidden();
+    await expect(accent).toHaveAttribute("data-active", "false");
+});
 
 test("desktop: no words in the scenery, a compact header, and every layer from the bundle", async ({ page }) => {
     const failed = await openTheme(page, { width: 1440, height: 900 });
