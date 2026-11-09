@@ -4155,5 +4155,532 @@
   "expected": "PASS",
   "note": "E1c at 412f7b00 with two owners: every waiter is served, refused or aborted.",
   "batch": "r3"
+ },
+ {
+  "id": "impl.graph-delete-after-cmd",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "impl.graph-delete-after-cmd.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_EndReported"
+  ],
+  "expected": "PASS",
+  "note": "R3-GR1 at a9f60db7 (5a7be64b): a cancel accepted, then the workflow deleted before observeEnd; the run's end is the cancel's (not runEndedByDeletion), so the cancel's end is told.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.graph-delete-after-retry",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "impl.graph-delete-after-retry.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_EndReported"
+  ],
+  "expected": "PASS",
+  "note": "R3-GR1 at a9f60db7, own end: the finish commits completed, the worker crashes, the workflow is deleted, the retry answers elsewhere; observeEnd reads a completed run, not deleted: the completion is told.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.graph-linear",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "impl.graph-linear.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport",
+   "Inv_NoAdmitAfterAccept",
+   "Inv_NoCollectAfterEnd",
+   "Inv_NoRouteWhilePaused",
+   "Inv_NoFailWhilePaused",
+   "Inv_ReportOnlyEnded",
+   "Inv_ReportAfterChildren",
+   "Inv_DeletedNotReported",
+   "Inv_NoticeFollowsWinner",
+   "Prop_FirstEndWins"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7: graph.r3-linear's settings (every other end, deletions also after the end, retries): told at most once, only of an ended run, after its children, never of a deleted run, never by a losing command.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.graph-loop",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "impl.graph-loop.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport",
+   "Inv_NoAdmitAfterAccept",
+   "Inv_NoCollectAfterEnd",
+   "Inv_NoRouteWhilePaused",
+   "Inv_NoFailWhilePaused",
+   "Inv_ReportOnlyEnded",
+   "Inv_ReportAfterChildren",
+   "Inv_DeletedNotReported",
+   "Inv_NoticeFollowsWinner",
+   "Prop_FirstEndWins"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7: graph.r3-loop's settings (a loop that reaches its node limit): the same rules.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.graph-par",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "impl.graph-par.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport",
+   "Inv_NoAdmitAfterAccept",
+   "Inv_NoCollectAfterEnd",
+   "Inv_NoRouteWhilePaused",
+   "Inv_NoFailWhilePaused",
+   "Inv_ReportOnlyEnded",
+   "Inv_ReportAfterChildren",
+   "Inv_DeletedNotReported",
+   "Inv_NoticeFollowsWinner",
+   "Prop_FirstEndWins"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7: graph.r3-par's settings (a parallel state, two branches at once, failFast): the same rules.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.graph-live-linear",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "impl.graph-live-linear.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_ControllerEnds",
+   "Prop_RunEnds",
+   "Prop_CommandEnds",
+   "Prop_CommandTold",
+   "Prop_EndedElsewhereReported",
+   "Prop_EndReported",
+   "Prop_ChildrenEnded",
+   "Prop_DeletedChildrenEnded"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7: graph.r3-live-linear's settings: every end but a deletion is reported once after its children; a deletion ends the children only; the controller ends.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.graph-live-loop",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "impl.graph-live-loop.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_ControllerEnds",
+   "Prop_RunEnds",
+   "Prop_CommandEnds",
+   "Prop_CommandTold",
+   "Prop_EndedElsewhereReported",
+   "Prop_EndReported",
+   "Prop_ChildrenEnded",
+   "Prop_DeletedChildrenEnded"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7: graph.r3-live-loop's settings: the same progress rules.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.graph-live-par",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "impl.graph-live-par.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_ControllerEnds",
+   "Prop_RunEnds",
+   "Prop_CommandEnds",
+   "Prop_CommandTold",
+   "Prop_EndedElsewhereReported",
+   "Prop_EndReported",
+   "Prop_ChildrenEnded",
+   "Prop_DeletedChildrenEnded"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7: graph.r3-live-par's settings: the same progress rules.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.graph-live-linear-all",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "impl.graph-live-linear-all.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_ControllerEnds",
+   "Prop_RunEnds",
+   "Prop_CommandEnds",
+   "Prop_CommandTold",
+   "Prop_EndedElsewhereReported",
+   "Prop_EndReported",
+   "Prop_ChildrenEnded",
+   "Prop_DeletedChildrenEnded"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7: graph.r3-live-linear with a deletion after the end too (excluded at 9a8d0f66 by R3-GR1): every progress rule holds.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.graph-chat-reported",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "impl.graph-chat-reported.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_EndedElsewhereReported"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7: the owning chat's end is reported by the controller (endedElsewhere -> reportEnded).",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.graph-finish-deleted",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "impl.graph-finish-deleted.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "TypeOK",
+   "Inv_DeletedNotReported",
+   "Inv_OneReport",
+   "Inv_ReportOnlyEnded"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7: a finish that finds the run deleted (the deletion ended it: runEndedByDeletion) tells no one.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.graph-queue-loser",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "impl.graph-queue-loser.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "TypeOK",
+   "Inv_NoticeFollowsWinner",
+   "Inv_DeletedNotReported",
+   "Inv_OneReport",
+   "Inv_ReportOnlyEnded",
+   "Inv_NoCollectAfterEnd"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7: a queued cancel that lost to the chat's end or a deletion: the stored end decides the notice.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.parent-told-once",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "impl.parent-told-once.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "TypeOK",
+   "Inv_EndedIsLast",
+   "Inv_GivenOnce",
+   "Inv_SkipMeansNotGiven",
+   "Inv_NotifiedXorSkipped",
+   "Inv_NoDecisionAfterExpiry",
+   "Inv_NotedMeansKept",
+   "Inv_NoNoteAfterGone",
+   "Inv_NoteGivenConsumed",
+   "Inv_NoteIsLast",
+   "Inv_ToldOnce"
+  ],
+  "expected": "PASS",
+  "note": "R3-PA1 at a9f60db7 (30660458): the note and its skip are one transaction (keepNoticeAsNote), so a crash leaves neither; the end is given once.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.parent-safety-send",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "impl.parent-safety-send.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "TypeOK",
+   "Inv_EndedIsLast",
+   "Inv_GivenOnce",
+   "Inv_SkipMeansNotGiven",
+   "Inv_NotifiedXorSkipped",
+   "Inv_NoDecisionAfterExpiry",
+   "Inv_NotedMeansKept",
+   "Inv_NoNoteAfterGone",
+   "Inv_NoteGivenConsumed",
+   "Inv_NoteIsLast",
+   "Inv_ToldOnce"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7: parent.r3-safety-send's settings; every safety rule, told-once included.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.parent-safety-request",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "impl.parent-safety-request.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "TypeOK",
+   "Inv_EndedIsLast",
+   "Inv_GivenOnce",
+   "Inv_SkipMeansNotGiven",
+   "Inv_NotifiedXorSkipped",
+   "Inv_NoDecisionAfterExpiry",
+   "Inv_NotedMeansKept",
+   "Inv_NoNoteAfterGone",
+   "Inv_NoteGivenConsumed",
+   "Inv_NoteIsLast",
+   "Inv_ToldOnce"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7: parent.r3-safety-request's settings (a request, its deadline, clock steps); every safety rule, told-once included.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.parent-live-send",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "impl.parent-live-send.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_ParentToldEnd",
+   "Prop_NoteGivenAtTurn",
+   "Prop_ParentLearnsEnd"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7: parent.r3-live-send's settings: a late parent is given the end through its note, a started one through the notice.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.parent-live-request-n1",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "impl.parent-live-request-n1.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_ParentToldEnd",
+   "Prop_NoteGivenAtTurn",
+   "Prop_ParentLearnsEnd"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7: parent.r3-live-request-n1's settings (one notifier; the two-notifier case did not finish in 1,800 s at 9a8d0f66).",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.parent-live-off",
+  "module": "WfParent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "impl.parent-live-off.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_ParentToldEnd"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7 with notifications off: the skip is recorded, no note is kept.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.paused-cut-done-child",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "impl.paused-cut-done-child.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_DoneChildEnded"
+  ],
+  "expected": "PASS",
+  "note": "R3-PS1 at a9f60db7 (0944f872): a branch state completed after the paused collection and cut by the time limit: the cut returns it (completed, end_sent_at NULL) and ends its child while paused.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.paused-cut-timedout-endfail",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "impl.paused-cut-timedout-endfail.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_TimedOutChildEnded"
+  ],
+  "expected": "PASS",
+  "note": "R3-PS1 at a9f60db7: a timed-out branch state whose end failed on the paused pass is ended by the cut of the same pass.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.paused-cut-done-running",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "impl.paused-cut-done-running.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_DoneChildEnded"
+  ],
+  "expected": "PASS",
+  "note": "R3-PS1 at a9f60db7, no pause: a completed, uncollected branch state's child is ended by the cut.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.paused-safety",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "impl.paused-safety.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "TypeOK",
+   "Inv_NoAdmissionWhilePaused",
+   "Inv_NoChildAfterTimeoutRouted",
+   "Inv_NoRouteWhilePaused",
+   "Inv_NoRouteAfterEnd",
+   "Inv_TimedJoinCut",
+   "Inv_ParallelRoutedAfterCut",
+   "Inv_CutNotRouted"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7: paused.r3-safety's settings: nothing admitted or routed while paused or after the end; a timed join cuts at once; a cut result goes nowhere.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.paused-live-paused",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "impl.paused-live-paused.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_DeadlineEnforced",
+   "Prop_TimedOutChildEnded",
+   "Prop_DoneChildEnded"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7, permanently paused: the paused pass elapses the state and ends its child; a failed end is tried again.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.paused-live-any",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "impl.paused-live-any.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_DeadlineEnforced",
+   "Prop_TimedOutChildEnded",
+   "Prop_DoneChildEnded"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7: a pause at any time and a resume; every deadline enforced and every decided child ended.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.paused-timed-live",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "impl.paused-timed-live.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_DeadlineEnforced",
+   "Prop_TimedOutChildEnded",
+   "Prop_TimedJoinDecided",
+   "Prop_CutChildEnded",
+   "Prop_OwedCutMade"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7, permanently paused: the time limit decides and cuts; a cut child's failed end is owed and made.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.paused-resume-routed",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "ResumeSpec",
+  "config": "impl.paused-resume-routed.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_DecidedRouted",
+   "Prop_ParallelRouted",
+   "Prop_TimedJoinDecided",
+   "Prop_CutChildEnded",
+   "Prop_OwedCutMade"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7 with a resume: a result the pause held is routed after the resume (or its branch was cut); the parallel state's own result too.",
+  "batch": "r4"
+ },
+ {
+  "id": "impl.paused-ended",
+  "module": "WfPaused",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "impl.paused-ended.cfg",
+  "head": "a9f60db7",
+  "properties": [
+   "Prop_EndedReported"
+  ],
+  "expected": "PASS",
+  "note": "a9f60db7: a run another writer ended is found and reported (endedElsewhere).",
+  "batch": "r4"
  }
 ]

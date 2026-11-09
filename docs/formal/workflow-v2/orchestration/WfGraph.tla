@@ -42,6 +42,10 @@
 (* and cancel answer so, expire and stop report their own end again).     *)
 (* Named branches and named forks (66842522, 571ed468) are not modeled    *)
 (* here (the fork-join folder covers them).                               *)
+(* r4: Elsewhere "a9f60db7" is the branch head: "any" plus the R3-GR1     *)
+(* fix (5a7be64b): observeEnd's `deleted` holds only when the deletion    *)
+(* ended the run (runEndedByDeletion) or the run is still active; a       *)
+(* deletion after another end keeps that end's notice (ObservedReports).  *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -55,7 +59,8 @@ CONSTANTS
     Cmd,            \* lifecycle commands: "queue" (queued, applied by the controller) or "direct" (S7-DX2 1ef53967: acceptance ends the run)
     AllowLoseHint,  \* a queued command may be lost (continue-as-new behind 100 unread messages, or never read)
     Fault,          \* "none" or a deliberate fault
-    Elsewhere,      \* r3: endedElsewhere's rule: "command" (1ef53967) or "any" (9a8d0f66, S7-DX3)
+    Elsewhere,      \* r3: endedElsewhere's rule: "command" (1ef53967) or "any" (9a8d0f66, S7-DX3);
+                    \* r4: "a9f60db7" ("any" with the R3-GR1 fix 5a7be64b)
     OtherEnds       \* r3: subset of {"chat", "delete_after", "retry"} (see the header)
 
 Faults == {"none", "no_limit", "branch_catchall", "join_early", "no_dropped",
@@ -64,9 +69,13 @@ ASSUME Fault \in Faults
 ASSUME Cmd \in {"queue", "direct"} /\ AllowLoseHint \in BOOLEAN
 ASSUME Limit \in Nat \ {0} /\ K \in Nat \ {0} /\ Conc \in 1..K
 ASSUME Plan \in {"linear", "catch", "catchf", "loop", "par", "parc"}
-ASSUME Elsewhere \in {"command", "any"} /\ OtherEnds \subseteq {"chat", "delete_after", "retry"}
+ASSUME Elsewhere \in {"command", "any", "a9f60db7"} /\ OtherEnds \subseteq {"chat", "delete_after", "retry"}
 
 NONE == "none"
+\* S7-DX3 (9a8d0f66) and every later head: a store answer `elsewhere` goes to endedElsewhere
+DX3 == Elsewhere \in {"any", "a9f60db7"}
+\* R3-GR1 fix (5a7be64b, in a9f60db7): observeEnd calls the end the deletion's only when the deletion ended the run
+GR1 == Elsewhere = "a9f60db7"
 Ids == 1..(Limit + 1)
 Branches == 1..K
 Scopes == 0..K
@@ -190,16 +199,24 @@ Report == notified' = notified + 1
 (* answers `elsewhere` (finish, finishRun, cancel at 9a8d0f66), so the    *)
 (* controller goes to endedElsewhere instead. At 1ef53967 those answers   *)
 (* carried no such flag and the retry reported as the first attempt.      *)
-OwnEndPcs == IF "retry" \in OtherEnds /\ Elsewhere = "any" THEN {"children", "observe"} ELSE {"children"}
+OwnEndPcs == IF "retry" \in OtherEnds /\ DX3 THEN {"children", "observe"} ELSE {"children"}
 (* A finish, finishRun or cancel that finds the run already ended:       *)
 (* 1ef53967 reports it as its own end (reportEnded, or applyCommand's    *)
 (* notice with the command's requester); 9a8d0f66 goes to endedElsewhere *)
 (* (S7-DX3 N-1, N-2).                                                     *)
-FoundEndedPc == IF Elsewhere = "any" THEN "observe" ELSE "children"
+FoundEndedPc == IF DX3 THEN "observe" ELSE "children"
 (* endedElsewhere's rule after observeEnd. 1ef53967 (S7-DX2): the notice  *)
 (* only after an accepted command's end (commandEndOf). 9a8d0f66          *)
 (* (S7-DX3): unless the workflow session is deleted when observeEnd runs. *)
-ObservedReports == IF Elsewhere = "any" THEN ~wfDel ELSE (Cmd = "direct" /\ cmdEnd)
+(* a9f60db7 (R3-GR1 fix, 5a7be64b): deleted = linkDeleted /\ (the run is  *)
+(* active \/ runEndedByDeletion(run)): the deletion mark counts only when *)
+(* the deletion ended the run (runSt "deleted": the deletion trigger's    *)
+(* end, or a delete command's) or the run is still active (never at pc    *)
+(* "observe" here: every path to it reads the run ended).                 *)
+ObservedReports ==
+    IF GR1 THEN ~(wfDel /\ (runSt \in Live \/ runSt = "deleted"))
+    ELSE IF Elsewhere = "any" THEN ~wfDel
+    ELSE (Cmd = "direct" /\ cmdEnd)
 
 PendingIds == {cur[s].pend : s \in {t \in Scopes : cur[t].on}} \ {0}
 Owner(i) == {s \in Scopes : cur[s].on /\ cur[s].pend = i}
@@ -421,7 +438,7 @@ Join ==
 Collect ==
     /\ pc = "collect"
     /\ LET got == {i \in PendingIds : ne[i].st = "done"}
-       IN IF (Cmd = "direct" \/ Elsewhere = "any") /\ runSt \notin Live
+       IN IF (Cmd = "direct" \/ DX3) /\ runSt \notin Live
             THEN \* S7-DX2: 1.9.0's collect reports an ended run first; none of its results is routed (endedElsewhere)
                  /\ pc' = "observe"
                  /\ UNCHANGED <<batch, stopping, dropped, runSt, ne, pausedRoute>>

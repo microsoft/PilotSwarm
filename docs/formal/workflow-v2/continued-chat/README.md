@@ -1,7 +1,7 @@
 # The continued agent session (session lifecycle "continue")
 
 `WfContinuedChat.tla` models an agent state whose visits in one run go to one agent session, the default for an
-agent state in the outer graph. `CORRESPONDENCE-9a8d0f66.md` maps it to the code. A TLC pass is a bounded check, not a
+agent state in the outer graph. `CORRESPONDENCE-0df9e8a4.md` maps it to the code. A TLC pass is a bounded check, not a
 proof.
 
 ## What is checked
@@ -16,17 +16,31 @@ proof.
 | `Inv_PromptNotDropped`, `Inv_NoLoudFail` | A visit's prompt is not dropped, and a visit does not wait out the spawn retries, because its agent session ended between its admission and its spawn (G1). |
 | `Inv_NoPromptBehindStaleTurn` | A later visit's prompt never waits behind a decided visit's turn whose Stop was never sent (G2). |
 | `Inv_StopAtRunEnd` | A visit ended by the run's end stops its running turn (G5). |
+| `Inv_NoRevive` | A deleted agent session is never brought back (DRR-1). |
+| `Inv_NoOrphanRun` | No orchestration is started for a deleted agent session and left running. |
+| `Prop_OrphanEnded` | Such an orchestration is ended in the end. |
+| `Inv_NoTurnOnDeleted` | No model turn runs on a deleted agent session (DR2-001). |
+| `Inv_NoAbandonedLive`, `Inv_NoFailOnLive` | A replacement never leaves the previous agent session live with no end on its way, and a visit never fails at once on a live agent session with no end on its way (DRR-2). |
 | `Prop_AllEnded`, `Prop_OthersEnded` | After the run ends, every agent session is ended (G3). |
 | `Prop_OwedSent` | An owed end is eventually sent. |
 | `Prop_VisitsDecided` | Every visit is decided (guaranteed by the time limit). |
 
 Constants switch on a person's end or delete, a stop or cancel, failing Stops and a failing end, and each proposed
-fix (`SpawnRecheck`, `StopBeforeSpawn`, `PerChatEnd`, `StopAtRunEnd`). `gen-cases.py <commit>` writes the settings
-files, `cases.tsv` and `cases.json`.
+fix (`SpawnRecheck`, `StopBeforeSpawn`, `PerChatEnd`, `StopAtRunEnd`, and `EndMark` for the G1 residual).
+`SplitSpawn` takes the spawn as three steps (the check, the child create, the send) and `MarkSplit` a person's end as
+two (the mark, the command), so that other steps can run between them; `CheckAll`, `Fence`, `Backstop`,
+`AllowSpawnCrash`, `MarkFail`, `Withdraw`, `Outbox`, `Carry`, `CarryDelete`, `TurnGuard`, `MarkCreating` and `CarryNotFound` describe the DRR-1 and DRR-2 code and fixes (see the module
+header). `Inv_OneLive` does not count an agent session whose end command is on its way.
+`RecheckSeesEnding` says whether the spawn's check sees an agent session whose end was asked while one of its turns
+runs (the code: no, its orchestration reads Running until the turn ends). The settings files, `cases.tsv` and
+`cases.json` (89 cases) are written by
+
+    G1B_HEAD=7024ef6f DRR1_HEAD=69d07073 DRR2_HEAD=5451a22e DRR1B_HEAD=7bd79a46 \
+      DRR1C_HEAD=9b2ca643 DR2FIX_HEAD=781441bf python3 gen-cases.py 9a8d0f66
 
 ## Results
 
-Design run, bound to `a1772a01` (unchanged at `9a8d0f66`; 2026-11-09; TLC 2.19, two workers, 300 s per case): 27 of 27 as expected, no
+Design run, bound to `a1772a01` (2026-11-09; TLC 2.19, two workers, 300 s per case): 27 of 27 as expected, no
 timeouts. Largest case `fix.all`, 70,558 distinct states, 63 s.
 
 | Group | Cases | Result |
@@ -38,7 +52,7 @@ timeouts. Largest case `fix.all`, 70,558 distinct states, 63 s.
 | Deliberate faults (`fault.*`) | 5 | each fails on its property |
 | Witnesses (`wit.*`) | 4 | reached |
 
-Findings (each from the code at `a1772a01`, the same at `9a8d0f66`, confirmed in the model; the fixes are decided by the owner):
+Findings (each from the code at `a1772a01`, confirmed in the model; each is fixed, see "Fixes" below):
 
 - G1: an agent session that ends between a visit's admission and its spawn. Ended by a person: the spawn retries
   about 31 minutes, then the visit fails unavailable. Deleted by a person: the row is brought back as running, the
@@ -52,6 +66,53 @@ Findings (each from the code at `a1772a01`, the same at `9a8d0f66`, confirmed in
 - G4 (at most 50 detached end retries per agent session) is not reachable in practice: one is started per recover
   after a 31-minute retry ends; an end that stays owed concerns an agent session that never became visible, so
   nothing runs.
+
+## Fixes (2026-11-09)
+
+| Finding | Fix on the pull request branch | Cases (all pass) |
+|---|---|---|
+| G1 | `15a306c2`: before a later visit's prompt, the spawn checks the agent session its admission chose; if it was deleted or ended since, the visit fails `unavailable` at once with nothing sent, and the next visit starts a new agent session | `impl.cc-g1`, `impl.cc-g1-deleted` |
+| G1 residual | `80019c84`: a person's, a parent's or the Workflow's `done` or `cancel` is recorded on the agent session before its command is queued, and admission and the spawn's check read that mark | `impl.cc-g1b-end-during-turn`, `impl.cc-g1b-safety`, `impl.cc-g1b-live` |
+| G2 | `f4265d64`: an earlier visit whose end was not sent is ended before the next visit's prompt; a failure retries the spawn | `impl.cc-g2` |
+| G3 | `d2e00a16`: the run's end ends each agent session on its own, and the call fails afterwards naming those not ended | `impl.cc-g3` |
+| G5 | `06b3abab`: a visit ended by the run's end (and a recover) also stops its running turn | `impl.cc-g5` |
+
+The G1 residual was found by binding the G1 fix (`a9f60db7`): the fix's check reads the orchestration status, which
+stays Running while a turn runs after a person asked the session to end, so the next visit's prompt went to that
+session and was dropped (`limit.cc-g1-end-during-turn`, kept as the reference: admit, spawn, turn starts, time limit,
+the person ends the session during the turn, the next visit is admitted to the same session, its prompt is dropped).
+That remaining window between the spawn's check and its send was the subject of a later review (below).
+
+## Later review: the spawn's check is a read, and the end mark is a separate write (DRR, DR2)
+
+From `69d07073` on, the model takes the spawn as three steps (the check, the child create, the send) and a person's
+end as two (the mark, the command), so that other steps run between them (`SplitSpawn`, `MarkSplit`).
+
+| Finding | What the model showed at the code before the fix | Fix | Cases |
+|---|---|---|---|
+| DRR-1 (high) | A deletion between the check and the create, or before a retried attempt (whose check was skipped), brought the deleted row back (`limit.cc-drr1-delete-after-check`, `limit.cc-drr1-retry-revives`: `Inv_NoRevive`); an end after the check met the prompt (`limit.cc-drr1-end-after-check`, `limit.cc-drr1-create-then-end`: `Inv_NoLoudFail`) | `69d07073`: the create refuses a deleted row and leaves it deleted (row lock; DR2-002 `7ec59a50`: creates of one id take turns); every attempt is checked; the check runs again after the send and decides the visit | `impl.cc-drr1-fence`, `impl.cc-drr1-live`, `-live-n` |
+| DRR-2 (medium) | The mark commits before the command; when the command is lost (a throw or a crash) a visit replaced the live session or failed on it (`limit.cc-drr2-throw`, `-throw-withdraw`, `-crash`: `Inv_NoFailOnLive`); a withdrawal does not close it. The lost command drops no prompt and breaks no liveness property (`cc.drr2-crash-prompt` PASS) | `5451a22e`: a Workflow that acts on a mark first queues the marked end itself (`workflow-mark-end:<mark id>`); DR2-003 `de1f9f98`: also to a session that reads NotFound | `impl.cc-drr2-carry-throw`, `-carry-crash`, `-carry-live`, `-live-n`, `fix.cc-dr2-003-carry-notfound` |
+| DRR-1b, DRR-1c, DR2-001 | A deletion between the create and the send left an orchestration running on the deleted session (`limit.cc-drr1-orphan-run`); carried only when the start already reads as existing (`7bd79a46`, `limit.cc-drr1b-start-not-visible`); queued behind the start and the prompt (`9b2ca643`), a worker can still run one model turn first (`limit.cc-dr2-001-turn-before-delete`: `Inv_NoTurnOnDeleted`) | `7bd79a46`, `9b2ca643`: the check after the send queues the deletion's delete; DR2-001 `a386f3e5`: a turn of a deleted session runs no model and no tool and ends the session | `fix.cc-dr2-001-turn-guard`, `-guard-skew`, `-live-n`, `fix.cc-dr2-safety`, `impl.cc-final-live` |
+
+An orchestration that does run on a deleted session is ended by the run's end at the latest
+(`impl.cc-drr1b-orphan-ended`: `Prop_OrphanEnded`).
+
+Runs of the implementation cases (TLC 2.19, two workers):
+
+| Run | Code | Cases | Result |
+|---|---|---|---|
+| cc3 | `a9f60db7` | 36 (the 27 above and 9 new) | 36 of 36 as expected; the largest new case `impl.cc-live`, 80,612 distinct states, 68 s; `limit.cc-g1-end-during-turn` violates `Inv_PromptNotDropped` |
+| cc4 | `7024ef6f` | 39 (cc3 and 3 `impl.cc-g1b-*`) | 39 of 39 as expected; `impl.cc-g1b-end-during-turn`, `-safety` and `-live` pass (99,326 distinct states, 154 s for `-live`); `limit.cc-g1-end-during-turn` still violates `Inv_PromptNotDropped` at `a9f60db7` |
+| cc5d | design of DRR-1, DRR-2 and the carried end | 59, 600 s | 56 of 59 as expected; 3 liveness cases not checked within 600 s (rerun in cc6l) |
+| cc6b | `69d07073`, `5451a22e` | 67, 600 s | 67 of 67 as expected; the DRR-1 and DRR-2 cases pass (largest `impl.cc-drr-safety`, 1,630,717 distinct states); every reduced liveness case passes |
+| cc6l | `69d07073`, `5451a22e` | 5 full-size liveness cases, 1,800 s | 4 PASS (`fix.cc-drr1-live`, `impl.cc-drr1-live`, `fix.cc-drr2-carry-live`, `impl.cc-drr2-carry-live`, up to 1,709,892 distinct states); `cc.drr2-crash-live` not checked (1,695,724 distinct states at 1,800 s; its two-visit version passes) |
+| cc7 | `7bd79a46` | 11, 1,800 s | 11 of 11 as expected; `limit.cc-drr1b-start-not-visible` violates `Inv_NoOrphanRun`, `impl.cc-drr1b-orphan-ended` passes |
+| cc9 | `781441bf` (the code at `0df9e8a4`) | 83, 600 s | running at publish |
+| cc9l | `781441bf` | `cc.drr2-crash-live` and `impl.cc-final-live`, 3,600 s | running at publish |
+
+Not checked so far: `cc.drr2-crash-live` (full size; a design case of the lost command without a fix, not the code).
+The cases at the final code (`fix.cc-dr2-*`, `limit.cc-dr2-*`, `impl.cc-final-live`) have no TLC result yet: their
+verdicts in `cases.json` are predictions until cc9 and cc9l report.
 
 ## How to run
 

@@ -43,6 +43,10 @@
 (* "proposedR3": 9a8d0f66 with the cut also ending (or owing) the child   *)
 (* of a cut branch's agent state that was decided but whose end is not    *)
 (* recorded (r3 finding R3-P1).                                           *)
+(* r4: "a9f60db7" (the branch head) is proposedR3 as committed (R3-PS1,   *)
+(* 0944f872: cancelBranchScopes also returns the cut scopes' completed    *)
+(* agent states whose child's end is owed; the activity ends them, or     *)
+(* owes their branch).                                                    *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -52,15 +56,15 @@ CONSTANTS Code, AllowResume, AllowChildComplete, AllowEndFail, PauseFirst,
           AllowCutFail,       \* r3: the cut's end of a child fails (at most twice: owed, then one failed retry)
           AllowPause          \* r3: a pause may be accepted (FALSE: never; PauseFirst still pauses at the start)
 
-New == Code \in {"9a8d0f66", "proposedR3"}
-FixCut == Code = "proposedR3"
+New == Code \in {"9a8d0f66", "proposedR3", "a9f60db7"}
+FixCut == Code \in {"proposedR3", "a9f60db7"}   \* a9f60db7: R3-PS1 fix 0944f872
 
-ASSUME Code \in {"efe44835", "1c117a47", "1f7bdc77", "a99cd382", "9a8d0f66", "proposedR3"}
+ASSUME Code \in {"efe44835", "1c117a47", "1f7bdc77", "a99cd382", "9a8d0f66", "proposedR3", "a9f60db7"}
 ASSUME /\ TimedJoin \in BOOLEAN /\ AllowEndElsewhere \in BOOLEAN
        /\ AllowCutFail \in BOOLEAN /\ AllowPause \in BOOLEAN
 ASSUME TimedJoin => New                       \* IR 9 time limits came after a99cd382
-ASSUME AllowEndElsewhere => Code \in {"a99cd382", "9a8d0f66", "proposedR3"}
-Fixed == Code \in {"1c117a47", "1f7bdc77", "a99cd382", "9a8d0f66", "proposedR3"}
+ASSUME AllowEndElsewhere => Code \in {"a99cd382", "9a8d0f66", "proposedR3", "a9f60db7"}
+Fixed == Code \in {"1c117a47", "1f7bdc77", "a99cd382", "9a8d0f66", "proposedR3", "a9f60db7"}
 E2 == Code = "a99cd382"   \* 1f7bdc77 = 1c117a47 + group D; these paths are unchanged
 
 VARIABLES

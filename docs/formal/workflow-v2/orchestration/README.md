@@ -17,8 +17,8 @@ Controller 1.9.0 is every run's controller in this release. The bindings were ch
 
 | Module | At 9a8d0f66 |
 |---|---|
-| `WfGraph`, `WfParent`, `WfPaused`, `WfExecShare` | Revised and bound to `9a8d0f66` (section "r3" below). |
-| `WfAgent`, `WfRecover`, `WfPaging` | Results stand for an agent state whose session lifecycle is `new` (a For each body, a named branch, or `session: new`). An agent session that continues across visits, the default elsewhere, is modelled by `../continued-chat/` (`WfContinuedChat`). Their code changed only for continued sessions, plus the recheck of an owed end that `WfAgent` already models (WFO-2). |
+| `WfGraph`, `WfParent`, `WfPaused`, `WfExecShare` | Revised and bound to `9a8d0f66` (section "r3" below); the fixes of the r3 findings are bound at `0df9e8a4` (section "r4" below). |
+| `WfAgent`, `WfRecover`, `WfPaging` | Results stand for an agent state whose session lifecycle is `new` (a For each body, a named branch, or `session: new`). An agent session that continues across visits, the default elsewhere, is modelled by `../continued-chat/` (`WfContinuedChat`). Their code changed only for continued sessions, plus the recheck of an owed end that `WfAgent` already models (WFO-2). The fixes at `0df9e8a4` (G5 `06b3abab`: a turn Stop before a cancel end; PRR-3 `bda053ff`: visits ordered by ordinal) change no step these models take (section "r4" below). |
 | `WfExecutor`, `WfExecLease` | History: the code they describe (the share at `1c117a47`, the exclusive lease at `0c3b4ceb`) was replaced by the share that `WfExecShare` models. |
 
 | Module | Checks |
@@ -312,47 +312,85 @@ within 300 s again at 1,800 s, with smaller settings beside them:
 The 28 cases that had no recorded result (r2f, r2g, o3, o4, o5) all gave their expected verdicts, except `exec.e1c-live`
 (above); `exec.e1b-8dd-live` and `parent.live-e3b` passed at 1,800 s.
 
-Findings at `9a8d0f66` (runtime behaviour; each fix is decided by the owner before any code):
+Findings at `9a8d0f66` (runtime behaviour; each one is fixed on the pull request branch, section "r4"):
 
-- `WfPaused`: when a parallel state's time limit cuts its branches, an agent state of a cut branch that was already
+- R3-PS1, `WfPaused`: when a parallel state's time limit cuts its branches, an agent state of a cut branch that was already
   decided, but whose child's end was never recorded, keeps its child running (until the resume, or until the run ends).
   The cut lists only the work it cancelled (`S` `cancelBranchScopes`) and removes the branch's cursor (`R` 1554-1556);
   without a pause, the timed joins are asked before the collection (`R` 1933, 1944), so a completed state not yet
   collected is dropped the same way (`paused.r3-cut-done-child`, `paused.r3-cut-timedout-endfail`,
-  `paused.r3-cut-done-running`; the proposed fix, `cmp.paused-r3-fix-*`, passes).
-- `WfGraph`: a deletion after another end (a person's cancel or done, the chat's end, or the controller's own end
+  `paused.r3-cut-done-running`; the proposed fix, `cmp.paused-r3-fix-*`, passes). Fixed by `1f5dbc89` (section "r4").
+- R3-GR1, `WfGraph`: a deletion after another end (a person's cancel or done, the chat's end, or the controller's own end
   retried after a crash) drops that end's parent notice: `observeEnd` (`R` 4273) decides "deleted" from the deletion
   mark at the time it runs, not from what ended the run (`graph.r3-delete-after-cmd`, `graph.r3-delete-after-retry`;
-  `cmp.graph-r3-delete-after-cmd-1ef` passes at `1ef53967`).
-- `WfParent`: the parent can be told the run's end twice, as a chat note and as a notice, when the note and the skip
+  `cmp.graph-r3-delete-after-cmd-1ef` passes at `1ef53967`). Fixed by `fb7d137d` (section "r4").
+- R3-PA1, `WfParent`: the parent can be told the run's end twice, as a chat note and as a notice, when the note and the skip
   record (`R` 4460, 4462) are separated by a crash or a failed write (`parent.r3-told-twice`; the proposed fix of one
-  transaction, `cmp.parent-r3-fix-*`, passes).
+  transaction, `cmp.parent-r3-fix-*`, passes). Fixed by `92ad9456` (section "r4").
 
 `WfExecShare` has no finding; `exec.r3-unlisted` (a task no listing claimed is left to the last owner's teardown) and
 `exec.r3-barrier-stays` (a cause "a call did not end" is lifted only by a worker restart) are its documented limits.
 
+## r4 (2026-11-09): the r3 findings' fixes bound to 0df9e8a4
+
+The fixes were first bound at `a9f60db7`; on the pull request branch they are R3-PS1 `1f5dbc89`, R3-GR1 `fb7d137d` and
+R3-PA1 `92ad9456`, and the bound regions are the same at `0df9e8a4`, the final code head (only line numbers move; the later review fixes on the branch, DRR and DR2, change none of them). The new `Code` and
+`Elsewhere` value is named `"a9f60db7"`. `gen-cases.py` reads the 27 new cases (`impl.*`, batch `r4`) from
+`r3-impl.py`. Line numbers in this section are at `0df9e8a4`.
+
+| Finding | Fix | Model | Binding |
+|---|---|---|---|
+| R3-PS1 | `S` 6974 `cancelBranchScopes` also returns the cut scopes' agent states that were decided otherwise and whose child's end is owed (`S` 7003-7013); `cancelBranches` (`R` 5419) ends each, and a child it cannot end leaves its branch owed for `retryOwedCuts` (`R` 1527), paused or not. | `WfPaused` | `Code = "a9f60db7"`, which behaves as the proposal `"proposedR3"` |
+| R3-GR1 | `observeEnd` (`R` 4429) reads "deleted" only when the run is active or the deletion ended it (`R` 4434, `runEndedByDeletion` `S` 102-111: since DRR-5 the stored command decides first); `endedElsewhere` (`R` 1113) tells the parent unless deleted. | `WfGraph` | `Elsewhere = "a9f60db7"`: the S7-DX3 behaviour plus this rule (a run that ended otherwise and was deleted later still reports its end) |
+| R3-PA1 | The note and its skip record are one transaction: `R` 4621-4626 → `S` 3324 `keepNoticeAsNote` (the note and `project`, `S` 2174). | `WfParent` | `Code = "a9f60db7"`, which behaves as the proposal `"proposedNoteTx"` |
+
+Differences that no case depends on: the cut's clause for an end that found no child after a spawn has no effect
+in the cut path, because `cancelBranches` does not pass `afterSpawn` (`R` 2997); that re-send is left to the run's
+end, as `WfAgent` models (WFO-2). The cut's query does not include the continued-session clause of
+`listOwedAgentInvocations` (`S` 6286); continued sessions are in `../continued-chat/`. The fix also covers failFast
+and join cuts, which these modules do not combine with agent children.
+
+G5 (`06b3abab`, a turn Stop before a cancel end and at the run's end) and PRR-3 (`bda053ff`, visits ordered by
+ordinal) change no model: the models take a child's end as one step that succeeds or fails, and a Stop that fails
+leaves the end owed, which is the existing "end fails" choice; no model here has continued sessions or the database
+clock. The G1-residual commit `80019c84` adds an end mark that only a continued session's next visit reads.
+
+### Results (2026-11-09)
+
+One run of 79 cases (the 27 `impl.*` cases and 52 r3 cases again), TLC 2.19, two workers, 600 s per case:
+
+| Outcome | Cases |
+|---|---|
+| As expected | 78 of 79: every `impl.*` case passes (graph 12, parent 4 of 5 within 600 s, paused 9); the 52 r3 cases give their r3 verdicts, for example `parent.r3-told-twice` still violates `Inv_ToldOnce` at `9a8d0f66` |
+| Not checked at 600 s, then checked at 1,800 s | `impl.parent-live-request-n1`: PASS in 1,298 s (2,060,134 distinct states) |
+
+The r3 findings' counterexamples are gone under the fixes: `impl.paused-cut-done-child`, `-cut-timedout-endfail`
+and `-cut-done-running` (R3-PS1), `impl.graph-delete-after-cmd` and `-delete-after-retry` (R3-GR1) and
+`impl.parent-told-once` (R3-PA1) pass. `impl.graph-live-linear-all` adds the deletion after another end to the
+liveness check, which r3 had to leave out because of R3-GR1.
+
 ## Case taxonomy
 
-`cases.json` gives each case a `mode`: `reviewed` (165: the code as written at
-the head named in `head`), `deliberate` (16: a planned break of one protection,
-expected to fail), `comparison` (6: an earlier code behavior or a proposed fix,
-kept for comparison) and `witness` (1: reachability). `expected` is `PASS`
+`cases.json` gives each of the 285 cases a `mode`: `reviewed` (236: the code as
+written at the head named in `head`), `deliberate` (16: a planned break of one
+protection, expected to fail), `comparison` (25: an earlier code behavior or a
+proposed fix, kept for comparison) and `witness` (8: reachability). `expected` is `PASS`
 (`safety` or `liveness` when a violation is expected). A case id names its
 group: `graph.`, `agent.`, `parent.`, `recover.`, `paging.`, `paused.`, `exec.`,
-`cmp.`, `fault.`, `wit.`. A `reviewed` case with expected `safety` or
+`impl.`, `cmp.`, `fault.`, `wit.`. A `reviewed` case with expected `safety` or
 `liveness` shows a defect of an earlier head or a limit of the code (the
 "Correspondence" table above names the case that shows each finding and the case
 that checks its fix).
 
 | Module | Cases | Heads modeled |
 |---|---|---|
-| `WfGraph` | 44 | `efe44835`, `1f7bdc77`, S7-DX2 (`1ef53967` on `dbf99086`) |
-| `WfParent` | 62 | `efe44835`, `1f7bdc77`, `a10c2e07`, `fc6d7a65`, proposed variants |
+| `WfParent` | 88 | `efe44835`, `1f7bdc77`, `a10c2e07`, `fc6d7a65`, `9a8d0f66`, `a9f60db7` (the code at `0df9e8a4`), proposed variants |
+| `WfGraph` | 73 | `efe44835`, `1f7bdc77`, S7-DX2 (`1ef53967` on `dbf99086`), `9a8d0f66`, `a9f60db7` |
+| `WfPaused` | 42 | `1c117a47`, `a99cd382`, `9a8d0f66`, `a9f60db7` |
+| `WfExecShare` | 32 | `8dd3eae1`, `412f7b00`, `9a8d0f66` |
 | `WfAgent` | 23 | `efe44835`, `1f7bdc77`, `a10c2e07` |
-| `WfExecShare` | 17 | `8dd3eae1`, `412f7b00` |
-| `WfPaused` | 15 | `1c117a47`, `a99cd382` |
 | `WfRecover` | 11 | `efe44835`, `1c117a47` |
-| `WfExecLease`, `WfExecutor` | 6 + 6 | `0c3b4ceb` (E1), `efe44835`, `1c117a47` |
+| `WfExecLease`, `WfExecutor` | 6 + 6 | `0c3b4ceb` (E1), `efe44835`, `1c117a47` (history) |
 | `WfPaging` | 4 | `efe44835`, `1c117a47` |
 
 ## Results

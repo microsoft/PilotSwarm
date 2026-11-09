@@ -21,7 +21,7 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "a1772a01: three visits, stop and cancel, no person action, no failure (the run-end Stop of G5 assumed): one agent session goes on at a time, results bind to their own visit, ends are sent once."
+  "note": "9a8d0f66: three visits, stop and cancel, no person action, no failure (the run-end Stop of G5 assumed): one agent session goes on at a time, results bind to their own visit, ends are sent once."
  },
  {
   "id": "cc.live",
@@ -45,7 +45,7 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "a1772a01: every visit is decided; after the run ends every agent session is ended; an owed end is sent."
+  "note": "9a8d0f66: every visit is decided; after the run ends every agent session is ended; an owed end is sent."
  },
  {
   "id": "cc.stop",
@@ -72,7 +72,7 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "a1772a01: a graceful stop: started visits finish, idle agent sessions are ended, then the run ends."
+  "note": "9a8d0f66: a graceful stop: started visits finish, idle agent sessions are ended, then the run ends."
  },
  {
   "id": "cc.cancel",
@@ -96,7 +96,7 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "a1772a01: a cancel decides pending visits; an agent session being created is owed and ended later."
+  "note": "9a8d0f66: a cancel decides pending visits; an agent session being created is owed and ended later."
  },
  {
   "id": "cc.person-rest",
@@ -116,7 +116,7 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "a1772a01: a person ends or deletes the agent session: one goes on at a time, a replacement only after it ended, results bind to their own visit."
+  "note": "9a8d0f66: a person ends or deletes the agent session: one goes on at a time, a replacement only after it ended, results bind to their own visit."
  },
  {
   "id": "cc.person-live",
@@ -140,7 +140,7 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "a1772a01: with a person's end or delete, every visit is still decided and every agent session ended."
+  "note": "9a8d0f66: with a person's end or delete, every visit is still decided and every agent session ended."
  },
  {
   "id": "cc.late-reply-binding",
@@ -160,7 +160,7 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "a1772a01: a visit's turn runs on after its visit was decided (time limit, Stop not sent): its result is refused, never taken by the next visit."
+  "note": "9a8d0f66: a visit's turn runs on after its visit was decided (time limit, Stop not sent): its result is refused, never taken by the next visit."
  },
  {
   "id": "finding.g1-silent",
@@ -175,7 +175,7 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "G1 at a1772a01: the visit's agent session is chosen at admission and frozen; deleted before the spawn, it is brought back as a row that says running and the prompt is dropped; the visit waits out its time limit."
+  "note": "G1 at 9a8d0f66: the visit's agent session is chosen at admission and frozen; deleted before the spawn, it is brought back as a row that says running and the prompt is dropped; the visit waits out its time limit."
  },
  {
   "id": "finding.g1-loud",
@@ -190,7 +190,7 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "G1 at a1772a01: ended before the spawn, the agent session refuses the prompt; the spawn retries about 31 minutes, then the visit fails unavailable."
+  "note": "G1 at 9a8d0f66: ended before the spawn, the agent session refuses the prompt; the spawn retries about 31 minutes, then the visit fails unavailable."
  },
  {
   "id": "fix.g1-recheck",
@@ -229,7 +229,7 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "G2 at a1772a01: a visit's cycle Stop fails past its retries; nothing sends it again during the run; the next visit's prompt waits behind the old turn."
+  "note": "G2 at 9a8d0f66: a visit's cycle Stop fails past its retries; nothing sends it again during the run; the next visit's prompt waits behind the old turn."
  },
  {
   "id": "fix.g2-stop-before-spawn",
@@ -279,7 +279,7 @@
    "Prop_OthersEnded"
   ],
   "deadlock": false,
-  "note": "G3 at a1772a01: the first agent session's end fails past every retry; the loop stops there, so the replacement session is never ended."
+  "note": "G3 at 9a8d0f66: the first agent session's end fails past every retry; the loop stops there, so the replacement session is never ended."
  },
  {
   "id": "limit.g3-failed-chat",
@@ -339,7 +339,7 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "G5 at a1772a01: a run cancelled during a visit's turn sends no Stop; the end command waits for the turn's natural end."
+  "note": "G5 at 9a8d0f66: a run cancelled during a visit's turn sends no Stop; the end command waits for the turn's natural end."
  },
  {
   "id": "fix.g5-stop-at-end",
@@ -392,6 +392,1390 @@
   ],
   "deadlock": true,
   "note": "Every proposed fix together, with a person's action and failing Stops."
+ },
+ {
+  "id": "impl.cc-safety",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-safety.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "a9f60db7: every fix, a person's delete, failing Stops: one agent session at a time, results bound, no prompt dropped, no 31-minute wait, no prompt behind a stale turn, the run's end stops a running turn."
+ },
+ {
+  "id": "impl.cc-live",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "a9f60db7: with a person's end or delete and failing Stops, every visit is decided and every agent session ended."
+ },
+ {
+  "id": "impl.cc-g1",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-g1.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoLoudFail",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_OneLive"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "G1 at a9f60db7 (feeb321e): an agent session ended or deleted after admission fails the visit at once; the next visit gets a replacement."
+ },
+ {
+  "id": "impl.cc-g1-deleted",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-g1-deleted.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_PromptNotDropped"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "G1 at a9f60db7: a deleted agent session gets no prompt and is not brought back."
+ },
+ {
+  "id": "limit.cc-g1-end-during-turn",
+  "module": "WfContinuedChat",
+  "config": "limit.cc-g1-end-during-turn.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_PromptNotDropped"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Prediction at a9f60db7: a person ends the agent session while a turn runs; the status stays Running until that turn ends, so the next visit's prompt is sent and then dropped when the end lands; the visit waits out its time limit."
+ },
+ {
+  "id": "impl.cc-g1b-end-during-turn",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-g1b-end-during-turn.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_PromptNotDropped",
+   "Inv_OneLive",
+   "Inv_ReplaceOnlyEnded"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "7024ef6f: a person ends the agent session while a turn runs; the end is recorded before its command, so the next visit gets a replacement (or fails at once) and no prompt is dropped."
+ },
+ {
+  "id": "impl.cc-g1b-safety",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-g1b-safety.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "7024ef6f: every fix, a person's end or delete, failing Stops: all safety properties."
+ },
+ {
+  "id": "impl.cc-g1b-live",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-g1b-live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "7024ef6f: every visit decided, every agent session ended, owed ends sent."
+ },
+ {
+  "id": "impl.cc-g2",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-g2.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "G2 at a9f60db7 (6ab43450): an earlier visit's Stop that failed is sent again before the next prompt, and at the run's end."
+ },
+ {
+  "id": "impl.cc-g3",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-g3.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_OthersEnded",
+   "Prop_AllEnded"
+  ],
+  "deadlock": true,
+  "note": "G3 at a9f60db7 (d227a0e6): each agent session's end is tried on its own; the others are ended; a recover ends the failed one."
+ },
+ {
+  "id": "impl.cc-g5",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-g5.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "G5 at a9f60db7 (1066e995): a run cancelled during a visit's turn stops that turn."
+ },
+ {
+  "id": "wit.cc-recheck-fails-visit",
+  "module": "WfContinuedChat",
+  "config": "wit.cc-recheck-fails-visit.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoRecheckFail"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "a9f60db7: the spawn's check fails a visit whose agent session ended after admission."
+ },
+ {
+  "id": "limit.cc-drr1-delete-after-check",
+  "module": "WfContinuedChat",
+  "config": "limit.cc-drr1-delete-after-check.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoRevive"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "DRR-1 at 7024ef6f: a person deletes the agent session after the spawn's check and before the child create; the create's upsert brings the deleted row back."
+ },
+ {
+  "id": "limit.cc-drr1-retry-revives",
+  "module": "WfContinuedChat",
+  "config": "limit.cc-drr1-retry-revives.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoRevive"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "DRR-1 at 7024ef6f: a first visit's attempt creates its agent session and fails before it is recorded; a person deletes the session; the retry is not checked and its create brings the row back."
+ },
+ {
+  "id": "limit.cc-drr1-end-after-check",
+  "module": "WfContinuedChat",
+  "config": "limit.cc-drr1-end-after-check.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "TypeOK",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "DRR-1 at 7024ef6f: a person ends the agent session after the spawn's check; the prompt is sent to an ended session (refused, the spawn retries) or queued behind the end (dropped)."
+ },
+ {
+  "id": "fix.cc-drr1-create-norevive",
+  "module": "WfContinuedChat",
+  "config": "fix.cc-drr1-create-norevive.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoRevive",
+   "Inv_PromptNotDropped"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "DRR-1 fix (proposed), the create part: a create refuses a deleted row without reviving it; every attempt is checked."
+ },
+ {
+  "id": "limit.cc-drr1-create-then-end",
+  "module": "WfContinuedChat",
+  "config": "limit.cc-drr1-create-then-end.cfg",
+  "mode": "proposal",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "TypeOK",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "DRR-1 fix (proposed) with the create fenced but not the send: an end between the create and the send still meets the prompt."
+ },
+ {
+  "id": "fix.cc-drr1-fence",
+  "module": "WfContinuedChat",
+  "config": "fix.cc-drr1-fence.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd",
+   "Inv_NoRevive"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "DRR-1 fix (proposed): the create refuses a tombstone and the send is fenced with its check; every attempt checked: no revival, no prompt dropped, no 31-minute wait."
+ },
+ {
+  "id": "fix.cc-drr1-live",
+  "module": "WfContinuedChat",
+  "config": "fix.cc-drr1-live.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_NoRevive"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "DRR-1 fix (proposed): every visit decided, every agent session ended, owed ends sent."
+ },
+ {
+  "id": "cc.drr2-no-fail",
+  "module": "WfContinuedChat",
+  "config": "cc.drr2-no-fail.cfg",
+  "mode": "proposal",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_NoAbandonedLive",
+   "Inv_NoFailOnLive",
+   "TypeOK",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd",
+   "Inv_NoRevive"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "DRR-2 at 7024ef6f (with the DRR-1 fence): the mark before the command alone leaves no agent session abandoned and fails no visit on a live one."
+ },
+ {
+  "id": "limit.cc-drr2-throw",
+  "module": "WfContinuedChat",
+  "config": "limit.cc-drr2-throw.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_NoAbandonedLive",
+   "Inv_NoFailOnLive"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "DRR-2 at 7024ef6f: the end's command fails after its mark; the mark stays; the next visit replaces a live agent session (abandoned) or fails at once on it."
+ },
+ {
+  "id": "limit.cc-drr2-throw-withdraw",
+  "module": "WfContinuedChat",
+  "config": "limit.cc-drr2-throw-withdraw.cfg",
+  "mode": "proposal",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_NoAbandonedLive",
+   "Inv_NoFailOnLive"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "DRR-2 with a withdrawal on a thrown command: between the mark and its withdrawal a visit can still replace the live agent session or fail on it."
+ },
+ {
+  "id": "limit.cc-drr2-crash",
+  "module": "WfContinuedChat",
+  "config": "limit.cc-drr2-crash.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_NoAbandonedLive",
+   "Inv_NoFailOnLive"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "DRR-2 at 7024ef6f: the process stops after the mark; no command, no withdrawal: the agent session stays live and is abandoned for the rest of the run."
+ },
+ {
+  "id": "cc.drr2-crash-prompt",
+  "module": "WfContinuedChat",
+  "config": "cc.drr2-crash-prompt.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd",
+   "Inv_NoRevive"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "DRR-2 at 7024ef6f (with the DRR-1 fence): the crash window drops no prompt, makes no visit wait out the spawn retries, and revives nothing."
+ },
+ {
+  "id": "cc.drr2-crash-live",
+  "module": "WfContinuedChat",
+  "config": "cc.drr2-crash-live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "DRR-2 at 7024ef6f (with the DRR-1 fence): after a crash window every visit is decided and the abandoned agent session is ended by the run's end."
+ },
+ {
+  "id": "fix.cc-drr2-outbox",
+  "module": "WfContinuedChat",
+  "config": "fix.cc-drr2-outbox.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_NoAbandonedLive",
+   "Inv_NoFailOnLive",
+   "TypeOK",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd",
+   "Inv_NoRevive"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "DRR-2 fix (proposed), a durable outbox: the end command is sent after a crash; no agent session is abandoned and no visit fails on a live one."
+ },
+ {
+  "id": "fix.cc-drr2-outbox-throw",
+  "module": "WfContinuedChat",
+  "config": "fix.cc-drr2-outbox-throw.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_NoAbandonedLive",
+   "Inv_NoFailOnLive",
+   "TypeOK",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd",
+   "Inv_NoRevive"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "DRR-2 fix (proposed), a durable outbox: the end command is sent after its enqueue failed."
+ },
+ {
+  "id": "fix.cc-drr2-outbox-live",
+  "module": "WfContinuedChat",
+  "config": "fix.cc-drr2-outbox-live.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "DRR-2 fix (proposed): every visit decided, every agent session ended, owed ends sent."
+ },
+ {
+  "id": "fix.cc-drr2-carry-throw",
+  "module": "WfContinuedChat",
+  "config": "fix.cc-drr2-carry-throw.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_NoAbandonedLive",
+   "Inv_NoFailOnLive",
+   "TypeOK",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd",
+   "Inv_NoRevive"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "DRR-2 fix (proposed), the Workflow carries the end: the person's command failed; a visit that acts on the mark first queues its end, so no agent session is abandoned and no visit fails on a live one."
+ },
+ {
+  "id": "fix.cc-drr2-carry-crash",
+  "module": "WfContinuedChat",
+  "config": "fix.cc-drr2-carry-crash.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_NoAbandonedLive",
+   "Inv_NoFailOnLive",
+   "TypeOK",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd",
+   "Inv_NoRevive"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "DRR-2 fix (proposed), the Workflow carries the end after a crash between the mark and the command."
+ },
+ {
+  "id": "fix.cc-drr2-carry-live",
+  "module": "WfContinuedChat",
+  "config": "fix.cc-drr2-carry-live.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "DRR-2 fix (proposed), the Workflow carries the end: every visit decided, every agent session ended, owed ends sent."
+ },
+ {
+  "id": "wit.cc-drr2-carried",
+  "module": "WfContinuedChat",
+  "config": "wit.cc-drr2-carried.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoCarry"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A Workflow step carries a person's end whose command was lost."
+ },
+ {
+  "id": "impl.cc-drr1-fence",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-drr1-fence.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd",
+   "Inv_NoRevive"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "DRR-1 at 69d07073: the create refuses a deleted row (locked), every attempt is checked, and the check after the send decides the visit: no revival, no prompt dropped, no 31-minute wait."
+ },
+ {
+  "id": "impl.cc-drr1-live",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-drr1-live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_NoRevive"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "DRR-1 at 69d07073: every visit decided, every agent session ended, owed ends sent."
+ },
+ {
+  "id": "limit.cc-drr1-orphan-run",
+  "module": "WfContinuedChat",
+  "config": "limit.cc-drr1-orphan-run.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoOrphanRun"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "At 5451a22e: a person deletes a just-created agent session (row, no orchestration yet) between the create and the send; the send starts its orchestration, and the check after the send decides the visit but leaves that orchestration running."
+ },
+ {
+  "id": "fix.cc-drr1-carry-delete",
+  "module": "WfContinuedChat",
+  "config": "fix.cc-drr1-carry-delete.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoOrphanRun",
+   "Inv_NoRevive",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Proposed (DRR-1b with the owed look): when the check after the send finds the session deleted, it ends an orchestration the send started, also when that start does not read as existing yet (the attempt retries until it does)."
+ },
+ {
+  "id": "impl.cc-drr2-carry-throw",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-drr2-carry-throw.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_NoAbandonedLive",
+   "Inv_NoFailOnLive",
+   "TypeOK",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd",
+   "Inv_NoRevive"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "DRR-2 at 5451a22e: the person's command failed after its mark; the Workflow carries the end when it acts on the mark."
+ },
+ {
+  "id": "impl.cc-drr2-carry-crash",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-drr2-carry-crash.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_NoAbandonedLive",
+   "Inv_NoFailOnLive",
+   "TypeOK",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd",
+   "Inv_NoRevive"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "DRR-2 at 5451a22e: the asker's process stopped after the mark; the Workflow carries the end."
+ },
+ {
+  "id": "impl.cc-drr2-carry-live",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-drr2-carry-live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "DRR-2 at 5451a22e: every visit decided, every agent session ended, owed ends sent."
+ },
+ {
+  "id": "impl.cc-drr-safety",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-drr-safety.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_NoAbandonedLive",
+   "Inv_NoFailOnLive",
+   "TypeOK",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd",
+   "Inv_NoRevive"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "5451a22e: DRR-1 and DRR-2 together, a person's end or delete, a lost command, a crashed spawn attempt, failing Stops: all safety properties."
+ },
+ {
+  "id": "fix.cc-drr1-live-n",
+  "module": "WfContinuedChat",
+  "config": "fix.cc-drr1-live-n.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_NoRevive"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "fix.cc-drr1-live reduced: a person's delete, a crashed spawn attempt, no failing Stops."
+ },
+ {
+  "id": "cc.drr2-crash-live-n",
+  "module": "WfContinuedChat",
+  "config": "cc.drr2-crash-live-n.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "cc.drr2-crash-live reduced: two visits, no failing Stops."
+ },
+ {
+  "id": "fix.cc-drr2-carry-live-n",
+  "module": "WfContinuedChat",
+  "config": "fix.cc-drr2-carry-live-n.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "fix.cc-drr2-carry-live reduced: two visits, a person's end, no failing Stops."
+ },
+ {
+  "id": "impl.cc-drr1-live-n",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-drr1-live-n.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_NoRevive"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "impl.cc-drr1-live reduced (69d07073): a person's delete, a crashed spawn attempt, no failing Stops."
+ },
+ {
+  "id": "impl.cc-drr2-carry-live-n",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-drr2-carry-live-n.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "impl.cc-drr2-carry-live reduced (5451a22e): two visits, a person's end, no failing Stops."
+ },
+ {
+  "id": "limit.cc-drr1b-start-not-visible",
+  "module": "WfContinuedChat",
+  "config": "limit.cc-drr1b-start-not-visible.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoOrphanRun"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "At 7bd79a46: the check after the send finds the just-created session deleted; the start the send queued does not read as existing yet (NotFound), so the deletion is not carried and the orchestration runs on."
+ },
+ {
+  "id": "impl.cc-drr1b-orphan-ended",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-drr1b-orphan-ended.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_NoRevive"
+  ],
+  "properties": [
+   "Prop_OrphanEnded",
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "7bd79a46: such an orchestration is ended at the latest by the run's end (endContinuedChatLocked reads its status)."
+ },
+ {
+  "id": "impl.cc-drr1b-safety",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-drr1b-safety.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_NoAbandonedLive",
+   "Inv_NoFailOnLive",
+   "TypeOK",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd",
+   "Inv_NoRevive"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "7bd79a46: DRR-1, DRR-1b and DRR-2 together: all safety properties but the orphan."
+ },
+ {
+  "id": "impl.cc-drr1b-live-n",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-drr1b-live-n.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "7bd79a46: every visit decided, every agent session ended, owed ends sent (two visits, a person's end)."
+ },
+ {
+  "id": "impl.cc-drr1c-no-orphan",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-drr1c-no-orphan.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoOrphanRun",
+   "Inv_NoRevive",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "9b2ca643: the check after the send enqueues the deletion's delete even when the start does not read as existing yet; it is delivered with the start, before any turn."
+ },
+ {
+  "id": "impl.cc-drr1c-safety",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-drr1c-safety.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_NoAbandonedLive",
+   "Inv_NoFailOnLive",
+   "TypeOK",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd",
+   "Inv_NoRevive",
+   "Inv_NoOrphanRun"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "9b2ca643: DRR-1, DRR-1c and DRR-2 together: all safety properties."
+ },
+ {
+  "id": "impl.cc-drr1c-live-n",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-drr1c-live-n.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_NoRevive",
+   "Inv_NoOrphanRun"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "9b2ca643: every visit decided, every agent session ended, owed ends sent (two visits, a person's delete)."
+ },
+ {
+  "id": "limit.cc-drr1c-clock-skew",
+  "module": "WfContinuedChat",
+  "config": "limit.cc-drr1c-clock-skew.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoOrphanRun"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "9b2ca643: when the event becomes visible before the start (hosts' clocks apart), it is fetched alone and dropped; the orchestration runs on."
+ },
+ {
+  "id": "impl.cc-drr1c-skew-ended",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-drr1c-skew-ended.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_OrphanEnded",
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "9b2ca643: even then the run's end ends it."
+ },
+ {
+  "id": "limit.cc-dr2-001-turn-before-delete",
+  "module": "WfContinuedChat",
+  "config": "limit.cc-dr2-001-turn-before-delete.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoTurnOnDeleted"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "DR2-001 at 9b2ca643: a person deletes a just-created agent session before its send; the send queues the start and the prompt, the check after it queues the delete; a worker fetches the start and the prompt first and runs a model turn on the deleted session."
+ },
+ {
+  "id": "fix.cc-dr2-001-turn-guard",
+  "module": "WfContinuedChat",
+  "config": "fix.cc-dr2-001-turn-guard.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoTurnOnDeleted",
+   "Inv_NoRevive",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "DR2-001 fix (781441bf): a turn's admission reads the row's deletion first; a deleted session runs no model turn and ends."
+ },
+ {
+  "id": "fix.cc-dr2-001-guard-skew",
+  "module": "WfContinuedChat",
+  "config": "fix.cc-dr2-001-guard-skew.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoTurnOnDeleted"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "DR2-001 fix (781441bf): the guard also covers a delete fetched alone and dropped (hosts' clocks apart)."
+ },
+ {
+  "id": "fix.cc-dr2-001-live-n",
+  "module": "WfContinuedChat",
+  "config": "fix.cc-dr2-001-live-n.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_NoRevive",
+   "Inv_NoTurnOnDeleted"
+  ],
+  "properties": [
+   "Prop_OrphanEnded",
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "DR2-001 fix (781441bf): every orchestration on a deleted session ends; every visit decided; every agent session ended."
+ },
+ {
+  "id": "limit.cc-dr2-003-mark-notfound",
+  "module": "WfContinuedChat",
+  "config": "limit.cc-dr2-003-mark-notfound.cfg",
+  "mode": "impl",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_NoAbandonedLive",
+   "Inv_NoFailOnLive"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "DR2-003 at 9b2ca643: a parent's end is marked on an agent session whose start does not read as existing yet and its command is lost; the Workflow acts on the mark but carries nothing (NotFound), so the session goes on beside its replacement or a visit fails on it."
+ },
+ {
+  "id": "fix.cc-dr2-003-carry-notfound",
+  "module": "WfContinuedChat",
+  "config": "fix.cc-dr2-003-carry-notfound.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_NoAbandonedLive",
+   "Inv_NoFailOnLive",
+   "Inv_NoTurnOnDeleted"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "DR2-003 fix (781441bf): the marked end is queued to a session that reads NotFound too."
+ },
+ {
+  "id": "fix.cc-dr2-safety",
+  "module": "WfContinuedChat",
+  "config": "fix.cc-dr2-safety.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_NoAbandonedLive",
+   "Inv_NoFailOnLive",
+   "TypeOK",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd",
+   "Inv_NoRevive",
+   "Inv_NoTurnOnDeleted"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "781441bf: every DRR and DR2 fix together: all safety properties."
+ },
+ {
+  "id": "impl.cc-final-live",
+  "module": "WfContinuedChat",
+  "config": "impl.cc-final-live.cfg",
+  "mode": "impl",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_NoRevive",
+   "Inv_NoTurnOnDeleted"
+  ],
+  "properties": [
+   "Prop_OrphanEnded",
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent"
+  ],
+  "deadlock": true,
+  "note": "781441bf: every DRR and DR2 fix, a person's or a parent's end or delete, a lost command, a crashed spawn attempt: every visit decided, every agent session ended, owed ends sent, no orchestration left on a deleted session."
  },
  {
   "id": "fault.bind-newest",

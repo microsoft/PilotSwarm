@@ -43,6 +43,9 @@
 (* A started parent that is deleted may have its orchestration deleted    *)
 (* too (pPurged): NotFound again. "proposedNoteTx" is 9a8d0f66 with the   *)
 (* note and the skip in one transaction (the r3 finding's fix).           *)
+(* r4 adds "a9f60db7" (the branch head, R3-PA1 fix 30660458): the code    *)
+(* of proposedNoteTx (store.keepNoticeAsNote: chat.keepNoteIn and the     *)
+(* skip event projected in one transaction); otherwise as 9a8d0f66.       *)
 (*                                                                         *)
 (* Only the prompt path is live: a send is a WORKFLOW_UPDATE prompt        *)
 (* (legacy_window). The durable intake (claim, bind, expose, settle) is  *)
@@ -79,25 +82,25 @@ CONSTANTS
     MaxRecovers,
     RecoverAfterRelease, \* a recover is made only while no attempt holds the run's notice lock
     AllowLateStart,    \* r3: the parent's session has not started (NotFound) when the run begins; it may start later
-    Code               \* "efe44835", "1c117a47", "1f7bdc77", "proposedD", "proposedE3", "a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx"
+    Code               \* "efe44835", "1c117a47", "1f7bdc77", "proposedD", "proposedE3", "a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx", "a9f60db7"
 
 ASSUME MKind \in {"send", "request"} /\ StartFlag \in {"omitted", "true", "false"}
 ASSUME Fault \in {"none", "no_prior_check", "no_window", "no_durable_expiry"}
-ASSUME Code \in {"efe44835", "1c117a47", "1f7bdc77", "proposedD", "proposedE3", "a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx"}
+ASSUME Code \in {"efe44835", "1c117a47", "1f7bdc77", "proposedD", "proposedE3", "a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx", "a9f60db7"}
        /\ NumNotifiers \in {1, 2}
-ASSUME AllowRecover => (Code \in {"a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx"} /\ NumNotifiers = 2)
-ASSUME AllowNtZombie => Code \in {"a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx"}
-ASSUME AllowLateStart \in BOOLEAN /\ (AllowLateStart => Code \in {"a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx"})
+ASSUME AllowRecover => (Code \in {"a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx", "a9f60db7"} /\ NumNotifiers = 2)
+ASSUME AllowNtZombie => Code \in {"a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx", "a9f60db7"}
+ASSUME AllowLateStart \in BOOLEAN /\ (AllowLateStart => Code \in {"a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx", "a9f60db7"})
 NONE == "none"
 \* the state's message (its exchange id), the run's end ("...:terminal") and (r3) the run's end read from a chat note
 Ids == {"M", "E", "N"}
 FixD == Code = "proposedD"
 D1 == Code \in {"1f7bdc77", "proposedE3"}   \* group D as committed (E3 builds on it)
 E3 == Code = "proposedE3"
-A10 == Code \in {"a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx"}   \* batch E3 as committed (and E3b on top of it)
-E3B == Code \in {"fc6d7a65", "9a8d0f66", "proposedNoteTx"}               \* E3b: a held lock fails the attempt, which runs again
-DS2 == Code \in {"9a8d0f66", "proposedNoteTx"}   \* r3: a NotFound parent keeps the notice as a chat note
-NoteTx == Code = "proposedNoteTx"               \* r3 fix: the note and its skip are one transaction
+A10 == Code \in {"a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx", "a9f60db7"}   \* batch E3 as committed (and E3b on top of it)
+E3B == Code \in {"fc6d7a65", "9a8d0f66", "proposedNoteTx", "a9f60db7"}               \* E3b: a held lock fails the attempt, which runs again
+DS2 == Code \in {"9a8d0f66", "proposedNoteTx", "a9f60db7"}   \* r3: a NotFound parent keeps the notice as a chat note
+NoteTx == Code \in {"proposedNoteTx", "a9f60db7"}  \* r3 fix: the note and its skip are one transaction (a9f60db7: 30660458)
 E3L == E3 \/ A10                            \* the count of failed rows; the skip with earlierAttempt
 NI == 1..NumNotifiers
 Procs == IF AllowNtZombie THEN NI \cup {3} ELSE NI   \* 3: an attempt that timed out and keeps running

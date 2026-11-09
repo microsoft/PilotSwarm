@@ -60,6 +60,8 @@ E3B = "fc6d7a65"   # E3b: a held notice lock fails the attempt; the activity ret
 HERE = os.path.dirname(os.path.abspath(__file__))
 for _m in ("graph", "parent", "paused", "execshare"):
     exec(open(os.path.join(HERE, f"r3-{_m}.py")).read())
+# r4 (2026-11-09): the r3 findings' fixes bound to the branch head a9f60db7 (R3_IMPL; batch "r4").
+exec(open(os.path.join(HERE, "r3-impl.py")).read())
 
 # id, module, mode, spec, constants, invariants, properties, expected, note
 CASES = [
@@ -316,7 +318,8 @@ CASES = [
 ]
 R2E_IDS = None
 R3_START = len(CASES)
-CASES = r3_paused_patch(CASES + R3_GRAPH + R3_PARENT + R3_PAUSED + R3_EXECSHARE)
+R4_START = R3_START + len(R3_GRAPH) + len(R3_PARENT) + len(R3_PAUSED) + len(R3_EXECSHARE)
+CASES = r3_paused_patch(CASES + R3_GRAPH + R3_PARENT + R3_PAUSED + R3_EXECSHARE + R3_IMPL)
 
 def val(v):
     if isinstance(v, bool): return "TRUE" if v else "FALSE"
@@ -327,14 +330,15 @@ IDS = [c[0] for c in CASES]
 R2E_START = IDS.index("parent.zombie-holder-a10")
 STARTS = [(R2E_START, "r2e"), (IDS.index("exec.e1c-safety"), "r2f"), (IDS.index("parent.zombie-holder-recover-late-a10"), "r2g"),
           (IDS.index("graph.pause-pending-par"), "o3"), (IDS.index("graph.srt1-par"), "o4"), (IDS.index("graph.dx2-linear"), "o5"),
-          (R3_START, "r3")]
+          (R3_START, "r3"), (R4_START, "r4")]
 def batch_of(n):
     b = "r2d"
     for start, name in STARTS:
         if n >= start: b = name
     return b
 def head_of(cid, mod, consts, b):
-    if "Code" in consts: return str(consts["Code"]).strip('"')
+    if "Code" in consts: return str(consts["Code"]).strip('"')   # r4: Code "a9f60db7" -> head a9f60db7
+    if str(consts.get("Elsewhere", '"command"')).strip('"') == "a9f60db7": return "a9f60db7"   # r4: WfGraph at a9f60db7
     if mod != "WfGraph": return "efe44835"
     if b == "o3" or cid == "cmp.graph-limit-paused-8d5": return "8d568890"
     if b == "o4": return "c4481682" if cid.startswith("graph.srt1b") else "07c29b05"

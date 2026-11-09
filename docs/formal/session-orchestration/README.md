@@ -28,11 +28,12 @@ continue-as-new. Models and batches below name the paths of the commit they were
 | Latest-1.0.83 batch (2026-11-08, `5d8eaa46` to `4ffbf909`) | 50 cases of `VersionHandoff`, `RollingDeploy`, `DigestWindow`, `MergeRule`, `ForcedRefresh` and `IntakeDrain` with 1.0.83 as the latest version: every case as expected across seven runs (TLC 2.19, two workers, an isolated machine); no new code finding open |
 | Batches so4b, so5, so5b (2026-11-08) | The late-cancel give-back fixes in 1.0.83 (`CarriedGiveBack`): so4b found three gaps, so5 and so5b check their fixes; so5b, 48 cases at `bb162ed8` (`packages/sdk/src` identical at `8aaf5435` on v0.8.10): 48 of 48 as expected |
 
-1.0.82 is the version sessions run. The models therefore describe the current
-1.0.82 code, at the line numbers of `198ad79a`. Version 1.0.83
-(`orchestration_1_0_83/`, the durable Workflow intake) is not in the registry's
-default list: only a worker with the Workflow test option starts sessions at
-it. The intake protocol itself is modelled in
+1.0.83 (`src/orchestration/`, the durable Workflow intake) is the latest
+version: new sessions start at it, and every continue-as-new targets it. 1.0.82
+is frozen in `orchestration_1_0_82/` and stays registered for the sessions still
+on it. The modules that describe 1.0.82's queue and turn are bound to the line
+numbers of `198ad79a`; 1.0.83 keeps that behaviour. The intake ships switched
+off: no worker sets the workflowIntake capability. The intake protocol itself is modelled in
 `../workflow-v2/paired/recipient/`. The 1.0.83 run-loop changes around it (the
 owned retry, the intake write as a drain deadline, the carried arrival flag,
 the refused continue-as-new at the history cap, the continue-as-new target and
@@ -102,7 +103,7 @@ N02, N04-N07 and N10):
 |---|---|
 | `OwnedRetry` | `orchestration_1_0_83/state.ts` 255-410 (`ownedRetry`), 759-761; `queue.ts` 620-629, 749-760 (`releaseTimerForOwnedRetry`), 1495-1517 (`decide`); `turn.ts` 159, 194, 364, 549-553; `lifecycle.ts` 733-740 |
 | `IntakeDrain` | `orchestration_1_0_83/queue.ts` 482-520, 797-812; `runtime.ts` 253-278, 303; `lifecycle.ts` 724-776; `intake-state.ts` 534-545; `intake-wiring.ts` 326, 584; `state.ts` 804; `orchestration-version.ts` 15, 33; `activity-routing.ts` 10-22, 93-128; `session-proxy.ts` 5778 |
-| `WorkerShutdown` | `worker.ts` 1307-1404 (`gracefulShutdown`; `bounded` 1317-1338 starts every step and races it against the time left; workspace release 1374, release sweep 1394, stop 1403). Updated to `bb162ed8` in batch ws2 (`CORRESPONDENCE-bb162ed8-ws2.md`) |
+| `WorkerShutdown` | `worker.ts` 1307-1404 (`gracefulShutdown`; `bounded` 1317-1338 starts every step and races it against the time left; workspace release 1374, release sweep 1394, stop 1403). Updated to `bb162ed8` in batch ws2 (`CORRESPONDENCE-bb162ed8-ws2.md`). At `0df9e8a4` the same steps are at 1310-1408 (release sweep 1397-1405, stop 1407). The release sweep is now `sweepIdleSessions(1, { final: true })` (DRR-3b `3432b239`, DR2-006 `781441bf`): a session whose close in the Copilot CLI is not confirmed (DRR-3, `4d564f47`) is still uploaded and its local copy deleted, as at `bb162ed8`, and such sessions are taken last. Without `final` (the periodic sweep) such a session is kept and evicted again later. So the model's sweep and its `closeCut` limit (a legacy upload cut by the close) are unchanged |
 
 Bound to `bb162ed8` (`CORRESPONDENCE-bb162ed8-so5b.md`):
 
