@@ -7,7 +7,7 @@
  * - each node execution of those runs: its state, outcome and error, as stored (secrets hidden).
  * Reading changes nothing, and a read that fails is recorded in the evidence, never thrown: assertions are the case's.
  */
-import { redactWorkflowErrorValue, redactWorkflowSecrets } from "../../src/workflow/v2/redact.ts";
+import { redactThenClip, redactWorkflowErrorValue, redactWorkflowSecrets } from "../../src/workflow/v2/redact.ts";
 
 /** The most YAML kept per revision. */
 export const EVIDENCE_YAML_MAX_BYTES = 8 * 1024;
@@ -23,7 +23,8 @@ export function evidenceText(text, max = EVIDENCE_YAML_MAX_BYTES) {
     return `${bytes.subarray(0, max).toString("utf8").replace(/\uFFFD$/, "")}… [cut: ${bytes.length} bytes in all]`;
 }
 
-const failed = error => `unreadable: ${String(error?.message ?? error).slice(0, 300)}`;
+/** A read that failed, in words: its message with secrets hidden before it is cut (review DSS-002: never cut first). */
+const failed = error => `unreadable: ${redactThenClip(String(error?.message ?? error), 300)}`;
 
 /** One run with its node executions. */
 async function runEvidence(store, run) {
