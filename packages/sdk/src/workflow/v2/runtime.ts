@@ -91,6 +91,7 @@ import {
     type WorkflowTestInterception,
     type CancelledNodeWinner,
     commandEndOf,
+    runEndedByDeletion,
     workflowTestInterceptionId,
 } from "./store.js";
 
@@ -4353,7 +4354,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      */
     register("observeEnd", async (actx, rawInput) => {
         const run = await runOf(text(record(rawInput, "observe end input").runId, "runId"));
-        const deleted = (await store.readSessionLink(run.workflowSessionId))?.deleted !== false;
+        // Review R3-GR1: the end is the deletion's only when the deletion is what ended the run; a deletion after another
+        // end (a cancel, a done, the chat's end, the controller's own end retried after a crash) keeps that end's notice.
+        const linkDeleted = (await store.readSessionLink(run.workflowSessionId))?.deleted !== false;
+        const deleted = linkDeleted && (ACTIVE_RUN_STATUSES.includes(run.status) || runEndedByDeletion(run));
         if (!ACTIVE_RUN_STATUSES.includes(run.status)) {
             const reason = commandEndOf(run)?.command === "done" ? "Stopped" : deleted ? "Deleted" : "Cancelled";
             await stopCancelledEffects(actx, run, reason, ["cancel", "delete", "deadline"]);

@@ -91,6 +91,21 @@ export function commandEndOf(run: Pick<WorkflowRunRow, "status" | "terminalError
         operationId: typeof details.operationId === "string" ? details.operationId : null };
 }
 
+/** The end the workflow session's deletion gives a run it ends (migrations 0090 and 0091, workflow_v2_on_session_deleted). */
+export const WORKFLOW_V2_SESSION_DELETED_MESSAGE = "The workflow session was deleted.";
+
+/**
+ * Review R3-GR1: whether a run's stored end is its workflow's deletion: the deletion trigger's end, or a delete command's.
+ * A run that a cancel, a done, its own terminal, a failure or its deadline ended first keeps that end, also when its
+ * workflow was deleted afterwards (whatever ended the run first decides who is told).
+ */
+export function runEndedByDeletion(run: Pick<WorkflowRunRow, "status" | "terminalError">): boolean {
+    if (run.status !== "cancelled" || !isJsonObject(run.terminalError)) return false;
+    const error = run.terminalError;
+    if (error.code === "cancelled" && error.message === WORKFLOW_V2_SESSION_DELETED_MESSAGE) return true;
+    return isJsonObject(error.details) && error.details.command === "delete";
+}
+
 /** Open KV limits (design D07: proposed defaults, enforced on every update). */
 export const WORKFLOW_V2_KV_LIMITS = { maxKeys: 1_000, maxKeyLength: 128, maxValueBytes: 256 * 1024, maxTotalBytes: 1024 * 1024 } as const;
 

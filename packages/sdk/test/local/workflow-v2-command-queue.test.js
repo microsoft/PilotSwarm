@@ -709,6 +709,86 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
         }
     });
 
+    // Review R3-GR1 (formal r3, graph.r3-delete-after-cmd and r3-delete-after-retry): a deletion that follows another end does
+    // not silence that end's notice: whatever ended the run first decides who is told. The controller is held (its plan, or
+    // its finish's attempt) while another writer ends the run and the workflow is then deleted; the parent is told once.
+    describe("R3-GR1 (1.9.0): a deletion after another end keeps that end's parent notice", () => {
+        /** A 1.9.0 harness whose parent notices are recorded, with `wrap`. */
+        const noticed = (wrap = {}) => {
+            const notices = [];
+            return { notices, options: { authorizeParentNotification: async () => true,
+                notifyParent: async (parentSessionId, text) => { notices.push({ parentSessionId, text }); } }, wrap };
+        };
+        const heldPlan = () => {
+            const plan = gate();
+            let planned = false;
+            return { plan, wrap: { [WORKFLOW_V2_REQUEST_ACTIVITIES.plan]: fn => async (ctx, input) => {
+                if (!planned) { planned = true; plan.arrive(); await plan.wait(); }
+                return fn(ctx, input);
+            } } };
+        };
+
+        for (const [label, endFirst, status, words] of [
+            ["a person's cancel", async (h, run) => controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "stopped by a person" },
+                { actor: { kind: "user", provider: "test", subject: `person-${randomUUID()}` }, operationId: "person-cancel" }), "cancelled", "cancelled"],
+            ["the chat's own end", async (h, _run, parent) => h.catalog.updateSession(parent, { state: "cancelled" }), "cancelled", "cancelled"],
+        ]) {
+            it(`${label}, then the workflow's deletion, while the controller is held: the parent is told once, of that end`, { timeout: TIMEOUT }, async () => {
+                const held = heldPlan();
+                const n = noticed(held.wrap);
+                const h = await harness(getEnv(), { requests: true, options: n.options, wrap: n.wrap });
+                try {
+                    const parent = randomUUID();
+                    const run = await started(h, HOLD(), { parent });
+                    await held.plan.reached;
+                    await endFirst(h, run, parent);
+                    expect(await h.store.readRun(run.runId)).toMatchObject({ status });
+                    await h.catalog.softDeleteSession(run.workflowSessionId);
+                    held.plan.open();
+                    await controllerFinished(h, run.controller, status);
+                    await until(async () => n.notices.length > 0 || null, "the parent's notice");
+                    await pause(1_000);
+                    expect(n.notices.map(notice => notice.parentSessionId)).toEqual([parent]);
+                    expect(n.notices[0].text).toContain(words);
+                } finally {
+                    held.plan.open();
+                    await h.stop();
+                }
+            });
+        }
+
+        it("the controller's own end, retried after its attempt crashed, then the workflow's deletion: the parent is told once, of that end", { timeout: TIMEOUT }, async () => {
+            // Fault injection: the finish's first attempt commits the run's end, then the workflow is deleted and the attempt
+            // fails (a crash after the commit); its retry finds the run ended and reconciles it.
+            let crashed = false;
+            let h = null;
+            const n = noticed({ [WORKFLOW_V2_REQUEST_ACTIVITIES.finish]: fn => async (ctx, input) => {
+                const result = await fn(ctx, input);
+                if (!crashed) {
+                    crashed = true;
+                    await h.catalog.softDeleteSession((await h.store.readRun(input.runId)).workflowSessionId);
+                    throw new Error("injected: the worker crashed after the finish committed");
+                }
+                return result;
+            } });
+            h = await harness(getEnv(), { requests: true, options: n.options, wrap: n.wrap });
+            try {
+                const parent = randomUUID();
+                // HOLD with a one-second wait: the run ends by its own terminal.
+                const run = await started(h, { ...HOLD(), states: { ...HOLD().states, hold: { ...HOLD().states.hold, seconds: 1 } } }, { parent });
+                await controllerFinished(h, run.controller, "completed");
+                expect(crashed).toBe(true);
+                expect(await h.store.readRun(run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+                await until(async () => n.notices.length > 0 || null, "the parent's notice");
+                await pause(1_000);
+                expect(n.notices.map(notice => notice.parentSessionId)).toEqual([parent]);
+                expect(n.notices[0].text).toContain("succeeded");
+            } finally {
+                await h.stop();
+            }
+        });
+    });
+
     // Review N-4 residual: the pump keeps a failed enqueue unless the run's status proves it ended; a failed status read is
     // kept on the error, never taken for an end. (No database: the client and the store fail as given.)
     it("N-4: the wake pump's stop rejects when an enqueue fails and the status read fails too; only a proven end is quiet", async () => {
