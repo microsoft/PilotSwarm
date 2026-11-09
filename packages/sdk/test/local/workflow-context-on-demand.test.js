@@ -24,12 +24,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SessionManager } from "../../src/session-manager.ts";
+import { SessionManager, bindingFingerprintDigest, buildBindingFingerprintInput } from "../../src/session-manager.ts";
 import { ManagedSession } from "../../src/managed-session.ts";
 import { normalizeCapabilityState, withWorkflowsOn, withWorkspaceLoad } from "../../src/capability-catalog.ts";
 import { nextCapabilityState } from "../../src/capability-runtime.ts";
 import {
     ENABLE_WORKFLOWS_TOOL_SPEC, WORKFLOW_CONTEXT_STUB, WORKFLOW_INSIDE_GUIDANCE, WORKFLOW_SCHEDULING_HINT, WORKFLOW_SCHEDULING_HINT_OFF, WORKFLOW_SESSION_GUIDANCE,
+    WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR,
 } from "../../src/workflow/guidance.ts";
 
 const owner = { provider: "test", subject: "workflow-context-owner", email: null, displayName: null };
@@ -37,7 +38,7 @@ const WORKFLOW_TOOLS = ["workflow_definition", "update_workflow", "read_workflow
 const cleanup = [];
 afterEach(async () => { while (cleanup.length) await cleanup.pop()(); });
 
-function fixture({ catalogStorage = true, agentIdentity, sources = [], native = false, handle: makeHandle } = {}) {
+function fixture({ catalogStorage = true, agentIdentity, sources = [], native = false, handle: makeHandle, workerDefaults = {} } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "ps-workflow-context-"));
     let state = { revision: 0, selections: [] };
     const saves = [];
@@ -59,7 +60,8 @@ function fixture({ catalogStorage = true, agentIdentity, sources = [], native = 
             },
         } : {}),
     };
-    const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "legacy base", nativeSubagents: native ? "sync" : "off", getCapabilitySources: () => sources }, dir);
+    const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "legacy base", nativeSubagents: native ? "sync" : "off", getCapabilitySources: () => sources,
+        ...workerDefaults }, dir);
     manager.workflowScriptsEnabled = true;
     manager.setSessionCatalog(catalog);
     manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
@@ -223,6 +225,55 @@ describe("Workflows on demand: the V2 skills index", () => {
         expect(on.config.workflowContext).toBe("on");
         expect(indexOf(on)).toContain("workflow-authoring");
         expect(indexOf(on)).toContain("workflow-tools");
+    });
+});
+
+describe("Workflows on demand: the CLI's skill directories (its own `skill` tool)", () => {
+    // As worker.ts gives them: the Workflow skill directories (_loadSdkSkillDir; test-mode ones with test mode) and a
+    // deployment's own, to Base V1 (skillDirectories) and Base V2 (getBaseV2SkillDirectories).
+    const OTHER = "/deployment/skills";
+    const dirs = [WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR, OTHER];
+    const workerDefaults = { skillDirectories: dirs, getBaseV2SkillDirectories: () => dirs };
+    const given = f => f.opened.at(-1).config.skillDirectories;
+
+    for (const native of [false, true]) {
+        it(`Base ${native ? "V2" : "V1"}: off, the CLI is not given the Workflow skill directories; on, it is, on a fresh handle`, async () => {
+            const f = fixture({ native, workerDefaults });
+            const off = await f.turn(0);
+            expect(off.config.workflowContext).toBe("off");
+            expect(off.config.baseAgentPolicy?.version ?? "v1").toBe(native ? "v2" : "v1");
+            expect(given(f)).toEqual([OTHER]);
+            await off.config.capabilityServices.enableWorkflows();
+            const before = f.opened.length;
+            const on = await f.turn(1);
+            expect(on.config.workflowContext).toBe("on");
+            expect(given(f)).toEqual(dirs);
+            expect(f.opened.length).toBe(before + 1);
+            expect(f.opened.at(-2).handle.disconnect).toHaveBeenCalled();
+        });
+    }
+
+    it("on in Agent Smith and inside a Workflow; never in the read-only tuner", async () => {
+        const smith = fixture({ agentIdentity: "agent-manager", workerDefaults });
+        await smith.turn(0);
+        expect(given(smith)).toEqual(dirs);
+        const inside = fixture({ workerDefaults });
+        await inside.turn(0, { workflowInsideWorkflow: true, workflowAgentChild: true });
+        expect(given(inside)).toEqual(dirs);
+        const tuner = fixture({ agentIdentity: "agent-tuner", workerDefaults });
+        expect((await tuner.turn(0)).config.workflowContext).toBe("none");
+        expect(given(tuner)).toEqual([OTHER]);
+    });
+
+    it("the Workflow skill directories are part of a Base V1 chat's handle identity (V2's skill directories already are)", () => {
+        const parts = { capabilityFingerprint: "cap", baseAgentPolicy: "v1", sdkSkillDirectories: [OTHER], boundAgentName: undefined,
+            boundAgentSource: undefined, boundAgentCopy: undefined, mcpServers: {}, excludedTools: ["task"], tools: [{ name: "wait" }] };
+        const off = buildBindingFingerprintInput(parts);
+        expect(Object.hasOwn(off, "workflowSkillDirectories")).toBe(false);
+        expect(Object.hasOwn(buildBindingFingerprintInput({ ...parts, workflowSkillDirectories: [] }), "workflowSkillDirectories")).toBe(false);
+        const on = buildBindingFingerprintInput({ ...parts, workflowSkillDirectories: [WORKFLOW_V2_SKILLS_DIR] });
+        expect(on.workflowSkillDirectories).toEqual([WORKFLOW_V2_SKILLS_DIR]);
+        expect(bindingFingerprintDigest(on)).not.toBe(bindingFingerprintDigest(off));
     });
 });
 

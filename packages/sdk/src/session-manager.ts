@@ -30,7 +30,7 @@ import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createScriptSessionTools } from "./workflow/session-tools.js";
 import { WORKFLOW_TOOL_POLICY, captureWorkflowTools, isWorkflowControlTool, workflowParentContextUnavailable, workflowToolPermission, type WorkflowToolBinding } from "./workflow/tool-policy.js";
 import { createWorkflowToolExecutor, type WorkflowToolExecutor } from "./workflow/tool-executor.js";
-import { WORKFLOW_CONTEXT_STUB, withWorkflowSkillsListed, workflowAwareSchedulingTool, workflowSessionGuidance, type WorkflowContextMode } from "./workflow/guidance.js";
+import { WORKFLOW_CONTEXT_STUB, WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR, withWorkflowSkillsListed, workflowAwareSchedulingTool, workflowSessionGuidance, type WorkflowContextMode } from "./workflow/guidance.js";
 import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
 import { WORKFLOW_V2_AGENT_COMPLETION_TOOL } from "./workflow/v2/compiler.js";
 import { workflowDefinitionMcpPermission, workflowDefinitionMcpToolFilters } from "./workflow/v2/input-policy.js";
@@ -439,6 +439,8 @@ export function buildBindingFingerprintInput(parts: {
     workspace?: WorkspaceFingerprintPart;
     /** FU-17: the tools an agent state limits this session to (workflowAgentToolAllowlist), when it does. */
     availableTools?: string[];
+    /** The Workflow skill directories the CLI is given (only where Workflows are on: cliSkillDirectories), when it is. */
+    workflowSkillDirectories?: string[];
 }): Record<string, unknown> {
     return {
         capabilityFingerprint: parts.capabilityFingerprint,
@@ -451,6 +453,9 @@ export function buildBindingFingerprintInput(parts: {
         excludedTools: parts.excludedTools,
         tools: parts.tools,
         ...(parts.availableTools ? { availableTools: parts.availableTools } : {}),
+        // A Base V1 chat's skill directories are not otherwise in its identity (V2's sdkSkillDirectories are): turning
+        // Workflows on gives the CLI the Workflow skill directory, so the chat needs a fresh handle.
+        ...(parts.workflowSkillDirectories?.length ? { workflowSkillDirectories: parts.workflowSkillDirectories } : {}),
         ...(parts.workspace ? {
             workspace: {
                 path: parts.workspace.path,
@@ -458,6 +463,45 @@ export function buildBindingFingerprintInput(parts: {
                 ...(parts.workspace.repoAgentHash ? { repoAgentHash: parts.workspace.repoAgentHash } : {}),
             },
         } : {}),
+    };
+}
+
+/** One of the SDK's Workflow skill directories (WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR). */
+export function isWorkflowSkillDirectory(dir: string): boolean {
+    const resolved = path.resolve(dir);
+    return resolved === path.resolve(WORKFLOW_V2_SKILLS_DIR) || resolved === path.resolve(WORKFLOW_V2_TEST_MODE_SKILLS_DIR);
+}
+
+/**
+ * The skill directories a chat's CLI is given. The CLI's built-in `skill` tool serves them, and its declaration lists
+ * their skills (an <available_skills> block in its description; Copilot CLI 1.0.83). Every worker loads the Workflow skill
+ * directories, so they reach the CLI only where Workflows are on in the chat, as PilotSwarm's skills indexes list the
+ * Workflow skills only there. Off, the chat's paragraph names enable_workflows instead; the read-only tuner has none.
+ * load_skill and search_capabilities find the Workflow skills in every chat (capability sources).
+ */
+export function cliSkillDirectories(dirs: readonly string[], workflowContext: WorkflowContextMode): string[] {
+    return workflowContext === "on" ? [...dirs] : dirs.filter(dir => !isWorkflowSkillDirectory(dir));
+}
+
+/**
+ * The CLI's built-in `skill` tool takes the skill's name as `skill` (Copilot CLI 1.0.83: {"skill": string}, required).
+ * PilotSwarm's load_skill takes `name`, and the Workflow guidance says "call `load_skill` with name `workflow-authoring`":
+ * a model that called `skill` with `name` was refused by the CLI ('"skill": Required', a Failed row in the chat). The
+ * pre-tool hook runs before the CLI checks the arguments, so such a call is given its name as `skill`. A call that has
+ * `skill`, any other tool's call, and a call an earlier hook denies are unchanged.
+ */
+export function withSkillNameArgument(hooks: SessionConfig["hooks"]): SessionConfig["hooks"] {
+    return {
+        ...hooks,
+        onPreToolUse: async (input: any, invocation: any) => {
+            const result = await hooks?.onPreToolUse?.(input, invocation);
+            if (input?.toolName !== "skill" || (result as any)?.permissionDecision === "deny") return result;
+            const args = (result as any)?.modifiedArgs ?? input?.toolArgs;
+            if (!args || typeof args !== "object" || Array.isArray(args) || typeof args.skill === "string") return result;
+            const { name, ...rest } = args as Record<string, unknown>;
+            if (typeof name !== "string" || !name.trim()) return result;
+            return { ...(result ?? {}), modifiedArgs: { ...rest, skill: name } };
+        },
     };
 }
 
@@ -2737,9 +2781,11 @@ export class SessionManager {
         ])];
         // A child of a system session can be non-system yet retain the system
         // principal; use the same filtered owner as the V2 index and catalog.
-        const sdkSkillDirectories = config.baseAgentPolicy?.version === "v2"
+        // The Workflow skill directories only where Workflows are on in the chat (cliSkillDirectories).
+        const sdkSkillDirectories = cliSkillDirectories(config.baseAgentPolicy?.version === "v2"
             ? this.workerDefaults.getBaseV2SkillDirectories?.(v2Owner) ?? []
-            : this.workerDefaults.skillDirectories ?? [];
+            : this.workerDefaults.skillDirectories ?? [], workflowContext);
+        const workflowSkillDirectories = sdkSkillDirectories.filter(isWorkflowSkillDirectory);
         // Session workspaces (section 4.6): the repo agents and skills the
         // provider's adopt allows, filtered for this session. Agents need
         // native tasks; they run as native task children.
@@ -2801,6 +2847,7 @@ export class SessionManager {
             excludedTools,
             tools: allTools.map(toolDeclarationForFingerprint),
             ...(agentToolAllowlist ? { availableTools: agentToolAllowlist } : {}),
+            ...(workflowSkillDirectories.length ? { workflowSkillDirectories } : {}),
             ...(workspaceAttach ? { workspace: {
                 path: workspaceAttach.path,
                 adopt: workspaceAttach.adopt ?? null,
@@ -2871,14 +2918,15 @@ export class SessionManager {
                 enableFileHooks: false,
                 skipCustomInstructions: workspaceAttach.adopt?.instructions !== true,
             } : config.workspaceCleared ? { enableFileHooks: false } : {}),
-            hooks: withWorkspaceChangeDeny(
+            // The CLI's `skill` tool called with `name` is given it as `skill` (withSkillNameArgument).
+            hooks: withSkillNameArgument(withWorkspaceChangeDeny(
                 nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks,
                     () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false, nativeTaskAccess, repoAgentAccess, nativeLimit) : config.hooks,
                 workspaceTools ? {
                     state: () => this.sessions.get(sessionId)?.workspaceChangeState() ?? "none",
                     noteRequested: () => this.sessions.get(sessionId)?.noteWorkspaceChangeRequested(),
                 } : null,
-            ),
+            )),
             // Workflow v2 real-agent test runs: a session whose turn ran
             // under such a test refuses MCP tools, which cannot be intercepted; its other requests go to its handler unchanged.
             // Every other session gets its handler as it is.
