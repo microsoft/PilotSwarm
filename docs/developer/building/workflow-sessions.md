@@ -785,8 +785,13 @@ Not available: turn-control tools (`wait`, `cron`, `ask_user`, `spawn_agent`,
 `respond_session_request`, `complete_workflow_node`), and session messaging
 (`send_session_message`, `reply_session_message`, `message_agent`): a Workflow
 messages sessions through its own send and request states, never as its
-parent. Such a tool is never captured in the grant, and a call of one is
-refused. Existing approved application tools retain their authority;
+parent. The same controls under the names the PilotSwarm MCP server and the
+management tools give them are left out too: a session's lifecycle,
+conversation and turn (`abort_session`, `complete_session`, `send_answer`,
+`stop_turn`, `regenerate_session`, ...), who may see or change a session or a
+package, model providers and defaults, agent package publication, feature
+flags, and system maintenance (`workflow/tool-policy.ts` lists them). Such a
+tool is never captured in the grant, and a call of one is refused. Existing approved application tools retain their authority;
 a generated confirmation flag is not human approval. Parent capability
 removal or a changed source binding can stop later calls, but newly added
 parent tools do not enlarge an admitted run.

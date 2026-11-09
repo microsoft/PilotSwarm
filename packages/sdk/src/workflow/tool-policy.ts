@@ -85,6 +85,26 @@ const controls = new Set([
     "workflow_definition", "respond_session_request", "complete_workflow_node",
     // A Workflow messages sessions through its own send and request states, never as its parent.
     "send_session_message", "reply_session_message",
+    // Review DS2-002: the same controls under the names the bundled PilotSwarm MCP server (packages/app/mcp) and the
+    // SDK's management tools give them. A session's lifecycle, conversation and turn: an answer, an abort, a regeneration,
+    // a turn's stop or steer, a completion, queued-message cancels, custom events, workspace retries, a model switch, a raw
+    // orchestration command, a system session's restart.
+    "send_answer", "abort_session", "regenerate_session", "stop_turn", "steer_session_turn", "complete_session",
+    "cancel_pending_messages", "send_session_event", "retry_session_workspace", "switch_model", "send_command",
+    "restart_system_session",
+    // Who may see or change a session or a package.
+    "set_session_visibility", "grant_session_share", "revoke_session_share", "grant_agent_package_editor",
+    "revoke_agent_package_editor",
+    // What the deployment offers: model providers and defaults, agent packages, feature flags, notices to every user.
+    "manage_provider", "set_provider_limit", "set_provider_allowance", "provider_hold", "set_provider_default",
+    "set_model_default", "set_provider_system_use", "set_system_model_default", "adopt_legacy_system_github_key",
+    "push_agent_package", "publish_agent_package", "import_agent_package", "republish_agent_package_version",
+    "pin_agent_package_version", "set_agent_package_enabled", "set_agent_package_scope", "delete_agent_package",
+    "set_cluster_feature_flag", "reset_cluster_feature_flag", "set_user_feature_flag", "unset_user_feature_flag",
+    "set_my_feature_flag", "unset_my_feature_flag", "create_motd", "delete_motd",
+    // System maintenance.
+    "start_embedder", "stop_embedder", "facts_admin", "scale_workers", "compact_database", "purge_old_events",
+    "purge_orphaned_blobs", "facts_force_purge", "facts_purge_tombstones",
 ]);
 
 export function isWorkflowControlTool(name: string): boolean {

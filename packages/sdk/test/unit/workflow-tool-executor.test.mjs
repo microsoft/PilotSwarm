@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { captureWorkflowTools, isWorkflowControlTool, resolveWorkflowTool, validateWorkflowToolArguments, workflowToolPermission } from "../../dist/workflow/tool-policy.js";
+import { admittedWorkflowToolGrant, captureWorkflowTools, isWorkflowControlTool, resolveWorkflowTool, validateWorkflowToolArguments, workflowToolGrant,
+    workflowToolPermission } from "../../dist/workflow/tool-policy.js";
 import { createWorkflowToolExecutor, workflowToolResult } from "../../dist/workflow/tool-executor.js";
 import { compileWorkflow, validateNodeWorkflowAdmission } from "../../dist/workflow/compiler.js";
 
@@ -48,6 +49,45 @@ test("review PRW-T1: a parent's grant never captures the Workflow tools that edi
 for (const name of ["bash", "view", "apply_patch", "rg", "read_bash", "stop_bash", "facts/read"]) {
     test(`ordinary tool remains eligible: ${name}`, () => assert.equal(isWorkflowControlTool(name), false));
 }
+// Review DS2-002: the bundled PilotSwarm MCP server's (and the SDK management tools') lifecycle, conversational, access and
+// deployment controls are control tools under their own names. With full MCP metadata, capture leaves each out; a grant
+// stored before this change (holding one) is refused at resolution, at a test run's interception and by the executor,
+// which never calls the tool.
+const MCP_CONTROL_LEAVES = ["send_answer", "abort_session", "regenerate_session", "stop_turn", "steer_session_turn", "complete_session",
+    "cancel_pending_messages", "send_session_event", "retry_session_workspace", "switch_model", "send_command", "restart_system_session",
+    "set_session_visibility", "grant_session_share", "revoke_session_share", "grant_agent_package_editor", "revoke_agent_package_editor",
+    "manage_provider", "set_provider_limit", "set_provider_allowance", "provider_hold", "set_provider_default", "set_model_default",
+    "set_provider_system_use", "set_system_model_default", "adopt_legacy_system_github_key", "push_agent_package", "publish_agent_package",
+    "import_agent_package", "republish_agent_package_version", "pin_agent_package_version", "set_agent_package_enabled",
+    "set_agent_package_scope", "delete_agent_package", "set_cluster_feature_flag", "reset_cluster_feature_flag", "set_user_feature_flag",
+    "unset_user_feature_flag", "set_my_feature_flag", "unset_my_feature_flag", "create_motd", "delete_motd", "start_embedder",
+    "stop_embedder", "facts_admin", "scale_workers", "compact_database", "purge_old_events", "purge_orphaned_blobs", "facts_force_purge",
+    "facts_purge_tombstones"];
+const mcpTool = leaf => ({ name: `pilotswarm-${leaf}`, namespacedName: `pilotswarm.${leaf}`, mcpServerName: "pilotswarm", mcpToolName: leaf,
+    description: leaf, input_schema: { type: "object" } });
+test("review DS2-002: the PilotSwarm MCP server's control tools are never captured, and a stored grant of one is refused", async () => {
+    const controls = MCP_CONTROL_LEAVES.map(mcpTool);
+    const ordinary = [mcpTool("list_sessions"), mcpTool("get_session_detail"), mcpTool("read_facts"), mcpTool("list_artifacts")];
+    assert.deepEqual(captureWorkflowTools([...metadata, ...controls, ...ordinary]).map(grant => grant.name).sort(),
+        ["bash", "facts_read", "pilotswarm-get_session_detail", "pilotswarm-list_artifacts", "pilotswarm-list_sessions", "pilotswarm-read_facts", "view"]);
+    for (const tool of controls) {
+        assert.equal(isWorkflowControlTool(tool.mcpToolName), true, tool.mcpToolName);
+        const legacy = [workflowToolGrant(tool)];
+        for (const name of [tool.name, `pilotswarm/${tool.mcpToolName}`, tool.namespacedName]) {
+            assert.throws(() => resolveWorkflowTool(name, legacy, [tool]), /not permitted|not uniquely admitted/, name);
+            assert.throws(() => admittedWorkflowToolGrant(name, legacy, []), /not permitted|not uniquely admitted/, name);
+        }
+    }
+    // One executor per call form (an executor takes at most 100 calls).
+    for (const form of [tool => `pilotswarm/${tool.mcpToolName}`, tool => tool.name]) {
+        const f = fixture();
+        f.setMetadata([...metadata, ...controls]);
+        const executor = await createWorkflowToolExecutor({ ...f.options, grants: [...captureWorkflowTools(metadata), ...controls.map(workflowToolGrant)] });
+        for (const tool of controls) await assert.rejects(executor.call(form(tool), {}), /not permitted|not uniquely admitted/, form(tool));
+        assert.deepEqual(f.calls, []);
+        await executor.close();
+    }
+});
 test("captured tools exclude orchestration and match MCP aliases exactly", () => {
     const grants = captureWorkflowTools(metadata);
     assert.equal(grants.length, 3);
