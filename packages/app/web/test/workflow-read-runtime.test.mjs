@@ -182,6 +182,8 @@ async function routeHarness({ config, enforce = true, shared = [] } = {}) {
         // Read only for the commands a person may send (workflowCommands): wf1 is in no agent state's subtree.
         readWorkflowLineage: async () => null,
         readRun: async (runId) => runs.find((item) => item.runId === runId) ?? null,
+        // Review PRA-F3: every read of the view asks who last controlled the run; these runs have no control action.
+        readLastRunControl: async () => null,
     };
     const mgmt = {
         _ensureStarted() {},

@@ -6,12 +6,15 @@
  *   by; never their sign-in identity), as on TEST: the chat paused, the person resumed from the portal;
  * - variables set by another session ("another session", its id); a system's pause ("system", its name);
  * - a graceful stop and a cancel, with their reasons as stored: secrets hidden, cut at 500 characters (and "…");
- * - a "done" ends a run but is no control action.
+ * - a "done" ends a run but is no control action;
+ * - review PRA-F3: the management client's readWorkflow (the Web API's and MCP's read) has it too, with no reading session:
+ *   the chat's own action reads "another session" with its id.
  * Nothing here runs a controller: the runs are admitted and never begin (the store's commands apply to them as they are).
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
+import { createManagementClient } from "../helpers/local-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { controlWorkflowV2Run } from "../../src/workflow/v2/service.ts";
@@ -179,5 +182,25 @@ describe("read_workflow run.lastControl (UXP-AD-01)", () => {
         expect(ended.status).toBe("cancelled");
         expect((await done.stored("workflow.cancelled")).command).toBe("done");
         expect(ended.lastControl).toEqual({ operation: "pause", by: "this session", at: expect.stringMatching(ISO) });
+    });
+
+    it("PRA-F3: the management client's read (the Web API's and MCP's) has lastControl too, read by no session", { timeout: TIMEOUT }, async () => {
+        const h = await chatWorkflow(getEnv(), "mgmt-read");
+        const mgmt = await createManagementClient(h.env);
+        try {
+            expect((await mgmt.readWorkflow(h.workflowSessionId)).run).not.toHaveProperty("lastControl");
+            await h.asChat({ operation: "pause", operation_id: "chat-pause", reason: "The person asked me to pause it." });
+            expect((await mgmt.readWorkflow(h.workflowSessionId)).run.lastControl).toEqual({ operation: "pause", by: "another session", sessionId: h.chat,
+                at: expect.stringMatching(ISO), reason: "The person asked me to pause it." });
+            // The chat's own read still says it was this session.
+            expect((await h.read()).lastControl).toMatchObject({ operation: "pause", by: "this session" });
+            const person = { kind: "user", provider: "test-idp", subject: `subject-${randomUUID()}` };
+            await nameThePerson(h.catalog, h.env, person, "Ada Lovelace");
+            await h.command(person, { operation: "resume" });
+            expect((await mgmt.readWorkflow(h.workflowSessionId)).run.lastControl).toEqual({ operation: "resume", by: "a person", name: "Ada Lovelace",
+                at: expect.stringMatching(ISO) });
+        } finally {
+            await mgmt.stop();
+        }
     });
 });

@@ -642,6 +642,11 @@ export interface WorkflowV2ReadOptions {
      * is refused as an unknown run is. readWorkflowV2 sets it from its host's test mode.
      */
     hideTestRuns?: boolean;
+    /**
+     * Review PRA-F3: who reads, for the run's lastControl: the chat whose read_workflow this is (its own actions read "this
+     * session"); null for a management, Web API or MCP read (an agent's action reads "another session" with its id).
+     */
+    callerSessionId?: string | null;
 }
 
 /** The runs a read may show: all of them, or, with test mode off (`hide`), the live ones (review SF-5). */
@@ -651,7 +656,7 @@ const readableRuns = <T extends { mode: string }>(runs: readonly T[], hide: bool
 const readInvalid = (message: string): WorkflowStoreError => new WorkflowStoreError("WORKFLOW_READ_INVALID", message);
 
 /** A read's options as an adapter received them (read_workflow's arguments, or readWorkflow's options), for readWorkflowV2. */
-export interface WorkflowV2ReadRequest extends Omit<WorkflowV2ReadOptions, "includeYaml" | "hideTestRuns"> {
+export interface WorkflowV2ReadRequest extends Omit<WorkflowV2ReadOptions, "includeYaml" | "hideTestRuns" | "callerSessionId"> {
     includeYaml?: unknown; agentVersions?: unknown; definitionRevision?: unknown; stepInput?: unknown;
 }
 
@@ -676,7 +681,8 @@ export function workflowV2ExclusiveRead(request: WorkflowV2ReadRequest): "agentV
  * is decided before this, and what an adapter adds to the view, after it.
  */
 export async function readWorkflowV2(host: Pick<WorkflowV2Host, "store" | "resolveAgent" | "requests"> & { testMode?: boolean },
-    workflowSessionId: string, request: WorkflowV2ReadRequest, names: "tool" | "api"): Promise<{ [key: string]: JsonValue }> {
+    workflowSessionId: string, request: WorkflowV2ReadRequest, names: "tool" | "api", reader: { callerSessionId?: string | null } = {})
+    : Promise<{ [key: string]: JsonValue }> {
     const own = workflowV2ExclusiveRead(request);
     const extra = (Object.keys(READ_TOOL_NAMES) as (keyof WorkflowV2ReadRequest)[])
         .filter(key => key !== own && readOptionGiven(request, key)).map(key => (names === "tool" ? READ_TOOL_NAMES[key] : key));
@@ -685,7 +691,7 @@ export async function readWorkflowV2(host: Pick<WorkflowV2Host, "store" | "resol
     if (own === "stepInput") return readWorkflowV2StepInput(host, workflowSessionId, request.stepInput, extra);
     // With test mode off (the host's, or else the deployment flag), test runs are not shown and not found (review SF-5).
     return readWorkflowV2View(host.store, workflowSessionId, { ...request, runId: request.runId ?? null, includeYaml: request.includeYaml === true,
-        hideTestRuns: !resolveWorkflowTestMode(host.testMode) });
+        hideTestRuns: !resolveWorkflowTestMode(host.testMode), callerSessionId: reader.callerSessionId ?? null });
 }
 
 /** A read of its own given with other read options (`extra`, by the caller's names): WORKFLOW_READ_INVALID naming them. */
@@ -1128,6 +1134,9 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
     const test = selected && sections && selected.mode === "test"
         ? await testViewOf(store, workflowSessionId, selected, definition.currentRevision, [...sections.executions.rows, ...sections.openExecutions], limits.interceptions)
         : null;
+    // UXP-AD-01, review PRA-F3: who took the run's latest control action, on every read of the view (the chat's tool, the
+    // management client, the Web API and MCP), as `options.callerSessionId` reads it.
+    const control = selected ? await store.readLastRunControl(workflowSessionId, selected.runId) : null;
     return {
         workflowId: workflowSessionId,
         definition: {
@@ -1159,6 +1168,7 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
                 graceSeconds: selected.stop.graceSeconds, reason: selected.stop.reason,
                 ...(stopping !== null ? { settled: stopSettled } : {}),
             } } : {}),
+            ...(control ? { lastControl: runControlView(control, options.callerSessionId ?? null) } : {}),
             ...(test !== null ? { test: test.view } : {}),
             // A run deadline (migration 0104; limits.timeoutSeconds, controller 1.9.0): only a run with one shows it (a test
             // run's is on its virtual clock).
@@ -1576,12 +1586,7 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
             runId: optionalString(args, "run_id"), includeYaml: args.include_yaml, cursor: args.cursor, limit: args.limit,
             executionId: args.execution_id, kvRevision: args.kv_revision, kvKey: args.kv_key, agentVersions: args.agent_versions,
             definitionRevision: args.definition_revision, stepInput: args.step_input,
-        }, "tool");
-        // UXP-AD-01: who took the run's latest control action, as the calling session reads it (the view only).
-        if (isJsonObject(view.run) && typeof view.run.runId === "string") {
-            const control = await context.host.store.readLastRunControl(workflowSessionId, view.run.runId);
-            if (control) view.run = { ...view.run, lastControl: runControlView(control, context.callerSessionId) };
-        }
+        }, "tool", { callerSessionId: context.callerSessionId });
         // Report (never change) whether an active run's controller can still end it; the view only (a page, an execution's value
         // or a read of its own has no run object).
         const shown = isJsonObject(view.run) && typeof view.run.runId === "string" ? await context.host.store.readRun(view.run.runId) : null;
