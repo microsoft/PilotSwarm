@@ -13,13 +13,30 @@ const skill = name => fs.readFileSync(path.join(WORKFLOW_V2_SKILLS_DIR, name, "S
 
 test("the guidance keeps its rules in about 2,000 characters, whatever the turn and worker add", () => {
     // UXP-AD-01 (owner 2026-11-09T03:25Z) added the person's control sentence (254 characters): core 2,048, default 2,222.
-    assert.ok(WORKFLOW_SESSION_GUIDANCE.length <= 2100, `core: ${WORKFLOW_SESSION_GUIDANCE.length}`);
+    // I1 (owner 2026-11-09T06:40Z; UXP-AC-01) added the step types (144 characters): core 2,192, default 2,366.
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.length <= 2250, `core: ${WORKFLOW_SESSION_GUIDANCE.length}`);
     // The default: test mode off, scripts on, a 1.0.83 turn (clock waits and respond_session_request).
     const usual = workflowSessionGuidance(false, { scripts: true, clockWaits: true, requests: true });
-    assert.ok(usual.length <= 2250, `default: ${usual.length}`);
+    assert.ok(usual.length <= 2400, `default: ${usual.length}`);
     for (const testMode of [false, true]) for (const scripts of [false, true]) for (const turn of [false, true]) for (const inside of [false, true]) {
         const text = workflowSessionGuidance(testMode, { scripts, clockWaits: turn, requests: turn, insideWorkflow: inside });
-        assert.ok(text.length <= 2550, `test mode ${testMode}, scripts ${scripts}, 1.0.83 ${turn}, inside ${inside}: ${text.length}`);
+        assert.ok(text.length <= 2700, `test mode ${testMode}, scripts ${scripts}, 1.0.83 ${turn}, inside ${inside}: ${text.length}`);
+    }
+});
+
+// I1 (owner 2026-11-09T06:40Z; UXP-AC-01: a real user's chat invented state types and said there was no script node): the
+// guidance names the real state types, exactly the compiler's, and says there is no other.
+test("I1: the guidance names every state type the compiler takes, and only those", async () => {
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("A state's `type` is `script`, `wait`, `messaging` (`mode: send`, `request` or `receive`), `agent`, `parallel` or `terminal`; there is no other."), WORKFLOW_SESSION_GUIDANCE);
+    const { compileWorkflowV2 } = await import("../../dist/workflow/v2/compiler.js");
+    const FLAGS = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true };
+    const named = ["script", "wait", "messaging", "agent", "parallel", "terminal"];
+    for (const type of [...named, "send", "receive", "request", "http", "task", "join"]) {
+        const result = compileWorkflowV2(`apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: t, version: "1.0.0" }\ninitial: a\n`
+            + `states:\n  a: { type: ${type} }\n  done: { type: terminal, outcome: succeeded }\n`, FLAGS);
+        const typeError = result.diagnostics.find(item => item.path === "states.a.type");
+        // A named type is a type (its other fields may be missing); every other word is refused as a type.
+        assert.equal(Boolean(typeError), !named.includes(type), `${type}: ${JSON.stringify(typeError)}`);
     }
 });
 

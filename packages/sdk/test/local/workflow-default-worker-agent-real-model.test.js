@@ -25,8 +25,9 @@
  * UXP-AC-01 (a real user's chat invented state types and said there was no script node): on a worker with script nodes
  * on, a new chat is asked, with no YAML words, "Create and start a Workflow that checks every minute whether a counter
  * variable has reached 3, using a small script, and ends when it does." PASS: within its first 3 saved revisions, one is
- * valid and has a `type: script` state, and a Workflow of the chat starts. Held (PS_TEST_RUN_HELD=1 runs it) until the
- * owner decides the guidance's state-type sentence and the compiler's type suggestions; the assertion stays as it is.
+ * valid and has a `type: script` state, and a Workflow of the chat starts. Owner 2026-11-09T06:40Z approved the guidance's
+ * state-type sentence (I1) and the compiler's type suggestions (I2), so it runs with the other cases; the assertion is
+ * unchanged.
  * UXP-AD-01 (owner 2026-11-09T03:25Z; a person's control is their latest instruction): a new chat with Workflows on owns
  * a Workflow a person started from its definition (a wait, then a message to the chat, then a long wait). Asked to pause
  * it, the chat pauses it; the person then resumes it through the API (their sign-in is the actor); the Workflow then
@@ -242,7 +243,6 @@ const TITLE_PERSON_CONTROL = "UXP-AD-01: a chat that paused its Workflow on requ
 const RUN_HELD = process.env.PS_TEST_RUN_HELD === "1";
 const HELD = {
     [TITLE_LOAD_SKILL]: "held: how the CLI's own skill tool serves the Workflow skills awaits the owner's decision",
-    [TITLE_SCRIPT]: "held: UXP-AC-01 (the guidance's state-type sentence and the compiler's type suggestions) awaits the owner's decision",
 };
 /** `it`, or a skip that says why the case is held. */
 const caseOf = title => (RUN_HELD || !HELD[title] ? it : (name, _options, _body) => it.skip(`${name} — ${HELD[name]}`, () => {}));

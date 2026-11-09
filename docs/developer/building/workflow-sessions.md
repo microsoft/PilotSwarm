@@ -989,8 +989,10 @@ and a person can send workflow commands.
   tool; a session inside a Workflow gets no definition tools
   (`workflow_definition`, `update_workflow`); an agent node's agent session also gets
   `complete_workflow_node` and its node's tool limit.
-- The guidance teaches the full engine in about 1,600 characters and names
-  the Workflow skills, which every worker loads: `workflow-authoring`,
+- The guidance teaches the full engine in about 2,200 characters, names
+  every state type (`script`, `wait`, `messaging` with `mode: send`,
+  `request` or `receive`, `agent`, `parallel`, `terminal`; "there is no
+  other"), and names the Workflow skills, which every worker loads: `workflow-authoring`,
   `workflow-reference` (every field), `workflow-tools` (every tool argument)
   and `workflow-patterns`; `workflow-testing` with test mode. `load_skill`
   serves them to every chat; the skills index does not list them.
