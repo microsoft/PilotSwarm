@@ -12943,18 +12943,12 @@ textarea.ps-link-input {
 .ps-wf-tab-modes .ps-canvas-max-btn { margin-left: 0; }
 .ps-wf-picker { display: inline-flex; min-width: 0; }
 .ps-wf-picker-select { max-width: 100%; min-width: 0; }
-/* A plain picker (a Workflow session's Definition picker) is drawn by the page, not the browser: WebKit's own select face
-   ignored the theme's ground and showed the theme's light words on white (DEV at bfa03e9b). Its arrow is drawn in its own
-   colour at its end. More specific than win95's text wells (which set the ground with the background shorthand). */
-.ps-wf-tab .ps-wf-picker select.ps-workflow-input.ps-wf-picker-select {
-  -webkit-appearance: none;
-  appearance: none;
-  padding-right: 24px;
-  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
-  background-position: calc(100% - 13px) 50%, calc(100% - 8px) 50%;
-  background-size: 5px 5px, 5px 5px;
-  background-repeat: no-repeat;
-}
+/* A plain picker (a Workflow session's Definition picker) is a native select: WebKit drew its face white under the theme's
+   light words (DEV at bfa03e9b). Its colour scheme follows its words: light words (every dark theme) draw the native face
+   dark; dark words (github-light, and win95's white text well) draw it light. The arrow stays the browser's own. */
+.ps-wf-picker-select { color-scheme: dark; }
+:root[data-ps-theme="github-light"] .ps-wf-picker-select,
+:root[data-ps-theme="win95"] .ps-wf-picker-select { color-scheme: light; }
 /* Owner, 2026-11-06T13:43Z (F2): the Workflow picker reads "#7 of 7" closed; its open list (the native one, a phone's
    too) is one group that says how many. The face is drawn; the select lies over it, transparent, and takes the taps. */
 .ps-wf-picker.is-faced { position: relative; flex: none; }
