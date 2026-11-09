@@ -74,6 +74,21 @@ const DIAGNOSTICS = [
     { severity: "warning", code: "WORKFLOW_INPUT_JSON_TEXT", path: "states.ask.input", line: 12, message: "This input is JSON text in quotes." },
 ];
 
+// DEV at bfa03e9b (WebKit 390 px): the view's scroller (.ps-wf-yaml) is about 327 px under the tab's header lines, less than
+// 55vh, so a capped box still ran under the bar. On a phone the chat's editor fills the scroller and the box takes the rest.
+test("UXP-GEM-04: on a phone the chat's editor fills the YAML view; its bar and notes keep their height, the box takes the rest", () => {
+    const chat = source("workflow-chat-tab.js");
+    assert.match(chat, /mode === "yaml" \? h\("div", \{ className: "ps-wf-main ps-wf-yaml" \},\n\s*h\(ChatYamlPanel,/);
+    assert.deepEqual(pick(declared(".ps-wf-yaml"), ["overflow", "flex-direction"]), { overflow: "auto", "flex-direction": "column" });
+    assert.deepEqual(pick(declared(".ps-wf-tab.is-phone .ps-wf-yaml > .ps-wf-chat-editor"), ["display", "flex-direction", "min-height"]),
+        { display: "flex", "flex-direction": "column", "min-height": "0" });
+    assert.equal(declared(".ps-wf-tab.is-phone .ps-wf-chat-editor > :not(.ps-workflow-yaml):not(.ps-workflow-yaml-marks)").flex, "none");
+    assert.deepEqual(pick(declared(".ps-wf-tab.is-phone .ps-wf-chat-editor > .ps-workflow-yaml"), ["flex", "min-height", "max-height", "overflow"]),
+        { flex: "1 1 auto", "min-height": "120px", "max-height": "55vh", overflow: "auto" });
+    // The list of marks under the box shrinks and scrolls too (at most 8em).
+    assert.deepEqual(pick(declared(".ps-workflow-yaml-marks"), ["flex", "max-height", "overflow"]), { flex: "0 1 auto", "max-height": "8em", overflow: "auto" });
+});
+
 test("UXP-GEM-05: the marks under the YAML box say what the diagnostics list says; the code and path only in their tooltip", () => {
     const marks = workflowV2DraftMarks(DIAGNOSTICS);
     assert.deepEqual(marks.lines, [
@@ -121,6 +136,12 @@ test("UXP-GEM-03: a phone's state chip with its time cuts only the end of its la
     assert.deepEqual(pick(label, ["flex", "min-width", "overflow", "text-overflow", "white-space", "text-align", "direction"]),
         { flex: "1 1 auto", "min-width": "0", overflow: "hidden", "text-overflow": "ellipsis", "white-space": "nowrap", "text-align": "left", direction: "ltr" });
     assert.equal(declared(".ps-wf-state.has-time > .ps-wf-state-time").flex, "none");
+    // DEV at bfa03e9b (WebKit 390 px, measured): the Workflow picker's group shrank below its words, so its picker painted over
+    // the chip's first 41 px. In the run bar the group keeps its width (the chip gives way); the picker is that group's.
+    assert.match(source("workflow-tab.js"), /h\("div", \{ className: "ps-wf-bar is-run" \},\n\s*h\(WorkflowNumberPicker,/);
+    assert.equal(declared(".ps-wf-tab.is-phone .ps-wf-bar.is-run > .ps-wf-picker-group").flex, "none");
+    assert.equal(declared(".ps-wf-picker.is-faced").flex, "none");
+    assert.equal(declared(".ps-wf-tab.is-phone .ps-wf-bar .ps-wf-state")["min-width"], "0");
     // Nothing that draws a state chip or its parts packs them to the end, centres them or reads them right to left.
     const chipRules = RULES.filter(rule => rule.selectors.some(one => /\.ps-wf-state\b/.test(one)));
     assert.ok(chipRules.length >= 5);

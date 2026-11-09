@@ -13446,6 +13446,12 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-tab.is-phone .ps-workflow-draft-editor > .ps-workflow-yaml { max-height: 55vh; overflow: auto; }
 .ps-wf-tab.is-phone .ps-wf-chat-editor > .ps-wf-bar.is-yaml,
 .ps-wf-tab.is-phone .ps-workflow-draft-editor > .ps-workflow-yaml-strip { position: sticky; top: 0; z-index: 2; background: var(--ps-surface); }
+/* UXP-GEM-04 (WebKit at 390 px): the YAML view's scroller (.ps-wf-yaml) is shorter than 55vh under the tab's header lines, so
+   a capped box still ran under the bar. On a phone the chat's editor fills that scroller: its bar and notes keep their
+   height and the box takes the rest, scrolling inside itself (at least 120 px; still at most 55vh). */
+.ps-wf-tab.is-phone .ps-wf-yaml > .ps-wf-chat-editor { display: flex; flex-direction: column; min-height: 0; }
+.ps-wf-tab.is-phone .ps-wf-chat-editor > :not(.ps-workflow-yaml):not(.ps-workflow-yaml-marks) { flex: none; }
+.ps-wf-tab.is-phone .ps-wf-chat-editor > .ps-workflow-yaml { flex: 1 1 auto; min-height: 120px; }
 .ps-wf-tab.is-phone .ps-wf-head-actions { gap: 6px; }
 .ps-wf-tab.is-phone .ps-wf-picker-select { width: 100%; min-height: 44px; text-overflow: ellipsis; }
 .ps-wf-tab.is-phone .ps-wf-picker-face { min-height: 44px; }
@@ -13468,6 +13474,9 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
    scroll container (clip), so nothing can scroll its start out of sight; the label takes the room left and reads left to
    right to its ellipsis. */
 .ps-wf-tab.is-phone .ps-wf-bar .ps-wf-state.has-time { display: inline-flex; justify-content: flex-start; overflow: hidden; overflow: clip; }
+/* UXP-GEM-03 (WebKit at 390 px, measured): the Workflow picker's group shrank below its words and its picker (flex: none)
+   painted over the start of the state chip beside it. In the run bar the group keeps its width; the chip gives way. */
+.ps-wf-tab.is-phone .ps-wf-bar.is-run > .ps-wf-picker-group { flex: none; }
 .ps-wf-state.has-time > .ps-wf-state-label {
   flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; direction: ltr;
 }
