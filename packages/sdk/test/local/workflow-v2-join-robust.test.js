@@ -689,9 +689,12 @@ describe("J3 robust joins: commit order, repeats and lost acknowledgements (cont
             const tolerantRows = await base.store.listNodeExecutions(tolerated.runId);
             expect(tolerantRows.filter(node => node.winner === "fail_fast"), "failFast cut nothing").toEqual([]);
 
-            // One failure more, with failFast: blocked at the third failure; the branch still at work is cut for it.
+            // One failure more, with failFast: blocked at the third failure; the branch still at work is cut for it. CI run 114:
+            // that branch was a short script and then a 600 s wait, and on a loaded runner the cut came between the two (its
+            // script finished, its wait admitted but not started): the report had it finished. It now stays in its script
+            // until the cut, so it is cut while running (or, not yet started, never started), whatever the machine's speed.
             const blocked = await startJoin(base, joinDoc({ join: { first: 3 }, failFast: true, concurrency: 4,
-                items: [{ ms: 100 }, { fail: true, ms: 400 }, { fail: true, ms: 600 }, { fail: true, ms: 800 }, { seconds: 600 }] }));
+                items: [{ ms: 100 }, { fail: true, ms: 400 }, { fail: true, ms: 600 }, { fail: true, ms: 800 }, { ms: 600_000 }] }));
             const blockedRun = await endOf(base, blocked.runId);
             expect(blockedRun).toMatchObject({ terminalNodeId: "stuck" });
             expect(blockedRun.terminalOutput).toMatchObject({ joined: false, timedOut: false, total: 5, needed: 3, succeeded: 1, failFast: true });

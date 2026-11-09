@@ -874,10 +874,13 @@ describe("workflow v2 parallel joins of the first k: controller 1.9.0 (inactive,
         }
     });
 
+    // CI run 114: the branch to cut was a short script and then a 600 s wait; on a loaded runner the cut came between the
+    // two (its script finished, its wait admitted but not yet started), so the report had it finished at its script. The
+    // branch to cut now stays in its script until the cut: it is always cut while running, whatever the machine's speed.
     it("k that can no longer happen: failFast cancels the rest at once; without it they run to their end, then the join blocks", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const fast = await started(h, joinDoc({ items: [{ fail: true, ms: 100 }, { fail: true, ms: 300 }, { seconds: 600 }], join: { first: 2 }, failFast: true }));
+            const fast = await started(h, joinDoc({ items: [{ fail: true, ms: 100 }, { fail: true, ms: 300 }, { ms: 600_000 }], join: { first: 2 }, failFast: true }));
             const run = await ended(h, fast.runId);
             expect(run).toMatchObject({ status: "completed", terminalOutcome: "blocked", terminalNodeId: "stuck" });
             expect(run.terminalOutput).toMatchObject({ joined: false, timedOut: false, total: 3, needed: 2, succeeded: 0, failFast: true });
@@ -925,16 +928,27 @@ describe("workflow v2 parallel joins of the first k: controller 1.9.0 (inactive,
 });
 
 describe("workflow v2 parallel time limits: controller 1.9.0 (inactive, test-only registration)", () => {
+    // CI run 114: on a loaded runner the 2 s time limit passed before the first branch had finished, so the second was
+    // never admitted (once the limit passed a branch admits only its terminal) and nothing was running to cut. The time
+    // limit is now 20 s, and the case first waits until the first branch has finished and the second is in its wait. Seen
+    // only after the limit, the case is VOID (not a product result), as the continue-as-new case below says it.
     it("ends the state timed_out with 1 of 3 finished: its output kept, the running branch cancelled, the queued one not started; a late result loses", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             const { workflowSessionId, runId, fan, at } = await started(h, joinDoc({ items: [{ ms: 0 }, { seconds: 600 }, { seconds: 600 }], concurrency: 1,
-                timeoutSeconds: 2 }));
+                timeoutSeconds: 20 }));
+            await until(async () => {
+                const [done, hold] = await Promise.all([h.store.readNodeExecution(at(0, "done")), h.store.readNodeExecution(at(1, "hold"))]);
+                return done?.state === "completed" && hold?.state === "pending";
+            }, "the first branch's end and the second branch's wait");
+            const readyAt = Date.now();
+            expect(readyAt, "VOID (not a product result): the second branch's wait was seen only after the time limit; run the case again")
+                .toBeLessThan((await h.store.readNodeExecution(fan)).deadlineAt.getTime());
             const run = await ended(h, runId);
             expect(run).toMatchObject({ status: "completed", terminalOutcome: "blocked", terminalNodeId: "late" });
             const fanRow = await h.store.readNodeExecution(fan);
             expect(fanRow).toMatchObject({ state: "completed", outcome: "timed_out", resultKind: "runtime_error", winner: "controller" });
-            expect(fanRow.deadlineAt.getTime() - fanRow.enteredAt.getTime()).toBe(2_000);
+            expect(fanRow.deadlineAt.getTime() - fanRow.enteredAt.getTime()).toBe(20_000);
             expect(fanRow.completedAt.getTime()).toBeGreaterThanOrEqual(fanRow.deadlineAt.getTime());
             const cut = (await branchRows(h, runId, fan, 1)).find(node => node.winner === "join_timeout");
             expect(cut).toMatchObject({ state: "completed", outcome: "cancelled", winner: "join_timeout" });
@@ -965,7 +979,7 @@ describe("workflow v2 parallel time limits: controller 1.9.0 (inactive, test-onl
                 .toEqual([expect.objectContaining({ cancelled: [cut.nodeExecutionId], reason: "timeout" })]);
             // read_workflow: the graph says the join and the time limit; the parallel state's visit says its deadline.
             const view = await readWorkflowV2View(h.store, workflowSessionId);
-            expect(view.graph.states.find(state => state.id === "fan")).toMatchObject({ join: "all_required", timeoutSeconds: 2 });
+            expect(view.graph.states.find(state => state.id === "fan")).toMatchObject({ join: "all_required", timeoutSeconds: 20 });
             expect(view.run.nodeExecutions.find(node => node.nodeExecutionId === fan)).toMatchObject({
                 outcome: "timed_out", resultKind: "runtime_error", deadline: fanRow.deadlineAt.toISOString(), branches: 3,
                 completedAt: fanRow.completedAt.toISOString() });

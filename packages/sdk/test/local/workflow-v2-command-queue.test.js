@@ -187,7 +187,7 @@ async function queueWakes(h, controller, runId, count) {
  * The failure is kept also when it settles after stop() was called (review N-4-stop-inflight): stop() first waits for every
  * enqueue in flight, then throws. halt() stops the pump without throwing, for a test's finally; it is the only quiet cleanup.
  */
-function pumpWakes(h, controller, runId, producers = 1) {
+function pumpWakes(h, controller, runId, producers = 1, pauseMs = 2) {
     let on = true;
     let sent = 0;
     let failure = null;
@@ -208,7 +208,7 @@ function pumpWakes(h, controller, runId, producers = 1) {
                 if (!ended) failure ??= error;
                 on = false;
             }
-            await pause(2);
+            await pause(pauseMs);
         }
     };
     const running = Promise.all(Array.from({ length: producers }, loop));
@@ -375,6 +375,11 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
     // answers "not yet" (as when its clock is behind the controller's: the controller moves its deadline later and goes on)
     // until the controller has continued as new; from then on the store decides as it does. The rollover no longer races
     // the deadline, and the run still ends by its deadline, through the store, in the new execution.
+    //
+    // CI run 114 (4 CPUs): four producers with no pause queued wakes far faster than the paused loop takes them. Every
+    // queued wake is a history event the next turn replays, so each pass grew slower (53,000 events, 29 passes in 90 s) and
+    // the 50th never came. One producer, a wake every 20 ms, keeps wakes flowing through the whole rollover (a pass that
+    // finds one takes it at once), with a history the passes can replay.
     it("V-2 (1.9.0): under sustained wakes a paused run continues as new and still ends at its run deadline", { timeout: TIMEOUT }, async () => {
         let rolledOver = async () => false;
         let held = 0;
@@ -398,7 +403,7 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
             await until(async () => (await h.store.readRun(run.runId))?.status === "paused" || null, "the pause", 30_000, diagnose);
             const executions = (await h.client.listExecutions(run.controller)).length;
             rolledOver = async () => (await h.client.listExecutions(run.controller)).length > executions;
-            pump = pumpWakes(h, run.controller, run.runId, 4);
+            pump = pumpWakes(h, run.controller, run.runId, 1, 20);
             // The rollover happens while the wakes flow: more executions, and at least 50 accepted wakes (one per paused wait).
             await until(rolledOver, "a continue-as-new under sustained wakes", 90_000, diagnose);
             const rolledAt = Date.now();
