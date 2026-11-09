@@ -2491,12 +2491,15 @@ export class SessionManager {
         const desiredCapabilities = options?.workflowTools?.capabilities ?? (this.sessionCatalog?.getSessionCapabilities
             ? await readState()
             : { revision: 0, selections: [] });
-        const workflowDecision = await this._workflowContextMode(sessionId, config, desiredCapabilities, {
+        const workflowFlags = {
             restricted: isTunerSession || effectiveSerializableConfig.agentIdentity === "regen-distiller",
             manager: holdsManagerBundle(effectiveSerializableConfig.agentIdentity),
             workflowTools: Boolean(options?.workflowTools),
             ownsCheck: workflowContextOwnsCheck,
-        });
+        };
+        // Review LOCK-1: the fixed cases are decided without an await (the no-catalog path above keeps its one microtask).
+        const workflowDecision = this._workflowContextModeFixed(config, workflowFlags)
+            ?? await this._workflowContextMode(sessionId, config, desiredCapabilities, workflowFlags);
         const workflowContext = workflowDecision.mode;
         config.workflowContext = workflowContext;
         const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "use_package", "load_agent",
@@ -5059,6 +5062,22 @@ export class SessionManager {
      * `onDemand`: the chat's context follows its flag and triggers (the rule above after its fixed cases), so it is declared
      * enable_workflows whether they are on or off.
      */
+    /**
+     * Review LOCK-1: _workflowContextMode's answer when it needs no read or save: the tuner and service sessions (none), a
+     * Workflow's own capture, a frozen 1.0.82 turn, and a session manager without durable capability storage (on, not on
+     * demand). Null when the chat's flag and triggers decide (the async path). Synchronous, so a standalone manager reaches
+     * the SDK resume in as many microtasks as before the Workflow context existed.
+     */
+    private _workflowContextModeFixed(config: ManagedSessionConfig, flags: { restricted: boolean; workflowTools: boolean })
+        : { mode: WorkflowContextMode; onDemand: boolean } | null {
+        if (flags.restricted) return { mode: "none", onDemand: false };
+        const catalog = this.sessionCatalog;
+        if (flags.workflowTools || config.workflowMilestoneTurn !== true || !catalog?.getSessionCapabilities || !catalog.saveSessionCapabilities) {
+            return { mode: "on", onDemand: false };
+        }
+        return null;
+    }
+
     private async _workflowContextMode(sessionId: string, config: ManagedSessionConfig, state: CapabilityState,
         flags: { restricted: boolean; manager: boolean; workflowTools: boolean; ownsCheck?: () => Promise<boolean> }): Promise<{ mode: WorkflowContextMode; onDemand: boolean }> {
         if (flags.restricted) return { mode: "none", onDemand: false };
