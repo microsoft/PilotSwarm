@@ -14,6 +14,7 @@ import { randomBytes } from "node:crypto";
 import { afterAll, afterEach, beforeAll } from "vitest";
 import { createTempSessionLayout } from "./temp-session-layout.js";
 import { resolveStorageConfig, getRuntimeStorageProvider, createFactStoreForUrl, isEnhancedFactStore } from "../../src/index.ts";
+import { timeScaleFor, timeScaler } from "./time-scale.js";
 
 // ─── Constants ───────────────────────────────────────────────────
 
@@ -46,6 +47,14 @@ function resolveDatabaseUrl() {
 
 const DATABASE_URL = resolveDatabaseUrl();
 const TIMEOUT = 180_000;
+
+/** The runtime storage provider the suite runs on ("postgres" or "horizondb"). */
+export const TEST_RUNTIME_PROVIDER = resolveStorageConfig({ options: { store: DATABASE_URL } }).runtime.provider;
+/**
+ * Fixed waits and limits of a test, scaled for the suite's database (CI run 114: HorizonDB about 10 times slower than
+ * local PostgreSQL; PS_TEST_TIME_SCALE overrides): `testTime.ms(30_000)`, `testTime.seconds(2)`, `testTime.scale`.
+ */
+export const testTime = timeScaler(timeScaleFor(TEST_RUNTIME_PROVIDER));
 const TEST_SCHEMA_PREFIX = "ps_test";
 
 // ─── Schema Isolation ────────────────────────────────────────────

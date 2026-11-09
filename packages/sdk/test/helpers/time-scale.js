@@ -1,0 +1,27 @@
+/**
+ * CI run 114: the suite's fixed waits and limits were set on local PostgreSQL. On HorizonDB the same work takes about ten
+ * times as long (workflow-v2-join-robust: 329 s on local PostgreSQL, 2,909 s on HorizonDB), so a test's own time limit, a
+ * poll's timeout or a bound on how long something took must grow with the database the suite runs on. A test multiplies
+ * those numbers by the scale here; what it proves does not change.
+ *
+ * The scale is PS_TEST_TIME_SCALE when that is a positive number, else 10 on HorizonDB and 1 otherwise.
+ */
+
+/** The default scale per runtime storage provider. */
+export const PROVIDER_TIME_SCALES = Object.freeze({ postgres: 1, horizondb: 10 });
+
+/** The scale for a runtime storage provider ("postgres", "horizondb") and an environment. */
+export function timeScaleFor(provider, env = process.env) {
+    const override = Number(env?.PS_TEST_TIME_SCALE);
+    if (env?.PS_TEST_TIME_SCALE !== undefined && env.PS_TEST_TIME_SCALE !== "" && Number.isFinite(override) && override > 0) return override;
+    return PROVIDER_TIME_SCALES[provider] ?? 1;
+}
+
+/** A scaler for `scale`: milliseconds and seconds, rounded up to whole units. */
+export function timeScaler(scale) {
+    return {
+        scale,
+        ms: value => Math.ceil(value * scale),
+        seconds: value => Math.ceil(value * scale),
+    };
+}
