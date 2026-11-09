@@ -307,8 +307,11 @@ function* requestInbox(ctx, input) {
     return received;
 }
 
-/** A worker-equivalent registration with workflowRequests, the request tag declared, and a responder observed at `version`. */
-async function harness(env, { version = "1.0.83" } = {}) {
+/**
+ * A worker-equivalent registration with workflowRequests, the request tag declared, and a responder observed at `version`.
+ * `enabled` is the worker's scripts setting (PILOTSWARM_WORKFLOW_SCRIPTS), which only script states read (PRR-1).
+ */
+async function harness(env, { version = "1.0.83", enabled = () => true } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
@@ -324,7 +327,7 @@ async function harness(env, { version = "1.0.83" } = {}) {
         registerActivity: (name, fn) => runtime.registerActivity(name, fn),
         registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
     }, {
-        store, catalog, enabled: () => true,
+        store, catalog, enabled,
         resolveToolBinding: async () => null,
         openToolExecutor: async () => { throw new Error("These workflows call no tools."); },
         authorizeParentNotification: async () => false,
@@ -428,6 +431,23 @@ describe("workflow v2 request runtime: controller 1.9.0 (inactive, test-only reg
             expect((await h.client.getStatus(`wfr-${request.requestId}`)).status).toBe("Completed");
             const nodes = await h.store.listNodeExecutions(runId);
             expect(nodes.find(node => node.nodeId === "ask")).toMatchObject({ outcome: "responded", resultKind: "business", winner: "response" });
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("delivers a script-free request on a worker whose scripts are off (PRR-1): the scripts setting gates script states only", { timeout: REQUEST_TIMEOUT }, async () => {
+        const h = await harness(getEnv(), { enabled: () => false });
+        try {
+            const { parent, runId } = await requested(h, REQUEST_YAML());
+            const [message] = await until(async () => { const read = await inbox(h, parent); return read.length > 0 ? read : null; },
+                "the request to reach its responder on a worker whose scripts are off");
+            const request = JSON.parse(message.prompt.split("\n")[3]);
+            expect(await answer(h, parent, { request_id: request.requestId, operation_id: "op-1", response: { approved: true } }))
+                .toMatchObject({ ok: true, status: "responded" });
+            expect(await finished(h.store, runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+            expect((await h.store.listNodeExecutions(runId)).find(node => node.nodeId === "ask"))
+                .toMatchObject({ outcome: "responded", resultKind: "business", winner: "response" });
         } finally {
             await h.stop();
         }

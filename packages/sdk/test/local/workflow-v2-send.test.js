@@ -38,9 +38,9 @@
  * - a send whose every attempt fails ends with delivery_failed; a cancel
  *   does not recall a message being delivered, and a send orchestration that
  *   ends without a record fails its state when the controller collects it;
- * - a worker where workflow execution is disabled delivers nothing: the
- *   state fails unavailable, and a cancel, a delivery recorded before or a
- *   workflow recipient's earlier acceptance is kept.
+ * - a worker whose scripts are off (PILOTSWARM_WORKFLOW_SCRIPTS=0) still
+ *   delivers a script-free send to an agent session and to a Workflow; only
+ *   a script state fails there (PRR-1).
  *
  * Sends to a workflow are modeled in WorkflowV2Send.tla (README "Send
  * model"), a diagnostic of its modeled paths, not a proof; sends to an
@@ -59,9 +59,11 @@ import {
 import { canonicalJson, sha256Hex } from "../../src/workflow/v2/json.ts";
 import { createWorkflowV2, sendWorkflowInputV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
+import { WORKFLOW_SCRIPTS_DISABLED } from "../../src/workflow/v2/scripts-gate.ts";
+import { WORKFLOW_SCRIPTS_DISABLED_MESSAGE } from "../../src/workflow/activities.ts";
 import {
     promptSafeJson, registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_FINALIZE_DELAYS_MS, WORKFLOW_V2_MAX_SEND_PAYLOAD_BYTES,
-    WORKFLOW_V2_SEND_DISABLED_MESSAGE, workflowSendClientMessageId, workflowSendInstanceId, workflowSendPrompt,
+    workflowSendClientMessageId, workflowSendInstanceId, workflowSendPrompt,
 } from "../../src/workflow/v2/runtime.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
@@ -858,134 +860,52 @@ describe("workflow v2 messaging send", () => {
         } finally { await h.stop(); }
     });
 
-    it("delivers nothing on a worker where workflow execution is disabled: the state fails unavailable; a cancel, and a delivery recorded or accepted before, are kept", { timeout: TIMEOUT }, async () => {
-        let enabled = true;
+    it("delivers on a worker whose scripts are off (PRR-1): a script-free send reaches an agent session and a Workflow; a script state still fails, and a host that knows refuses it at save and Start", { timeout: TIMEOUT }, async () => {
         const queue = testQueue();
-        // Fault injection: a one-time stop as a delivery attempt reads its message (before it decides anything), and
-        // hooks after a delivery's record or a workflow inbox's acceptance commits.
-        let holdRead = null;
-        let afterRecord = null;
-        let afterAccept = null;
-        const h = await harness(getEnv(), {
-            queue, enabled: () => enabled,
-            wrapStore: store => {
-                const wrapped = Object.create(store);
-                wrapped.readOutboxMessage = async (...args) => {
-                    if (holdRead) {
-                        const hold = holdRead;
-                        holdRead = null;
-                        hold.arrive();
-                        await hold.opened;
-                    }
-                    return store.readOutboxMessage(...args);
-                };
-                wrapped.recordDelivery = async (...args) => {
-                    const recorded = await store.recordDelivery(...args);
-                    if (afterRecord) {
-                        const hook = afterRecord;
-                        afterRecord = null;
-                        await hook();
-                    }
-                    return recorded;
-                };
-                wrapped.acceptInput = async (...args) => {
-                    const accepted = await store.acceptInput(...args);
-                    if (afterAccept) {
-                        const hook = afterAccept;
-                        afterAccept = null;
-                        await hook();
-                    }
-                    return accepted;
-                };
-                return wrapped;
-            },
-        });
+        const h = await harness(getEnv(), { queue, enabled: () => false });
         try {
             const alice = { provider: "test", subject: `alice-${randomUUID()}` };
             const parent = await sessionOf(h, alice);
-            /** A send to `peer` whose first delivery attempt is stopped as it reads its message. */
-            const stoppedSend = async (peerId) => {
-                const hold = gate();
-                holdRead = hold;
-                const run = await started(h, parent, SENDER({ recipient: '"${kv.peer}"' }), { owner: alice, vars: { peer: peerId } });
-                await hold.reached;
-                return { run, hold };
-            };
 
-            // The worker is disabled after the send was admitted, before its delivery: no status read, nothing queued;
-            // the state fails unavailable and the message is failed.
+            // To an agent session: the status is read, the message is queued and read, and the state completes.
             const peer = await sessionOf(h, alice);
             const peerInbox = await inboxOf(h, peer.sessionId, 1);
-            const disabled = await stoppedSend(peer.sessionId);
-            enabled = false;
-            disabled.hold.open();
-            expect(await finished(h.store, disabled.run.runId)).toMatchObject({ status: "failed",
-                terminalOutput: { code: "unavailable", message: WORKFLOW_V2_SEND_DISABLED_MESSAGE, details: { sessionId: peer.sessionId, attempts: 0 } } });
-            expect(await tellOf(h.store, disabled.run.runId)).toMatchObject({ outcome: "unavailable", winner: "delivery" });
-            expect(await h.store.listOutbox(disabled.run.runId)).toEqual([expect.objectContaining({ state: "failed", attempts: 0, receipt: null,
-                error: expect.objectContaining({ code: "unavailable" }) })]);
-            expect(queue.calls.status).toEqual([]);
-            expect(queue.calls.enqueue).toEqual([]);
-            expect(await peerInbox.status()).toBe("Running");
+            const toSession = await started(h, parent, SENDER({ recipient: '"${kv.peer}"' }), { owner: alice, vars: { peer: peer.sessionId } });
+            expect(await finished(h.store, toSession.runId)).toMatchObject({ status: "completed", terminalOutput: { recipientKind: "agent", attempts: 1 } });
+            expect(await tellOf(h.store, toSession.runId)).toMatchObject({ outcome: "sent", winner: "delivery" });
+            expect(await h.store.listOutbox(toSession.runId)).toEqual([expect.objectContaining({ state: "delivered", attempts: 1 })]);
+            expect(await peerInbox.messages()).toHaveLength(1);
+            expect(queue.calls.enqueue.map(call => call.sessionId)).toEqual([peer.sessionId]);
 
-            // A cancel decided the state first: the disabled worker fails only the message, and the state keeps the cancel.
-            enabled = true;
-            const cancelPeer = await sessionOf(h, alice);
-            await inboxOf(h, cancelPeer.sessionId, 1);
-            const cancelled = await stoppedSend(cancelPeer.sessionId);
-            expect(await parent.update(cancelled.run.id, { operation: "cancel", run_id: cancelled.run.runId, operation_id: "cancel" })).toMatchObject({ ok: true });
-            expect(await finished(h.store, cancelled.run.runId)).toMatchObject({ status: "cancelled" });
-            enabled = false;
-            cancelled.hold.open();
-            await until(async () => (await h.store.listOutbox(cancelled.run.runId))[0]?.state === "failed", "the cancelled state's message to be failed");
-            expect(await tellOf(h.store, cancelled.run.runId)).toMatchObject({ outcome: "cancelled", winner: "cancel" });
-            expect((await h.store.listOutbox(cancelled.run.runId))[0]).toMatchObject({ attempts: 0, receipt: null, error: { code: "unavailable" } });
-            expect(queue.calls.enqueue).toEqual([]);
-
-            // Control: the same stop on an enabled worker delivers the message.
-            enabled = true;
-            const live = await sessionOf(h, alice);
-            const liveInbox = await inboxOf(h, live.sessionId, 1);
-            const delivered = await stoppedSend(live.sessionId);
-            delivered.hold.open();
-            expect(await finished(h.store, delivered.run.runId)).toMatchObject({ status: "completed", terminalOutput: { recipientKind: "agent", attempts: 1 } });
-            expect(await liveInbox.messages()).toHaveLength(1);
-            expect(queue.calls.enqueue.map(call => call.sessionId)).toEqual([live.sessionId]);
-
-            // A delivery recorded before the worker was disabled is kept: the attempt fails after its record, and the retry
-            // on the disabled worker finds the message delivered.
-            const recordedPeer = await sessionOf(h, alice);
-            const recordedInbox = await inboxOf(h, recordedPeer.sessionId, 1);
-            afterRecord = async () => {
-                enabled = false;
-                throw new Error("injected: the delivery attempt fails after its record committed, and the worker is disabled");
-            };
-            const recorded = await started(h, parent, SENDER({ recipient: '"${kv.peer}"' }), { owner: alice, vars: { peer: recordedPeer.sessionId } });
-            expect(await finished(h.store, recorded.runId)).toMatchObject({ status: "completed", terminalOutput: { recipientKind: "agent", attempts: 1 } });
-            expect(afterRecord).toBeNull();
-            expect(await h.store.listOutbox(recorded.runId)).toEqual([expect.objectContaining({ state: "delivered", attempts: 1 })]);
-            expect(await recordedInbox.messages()).toHaveLength(1);
-            expect(queue.calls.enqueue.map(call => call.sessionId)).toEqual([live.sessionId, recordedPeer.sessionId]);
-
-            // A workflow recipient's acceptance before the worker was disabled is kept: the retry on the disabled worker
-            // records that acceptance.
-            enabled = true;
+            // To another Workflow: its inbox accepts the message, and both runs complete.
             const receiver = await started(h, parent, RECEIVER, { owner: alice, vars: { secs: 60 } });
             await nodeAt(h.store, receiver.runId, "await_build", 1, "pending");
-            afterAccept = async () => {
-                enabled = false;
-                throw new Error("injected: the delivery attempt fails after the inbox accepted the message, and the worker is disabled");
-            };
-            const accepted = await started(h, parent, SENDER({ recipient: '"${kv.peer}"', extra: '    correlate: { buildId: "${inputs.buildId}" }\n' }),
+            const toWorkflow = await started(h, parent, SENDER({ recipient: '"${kv.peer}"', extra: '    correlate: { buildId: "${inputs.buildId}" }\n' }),
                 { owner: alice, vars: { peer: receiver.id } });
-            const acceptedEnded = await finished(h.store, accepted.runId);
-            expect(afterAccept).toBeNull();
-            const [input] = await h.store.listInbox(receiver.runId);
-            expect(acceptedEnded).toMatchObject({ status: "completed", terminalOutput: { recipientKind: "workflow", attempts: 1,
+            const [input] = await until(async () => { const got = await h.store.listInbox(receiver.runId); return got.length ? got : null; },
+                "the receiver's inbox to accept the message");
+            expect(await finished(h.store, toWorkflow.runId)).toMatchObject({ status: "completed", terminalOutput: { recipientKind: "workflow", attempts: 1,
                 input: { messageId: input.messageId, runId: receiver.runId } } });
             expect(await finished(h.store, receiver.runId)).toMatchObject({ status: "completed", terminalOutput: BUILD });
+
+            // A definition with a script state: on a host that does not know the workers' setting it starts, its send still
+            // delivers, and the run fails at the script with the setting named.
+            const scripted = SENDER({ recipient: '"${kv.peer}"' }).replace("sent: done", "sent: check")
+                + "  check: { type: script, runtime: node, source: \"return { outcome: 'done' };\", timeoutSeconds: 30, transition: { next: { done: done } } }\n";
+            const scriptPeer = await sessionOf(h, alice);
+            const scriptInbox = await inboxOf(h, scriptPeer.sessionId, 1);
+            const withScript = await started(h, parent, scripted, { owner: alice, vars: { peer: scriptPeer.sessionId } });
+            expect(await finished(h.store, withScript.runId)).toMatchObject({ status: "failed" });
+            expect(await scriptInbox.messages()).toHaveLength(1);
+            expect((await h.store.listNodeExecutions(withScript.runId)).find(node => node.nodeId === "check"))
+                .toMatchObject({ outcome: "unavailable", error: { code: "unavailable", message: WORKFLOW_SCRIPTS_DISABLED_MESSAGE } });
+            // A host that knows its workers run no scripts refuses that definition before anything is written: at save and at Start.
+            await expect(createWorkflowV2({ ...h.host, scripts: false }, { workflowSessionId: randomUUID(), parentSessionId: parent.sessionId,
+                owner: alice, yaml: scripted, actor: ACTOR, operationId: "save" })).rejects.toMatchObject({ code: WORKFLOW_SCRIPTS_DISABLED });
+            await expect(createWorkflowV2({ ...h.host, scripts: false }, { workflowSessionId: randomUUID(), parentSessionId: parent.sessionId,
+                owner: alice, yaml: scripted, actor: ACTOR, operationId: "start", start: { inputs: BUILD, vars: { peer: scriptPeer.sessionId } } }))
+                .rejects.toMatchObject({ code: WORKFLOW_SCRIPTS_DISABLED });
         } finally {
-            enabled = true;
             await h.stop();
         }
     });

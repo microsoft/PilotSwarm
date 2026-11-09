@@ -197,9 +197,6 @@ export const WORKFLOW_V2_AGENT_VERSION = "1.0.0";
  * the recipient as part of a prompt. Larger data goes by artifact reference.
  */
 export const WORKFLOW_V2_MAX_SEND_PAYLOAD_BYTES = 16 * 1024;
-/** Why a worker where workflow execution is disabled fails a send state instead of delivering its message. */
-export const WORKFLOW_V2_SEND_DISABLED_MESSAGE = "Workflow execution is disabled on this worker, so it delivers no workflow messages; "
-    + `this message was not sent by this attempt. ${WORKFLOW_SCRIPTS_DISABLED_MESSAGE}`;
 /**
  * Evaluations of one admission whose KV revision changed before it committed,
  * before the enter activity fails (and the store retry policy runs it again).
@@ -2412,7 +2409,10 @@ export interface WorkflowV2RuntimeDeps {
      * by node execution id keeps its late answer from deciding the next visit.
      */
     catalog: Pick<SessionCatalog, "getSession" | "getSessionEvents"> & Partial<Pick<SessionCatalog, "turnControlAdd">>;
-    /** Whether this worker runs workflow scripts. */
+    /**
+     * Whether this worker runs workflow scripts (PILOTSWARM_WORKFLOW_SCRIPTS). Only a script state's activity reads it: the
+     * Workflow engine itself (waits, messages, requests, agents, parallel states) is always on (PRR-1).
+     */
     enabled: () => boolean;
     resolveToolBinding: (sessionId: string) => Promise<WorkflowToolBinding | null>;
     /**
@@ -4762,12 +4762,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     };
 
     /**
-     * One delivery attempt of a send state's message (workflowV2Send). On a
-     * worker where workflow execution is disabled (deps.enabled, the gate a
-     * script's effect honors), nothing is delivered: the state fails
-     * unavailable through the store's first-winner update (store.failDelivery),
-     * and a delivery recorded before, a cancel, or a workflow recipient's
-     * acceptance of the message is kept. For an agent recipient, the session
+     * One delivery attempt of a send state's message (workflowV2Send). It is
+     * not gated by the scripts setting (deps.enabled concerns script states
+     * only; PRR-1). For an agent recipient, the session
      * orchestration status is read first: one that has ended, or has none,
      * would not read a queued message. Then the store decides under the
      * session locks (beginDelivery): the message already decided, a workflow
@@ -4817,17 +4814,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             return { result, projection: sendFailedProjection(message.workflowSessionId, executed, result) };
         };
         /** No delivery by this send; a workflow recipient's acceptance of the message is recorded instead (store.failDelivery). */
-        const fail = async (decided: NodeResultInput, kind: "disabled" | "refused") => {
+        const fail = async (decided: NodeResultInput, kind: "refused") => {
             const { result, projection } = atDelivery(decided);
             const stored = await store.failDelivery(input.nodeExecutionId, result, projection, delivered);
             return stored.delivered ? { kind: "delivered", won: stored.won, outcome: stored.node.outcome } : { kind, outcome: stored.node.outcome };
         };
-        // A worker where workflow execution is disabled delivers nothing: the state fails unavailable (first winner kept).
-        if (!deps.enabled()) {
-            return fail(runtimeError("unavailable", `${WORKFLOW_V2_SEND_DISABLED_MESSAGE}${message.attempts > 0
-                ? ` ${message.attempts} delivery attempts had begun before, so the recipient may have received the message.` : ""}`,
-            { sessionId: recipient, attempts: message.attempts }), "disabled");
-        }
         const status = message.recipientKind === "agent" ? await queue.status(recipient) : null;
         const ended = status !== null && ENDED_SESSION_STATUSES.includes(status);
         // Durable recipient intake (design workflow-durable-intake.md section 4; off unless the deployment capability
@@ -5635,13 +5626,6 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const queue = deps.sessionQueue ?? sessionQueueTransport(client);
         const responder = message.recipientSessionId;
         const refusals = requestRefusals(message, executed, "delivery");
-        if (!deps.enabled()) {
-            const { result, projection } = refusals.at(runtimeError("unavailable", `${WORKFLOW_V2_SEND_DISABLED_MESSAGE}${message.attempts > 0
-                ? ` ${message.attempts} delivery attempts had begun before, so the responder may have received the request.` : ""}`,
-            { sessionId: responder, attempts: message.attempts }));
-            const stored = await store.failRequestDelivery(input.nodeExecutionId, result, projection);
-            return { kind: "disabled", outcome: stored.node.outcome };
-        }
         const status = await queue.status(responder);
         const ended = ENDED_SESSION_STATUSES.includes(status);
         const version = ended ? null : await queue.version?.(responder) ?? null;
