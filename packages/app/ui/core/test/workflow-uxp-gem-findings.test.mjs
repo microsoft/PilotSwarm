@@ -45,7 +45,7 @@ function declared(selector) {
 const pick = (values, names) => Object.fromEntries(names.map(name => [name, values[name]]));
 const words = html => html.replace(/<[^>]+>/g, "").replace(/&quot;/g, "\"").replace(/&#x27;/g, "'");
 
-test("UXP-GEM-04: on a phone the chat's YAML editor caps its box at 55vh and keeps its bar at the top, as the draft editor does", () => {
+test("UXP-GEM-04: on a phone the chat's YAML editor's box scrolls inside itself and its bar stays at the top, as the draft editor's", () => {
     // The chat's editor: its bar, then the YAML box, each a child of .ps-wf-chat-editor (the box is the first element the
     // YAML box component draws, not wrapped).
     const chat = source("workflow-chat-tab.js");
@@ -54,10 +54,10 @@ test("UXP-GEM-04: on a phone the chat's YAML editor caps its box at 55vh and kee
     const drawn = renderToStaticMarkup(h("div", { className: "ps-wf-chat-editor" },
         h(WorkflowV2YamlBox, { value: "name: a\n", marks: { lines: [], unplaced: 0 }, changed: false, onChange: () => {} })));
     assert.match(drawn, /^<div class="ps-wf-chat-editor"><div class="ps-workflow-yaml">/);
-    for (const editor of [".ps-workflow-draft-editor", ".ps-wf-chat-editor"]) {
-        assert.deepEqual(pick(declared(`.ps-wf-tab.is-phone ${editor} > .ps-workflow-yaml`), ["max-height", "overflow"]),
-            { "max-height": "55vh", overflow: "auto" }, editor);
-    }
+    // The draft editor keeps its 55vh cap; the chat's editor fills its view instead (the next test).
+    assert.deepEqual(pick(declared(".ps-wf-tab.is-phone .ps-workflow-draft-editor > .ps-workflow-yaml"), ["max-height", "overflow"]),
+        { "max-height": "55vh", overflow: "auto" });
+    assert.equal(declared(".ps-wf-tab.is-phone .ps-wf-chat-editor > .ps-workflow-yaml").overflow, "auto");
     for (const bar of [".ps-workflow-draft-editor > .ps-workflow-yaml-strip", ".ps-wf-chat-editor > .ps-wf-bar.is-yaml"]) {
         assert.deepEqual(pick(declared(`.ps-wf-tab.is-phone ${bar}`), ["position", "top", "z-index", "background"]),
             { position: "sticky", top: "0", "z-index": "2", background: "var(--ps-surface)" }, bar);
@@ -83,10 +83,37 @@ test("UXP-GEM-04: on a phone the chat's editor fills the YAML view; its bar and 
     assert.deepEqual(pick(declared(".ps-wf-tab.is-phone .ps-wf-yaml > .ps-wf-chat-editor"), ["display", "flex-direction", "min-height"]),
         { display: "flex", "flex-direction": "column", "min-height": "0" });
     assert.equal(declared(".ps-wf-tab.is-phone .ps-wf-chat-editor > :not(.ps-workflow-yaml):not(.ps-workflow-yaml-marks)").flex, "none");
+    // No viewport cap (it was taller than the view); at least 8 lines of the box's own font (line-height 1.45) and its padding.
     assert.deepEqual(pick(declared(".ps-wf-tab.is-phone .ps-wf-chat-editor > .ps-workflow-yaml"), ["flex", "min-height", "max-height", "overflow"]),
-        { flex: "1 1 auto", "min-height": "120px", "max-height": "55vh", overflow: "auto" });
+        { flex: "1 1 auto", "min-height": "calc(8 * 1.45em + 6px)", "max-height": "none", overflow: "auto" });
+    assert.equal(declared(".ps-workflow-yaml")["line-height"], "1.45");
     // The list of marks under the box shrinks and scrolls too (at most 8em).
     assert.deepEqual(pick(declared(".ps-workflow-yaml-marks"), ["flex", "max-height", "overflow"]), { flex: "0 1 auto", "max-height": "8em", overflow: "auto" });
+});
+
+// DEV at bfa03e9b (WebKit): a Workflow session's Definition picker is a plain select; WebKit drew its own white face under
+// the theme's light words. The page draws it: no native appearance, the theme's ground and words (win95: its white well),
+// and an arrow in the words' colour.
+test("the plain Definition picker is drawn by the page in every browser: theme ground and words at 4.5:1, its arrow kept", () => {
+    assert.match(source("workflow-tab.js"), /h\("select", \{ id, className: "ps-workflow-input ps-wf-picker-select", value,/);
+    const selector = ".ps-wf-tab .ps-wf-picker select.ps-workflow-input.ps-wf-picker-select";
+    const drawn = declared(selector);
+    assert.deepEqual(pick(drawn, ["-webkit-appearance", "appearance", "background-repeat", "padding-right"]),
+        { "-webkit-appearance": "none", appearance: "none", "background-repeat": "no-repeat", "padding-right": "24px" });
+    assert.match(drawn["background-image"], /^linear-gradient\(45deg, transparent 50%, currentColor 50%\), linear-gradient\(135deg, currentColor 50%, transparent 50%\)$/);
+    // Its ground and words: the field's (every theme), and win95's white well; the shorthand there does not clear the arrow,
+    // which is more specific (4 classes and an element against 4 classes).
+    assert.deepEqual(pick(declared(".ps-workflow-input"), ["background", "color"]), { background: "var(--ps-background)", color: "var(--ps-foreground)" });
+    const win95 = declared(':root[data-ps-theme="win95"] .ps-wf-tab .ps-workflow-input');
+    assert.deepEqual(pick(win95, ["background", "color"]), { background: "#ffffff", color: "var(--w95-dark)" });
+    assert.ok(!("background" in drawn) && !("background-color" in drawn), "the theme's ground stays the field's");
+    const ratios = { "workspace-dark": contrastRatio(getTheme("workspace-dark").tui.foreground, getTheme("workspace-dark").tui.background),
+        win95: contrastRatio("#000000", "#ffffff") };
+    for (const [id, ratio] of Object.entries(ratios)) assert.ok(ratio >= 4.5, `${id}: ${ratio}`);
+    // Every other theme's field: its words on its ground (win95's field is the white well above).
+    const low = listThemes().filter(theme => theme.id !== "win95" && !(contrastRatio(theme.tui.foreground, theme.tui.background) >= 4.5))
+        .map(theme => theme.id);
+    assert.deepEqual(low, []);
 });
 
 test("UXP-GEM-05: the marks under the YAML box say what the diagnostics list says; the code and path only in their tooltip", () => {

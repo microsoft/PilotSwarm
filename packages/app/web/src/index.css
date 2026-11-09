@@ -12943,6 +12943,18 @@ textarea.ps-link-input {
 .ps-wf-tab-modes .ps-canvas-max-btn { margin-left: 0; }
 .ps-wf-picker { display: inline-flex; min-width: 0; }
 .ps-wf-picker-select { max-width: 100%; min-width: 0; }
+/* A plain picker (a Workflow session's Definition picker) is drawn by the page, not the browser: WebKit's own select face
+   ignored the theme's ground and showed the theme's light words on white (DEV at bfa03e9b). Its arrow is drawn in its own
+   colour at its end. More specific than win95's text wells (which set the ground with the background shorthand). */
+.ps-wf-tab .ps-wf-picker select.ps-workflow-input.ps-wf-picker-select {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 24px;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 13px) 50%, calc(100% - 8px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
 /* Owner, 2026-11-06T13:43Z (F2): the Workflow picker reads "#7 of 7" closed; its open list (the native one, a phone's
    too) is one group that says how many. The face is drawn; the select lies over it, transparent, and takes the taps. */
 .ps-wf-picker.is-faced { position: relative; flex: none; }
@@ -13448,10 +13460,11 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-tab.is-phone .ps-workflow-draft-editor > .ps-workflow-yaml-strip { position: sticky; top: 0; z-index: 2; background: var(--ps-surface); }
 /* UXP-GEM-04 (WebKit at 390 px): the YAML view's scroller (.ps-wf-yaml) is shorter than 55vh under the tab's header lines, so
    a capped box still ran under the bar. On a phone the chat's editor fills that scroller: its bar and notes keep their
-   height and the box takes the rest, scrolling inside itself (at least 120 px; still at most 55vh). */
+   height and the box takes the rest, scrolling inside itself; no viewport cap, at least 8 lines (line-height 1.45, its
+   padding and border). */
 .ps-wf-tab.is-phone .ps-wf-yaml > .ps-wf-chat-editor { display: flex; flex-direction: column; min-height: 0; }
 .ps-wf-tab.is-phone .ps-wf-chat-editor > :not(.ps-workflow-yaml):not(.ps-workflow-yaml-marks) { flex: none; }
-.ps-wf-tab.is-phone .ps-wf-chat-editor > .ps-workflow-yaml { flex: 1 1 auto; min-height: 120px; }
+.ps-wf-tab.is-phone .ps-wf-chat-editor > .ps-workflow-yaml { flex: 1 1 auto; min-height: calc(8 * 1.45em + 6px); max-height: none; }
 .ps-wf-tab.is-phone .ps-wf-head-actions { gap: 6px; }
 .ps-wf-tab.is-phone .ps-wf-picker-select { width: 100%; min-height: 44px; text-overflow: ellipsis; }
 .ps-wf-tab.is-phone .ps-wf-picker-face { min-height: 44px; }
