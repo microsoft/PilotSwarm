@@ -36,6 +36,10 @@ function drawn(theme) {
         ["edge label on its label", w["edge-text"], tui.surface, 4.5],
         ["error edge label on its label", w["danger-text"], tui.surface, 4.5],
         ["selected card edge on the canvas", w.selected, ground, 3],
+        // Owner 2026-11-09 (the timeline): the lit trail and the current step's ring at full strength, and a name on the current
+        // step's fill (the lit colour at 20% over the card).
+        ["lit trail and ring on the canvas", w.lit, ground, 3],
+        ["node name on the current step's fill", tui.foreground, mix(card, w.lit, 0.2), 4.5],
         ["Start on the canvas", w.start, ground, 4.5],
         ["not valid on the tab", w["danger-text"], ground, 4.5],
         ["a node not reached: its name", w["dim-text"], card, 4.5],

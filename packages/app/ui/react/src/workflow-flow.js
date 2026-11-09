@@ -4,7 +4,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
 import { WorkflowEdgeShape, WorkflowGroupBox, WorkflowJoinBar, WorkflowStepCard } from "./workflow-graph.js";
-import { workflowGraphPlaces, workflowPlaceKey } from "../../core/src/workflow-graph-layout.js";
+import { workflowGraphEdgeKey, workflowGraphPlaces, workflowPlaceKey } from "../../core/src/workflow-graph-layout.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 
 const h = React.createElement;
@@ -173,16 +173,17 @@ function JoinNode({ data }) {
  */
 function StepEdge({ data, markerEnd, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition }) {
     const edge = data.edge;
-    if (!data.motion) return h(WorkflowEdgeShape, { edge, markerEnd });
+    const lit = { litCount: data.litCount ?? 0, litAge: data.litAge ?? null };
+    if (!data.motion) return h(WorkflowEdgeShape, { edge, markerEnd, ...lit });
     if (data.motion.offset) {
-        return h("g", { transform: `translate(${data.motion.offset[0]},${data.motion.offset[1]})` }, h(WorkflowEdgeShape, { edge, markerEnd }));
+        return h("g", { transform: `translate(${data.motion.offset[0]},${data.motion.offset[1]})` }, h(WorkflowEdgeShape, { edge, markerEnd, ...lit }));
     }
     if (edge.from === edge.to) {
         const path = `M${sourceX},${sourceY} C${sourceX + LOOP_REACH_PX},${sourceY + 60} ${targetX + LOOP_REACH_PX},${targetY - 60} ${targetX},${targetY}`;
-        return h(WorkflowEdgeShape, { edge: { ...edge, path, labelX: sourceX + LOOP_REACH_PX * 0.75, labelY: (sourceY + targetY) / 2 }, markerEnd });
+        return h(WorkflowEdgeShape, { edge: { ...edge, path, labelX: sourceX + LOOP_REACH_PX * 0.75, labelY: (sourceY + targetY) / 2 }, markerEnd, ...lit });
     }
     const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
-    return h(WorkflowEdgeShape, { edge: { ...edge, path, labelX, labelY }, markerEnd });
+    return h(WorkflowEdgeShape, { edge: { ...edge, path, labelX, labelY }, markerEnd, ...lit });
 }
 
 // Stable for React Flow: new objects on each render would make it re-create every step and edge.
@@ -240,7 +241,8 @@ function GraphView({ bounds, area, fitted, touched, modeChanged, hand, onHand, o
  * settles; `places` the person's saved step places and `onPlaces(places | null)` told them at the end of each drag;
  * `mode` the display mode the graph is shown in ("normal", "zen" or "full"; F8).
  */
-export function WorkflowFlow({ layout, nodes, selected, select, viewport = null, onViewport = null, places = null, onPlaces = null, mode = "normal" }) {
+export function WorkflowFlow({ layout, nodes, selected, select, viewport = null, onViewport = null, places = null, onPlaces = null, mode = "normal",
+    lit = null }) {
     const [hand, setHand] = React.useState(true);
     const hostRef = React.useRef(null);
     const [start] = React.useState(() => workflowViewportOf(viewport));
@@ -328,10 +330,13 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
             const box = layout.positions.get(node.id);
             const place = shown.get(node.id);
             if (!box || !place) return [];
+            // Owner 2026-11-09 (the timeline): how lit the step is, as plain values, so an unchanged step keeps its node object.
+            const shownLit = lit?.nodes?.get(node.id) ?? null;
             return [keep({
                 id: node.id, type: "workflowStep", position: { x: place.at.x, y: place.at.y }, width: box.width, height: box.height,
                 ...(place.parent ? { parentId: place.parent } : {}),
-                data: { node, selected: node.id === selectedId, onSelect },
+                data: { node, selected: node.id === selectedId, onSelect, litCount: shownLit?.count ?? 0, litAge: shownLit?.age ?? null,
+                    current: lit?.current === node.id },
                 ...fixed, draggable: true,
                 // A press on a step is the step's own (a click selects it, a drag moves it); it never moves the graph.
                 className: "nopan", style: NODE_STYLE,
@@ -350,14 +355,18 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
         });
         made.current = next;
         return [...groups, ...steps, ...joins];
-    }, [layout, nodes, selectedId, onSelect, shown]);
+    }, [layout, nodes, selectedId, onSelect, shown, lit]);
     // An edge keeps its route until a box it joins moves; how each edge is drawn is all that changes it.
     const motions = layout.edges.map(edge => edgeMotion(edge, shown));
     const motionKey = JSON.stringify(motions);
+    // Owner 2026-11-09 (the timeline): each edge's lit count and age, as plain values.
+    const edgeLit = layout.edges.map(edge => lit?.edges?.get(workflowGraphEdgeKey(edge.from, edge.to)) ?? null);
+    const litKey = JSON.stringify(edgeLit.map(item => (item ? [item.count, item.age] : 0)));
     const flowEdges = React.useMemo(() => layout.edges.map((edge, index) => ({
-        id: `e${index}`, source: edge.from, target: edge.to, type: "workflowEdge", data: { edge, motion: motions[index] },
+        id: `e${index}`, source: edge.from, target: edge.to, type: "workflowEdge",
+        data: { edge, motion: motions[index], litCount: edgeLit[index]?.count ?? 0, litAge: edgeLit[index]?.age ?? null },
         markerEnd: MARKER, selectable: false, deletable: false, focusable: false, reconnectable: false,
-    })), [layout, motionKey]);
+    })), [layout, motionKey, litKey]);
     // A box follows the pointer while it is dragged (the flow is controlled: React Flow says where, this keeps it). A box
     // inside a branch box is told relative to it, and kept so (H2).
     const onNodesChange = React.useCallback(changes => {

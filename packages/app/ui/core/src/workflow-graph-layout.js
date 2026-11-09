@@ -169,6 +169,20 @@ function graphEdges(states, { bodies, memberOf }) {
 }
 
 /**
+ * Owner 2026-11-09 (the timeline's lit transitions): an edge's key, as both renderers key the edge from `from` to `to`
+ * (a step, a branch box "group:<id>" or a join bar "join:<id>"). Pure.
+ */
+export function workflowGraphEdgeKey(from, to) {
+    return JSON.stringify([from, to]);
+}
+
+/** The keys of every edge the graph draws (workflowGraphEdgeKey), the lines into join bars excepted (no visit takes one). Pure. */
+export function workflowGraphEdgeKeys(definition) {
+    const states = Array.isArray(definition?.states) ? definition.states.filter(node => node && typeof node.id === "string") : [];
+    return new Set(graphEdges(states, workflowGraphBodies(states)).map(edge => workflowGraphEdgeKey(edge.from, edge.to)));
+}
+
+/**
  * A smooth curve through an edge's points: the uniform cubic B-spline d3's curveBasis draws (straight from the first
  * point, then cubic segments, straight into the last point, so an arrowhead follows the last routed segment). It passes
  * through the first and last points and stays within the hull of each run of four points, so it never leaves the

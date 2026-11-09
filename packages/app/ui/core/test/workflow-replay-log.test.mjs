@@ -57,9 +57,10 @@ test("the Log marks a replayed visit older than its newest lines, says it lists 
     const replay = current => ({ visits, current, onVisit() {}, older: { more: false, load: null } });
     const first = render(replay("nx-poll-1"));
     assert.match(first, /<li[^>]*aria-current="step"[^>]*>.*?data-visit="nx-poll-1"/, "the first visit's line is listed and marked");
-    assert.match(first, /data-log="around"[^>]*>Around the replayed run\. Back to now shows the newest\./);
+    // Owner 2026-11-09 (the timeline): the right end is Live.
+    assert.match(first, /data-log="around"[^>]*>Around the visit shown\. Live shows the newest\./);
     assert.equal((first.match(/<li/g) || []).length, 200);
-    // Now: the newest lines, nothing marked, no note.
+    // Live: the newest lines, nothing marked, no note.
     const now = render(replay(null));
     assert.ok(!now.includes('aria-current="step"') && !now.includes("data-log="), now.slice(0, 300));
     // A visit whose line is not loaded, with no older events to read: plain words, the newest lines.

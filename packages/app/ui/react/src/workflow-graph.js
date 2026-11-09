@@ -1,5 +1,5 @@
 import React from "react";
-import { layoutWorkflowGraphTB, WORKFLOW_GRAPH_LABEL_HEIGHT } from "../../core/src/workflow-graph-layout.js";
+import { layoutWorkflowGraphTB, workflowGraphEdgeKey, WORKFLOW_GRAPH_LABEL_HEIGHT } from "../../core/src/workflow-graph-layout.js";
 import { workflowV1NodeCard } from "../../core/src/workflow-words.js";
 
 const h = React.createElement;
@@ -32,9 +32,11 @@ const NODE_GLYPHS = {
  * not loaded); then its state as a mark (✓ ● ✕ ⊘) and its one key fact (node.card, workflowNodeCardWords). Its type and
  * the full sentence are its title (its tooltip, and its description for screen readers). The node a Workflow starts at
  * carries the Start marker (F4); an end is a ring, filled once the Workflow reached it, in its outcome's colour; a node
- * the Workflow did not reach is dimmed (W7).
+ * the Workflow did not reach is dimmed (W7). Owner 2026-11-09 (the timeline): `litCount` and `litAge`, how often the last
+ * four transitions entered it and how long ago (workflowV2LitTransitions), and `current`, the step of the visit shown; the
+ * stylesheet draws them (data-lit, data-lit-age, data-current) apart from the selection.
  */
-export function WorkflowStepCard({ node, selected = false, onSelect }) {
+export function WorkflowStepCard({ node, selected = false, onSelect, litCount = 0, litAge = null, current = false }) {
     const v2 = node.shape === "v2";
     const terminal = node.type === "terminal";
     const kind = v2 ? node.kind : terminal ? "terminal" : "script";
@@ -54,6 +56,7 @@ export function WorkflowStepCard({ node, selected = false, onSelect }) {
         className: `ps-workflow-node is-${node.state}${selected ? " is-selected" : ""}${terminal ? " is-terminal" : ""} is-kind-${kind}`
             + `${reached ? " is-reached" : ""}${notReached ? " is-not-reached" : ""}${node.initial ? " is-initial" : ""}`,
         "data-phase": node.phase, "data-kind": kind, ...(terminal ? { "data-outcome": node.outcome ?? "" } : {}), "data-node-id": node.id,
+        ...litAttributes(litCount, litAge), ...(current ? { "data-current": "true" } : {}),
         role: "button", tabIndex: 0,
         "aria-label": `Inspect ${node.id}`, "aria-pressed": selected,
         title: card?.title ?? `${node.id} · ${node.label} · ${node.stateLabel}`,
@@ -65,6 +68,12 @@ export function WorkflowStepCard({ node, selected = false, onSelect }) {
     node.initial ? h("span", { className: "ps-workflow-node-start", "aria-hidden": "true" }, h("span", null, "Start")) : null,
     terminal ? h("span", { className: "ps-workflow-node-ring", "aria-hidden": "true" }) : Glyph ? h("span", { className: "ps-workflow-node-icon" }, h(Glyph)) : null,
     text);
+}
+
+/** A lit part's attributes (owner 2026-11-09): data-lit "1" (taken once among the last four) or "2", and its age (0 the newest). */
+function litAttributes(count, age) {
+    if (!(count > 0)) return {};
+    return { "data-lit": count >= 2 ? "2" : "1", "data-lit-age": String(Math.min(3, Math.max(0, Number.isSafeInteger(age) ? age : 0))) };
 }
 
 /** What an edge says to a screen reader: its route, or (owner batch 7, H2) the way into a branch box or into a join bar. */
@@ -90,15 +99,21 @@ function edgeTitle(edge, error) {
 
 /**
  * One edge: its curve with an arrowhead (dashed for a runtime-error route) and its label, the whole outcome as its title.
- * An edge without a label (into a branch box or a join bar, H2) draws none.
+ * An edge without a label (into a branch box or a join bar, H2) draws none. Owner 2026-11-09 (the timeline): a lit edge
+ * (`litCount` taken among the last four transitions, `litAge` how long ago) has its own arrowhead in the lit colour.
  */
-export function WorkflowEdgeShape({ edge, markerEnd }) {
+export function WorkflowEdgeShape({ edge, markerEnd, litCount = 0, litAge = null }) {
     const error = edge.kind === "error";
     const width = edge.labelWidth ?? 60;
+    const markerId = `wf-lit-${React.useId().replace(/:/g, "")}`;
+    const lit = litAttributes(litCount, litAge);
     return h("g", {
-        className: "ps-workflow-edge", "data-from": edge.from, "data-to": edge.to, "data-kind": edge.kind, "aria-label": edgeAria(edge, error),
+        className: "ps-workflow-edge", "data-from": edge.from, "data-to": edge.to, "data-kind": edge.kind, "aria-label": edgeAria(edge, error), ...lit,
     },
-    h("path", { className: "ps-workflow-edge-path", d: edge.path, fill: "none", markerEnd, strokeDasharray: error ? "5 4" : undefined }),
+    lit["data-lit"] ? h("defs", null, h("marker", { id: markerId, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto",
+        markerUnits: "userSpaceOnUse" }, h("path", { className: "ps-workflow-edge-lit-arrow", d: "M0 0L10 5L0 10z" }))) : null,
+    h("path", { className: "ps-workflow-edge-path", d: edge.path, fill: "none", markerEnd: lit["data-lit"] ? `url(#${markerId})` : markerEnd,
+        strokeDasharray: error ? "5 4" : undefined }),
     width > 0 ? h("g", { className: "ps-workflow-edge-label", transform: `translate(${edge.labelX},${edge.labelY})` },
         h("rect", { x: -width / 2, y: -WORKFLOW_GRAPH_LABEL_HEIGHT / 2, width, height: WORKFLOW_GRAPH_LABEL_HEIGHT, rx: 4 }),
         h("text", { textAnchor: "middle", dominantBaseline: "central" }, edge.labelText ?? edge.outcome, h("title", null, edgeTitle(edge, error)))) : null);
@@ -159,7 +174,7 @@ export function workflowGraphKey(definition) {
 }
 
 /** The plain picture: the layout at its own size, scrolled when it is larger than the graph's area. */
-function WorkflowGraphStatic({ layout, nodes, selected, select }) {
+function WorkflowGraphStatic({ layout, nodes, selected, select, lit = null }) {
     const markerId = `wf-arrow-${React.useId().replace(/:/g, "")}`;
     const byId = new Map(nodes.map(node => [node.id, node]));
     const slot = (box, className, child, key) => h("div", { key, className, style: { left: box.x, top: box.y, width: box.width, height: box.height } }, child);
@@ -172,11 +187,17 @@ function WorkflowGraphStatic({ layout, nodes, selected, select }) {
                 h("defs", null,
                     h("marker", { id: markerId, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto" },
                         h("path", { d: "M0 0L10 5L0 10z", fill: "currentColor" }))),
-                layout.edges.map(edge => h(WorkflowEdgeShape, { key: JSON.stringify([edge.from, edge.to]), edge, markerEnd: `url(#${markerId})` }))),
+                layout.edges.map(edge => {
+                    const key = workflowGraphEdgeKey(edge.from, edge.to);
+                    const shown = lit?.edges?.get(key) ?? null;
+                    return h(WorkflowEdgeShape, { key, edge, markerEnd: `url(#${markerId})`, litCount: shown?.count ?? 0, litAge: shown?.age ?? null });
+                })),
             nodes.map(node => {
                 const box = layout.positions.get(node.id);
+                const shown = lit?.nodes?.get(node.id) ?? null;
                 return box ? h("div", { key: node.id, className: "ps-workflow-node-slot", style: { left: box.x, top: box.y, width: box.width, height: box.height } },
-                    h(WorkflowStepCard, { node, selected: node.id === selected?.id, onSelect: select })) : null;
+                    h(WorkflowStepCard, { node, selected: node.id === selected?.id, onSelect: select, litCount: shown?.count ?? 0, litAge: shown?.age ?? null,
+                        current: lit?.current === node.id })) : null;
             }),
             [...(layout.joins?.values() ?? [])].map(join => slot(join, "ps-workflow-join-slot",
                 h(WorkflowJoinBar, { join, node: byId.get(join.parallel) ?? null, selected: join.parallel === selected?.id, onSelect: select }), join.id))));
@@ -198,10 +219,11 @@ function loadFlow() {
  * with that key. Batch 6 (f-03): `places` are where the person moved the step boxes ({ stepId: [x, y] }) and
  * `onPlaces` is told the new places at the end of each drag (null after Reset layout); the plain picture keeps the
  * automatic layout. `mode` is the display mode it is shown in ("normal", "zen", "full"): a change fits an untouched view
- * again (owner, 2026-11-06T19:40Z, F8).
+ * again (owner, 2026-11-06T19:40Z, F8). Owner 2026-11-09 (the timeline): `lit`, the last four transitions up to the visit
+ * shown and its step (workflowV2LitTransitions), drawn the same by both renderers.
  */
 export function WorkflowGraph({ definition, nodes, selected, select, scope = null, viewport = null, onViewport = null, places = null, onPlaces = null,
-    mode = "normal" }) {
+    mode = "normal", lit = null }) {
     const key = workflowGraphKey(definition);
     // The key holds everything of the definition the layout reads.
     const layout = React.useMemo(() => layoutWorkflowGraphTB(definition), [key]);
@@ -215,6 +237,6 @@ export function WorkflowGraph({ definition, nodes, selected, select, scope = nul
         return () => { live = false; };
     }, [Flow]);
     return h("div", { className: "ps-workflow-graph", role: "group", "aria-label": "Workflow graph", "data-renderer": Flow ? "flow" : "static" },
-        Flow ? h(Flow, { key: `${scope ?? ""}\u0000${key}`, layout, nodes, selected, select, viewport: remembered, onViewport: report, places, onPlaces, mode })
-            : h(WorkflowGraphStatic, { layout, nodes, selected, select }));
+        Flow ? h(Flow, { key: `${scope ?? ""}\u0000${key}`, layout, nodes, selected, select, viewport: remembered, onViewport: report, places, onPlaces, mode, lit })
+            : h(WorkflowGraphStatic, { layout, nodes, selected, select, lit }));
 }

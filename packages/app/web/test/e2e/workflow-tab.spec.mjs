@@ -3244,11 +3244,14 @@ test("M-18 (UI-8): the Log shows the Workflow's own entries only, never a test r
     expect(errors).toEqual([]);
 });
 
-// Stage 2.4 (FU-26, the replay): under a finished Workflow's graph, a timeline of its visits. Step back and Step on move
-// one visit, the slider (mouse and keys) any, Play shows each visit in turn and stops at the last; the graph shows each
-// node as it stood when the chosen visit began; the Log marks that visit's line, and a click on a visit's line moves the
-// replay to it; Back to now shows the Workflow as it is. A running Workflow has no replay (it is shown live).
-// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "FU-26" (from packages/app/web, after build).
+// Stage 2.4 (FU-26) folded into the timeline (owner 2026-11-09T03:37Z, corrected 03:52Z): under every version 2 run's graph,
+// a timeline of its visits whose right end is Live (Latest once the run ended): the graph as it is now, following new
+// visits. Step back from Live shows the visit before the newest; Step back and Step on move one visit, the slider (mouse
+// and keys) any, and Step on or the slider at the right end is Live again; Play steps on in history and rejoins Live; Live
+// (the button) returns at once. The last four transitions up to the visit shown are lit on the graph (data-lit 1 or 2,
+// data-lit-age 0 to 3) and the current step is marked (data-current). The Log marks the visit shown, and a click on a
+// visit's line shows it. A running Workflow has the timeline too and keeps running while history is shown.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "timeline" (from packages/app/web, after build).
 const REPLAY_BASE = Date.parse("2026-11-07T15:00:00.000Z");
 const replayAt = seconds => new Date(REPLAY_BASE + seconds * 1000).toISOString();
 function replayFixture() {
@@ -3273,10 +3276,21 @@ function replayFixture() {
         run: { ...V2_READ_MODEL.run, status: "completed", outcome: "succeeded", terminalState: "done",
             nodeExecutions: [row("poll", 1, "unchanged", 0, 10), row("pause", 1, "elapsed", 10, 40), row("poll", 2, "changed", 40, 50),
                 row("done", 1, "succeeded", 50, 50)] } };
-    return { events, model };
+    return { events, model, event, visit };
 }
 
-test("FU-26 replay: a finished Workflow's visits replay under the graph by buttons, slider keys and Play, and the Log and the replay follow each other", async ({ page }) => {
+/** The timeline under a Workflow tab's graph, its slider and its words. */
+const timelineOf = (tab) => {
+    const bar = tab.getByRole("group", { name: "Timeline" });
+    return { bar, slider: bar.getByRole("slider", { name: "Timeline position" }), words: bar.locator(".ps-wf-replay-label"),
+        button: name => bar.getByRole("button", { name, exact: true }) };
+};
+/** How the graph lights a step or an edge: [data-lit, data-lit-age, data-current] (null where absent). */
+const litOf = async (locator) => [await locator.getAttribute("data-lit"), await locator.getAttribute("data-lit-age"), await locator.getAttribute("data-current")];
+const stepOf = (tab, id) => tab.getByRole("group", { name: "Workflow graph" }).locator(`[data-node-id="${id}"]`);
+const edgeOf = (tab, from, to) => tab.getByRole("group", { name: "Workflow graph" }).locator(`g.ps-workflow-edge[data-from="${from}"][data-to="${to}"]`);
+
+test("timeline: a finished Workflow's visits by buttons, slider keys and Play; Latest at the right end; the Log and the timeline follow each other", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
@@ -3288,118 +3302,214 @@ test("FU-26 replay: a finished Workflow's visits replay under the graph by butto
     });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = workflowTab(page);
-    const replay = main.getByRole("group", { name: "Replay" });
-    const slider = replay.getByRole("slider", { name: "Replay position" });
-    const words = replay.locator(".ps-wf-replay-label");
-    const phase = id => main.getByRole("group", { name: "Workflow graph" }).locator(`[data-node-id="${id}"]`).getAttribute("data-phase");
+    const { bar, slider, words, button } = timelineOf(main);
+    const phase = id => stepOf(main, id).getAttribute("data-phase");
     const phases = async () => ({ poll: await phase("poll"), pause: await phase("pause"), done: await phase("done") });
 
-    // As it is now: four visits and Now at the slider's end; Step on has nowhere to go.
-    await expect(replay).toBeVisible();
-    await expect(words).toHaveText("Now");
-    await expect(slider).toHaveAttribute("max", "4");
-    await expect(slider).toHaveValue("4");
-    await expect(replay.getByRole("button", { name: "Step on", exact: true })).toBeDisabled();
-    await expect(replay.getByRole("button", { name: "Back to now", exact: true })).toHaveCount(0);
+    // Latest: four visits, the right end is the newest; Step on and Play have nowhere to go; the last four transitions lit.
+    await expect(bar).toBeVisible();
+    await expect(bar).toHaveAttribute("data-mode", "live");
+    await expect(words).toHaveText(/^Latest · .*done visit 1$/);
+    await expect(slider).toHaveAttribute("max", "3");
+    await expect(slider).toHaveValue("3");
+    await expect(button("Step on")).toBeDisabled();
+    await expect(button("Play")).toBeDisabled();
+    await expect(button("Latest")).toHaveAttribute("aria-pressed", "true");
     await expect.poll(phases).toEqual({ poll: "done", pause: "done", done: "done" });
+    await expect.poll(() => litOf(stepOf(main, "done"))).toEqual(["1", "0", "true"]);
+    await expect.poll(() => litOf(stepOf(main, "poll"))).toEqual(["2", "1", null]);
+    await expect.poll(() => litOf(stepOf(main, "pause"))).toEqual(["1", "2", null]);
+    await expect.poll(() => litOf(edgeOf(main, "poll", "done"))).toEqual(["1", "0", null]);
+    await expect.poll(() => litOf(edgeOf(main, "pause", "poll"))).toEqual(["1", "1", null]);
+    await expect.poll(() => litOf(edgeOf(main, "poll", "pause"))).toEqual(["1", "2", null]);
+    await expect(edgeOf(main, "poll", "failed")).not.toHaveAttribute("data-lit");
 
-    // Step back twice: poll's second visit; poll runs, pause is done, the end is not reached; the node shown is poll.
-    await replay.getByRole("button", { name: "Step back", exact: true }).click();
-    await expect(words).toContainText("done visit 1");
-    await replay.getByRole("button", { name: "Step back", exact: true }).click();
-    await expect(words).toContainText("poll visit 2");
+    // Step back once: the visit before the newest (poll's second); poll runs, pause is done, the end is not reached.
+    await button("Step back").click();
+    await expect(bar).toHaveAttribute("data-mode", "history");
+    await expect(words).toContainText("poll visit 2 · 1 newer");
     await expect(slider).toHaveValue("2");
-    await expect(slider).toHaveAttribute("aria-valuetext", /poll visit 2$/);
+    await expect(slider).toHaveAttribute("aria-valuetext", /poll visit 2 · 1 newer$/);
     await expect.poll(phases).toEqual({ poll: "running", pause: "done", done: "not-reached" });
-    await expect(main.getByRole("group", { name: "Workflow graph" }).locator('[data-node-id="poll"]')).toHaveAttribute("aria-pressed", "true");
+    await expect(stepOf(main, "poll")).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(() => litOf(stepOf(main, "poll"))).toEqual(["2", "0", "true"]);
+    await expect.poll(() => litOf(stepOf(main, "done"))).toEqual([null, null, null]);
+    await expect(button("Latest")).toBeEnabled();
 
-    // The Log marks that visit's line; a click on pause's line moves the replay there.
+    // The Log marks that visit's line; a click on pause's line shows it.
     await panelTab(main, "Log").click();
     const log = bottomPanel(main, "log");
     const current = log.locator('li[aria-current="step"]');
     await expect(current).toHaveCount(1);
     await expect(current).toContainText("● poll started · visit 2");
     await log.getByRole("button", { name: /^● pause started/ }).click();
-    await expect(words).toContainText("pause visit 1");
+    await expect(words).toContainText("pause visit 1 · 2 newer");
     await expect(current).toContainText("● pause started");
     await expect.poll(phases).toEqual({ poll: "done", pause: "waiting", done: "not-reached" });
-    await shot(page, "fu26-replay-pause");
+    await shot(page, "timeline-finished-history");
 
-    // Play from there: each visit in turn, then it stops at the last and offers Play again.
-    await replay.getByRole("button", { name: "Play the replay", exact: true }).click();
-    await expect(replay.getByRole("button", { name: "Pause the replay", exact: true })).toBeVisible();
+    // Play from there: each visit in turn, then Latest, where it stops (Play is off again).
+    await button("Play").click();
+    await expect(button("Pause")).toBeVisible();
     await expect(words).toContainText("poll visit 2");
-    await expect(words).toContainText("done visit 1", { timeout: 5_000 });
-    await expect(replay.getByRole("button", { name: "Play the replay", exact: true })).toBeVisible({ timeout: 5_000 });
-    await expect(current).toContainText("● done started");
+    await expect(bar).toHaveAttribute("data-mode", "live", { timeout: 5_000 });
+    await expect(words).toHaveText(/^Latest · .*done visit 1$/);
+    await expect(button("Play")).toBeDisabled();
+    await expect(current).toHaveCount(0);
 
-    // The slider's keys: Home is the first visit, End is now.
+    // The slider's keys: Home is the first visit, End is Latest.
     await slider.focus();
     await page.keyboard.press("Home");
-    await expect(words).toContainText("poll visit 1");
+    await expect(words).toContainText("poll visit 1 · 3 newer");
     await expect.poll(phases).toEqual({ poll: "running", pause: "not-reached", done: "not-reached" });
+    await expect.poll(() => litOf(stepOf(main, "poll"))).toEqual(["1", "0", "true"]);
     await page.keyboard.press("ArrowRight");
     await expect(words).toContainText("pause visit 1");
     await page.keyboard.press("End");
-    await expect(words).toHaveText("Now");
-    await expect(current).toHaveCount(0);
+    await expect(bar).toHaveAttribute("data-mode", "live");
+    await expect(words).toHaveText(/^Latest/);
 
-    // Back to now from any visit: the Workflow as it is.
-    await replay.getByRole("button", { name: "Step back", exact: true }).click();
-    await replay.getByRole("button", { name: "Back to now", exact: true }).click();
-    await expect(words).toHaveText("Now");
+    // Latest (the button) from any visit: the Workflow as it is.
+    await button("Step back").click();
+    await button("Step back").click();
+    await expect(words).toContainText("pause visit 1");
+    await button("Latest").click();
+    await expect(bar).toHaveAttribute("data-mode", "live");
     await expect.poll(phases).toEqual({ poll: "done", pause: "done", done: "done" });
     expect(errors).toEqual([]);
 });
 
-test("FU-26 replay: a running Workflow has no replay; on a phone a finished one's slider and Log lines are 44 px targets", async ({ page }) => {
+test("timeline: a running Workflow is Live; it follows new visits, lights the last four transitions, and history holds its visit while the run goes on", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const { events, model } = replayFixture();
-    let finished = false;
+    const { events: all, model, visit } = replayFixture();
+    // Running: poll, pause, then poll's second visit still running.
+    const events = all.filter(item => !(item.eventType === "workflow.completed" || item.data.stateId === "done"
+        || (item.eventType === "workflow.state_completed" && item.data.nodeExecutionId === "nx-poll-2")));
     const running = { ...model, runs: [{ ...model.runs[0], status: "running", outcome: null }],
-        run: { ...model.run, status: "running", outcome: null, terminalState: null } };
-    // The same Workflow, read while it runs and then after it finished (its end event, row and read model).
-    const shownEvents = events.filter(item => item.eventType !== "workflow.completed");
-    const state = { title: "Workflow: watch-v2", status: "running" };
+        run: { ...model.run, status: "running", outcome: null, terminalState: null,
+            nodeExecutions: [...model.run.nodeExecutions.slice(0, 2), { ...model.run.nodeExecutions[2], state: "pending", outcome: null, endedAt: null }] } };
+    const sockets = [];
+    let subscribed = false;
     await routeApi(page, {
-        workflowEvents: shownEvents,
-        workflowState: state,
-        onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: finished ? model : running } }),
+        workflowEvents: events,
+        workflowState: { title: "Workflow: watch-v2", status: "running" },
+        onSocket: (socket) => {
+            sockets.push(socket);
+            socket.onMessage((raw) => { if (JSON.parse(raw).type === "subscribeSession") subscribed = true; });
+        },
+        onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: running } }),
     });
-    await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = workflowTab(page);
-    await expect(main.getByRole("group", { name: "Workflow graph" })).toBeVisible();
-    await expect(main.locator('[data-node-id="poll"]')).toHaveAttribute("data-phase", "done");
-    await expect(main.getByRole("group", { name: "Replay" })).toHaveCount(0);
+    const { bar, slider, words, button } = timelineOf(main);
+    // The run grows: each new visit is told live, as the runtime's events are.
+    let at = 60;
+    const grow = async (...items) => {
+        events.push(...items);
+        for (const socket of sockets) for (const item of items) socket.send(JSON.stringify({ type: "sessionEvent", sessionId: WORKFLOW_ID, event: item }));
+    };
+    const next = async (stateId, ordinal, prior) => {
+        const items = [...(prior ? visit(prior[0], prior[1], prior[2], at - 5, at - 5, "script").slice(1) : []), ...visit(stateId, ordinal, null, at, at,
+            stateId === "pause" ? "wait" : "script")];
+        at += 10;
+        await grow(...items);
+    };
 
-    finished = true;
-    state.status = "completed";
-    shownEvents.push(events.find(item => item.eventType === "workflow.completed"));
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
-    const phone = workflowTab(page);
-    const replay = phone.getByRole("group", { name: "Replay" });
-    await expect(replay).toBeVisible();
-    const slider = replay.getByRole("slider", { name: "Replay position" });
-    expect((await slider.boundingBox()).height).toBeGreaterThanOrEqual(44);
-    // Review S2UI-F8: every replay button is a 44 px target on a phone (measured raw, within float precision).
-    for (const name of ["Step back", "Play the replay", "Step on"]) {
-        const box = await replay.getByRole("button", { name, exact: true }).boundingBox();
-        expect(box.width, name).toBeGreaterThanOrEqual(44 - 0.01);
-        expect(box.height, name).toBeGreaterThanOrEqual(44 - 0.01);
-    }
-    await replay.getByRole("button", { name: "Step back", exact: true }).click();
-    await expect(replay.locator(".ps-wf-replay-label")).toContainText("done visit 1");
-    const now = await replay.getByRole("button", { name: "Back to now", exact: true }).boundingBox();
-    expect(now.height).toBeGreaterThanOrEqual(44 - 0.01);
-    await panelTab(phone, "Log").click();
-    const line = bottomPanel(phone, "log").getByRole("button", { name: /^● poll started$/ });
-    expect((await line.boundingBox()).height).toBeGreaterThanOrEqual(44);
-    await shot(page, "fu26-replay-phone");
+    // Live: the bar is there, Play is off with its reason, the slider's right end is the newest visit.
+    await expect(bar).toBeVisible();
+    await expect(bar).toHaveAttribute("data-mode", "live");
+    await expect(words).toHaveText(/^Live · .*poll visit 2$/);
+    await expect(slider).toHaveAttribute("max", "2");
+    await expect(slider).toHaveValue("2");
+    await expect(button("Play")).toBeDisabled();
+    await expect(button("Play")).toHaveAttribute("data-title", "Play — step back first; live view already moves");
+    await expect(button("Live")).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(() => litOf(stepOf(main, "poll"))).toEqual(["2", "0", "true"]);
+    await expect.poll(() => litOf(stepOf(main, "pause"))).toEqual(["1", "1", null]);
+    // The person's selection: Live never moves it.
+    await stepOf(main, "pause").click();
+    await expect(stepOf(main, "pause")).toHaveAttribute("aria-pressed", "true");
+
+    // New visits: Live follows them; the last four transitions only are lit, the repeated ones double.
+    await expect.poll(() => subscribed).toBe(true);
+    await next("pause", 2, ["poll", 2, "unchanged"]);
+    await next("poll", 3, ["pause", 2, "elapsed"]);
+    await expect(slider).toHaveAttribute("max", "4");
+    await expect(slider).toHaveValue("4");
+    await expect(words).toHaveText(/^Live · .*poll visit 3$/);
+    // pause 1, poll 2, pause 2, poll 3: both steps twice; poll→pause and pause→poll twice each; the first poll's arrival is out.
+    await expect.poll(() => litOf(stepOf(main, "poll"))).toEqual(["2", "0", "true"]);
+    await expect.poll(() => litOf(stepOf(main, "pause"))).toEqual(["2", "1", null]);
+    await expect.poll(() => litOf(edgeOf(main, "pause", "poll"))).toEqual(["2", "0", null]);
+    await expect.poll(() => litOf(edgeOf(main, "poll", "pause"))).toEqual(["2", "1", null]);
+    await expect(main.getByRole("group", { name: "Workflow graph" }).locator("g.ps-workflow-edge[data-lit]")).toHaveCount(2);
+    await expect(main.getByRole("group", { name: "Workflow graph" }).locator(".ps-workflow-node[data-lit]")).toHaveCount(2);
+    await expect(stepOf(main, "pause")).toHaveAttribute("aria-pressed", "true");
+    await shot(page, "timeline-running-live");
+
+    // Step back: the visit before the newest. New visits while history is shown: the slider grows, the thumb stays on it.
+    await button("Step back").click();
+    await expect(bar).toHaveAttribute("data-mode", "history");
+    await expect(words).toContainText("pause visit 2 · 1 newer");
+    await expect(slider).toHaveValue("3");
+    await next("pause", 3, ["poll", 3, "unchanged"]);
+    await expect(slider).toHaveAttribute("max", "5");
+    await expect(slider).toHaveValue("3");
+    await expect(words).toContainText("pause visit 2 · 2 newer");
+    await expect(bar).toHaveAttribute("data-mode", "history");
+    await shot(page, "timeline-running-history");
+
+    // Play: each next visit, then Live, where it stops.
+    await button("Play").click();
+    await expect(bar).toHaveAttribute("data-mode", "live", { timeout: 5_000 });
+    await expect(words).toHaveText(/^Live · .*pause visit 3$/);
+    await expect(button("Play")).toBeDisabled();
+
+    // Live (the button) from history.
+    await button("Step back").click();
+    await button("Step back").click();
+    await expect(bar).toHaveAttribute("data-mode", "history");
+    await button("Live").click();
+    await expect(bar).toHaveAttribute("data-mode", "live");
+    await expect(button("Live")).toBeDisabled();
     expect(errors).toEqual([]);
 });
+
+for (const [name, size] of [["portrait", { width: 390, height: 844 }], ["landscape", { width: 844, height: 390 }]]) {
+    test(`timeline: on a phone (${name}) the bar is one row of 44 px targets under a graph that keeps its height`, async ({ page }) => {
+        const errors = [];
+        page.on("pageerror", collectPageErrors(errors));
+        const { events, model } = replayFixture();
+        await routeApi(page, { workflowEvents: events, workflowState: { title: "Workflow: watch-v2", status: "completed" },
+            onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: model } }) });
+        await page.setViewportSize(size);
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        const phone = workflowTab(page);
+        await phone.waitFor({ state: "visible", timeout: 10_000 }).catch(() => showWorkflowPane(page));
+        const { bar, slider, button } = timelineOf(phone);
+        await expect(bar).toBeVisible();
+        await button("Step back").click();
+        const rows = new Set();
+        for (const control of [button("Step back"), button("Play"), button("Step on"), button("Latest"), slider]) {
+            const box = await control.boundingBox();
+            expect(box.height, "44 px tall").toBeGreaterThanOrEqual(44 - 0.01);
+            if (control !== slider) expect(box.width, "44 px wide").toBeGreaterThanOrEqual(44 - 0.01);
+            rows.add(Math.round(box.y + box.height / 2));
+        }
+        // One row: every control's middle on one line (within a pixel).
+        const middles = [...rows];
+        expect(Math.max(...middles) - Math.min(...middles)).toBeLessThanOrEqual(1);
+        const graph = await phone.getByRole("group", { name: "Workflow graph" }).boundingBox();
+        expect(graph.height).toBeGreaterThanOrEqual(150 - 0.01);
+        await panelTab(phone, "Log").click();
+        const line = bottomPanel(phone, "log").getByRole("button", { name: /^● poll started$/ });
+        expect((await line.boundingBox()).height).toBeGreaterThanOrEqual(44);
+        await shot(page, `timeline-phone-${name}`);
+        expect(errors).toEqual([]);
+    });
+}
 
 // Final review FUI-F1: on a phone held sideways (844 x 390, a touch screen) the Workflow tab shows maximized over the page,
 // and the Workflow's touch targets keep 44 px there too, as at 390 px: a Workflow dialog's controls (portalled out of the
@@ -3442,7 +3552,7 @@ test.describe("FUI-F1: a phone held sideways (844 x 390, touch)", () => {
         expect(errors).toEqual([]);
     });
 
-    test("FUI-F1 sideways: a finished Workflow's replay slider and buttons are 44 px targets", async ({ page }) => {
+    test("FUI-F1 sideways: a finished Workflow's timeline slider and buttons are 44 px targets", async ({ page }) => {
         await page.setViewportSize(SIDEWAYS);
         const errors = [];
         page.on("pageerror", collectPageErrors(errors));
@@ -3451,12 +3561,12 @@ test.describe("FUI-F1: a phone held sideways (844 x 390, touch)", () => {
             onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: model } }) });
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
         const main = await sidewaysTab(page);
-        const replay = main.getByRole("group", { name: "Replay" });
+        const replay = main.getByRole("group", { name: "Timeline" });
         await expect(replay).toBeVisible();
-        expect((await replay.getByRole("slider", { name: "Replay position" }).boundingBox()).height).toBeGreaterThanOrEqual(44 - 0.01);
-        for (const name of ["Step back", "Play the replay", "Step on"]) await target(replay.getByRole("button", { name, exact: true }), name);
+        expect((await replay.getByRole("slider", { name: "Timeline position" }).boundingBox()).height).toBeGreaterThanOrEqual(44 - 0.01);
+        for (const name of ["Step back", "Play", "Step on"]) await target(replay.getByRole("button", { name, exact: true }), name);
         await replay.getByRole("button", { name: "Step back", exact: true }).click();
-        await target(replay.getByRole("button", { name: "Back to now", exact: true }), "Back to now");
+        await target(replay.getByRole("button", { name: "Latest", exact: true }), "Latest");
         await shot(page, "fui-f1-replay-sideways");
         expect(errors).toEqual([]);
     });
@@ -3528,10 +3638,11 @@ test("S2UI-F5 replay: a replayed branch visit's Node details show its own branch
     });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = workflowTab(page);
-    const replay = main.getByRole("group", { name: "Replay" });
+    const replay = main.getByRole("group", { name: "Timeline" });
     const words = replay.locator(".ps-wf-replay-label");
-    const slider = replay.getByRole("slider", { name: "Replay position" });
-    await expect(slider).toHaveAttribute("max", "6");
+    const slider = replay.getByRole("slider", { name: "Timeline position" });
+    // Six visits: positions 0 to 5, the right end Latest.
+    await expect(slider).toHaveAttribute("max", "5");
     // The third visit: branch 2's work, while branch 1's work runs too.
     await slider.focus();
     await page.keyboard.press("Home");
@@ -3562,7 +3673,7 @@ test("S2UI-F5 replay: a replayed branch visit's Node details show its own branch
 
 // Review S2UI-F7: in a long run the replay and the Log stay linked. Replaying a visit whose Log line is older than the
 // loaded events reads the Workflow's older events until it is there; the Log then lists the lines around it, marked, and
-// a click on a visit's line there moves the replay. Back to now lists the newest lines again.
+// a click on a visit's line there moves the timeline. Latest (the right end) lists the newest lines again.
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "S2UI-F7" (from packages/app/web, after build).
 test("S2UI-F7 replay: an early visit of a long run gets its Log line, read from older events, and the line moves the replay", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -3610,7 +3721,7 @@ test("S2UI-F7 replay: an early visit of a long run gets its Log line, read from 
     });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = workflowTab(page);
-    const replay = main.getByRole("group", { name: "Replay" });
+    const replay = main.getByRole("group", { name: "Timeline" });
     const words = replay.locator(".ps-wf-replay-label");
     await expect(replay).toBeVisible();
     await panelTab(main, "Log").click();
@@ -3619,23 +3730,23 @@ test("S2UI-F7 replay: an early visit of a long run gets its Log line, read from 
     await expect(log.locator('[data-visit="nx-poll-1"]')).toHaveCount(0);
 
     // The first visit: its line is older than the loaded events; they are read, and its line is listed and marked.
-    const slider = replay.getByRole("slider", { name: "Replay position" });
+    const slider = replay.getByRole("slider", { name: "Timeline position" });
     await slider.focus();
     await page.keyboard.press("Home");
     await expect(words).toContainText("poll visit 1");
     const current = log.locator('li[aria-current="step"]');
     await expect(current.locator('[data-visit="nx-poll-1"]')).toBeVisible();
     expect(before.length).toBeGreaterThan(0);
-    await expect(log.locator('[data-log="around"]')).toHaveText("Around the replayed run. Back to now shows the newest.");
+    await expect(log.locator('[data-log="around"]')).toHaveText("Around the visit shown. Live shows the newest.");
     await expect(log.locator(".ps-wf-log > li")).toHaveCount(200);
     // A click on another visit's line there moves the replay to it, and that line is marked.
     await log.locator('[data-visit="nx-pause-3"]').click();
     await expect(words).toContainText("pause visit 3");
     await expect(current.locator('[data-visit="nx-pause-3"]')).toBeVisible();
-    // Now: the newest lines, nothing marked.
+    // Latest: the newest lines, nothing marked.
     await replay.getByRole("button", { name: "Step back", exact: true }).click();
-    await replay.getByRole("button", { name: "Back to now", exact: true }).click();
-    await expect(words).toHaveText("Now");
+    await replay.getByRole("button", { name: "Latest", exact: true }).click();
+    await expect(words).toHaveText(/^Latest/);
     await expect(current).toHaveCount(0);
     await expect(log.locator('[data-log]')).toHaveCount(0);
     expect(errors).toEqual([]);

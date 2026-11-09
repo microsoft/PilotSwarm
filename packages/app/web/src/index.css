@@ -5459,6 +5459,35 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 .ps-workflow-edge-label rect { fill: var(--ps-surface); stroke: color-mix(in srgb, var(--ps-border) 70%, transparent); stroke-width: 1; }
 .ps-workflow-edge-label text { fill: var(--ps-wf-edge-text, var(--ps-muted)); font-size: 10px; }
 .ps-workflow-edge[data-kind="error"] .ps-workflow-edge-label text { fill: var(--ps-wf-danger-text, var(--ps-danger)); }
+/* Owner 2026-11-09 (the timeline; "the current node should be highlight more and the history trail gets fainter"): the
+   last four transitions up to the visit shown are lit in the theme's lit colour (themeWorkflowColors "lit", 3:1 on the
+   canvas). Thickness says how often each was taken among the four (data-lit 1: once, 2: twice or more); brightness how long
+   ago it was last taken (data-lit-age 0, the newest, to 3). The current step (data-current: the visit shown, or Live's
+   newest) is filled with the lit colour, ringed thicker and glows; the selection keeps its own ring inside the card. No
+   animation. The Node panel and the Log say the same in words. */
+.ps-workflow-edge[data-lit] .ps-workflow-edge-path { stroke: var(--ps-wf-lit, var(--ps-warning)); stroke-width: 2.5; }
+.ps-workflow-edge[data-lit="2"] .ps-workflow-edge-path { stroke-width: 4.5; }
+.ps-workflow-edge-lit-arrow { fill: var(--ps-wf-lit, var(--ps-warning)); }
+.ps-workflow-edge[data-lit-age="1"] .ps-workflow-edge-path { stroke-opacity: 0.75; }
+.ps-workflow-edge[data-lit-age="2"] .ps-workflow-edge-path { stroke-opacity: 0.5; }
+.ps-workflow-edge[data-lit-age="3"] .ps-workflow-edge-path { stroke-opacity: 0.35; }
+.ps-workflow-edge[data-lit-age="1"] .ps-workflow-edge-lit-arrow { fill-opacity: 0.75; }
+.ps-workflow-edge[data-lit-age="2"] .ps-workflow-edge-lit-arrow { fill-opacity: 0.5; }
+.ps-workflow-edge[data-lit-age="3"] .ps-workflow-edge-lit-arrow { fill-opacity: 0.35; }
+.ps-workflow-node[data-lit] { outline: 1.5px solid var(--ps-wf-lit, var(--ps-warning)); outline-offset: 3px; }
+.ps-workflow-node[data-lit="2"] { outline-width: 3px; }
+.ps-workflow-node[data-lit-age="1"] { outline-color: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 75%, transparent); }
+.ps-workflow-node[data-lit-age="2"] { outline-color: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 50%, transparent); }
+.ps-workflow-node[data-lit-age="3"] { outline-color: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 35%, transparent); }
+.ps-workflow-node[data-current="true"] {
+  outline: 4.5px solid var(--ps-wf-lit, var(--ps-warning));
+  outline-offset: 3px;
+  background: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 20%, var(--ps-chrome));
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 60%, transparent));
+}
+.ps-workflow-node.is-running[data-current="true"] {
+  background: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 20%, color-mix(in srgb, var(--ps-accent) 15%, var(--ps-surface)));
+}
 /* Owner batch 7 (H2): a parallel step's branch box, dashed and drawn as a stack (two outlines behind it, from its
    shadows, which are never painted inside it), and its join bar under it. The box lets a press through to the graph
    except on its label row, where it is dragged. */
@@ -13354,6 +13383,9 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-replay-range { flex: 1 1 140px; min-width: 100px; margin: 0; accent-color: var(--ps-accent); }
 .ps-wf-replay-label { color: var(--ps-muted); min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .ps-wf-replay[data-replaying="true"] .ps-wf-replay-label { color: var(--ps-foreground); }
+/* Owner 2026-11-09 (the timeline): Live (Latest once the run ended) is pressed while the graph shows the run as it is. */
+.ps-wf-replay-live.is-on[aria-disabled="true"] { opacity: 1; cursor: default; color: var(--ps-success); border-color: var(--ps-success); }
+.ps-wf-replay-older-short { display: none; }
 .ps-wf-log li.is-current {
   background: color-mix(in srgb, var(--ps-accent) 14%, transparent);
   border-radius: var(--ps-radius-sm);
@@ -13372,6 +13404,13 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
      definition's Make a copy and Use it for the next Workflow are 44 px targets on a phone. */
   .ps-wf-replay .ps-mini-button,
   .ps-wf-replay .ps-mini-button.ps-workflow-tool-button { min-width: 44px; min-height: 44px; }
+  /* Owner 2026-11-09 (the timeline, R10): one compact row on a phone; the words give way, the slider keeps 60 px. */
+  .ps-wf-replay { flex-wrap: nowrap; gap: 4px; padding: 2px 6px; }
+  .ps-wf-replay > * { flex: none; }
+  .ps-wf-replay .ps-wf-replay-range { flex: 1 1 60px; min-width: 60px; }
+  .ps-wf-replay .ps-wf-replay-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
+  .ps-wf-replay-older-long { display: none; }
+  .ps-wf-replay-older-short { display: inline; }
   .ps-wf-info .ps-link-button,
   .ps-wf-latest .ps-link-button {
     display: inline-flex; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; padding: 0 8px;

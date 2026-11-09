@@ -29,7 +29,10 @@ function mix(from, to, share) {
 /** The names of the colours themeWorkflowColors gives (each the CSS variable --ps-wf-<name>). */
 export const WORKFLOW_COLOR_NAMES = Object.freeze(["ground", "edge", "edge-text", "node-border", "selected", "meta", "dim-text", "dim-icon",
     "icon-script", "icon-agent", "icon-wait", "icon-request", "icon-message", "icon-other", "mark-done", "mark-running", "mark-failed", "mark-canceled",
-    "start", "end-succeeded", "end-blocked", "end-failed", "end-cancelled", "danger-text"]);
+    "start", "end-succeeded", "end-blocked", "end-failed", "end-cancelled", "danger-text", "lit"]);
+
+/** Owner 2026-11-09 (the timeline): the lit trail's own amber, where a theme's yellow is not seen on its canvas. */
+export const WORKFLOW_LIT_COLOR = "#f5b942";
 
 /** The node icons' own colours, as the viewer drew them in every theme before (the kind of each node at a glance). */
 export const WORKFLOW_ICON_COLORS = Object.freeze({ script: "#60a5fa", agent: "#a78bfa", wait: "#f59e0b", request: "#fb923c", message: "#22d3ee" });
@@ -103,5 +106,8 @@ export function themeWorkflowColors(theme) {
         // Words in the danger colour ("not valid", an error edge's label): on the tab, its panel and an error line's tint.
         "danger-text": seenColor([tui.red], [background, surface, mix(background, hex(tui.red) ?? text, 0.1), mix(surface, hex(tui.red) ?? text, 0.1)],
             WORKFLOW_TEXT_MIN_CONTRAST, text),
+        // Owner 2026-11-09 (the timeline): the last four transitions and the current step's ring, on the canvas (3:1 at full
+        // strength; its fainter steps are extra cues, said in words by the Node panel and the Log).
+        "lit": seenColor([tui.yellow, WORKFLOW_LIT_COLOR], canvas, WORKFLOW_PART_MIN_CONTRAST, text),
     };
 }

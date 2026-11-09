@@ -122,7 +122,7 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   In zen and full screen on a desktop, the panel (**Node**, **Log**,
   **Variables**; **Node**, **Revisions**) is a column to the right of the
   graph instead of under it, from below the header bars to the bottom, with
-  the same tabs and open state; the replay timeline and the zoom controls stay
+  the same tabs and open state; the timeline and the zoom controls stay
   with the graph, which keeps at least 360 px. Its left edge resizes it (drag,
   arrow keys, double-click for the default 400 px; at least 280 px); the width
   is kept in the profile (`workflowPanelWidths`). Closed, it is a slim strip of
@@ -393,24 +393,52 @@ lists them; a connection without them keeps the stage 1 grouping above):
 - A person who can read the chat but not change it sees the graph, but no
   YAML, and the input schema and errors without what their author wrote; Start,
   Delete and Run again are off and say why.
-- **Replay** (stage 2.4, FU-26). A finished Workflow with two or more visits
-  has a timeline under its graph: **Step back**, **Play**/**Pause**, **Step
-  on**, a slider (arrow keys, Home, End) and **Back to now**. At a visit the
-  graph shows each step as it stood when that visit began (a visit that ended
-  later is shown running, one that began later is not reached, and a send's
-  delivery and the recipient's check show only from when they happened), and
-  the Node panel follows that visit: for a visit in a For each branch it shows
-  that branch and its agent chat. The Log marks that visit's `Node … started`
-  line; a click on such a line moves the replay there. The Log lists 200
-  lines: the newest, or, for a visit older than those, the lines around it
-  ("Lines around the replayed visit"). When that visit's line is older than
-  the Workflow's loaded events, the Log reads older events, page by page,
-  until it is there (the portal keeps at most about 3,000 events of a
-  session); otherwise it says "This visit's line is not among the Log lines
-  loaded". Play shows each next visit in turn
-  (about 0.8 s each) and stops at the last. The replay reads the stored visits
-  only; **Load older visits** reads a long run's older ones. A running
-  Workflow is shown live and has no replay.
+- **Timeline** (the replay of stage 2.4, FU-26, as a viewing mode). Every
+  Workflow, running or ended, has a timeline under its graph: **Step back**,
+  **Play**/**Pause**, **Step on**, a slider over its loaded visits (arrow
+  keys, Home, End) and **Live**, which reads **Latest** once the run has
+  ended. With no visit yet its controls are off and it says "No steps yet".
+  - **Live** is the default. The slider's right end is the newest visit; the
+    graph shows the Workflow as it is now and follows new visits. Live never
+    changes the step a person selected.
+  - **History.** **Step back** from Live shows the visit before the newest;
+    **Step back** and **Step on** move one visit, and the slider any. **Step
+    on** from the visit before the newest, the slider at its right end, End, or
+    **Live** returns to Live. At a visit the graph shows each step as it stood
+    when that visit began (a visit that ended later is shown running, one that
+    began later is not reached, and a send's delivery and the recipient's check
+    show only from when they happened), and the Node panel follows that visit:
+    for a visit in a branch it shows that branch and its agent chat. The run
+    keeps running meanwhile: the timeline is kept by visit, so new visits
+    lengthen the slider while the visit shown stays, and history never returns
+    to Live by itself.
+  - **Play** shows each next visit in turn (about 0.8 s each) and returns to
+    Live (or Latest) at the right end. In Live it is off: "Play — step back
+    first; live view already moves".
+  - **Lit transitions.** The last four transitions up to the visit shown (in
+    Live, the newest four) are lit on the graph in the theme's lit colour,
+    counted across branches in the order the visits began: an edge or a
+    step's ring is thicker when it was taken twice or more among the four,
+    and fainter the longer ago it was last taken (100%, 75%, 50%, 35%). The
+    current step (the visit shown, or Live's newest) is filled with the lit
+    colour, has a thicker ring and glows; the selection keeps its own ring. A
+    visit entered by a catch-all route, and the run's first visit, light their
+    step only; a parallel step drawn as a box leaves from its join bar, and
+    the lines into a join bar are never lit. The Node panel and the Log say
+    the same in words.
+  - The Log marks the visit shown's `Node … started` line; a click on such a
+    line shows that visit. The Log lists 200 lines: the newest, or, for a
+    visit older than those, the lines around it ("Around the visit shown").
+    When that visit's line is older than the Workflow's loaded events, the Log
+    reads older events, page by page, until it is there (the portal keeps at
+    most about 3,000 events of a session); otherwise it says "This visit's
+    line is not among the Log lines loaded".
+  - The timeline reads the stored visits only; **Load older visits** reads a
+    long run's older ones (a running run's too). A visit shown in history that
+    leaves the loaded visits gives way to the oldest one loaded, not to Live.
+  - On a phone the timeline is one row of 44 px targets ("Older" for **Load
+    older visits**). The terminal UI draws no graph, so it has no timeline and
+    no lit transitions; its run views are unchanged.
 
 **An agent's test of a revision, on request (stage 2.2).** Testing is
 optional: the chat tests a revision only when the person asks (for example

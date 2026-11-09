@@ -15,6 +15,7 @@ import { workflowModelFromKey, workflowRefusalText, workflowRunsText, workflowSe
     workflowV1NodeWords } from "../../core/src/workflow-words.js";
 import { AUTO_HISTORY_EVENT_SOFT_CAP, SESSION_NAV_SETTLE_MS } from "../../core/src/controller.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
+import { WORKFLOW_LIT_TRANSITIONS, workflowV2LitTransitions, workflowV2Transitions } from "../../core/src/workflow-v2-transitions.js";
 import {
     WORKFLOW_AGENT_LOG_VISITS, workflowAgentLogChats, workflowAgentNodeLog, workflowBaseInstructionsMatch, workflowBaseInstructionsReadable,
 } from "../../core/src/workflow-agent-log.js";
@@ -46,8 +47,10 @@ const h = React.createElement;
 const EMPTY = Object.freeze({});
 const EMPTY_EVENTS = Object.freeze([]);
 export const LIST_READ_LIMIT = 10;
-/** Stage 2.4 (FU-26): how long the replay shows each visit while it plays. */
+/** Stage 2.4 (FU-26): how long the timeline shows each visit while it plays. */
 export const REPLAY_STEP_MS = 800;
+/** Owner 2026-11-09: Play's words while the timeline is live (there is nothing to play: the live view already moves). */
+export const TIMELINE_PLAY_LIVE_TITLE = "Play — step back first; live view already moves";
 
 /**
  * Workflow Simplified, stage 1 (spec draft 3, sections 06–08, 11, 12): the Workflow tab. It shares the right block with
@@ -852,43 +855,61 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     React.useEffect(() => {
         if (view.selectedRunId) controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedRunId: null } });
     }, [controller, sessionId, view.selectedRunId]);
-    // Stage 2.4 (FU-26, the replay): under the graph of a finished Workflow, a timeline of its loaded visits (a running one
-    // is shown live). `replayId` is the visit shown (the graph as it stood when that visit began), or null for the Workflow
-    // as it is now. It is kept by visit, not by position, so older visits loaded later do not move it.
+    // Owner 2026-11-09T03:37Z (the timeline as a viewing mode; FU-26's replay folded into it): under the graph of every
+    // version 2 run, running or ended, a timeline of its loaded visits. Its right end is Live: the graph as it is now, which
+    // follows new visits. `replayId` is the visit shown in history (the graph as it stood when that visit began), or null
+    // for Live. It is kept by visit, not by position, so new visits (the run keeps going) and older ones loaded later do not
+    // move it, and history never returns to Live by itself; only Play does, at the right end.
     const frames = React.useMemo(() => workflowV2ReplayFrames(projection?.allExecutions), [projection?.allExecutions]);
+    const transitions = React.useMemo(() => workflowV2Transitions(projection?.allExecutions, child.definition),
+        [projection?.allExecutions, child.definition]);
     const [replayId, setReplayId] = React.useState(null);
     const [playing, setPlaying] = React.useState(false);
     React.useEffect(() => { setReplayId(null); setPlaying(false); }, [sessionId]);
-    const replayable = projection?.status?.ended === true && frames.length >= 2;
-    const replayIndex = replayId === null || !replayable ? null : frames.findIndex(frame => frame.nodeExecutionId === replayId);
-    const frame = replayIndex !== null && replayIndex >= 0 ? frames[replayIndex] : null;
+    const timeline = projection !== null && projection !== undefined;
+    const found = replayId === null ? -1 : frames.findIndex(item => item.nodeExecutionId === replayId);
+    // R8: a visit shown in history that left the loaded window: the oldest loaded visit, never Live.
+    const replayIndex = replayId === null || !timeline ? null : found >= 0 ? found : frames.length ? 0 : null;
+    React.useEffect(() => {
+        if (replayId !== null && found < 0 && frames.length) setReplayId(frames[0].nodeExecutionId);
+    }, [replayId, found, frames]);
+    const frame = replayIndex !== null ? frames[replayIndex] ?? null : null;
     const frameAt = frame ? frame.atMs : null;
     const replayed = React.useMemo(() => frameAt !== null ? child.projectAt(frameAt) : null, [frameAt, child.projectAt]);
+    const newest = frames.length - 1;
+    /** Show the visit at `index` (history), or Live for null and for the right end (timelineVisitAt). */
     const goTo = index => {
-        const next = index !== null && index >= 0 && index < frames.length ? frames[index] : null;
-        setReplayId(next ? next.nodeExecutionId : null);
-        // The visit shown is the node selected (its panel says it as it stood then).
-        if (next) controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: next.stateId } });
+        const nextId = timelineVisitAt(frames, index);
+        setReplayId(nextId);
+        // A visit shown in history is the node selected (its panel says it as it stood then); Live never moves the selection.
+        if (nextId !== null) controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: frames[index].stateId } });
+        return nextId;
     };
-    // Playing shows each next visit in turn and stops at the last one.
+    // Playing shows each next visit in turn, and rejoins Live at the right end (an ended run: Latest).
     React.useEffect(() => {
         if (!playing) return undefined;
-        if (frame === null || replayIndex >= frames.length - 1) { setPlaying(false); return undefined; }
-        const timer = setTimeout(() => goTo(replayIndex + 1), REPLAY_STEP_MS);
+        if (frame === null) { setPlaying(false); return undefined; }
+        const timer = setTimeout(() => { if (goTo(replayIndex + 1) === null) setPlaying(false); }, REPLAY_STEP_MS);
         return () => clearTimeout(timer);
     }, [playing, replayId, frames.length]);
-    const replay = replayable ? {
-        frames, index: frame ? replayIndex : null, playing,
+    const ended = projection?.status?.ended === true;
+    const replay = timeline ? {
+        frames, index: frame ? replayIndex : null, playing, ended,
         onGo: index => { setPlaying(false); goTo(index); },
-        onPlay: () => { if (frame === null || replayIndex >= frames.length - 1) goTo(0); setPlaying(true); },
+        onPlay: () => { if (frame !== null) setPlaying(true); },
         onPause: () => setPlaying(false),
+        // R8: older visits can be loaded while the run runs too.
         onOlder: projection && !projection.historyComplete && typeof controller.loadOlderWorkflowHistory === "function"
             ? () => { controller.loadOlderWorkflowHistory(sessionId, { restart: Boolean(projection.historyStale) }).catch(() => {}); } : null,
     } : null;
+    // The last four transitions up to the visit shown (Live: up to the newest), drawn on the graph.
+    const shownIndex = replayIndex ?? newest;
+    const lit = React.useMemo(() => (timeline && frames.length ? workflowV2LitTransitions(transitions, shownIndex, WORKFLOW_LIT_TRANSITIONS) : null),
+        [timeline, transitions, shownIndex, frames.length]);
     const logReplay = React.useMemo(() => replay ? {
         visits: new Set(frames.map(item => item.nodeExecutionId)), current: frame?.nodeExecutionId ?? null,
         onVisit: id => { const index = frames.findIndex(item => item.nodeExecutionId === id); if (index >= 0) { setPlaying(false); goTo(index); } },
-        // Review S2UI-F7: the Workflow's older events, read while a replayed visit's line is older than the loaded ones.
+        // Review S2UI-F7: the Workflow's older events, read while a visit's line shown in history is older than the loaded ones.
         older: { more: child.olderEvents, load: typeof controller.expandSessionHistory === "function" ? () => controller.expandSessionHistory(sessionId) : null },
     } : null, [Boolean(replay), frames, frame?.nodeExecutionId, child.olderEvents, controller, sessionId]);
     const nodes = replayed ? replayed.nodes : child.nodes;
@@ -986,41 +1007,67 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
                 : null) },
         h("div", { className: "ps-wf-main" },
             graph ? h(WorkflowGraph, { definition: graph, nodes, selected, select, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView,
-                places: places ?? null, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)) })
+                places: places ?? null, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)), lit })
                 : projection ? h(WorkflowV2NoGraph, { projection })
                 : h("p", { className: "ps-wf-muted" }, view.error || "Loading the Workflow…")),
-        // The replay timeline stays with the graph (OF-S2-1).
+        // The timeline stays with the graph (OF-S2-1).
         graph && replay ? h(ReplayBar, replay) : null),
         stopping ? h(StopDialog, { controller, sessionId, runId: runControls?.runId ?? runId, title: `${definition.name} #${number}`, stop, cancel,
             onClose: () => setStopping(false) }) : null);
 }
 
 /**
- * Stage 2.4 (FU-26, the replay): under the graph, Step back, Play or Pause, Step on, a slider over the run's loaded
- * visits with "Now" at its end, the moment shown in words, Back to now, and Load older visits while older visits are not
- * loaded. The graph above shows each node as it stood when the chosen visit began; the Log's line for that visit is
- * marked, and a click on a visit's line in the Log moves the replay to it.
+ * Owner 2026-11-09 (the timeline): the visit a position on the timeline shows, its id, in history; null for Live: the right
+ * end (the newest visit), a position past it, or no position (the slider's positions are the visits, 0 to newest). Pure.
  */
-function ReplayBar({ frames, index, playing, onGo, onPlay, onPause, onOlder = null }) {
+export function timelineVisitAt(frames, index) {
+    const list = Array.isArray(frames) ? frames : [];
+    return Number.isSafeInteger(index) && index >= 0 && index < list.length - 1 ? list[index].nodeExecutionId : null;
+}
+
+/**
+ * Owner 2026-11-09T03:37Z (the timeline; FU-26's replay folded into it): under the graph of every version 2 run, Step back,
+ * Play or Pause, Step on, a slider over the run's loaded visits whose right end is Live (the newest visit; the graph as it
+ * is now, following new visits), the moment shown in words, Live (Latest once the run ended), and Load older visits while
+ * older visits are not loaded. Step back from Live shows the visit before the newest; Step on from the visit before the
+ * newest, or the slider at its right end, is Live again. Play steps on every REPLAY_STEP_MS in history and rejoins Live at
+ * the right end; Live has nothing to play. With no visit yet every control is off ("No steps yet"). The Log's line for the
+ * visit shown is marked, and a click on a visit's line shows it.
+ */
+export function ReplayBar({ frames, index, playing, ended = false, onGo, onPlay, onPause, onOlder = null }) {
     const id = `wf-replay-${React.useId().replace(/:/g, "")}`;
-    const now = frames.length;
-    const position = index ?? now;
-    const words = index !== null ? workflowV2ReplayLabel(frames[index]) : "Now";
-    return h("div", { className: "ps-wf-replay", role: "group", "aria-label": "Replay", "data-replaying": index !== null ? "true" : "false" },
-        h(WorkflowToolButton, { label: "Step back", glyph: "step-back", "data-action": "replay-back", disabled: position <= 0,
-            title: "Show the visit before", onClick: () => onGo(position - 1) }),
+    const count = frames.length;
+    const newest = count - 1;
+    const live = index === null;
+    const position = live ? Math.max(0, newest) : index;
+    const liveWord = ended ? "Latest" : "Live";
+    const words = count === 0 ? "No steps yet"
+        : live ? `${liveWord} · ${workflowV2ReplayLabel(frames[newest])}`
+            : `${workflowV2ReplayLabel(frames[index])} · ${newest - index} newer`;
+    return h("div", { className: "ps-wf-replay", role: "group", "aria-label": "Timeline", "data-replaying": live ? "false" : "true",
+        "data-mode": count === 0 ? "empty" : live ? "live" : "history" },
+        h(WorkflowToolButton, { label: "Step back", glyph: "step-back", "data-action": "replay-back", disabled: count < 2 || position <= 0,
+            title: live ? "Show the visit before the newest" : "Show the visit before", onClick: () => onGo(position - 1) }),
         playing
-            ? h(WorkflowToolButton, { label: "Pause the replay", glyph: "pause", "data-action": "replay-pause", onClick: onPause })
-            : h(WorkflowToolButton, { label: "Play the replay", glyph: "resume", "data-action": "replay-play",
-                title: "Show each visit in turn, from the first", onClick: onPlay }),
-        h(WorkflowToolButton, { label: "Step on", glyph: "step-on", "data-action": "replay-on", disabled: position >= now,
-            title: "Show the next visit", onClick: () => onGo(position + 1 >= now ? null : position + 1) }),
-        h("label", { htmlFor: id, className: "ps-sr-only" }, "Replay position"),
-        h("input", { id, type: "range", className: "ps-wf-replay-range", min: 0, max: now, step: 1, value: position, "aria-valuetext": words,
-            onChange: event => { const next = Number(event.target.value); onGo(next >= now ? null : next); } }),
-        h("span", { className: "ps-wf-replay-label", title: index !== null ? workflowTimeTitle(frames[index].atMs) ?? undefined : undefined }, words),
-        index !== null ? h("button", { type: "button", className: "ps-mini-button", "data-action": "replay-now", onClick: () => onGo(null) }, "Back to now") : null,
-        onOlder ? h("button", { type: "button", className: "ps-mini-button", "data-action": "replay-older", onClick: onOlder }, "Load older visits") : null);
+            ? h(WorkflowToolButton, { label: "Pause", glyph: "pause", "data-action": "replay-pause", title: "Pause", onClick: onPause })
+            : h(WorkflowToolButton, { label: "Play", glyph: "resume", "data-action": "replay-play", disabled: live,
+                title: live ? TIMELINE_PLAY_LIVE_TITLE : `Show each visit in turn, then ${liveWord}`, onClick: onPlay }),
+        h(WorkflowToolButton, { label: "Step on", glyph: "step-on", "data-action": "replay-on", disabled: live,
+            title: !live && timelineVisitAt(frames, index + 1) === null ? `Back to ${liveWord}` : "Show the next visit", onClick: () => onGo(index + 1) }),
+        h("label", { htmlFor: id, className: "ps-sr-only" }, "Timeline position"),
+        h("input", { id, type: "range", className: "ps-wf-replay-range", min: 0, max: Math.max(0, newest), step: 1, value: position,
+            disabled: count === 0, "aria-valuetext": words,
+            onChange: event => onGo(Number(event.target.value)) }),
+        h("span", { className: "ps-wf-replay-label", title: count === 0 ? undefined
+            : workflowTimeTitle(frames[live ? newest : index].atMs) ?? undefined }, words),
+        // Live while the graph is live: pressed, and (UXFD-F15) off but still focusable, its title saying why.
+        h("button", { type: "button", className: `ps-mini-button ps-wf-replay-live${live && count > 0 ? " is-on" : ""}`, "data-action": "replay-live",
+            "aria-disabled": live ? "true" : undefined, "aria-pressed": live, title: live ? `Showing ${liveWord.toLowerCase()}` : `Back to ${liveWord}`,
+            onClick: () => { if (!live) onGo(null); } }, liveWord),
+        // On a phone the row stays one line: the button reads "Older" (its name is the same).
+        onOlder ? h("button", { type: "button", className: "ps-mini-button", "data-action": "replay-older", "aria-label": "Load older visits", onClick: onOlder },
+            h("span", { className: "ps-wf-replay-older-long" }, "Load older visits"), h("span", { className: "ps-wf-replay-older-short", "aria-hidden": "true" }, "Older"))
+            : null);
 }
 
 /**
@@ -1299,7 +1346,7 @@ export function WorkflowLog({ events, runId, runs = null, replay = null }) {
     const note = missing
         ? h("p", { className: "ps-wf-muted", role: "status", "data-log": "missing" }, reading
             ? "Reading older lines…" : "This visit's line is not loaded.")
-        : shown.around ? h("p", { className: "ps-wf-muted", "data-log": "around" }, "Around the replayed run. Back to now shows the newest.")
+        : shown.around ? h("p", { className: "ps-wf-muted", "data-log": "around" }, "Around the visit shown. Live shows the newest.")
         : null;
     return h(React.Fragment, null, note, h("ol", { className: "ps-wf-log", "aria-label": "Workflow log", ref: listRef },
         rows.map((row, index) => {
