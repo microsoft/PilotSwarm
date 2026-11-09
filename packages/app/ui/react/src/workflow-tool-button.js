@@ -7,6 +7,18 @@ const HOVER_TOOLTIP_MS = 400;
 const LONG_PRESS_MS = 450;
 /** How long a long-press tooltip stays after the finger lifts (the top bar's IconButton). */
 const LONG_PRESS_LINGER_MS = 3_000;
+/**
+ * UXP-TL-03: how long after a touch on the button a focus counts as that touch's, not the keyboard's. A tap focuses the
+ * button after the finger lifts (and WebKit matches :focus-visible then), so without this the tooltip came up at every
+ * tap and stayed until something else took the focus.
+ */
+const TOUCH_FOCUS_MS = 1_000;
+
+/** UXP-TL-03: whether the screen's pointer can hover; a touch screen's mouse events (after a tap) show no hover tooltip. */
+function canHover() {
+    try { return typeof window === "undefined" || typeof window.matchMedia !== "function" || window.matchMedia("(hover: hover)").matches; }
+    catch { return true; }
+}
 /** The tooltip's distance from the viewport's edges and from its button. */
 const TIP_MARGIN = 8;
 /** The tooltip's widest: min(260 px, the viewport less its margins); narrower only when its text is. */
@@ -86,7 +98,9 @@ export const WORKFLOW_TOOL_GLYPHS = Object.freeze({
  * the top bar's is, so a clipping pane cannot hide it. The wrapper takes the hover, so a disabled button still explains
  * why. `data-title` keeps that explanation readable to tests. On touch, as the top bar's icon buttons do (IconButton):
  * a tap acts; holding the button about half a second shows the tooltip above it instead (the click that follows is not
- * acted on), and it stays about 3 s after the finger lifts (owner, 2026-11-06T13:43Z: icons only, on the phone too).
+ * acted on), and it stays about 3 s after the finger lifts (owner, 2026-11-06T13:43Z: icons only, on the phone too). A
+ * tap shows none (UXP-TL-03): the focus a tap gives the button is not the keyboard's, and a screen that cannot hover
+ * shows no hover tooltip (the mouse events a tap brings).
  * The tooltip is sized to its text, at most min(260 px, the viewport less 16 px), and kept inside the viewport with an
  * 8 px margin by moving it, never by narrowing it (a button at the edge squeezed it into a one-word column); with no room
  * above its button it shows below. On touch one tooltip is open at a time: any new touch, a long-press elsewhere or a tap
@@ -106,6 +120,7 @@ export function WorkflowToolButton({ label, glyph: glyphName, title = null, dang
     const hideTimerRef = React.useRef(null);
     const longPressRef = React.useRef(false);
     const pressOriginRef = React.useRef(null);
+    const touchedAtRef = React.useRef(0);
     const describedId = `wf-tool-${React.useId().replace(/:/g, "")}`;
     const explain = typeof title === "string" && title && title !== label ? title : null;
     // A finger covers what is below it: a long-press (`touch`) prefers above. UX2P-F3: so does a button whose tooltip would
@@ -178,6 +193,7 @@ export function WorkflowToolButton({ label, glyph: glyphName, title = null, dang
     // Touch (IconButton's long-press): hold to see the tooltip; a real move (a scroll) cancels it.
     const startPress = event => {
         if (event.pointerType === "mouse") return;
+        touchedAtRef.current = Date.now();
         longPressRef.current = false;
         pressOriginRef.current = { x: event.clientX, y: event.clientY };
         clearTimeout(timerRef.current);
@@ -221,7 +237,7 @@ export function WorkflowToolButton({ label, glyph: glyphName, title = null, dang
     const icon = WORKFLOW_TOOL_GLYPHS[glyphName] ?? WORKFLOW_TOOL_GLYPHS.details;
     return h("span", { className: "ps-workflow-tool-wrap",
         onPointerEnter: event => {
-            if (event.pointerType !== "mouse") return;
+            if (event.pointerType !== "mouse" || !canHover()) return;
             clearTimeout(timerRef.current);
             timerRef.current = setTimeout(show, HOVER_TOOLTIP_MS);
         },
@@ -234,7 +250,11 @@ export function WorkflowToolButton({ label, glyph: glyphName, title = null, dang
     h("button", { ref: buttonRef, type: "button", "aria-disabled": disabled ? "true" : undefined,
         className: `ps-mini-button ps-workflow-tool-button${danger ? " is-danger" : ""}${disabled ? " is-disabled" : ""}`,
         "aria-label": label, "data-title": explain ?? undefined, "aria-describedby": explain ? describedId : undefined,
-        onClick: act, onFocus: event => { if (focusVisible(event.currentTarget)) show(); }, onBlur: hide,
+        // UXP-TL-03: the keyboard's focus shows it; a tap's focus does not (a long-press does, above).
+        onClick: act, onFocus: event => {
+            if (Date.now() - touchedAtRef.current < TOUCH_FOCUS_MS) return;
+            if (focusVisible(event.currentTarget)) show();
+        }, onBlur: hide,
         onKeyDown: event => { if (event.key === "Escape" && tip) { event.stopPropagation(); hide(); } },
         ...rest },
     h("span", { className: "ps-workflow-tool-glyph", "aria-hidden": "true" }, icon()),

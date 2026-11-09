@@ -3590,6 +3590,57 @@ for (const [name, size, touch] of [["portrait", { width: 390, height: 844 }, fal
     });
 }
 
+// UXP-TL-03 (owner, TEST at 390 x 844, WebKit): a tap on Fit to screen left its tooltip up, over the timeline's Play and Step
+// on, until something else was tapped. A tap shows no tooltip on any Workflow tool button (a long-press still does); the
+// keyboard's focus still shows it.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "UXP-TL-03" (from packages/app/web, after build).
+test.describe("UXP-TL-03: a phone (390 x 844, touch)", () => {
+    test.use({ hasTouch: true, isMobile: true });
+    test("UXP-TL-03: a tap on Fit to screen leaves no tooltip, and Play under it takes the next tap", async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 844 });
+        const errors = [];
+        page.on("pageerror", collectPageErrors(errors));
+        const { events: all, model } = replayFixture();
+        const events = all.filter(item => !(item.eventType === "workflow.completed" || item.data.stateId === "done"
+            || (item.eventType === "workflow.state_completed" && item.data.nodeExecutionId === "nx-poll-2")));
+        const running = { ...model, runs: [{ ...model.runs[0], status: "running", outcome: null }],
+            run: { ...model.run, status: "running", outcome: null, terminalState: null,
+                nodeExecutions: [...model.run.nodeExecutions.slice(0, 2), { ...model.run.nodeExecutions[2], state: "pending", outcome: null, endedAt: null }] } };
+        await routeApi(page, { workflowEvents: events, workflowState: { title: "Workflow: watch-v2", status: "running" },
+            onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: running } }) });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        const main = workflowTab(page);
+        await main.waitFor({ state: "visible", timeout: 10_000 }).catch(() => showWorkflowPane(page));
+        await expect(main.getByRole("group", { name: "Workflow graph" })).toHaveAttribute("data-renderer", "flow");
+        const { button } = timelineOf(main);
+        // Step back first, so Play is on and its tap shows a visit.
+        await button("Step back").tap();
+        await expect(timelineOf(main).bar).toHaveAttribute("data-mode", "history");
+        const fit = main.locator(".ps-workflow-graph-controls").getByRole("button", { name: "Fit to screen", exact: true });
+        // A tap, and a click as a test harness gives a touch screen (a mouse pointer over a screen that cannot hover): no
+        // tooltip either way, also after the hover delay.
+        await fit.tap();
+        await page.waitForTimeout(600);
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
+        await fit.click();
+        await page.waitForTimeout(800);
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
+        expect(await page.evaluate(() => window.matchMedia("(hover: hover)").matches), "the screen cannot hover").toBe(false);
+        for (const name of ["Play", "Step on"]) {
+            const box = await button(name).boundingBox();
+            const hit = await page.evaluate(({ x, y }) => {
+                const element = document.elementFromPoint(x, y);
+                return element?.closest?.("button")?.getAttribute("aria-label") ?? null;
+            }, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
+            expect(hit, `${name}'s centre is ${name}`).toBe(name);
+        }
+        await button("Play").tap();
+        await expect(timelineOf(main).bar).toHaveAttribute("data-mode", "live", { timeout: 5_000 });
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
+        expect(errors).toEqual([]);
+    });
+});
+
 // UXP-TL-02 (owner, TEST at 390 x 844, a running Workflow, Live): the graph's zoom controls (bottom left) covered the
 // current step's card at the bottom of the fitted graph. On a phone the fit leaves the controls' strip clear: the first
 // fit and Fit to screen both; a desktop's fit is unchanged.
