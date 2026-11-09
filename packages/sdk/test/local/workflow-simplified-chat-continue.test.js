@@ -156,13 +156,16 @@ describe("chat: continue in the store (migration 0106)", () => {
             // A real-agent test's scope (workflowTestAgentScope) is the agent root's visit: the open one, not the first.
 
             // RT-5: the visits are counted in the store, with no cap. 1,001 older decided visits (copies of the first,
-            // admitted earlier) make the second visit cycle 1,003 of the state; its previous visit is still the first.
+            // admitted earlier: lower ordinals, the order the store reads them in since PRR-3) make the second visit cycle
+            // 1,003 of the state; its previous visit is still the first.
             const copies = 1_001;
+            await direct.query(`UPDATE "${env.cmsSchema}".workflow_node_executions SET ordinal = ordinal + ${copies} WHERE node_execution_id = ANY($1::text[])`,
+                [[first, second]]);
             const copy = (table, extra) => `INSERT INTO "${env.cmsSchema}".${table}
                 SELECT (jsonb_populate_record(NULL::"${env.cmsSchema}".${table}, to_jsonb(t) || ${extra})).*
                   FROM "${env.cmsSchema}".${table} t, generate_series(1, ${copies}) g WHERE t.node_execution_id = $1`;
             await direct.query(copy("workflow_node_executions",
-                "jsonb_build_object('node_execution_id', 'rt5-' || g, 'ordinal', 100000 + g)"), [first]);
+                `jsonb_build_object('node_execution_id', 'rt5-' || g, 'ordinal', ${copies + 1} - g)`), [first]);
             await direct.query(copy("workflow_agent_invocations",
                 "jsonb_build_object('node_execution_id', 'rt5-' || g, 'created_at', t.created_at - make_interval(secs => g))"), [first]);
             const before = await store.readAgentVisitsBefore(runId, "talk", second);
@@ -886,6 +889,57 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
             }
         });
     }
+
+    it("PRR-3: visits are ordered by their ordinals, not the database clock: with visit 2 admitted at an earlier time, it is cycle 2 after visit 1, and a graceful stop keeps the chat while visit 2 runs", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const direct = new pg.Pool({ connectionString: env.store, max: 2 });
+        let firstVisit = null;
+        let inverted = false;
+        // Fault injection: as visit 2's spawn begins, its invocation's time is set a minute before visit 1's (the database
+        // clock stepped back between the two admissions).
+        const h = await harness(env, {
+            storeBefore: { beginAgentSpawn: async ([nodeExecutionId]) => {
+                if (!firstVisit || nodeExecutionId === firstVisit || inverted) return;
+                inverted = true;
+                await direct.query(`UPDATE "${env.cmsSchema}".workflow_agent_invocations SET created_at =
+                    (SELECT created_at - interval '1 minute' FROM "${env.cmsSchema}".workflow_agent_invocations WHERE node_execution_id = $2)
+                    WHERE node_execution_id = $1`, [nodeExecutionId, firstVisit]);
+            } },
+        });
+        try {
+            const run = await started(h, CHAT_YAML());
+            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            firstVisit = (await spawnedVisit(h, 1)).nodeExecutionId;
+            expect(await completeAs(h, chat, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: firstVisit }))
+                .toMatchObject({ ok: true });
+            const second = await spawnedVisit(h, 2);
+            expect(inverted).toBe(true);
+            const [first2, second2] = await Promise.all([firstVisit, second.nodeExecutionId].map(nx => h.store.readAgentInvocation(nx)));
+            expect(second2.createdAt.getTime()).toBeLessThan(first2.createdAt.getTime());
+            // Visit 2's prompt is cycle 2, with visit 1's result as the previous one.
+            const [system2, json2] = second.prompt.split("\n");
+            expect(system2).toMatch(/^\[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE 2\./);
+            expect(JSON.parse(json2)).toMatchObject({ cycle: 2, previousResult: { outcome: "again", output: { fact: "one" } } });
+            // The chat's newest visit is visit 2.
+            expect(await h.store.readAgentInvocationByChild(chat)).toMatchObject({ nodeExecutionId: second.nodeExecutionId });
+            expect((await h.store.readAgentVisitsBefore(run.runId, "talk", null))).toMatchObject({ count: 2, previous: { nodeExecutionId: second.nodeExecutionId } });
+            // A graceful stop with visit 2 running: the chat is started work, so it is not ended.
+            await controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "stop", runId: null, reason: "enough", graceSeconds: 300 },
+                { actor: ACTOR, operationId: "stop-prr3" });
+            await pause(3_000);
+            expect(await commandsOf(h, chat)).toEqual([]);
+            // Visit 2's own result ends it; then the chat is ended once.
+            expect(await completeAs(h, chat, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
+                .toMatchObject({ ok: true });
+            expect(await chatEnd(h, chat)).toMatchObject({ cmd: "done", id: `workflow-agent-chat-end:${chat}` });
+            await ended(h, run.runId);
+            await pause(1_000);
+            expect(await commandsOf(h, chat)).toHaveLength(1);
+        } finally {
+            await h.stop();
+            await direct.end();
+        }
+    });
 
     for (const [label, finish] of [
         ["the run completes", async (h, run, chat, nx) => {

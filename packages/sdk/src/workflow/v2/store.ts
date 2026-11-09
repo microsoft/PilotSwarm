@@ -5938,7 +5938,7 @@ export class WorkflowStore {
                   SELECT i.node_execution_id, i.workflow_session_id, i.controlling_session_id
                     FROM ${this.t.agentInvocations} i LEFT JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
                    WHERE i.child_session_id = lineage.session_id
-                   ORDER BY COALESCE(n.state = 'pending', false) DESC, i.created_at DESC, i.node_execution_id DESC
+                   ORDER BY COALESCE(n.state = 'pending', false) DESC, n.ordinal DESC NULLS LAST, i.created_at DESC, i.node_execution_id DESC
                    LIMIT 1) invocation ON true` : ""}
              ORDER BY lineage.distance`;
         let rows: Row[];
@@ -5991,10 +5991,15 @@ export class WorkflowStore {
         return rows[0] ? agentInvocationFrom(rows[0]) : null;
     }
 
-    /** The newest invocation whose child agent session is `childSessionId` (a chat that continues has one per visit), or null. */
+    /**
+     * The newest invocation whose child agent session is `childSessionId` (a chat that continues has one per visit), or
+     * null. Newest by the visit's ordinal (review PRR-3: the database clock can step back between two visits), then time.
+     */
     async readAgentInvocationByChild(childSessionId: string): Promise<WorkflowAgentInvocation | null> {
         if (!storableId(childSessionId)) return null;
-        const { rows } = await this.pool.query(`SELECT * FROM ${this.t.agentInvocations} WHERE child_session_id = $1 ORDER BY created_at DESC, node_execution_id DESC LIMIT 1`, [childSessionId]);
+        const { rows } = await this.pool.query(
+            `SELECT i.* FROM ${this.t.agentInvocations} i LEFT JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
+              WHERE i.child_session_id = $1 ORDER BY n.ordinal DESC NULLS LAST, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [childSessionId]);
         return rows[0] ? agentInvocationFrom(rows[0]) : null;
     }
 
@@ -6034,7 +6039,7 @@ export class WorkflowStore {
             const { rows } = await this.pool.query(
                 `SELECT i.node_execution_id, n.state FROM ${this.t.agentInvocations} i JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
                   WHERE i.child_session_id = $1 AND i.node_execution_id = ANY($2::text[])
-                  ORDER BY (n.state = 'pending') DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [childSessionId, [...new Set(ids)]]);
+                  ORDER BY (n.state = 'pending') DESC, n.ordinal DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [childSessionId, [...new Set(ids)]]);
             return rows[0] ? { id: str(rows[0], "node_execution_id"), open: str(rows[0], "state") === "pending" } : null;
         };
         const own = await visitsOf(promptClientMessageIds.map(workflowVisitOfPromptId).filter((id): id is string => id !== null));
@@ -6092,7 +6097,7 @@ export class WorkflowStore {
 
     /**
      * The visits of a run's state `stateId` before visit `beforeNodeExecutionId` (every visit, when null), in the order
-     * they were admitted: how many there are, and the last of them (null when none). A state that continues its chat
+     * they were admitted (their ordinals; review PRR-3: not the database clock, which can step back): how many there are, and the last of them (null when none). A state that continues its chat
      * (owner decision agent-node-continue-20261106) numbers a visit's cycle and finds its previous visit, and chooses a
      * new visit's chat, from this. Counted in the store, not read and capped (review RT-5): a run may admit up to
      * WORKFLOW_V2_MAX_NODE_EXECUTIONS visits.
@@ -6103,9 +6108,10 @@ export class WorkflowStore {
             `SELECT count(*) OVER () AS visits, i.* FROM ${this.t.agentInvocations} i
                JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
               WHERE i.run_id = $1 AND n.node_id = $2
-                AND ($3::text IS NULL OR (i.created_at, i.node_execution_id) <
-                     (SELECT b.created_at, b.node_execution_id FROM ${this.t.agentInvocations} b WHERE b.node_execution_id = $3))
-              ORDER BY i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [runId, stateId, beforeNodeExecutionId]);
+                AND ($3::text IS NULL OR (n.ordinal, i.created_at, i.node_execution_id) <
+                     (SELECT bn.ordinal, b.created_at, b.node_execution_id FROM ${this.t.agentInvocations} b
+                        JOIN ${this.t.nodes} bn ON bn.node_execution_id = b.node_execution_id WHERE b.node_execution_id = $3))
+              ORDER BY n.ordinal DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [runId, stateId, beforeNodeExecutionId]);
         return rows[0] ? { count: int(rows[0], "visits"), previous: agentInvocationFrom(rows[0]) } : { count: 0, previous: null };
     }
 
@@ -6116,7 +6122,7 @@ export class WorkflowStore {
     async listAgentInvocationsOfState(runId: string, stateId: string, limit = 1_000): Promise<WorkflowAgentInvocation[]> {
         const { rows } = await this.pool.query(
             `SELECT i.* FROM ${this.t.agentInvocations} i JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
-              WHERE i.run_id = $1 AND n.node_id = $2 ORDER BY i.created_at, i.node_execution_id LIMIT $3`, [runId, stateId, limit]);
+              WHERE i.run_id = $1 AND n.node_id = $2 ORDER BY n.ordinal, i.created_at, i.node_execution_id LIMIT $3`, [runId, stateId, limit]);
         return rows.map(agentInvocationFrom);
     }
 
