@@ -32,7 +32,8 @@ import {
     type WorkflowActor, type WorkflowNodeExecutionRow, type WorkflowRunRow, type WorkflowTestInterception,
 } from "./store.js";
 import {
-    advanceWorkflowV2Test, controlWorkflowV2Run, createWorkflowV2, sendWorkflowInputV2, startWorkflowV2Test, testBenchExpect, type WorkflowV2Host,
+    advanceWorkflowV2Test, compileWorkflowV2ForHost, controlWorkflowV2Run, createWorkflowV2, sendWorkflowInputV2, startWorkflowV2Test, testBenchExpect,
+    type WorkflowV2Host,
 } from "./service.js";
 import { requireWorkflowScripts } from "./scripts-gate.js";
 import { TERMINAL_OUTCOMES, WORKFLOW_V2_MILESTONE_IR_VERSION } from "./compiler.js";
@@ -403,12 +404,17 @@ export async function startChatWorkflowTest(host: WorkflowV2Host, request: {
     const saved = await host.store.chat.readRevision(definition.definitionId, revision);
     if (!saved) throw new WorkflowStoreError("REVISION_NOT_FOUND", `${definition.name} has no revision ${revision}.`);
     if (!saved.valid) throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} of ${definition.name} has errors, so it cannot be tested. Nothing was tested.`);
-    // The scripts gate first, on the revision it would test, before anything is made or read of the chat's session.
-    if (host.scripts === false) {
-        requireWorkflowScripts(host, await host.store.chat.readRevisionIr(definition.definitionId, revision, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION }), "test");
+    // Review PRA-F1: a test compiles the revision's YAML again, as a Start does (the bench is made from that YAML). One this
+    // build no longer compiles (an agent state's `chat:`, now `session:`) is refused with its first error, before anything is made.
+    const again = compileWorkflowV2ForHost(host, saved.yaml);
+    if (!again.valid || !again.ir) {
+        const first = again.diagnostics.find(item => item.severity !== "warning");
+        throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} of ${definition.name} does not compile in this version`
+            + `${first ? ` (${first.path}): ${first.message}` : "."} Save it again with that change. Nothing was tested.`, { revision });
     }
-    const expect = request.expect === undefined || request.expect === null ? null
-        : parseChatTestExpect(request.expect, await host.store.chat.readRevisionIr(definition.definitionId, revision, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION }));
+    // The scripts gate first, on the definition it would test, before anything is made or read of the chat's session.
+    requireWorkflowScripts(host, again.ir, "test");
+    const expect = request.expect === undefined || request.expect === null ? null : parseChatTestExpect(request.expect, again.ir);
     const owner = await request.owner();
     const binding = await request.binding();
     const benchId = systemChildAgentUUID(request.ownerSessionId, `workflow:test:${request.operationId}`);

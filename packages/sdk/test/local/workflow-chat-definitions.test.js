@@ -34,6 +34,7 @@ import { spawnWorkflowCompatFromTool, workflowDefinitionFromTool } from "../../s
 import { readStoredAgentModels, readWorkflowAgentModels } from "../../src/workflow/v2/agent-models.ts";
 import { createWorkflowAgentNodeHost } from "../../src/workflow/v2/agent-host.ts";
 import { readWorkflowV2 } from "../../src/workflow/v2/tools.ts";
+import { startChatWorkflowTest } from "../../src/workflow/v2/chat-test.ts";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson, sha256Hex } from "../../src/workflow/v2/json.ts";
 
@@ -640,6 +641,17 @@ states:
             expect(refusal?.message).toContain("`chat` is now `session`: write `session: continue` or `session: new`.");
             // Its graph is the stored one (its YAML no longer compiles).
             expect(modeOf((await readChatWorkflowDefinition(agentsHost, chat, { definitionId: old.definitionId, revision: 3 }, { graph: true })).graph)).toBe("new");
+            // Review PRA-F1: a test of that revision is refused in the same words, before a bench is made; a test of revision 1
+            // (saved before the default changed) runs its YAML as this build compiles it, continued.
+            const testOf = (revision, operationId) => startChatWorkflowTest(agentsHost, { ownerSessionId: chat, definition: { definitionId: old.definitionId },
+                revision, inputs: {}, fixtures: [], operationId, actor: ENGINE, owner: async () => OWNER, binding: async () => null });
+            const testRefusal = await testOf(3, "test-3").then(() => null, error => error);
+            expect(testRefusal).toMatchObject({ code: "DEFINITION_INVALID",
+                message: expect.stringContaining("`chat` is now `session`: write `session: continue` or `session: new`.") });
+            expect(testRefusal.message).toContain("Nothing was tested.");
+            const tested = await testOf(1, "test-1");
+            expect(tested).toMatchObject({ definitionId: old.definitionId, revision: 1, runId: expect.any(String) });
+            expect(await workflowMode(tested.testId)).toBe("continue");
         } finally {
             await h.stop();
         }
