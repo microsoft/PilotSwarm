@@ -1030,12 +1030,15 @@ export class SessionManager {
      */
     private sessionClientKeys = new Map<string, string>();
     /**
-     * Review DRR-3: a session's close in the Copilot CLI whose answer has not come yet (the client it was sent to, and its
-     * settled result: true when closed). A turn of the session waits for it before it resumes the session.
+     * Review DRR-3, DS2-003: a session's closes in the Copilot CLI whose answer has not come yet, by the client each was sent
+     * to (its settled result: true when closed). A turn of the session waits for all of them before it resumes the session.
      */
-    private cliClosesInFlight = new Map<string, { key: string; settled: Promise<boolean> }>();
-    /** Review DRR-3: sessions whose close in the Copilot CLI is not confirmed, with the client that holds them; each sweep tries again. */
-    private cliClosesOwed = new Map<string, string>();
+    private cliClosesInFlight = new Map<string, Map<string, Promise<boolean>>>();
+    /**
+     * Review DRR-3, DS2-003: sessions whose close in the Copilot CLI is not confirmed, with every client that may still hold
+     * them (one per failed close: a session rebound twice may owe two); each sweep tries each again.
+     */
+    private cliClosesOwed = new Map<string, Set<string>>();
     /** Review DRR-3: CLI_SESSION_CLOSE_TIMEOUT_MS and CLI_SESSION_CLOSE_SETTLE_MS (a test shortens them). */
     private cliCloseTimeoutMs = CLI_SESSION_CLOSE_TIMEOUT_MS;
     private cliCloseSettleMs = CLI_SESSION_CLOSE_SETTLE_MS;
@@ -3266,50 +3269,70 @@ export class SessionManager {
     private async _closeCliSession(sessionId: string, key: string | undefined = this.sessionClientKeys.get(sessionId)): Promise<boolean> {
         const client = key != null ? this.clients.get(key) : undefined;
         if (!client || key == null) {
-            if (key != null && this.cliClosesOwed.get(sessionId) === key) this.cliClosesOwed.delete(sessionId);
+            if (key != null) this._settleOwedCliClose(sessionId, key);
             return true;
         }
-        // One close of a session at a time: one in flight to another client is waited for first (bounded).
-        const other = this.cliClosesInFlight.get(sessionId);
-        if (other && other.key !== key) await settledWithin(other.settled, this.cliCloseTimeoutMs);
-        let inFlight = this.cliClosesInFlight.get(sessionId);
-        if (!inFlight || inFlight.key !== key) {
-            const settled: Promise<boolean> = Promise.resolve().then(() => client.rpc.sessions.close({ sessionId })).then(() => true, (error: unknown) => {
+        // One close of a session at a time: closes in flight to other clients are waited for first (each bounded).
+        const flights = this.cliClosesInFlight.get(sessionId) ?? new Map<string, Promise<boolean>>();
+        this.cliClosesInFlight.set(sessionId, flights);
+        for (const [other, pending] of [...flights]) if (other !== key) await settledWithin(pending, this.cliCloseTimeoutMs);
+        let settled = flights.get(key);
+        if (!settled) {
+            const sent: Promise<boolean> = Promise.resolve().then(() => client.rpc.sessions.close({ sessionId })).then(() => true, (error: unknown) => {
                 const message = error instanceof Error ? error.message : String(error);
                 console.warn(`[SessionManager] closing ${sessionId} in the Copilot CLI failed: ${message}`);
                 return false;
             }).then((closed) => {
-                if (this.cliClosesInFlight.get(sessionId) === entry) this.cliClosesInFlight.delete(sessionId);
+                const current = this.cliClosesInFlight.get(sessionId);
+                if (current?.get(key) === sent) {
+                    current.delete(key);
+                    if (current.size === 0) this.cliClosesInFlight.delete(sessionId);
+                }
                 if (closed) {
                     (client as unknown as { sessions?: Map<string, unknown> }).sessions?.delete(sessionId);
-                    if (this.cliClosesOwed.get(sessionId) === key) this.cliClosesOwed.delete(sessionId);
+                    this._settleOwedCliClose(sessionId, key);
                 } else {
-                    this.cliClosesOwed.set(sessionId, key);
+                    this._oweCliClose(sessionId, key);
                 }
                 return closed;
             });
-            const entry = { key, settled };
-            this.cliClosesInFlight.set(sessionId, entry);
-            inFlight = entry;
+            flights.set(key, sent);
+            settled = sent;
         }
-        const outcome = await settledWithin(inFlight.settled, this.cliCloseTimeoutMs);
+        const outcome = await settledWithin(settled, this.cliCloseTimeoutMs);
         if (outcome === true) return true;
         if (outcome === undefined) {
             console.warn(`[SessionManager] closing ${sessionId} in the Copilot CLI had no answer within ${this.cliCloseTimeoutMs} ms; it is tried again later`);
         }
-        this.cliClosesOwed.set(sessionId, key);
+        this._oweCliClose(sessionId, key);
         return false;
     }
 
+    /** Review DS2-003: `key`'s close of `sessionId` is owed, beside any other client's. */
+    private _oweCliClose(sessionId: string, key: string): void {
+        const owed = this.cliClosesOwed.get(sessionId) ?? new Set<string>();
+        owed.add(key);
+        this.cliClosesOwed.set(sessionId, owed);
+    }
+
+    /** Review DS2-003: `key`'s close of `sessionId` is no longer owed; another client's stays owed. */
+    private _settleOwedCliClose(sessionId: string, key: string): void {
+        const owed = this.cliClosesOwed.get(sessionId);
+        if (!owed) return;
+        owed.delete(key);
+        if (owed.size === 0) this.cliClosesOwed.delete(sessionId);
+    }
+
     /**
-     * Review DRR-3: a turn's barrier. A close of this session still in flight in the Copilot CLI is waited for before the
-     * session is resumed; one that has no answer within cliCloseSettleMs fails the turn (its orchestration retries it), so
-     * a turn never resumes into a close that may still land. Nothing in flight: returns at once, with no await.
+     * Review DRR-3: a turn's barrier. The closes of this session still in flight in the Copilot CLI (to any client) are
+     * waited for before the session is resumed; when they have no answer within cliCloseSettleMs the turn fails (its
+     * orchestration retries it), so a turn never resumes into a close that may still land. Nothing in flight: returns at
+     * once, with no await.
      */
     private awaitCliClose(sessionId: string): Promise<void> | void {
-        const inFlight = this.cliClosesInFlight.get(sessionId);
-        if (!inFlight) return;
-        return settledWithin(inFlight.settled, this.cliCloseSettleMs).then((outcome) => {
+        const flights = this.cliClosesInFlight.get(sessionId);
+        if (!flights || flights.size === 0) return;
+        return settledWithin(Promise.all([...flights.values()]), this.cliCloseSettleMs).then((outcome) => {
             if (outcome === undefined) {
                 throw new Error(`The Copilot CLI has not finished closing session ${sessionId} after ${this.cliCloseSettleMs} ms; the turn does not resume it yet.`);
             }
@@ -3327,13 +3350,14 @@ export class SessionManager {
             if (this.sessionLocks.has(sessionId)) continue;
             try {
                 await this._withSessionLock(sessionId, "cli-close-retry", async () => {
-                    const key = this.cliClosesOwed.get(sessionId);
-                    if (key === undefined) return;
-                    if (this.sessions.has(sessionId) && this.sessionClientKeys.get(sessionId) === key) {
-                        this.cliClosesOwed.delete(sessionId);
-                        return;
+                    // Review DS2-003: every client that may still hold the session, each on its own.
+                    for (const key of [...(this.cliClosesOwed.get(sessionId) ?? [])]) {
+                        if (this.sessions.has(sessionId) && this.sessionClientKeys.get(sessionId) === key) {
+                            this._settleOwedCliClose(sessionId, key);
+                            continue;
+                        }
+                        if (await this._closeCliSession(sessionId, key)) closed++;
                     }
-                    if (await this._closeCliSession(sessionId, key)) closed++;
                 });
             } catch (error: unknown) {
                 const message = error instanceof Error ? error.message : String(error);

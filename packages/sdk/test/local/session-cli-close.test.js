@@ -91,7 +91,7 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
                 await manager.sweepIdleSessions(1_000);
                 expect(closes).toEqual([id]);
                 expect(manager.sessionClientKeys.get(id), "the binding stays").toBe(key);
-                expect(manager.cliClosesOwed.get(id), "the close is owed").toBe(key);
+                expect([...manager.cliClosesOwed.get(id)], "the close is owed").toEqual([key]);
                 expect(manager.sessionLastTouchedAt.has(id), "it stays an eviction candidate").toBe(true);
                 expect(fs.existsSync(dir), "its files stay").toBe(true);
                 expect(copilot.sessions.has(id), "the SDK's object stays while the CLI holds the session").toBe(true);
@@ -195,6 +195,57 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
                 expect(manager.cliClosesOwed?.has(id) ?? false).toBe(false);
             } finally {
                 manager.clients.delete(previousKey);
+            }
+        });
+    });
+
+    // Review DS2-003: a session rebound twice, whose close fails on each client it leaves, owes both closes; a later failed
+    // close does not overwrite an earlier one. The next sweep closes it on both earlier clients and leaves the current one.
+    it("DS2-003: two failed rebind closes are both owed, and the next sweep closes both", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        await withScriptedModel(env, { worker: { logLevel: "warning" } }, async ({ client, worker, model, qualifiedModel }) => {
+            const manager = worker.sessionManager;
+            const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
+            const id = chat.sessionId;
+            await chat.sendAndWait(FIRST, TURN_MS);
+            const currentKey = manager.sessionClientKeys.get(id);
+            /** A stand-in for a client the session leaves: its first close fails, later ones close. */
+            const leftClient = () => {
+                const stand = { closes: 0, sessions: new Map([[id, { sessionId: id }]]), stop: async () => [], forceStop: async () => {} };
+                stand.rpc = { sessions: { close: async () => {
+                    stand.closes += 1;
+                    if (stand.closes === 1) throw new Error("the CLI refused the close");
+                } } };
+                return stand;
+            };
+            const a = leftClient();
+            const b = leftClient();
+            manager.clients.set("ds2-003-a", a);
+            manager.clients.set("ds2-003-b", b);
+            const owed = () => [...(manager.cliClosesOwed?.get(id) ?? [])].sort();
+            try {
+                // The session's last turn ran on A; the next turn rebinds it to the worker's client, and A's close fails.
+                manager.sessionClientKeys.set(id, "ds2-003-a");
+                await chat.sendAndWait("turn 2 after leaving A", TURN_MS);
+                // Then on B; the next turn rebinds again, and B's close fails too.
+                manager.sessionClientKeys.set(id, "ds2-003-b");
+                await chat.sendAndWait("turn 3 after leaving B", TURN_MS);
+                expect([a.closes, b.closes]).toEqual([1, 1]);
+                expect(owed()).toEqual(["ds2-003-a", "ds2-003-b"]);
+                expect(manager.sessionClientKeys.get(id)).toBe(currentKey);
+                // A sweep (nothing is idle) closes it on both A and B; the current client keeps the warm session.
+                await manager.sweepIdleSessions(60 * 60 * 1000);
+                expect([a.closes, b.closes]).toEqual([2, 2]);
+                expect(a.sessions.has(id)).toBe(false);
+                expect(b.sessions.has(id)).toBe(false);
+                expect(owed()).toEqual([]);
+                expect(manager.sessions.has(id)).toBe(true);
+                expect(manager.sessionClientKeys.get(id)).toBe(currentKey);
+                await chat.sendAndWait("turn 4 on the current client", TURN_MS);
+                expect(model.sessionRequests(FIRST).at(-1).position).toMatchObject({ turn: 4, firstUserText: expect.stringContaining(FIRST) });
+            } finally {
+                manager.clients.delete("ds2-003-a");
+                manager.clients.delete("ds2-003-b");
             }
         });
     });

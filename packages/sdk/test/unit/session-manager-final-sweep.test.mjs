@@ -35,7 +35,7 @@ test("an ordinary sweep keeps a legacy session whose close fails; the final swee
     await h.manager.sweepIdleSessions(1_000);
     assert.deepEqual(h.uploaded, [], "an ordinary sweep defers it");
     assert.equal(existsSync(join(h.home, "legacy-1")), true);
-    assert.equal(h.manager.cliClosesOwed.get("legacy-1"), "client-a");
+    assert.deepEqual([...h.manager.cliClosesOwed.get("legacy-1")], ["client-a"]);
 
     await h.manager.sweepIdleSessions(1, { final: true });
     assert.deepEqual(h.uploaded, ["legacy-1"], "the final sweep uploads it");
