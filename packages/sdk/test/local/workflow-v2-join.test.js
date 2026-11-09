@@ -51,7 +51,7 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import {
     compileWorkflowV2, parseWorkflowIr, WORKFLOW_V2_AGENT_IR_VERSION, WORKFLOW_V2_JOIN_IR_VERSION, WORKFLOW_V2_MILESTONE_IR_VERSION,
@@ -73,13 +73,14 @@ import { openWorkflowStore } from "../helpers/workflow-v2-request-fixture.js";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
-const TIMEOUT = 120_000;
+// CI run 114 (HorizonDB, about ten times slower): the test's own bounds grow with the database (test/helpers/time-scale.js).
+const TIMEOUT = testTime.ms(120_000);
 const ACTOR = { kind: "system", name: "workflow-v2-join-test" };
 const PARALLEL = { enableRequests: true, enableAgents: true, enableParallel: true };
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function until(check, label, timeoutMs = 60_000) {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = Date.now() + testTime.ms(timeoutMs);
     let last;
     while (Date.now() < deadline) {
         last = await check();
@@ -519,18 +520,28 @@ const enterFanOf = (h, { runId, fan }, items, seconds) => h.store.enterNode({
     runId, nodeExecutionId: fan, scopeId: "root", nodeId: "fan", ordinal: 1, nodeType: "parallel", predecessorId: null, arrivalRoute: null,
     inputText: canonicalJson(items), kvRevision: 1, waitSeconds: seconds, immediate: null,
 });
-/** Wait until the store's clock is past the parallel state's deadline. */
+/**
+ * Wait until the store's clock is past the parallel state's deadline. The case's steps before it must all have run before
+ * the deadline; seen after it, the case is VOID (not a product result).
+ */
 const pastDeadlineOf = async (h, run) => {
     const { deadlineAt } = await h.store.readNodeExecution(run.fan);
+    expect(Date.now(), "VOID (not a product result): the case's steps before the time limit ran past it; run the case again")
+        .toBeLessThan(deadlineAt.getTime());
     await until(async () => Date.now() >= deadlineAt.getTime() + 300, "the time limit to pass", 10_000);
 };
+/**
+ * CI run 114 (HorizonDB): the J1b cases' 1 s time limit passed while the case still stored the branches it is about (a
+ * branch admitted after it is cut), so the store found nothing to cancel. The limit is scaled with the database.
+ */
+const J1B_LIMIT_SECONDS = testTime.seconds(1);
 
 describe("workflow v2 parallel joins: the store's one count for the join and the time limit (J1b)", () => {
     it("(a) the time limit with k successes committed by it, none admitted, is a join due: nothing decided, the rest cancelled; the join then joins them", { timeout: TIMEOUT }, async () => {
         const h = await openWorkflowStore(getEnv());
         try {
-            const run = await storedRun(h, joinDoc({ items: [{ seconds: 600 }, { seconds: 600 }, { seconds: 600 }], join: { first: 1 }, timeoutSeconds: 1 }));
-            await enterFanOf(h, run, [{ seconds: 600 }, { seconds: 600 }, { seconds: 600 }], 1);
+            const run = await storedRun(h, joinDoc({ items: [{ seconds: 600 }, { seconds: 600 }, { seconds: 600 }], join: { first: 1 }, timeoutSeconds: J1B_LIMIT_SECONDS }));
+            await enterFanOf(h, run, [{ seconds: 600 }, { seconds: 600 }, { seconds: 600 }], J1B_LIMIT_SECONDS);
             const b = branchesOf(h, run);
             await b.hold(0);
             await b.hold(1);
@@ -560,8 +571,8 @@ describe("workflow v2 parallel joins: the store's one count for the join and the
     it("(b) a k-th success committed after the deadline does not count when the join is reached first: timed_out, the late success marked", { timeout: TIMEOUT }, async () => {
         const h = await openWorkflowStore(getEnv());
         try {
-            const run = await storedRun(h, joinDoc({ items: [{ seconds: 600 }, { seconds: 600 }], join: { first: 1 }, timeoutSeconds: 1 }));
-            await enterFanOf(h, run, [{ seconds: 600 }, { seconds: 600 }], 1);
+            const run = await storedRun(h, joinDoc({ items: [{ seconds: 600 }, { seconds: 600 }], join: { first: 1 }, timeoutSeconds: J1B_LIMIT_SECONDS }));
+            await enterFanOf(h, run, [{ seconds: 600 }, { seconds: 600 }], J1B_LIMIT_SECONDS);
             const b = branchesOf(h, run);
             await b.hold(0);
             await pastDeadlineOf(h, run);
@@ -586,8 +597,8 @@ describe("workflow v2 parallel joins: the store's one count for the join and the
         const h = await openWorkflowStore(getEnv());
         try {
             const items = [{ seconds: 600 }, { seconds: 600 }, { seconds: 600 }];
-            const run = await storedRun(h, joinDoc({ items, join: { first: 2 }, timeoutSeconds: 1 }));
-            await enterFanOf(h, run, items, 1);
+            const run = await storedRun(h, joinDoc({ items, join: { first: 2 }, timeoutSeconds: J1B_LIMIT_SECONDS }));
+            await enterFanOf(h, run, items, J1B_LIMIT_SECONDS);
             const b = branchesOf(h, run);
             for (const index of [0, 1, 2]) await b.hold(index);
             await b.fail(0);
@@ -610,8 +621,8 @@ describe("workflow v2 parallel joins: the store's one count for the join and the
         const h = await openWorkflowStore(getEnv());
         try {
             const items = [{ seconds: 600 }, { seconds: 600 }, { seconds: 600 }, { seconds: 600 }];
-            const run = await storedRun(h, joinDoc({ items, timeoutSeconds: 1 }));
-            await enterFanOf(h, run, items, 1);
+            const run = await storedRun(h, joinDoc({ items, timeoutSeconds: J1B_LIMIT_SECONDS }));
+            await enterFanOf(h, run, items, J1B_LIMIT_SECONDS);
             const b = branchesOf(h, run);
             await b.hold(0);
             await b.succeed(0);
@@ -641,8 +652,8 @@ describe("workflow v2 parallel joins: the store's one count for the join and the
         try {
             for (const timeFirst of [false, true]) {
                 const items = [{ seconds: 600 }, { seconds: 600 }];
-                const run = await storedRun(h, joinDoc({ items, join: { first: 1 }, timeoutSeconds: 1 }));
-                await enterFanOf(h, run, items, 1);
+                const run = await storedRun(h, joinDoc({ items, join: { first: 1 }, timeoutSeconds: J1B_LIMIT_SECONDS }));
+                await enterFanOf(h, run, items, J1B_LIMIT_SECONDS);
                 const b = branchesOf(h, run);
                 await b.hold(0);
                 await b.hold(1);
@@ -793,11 +804,14 @@ async function scheduledInputs(client, instanceId, name) {
 }
 
 describe("workflow v2 parallel joins of the first k: controller 1.9.0 (inactive, test-only registration)", () => {
+    // CI run 114 (HorizonDB): the join came after the losers' 5 s and 9 s scripts had ended. The losers' lengths, and the wait
+    // past the slowest of them, are scaled with the database; the winner's 200 ms is not.
     it("a race of three scripts: the first success joins, the others are cancelled with their effects, and nothing of theirs is routed later", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             const begun = Date.now();
-            const { workflowSessionId, runId, fan, at } = await started(h, joinDoc({ items: [{ ms: 200 }, { ms: 5_000 }, { ms: 9_000 }], join: { first: 1 } }));
+            const { workflowSessionId, runId, fan, at } = await started(h, joinDoc({ items: [{ ms: 200 }, { ms: testTime.ms(5_000) }, { ms: testTime.ms(9_000) }],
+                join: { first: 1 } }));
             const run = await ended(h, runId);
             const won = [{ index: 0, output: { index: 0, ms: 200 } }];
             expect(run).toMatchObject({ status: "completed", terminalOutcome: "succeeded", terminalNodeId: "finished", terminalOutput: won });
@@ -817,7 +831,7 @@ describe("workflow v2 parallel joins of the first k: controller 1.9.0 (inactive,
             expect(asked[0].effects.map(effect => effect.nodeExecutionId).sort()).toEqual([at(1, "work"), at(2, "work")].sort());
 
             // Nothing of the losers is routed later: past the slowest script's length, their branches hold only the cancelled state.
-            await until(async () => Date.now() - begun >= 10_000, "the slowest script's length");
+            await until(async () => Date.now() - begun >= testTime.ms(10_000), "the slowest script's length");
             for (const index of [1, 2]) {
                 expect((await branchRows(h, runId, fan, index)).map(node => [node.nodeId, node.outcome, node.winner])).toEqual([["work", "cancelled", "join"]]);
             }
@@ -828,12 +842,15 @@ describe("workflow v2 parallel joins of the first k: controller 1.9.0 (inactive,
         }
     });
 
+    // CI run 114 (HorizonDB): the branches started seconds apart there, so the 6 s script ended before the 1.8 s one. The
+    // lengths are scaled with the database, the first winner's 200 ms is not.
     it("the first 2 of 4 join in the order they finished; the other two are cancelled for the join", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const { runId, fan, at } = await started(h, joinDoc({ items: [{ ms: 6_000 }, { ms: 200 }, { ms: 10_000 }, { ms: 1_800 }], join: { first: 2 } }));
+            const items = [{ ms: testTime.ms(6_000) }, { ms: 200 }, { ms: testTime.ms(10_000) }, { ms: testTime.ms(1_800) }];
+            const { runId, fan, at } = await started(h, joinDoc({ items, join: { first: 2 } }));
             const run = await ended(h, runId);
-            const won = [{ index: 1, output: { index: 1, ms: 200 } }, { index: 3, output: { index: 3, ms: 1_800 } }];
+            const won = [{ index: 1, output: { index: 1, ...items[1] } }, { index: 3, output: { index: 3, ...items[3] } }];
             expect(run).toMatchObject({ status: "completed", terminalNodeId: "finished", terminalOutput: won });
             expect(await h.store.readNodeExecution(fan)).toMatchObject({ outcome: "joined", output: won });
             for (const index of [0, 2]) expect(await h.store.readNodeExecution(at(index, "work"))).toMatchObject({ outcome: "cancelled", winner: "join" });
@@ -1040,9 +1057,13 @@ describe("workflow v2 parallel time limits: controller 1.9.0 (inactive, test-onl
     it("while the run is paused the time limit still passes; the state is timed_out then, and its route is taken after the resume", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const { workflowSessionId, runId, fan, at } = await started(h, joinDoc({ items: [{ seconds: 600 }], timeoutSeconds: 3 }));
+            // CI run 114 (HorizonDB): the 3 s limit passed before the branch's wait was admitted. The limit is scaled; paused
+            // only after it, the case is VOID.
+            const { workflowSessionId, runId, fan, at } = await started(h, joinDoc({ items: [{ seconds: 600 }], timeoutSeconds: testTime.seconds(3) }));
             await until(async () => (await h.store.readNodeExecution(at(0, "hold")))?.state === "pending", "the branch's wait");
             await controlWorkflowV2Run(h.host, workflowSessionId, { operation: "pause", runId: null, reason: "look first" }, { actor: ACTOR, operationId: "pause-1" });
+            expect(Date.now(), "VOID (not a product result): the run was paused only after the time limit; run the case again")
+                .toBeLessThan((await h.store.readNodeExecution(fan)).deadlineAt.getTime());
             await until(async () => (await h.store.readNodeExecution(fan))?.state === "completed", "the time limit to pass while paused", 30_000);
             expect(await h.store.readNodeExecution(fan)).toMatchObject({ outcome: "timed_out" });
             expect(await h.store.readNodeExecution(at(0, "hold"))).toMatchObject({ outcome: "cancelled", winner: "join_timeout" });
@@ -1065,7 +1086,9 @@ describe("workflow v2 parallel time limits: controller 1.9.0 (inactive, test-onl
         // restart cases below say it), not a pass or a product failure.
         const h = await harness(getEnv(), { wakeBackstopMs: 100 });
         try {
-            const { workflowSessionId, runId, fan } = await started(h, joinDoc({ items: [{ seconds: 600 }], timeoutSeconds: 24 }));
+            // CI run 114 (HorizonDB): the continue-as-new came after the 24 s limit there. The limit and the lateness bound are
+            // scaled together: a time limit started again at the continue-as-new is still later than the bound.
+            const { workflowSessionId, runId, fan } = await started(h, joinDoc({ items: [{ seconds: 600 }], timeoutSeconds: testTime.seconds(24) }));
             const instanceId = workflowLiveControllerInstanceId(workflowSessionId);
             await until(async () => (await h.client.listExecutions(instanceId)).length >= 2, "a continue-as-new", 60_000);
             const seenAt = Date.now();
@@ -1078,7 +1101,7 @@ describe("workflow v2 parallel time limits: controller 1.9.0 (inactive, test-onl
             expect(fanRow).toMatchObject({ outcome: "timed_out" });
             const late = fanRow.completedAt.getTime() - fanRow.deadlineAt.getTime();
             expect(late).toBeGreaterThanOrEqual(0);
-            expect(late).toBeLessThan(2_000);
+            expect(late).toBeLessThan(testTime.ms(2_000));
             expect(await h.store.readNodeExecution(nodeExecutionIdFor(runId, "root", "fan", 2))).toBeFalsy();
             const events = await eventsOf(h, workflowSessionId);
             expect(events.filter(event => event.data?.nodeExecutionId === fan && event.eventType === "workflow.state_failed")).toHaveLength(1);
@@ -1124,7 +1147,8 @@ async function restartRuntimeOn(base) {
 }
 
 describe("workflow v2 parallel time limits: a worker restart across the deadline (controller 1.9.0, test-only)", () => {
-    it("decides the time limit once after the runtime was down at its deadline, keeping the deadline", { timeout: 180_000 }, async () => {
+    // CI run 114 (HorizonDB): the 6 s limit passed before both branches' waits were admitted. The limit is scaled.
+    it("decides the time limit once after the runtime was down at its deadline, keeping the deadline", { timeout: testTime.ms(180_000) }, async () => {
         const base = await restartBaseOf(getEnv());
         const workers = [await restartRuntimeOn(base)];
         try {
@@ -1132,7 +1156,8 @@ describe("workflow v2 parallel time limits: a worker restart across the deadline
             await base.catalog.createSession(parent, {});
             const workflowSessionId = randomUUID();
             const created = await createWorkflowV2(base.host, { workflowSessionId, parentSessionId: parent,
-                yaml: yamlOf(joinDoc({ items: [{ seconds: 600 }, { seconds: 600 }], timeoutSeconds: 6 })), actor: ACTOR, operationId: "start", start: { inputs: {} } });
+                yaml: yamlOf(joinDoc({ items: [{ seconds: 600 }, { seconds: 600 }], timeoutSeconds: testTime.seconds(6) })), actor: ACTOR, operationId: "start",
+                start: { inputs: {} } });
             expect(created.receipt.valid, JSON.stringify(created.receipt.diagnostics)).toBe(true);
             const runId = created.receipt.run.runId;
             const fan = nodeExecutionIdFor(runId, "root", "fan", 1);
@@ -1200,12 +1225,17 @@ describe("workflow v2 parallel joins and time limits, J1b: controller 1.9.0 (ina
     it("(a) a success committed before the time limit while the run was paused still joins after the resume: the time limit finds the join due", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const { workflowSessionId, runId, fan, at } = await started(h, joinDoc({ items: [{ seconds: 2 }, { seconds: 600 }], join: { first: 1 }, timeoutSeconds: 4 }));
+            // CI run 114 (HorizonDB): the 4 s limit passed before both waits were admitted. The first wait (2 s) and the limit are
+            // scaled together; paused only after the first wait's deadline, the case is VOID.
+            const { workflowSessionId, runId, fan, at } = await started(h, joinDoc({ items: [{ seconds: testTime.seconds(2) }, { seconds: 600 }], join: { first: 1 },
+                timeoutSeconds: testTime.seconds(4) }));
             await until(async () => {
                 const rows = await Promise.all([h.store.readNodeExecution(at(0, "hold")), h.store.readNodeExecution(at(1, "hold"))]);
                 return rows.every(row => row?.state === "pending");
             }, "both branches' waits");
             await controlWorkflowV2Run(h.host, workflowSessionId, { operation: "pause", runId: null, reason: "slow controller" }, { actor: ACTOR, operationId: "pause-1" });
+            expect(Date.now(), "VOID (not a product result): the run was paused only after the first wait's deadline; run the case again")
+                .toBeLessThan((await h.store.readNodeExecution(at(0, "hold"))).deadlineAt.getTime());
             // While paused, the first wait elapses by its deadline (2 s), then the time limit (4 s) finds its success: the join is
             // due, nothing is decided, and the other branch's wait is cancelled at the time limit.
             const fanRow = await h.store.readNodeExecution(fan);
@@ -1239,7 +1269,16 @@ describe("workflow v2 parallel joins and time limits, J1b: controller 1.9.0 (ina
     it("(c) k can no longer happen and failFast is off: the rest run on, and the time limit ends it blocked with timedOut (Q3)", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const { runId, fan, at } = await started(h, joinDoc({ items: [{ fail: true, ms: 100 }, { seconds: 600 }], join: { first: 2 }, timeoutSeconds: 3 }));
+            // CI run 114 (HorizonDB): the 3 s limit passed before the second branch's wait was admitted. The limit is scaled; the
+            // case first waits for that wait (or the state's end) and is VOID if the wait was not admitted before the limit.
+            const { runId, fan, at } = await started(h, joinDoc({ items: [{ fail: true, ms: 100 }, { seconds: 600 }], join: { first: 2 },
+                timeoutSeconds: testTime.seconds(3) }));
+            const [fanBefore, holdBefore] = await until(async () => {
+                const rows = await Promise.all([h.store.readNodeExecution(fan), h.store.readNodeExecution(at(1, "hold"))]);
+                return rows[1]?.state === "pending" || rows[0]?.state === "completed" ? rows : null;
+            }, "the second branch's wait, or the state's end");
+            expect(holdBefore !== null && (holdBefore.state !== "pending" || Date.now() < fanBefore.deadlineAt.getTime()),
+                "VOID (not a product result): the second branch's wait was not admitted before the time limit; run the case again").toBe(true);
             const run = await ended(h, runId);
             expect(run).toMatchObject({ status: "completed", terminalOutcome: "blocked", terminalNodeId: "stuck" });
             const fanRow = await h.store.readNodeExecution(fan);
@@ -1254,7 +1293,8 @@ describe("workflow v2 parallel joins and time limits, J1b: controller 1.9.0 (ina
         }
     });
 
-    it("H1 and (b) across a worker restart: A on time and B late, collected together and B admitted first, join with A; a late success alone times out", { timeout: 180_000 }, async () => {
+    // CI run 114 (HorizonDB): the 8 s limits passed before every branch's wait was admitted. The limits are scaled.
+    it("H1 and (b) across a worker restart: A on time and B late, collected together and B admitted first, join with A; a late success alone times out", { timeout: testTime.ms(180_000) }, async () => {
         const base = await restartBaseOf(getEnv());
         const workers = [await restartRuntimeOn(base)];
         try {
@@ -1269,8 +1309,8 @@ describe("workflow v2 parallel joins and time limits, J1b: controller 1.9.0 (ina
                 const fan = nodeExecutionIdFor(runId, "root", "fan", 1);
                 return { workflowSessionId, runId, fan, hold: index => nodeExecutionIdFor(runId, branchScopeId(fan, index), "hold", 1) };
             };
-            const race = await start(joinDoc({ items: [{ seconds: 600 }, { seconds: 600 }], join: { first: 1 }, timeoutSeconds: 8 }));
-            const alone = await start(joinDoc({ items: [{ seconds: 600 }], timeoutSeconds: 8 }));
+            const race = await start(joinDoc({ items: [{ seconds: 600 }, { seconds: 600 }], join: { first: 1 }, timeoutSeconds: testTime.seconds(8) }));
+            const alone = await start(joinDoc({ items: [{ seconds: 600 }], timeoutSeconds: testTime.seconds(8) }));
             const holds = [race.hold(0), race.hold(1), alone.hold(0)];
             await until(async () => (await Promise.all(holds.map(id => base.store.readNodeExecution(id)))).every(row => row?.state === "pending"),
                 "every branch's wait persisted as pending", 90_000);
