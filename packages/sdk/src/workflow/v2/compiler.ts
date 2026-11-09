@@ -1752,6 +1752,7 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
     if (diagnostics.failed) return result(name, version, null);
     checkFixedInputs(nodes, contracts, schemas.defs, diagnostics);
     if (diagnostics.failed) return result(name, version, null);
+    warnInputMismatches(nodes, schemas.defs, diagnostics);
     const received = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? [node.contract] : []));
     const sent = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "send" ? [node.contract] : []));
     const requested = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "request" ? [node.contract] : []));
@@ -1967,6 +1968,90 @@ function checkFixedInputs(nodes: Record<string, WorkflowIRNode>, contracts: Reco
         if (problems.length) {
             diagnostics.error("WORKFLOW_STATE_INPUT_INVALID", path, `this input has no binding, so it is sent as written, and it does not match ${target.what}: `
                 + `${problems.slice(0, 3).map(problem => problem.message).join("; ")}.`);
+        }
+    }
+}
+
+/** The keywords a simple object schema may have: none of them changes which properties it allows or requires but these. */
+const SIMPLE_OBJECT_KEYWORDS: ReadonlySet<string> = new Set(["type", "properties", "required", "additionalProperties", "title", "description", "$comment"]);
+
+/**
+ * A simple object schema's properties, required properties and whether it is closed (additionalProperties: false); null
+ * for any other schema (a $ref, anyOf, patternProperties, a schema for additional properties, no properties, and so on).
+ */
+function simpleObjectShape(schema: JsonValue | undefined): { properties: ReadonlySet<string>; required: readonly string[]; closed: boolean } | null {
+    if (!isJsonObject(schema) || schema.type !== "object" || !isJsonObject(schema.properties)) return null;
+    if (Object.keys(schema).some(key => !SIMPLE_OBJECT_KEYWORDS.has(key))) return null;
+    if (schema.additionalProperties !== undefined && typeof schema.additionalProperties !== "boolean") return null;
+    const required: JsonValue = schema.required ?? [];
+    if (!isStringList(required)) return null;
+    return { properties: new Set(Object.keys(schema.properties)), required, closed: schema.additionalProperties === false };
+}
+
+/**
+ * A warning, never an error, for a script or agent state with no `input:` whose inputSchema refuses what a route brings it
+ * (2026-11-08: a chat's check_ci took a closed { checks } and gave { checks, ciState }; its wait passed that back, and the
+ * second visit failed invalid_input). The value a route brings is a script's or agent's output (its outputSchema), or what a
+ * wait, or a receive's elapsed route, without an `input:` of its own passes on. Both schemas must be simple objects; it warns
+ * when the consumer is closed and the producer declares a property the consumer does not, or when the producer is closed
+ * and lacks a property the consumer requires. Anything else stays silent.
+ */
+function warnInputMismatches(nodes: Record<string, WorkflowIRNode>, defs: Record<string, JsonValue>, diagnostics: Diagnostics): void {
+    const pathOf = new Map<string, string>();
+    for (const node of Object.values(nodes)) {
+        if (node.type !== "parallel") continue;
+        if (node.branches !== undefined) {
+            for (const branch of node.branches) for (const id of branch.states) pathOf.set(id, `states.${node.id}.branches.${branch.name}.states.${id}`);
+        } else for (const id of node.body.states) pathOf.set(id, `states.${node.id}.body.states.${id}`);
+    }
+    const arriving = new Map<string, Array<{ from: string; label: string }>>();
+    for (const node of Object.values(nodes)) {
+        if (node.type === "terminal") continue;
+        for (const [label, target] of Object.entries(node.next)) {
+            if (isRuntimeRoute(label)) continue;
+            arriving.set(target, [...(arriving.get(target) ?? []), { from: node.id, label }]);
+        }
+    }
+    const producers = (from: string, label: string, seen: Set<string>): string[] => {
+        const node = nodes[from];
+        if (node?.type === "script" || node?.type === "agent") return node.outputSchema !== null ? [node.id] : [];
+        const passes = (node?.type === "wait" || (node?.type === "messaging" && node.mode === "receive")) && label === WAIT_ELAPSED && !node.hasInput;
+        if (!passes || seen.has(from)) return [];
+        seen.add(from);
+        return (arriving.get(from) ?? []).flatMap(edge => producers(edge.from, edge.label, seen));
+    };
+    for (const consumer of Object.values(nodes)) {
+        if ((consumer.type !== "script" && consumer.type !== "agent") || consumer.hasInput || consumer.inputSchema === null) continue;
+        const wants = simpleObjectShape(defs[consumer.inputSchema]);
+        if (wants === null) continue;
+        const said = new Set<string>();
+        const warn = (message: string): void => {
+            if (said.has(message)) return;
+            said.add(message);
+            diagnostics.warning("WORKFLOW_INPUT_MISMATCH", `${pathOf.get(consumer.id) ?? `states.${consumer.id}`}.inputSchema`, message);
+        };
+        for (const edge of arriving.get(consumer.id) ?? []) {
+            for (const producerId of new Set(producers(edge.from, edge.label, new Set()))) {
+                const producer = nodes[producerId];
+                if (producer?.type !== "script" && producer?.type !== "agent") continue;
+                const gives = producer.outputSchema !== null ? simpleObjectShape(defs[producer.outputSchema]) : null;
+                if (gives === null) continue;
+                const from = edge.from === producerId ? edge.from : `${edge.from} (which passes on ${producerId}'s output)`;
+                if (wants.closed) {
+                    for (const property of gives.properties) {
+                        if (wants.properties.has(property)) continue;
+                        warn(`${consumer.id} ${gives.required.includes(property) ? "gets" : "can get"} "${property}" from ${from}, `
+                            + "but its inputSchema does not allow it: map the input with input: or allow the property.");
+                    }
+                }
+                if (gives.closed) {
+                    for (const property of wants.required) {
+                        if (gives.properties.has(property)) continue;
+                        warn(`${consumer.id} needs "${property}" from ${from}, but ${producerId}'s outputSchema does not have it: `
+                            + "map the input with input: or add the property.");
+                    }
+                }
+            }
         }
     }
 }
