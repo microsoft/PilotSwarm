@@ -9,13 +9,16 @@
  * - Prepared answers (fixtures, test-mode.ts) answer the intercepted calls; a fixture without arguments answers any call of
  *   its tool or state, and one with `visit` only that visit of its state (G2). A call no fixture answers fails the test,
  *   which names it and gives the fixture to add; the run is canceled. A script's call of a tool the chat lacks is answered
- *   by its fixture too (no real call either way), and the report says a run needs that tool (G3).
+ *   by its fixture too (no real call either way), and the report says a run needs that tool (G3). RLR-F5: when the chat's
+ *   grant (as the bench keeps it) cannot be read, the report says its tools were not checked; it never reads as "none missing".
  * - Messages (G1): a receive fixture (operation receive, the receive state, its message as the response's value) is given
  *   to its receive state as a real message is (sendWorkflowInputV2, from the state's sender or the chat), before the
  *   virtual clock moves on. A receive with no fixture and no deadline cannot go on (TEST_STUCK).
  * - Waits pass at once: whenever every open step only waits for its timer (wait states, and receive states with a
  *   deadline and no fixture), the run's virtual clock is moved to the next deadline; the report says how long they would take.
  * - Expected end (G4): `expect` names the terminal state or the outcome the test must end at (default: outcome succeeded).
+ *   RLR-F6: it is part of the test's identity: the same call (operation id) with another expect is refused (WORKFLOW_EXISTS),
+ *   and a repeat answers with the stored test and its stored expect, as a later read by test_id does.
  * - Never: wakes the chat (the bench notifies nobody), shows as Workflow #N (no chat pin) or appears in a session list.
  * - The call waits up to WORKFLOW_DEFINITION_TEST_WAIT_MS for the end (a turn with no event for 5 minutes is treated as
  *   lost, so the wait stays under that), then answers with the test's id; the chat reads it again with that id.
@@ -28,7 +31,9 @@ import {
     WORKFLOW_V2_TEST_ADVANCE_MAX_SECONDS, WORKFLOW_V2_TEST_EPOCH, WorkflowStoreError,
     type WorkflowActor, type WorkflowNodeExecutionRow, type WorkflowRunRow, type WorkflowTestInterception,
 } from "./store.js";
-import { advanceWorkflowV2Test, controlWorkflowV2Run, createWorkflowV2, sendWorkflowInputV2, startWorkflowV2Test, type WorkflowV2Host } from "./service.js";
+import {
+    advanceWorkflowV2Test, controlWorkflowV2Run, createWorkflowV2, sendWorkflowInputV2, startWorkflowV2Test, testBenchExpect, type WorkflowV2Host,
+} from "./service.js";
 import { requireWorkflowScripts } from "./scripts-gate.js";
 import { TERMINAL_OUTCOMES, WORKFLOW_V2_MILESTONE_IR_VERSION } from "./compiler.js";
 import { definitionOf } from "./chat-definitions.js";
@@ -122,8 +127,13 @@ export interface ChatTestReport {
     /** A call whose prepared answer the test refused (its shape), and why, with the shape it needs. */
     refused: { call: string; reason: string } | null;
     answeredCalls: Array<{ call: string; by: "prepared answer" | "parent" }>;
-    /** G3: calls a prepared answer answered of tools this chat does not have: a run of the revision needs them granted. */
-    needsToolAtRunTime: Array<{ call: string; tool: string }>;
+    /**
+     * G3: calls a prepared answer answered of tools this chat does not have: a run of the revision needs them granted.
+     * RLR-F5: null when that could not be checked (the chat's grant could not be read): `toolsUnchecked` says why.
+     */
+    needsToolAtRunTime: Array<{ call: string; tool: string }> | null;
+    /** RLR-F5: why the tools the scripts called were not checked against the chat's grant, and those tools; null when they were. */
+    toolsUnchecked: { reason: string; tools: string[] } | null;
     waitedVirtualSeconds: number;
     tookSeconds: number;
     notice: string;
@@ -154,15 +164,6 @@ export function parseChatTestExpect(value: unknown, ir: WorkflowIR | null): Chat
     if (terminals.includes(text)) return { state: text };
     if ((TERMINAL_OUTCOMES as readonly string[]).includes(text)) return { outcome: text };
     throw refuse();
-}
-
-/** A stored expect (the bench's creation config): { state } or { outcome }, else none. */
-function storedChatTestExpect(value: unknown): ChatTestExpect | null {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    const item = value as { state?: unknown; outcome?: unknown };
-    if (typeof item.state === "string" && item.state) return { state: item.state };
-    if (typeof item.outcome === "string" && item.outcome) return { outcome: item.outcome };
-    return null;
 }
 
 const expectWords = (expect: ChatTestExpect): string => "state" in expect ? `state ${expect.state}` : `outcome ${expect.outcome}`;
@@ -219,6 +220,27 @@ function fixtureFor(fixtures: readonly WorkflowTestFixture[], interception: Work
             visit: node?.ordinal ?? null })
         : matchTestFixture(fixtures, { operation: interception.operation, tool: null, state: node?.nodeId ?? null, argumentsSha256: node?.inputSha256 ?? "",
             visit: node?.ordinal ?? null });
+}
+
+/**
+ * RLR-F5: the chat's tool grant as the test bench keeps it (null: the chat had none), or, in words, why it could not be read:
+ * a host that reads no creation configs, a read that fails or finds none, a stored grant that is not valid.
+ */
+async function benchToolGrant(host: Partial<Pick<WorkflowV2Host, "catalog">>, testId: string)
+    : Promise<{ grant: WorkflowToolBinding | null } | { unchecked: string }> {
+    if (!host.catalog?.getSessionCreationConfig) return { unchecked: "this host cannot read the chat's tool grant" };
+    let config: Record<string, unknown> | null;
+    try {
+        config = await host.catalog.getSessionCreationConfig(testId);
+    } catch {
+        return { unchecked: "the chat's tool grant could not be read" };
+    }
+    if (!config) return { unchecked: "the chat's tool grant could not be read" };
+    try {
+        return { grant: readWorkflowToolBinding(config.workflowToolBinding) };
+    } catch {
+        return { unchecked: "the chat's tool grant, as the test keeps it, is not valid" };
+    }
 }
 
 /**
@@ -293,29 +315,39 @@ export async function chatTestReport(host: Pick<WorkflowV2Host, "store"> & Parti
             words: refused ? refused.reason : `no prepared answer for the ${unanswered!.call}. ${unanswered!.expected}` } : null;
     const status: ChatTestReport["status"] = !ended ? "running" : endedAsExpected(run, expect) && !unanswered && !refused ? "passed" : "failed";
     // G3: a call answered by its fixture of a tool this chat does not have (the bench holds the chat's grant): a run needs it.
-    const needsToolAtRunTime: ChatTestReport["needsToolAtRunTime"] = [];
-    try {
-        if (host.catalog?.getSessionCreationConfig) {
-            const grant = readWorkflowToolBinding((await host.catalog.getSessionCreationConfig(bench.testId))?.workflowToolBinding);
+    // RLR-F5: a grant that cannot be read is said (null, and why), never an empty list; with no tool call nothing is read.
+    const toolCalls = interceptions.filter((item): item is WorkflowTestInterception & { tool: string } =>
+        item.operation === "tool.call" && typeof item.tool === "string" && item.tool !== "");
+    let needsToolAtRunTime: ChatTestReport["needsToolAtRunTime"] = [];
+    let toolsUnchecked: ChatTestReport["toolsUnchecked"] = null;
+    if (toolCalls.length > 0) {
+        const read = await benchToolGrant(host, bench.testId);
+        if ("unchecked" in read) {
+            needsToolAtRunTime = null;
+            toolsUnchecked = { reason: read.unchecked, tools: [...new Set(toolCalls.map(item => item.tool))].slice(0, 20) };
+        } else {
             const lacks = (tool: string): boolean => {
-                try { admittedWorkflowToolGrant(tool, grant?.tools ?? [], grant?.excludedTools ?? []); return false; }
+                try { admittedWorkflowToolGrant(tool, read.grant?.tools ?? [], read.grant?.excludedTools ?? []); return false; }
                 catch { return true; }
             };
-            for (const item of interceptions) {
-                if (item.operation !== "tool.call" || !item.tool || !lacks(item.tool)) continue;
+            const needed: Array<{ call: string; tool: string }> = [];
+            for (const item of toolCalls) {
+                if (!lacks(item.tool)) continue;
                 const call = callWords(item, stateOf.get(item.nodeExecutionId) ?? null);
-                if (needsToolAtRunTime.length < 20 && !needsToolAtRunTime.some(entry => entry.call === call)) needsToolAtRunTime.push({ call, tool: item.tool });
+                if (needed.length < 20 && !needed.some(entry => entry.call === call)) needed.push({ call, tool: item.tool });
             }
+            needsToolAtRunTime = needed;
         }
-    } catch {
-        needsToolAtRunTime.length = 0;
     }
     const virtualMs = run.virtualNow ? run.virtualNow.getTime() - Date.parse(WORKFLOW_V2_TEST_EPOCH) : 0;
     const tookMs = (run.finishedAt ?? new Date()).getTime() - run.createdAt.getTime();
     const runWords = run.terminalError === null ? null : workflowErrorWords(run.terminalError);
     const which = `The test of ${bench.name} revision ${bench.revision}`;
-    const needsWords = needsToolAtRunTime.length ? ` Its scripts call tools this chat does not have (${[...new Set(needsToolAtRunTime.map(item => item.tool))].join(", ")}): `
-        + "the test answered them, but a run of this revision needs them." : "";
+    const needsWords = toolsUnchecked ? ` It could not check whether this chat has the tools its scripts call (${toolsUnchecked.tools.join(", ")}): `
+        + `${toolsUnchecked.reason}. The test answered those calls, but a run of this revision needs each of them; read this test again with `
+        + `workflow_definition operation test and test_id ${bench.testId} to check them.`
+        : needsToolAtRunTime?.length ? ` Its scripts call tools this chat does not have (${[...new Set(needsToolAtRunTime.map(item => item.tool))].join(", ")}): `
+            + "the test answered them, but a run of this revision needs them." : "";
     const failedWords = failed ? ` after ${failed.nodeId} failed: ${workflowErrorWords(failed.error) ?? failed.outcome ?? "an error"}` : runWords ? `: ${runWords}` : "";
     const what = status === "running" ? `${which} is still running. Read it again with `
         + `workflow_definition operation test and test_id ${bench.testId}; do not start another test meanwhile.`
@@ -333,7 +365,7 @@ export async function chatTestReport(host: Pick<WorkflowV2Host, "store"> & Parti
         path, firstError: stoppedAt ?? (failed ? { step: failed.nodeId, words: workflowErrorWords(failed.error) } : null), unanswered, refused,
         answeredCalls: interceptions.filter(item => item.response !== null).map(item => ({
             call: callWords(item, stateOf.get(item.nodeExecutionId) ?? null), by: item.response?.disposition === "fixture" ? "prepared answer" as const : "parent" as const })),
-        needsToolAtRunTime,
+        needsToolAtRunTime, toolsUnchecked,
         waitedVirtualSeconds: Math.max(0, Math.round(virtualMs / 1000)), tookSeconds: Math.max(0, Math.round(tookMs / 1000)),
         notice: WORKFLOW_V2_TEST_NOTICE, message: what,
     };
@@ -344,7 +376,9 @@ export async function chatTestReport(host: Pick<WorkflowV2Host, "store"> & Parti
  * inputs, initial variables and prepared answers. Refused on a host that runs no tests (WORKFLOW_TEST_UNAVAILABLE), for a
  * revision with errors, and, on a host that runs no scripts, for a revision with a script node (before anything is made).
  * G4: `expect` (a terminal state of the revision or an outcome; parseChatTestExpect) is checked before anything is made and
- * kept in the bench's creation config (agentTest.expect), where its report reads it.
+ * kept in the bench's creation config (agentTest.expect), where its report reads it. RLR-F6: a repeat of the operation with
+ * another expect (or revision) is refused by the bench's creation (WORKFLOW_EXISTS) before a run; the test answered is the
+ * bench as stored (chatTestBench: its stored expect), as a later read by test_id finds it.
  */
 export async function startChatWorkflowTest(host: WorkflowV2Host, request: {
     ownerSessionId: string;
@@ -389,9 +423,11 @@ export async function startChatWorkflowTest(host: WorkflowV2Host, request: {
         bench: { ownerSessionId: request.ownerSessionId, definitionId: definition.definitionId } });
     const runId = started.receipt.run?.runId;
     if (!runId) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Test ${benchId} was admitted without its run.`);
+    // RLR-F6: the test as stored (its expect as its bench keeps it), read as a later read by test_id reads it.
+    const stored = await chatTestBench(host, request.ownerSessionId, benchId);
     // Best effort: older ended tests of this definition are deleted (their rows stay); a failure never refuses this test.
     await host.store.chat.retireTests(request.ownerSessionId, definition.definitionId, WORKFLOW_DEFINITION_TESTS_KEPT).catch(() => undefined);
-    return { testId: benchId, runId, definitionId: definition.definitionId, name: definition.name, revision, expect };
+    return { ...stored, runId, expect: stored.expect ?? null };
 }
 
 /**
@@ -417,7 +453,7 @@ export async function chatTestBench(host: Pick<WorkflowV2Host, "catalog" | "stor
     }
     const definition = await host.store.chat.readDefinition(bench.definitionId);
     return { testId, definitionId: bench.definitionId, name: definition?.name ?? "(deleted definition)", revision: bench.revision as number,
-        expect: storedChatTestExpect(bench.expect) };
+        expect: testBenchExpect(bench.expect) };
 }
 
 /**

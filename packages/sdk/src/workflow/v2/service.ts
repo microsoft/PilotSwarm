@@ -801,6 +801,29 @@ function sameGrant(stored: unknown, requested: WorkflowToolBinding | null | unde
     return storedGrant === requestedGrant;
 }
 
+/**
+ * A test bench's expected end (G4), as stored in its creation config (agentTest.expect) or requested: { state } or
+ * { outcome }; anything else is none, the default (outcome succeeded). chat-test.ts reads a bench's expect with it too.
+ */
+export function testBenchExpect(value: unknown): { state: string } | { outcome: string } | null {
+    if (!isJsonObject(value)) return null;
+    if (typeof value.state === "string" && value.state) return { state: value.state };
+    if (typeof value.outcome === "string" && value.outcome) return { outcome: value.outcome };
+    return null;
+}
+
+/**
+ * RLR-F6: the same test bench: both none, or the same definition, revision and expected end (none on both: the default,
+ * outcome succeeded). Its YAML is in the creation fingerprint; these are not, so a replay is compared with the stored ones.
+ */
+function sameTestBench(stored: unknown, requested: CreateWorkflowV2Request["testBench"]): boolean {
+    const identity = (bench: unknown): string | null => isJsonObject(bench)
+        ? canonicalJson({ definitionId: typeof bench.definitionId === "string" ? bench.definitionId : null,
+            revision: typeof bench.revision === "number" ? bench.revision : null, expect: testBenchExpect(bench.expect) })
+        : null;
+    return identity(stored) === identity(requested ? { definitionId: requested.definitionId, revision: requested.revision, expect: requested.expect ?? null } : null);
+}
+
 function sameOwner(stored: SessionOwnerInfo | null | undefined, requested: SessionOwnerInfo | null | undefined): boolean {
     if (!stored || !requested) return !stored && !requested;
     return stored.provider === requested.provider && stored.subject === requested.subject;
@@ -923,6 +946,12 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
         if (!sameRequest) {
             throw new WorkflowStoreError("WORKFLOW_EXISTS",
                 `Workflow ${request.workflowSessionId} was created by a different request; use another key for another workflow.`);
+        }
+        // RLR-F6: a test bench's test (its definition, revision and expected end) is part of what was asked: a replay that
+        // names another is another request, refused before anything else is made (no new run; the stored test is unchanged).
+        if (!sameTestBench(creation?.agentTest, request.testBench)) {
+            throw new WorkflowStoreError("WORKFLOW_EXISTS", `Test ${request.workflowSessionId} was started by a different request (another revision or `
+                + "expect) under this operation; nothing was tested. Start another test for another expectation.");
         }
     }
     const stored = await host.store.createDefinition({

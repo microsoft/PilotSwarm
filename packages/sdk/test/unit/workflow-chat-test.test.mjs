@@ -21,6 +21,7 @@ import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
 import { isWorkflowTestBench, WORKFLOW_TEST_BENCH_KIND } from "../../dist/workflow/v2/test-bench.js";
 import { workflowScriptsDisabledText } from "../../dist/workflow/v2/scripts-gate.js";
 import { WORKFLOW_V2_TEST_EPOCH } from "../../dist/workflow/v2/store.js";
+import { WORKFLOW_TOOL_POLICY } from "../../dist/workflow/tool-policy.js";
 
 const sha = text => createHash("sha256").update(text).digest("hex");
 const untouchable = what => new Proxy({}, { get: (_target, name) => { throw new Error(`${what}.${String(name)} was used`); } });
@@ -98,7 +99,11 @@ test("the report of a passed test: its path, outputs, mocked answers and the vir
             state: "responded", response: { disposition: "fixture" } },
         { interceptionId: "i-2", nodeExecutionId: "nx-summarize-1", operation: "agent", tool: null, arguments: null, state: "responded", response: { disposition: "fixture" } },
     ];
-    const report = await chatTestReport({ store: reportStore(nodes, interceptions) }, bench, run());
+    // The chat has web_fetch (its grant, as the bench keeps it): the report checks it (RLR-F5: never assumed when unread).
+    const catalog = { getSessionCreationConfig: async () => ({ workflowToolBinding: { policy: WORKFLOW_TOOL_POLICY, parentSessionId: "chat",
+        owner: { provider: "test", subject: "ada" }, config: {}, capabilities: { selections: [] }, tools: [{ name: "web_fetch", schemaHash: "h" }],
+        sourceRevisions: {}, excludedTools: [], boundAgentFingerprint: "f" } }) };
+    const report = await chatTestReport({ store: reportStore(nodes, interceptions), catalog }, bench, run());
     assert.equal(report.status, "passed");
     assert.deepEqual(report.path.map(item => [item.step, item.outcome, item.mocked]),
         [["poll", "changed", false], ["summarize", "done", true], ["pause", "elapsed", false], ["done", "succeeded", false]]);

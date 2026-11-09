@@ -6,6 +6,7 @@
  *   the receive refuses fails the test at once (TEST_ANSWER_REFUSED).
  * - G2: a fixture's `visit` answers only that visit (exact arguments and visit, then exact arguments, then visit, then any).
  * - G3: the report lists the calls a prepared answer gave of tools the chat lacks (its grant, as the bench keeps it).
+ *   RLR-F5: a grant it cannot read (or check) is said (needsToolAtRunTime null, toolsUnchecked), never an empty list.
  * - G4: `expect` (a terminal state or an outcome) decides pass; without it, outcome succeeded as before.
  * - G5: each step's predecessor and route, branch and input; an unanswered call's exact fixture skeleton.
  * The runs themselves are test/local/workflow-chat-test-gaps.test.js.
@@ -25,7 +26,7 @@ import { canonicalJson } from "../../dist/workflow/v2/json.js";
 import { WORKFLOW_V2_TEST_EPOCH } from "../../dist/workflow/v2/store.js";
 import { WORKFLOW_TEST_BENCH_KIND } from "../../dist/workflow/v2/test-bench.js";
 import { WORKFLOW_TOOL_POLICY } from "../../dist/workflow/tool-policy.js";
-import { previewWorkflowV2AgentVersions, sendWorkflowInputV2 } from "../../dist/workflow/v2/service.js";
+import { createWorkflowV2, previewWorkflowV2AgentVersions, sendWorkflowInputV2 } from "../../dist/workflow/v2/service.js";
 import { workflowSessionGuidance, WORKFLOW_SESSION_GUIDANCE } from "../../dist/workflow/guidance.js";
 import fs from "node:fs";
 
@@ -277,13 +278,44 @@ test("G3: the report lists the answered calls of tools the chat lacks (its grant
     assert.equal(lacking.status, "passed", "a test of a tool the chat lacks still passes");
     assert.deepEqual(lacking.needsToolAtRunTime, [{ call: "tool call post_status in step poll", tool: "post_status" }]);
     assert.match(lacking.message, /passed: it ended at done \(succeeded\)\. Its scripts call tools this chat does not have \(post_status\): the test answered them, but a run of this revision needs them\.$/);
-    // Negative controls: a grant with both lists none; no grant at all lists every tool called; a grant that cannot be read lists none.
+    // Negative controls: a grant with both lists none; no grant at all lists every tool called (a grant that cannot be read: RLR-F5).
     assert.deepEqual((await withGrant(["read_build", "post_status"])).needsToolAtRunTime, []);
     assert.deepEqual((await withGrant(null)).needsToolAtRunTime.map(item => item.tool), ["read_build", "post_status"]);
-    const unreadable = await chatTestReport(reportHost(nodes, calls, { catalog: { getSessionCreationConfig: async () => ({ workflowToolBinding: { policy: "?" } }) } }),
-        BENCH, runOf());
-    assert.deepEqual(unreadable.needsToolAtRunTime, []);
-    assert.equal(unreadable.message, "The test of watch revision 1 passed: it ended at done (succeeded).");
+});
+
+test("RLR-F5: a grant the report cannot read or check is said so (needsToolAtRunTime null, toolsUnchecked), never the plain pass words", async () => {
+    const nodes = [visitRow("poll", 1, { outcome: "ok", resultKind: "business" }), visitRow("done", 1, { nodeType: "terminal", outcome: "succeeded", resultKind: "business" })];
+    const calls = ["read_build", "post_status", "post_status"].map((tool, index) => ({ interceptionId: `i-${index}`, nodeExecutionId: "nx-poll-1",
+        operation: "tool.call", tool, arguments: {}, state: "responded", response: { disposition: "fixture" } }));
+    const report = (catalog, interceptions = calls) => chatTestReport(reportHost(nodes, interceptions, catalog ? { catalog } : {}), BENCH, runOf());
+    const withGrant = tools => ({ getSessionCreationConfig: async () => ({ workflowToolBinding: binding(tools) }) });
+    // Controls: fully granted (checked, nothing missing, the plain pass words) and a missing tool (named).
+    const granted = await report(withGrant(["read_build", "post_status"]));
+    const plain = "The test of watch revision 1 passed: it ended at done (succeeded).";
+    assert.deepEqual(granted.needsToolAtRunTime, []);
+    assert.equal(granted.message, plain);
+    const lacking = await report(withGrant(["read_build"]));
+    assert.deepEqual(lacking.needsToolAtRunTime, [{ call: "tool call post_status in step poll", tool: "post_status" }]);
+    for (const [what, catalog, reason] of [
+        ["an invalid stored grant", { getSessionCreationConfig: async () => ({ workflowToolBinding: { policy: "?" } }) }, "the chat's tool grant, as the test keeps it, is not valid"],
+        ["a grant read that fails", { getSessionCreationConfig: async () => { throw new Error("connection reset by 10.0.0.7"); } }, "the chat's tool grant could not be read"],
+        ["a bench with no settings", { getSessionCreationConfig: async () => null }, "the chat's tool grant could not be read"],
+        ["a host that cannot read grants", null, "this host cannot read the chat's tool grant"],
+    ]) {
+        const unchecked = await report(catalog);
+        assert.equal(unchecked.status, "passed", `${what}: the run still ended as expected`);
+        assert.notEqual(unchecked.message, granted.message, `${what}: never the fully granted test's words`);
+        assert.notDeepEqual(unchecked.needsToolAtRunTime, granted.needsToolAtRunTime, `${what}: never the fully granted test's empty list`);
+        assert.equal(unchecked.needsToolAtRunTime, null, `${what}: unknown, not an empty list`);
+        assert.deepEqual(unchecked.toolsUnchecked, { reason, tools: ["read_build", "post_status"] }, what);
+        assert.equal(unchecked.message, `${plain} It could not check whether this chat has the tools its scripts call (read_build, post_status): ${reason}. `
+            + "The test answered those calls, but a run of this revision needs each of them; read this test again with workflow_definition "
+            + "operation test and test_id bench-1 to check them.", what);
+    }
+    assert.deepEqual([granted.toolsUnchecked, lacking.toolsUnchecked], [null, null], "checked: nothing unchecked");
+    // No tool call: nothing to check (the grant is not read), and nothing is said.
+    const none = await report({ getSessionCreationConfig: async () => { throw new Error("not read"); } }, []);
+    assert.deepEqual([none.needsToolAtRunTime, none.toolsUnchecked, none.message], [[], null, plain]);
 });
 
 const ENDS_YAML = `
@@ -358,6 +390,50 @@ test("G4: the tool declares expect with tests (bounded) and not without; a bad e
     assert.deepEqual((await chatTestBench({ catalog: catalog({ agentTest: { definitionId: "def-1", revision: 1, expect: { state: "rejected" } } }), store }, "chat", "b"))
         .expect, { state: "rejected" });
     assert.equal((await chatTestBench({ catalog: catalog({ agentTest: { definitionId: "def-1", revision: 1 } }), store }, "chat", "b")).expect, null);
+});
+
+test("RLR-F6: a test bench's expect (and revision) is part of its creation: a replay with another is WORKFLOW_EXISTS before anything is stored", async () => {
+    // A catalog that keeps the claim's creation config (as JSONB does), and a store that counts what reaches it.
+    let claimed = null;
+    const reached = [];
+    const host = { requests: true, scripts: true,
+        catalog: {
+            createWorkflowSessionV2: async (_id, options) => {
+                if (claimed) return { created: false };
+                claimed = JSON.parse(JSON.stringify(options.creationConfig));
+                return { created: true };
+            },
+            getSession: async id => ({ sessionId: id, sessionKind: "workflow", parentSessionId: "chat", deletedAt: null, owner: null }),
+            getSessionCreationConfig: async () => claimed,
+        },
+        store: { readDefinition: async () => null,
+            createDefinition: async input => { reached.push(input.operationId); return { receipt: { run: null }, replayed: reached.length > 1 }; } },
+    };
+    const create = (expect, revision = 1) => createWorkflowV2(host, { workflowSessionId: "bench-1", parentSessionId: "chat", yaml: ENDS_YAML,
+        actor: { kind: "agent", sessionId: "chat" }, operationId: "test-bench:op-1", publish: false, notifyParent: false,
+        testBench: { definitionId: "def-1", revision, ...(expect ? { expect } : {}) } });
+    await create({ state: "rejected" });
+    assert.deepEqual(claimed.agentTest, { definitionId: "def-1", revision: 1, expect: { state: "rejected" } });
+    assert.deepEqual(reached, ["test-bench:op-1"]);
+    for (const [what, expect, revision] of [["another state", { state: "done" }], ["an outcome", { outcome: "blocked" }], ["none (the default)", null],
+        ["another revision", { state: "rejected" }, 2]]) {
+        const error = await create(expect, revision).then(() => null, refused => refused);
+        assert.equal(error?.code, "WORKFLOW_EXISTS", what);
+        assert.match(error.message, /^Test bench-1 was started by a different request \(another revision or expect\) under this operation; nothing was tested\./);
+    }
+    assert.deepEqual(reached, ["test-bench:op-1"], "nothing reached the store for a changed request");
+    assert.deepEqual(claimed.agentTest.expect, { state: "rejected" }, "the stored test is unchanged");
+    // The same expect: the same request (the store answers it from what it made).
+    await create({ state: "rejected" });
+    assert.equal(reached.length, 2);
+    // The default (no expect: outcome succeeded) is its own identity: none again is the same; outcome succeeded is not.
+    claimed = null;
+    reached.length = 0;
+    await create(null);
+    assert.equal(Object.hasOwn(claimed.agentTest, "expect"), false);
+    await create(null);
+    assert.equal((await create({ outcome: "succeeded" }).then(() => null, refused => refused))?.code, "WORKFLOW_EXISTS");
+    assert.equal(reached.length, 2);
 });
 
 const BRANCHES_YAML = `

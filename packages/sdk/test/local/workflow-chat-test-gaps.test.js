@@ -9,7 +9,10 @@
  * - G3: a script's call of a tool the chat lacks (or of any tool, with no grant at all) is answered by its fixture, and the
  *   report says a run needs that tool; without a fixture the call fails as a live one would; a control tool is refused
  *   even with a fixture.
- * - G4: expect done passes there; expect failed (another state) fails; the bench keeps it.
+ * - G4: expect done passes there; expect failed (another state) fails; the bench keeps it. RLR-F6: expect is part of the
+ *   test's identity: the same call (operation id) with another expect is refused (WORKFLOW_EXISTS, no new run), and with
+ *   the same one (or none, both times) is the same test, run and stored expect, whose report a later test_id read repeats.
+ * - RLR-F5: a report whose chat grant cannot be read says its tools were not checked (needsToolAtRunTime null).
  * - G5: the path gives each step's predecessor and route and its input.
  *
  * Run: npx vitest run test/local/workflow-chat-test-gaps.test.js
@@ -108,12 +111,14 @@ async function harness(env) {
             actor: { kind: "chat", sessionId: chat }, operationId: `save-${randomUUID()}`, by: "chat" })).receipt;
         expect(saved.valid, JSON.stringify(saved.diagnostics)).toBe(true);
     }
-    // `granted: false`: a chat with no tool grant at all (the bench has none).
-    const tool = (args, { granted = true } = {}) => workflowDefinitionFromTool({ name: "loop-watch", operation: "test", ...args }, { callerSessionId: chat, host,
-        toolCallId: randomUUID(), owner: OWNER, binding: async () => granted ? grant(chat) : null, testWait: { waitMs: 120_000, pollMs: 50, graceMs: 10_000 } })
+    // `granted: false`: a chat with no tool grant at all (the bench has none). `toolCallId`: a repeat of one call (its operation id).
+    // `on`: another host (a catalog that reads otherwise).
+    const tool = (args, { granted = true, toolCallId = randomUUID(), on = host } = {}) => workflowDefinitionFromTool({ name: "loop-watch", operation: "test", ...args },
+        { callerSessionId: chat, host: on, toolCallId, owner: OWNER, binding: async () => granted ? grant(chat) : null,
+            testWait: { waitMs: 120_000, pollMs: 50, graceMs: 10_000 } })
         .then(text => JSON.parse(text));
     return {
-        catalog, store, chat, tool,
+        catalog, store, chat, tool, host,
         async stop() {
             await runtime.shutdown(100);
             await catalog.close();
@@ -151,6 +156,16 @@ describe("an agent's test of a revision: receive fixtures, visits, tools the cha
             expect(inbox.every(item => item.operationId.startsWith("test-receive:"))).toBe(true);
             // G4: the bench keeps what it expects.
             expect((await h.catalog.getSessionCreationConfig(report.testId)).agentTest.expect).toEqual({ state: "done" });
+            // RLR-F5: read again where the bench's grant reads as invalid: its tools were not checked, and it says so.
+            const invalidGrant = new Proxy(h.catalog, { get: (target, name) => name === "getSessionCreationConfig"
+                ? async id => ({ ...await target.getSessionCreationConfig(id), workflowToolBinding: { policy: "?" } })
+                : typeof target[name] === "function" ? target[name].bind(target) : target[name] });
+            const unchecked = await h.tool({ test_id: report.testId }, { on: { ...h.host, catalog: invalidGrant } });
+            expect(unchecked, JSON.stringify(unchecked)).toMatchObject({ status: "passed", runId: report.runId, needsToolAtRunTime: null,
+                toolsUnchecked: { reason: "the chat's tool grant, as the test keeps it, is not valid", tools: ["read_build", "post_status"] } });
+            expect(unchecked.message).not.toBe(report.message);
+            expect(unchecked.message).toMatch(/could not check whether this chat has the tools its scripts call \(read_build, post_status\)/);
+            expect(await h.tool({ test_id: report.testId })).toEqual(report);
 
             // G4 negative control: the same run, expecting another end, fails.
             const elsewhere = await h.tool({ fixtures: ALL_FIXTURES, expect: "failed" });
@@ -189,6 +204,37 @@ describe("an agent's test of a revision: receive fixtures, visits, tools the cha
             await h.stop();
         }
     });
+
+    it("RLR-F6: expect is part of the test's identity: another expect under the same call is refused; the same one is the same test",
+        { timeout: TIMEOUT }, async () => {
+            const h = await harness(getEnv());
+            try {
+                // control-call ends at its failed state: a test expecting done fails.
+                const toolCallId = randomUUID();
+                const first = await h.tool({ name: "control-call", fixtures: [], expect: "done" }, { toolCallId });
+                expect(first, JSON.stringify(first)).toMatchObject({ status: "failed", expect: { state: "done" }, run: { terminalState: "failed" } });
+                // The same call expecting the end it reached: refused; no new run, and the stored test and its verdict are unchanged.
+                const changed = await h.tool({ name: "control-call", fixtures: [], expect: "failed" }, { toolCallId });
+                expect(changed.error?.code, JSON.stringify(changed)).toBe("WORKFLOW_EXISTS");
+                expect(changed.error.message).toMatch(/another revision or expect/);
+                expect((await h.store.listRuns(first.testId)).map(run => run.runId)).toEqual([first.runId]);
+                expect((await h.catalog.getSessionCreationConfig(first.testId)).agentTest.expect).toEqual({ state: "done" });
+                expect(await h.tool({ test_id: first.testId })).toEqual(first);
+                // The same call with the same expect: the same test, run and stored expect; the same report as a test_id read.
+                expect(await h.tool({ name: "control-call", fixtures: [], expect: "done" }, { toolCallId })).toEqual(first);
+                // The default (no expect: outcome succeeded) is part of it too: none both times is the same test; then expect is another.
+                const plainCall = randomUUID();
+                const plain = await h.tool({ name: "control-call", fixtures: [] }, { toolCallId: plainCall });
+                expect(plain, JSON.stringify(plain)).toMatchObject({ status: "failed", expect: null });
+                expect(await h.tool({ name: "control-call", fixtures: [] }, { toolCallId: plainCall })).toEqual(plain);
+                const named = await h.tool({ name: "control-call", fixtures: [], expect: "succeeded" }, { toolCallId: plainCall });
+                expect(named.error?.code, JSON.stringify(named)).toBe("WORKFLOW_EXISTS");
+                expect((await h.store.listRuns(plain.testId)).map(run => run.runId)).toEqual([plain.runId]);
+                expect(await h.tool({ test_id: plain.testId })).toEqual(plain);
+            } finally {
+                await h.stop();
+            }
+        });
 
     it("with no tool grant at all, fixtures still answer a script's calls; an unanswered one fails as a run's would", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
