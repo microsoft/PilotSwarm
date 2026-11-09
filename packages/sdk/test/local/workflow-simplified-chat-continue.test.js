@@ -331,7 +331,7 @@ function* chatChild(ctx) {
  * records each Stop (the double runs no turns, so it answers no_turn).
  */
 async function harness(env, { storeHooks = null, storeBefore = null, beforeCreate = null, deferVisible = false, createAlways = false,
-    beforeStop = null, realHost = false, beforeSend = null } = {}) {
+    beforeStop = null, realHost = false, beforeSend = null, activityClient = null } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
@@ -363,6 +363,8 @@ async function harness(env, { storeHooks = null, storeBefore = null, beforeCreat
     // realHost (review DRR-1): the real host (agent-host.ts) over a child creator that does what the worker's does: the
     // catalog create with refuseDeleted (a deleted session is never brought back), then the first prompt. `beforeCreate`
     // gets the child's spec, after every check of the spawn and before the create.
+    /** The sessions the real host's creator has sent a prompt to (review DRR-1c). */
+    const sentTo = new Set();
     const real = realHost ? createWorkflowAgentNodeHost({
         getSession: id => catalog.getSession(id),
         resolveAgent: async () => null,
@@ -374,6 +376,7 @@ async function harness(env, { storeHooks = null, storeBefore = null, beforeCreat
             const instanceId = `session-${spec.sessionId}`;
             if ((await client.getStatus(instanceId)).status === "NotFound") await client.startOrchestrationVersioned(instanceId, CHILD, {}, "1.0.0");
             await client.enqueueEvent(instanceId, "messages", JSON.stringify({ prompt: spec.prompt, clientMessageIds: [spec.clientMessageId] }));
+            sentTo.add(spec.sessionId);
         },
     }) : null;
     const agentNodes = real ? { async spawn(request) { spawns.push(request); return real.spawn(request); } } : {
@@ -414,7 +417,14 @@ async function harness(env, { storeHooks = null, storeBefore = null, beforeCreat
         },
     });
     registerWorkflowV2({
-        registerActivity: (name, fn) => runtime.registerActivity(name, fn),
+        // `activityClient(client)` (review DRR-1c): what an activity's getClient returns, in place of its durable client.
+        registerActivity: (name, fn) => runtime.registerActivity(name, activityClient
+            ? (actx, input) => fn(new Proxy(actx, { get(target, key) {
+                if (key === "getClient") return () => { const own = target.getClient(); return own ? activityClient(own) : own; };
+                const value = Reflect.get(target, key, target);
+                return typeof value === "function" ? value.bind(target) : value;
+            } }), input)
+            : fn),
         registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
     }, {
         store: controllerStore, catalog: spied, enabled: () => true,
@@ -430,7 +440,7 @@ async function harness(env, { storeHooks = null, storeBefore = null, beforeCreat
     });
     await runtime.start();
     return {
-        catalog, store, client, spawns, stops, host: { catalog, store, duroxideClient: client, requests: true },
+        catalog, store, client, spawns, stops, sentTo, host: { catalog, store, duroxideClient: client, requests: true },
         /** A deferred chat's session starts now, and gets the prompts it was sent while it was not visible. */
         async makeVisible(chat) {
             const instanceId = `session-${chat}`;
@@ -975,6 +985,65 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
             expect(["Completed", "Failed", "Terminated"]).toContain(status);
             expect((await chatMessages(h, chat)).find(message => message.type === "cmd"))
                 .toMatchObject({ cmd: "delete", id: `workflow-deleted-end:${chat}`, requestedBy: run.workflowSessionId });
+        } finally {
+            await mgmt.stop();
+            await h.stop();
+        }
+    });
+    // Review DRR-1c: right after the spawn's own send the session's start is only queued and its first turn has not run, so
+    // its status reads NotFound. The carried delete is still queued: duroxide delivers it with the queued start, and the
+    // session's first turn applies it before any model turn. (Here the status read right after the send says NotFound.)
+    it("DRR-1c: a deleted session that reads NotFound right after its send still gets the carried delete and ends", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        let gate = null;
+        let h = null;
+        const notFoundOnce = new Set();
+        h = await harness(env, {
+            realHost: true,
+            beforeSend: async spec => {
+                if (gate) {
+                    const hook = gate;
+                    gate = null;
+                    await hook(spec);
+                }
+            },
+            activityClient: own => new Proxy(own, { get(target, key) {
+                if (key === "getStatus") {
+                    return async instanceId => {
+                        const id = instanceId.startsWith("session-") ? instanceId.slice("session-".length) : null;
+                        if (id !== null && h.sentTo.has(id) && !notFoundOnce.has(id)) {
+                            notFoundOnce.add(id);
+                            return { status: "NotFound" };
+                        }
+                        return target.getStatus(instanceId);
+                    };
+                }
+                const value = Reflect.get(target, key, target);
+                return typeof value === "function" ? value.bind(target) : value;
+            } }),
+        });
+        const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema });
+        await mgmt.start();
+        try {
+            gate = async spec => { await mgmt.deleteSession(spec.sessionId, "deleted by a person"); };
+            const run = await started(h, CHAT_YAML());
+            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            expect(await ended(h, run.runId)).toMatchObject({ status: "failed", terminalOutcome: "failed" });
+            // The status read right after the send said NotFound.
+            expect(notFoundOnce.has(chat)).toBe(true);
+            const first = await visit(h, 1);
+            expect(await h.store.readNodeExecution(first.nodeExecutionId)).toMatchObject({ state: "completed", outcome: "unavailable", winner: "controller",
+                error: { code: "unavailable", message: expect.stringContaining(`The agent session ${chat} of this step was deleted`) } });
+            expect(await h.store.isSessionDeleted(chat)).toBe(true);
+            // The carried delete reached the session, and its orchestration ended.
+            const status = await until(async () => {
+                const read = (await h.client.getStatus(`session-${chat}`)).status;
+                return read !== "Running" ? read : null;
+            }, "the deleted session's orchestration to end", 30_000);
+            expect(["Completed", "Failed", "Terminated"]).toContain(status);
+            const received = await h.client.getStatus(`session-${chat}`);
+            const messages = typeof received.customStatus === "string" && received.customStatus ? JSON.parse(received.customStatus) : [];
+            expect(messages.find(message => message.type === "cmd")).toMatchObject({ cmd: "delete", id: `workflow-deleted-end:${chat}`, requestedBy: run.workflowSessionId });
         } finally {
             await mgmt.stop();
             await h.stop();

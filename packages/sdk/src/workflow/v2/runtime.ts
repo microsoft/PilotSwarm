@@ -2951,14 +2951,18 @@ export async function carryMarkedEnd(client: WorkflowV2AgentEndClient | null, ch
  * the deletion. A person's delete of a session that had no orchestration yet (just created by a spawn, before its first
  * prompt) is a catalog delete only; the spawn's send then starts the orchestration, which no one ends (a run's end skips
  * deleted sessions). The Workflow queues the command a delete sends to a running session (delete: it ends the session and
- * its descendants), with the stable id `workflow-deleted-end:<session id>`, as the session's parent. A session that is
- * NotFound or already ended gets nothing. Throws (the attempt retries) without a durable client.
+ * its descendants), with the stable id `workflow-deleted-end:<session id>`, as the session's parent. Review DRR-1c: only a
+ * session that already ended gets nothing. NotFound is not skipped: right after the spawn's send the session's start is
+ * queued and its first turn has not run, so it reads NotFound; duroxide delivers a message queued after a queued start in
+ * the same batch as the start, and the first turn's drain applies the delete before any model turn. NotFound with no start
+ * queued is dropped by duroxide as an orphan, which is harmless. A repeat is harmless too (the session ends at the first).
+ * Throws (the attempt retries) without a durable client.
  */
 export async function carryDeletedEnd(client: WorkflowV2AgentEndClient | null, childSessionId: string, workflowSessionId: string): Promise<boolean> {
     if (!client) throw new Error(`The deletion of agent session ${childSessionId} cannot be carried: this worker has no durable client here.`);
     const instance = `session-${childSessionId}`;
     const status = (await client.getStatus(instance)).status;
-    if (status === "NotFound" || TERMINAL_ORCHESTRATION_STATUSES.includes(status)) return false;
+    if (TERMINAL_ORCHESTRATION_STATUSES.includes(status)) return false;
     await client.enqueueEvent(instance, "messages", JSON.stringify({
         type: "cmd", cmd: "delete", id: `workflow-deleted-end:${childSessionId}`, requestedBy: workflowSessionId,
         args: { reason: "This session was deleted." },

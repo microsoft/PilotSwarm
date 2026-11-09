@@ -1214,8 +1214,9 @@ function parseSessionLifecycleCommand(raw: unknown): { cmd: "cancel" | "done" | 
  * session sends to a child through the sendCommandToSession activity. The
  * command waits in the child orchestration's queue, but a v2 workflow child
  * may have no controller to read it: its live run has not begun (duroxide
- * drops a queue message for an instance that has not started), or it has no
- * run. So, for a v2 workflow child only:
+ * drops a queue message for an instance that has no start enqueued; a
+ * message queued after a queued start is delivered with that start), or it
+ * has no run. So, for a v2 workflow child only:
  * - the caller is the session of the orchestration that runs the activity
  *   (its instance id `session-<id>`, set by the runtime), never the
  *   command's requestedBy alone; it must be the child's parent in both its
