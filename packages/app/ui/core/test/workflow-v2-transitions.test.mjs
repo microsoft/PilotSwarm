@@ -156,7 +156,9 @@ test("both renderers draw the lit parts: data-lit, data-lit-age and the current 
 
 // ─── The timeline bar (workflow-tab.js ReplayBar, timelineVisitAt) ───
 
-import { ReplayBar, TIMELINE_PLAY_LIVE_TITLE, timelineVisitAt } from "../../react/src/workflow-tab.js";
+import {
+    ReplayBar, TIMELINE_PLAY_LIVE_TITLE, timelineIndexAt, timelineScale, timelineVisitAt, workflowTimelineVisits,
+} from "../../react/src/workflow-tab.js";
 import { workflowV2ReplayFrames } from "../src/workflow-v2-view.js";
 
 const FRAMES = workflowV2ReplayFrames(loopVisits(["check", "wait", "check", "done"]));
@@ -173,7 +175,12 @@ test("the bar: Live by default (Latest once ended), Play off with its reason; hi
     const live = render({});
     assert.match(live, /aria-label="Timeline"/);
     assert.match(live, /data-mode="live"/);
-    assert.match(live, /<input[^>]*type="range"[^>]*max="3"[^>]*value="3"|<input[^>]*value="3"[^>]*max="3"/);
+    // UXP-TL-04: the slider's scale is time: Live sits at its right end, the newest visit's start.
+    const range = /<input[^>]*type="range"[^>]*>/.exec(live)[0];
+    const attr = name => Number(new RegExp(` ${name}="([^"]+)"`).exec(range)[1]);
+    assert.equal(attr("min"), FRAMES[0].atMs);
+    assert.equal(attr("max"), FRAMES[3].atMs);
+    assert.equal(attr("value"), FRAMES[3].atMs);
     assert.match(live, /class="ps-wf-replay-label"[^>]*>Live · [^<]*done visit 4</);
     assert.match(button(live, "Play"), /aria-disabled="true"/);
     assert.ok(live.includes(`data-title="${TIMELINE_PLAY_LIVE_TITLE}"`), "Play's reason in Live");
@@ -187,6 +194,8 @@ test("the bar: Live by default (Latest once ended), Play off with its reason; hi
     assert.match(history, /data-mode="history"/);
     assert.match(history, /class="ps-wf-replay-label"[^>]*>[^<]*check visit 1 · 3 newer</);
     assert.match(button(history, "Step back"), /aria-disabled="true"/);
+    // UXP-TL-04: with older visits to load, Step back from the oldest loaded is on (it loads them first).
+    assert.ok(!/aria-disabled/.test(button(render({ index: 0, onOlder() {} }), "Step back")));
     for (const label of ["Step on", "Play"]) assert.ok(!/aria-disabled/.test(button(history, label)), label);
     assert.ok(!/data-action="replay-live"[^>]*aria-disabled/.test(history));
     // At the visit before the newest, Step on goes back to Live.
@@ -201,4 +210,37 @@ test("the bar: Live by default (Latest once ended), Play off with its reason; hi
     for (const label of ["Step back", "Play", "Step on"]) assert.match(button(empty, label), /aria-disabled="true"/, label);
     // Load older visits: its name whole; "Older" on a phone.
     assert.match(render({ onOlder() {} }), /aria-label="Load older visits"[^>]*>.*Load older visits.*Older/);
+});
+
+// UXP-TL-04 (owner, TEST at 09d98247): the thumb jittered on a long running run, as the loaded visits changed at both ends.
+test("UXP-TL-04: the slider's scale is time from the run's start to the newest visit; a value shows the last visit begun by then", () => {
+    const start = FRAMES[0].atMs - 5_000;
+    assert.deepEqual(timelineScale(FRAMES, start), { min: start, max: FRAMES[3].atMs });
+    // A start later than the first visit seen, or none: the first visit.
+    assert.deepEqual(timelineScale(FRAMES, FRAMES[1].atMs), { min: FRAMES[0].atMs, max: FRAMES[3].atMs });
+    assert.deepEqual(timelineScale(FRAMES, null), { min: FRAMES[0].atMs, max: FRAMES[3].atMs });
+    assert.deepEqual(timelineScale(FRAMES.slice(0, 1), null), { min: FRAMES[0].atMs, max: FRAMES[0].atMs + 1 });
+    assert.deepEqual(timelineScale([], null), { min: 0, max: 1 });
+    // A visit keeps its value whatever is loaded before or after it.
+    const value = FRAMES[2].atMs;
+    assert.equal(timelineIndexAt(FRAMES, value), 2);
+    assert.equal(timelineIndexAt(FRAMES.slice(1), value), 1);
+    assert.equal(timelineIndexAt(FRAMES, value + 9_000), 2, "between two visits: the one begun");
+    assert.equal(timelineIndexAt(FRAMES, FRAMES[0].atMs - 1), 0, "before every visit: the first");
+    assert.equal(timelineIndexAt(FRAMES, FRAMES[3].atMs), 3, "the right end: the newest (Live)");
+});
+
+test("UXP-TL-04: the timeline keeps every visit of the run it has seen; a new run starts afresh; an unchanged read keeps the list", () => {
+    const visits = loopVisits(["check", "wait", "check", "done"]);
+    let seen = workflowTimelineVisits(null, "run-1", visits.slice(2));
+    assert.deepEqual(seen.list.map(item => item.id), ["nx-2", "nx-3"]);
+    // Older visits loaded later join; visits that leave the loaded window stay.
+    seen = workflowTimelineVisits(seen, "run-1", visits.slice(0, 2));
+    assert.deepEqual(seen.list.map(item => item.id).sort(), ["nx-0", "nx-1", "nx-2", "nx-3"]);
+    const same = workflowTimelineVisits(seen, "run-1", visits.slice(0, 2));
+    assert.equal(same, seen, "nothing new: the same list");
+    // A newer copy of a visit replaces it.
+    const ended = { ...visits[3], status: "completed" };
+    assert.equal(workflowTimelineVisits(seen, "run-1", [ended]).list.find(item => item.id === "nx-3").status, "completed");
+    assert.deepEqual(workflowTimelineVisits(seen, "run-2", visits.slice(1, 2)).list.map(item => item.id), ["nx-1"]);
 });

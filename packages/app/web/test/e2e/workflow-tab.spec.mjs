@@ -3285,6 +3285,8 @@ const timelineOf = (tab) => {
     return { bar, slider: bar.getByRole("slider", { name: "Timeline position" }), words: bar.locator(".ps-wf-replay-label"),
         button: name => bar.getByRole("button", { name, exact: true }) };
 };
+/** UXP-TL-04: the slider's value for a visit that began `seconds` into the replay fixture (its scale is time). */
+const sliderAt = seconds => String(Date.parse(replayAt(seconds)));
 /** How the graph lights a step or an edge: [data-lit, data-lit-age, data-current] (null where absent). */
 const litOf = async (locator) => [await locator.getAttribute("data-lit"), await locator.getAttribute("data-lit-age"), await locator.getAttribute("data-current")];
 const stepOf = (tab, id) => tab.getByRole("group", { name: "Workflow graph" }).locator(`[data-node-id="${id}"]`);
@@ -3310,8 +3312,8 @@ test("timeline: a finished Workflow's visits by buttons, slider keys and Play; L
     await expect(bar).toBeVisible();
     await expect(bar).toHaveAttribute("data-mode", "live");
     await expect(words).toHaveText(/^Latest · .*done visit 1$/);
-    await expect(slider).toHaveAttribute("max", "3");
-    await expect(slider).toHaveValue("3");
+    await expect(slider).toHaveAttribute("max", sliderAt(50));
+    await expect(slider).toHaveValue(sliderAt(50));
     await expect(button("Step on")).toBeDisabled();
     await expect(button("Play")).toBeDisabled();
     await expect(button("Latest")).toHaveAttribute("aria-pressed", "true");
@@ -3328,7 +3330,7 @@ test("timeline: a finished Workflow's visits by buttons, slider keys and Play; L
     await button("Step back").click();
     await expect(bar).toHaveAttribute("data-mode", "history");
     await expect(words).toContainText("poll visit 2 · 1 newer");
-    await expect(slider).toHaveValue("2");
+    await expect(slider).toHaveValue(sliderAt(40));
     await expect(slider).toHaveAttribute("aria-valuetext", /poll visit 2 · 1 newer$/);
     await expect.poll(phases).toEqual({ poll: "running", pause: "done", done: "not-reached" });
     await expect(stepOf(main, "poll")).toHaveAttribute("aria-pressed", "true");
@@ -3421,8 +3423,8 @@ test("timeline: a running Workflow is Live; it follows new visits, lights the la
     await expect(bar).toBeVisible();
     await expect(bar).toHaveAttribute("data-mode", "live");
     await expect(words).toHaveText(/^Live · .*poll visit 2$/);
-    await expect(slider).toHaveAttribute("max", "2");
-    await expect(slider).toHaveValue("2");
+    await expect(slider).toHaveAttribute("max", sliderAt(40));
+    await expect(slider).toHaveValue(sliderAt(40));
     await expect(button("Play")).toBeDisabled();
     await expect(button("Play")).toHaveAttribute("data-title", "Play — step back first; live view already moves");
     await expect(button("Live")).toHaveAttribute("aria-pressed", "true");
@@ -3436,8 +3438,8 @@ test("timeline: a running Workflow is Live; it follows new visits, lights the la
     await expect.poll(() => subscribed).toBe(true);
     await next("pause", 2, ["poll", 2, "unchanged"]);
     await next("poll", 3, ["pause", 2, "elapsed"]);
-    await expect(slider).toHaveAttribute("max", "4");
-    await expect(slider).toHaveValue("4");
+    await expect(slider).toHaveAttribute("max", sliderAt(70));
+    await expect(slider).toHaveValue(sliderAt(70));
     await expect(words).toHaveText(/^Live · .*poll visit 3$/);
     // pause 1, poll 2, pause 2, poll 3: both steps twice; poll→pause and pause→poll twice each; the first poll's arrival is out.
     await expect.poll(() => litOf(stepOf(main, "poll"))).toEqual(["2", "0", "true"]);
@@ -3453,10 +3455,10 @@ test("timeline: a running Workflow is Live; it follows new visits, lights the la
     await button("Step back").click();
     await expect(bar).toHaveAttribute("data-mode", "history");
     await expect(words).toContainText("pause visit 2 · 1 newer");
-    await expect(slider).toHaveValue("3");
+    await expect(slider).toHaveValue(sliderAt(60));
     await next("pause", 3, ["poll", 3, "unchanged"]);
-    await expect(slider).toHaveAttribute("max", "5");
-    await expect(slider).toHaveValue("3");
+    await expect(slider).toHaveAttribute("max", sliderAt(80));
+    await expect(slider).toHaveValue(sliderAt(60));
     await expect(words).toContainText("pause visit 2 · 2 newer");
     await expect(bar).toHaveAttribute("data-mode", "history");
     await shot(page, "timeline-running-history");
@@ -3580,6 +3582,132 @@ for (const [name, size, touch] of [["a phone (390 x 844, touch)", { width: 390, 
         });
     });
 }
+
+// UXP-TL-04 (owner, TEST at 09d98247, a long running run): "when I hit back back back.. the slider moves back a bit forward
+// then back etc. the node highlights are correct though". A running run of many visits whose older visits are behind a
+// cursor and whose events are dense (only the newest few visits' lines are loaded), a new visit every second, the Log open:
+// ten Step backs move the thumb left every time, and a visit shown stays where it is while visits arrive and older ones load
+// (only the range's growth at the right moves it, by what that growth explains).
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "UXP-TL-04" (from packages/app/web, after build).
+test("UXP-TL-04: Step back on a long running run moves the thumb left every time; a visit shown keeps its place while visits load and arrive", async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", collectPageErrors(errors));
+    const BASE = Date.parse("2026-11-09T05:00:00.000Z");
+    const at = ms => new Date(BASE + ms).toISOString();
+    const FILLER = 58;
+    const events = [];
+    let seqs = 0;
+    const push = (eventType, data, ms) => events.push({ sessionId: WORKFLOW_ID, seq: ++seqs, eventType, createdAt: at(ms), data: { runId: "run-1", ...data } });
+    push("workflow.started", { ...V2_EVENTS[0].data }, 0);
+    // Visit i: poll on even i, pause on odd i, 2 s apart; each with many other events, so the loaded window holds few visits.
+    const visits = [];
+    const visitOf = i => ({ id: `nx-${i % 2 ? "pause" : "poll"}-${Math.floor(i / 2) + 1}`, stateId: i % 2 ? "pause" : "poll", ordinal: Math.floor(i / 2) + 1,
+        ms: 1_000 + i * 2_000 });
+    const addVisit = i => {
+        const visit = visitOf(i);
+        visits.push(visit);
+        push("workflow.state_started", { nodeExecutionId: visit.id, stateId: visit.stateId, scopeId: "root", ordinal: visit.ordinal,
+            type: visit.stateId === "pause" ? "wait" : "script", step: visit.ordinal, kvRevision: 1 }, visit.ms);
+        for (let n = 0; n < FILLER; n += 1) push("session.usage", { n }, visit.ms + 10 + n);
+        push("workflow.state_completed", { nodeExecutionId: visit.id, stateId: visit.stateId, step: visit.ordinal,
+            outcome: visit.stateId === "pause" ? "elapsed" : "unchanged", resultKind: "business" }, visit.ms + 1_500);
+        return visit;
+    };
+    for (let i = 0; i < 240; i += 1) addVisit(i);
+    const row = visit => ({ nodeExecutionId: visit.id, stateId: visit.stateId, ordinal: visit.ordinal, state: "completed",
+        outcome: visit.stateId === "pause" ? "elapsed" : "unchanged", resultKind: "business", winner: "controller", attempts: 0, kvRevision: 1,
+        enteredAt: at(visit.ms), endedAt: at(visit.ms + 1_500) });
+    // The read model: the newest 8 visits, the older ones behind a cursor (a page the server may size as it likes).
+    const model = () => ({ ...V2_READ_MODEL,
+        runs: [{ runId: "run-1", mode: "live", status: "running", revision: 1, outcome: null }],
+        run: { ...V2_READ_MODEL.run, status: "running", nodeExecutions: visits.slice(-8).reverse().map(row),
+            pages: { executions: { order: "newest_first", limit: 8, nextCursor: { runId: "run-1", section: "executions", before: visits.at(-8).id },
+                openComplete: true } } } });
+    const sockets = [];
+    let subscribed = false;
+    await routeApi(page, {
+        workflowEvents: events,
+        workflowState: { title: "Workflow: watch-v2", status: "running", createdAt: BASE },
+        onSocket: (socket) => {
+            sockets.push(socket);
+            socket.onMessage((raw) => { if (JSON.parse(raw).type === "subscribeSession") subscribed = true; });
+        },
+        // A read with a cursor answers the older page it names (8 visits, newest first), as the server does.
+        onReadWorkflow: (route) => {
+            const cursor = new URL(route.request().url()).searchParams.get("cursor");
+            if (!cursor) return route.fulfill({ json: { ok: true, result: model() } });
+            const before = visits.findIndex(visit => visit.id === JSON.parse(cursor).before);
+            const page = visits.slice(Math.max(0, before - 8), before);
+            return route.fulfill({ json: { ok: true, result: { runId: "run-1", section: "executions", items: page.slice().reverse().map(row),
+                nextCursor: before - 8 > 0 ? { runId: "run-1", section: "executions", before: page[0].id } : null } } });
+        },
+    });
+    // The Workflow's events as the server pages them: the newest `limit`, after a seq, or before one.
+    await page.route(`**/api/v1/**/sessions/${WORKFLOW_ID}/events**`, (route) => {
+        const url = new URL(route.request().url());
+        const limit = Number(url.searchParams.get("limit") ?? 300) || 300;
+        const before = url.pathname.endsWith("/events-before") ? Number(url.searchParams.get("beforeSeq")) : null;
+        const after = Number(url.searchParams.get("afterSeq") ?? 0) || 0;
+        const list = before !== null ? events.filter(event => event.seq < before).slice(-limit)
+            : after > 0 ? events.filter(event => event.seq > after).slice(0, limit) : events.slice(-limit);
+        return route.fulfill({ json: { ok: true, result: list } });
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = workflowTab(page);
+    const { bar, slider, words, button } = timelineOf(main);
+    await expect(bar).toHaveAttribute("data-mode", "live");
+    await expect.poll(() => subscribed).toBe(true);
+    await panelTab(main, "Log").click();
+    // A new visit every second, as the run goes on.
+    let next = 240;
+    const arrive = () => {
+        const visit = addVisit(next++);
+        const fresh = events.filter(event => event.data.nodeExecutionId === visit.id);
+        for (const socket of sockets) for (const item of fresh) socket.send(JSON.stringify({ type: "sessionEvent", sessionId: WORKFLOW_ID, event: item }));
+    };
+    const ticker = setInterval(arrive, 1_000);
+    try {
+        // Where the thumb is: its middle's x on the page, from the slider's box and its value in its range.
+        const thumb = async () => {
+            const box = await slider.boundingBox();
+            const [value, min, max] = await slider.evaluate(input => [Number(input.value), Number(input.min), Number(input.max)]);
+            return { x: box.x + (max > min ? (value - min) / (max - min) : 1) * box.width, value, min, max, words: await words.textContent() };
+        };
+        const marks = [];
+        for (let press = 1; press <= 10; press += 1) {
+            // Step back is never off while an older visit exists: the timeline loads it first.
+            await expect(button("Step back"), `press ${press}`).toBeEnabled({ timeout: 5_000 });
+            await button("Step back").click();
+            await expect(bar).toHaveAttribute("data-mode", "history");
+            await page.waitForTimeout(450);
+            const first = await thumb();
+            // The same visit a little later, after another visit arrived and the Log read older lines.
+            await page.waitForTimeout(1_100);
+            const later = await thumb();
+            marks.push({ press, ...first, laterX: later.x, laterWords: later.words, laterValue: later.value, laterMin: later.min, laterMax: later.max });
+            console.log("UXP-TL-04 press", JSON.stringify(marks.at(-1)));
+        }
+        console.log("UXP-TL-04 thumb", JSON.stringify(marks));
+        for (const mark of marks) {
+            // The same visit: its place moves only as the range grows at its right end (min and value unchanged).
+            expect(mark.laterWords.replace(/ · \d+ newer$/, ""), `press ${mark.press}: the same visit`).toBe(mark.words.replace(/ · \d+ newer$/, ""));
+            expect(mark.laterValue, `press ${mark.press}: its value`).toBe(mark.value);
+            expect(mark.laterMin, `press ${mark.press}: the range's left end`).toBe(mark.min);
+            const box = await slider.boundingBox();
+            const explained = box.x + (mark.value - mark.laterMin) / (mark.laterMax - mark.laterMin) * box.width;
+            expect(Math.abs(mark.laterX - explained), `press ${mark.press}: only the range's growth moves it`).toBeLessThanOrEqual(1);
+        }
+        for (let i = 1; i < marks.length; i += 1) {
+            expect(marks[i].x, `press ${marks[i].press} moves the thumb left of press ${marks[i - 1].press}'s (${JSON.stringify(marks)})`)
+                .toBeLessThan(marks[i - 1].laterX);
+        }
+    } finally {
+        clearInterval(ticker);
+    }
+    expect(errors).toEqual([]);
+});
 
 // Final review FUI-F1: on a phone held sideways (844 x 390, a touch screen) the Workflow tab shows maximized over the page,
 // and the Workflow's touch targets keep 44 px there too, as at 390 px: a Workflow dialog's controls (portalled out of the
@@ -3711,8 +3839,8 @@ test("S2UI-F5 replay: a replayed branch visit's Node details show its own branch
     const replay = main.getByRole("group", { name: "Timeline" });
     const words = replay.locator(".ps-wf-replay-label");
     const slider = replay.getByRole("slider", { name: "Timeline position" });
-    // Six visits: positions 0 to 5, the right end Latest.
-    await expect(slider).toHaveAttribute("max", "5");
+    // Six visits; the right end, Latest, is the newest's start (the slider's scale is time, UXP-TL-04).
+    await expect(slider).toHaveAttribute("max", sliderAt(600));
     // The third visit: branch 2's work, while branch 1's work runs too.
     await slider.focus();
     await page.keyboard.press("Home");

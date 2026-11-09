@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useControllerSelector } from "./use-controller-state.js";
 import { selectWorkflowViewSnapshotFor, workflowNodeViews, workflowParentWorking, workflowReadModelView, workflowViewSnapshotEqual } from "../../core/src/workflow-view.js";
 import {
-    formatSeconds, projectWorkflowV2, workflowLogEvents, workflowLogWindow, workflowV2Activity, workflowV2BranchPickKey, workflowV2ReplayBranchIndex, workflowV2ReplayFrames,
+    formatSeconds, projectWorkflowV2, workflowLogEvents, workflowLogWindow, workflowV2Activity, workflowV2BranchPickKey, workflowV2ExecutionOfRow, workflowV2ReplayBranchIndex, workflowV2ReplayFrames,
     workflowV2ReplayLabel, workflowV2SelectionAfterBranchChange,
 } from "../../core/src/workflow-v2-view.js";
 import {
@@ -860,9 +860,21 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     // follows new visits. `replayId` is the visit shown in history (the graph as it stood when that visit began), or null
     // for Live. It is kept by visit, not by position, so new visits (the run keeps going) and older ones loaded later do not
     // move it, and history never returns to Live by itself; only Play does, at the right end.
-    const frames = React.useMemo(() => workflowV2ReplayFrames(projection?.allExecutions), [projection?.allExecutions]);
-    const transitions = React.useMemo(() => workflowV2Transitions(projection?.allExecutions, child.definition),
-        [projection?.allExecutions, child.definition]);
+    // UXP-TL-04 (owner, TEST at 09d98247): the loaded visits change at both ends while a long run runs (the read's newest
+    // page and the events' window slide on as visits arrive; the Log reads older events while a visit shown in history is
+    // older than its loaded lines), so the timeline keeps every visit of the run it has seen (workflowTimelineVisits): a
+    // visit shown never leaves it, and a Step back can go on to the visits seen before it.
+    // An older page read for this run is taken as it came, even when the run's newest page has moved on since and the read
+    // view leaves it out until it joins again (workflowV2RunRows' gaps), so a Step back can always reach what it loaded.
+    const seen = React.useRef(null);
+    const olderRows = view.olderHistory?.runId === projection?.runId ? view.olderHistory?.sections?.executions?.items : null;
+    const visits = React.useMemo(() => {
+        const older = Array.isArray(olderRows) ? olderRows.map(workflowV2ExecutionOfRow).filter(Boolean) : [];
+        seen.current = workflowTimelineVisits(seen.current, projection?.runId ?? null, [...older, ...(projection?.allExecutions ?? [])]);
+        return seen.current.list;
+    }, [projection?.runId, projection?.allExecutions, olderRows]);
+    const frames = React.useMemo(() => workflowV2ReplayFrames(visits), [visits]);
+    const transitions = React.useMemo(() => workflowV2Transitions(visits, child.definition), [visits, child.definition]);
     const [replayId, setReplayId] = React.useState(null);
     const [playing, setPlaying] = React.useState(false);
     React.useEffect(() => { setReplayId(null); setPlaying(false); }, [sessionId]);
@@ -893,14 +905,43 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
         return () => clearTimeout(timer);
     }, [playing, replayId, frames.length]);
     const ended = projection?.status?.ended === true;
+    // R8: older visits can be loaded while the run runs too.
+    const onOlder = projection && !projection.historyComplete && typeof controller.loadOlderWorkflowHistory === "function"
+        ? () => controller.loadOlderWorkflowHistory(sessionId, { restart: Boolean(projection.historyStale) }).catch(() => {}) : null;
+    // UXP-TL-04: a Step back from the oldest visit loaded while older ones exist loads them first, then shows the one before:
+    // page after page older than the oldest page read (continueOlder), until one began before it, or none is left.
+    const [stepBackFrom, setStepBackFrom] = React.useState(null);
+    const loadBefore = React.useCallback(async (beforeMs) => {
+        for (let page = 0; page < TIMELINE_OLDER_PAGES_MAX; page += 1) {
+            const result = await controller.loadOlderWorkflowHistory(sessionId, { continueOlder: true }).catch(() => null);
+            const rows = controller.getState().ui.workflowViews?.[sessionId]?.olderHistory?.sections?.executions?.items;
+            if (Array.isArray(rows) && rows.some(row => Date.parse(row?.enteredAt ?? "") < beforeMs)) return;
+            if (!result?.ok || !result.rows) return;
+        }
+    }, [controller, sessionId]);
+    React.useEffect(() => {
+        if (stepBackFrom === null) return;
+        const at = frames.findIndex(item => item.nodeExecutionId === stepBackFrom);
+        if (at > 0) { setStepBackFrom(null); goTo(at - 1); } else if (at < 0 || !onOlder) setStepBackFrom(null);
+    }, [stepBackFrom, frames]);
+    // UXP-TL-04: the slider places each visit by when it began, between the run's start (its session's creation; the oldest
+    // visit seen when that is later or not known) and the newest visit, so a visit keeps its place while older visits load.
+    const createdMs = typeof session?.createdAt === "number" ? session.createdAt : Date.parse(session?.createdAt ?? "");
+    const startMs = frames.length ? (Number.isFinite(createdMs) ? Math.min(createdMs, frames[0].atMs) : frames[0].atMs) : null;
     const replay = timeline ? {
-        frames, index: frame ? replayIndex : null, playing, ended,
-        onGo: index => { setPlaying(false); goTo(index); },
+        frames, index: frame ? replayIndex : null, playing, ended, startMs,
+        onGo: index => {
+            setPlaying(false);
+            setStepBackFrom(null);
+            if (index < 0) {
+                if (onOlder && frames.length) { setStepBackFrom(frames[0].nodeExecutionId); loadBefore(frames[0].atMs); }
+                return;
+            }
+            goTo(index);
+        },
         onPlay: () => { if (frame !== null) setPlaying(true); },
         onPause: () => setPlaying(false),
-        // R8: older visits can be loaded while the run runs too.
-        onOlder: projection && !projection.historyComplete && typeof controller.loadOlderWorkflowHistory === "function"
-            ? () => { controller.loadOlderWorkflowHistory(sessionId, { restart: Boolean(projection.historyStale) }).catch(() => {}); } : null,
+        onOlder: onOlder ? () => { onOlder(); } : null,
     } : null;
     // The last four transitions up to the visit shown (Live: up to the newest), drawn on the graph.
     const shownIndex = replayIndex ?? newest;
@@ -1017,6 +1058,58 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
 }
 
 /**
+ * UXP-TL-04: every visit of the shown run the timeline has seen, by id (the newest copy of each), as `seen` (from the last
+ * call; a new run starts afresh) with `list`. The loaded visits change at both ends while a run runs; these do not lose one.
+ * At most WORKFLOW_TIMELINE_VISITS_KEPT are kept (the oldest beginnings first to go). Pure but for reusing `seen`'s map.
+ */
+export function workflowTimelineVisits(seen, runId, executions) {
+    const kept = seen && seen.runId === runId ? seen : { runId, byId: new Map(), list: [] };
+    let changed = kept !== seen;
+    for (const item of Array.isArray(executions) ? executions : []) {
+        if (!item || typeof item.id !== "string") continue;
+        if (kept.byId.get(item.id) !== item) { kept.byId.set(item.id, item); changed = true; }
+    }
+    if (kept.byId.size > WORKFLOW_TIMELINE_VISITS_KEPT) {
+        const ms = item => { const at = Date.parse(item?.enteredAt ?? ""); return Number.isFinite(at) ? at : -Infinity; };
+        const order = [...kept.byId.values()].sort((a, b) => ms(a) - ms(b));
+        for (const item of order.slice(0, kept.byId.size - WORKFLOW_TIMELINE_VISITS_KEPT)) kept.byId.delete(item.id);
+        changed = true;
+    }
+    return changed ? { runId, byId: kept.byId, list: [...kept.byId.values()] } : kept;
+}
+
+/** UXP-TL-04: the most older pages one Step back reads to find the visit before the oldest loaded. */
+export const TIMELINE_OLDER_PAGES_MAX = 25;
+
+/** UXP-TL-04: the most visits the timeline keeps of one run. */
+export const WORKFLOW_TIMELINE_VISITS_KEPT = 20_000;
+
+/**
+ * UXP-TL-04: the timeline slider's scale, in epoch milliseconds: from `startMs` (the run's start, when known and not later
+ * than its first visit seen) to the newest visit's start (the right end, Live). Never empty. Pure.
+ */
+export function timelineScale(frames, startMs = null) {
+    const list = Array.isArray(frames) ? frames : [];
+    if (!list.length) return { min: 0, max: 1 };
+    const first = list[0].atMs;
+    const min = Number.isFinite(startMs) ? Math.min(startMs, first) : first;
+    const max = list.at(-1).atMs;
+    return { min, max: max > min ? max : min + 1 };
+}
+
+/**
+ * UXP-TL-04: the visit a slider value (epoch milliseconds) shows: the last visit that began at or before it (the first
+ * when it is before every one); the right end (the newest visit, or past it) is Live, as timelineVisitAt reads it. Pure.
+ */
+export function timelineIndexAt(frames, value) {
+    const list = Array.isArray(frames) ? frames : [];
+    if (!list.length || !Number.isFinite(value)) return list.length - 1;
+    let at = 0;
+    for (let index = 0; index < list.length; index += 1) if (list[index].atMs <= value) at = index;
+    return at;
+}
+
+/**
  * Owner 2026-11-09 (the timeline): the visit a position on the timeline shows, its id, in history; null for Live: the right
  * end (the newest visit), a position past it, or no position (the slider's positions are the visits, 0 to newest). Pure.
  */
@@ -1034,19 +1127,29 @@ export function timelineVisitAt(frames, index) {
  * the right end; Live has nothing to play. With no visit yet every control is off ("No steps yet"). The Log's line for the
  * visit shown is marked, and a click on a visit's line shows it.
  */
-export function ReplayBar({ frames, index, playing, ended = false, onGo, onPlay, onPause, onOlder = null }) {
+export function ReplayBar({ frames, index, playing, ended = false, startMs = null, onGo, onPlay, onPause, onOlder = null }) {
     const id = `wf-replay-${React.useId().replace(/:/g, "")}`;
     const count = frames.length;
     const newest = count - 1;
     const live = index === null;
     const position = live ? Math.max(0, newest) : index;
+    // UXP-TL-04: the slider's scale is time (timelineScale): each visit at its start, the right end the newest (Live).
+    const scale = timelineScale(frames, startMs);
+    const slide = value => onGo(timelineIndexAt(frames, value));
+    const keys = event => {
+        const to = { ArrowLeft: position - 1, ArrowDown: position - 1, ArrowRight: position + 1, ArrowUp: position + 1,
+            PageDown: Math.max(0, position - 10), PageUp: position + 10, Home: 0, End: newest }[event.key];
+        if (to === undefined || !count) return;
+        event.preventDefault();
+        onGo(Math.min(to, newest));
+    };
     const liveWord = ended ? "Latest" : "Live";
     const words = count === 0 ? "No steps yet"
         : live ? `${liveWord} · ${workflowV2ReplayLabel(frames[newest])}`
             : `${workflowV2ReplayLabel(frames[index])} · ${newest - index} newer`;
     return h("div", { className: "ps-wf-replay", role: "group", "aria-label": "Timeline", "data-replaying": live ? "false" : "true",
         "data-mode": count === 0 ? "empty" : live ? "live" : "history" },
-        h(WorkflowToolButton, { label: "Step back", glyph: "step-back", "data-action": "replay-back", disabled: count < 2 || position <= 0,
+        h(WorkflowToolButton, { label: "Step back", glyph: "step-back", "data-action": "replay-back", disabled: count < 2 || (position <= 0 && !onOlder),
             title: live ? "Show the visit before the newest" : "Show the visit before", onClick: () => onGo(position - 1) }),
         playing
             ? h(WorkflowToolButton, { label: "Pause", glyph: "pause", "data-action": "replay-pause", title: "Pause", onClick: onPause })
@@ -1055,9 +1158,9 @@ export function ReplayBar({ frames, index, playing, ended = false, onGo, onPlay,
         h(WorkflowToolButton, { label: "Step on", glyph: "step-on", "data-action": "replay-on", disabled: live,
             title: !live && timelineVisitAt(frames, index + 1) === null ? `Back to ${liveWord}` : "Show the next visit", onClick: () => onGo(index + 1) }),
         h("label", { htmlFor: id, className: "ps-sr-only" }, "Timeline position"),
-        h("input", { id, type: "range", className: "ps-wf-replay-range", min: 0, max: Math.max(0, newest), step: 1, value: position,
-            disabled: count === 0, "aria-valuetext": words,
-            onChange: event => onGo(Number(event.target.value)) }),
+        h("input", { id, type: "range", className: "ps-wf-replay-range", min: scale.min, max: scale.max, step: "any",
+            value: count ? frames[position].atMs : scale.min, disabled: count === 0, "aria-valuetext": words,
+            onChange: event => slide(Number(event.target.value)), onKeyDown: keys }),
         h("span", { className: "ps-wf-replay-label", title: count === 0 ? undefined
             : workflowTimeTitle(frames[live ? newest : index].atMs) ?? undefined }, words),
         // Live while the graph is live: pressed, and (UXFD-F15) off but still focusable, its title saying why.

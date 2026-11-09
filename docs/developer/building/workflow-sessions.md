@@ -407,9 +407,15 @@ lists them; a connection without them keeps the stage 1 grouping above):
   Delete and Run again are off and say why.
 - **Timeline** (the replay of stage 2.4, FU-26, as a viewing mode). Every
   Workflow, running or ended, has a timeline under its graph: **Step back**,
-  **Play**/**Pause**, **Step on**, a slider over its loaded visits (arrow
-  keys, Home, End) and **Live**, which reads **Latest** once the run has
-  ended. With no visit yet its controls are off and it says "No steps yet".
+  **Play**/**Pause**, **Step on**, a slider over its visits (arrow keys, Page
+  Up and Page Down by ten, Home, End) and **Live**, which reads **Latest**
+  once the run has ended. With no visit yet its controls are off and it says
+  "No steps yet". The slider's scale is time: each visit sits at the moment
+  it began, between the run's start (its session's creation) and the newest
+  visit (UXP-TL-04). A visit therefore keeps its place while older visits
+  load and new ones arrive; only the scale's growth at the right end moves it
+  a little to the left. The words beside the slider have a width of their
+  own, so the slider's length does not change with them.
   - **Live** is the default. The slider's right end is the newest visit; the
     graph shows the Workflow as it is now and follows new visits. Live never
     changes the step a person selected.
@@ -446,8 +452,10 @@ lists them; a connection without them keeps the stage 1 grouping above):
     most about 3,000 events of a session); otherwise it says "This visit's
     line is not among the Log lines loaded".
   - The timeline reads the stored visits only; **Load older visits** reads a
-    long run's older ones (a running run's too). A visit shown in history that
-    leaves the loaded visits gives way to the oldest one loaded, not to Live.
+    long run's older ones (a running run's too). It keeps every visit of the
+    run it has seen, so a visit shown never leaves it while the loaded pages
+    and events move on with a long run; **Step back** from the oldest visit
+    seen loads the older ones first, then shows the one before.
   - On a phone the timeline is one row of 44 px targets ("Older" for **Load
     older visits**). The terminal UI draws no graph, so it has no timeline and
     no lit transitions; its run views are unchanged.

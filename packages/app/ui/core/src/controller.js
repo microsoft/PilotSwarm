@@ -7064,7 +7064,7 @@ export class PilotSwarmUiController {
      * per session at a time; a newer read (another run, or a restart) discards an older one's answer. Reading changes
      * nothing. Never throws.
      */
-    async loadOlderWorkflowHistory(sessionId, { restart = false } = {}) {
+    async loadOlderWorkflowHistory(sessionId, { restart = false, continueOlder = false } = {}) {
         const state = this.getState();
         if (!sessionId || state.sessions.byId[sessionId]?.sessionKind !== "workflow" || typeof this.transport?.readWorkflow !== "function") {
             return { ok: false, reason: "unsupported" };
@@ -7077,10 +7077,19 @@ export class PilotSwarmUiController {
         }
         const previous = !restart && view.olderHistory?.runId === run.runId ? view.olderHistory : null;
         if (previous?.loading) return { ok: false, reason: "pending" };
+        // UXP-TL-04 (`continueOlder`, the timeline's Step back): the next page older than the oldest loaded, even when the run's
+        // newest page has moved on since (the timeline keeps what it read; the read view leaves an older page out until it
+        // joins again).
+        const plain = value => value !== null && typeof value === "object" && !Array.isArray(value);
+        const continuing = continueOlder && previous && plain(previous.sections);
         // The loaded older pages that still join the read model's page, else the page itself (workflowV2OlderStart): the next
         // older page always follows rows already read, never leaving a gap after newer rows arrived.
-        const start = { runId: run.runId, sections: workflowV2OlderStart(run, previous) };
-        const history = workflowV2RunHistory(run, start);
+        const start = { runId: run.runId, sections: continuing ? previous.sections : workflowV2OlderStart(run, previous) };
+        const history = continuing
+            ? { paged: true, next: Object.fromEntries(Object.entries(previous.sections).flatMap(([section, loaded]) =>
+                (plain(loaded?.nextCursor) ? [[section, loaded.nextCursor]] : []))) }
+            : workflowV2RunHistory(run, start);
+        history.more = Object.keys(history.next).length > 0;
         if (!history.more) {
             // Review 19:10Z (D-W10): a status line names no run id.
             this.dispatch({ type: "ui/status", text: history.paged ? "Every visit is loaded"

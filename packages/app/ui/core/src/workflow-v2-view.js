@@ -808,6 +808,27 @@ function executionFromEvent(type, data, at = undefined) {
         outputPreview: data.outputPreview };
 }
 
+/**
+ * One node execution row of a read (read_workflow's run.nodeExecutions, or an older page's) as a visit, or null when it is
+ * not one (no id or step, or a state that is neither pending nor completed). Pure.
+ */
+export function workflowV2ExecutionOfRow(row) {
+    if (!isRecord(row) || typeof row.nodeExecutionId !== "string" || typeof row.stateId !== "string" || (row.state !== "pending" && row.state !== "completed")) {
+        return null;
+    }
+    return { id: row.nodeExecutionId, stateId: row.stateId, ordinal: Number.isSafeInteger(row.ordinal) ? row.ordinal : undefined,
+        status: row.state, outcome: text(row.outcome), resultKind: row.resultKind ?? undefined, outputPreview: row.outputPreview,
+        errorPreview: row.errorPreview, errorWords: text(row.errorWords) ?? undefined, winner: text(row.winner),
+        attempts: Number.isSafeInteger(row.attempts) ? row.attempts : undefined,
+        kvRevision: row.kvRevision ?? undefined, deadline: text(row.deadline), completedAt: text(row.completedAt),
+        enteredAt: text(row.enteredAt), endedAt: text(row.endedAt),
+        predecessorId: text(row.predecessorId),
+        receive: isRecord(row.receive) ? row.receive : undefined,
+        agent: isRecord(row.agent) && typeof row.agent.childSessionId === "string" ? row.agent : undefined,
+        scopeId: text(row.scopeId), branch: isRecord(row.branch) ? row.branch : undefined,
+        branches: Number.isSafeInteger(row.branches) ? row.branches : undefined };
+}
+
 function collectExecutions(events, runId, run, overlay) {
     const executions = new Map();
     let ignoredEvents = 0;
@@ -818,21 +839,12 @@ function collectExecutions(events, runId, run, overlay) {
     };
     if (run && overlay) {
         for (const row of run.nodeExecutions) {
-            if (typeof row.nodeExecutionId !== "string" || typeof row.stateId !== "string" || (row.state !== "pending" && row.state !== "completed")) {
+            const execution = workflowV2ExecutionOfRow(row);
+            if (!execution) {
                 ignoredRows++;
                 continue;
             }
-            add({ id: row.nodeExecutionId, stateId: row.stateId, ordinal: Number.isSafeInteger(row.ordinal) ? row.ordinal : undefined,
-                status: row.state, outcome: text(row.outcome), resultKind: row.resultKind ?? undefined, outputPreview: row.outputPreview,
-                errorPreview: row.errorPreview, errorWords: text(row.errorWords) ?? undefined, winner: text(row.winner),
-                attempts: Number.isSafeInteger(row.attempts) ? row.attempts : undefined,
-                kvRevision: row.kvRevision ?? undefined, deadline: text(row.deadline), completedAt: text(row.completedAt),
-                enteredAt: text(row.enteredAt), endedAt: text(row.endedAt),
-                predecessorId: text(row.predecessorId),
-                receive: isRecord(row.receive) ? row.receive : undefined,
-                agent: isRecord(row.agent) && typeof row.agent.childSessionId === "string" ? row.agent : undefined,
-                scopeId: text(row.scopeId), branch: isRecord(row.branch) ? row.branch : undefined,
-                branches: Number.isSafeInteger(row.branches) ? row.branches : undefined }, "read");
+            add(execution, "read");
         }
     }
     if (runId && (overlay || !run)) {
