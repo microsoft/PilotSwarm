@@ -63,6 +63,7 @@ import { sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
 import { WORKFLOW_V2_MILESTONE_IR_VERSION } from "../../src/workflow/v2/compiler.ts";
 import { realModelPlan } from "../helpers/workflow-v2-real-model.mjs";
+import { realModelWorkflowEvidence } from "../helpers/workflow-v2-real-model-evidence.mjs";
 import { loadModelProviders } from "../../src/index.ts";
 
 const OWNER = { provider: "test", subject: "workflow-default-worker-agent-real-model" };
@@ -253,7 +254,10 @@ function receiptPath(key) {
  * One new chat on a worker made with WORKER, in its own test environment: with `workflowsOn`, Workflows turned on in it
  * before its first prompt (test/helpers/workflows-on.js, as enable_workflows would); `ask` once (sendAndWait), then the
  * chat's orchestration version (its instance exists from the first prompt on), then `check({ env, client, worker,
- * catalog, chat, receipt })`. Prints the receipt and writes it (receiptPath), with the verdict, whatever the outcome.
+ * catalog, chat, receipt })`. Then, whatever the check found, the evidence of the chat's Workflows (receipt.evidence:
+ * each saved revision's YAML and diagnostics, each run's status, outcome and error, each node execution's state, outcome
+ * and error; test/helpers/workflow-v2-real-model-evidence.mjs), read before the environment is cleaned up. Prints the
+ * receipt and writes it (receiptPath), with the verdict, whatever the outcome.
  */
 async function realModelChat(key, ask, check, { workflowsOn = false, worker: workerOptions = WORKER, prepare = null } = {}) {
     if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
@@ -280,6 +284,7 @@ async function realModelChat(key, ask, check, { workflowsOn = false, worker: wor
                 receipt.steps.chatVersion = await sessionOrchestrationVersion(client, chat.sessionId);
                 await check({ env, client, worker, catalog, chat, receipt, prepared });
             } finally {
+                receipt.evidence = await realModelWorkflowEvidence(catalog, chat.sessionId);
                 await prepared.close?.().catch(() => {});
             }
         });
