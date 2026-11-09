@@ -27,7 +27,7 @@ import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflowV2, parseWorkflowIr, WORKFLOW_V2_IR_VERSION, WORKFLOW_V2_WAIT_IR_VERSION } from "../../src/workflow/v2/compiler.ts";
 import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
@@ -36,7 +36,8 @@ import { registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, workflowEffectInstanceId } 
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
-const TIMEOUT = 120_000;
+// CI run 114: the test's own bounds grow with the database the suite runs on (test/helpers/time-scale.js).
+const TIMEOUT = testTime.ms(120_000);
 const ACTOR = { kind: "system", name: "workflow-v2-wait-test" };
 
 /** A wait whose seconds and output come from the run's KV; bad seconds route to 'bad'. */
@@ -61,7 +62,7 @@ states:
 `;
 
 async function until(check, label, timeoutMs = 60_000) {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = Date.now() + testTime.ms(timeoutMs);
     let last;
     while (Date.now() < deadline) {
         last = await check();
@@ -277,39 +278,46 @@ describe("workflow v2 wait states", () => {
         } finally { await h.stop(); }
     });
 
-    it("keeps the absolute deadline across a worker restart and across continue-as-new", { timeout: 180_000 }, async () => {
+    // CI run 114 (HorizonDB): 50 idle passes of the controller did not fit in the 15 s wait there, so it elapsed before any
+    // continue-as-new. The waits, the outage window and the lateness bounds are scaled together: a timer started again at
+    // the restart or at the continue-as-new would still be later than the bound.
+    it("keeps the absolute deadline across a worker restart and across continue-as-new", { timeout: testTime.ms(180_000) }, async () => {
+        const restartWait = testTime.seconds(6);
+        const outageMs = testTime.ms(2_500);
+        const continueWait = testTime.seconds(15);
+        const lateBoundMs = testTime.ms(2_000);
         const base = await baseOf(getEnv());
         // Whole seconds of at least 2: a shorter activity lock renews no earlier than it expires (duroxide 0.1.32).
         const runtimeOptions = { workerLockTimeoutMs: 2_000, orchestratorLockTimeoutMs: 2_000 };
         const workers = [];
         try {
-            // The worker stops while the wait is pending and stays down for a 2.5 s outage window.
+            // The worker stops while the wait is pending and stays down for a 2.5 s outage window (scaled).
             let worker = await harness(getEnv(), { base, runtimeOptions });
             workers.push(worker);
             const parent = await parentOf(worker);
-            const restarted = await napEntered(worker, parent, { seconds: "6" });
+            const restarted = await napEntered(worker, parent, { seconds: String(restartWait) });
             await worker.stopRuntime();
             const stoppedAt = Date.now();
-            await until(async () => Date.now() - stoppedAt >= 2_500, "the outage window");
+            await until(async () => Date.now() - stoppedAt >= outageMs, "the outage window");
             worker = await harness(getEnv(), { base, runtimeOptions });
             workers.push(worker);
             const afterRestart = await completion(base.store, restarted.node.nodeExecutionId);
-            // On time in the store's clock: a timer started again at the restart would elapse about 3 s late.
+            // On time in the store's clock: a timer started again at the restart would elapse about the outage late.
             expect(lateness(afterRestart)).toBeGreaterThanOrEqual(0);
-            expect(lateness(afterRestart)).toBeLessThan(2_000);
+            expect(lateness(afterRestart)).toBeLessThan(lateBoundMs);
             expect(afterRestart).toMatchObject({ outcome: "elapsed", deadlineAt: restarted.node.deadlineAt });
-            expect(restarted.node.deadlineAt.getTime() - restarted.node.enteredAt.getTime()).toBe(6_000);
+            expect(restarted.node.deadlineAt.getTime() - restarted.node.enteredAt.getTime()).toBe(restartWait * 1_000);
             expect((await finished(base.store, restarted.runId)).status).toBe("completed");
             await worker.stopRuntime();
 
-            // A 100 ms backstop continues the controller as new (50 idle waits) during a 15 s wait.
+            // A 100 ms backstop continues the controller as new (50 idle waits) during a 15 s wait (scaled).
             worker = await harness(getEnv(), { base, runtimeOptions, wakeBackstopMs: 100 });
             workers.push(worker);
-            const continued = await napEntered(worker, parent, { seconds: "15" });
+            const continued = await napEntered(worker, parent, { seconds: String(continueWait) });
             const afterContinue = await completion(base.store, continued.node.nodeExecutionId);
             expect((await base.client.listExecutions(continued.controllerInstanceId)).length).toBeGreaterThanOrEqual(2);
             expect(lateness(afterContinue)).toBeGreaterThanOrEqual(0);
-            expect(lateness(afterContinue)).toBeLessThan(2_000);
+            expect(lateness(afterContinue)).toBeLessThan(lateBoundMs);
             expect(afterContinue).toMatchObject({ outcome: "elapsed", deadlineAt: continued.node.deadlineAt });
             expect((await finished(base.store, continued.runId)).status).toBe("completed");
         } finally {

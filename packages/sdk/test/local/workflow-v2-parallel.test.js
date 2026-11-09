@@ -34,7 +34,7 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import {
     compileWorkflowV2, parseWorkflowIr, WORKFLOW_V2_AGENT_IR_VERSION, WORKFLOW_V2_MILESTONE_IR_VERSION, WORKFLOW_V2_PARALLEL_MAX_CONCURRENCY,
@@ -53,13 +53,14 @@ import { openWorkflowStore } from "../helpers/workflow-v2-request-fixture.js";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
-const TIMEOUT = 120_000;
+// CI run 114 (HorizonDB, about ten times slower): the test's own bounds grow with the database (test/helpers/time-scale.js).
+const TIMEOUT = testTime.ms(120_000);
 const ACTOR = { kind: "system", name: "workflow-v2-parallel-test" };
 const PARALLEL = { enableRequests: true, enableAgents: true, enableParallel: true };
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function until(check, label, timeoutMs = 60_000) {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = Date.now() + testTime.ms(timeoutMs);
     let last;
     while (Date.now() < deadline) {
         last = await check();
@@ -399,7 +400,7 @@ const ended = (h, runId) => until(async () => {
     return run && ["completed", "failed", "cancelled", "stopped"].includes(run.status) ? run : null;
 }, `run ${runId} to end`);
 
-describe("workflow v2 parallel states: controller 1.9.0 (inactive, test-only registration)", () => {
+describe("workflow v2 parallel states: controller 1.9.0", () => {
     it("runs one branch per item, at most its concurrency at a time, each with its item and index, and joins their outputs in manifest order", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
@@ -611,7 +612,11 @@ describe("workflow v2 parallel states: deadlines while paused (controller 1.9.0,
 // turn over one catalog and provider (the wait restart test's split); each is stopped once. The precondition is read from
 // the store, not inferred from time: if it is read after a deadline, the case is VOID (its message says so), not a pass
 // and not a product failure.
-const RESTART_SECONDS = 6;
+// CI run 114 (HorizonDB): the recovery after the restart took 3.8 s there, past the 2 s lateness bound. The wait, the
+// outage window and the bound are scaled together, so a timer started again at the restart is still later than the bound.
+const RESTART_SECONDS = testTime.seconds(6);
+const RESTART_OUTAGE_MS = testTime.ms(2_500);
+const RESTART_LATE_BOUND_MS = testTime.ms(2_000);
 const RESTART_ITEMS = ["a", "b", "c"];
 
 function restartHoldOut() {
@@ -665,7 +670,7 @@ async function restartRuntimeOn(base) {
 }
 
 describe("workflow v2 parallel states: a worker restart while every branch waits (controller 1.9.0, test-only)", () => {
-    it("joins each branch exactly once after the runtime stops with every branch persisted as waiting, keeping each wait's deadline", { timeout: 180_000 }, async () => {
+    it("joins each branch exactly once after the runtime stops with every branch persisted as waiting, keeping each wait's deadline", { timeout: testTime.ms(180_000) }, async () => {
         const base = await restartBaseOf(getEnv());
         const workers = [await restartRuntimeOn(base)];
         try {
@@ -697,11 +702,11 @@ describe("workflow v2 parallel states: a worker restart while every branch waits
             expect(Date.now(), "VOID (not a product result): the precondition was read after a wait's deadline; run the case again")
                 .toBeLessThan(Math.min(...before.map(node => node.deadlineAt.getTime())));
 
-            // Stop the runtime, stay down 2.5 s, and start another over the same catalog and provider.
+            // Stop the runtime, stay down 2.5 s (scaled), and start another over the same catalog and provider.
             await workers[0].stop();
             const stoppedAt = Date.now();
             for (const index of RESTART_ITEMS.keys()) expect((await base.store.readNodeExecution(at(index, "hold"))).state).toBe("pending");
-            await until(async () => Date.now() - stoppedAt >= 2_500, "the outage window");
+            await until(async () => Date.now() - stoppedAt >= RESTART_OUTAGE_MS, "the outage window");
             workers.push(await restartRuntimeOn(base));
 
             const run = await until(async () => {
@@ -722,7 +727,7 @@ describe("workflow v2 parallel states: a worker restart while every branch waits
                 expect(hold.deadlineAt).toEqual(before[index].deadlineAt);
                 const late = hold.completedAt.getTime() - hold.deadlineAt.getTime();
                 expect(late).toBeGreaterThanOrEqual(0);
-                expect(late).toBeLessThan(2_000);
+                expect(late).toBeLessThan(RESTART_LATE_BOUND_MS);
                 expect(await base.store.readNodeExecution(at(index, "done"))).toMatchObject({ state: "completed", outcome: "succeeded", output: RESTART_ITEMS[index] });
                 expect(await base.store.readNodeExecution(at(index, "hold", 2))).toBeFalsy();
                 expect(await base.store.readNodeExecution(at(index, "done", 2))).toBeFalsy();

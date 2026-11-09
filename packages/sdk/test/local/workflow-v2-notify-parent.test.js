@@ -21,7 +21,7 @@ import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
@@ -33,7 +33,8 @@ import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
-const TIMEOUT = 120_000;
+// CI run 114: the test's own bounds grow with the database the suite runs on (test/helpers/time-scale.js).
+const TIMEOUT = testTime.ms(120_000);
 const ACTOR = { kind: "system", name: "workflow-v2-notify-parent-test" };
 
 /** Eight one-second waits: a run with nine node executions, each of which an outbox row below names. */
@@ -77,7 +78,7 @@ states:
 `;
 
 async function until(check, label, timeoutMs = 60_000) {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = Date.now() + testTime.ms(timeoutMs);
     let last;
     while (Date.now() < deadline) {
         last = await check();
@@ -634,7 +635,7 @@ describe("workflow v2: telling the parent when a live run ends", () => {
     // waits again, then finds it recorded and queues nothing. A tagged attempt (controller 1.9.0) has no timeout: it takes
     // the 35 s and records the notice, with no retry. Either way the parent gets the notice once.
     for (const [label, requests] of [["untagged (1.8.0): timed out at 30 s and tried again", false], ["tagged (1.9.0): no attempt timeout", true]]) {
-        it(`D-T9 (WFO-1, E3): a 35 s notice attempt, ${label}; the parent is told once`, { timeout: 240_000 }, async () => {
+        it(`D-T9 (WFO-1, E3): a 35 s notice attempt, ${label}; the parent is told once`, { timeout: testTime.ms(240_000) }, async () => {
             const env = getEnv();
             const queued = [];
             const h = await harness(env, {
@@ -661,10 +662,14 @@ describe("workflow v2: telling the parent when a live run ends", () => {
                          contract, payload, payload_sha256, state, attempts, created_at, last_attempt_at, decided_at, receipt, recipient_kind)
                      VALUES ($1, $2, $3, $4, 'send', $5, 'Note@1', '{}', 'sha', 'pending', 1, $6, $7, NULL, NULL, NULL)`,
                     [randomUUID(), first.nodeExecutionId, id, runId, parent.parentId, new Date(now - 2_000), new Date(now - 1_000)]);
-                await finished(h, runId);
-                const ended = Date.now();
-                const controller = await h.client.waitForOrchestration(controllerInstanceId, 150_000);
+                // CI run 114 (HorizonDB): a poll saw the run's end seconds after it, which took that much off the measured
+                // wait. A lower bound is now measured from the end the store recorded, an upper bound from when the poll saw
+                // it, so neither depends on the poll. The 15 s, 30 s and 35 s are the product's, not scaled.
+                const ended = (await finished(h, runId)).finishedAt.getTime();
+                const seenAt = Date.now();
+                const controller = await h.client.waitForOrchestration(controllerInstanceId, testTime.ms(150_000));
                 const tookMs = Date.now() - ended;
+                const tookSinceSeenMs = Date.now() - seenAt;
                 expect(controller.status, JSON.stringify(controller)).toBe("Completed");
                 const messageId = `workflow:${id}:${runId}:terminal`;
                 // The parent got the notice once: the slow attempt's own queueing, after its wait.
@@ -675,7 +680,7 @@ describe("workflow v2: telling the parent when a live run ends", () => {
                 if (requests) {
                     // No timeout: one attempt of about 35 s ended the controller's report.
                     expect(tookMs).toBeGreaterThanOrEqual(33_000);
-                    expect(tookMs).toBeLessThan(42_000);
+                    expect(tookSinceSeenMs).toBeLessThan(42_000);
                 } else {
                     // Timed out at 30 s: the retry waited its own 15 s before it found the notice recorded.
                     expect(tookMs).toBeGreaterThanOrEqual(42_000);

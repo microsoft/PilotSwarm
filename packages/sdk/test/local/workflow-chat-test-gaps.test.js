@@ -20,7 +20,7 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { registerWorkflowV2, sessionQueueTransport } from "../../src/workflow/v2/runtime.ts";
 import { saveChatWorkflowDefinition } from "../../src/workflow/v2/chat-definitions.ts";
@@ -30,7 +30,8 @@ import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
-const TIMEOUT = 240_000;
+// CI run 114: limits and bounds grow with the database the suite runs on (test/helpers/time-scale.js).
+const TIMEOUT = testTime.ms(240_000);
 const OWNER = { provider: "test", subject: "workflow-chat-test-gaps" };
 
 const yamlOf = doc => JSON.stringify(doc, null, 2);
@@ -190,7 +191,7 @@ describe("an agent's test of a revision: receive fixtures, visits, tools the cha
             const judged = await h.tool({ fixtures: ALL_FIXTURES.filter(item => item !== F.judgeAny), expect: "done" });
             expect(judged, JSON.stringify(judged)).toMatchObject({ status: "failed", unanswered: { call: "agent step judge",
                 fixture: { operation: "agent", state: "judge", arguments: { buildId: 7, state: "succeeded" }, visit: 2 } } });
-            expect(judged.tookSeconds).toBeLessThan(10);
+            expect(judged.tookSeconds).toBeLessThan(testTime.seconds(10));
             // G3: no fixture for the tool the chat lacks: the call fails as a live one would (no real call).
             const lacking = await h.tool({ fixtures: ALL_FIXTURES.filter(item => item !== F.postStatus), expect: "done" });
             expect(lacking, JSON.stringify(lacking)).toMatchObject({ status: "failed", run: { terminalState: "failed" }, firstError: { step: "poll" } });

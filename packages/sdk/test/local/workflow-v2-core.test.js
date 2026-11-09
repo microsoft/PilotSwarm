@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson, parseStoredJson, sha256Hex } from "../../src/workflow/v2/json.ts";
@@ -17,7 +17,8 @@ import { WORKFLOW_V2_REVISION_LIMITS } from "../../src/workflow/v2/store.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const ACTOR = { kind: "system", name: "workflow-v2-core-test" };
-const TIMEOUT = 120_000;
+// CI run 114 (HorizonDB, about ten times slower): the test's own bounds grow with the database (test/helpers/time-scale.js).
+const TIMEOUT = testTime.ms(120_000);
 
 const PIPELINE = `
 apiVersion: pilotswarm.dev/v2-draft
@@ -123,7 +124,7 @@ function host(client) {
 }
 
 async function until(check, label, timeoutMs = 60_000, diagnose = async () => null) {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = Date.now() + testTime.ms(timeoutMs);
     let last;
     while (Date.now() < deadline) {
         last = await check();

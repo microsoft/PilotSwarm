@@ -31,7 +31,7 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
@@ -43,7 +43,8 @@ import {
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
-const TIMEOUT = 120_000;
+// CI run 114 (HorizonDB, about ten times slower): the test's own bounds grow with the database (test/helpers/time-scale.js).
+const TIMEOUT = testTime.ms(120_000);
 const ACTOR = { kind: "system", name: "workflow-v2-fault-test" };
 
 const TWO_STEPS = `
@@ -100,7 +101,7 @@ states:
 `;
 
 async function until(check, label, timeoutMs = 60_000, diagnose = async () => null) {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = Date.now() + testTime.ms(timeoutMs);
     let last;
     while (Date.now() < deadline) {
         last = await check();
@@ -564,8 +565,14 @@ states:
     });
 
     it("carries a pending state across continue-as-new without admitting or starting it again", { timeout: TIMEOUT }, async () => {
-        // A 100 ms backstop makes 50 idle waits (the continue-as-new bound) pass while the script still runs.
+        // A 100 ms backstop makes 50 idle waits (the continue-as-new bound) pass while the script still runs. CI run 114
+        // (HorizonDB): they did not fit in the script's fixed 12 s there. The script now runs until the test lets it end,
+        // which it does once the controller has continued as new: no race with the database's speed.
         const h = await harness(getEnv(), {}, { wakeBackstopMs: 100 });
+        let open = false;
+        const gate = createServer((req, res) => { res.writeHead(200, { "content-type": "text/plain" }); res.end(open ? "open" : "held"); });
+        await new Promise(resolve => gate.listen(0, "127.0.0.1", resolve));
+        const gateUrl = `http://127.0.0.1:${gate.address().port}/`;
         try {
             const yaml = `
 apiVersion: pilotswarm.dev/v2-draft
@@ -576,7 +583,7 @@ states:
   wait:
     type: script
     source: |
-      await new Promise(resolve => setTimeout(resolve, 12_000));
+      while ((await (await fetch("${gateUrl}")).text()) !== "open") await new Promise(resolve => setTimeout(resolve, 200));
       await setResult("ok", { waited: true });
     transition: { next: { ok: done } }
   done: { type: terminal, outcome: succeeded, output: "\${input}" }
@@ -590,6 +597,7 @@ states:
                 return ids.length >= 2 && node?.state === "pending" ? ids : null;
             }, "continue-as-new while the script runs", 30_000);
             expect(executions.length).toBeGreaterThanOrEqual(2);
+            open = true;
             const run = await finished(h, runId, 60_000);
             expect(run.status, JSON.stringify(run)).toBe("completed");
             expect(run.terminalOutput).toEqual({ waited: true });
@@ -598,7 +606,12 @@ states:
                 ["wait", 1, 1, "effect"], ["done", 1, 0, "controller"],
             ]);
             expect(await h.client.listExecutions(workflowEffectInstanceId(nodes[0].nodeExecutionId))).toEqual([1]);
-        } finally { await h.stop(); }
+        } finally {
+            open = true;
+            await h.stop();
+            gate.closeAllConnections();
+            await new Promise(resolve => gate.close(resolve));
+        }
     });
 
     it("notifies the parent at least once with one stable message id when it crashes after the parent accepted the message", { timeout: TIMEOUT }, async () => {
