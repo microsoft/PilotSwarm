@@ -1287,6 +1287,9 @@ function formatActivity(event) {
     // Native child transcripts remain inspectable as events, but only their
     // lifecycle belongs in the parent's activity feed.
     if (event.eventType?.startsWith("native.") || event.eventType === "session.background_tasks_changed") return null;
+    // An end's mark (session.end_requested, recorded before a done or cancel is queued) has no row of its own: the
+    // command and the end already show.
+    if (event.eventType === "session.end_requested") return null;
     switch (event.eventType) {
         case "subagent.started":
         case "subagent.completed":

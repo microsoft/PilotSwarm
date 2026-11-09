@@ -16,6 +16,7 @@ import { publishCanvasApp, findCanvasApp } from "./canvas-app-catalog.js";
 import { canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEventData, latestCanvasRev } from "./canvas-support.js";
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
+import { recordSessionEndRequested } from "./session-end-mark.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
 import { applyWorkspaceDefaults, checkWorkspaceForSpawn, defaultsRecordOf, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, readDefaultsRecord, resolveWorkspaceDefaults, sameDefaultsRecord, WORKSPACE_PARTIAL_CHANGES_NOTE, workspaceOpenedKey } from "./workspace.js";
 import { workingFolderOf } from "./workspace-check.js";
@@ -3107,6 +3108,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     // S7-DX2 follow-up: a v2 workflow's active run ends in its store at once; the command is then queued only when
                     // its controller is to finish it (any other session gets it queued as before).
                     if (!await operatorCommandApplied(sdkClient, targetId, command)) {
+                        // G1 residual: the end is marked on the session before its command is queued (session-end-mark.ts).
+                        if (catalog) await recordSessionEndRequested(catalog, targetId, command, input.sessionId);
                         await sdkClient._getDuroxideClient().enqueueEvent(`session-${targetId}`, "messages", JSON.stringify(command));
                     }
                     return `[SYSTEM: ${action} requested for ${targetId}. It settles on its own schedule — poll read_session_info to confirm. Reason: ${reason}]`;
@@ -4027,6 +4030,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     const command = { type: "cmd", cmd: "done", id: cmdId, args: { reason: "Completed by parent" }, requestedBy: input.sessionId };
                     // S7-DX2: a v2 workflow child's command goes through the store first, as the orchestration's path sends it.
                     if (!await workflowChildCommandApplied(activityCtx, child.sessionId, command)) {
+                        // G1 residual: the end is marked on the child before its command is queued (session-end-mark.ts).
+                        if (catalog) await recordSessionEndRequested(catalog, child.sessionId, command, input.sessionId);
                         await sdkClient._getDuroxideClient().enqueueEvent(child.orchId, "messages", JSON.stringify(command));
                     }
                     return `[SYSTEM: Graceful completion requested for sub-agent ${child.orchId}. ` +
@@ -4065,6 +4070,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     const command = { type: "cmd", cmd: "cancel", id: cmdId, args: { reason: args.reason ?? "Cancelled by parent" }, requestedBy: input.sessionId };
                     // S7-DX2: a v2 workflow child's command goes through the store first, as the orchestration's path sends it.
                     if (!await workflowChildCommandApplied(activityCtx, child.sessionId, command)) {
+                        // G1 residual: the end is marked on the child before its command is queued (session-end-mark.ts).
+                        if (catalog) await recordSessionEndRequested(catalog, child.sessionId, command, input.sessionId);
                         await sdkClient._getDuroxideClient().enqueueEvent(child.orchId, "messages", JSON.stringify(command));
                     }
                     return `[SYSTEM: Graceful cancellation requested for sub-agent ${child.orchId}. ` +

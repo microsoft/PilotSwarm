@@ -4,6 +4,7 @@ import type { ScriptToolCall } from "../executor.js";
 import { runScriptNode, type RunScriptNodeResult, type ScriptRunnerOptions } from "../runner.js";
 import { WORKFLOW_COMMAND_QUEUE, parseWorkflowCommand, workflowErrorMessage } from "../orchestration.js";
 import { WORKFLOW_SCRIPTS_DISABLED_MESSAGE } from "../activities.js";
+import { SESSION_END_REQUESTED_EVENT } from "../../session-end-mark.js";
 import { admittedWorkflowToolGrant, isWorkflowControlTool, validateWorkflowToolArguments, type WorkflowToolBinding } from "../tool-policy.js";
 import type { WorkflowToolExecutor } from "../tool-executor.js";
 import { bindingWithDefaultShown, evaluateBindingTemplate, WorkflowBindingError, type BindingScope } from "./bindings.js";
@@ -2951,6 +2952,9 @@ export async function endWorkflowV2AgentChild(store: WorkflowStore, client: Work
         // requestedBy (the child's parent, the workflow) makes this the parent's own cleanup: the child records it on the
         // workflow (session.child_cleanup_completed) instead of sending the workflow a CHILD_UPDATE prompt, which no
         // controller reads and whose status read rewrote a failed workflow row to running (F-C2).
+        // G1 residual: the Workflow's own end is marked on the session too, before its command (session-end-mark.ts).
+        await store.recordSessionEvents(invocation.childSessionId, [{ eventType: SESSION_END_REQUESTED_EVENT,
+            data: { cmd: end, id: `workflow-agent-end:${nodeExecutionId}`, requestedBy: invocation.workflowSessionId } }]);
         await client.enqueueEvent(sessionInstance, "messages", JSON.stringify({
             type: "cmd", cmd: end, id: `workflow-agent-end:${nodeExecutionId}`, requestedBy: invocation.workflowSessionId,
             args: { reason: end === "done" ? "The workflow state this session ran was completed." : `The workflow state this session ran ended (${node.outcome}).` },
@@ -3160,6 +3164,9 @@ async function endContinuedChatLocked(store: WorkflowStore, client: WorkflowV2Ag
     }
     if (sent) {
         const why = ACTIVE_RUN_STATUSES.includes(run.status) ? "is stopping, so this chat gets no more cycles" : `ended (${run.status})`;
+        // G1 residual: the Workflow's own end is marked on the session too, before its command (session-end-mark.ts).
+        await store.recordSessionEvents(childSessionId, [{ eventType: SESSION_END_REQUESTED_EVENT,
+            data: { cmd: end, id: `workflow-agent-chat-end:${childSessionId}`, requestedBy: last.workflowSessionId } }]);
         await client.enqueueEvent(sessionInstance, "messages", JSON.stringify({
             type: "cmd", cmd: end, id: `workflow-agent-chat-end:${childSessionId}`, requestedBy: last.workflowSessionId,
             args: { reason: `The workflow run this chat served ${why}.` },
@@ -3461,6 +3468,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const created = last.spawnedAt !== null || (status !== null && status !== "NotFound");
         if (!created) return null;
         if (deleted) return "deleted";
+        // G1 residual (TLA+ limit.cc-g1-end-during-turn): an end asked while one of its turns runs reads Running until that
+        // turn ends; the end's mark says so first (session-end-mark.ts).
+        if (await store.sessionEndRequested(last.childSessionId)) return "ended";
         return status === "NotFound" || (status !== null && TERMINAL_ORCHESTRATION_STATUSES.includes(status)) ? "ended" : null;
     };
     /**

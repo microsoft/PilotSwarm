@@ -36,6 +36,7 @@ import {
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 import { spawnNesting, WORKFLOW_V2_MAX_DESCENDANT_LEVEL } from "../../src/workflow/v2/input-policy.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
+import { PilotSwarmManagementClient } from "../helpers/local-workers.js";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
@@ -780,6 +781,45 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
             }
         });
     }
+    // G1 residual (TLA+ limit.cc-g1-end-during-turn): a person ends the agent session while one of its turns runs. The
+    // command waits in the session's queue and its orchestration reads Running (the test double never ends: its turn is
+    // "still running"). The end's mark is recorded first, so the next visit does not reuse the ending session: it gets a
+    // new agent session (the visit's number in its id) and completes; its prompt is not queued behind the end.
+    it("G1 residual: a session a person ends while its turn runs is not reused by the next visit, which gets a new session and completes", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const h = await harness(env);
+        const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema });
+        await mgmt.start();
+        try {
+            const run = await started(h, CHAT_YAML({ limit: `"\${kv.limit}"` }), { limit: 3 });
+            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const first = await spawnedVisit(h, 1);
+            expect(first.childSessionId).toBe(chat);
+            // The person ends it while its (first visit's) turn runs: the command is queued; the session still reads Running.
+            await mgmt.completeSession(chat, "ended by a person", { wait: false });
+            expect((await h.client.getStatus(`session-${chat}`)).status).toBe("Running");
+            expect((await h.catalog.getSessionEvents(chat, 0, 100, ["session.end_requested"])).map(event => event.data))
+                .toEqual([expect.objectContaining({ cmd: "done" })]);
+            await controlWorkflowV2Run(h.host, run.workflowSessionId,
+                { operation: "set_vars", runId: null, set: { limit: 3600 }, delete: [], expectedKvRevision: 1 }, { actor: ACTOR, operationId: "vars-g1r" });
+            // The first visit is decided by its time limit; the next visit goes to a new agent session.
+            const second = await spawnedVisit(h, 2);
+            const replacement = workflowAgentChatSessionId(run.runId, "talk", 2);
+            expect(second.childSessionId).toBe(replacement);
+            expect(await h.store.readNodeExecution(first.nodeExecutionId)).toMatchObject({ outcome: "timed_out" });
+            expect(await eventsOf(h, run.workflowSessionId, "workflow.agent_chat_restarted"))
+                .toEqual([expect.objectContaining({ endedChatSessionId: chat, childSessionId: replacement, cycle: 2 })]);
+            // Nothing more went to the ending session after its end; the next visit completes in the new one.
+            expect((await chatMessages(h, chat)).map(message => message.prompt ?? message.cmd)).toEqual([first.prompt, "done"]);
+            expect(await completeAs(h, replacement, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
+                .toMatchObject({ ok: true, outcome: "finish" });
+            expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+        } finally {
+            await mgmt.stop();
+            await h.stop();
+        }
+    });
+
     it("G2: a visit whose turn Stop failed past its retries is ended before the next visit's prompt is sent; a failure there retries the spawn", { timeout: TIMEOUT }, async () => {
         // Fault injection: the first visit's Stop fails 5 times (the controller's end of that visit gives up), and then once
         // more as the second visit's spawn ends it (that attempt fails, and its retry ends it).

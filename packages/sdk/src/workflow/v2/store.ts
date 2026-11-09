@@ -5970,6 +5970,17 @@ export class WorkflowStore {
         return rows[0] ? agentInvocationFrom(rows[0]) : null;
     }
 
+    /**
+     * G1 residual: whether an end (done or cancel) was asked of session `sessionId` (its session.end_requested mark,
+     * session-end-mark.ts), whether or not the session has ended yet.
+     */
+    async sessionEndRequested(sessionId: string): Promise<boolean> {
+        if (!storableId(sessionId)) return false;
+        const { rows } = await this.pool.query(
+            `SELECT 1 FROM ${this.t.sessionEvents} WHERE session_id = $1 AND event_type = 'session.end_requested' LIMIT 1`, [sessionId]);
+        return rows.length > 0;
+    }
+
     /** Whether session `sessionId` has a row that was deleted (false: no row, or a row not deleted). */
     async isSessionDeleted(sessionId: string): Promise<boolean> {
         if (!storableId(sessionId)) return false;

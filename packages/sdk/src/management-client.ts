@@ -82,6 +82,7 @@ import type {
     AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentPackageEditorInfo, AgentWorkerStateRow, WorkerRow,
 } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
+import { recordSessionEndRequested } from "./session-end-mark.js";
 import { readCanvasKv, writeCanvasKv, CanvasKvError } from "./canvas-kv.js";
 import type { CanvasKvStore, CanvasKvPrincipal, CanvasKvReadResult, CanvasKvWriteOp, CanvasKvWriteResult, CanvasKvMe } from "./canvas-kv.js";
 import type {
@@ -4862,6 +4863,13 @@ export class PilotSwarmManagementClient {
             }, { targetSessionId: sessionId, command: { type: "cmd", ...command } });
             // A workflow with no active run has nothing for the store to apply: the command goes as before.
             if (applied.action === "applied" && applied.receipt?.applied !== "none") return;
+        }
+        // G1 residual (TLA+ limit.cc-g1-end-during-turn): a done or cancel is marked on the session before it is queued,
+        // once its orchestration is known to be live (a command that cannot be sent leaves no mark). The callers checked
+        // the session first (a system session, a chat with an active Workflow are refused before this).
+        if (command.cmd !== "delete") {
+            await this._assertOrchestrationLive(`session-${sessionId}`, sessionId, "sendCommand");
+            await recordSessionEndRequested(this._catalog!, sessionId, command);
         }
         await this.sendCommand(sessionId, command);
     }
