@@ -51,6 +51,8 @@ function createRestartHarness() {
     const sessionId = systemAgentUUID(agent.id);
     const rows = new Map([[sessionId, makeRow(sessionId)]]);
     const calls = [];
+    // The session events the management client records (SessionCatalog.recordEvents), in order: an end's mark.
+    const events = [];
     // Worker registry rows (migration 0040). Empty: no worker is live.
     const workers = [];
 
@@ -110,6 +112,9 @@ function createRestartHarness() {
                 updatedAt: new Date(3_000),
             });
             calls.push({ type: "updateSession", id, updates });
+        },
+        async recordEvents(id, records) {
+            for (const record of records) events.push({ id, eventType: record.eventType, data: record.data });
         },
         async listWorkers() {
             return workers;
@@ -194,7 +199,7 @@ function createRestartHarness() {
     };
     mgmt._systemAgents = [agent];
 
-    return { mgmt, rows, calls, agent, sessionId, workers };
+    return { mgmt, rows, calls, events, agent, sessionId, workers };
 }
 
 function liveWorker(workerNodeId, state) {
@@ -529,19 +534,33 @@ describe("system session removal: review fixes", () => {
     });
 
     it("the portal's complete call refuses a system session, and does not wait on a person's session", async () => {
-        const { mgmt, rows, calls, sessionId } = createRestartHarness();
+        const { mgmt, rows, calls, events, sessionId } = createRestartHarness();
         const transport = Object.create(NodeSdkTransport.prototype);
         transport.mgmt = mgmt;
 
         await expectCodedRefusal(transport.completeSession(sessionId), "SYSTEM_SESSION_PROTECTED", 409);
         assertEqual(calls.length, 0, "no done command reaches the system session");
         assertEqual(rows.get(sessionId).state, "running", "the system session keeps running");
+        // G1 residual: a refused end records no mark.
+        assertEqual(events.filter((event) => event.eventType === "session.end_requested").length, 0, "the refused system session gets no end mark");
 
         const userId = "0c0c0c0c-1111-2222-3333-444444444444";
         rows.set(userId, makeRow(userId, { isSystem: false, agentId: null, title: "Mine" }));
         const sent = [];
-        mgmt.sendCommand = async (id, command) => { sent.push({ id, command }); };
+        const order = [];
+        mgmt.sendCommand = async (id, command) => { sent.push({ id, command }); order.push("done"); };
+        const recordEvents = mgmt._catalog.recordEvents.bind(mgmt._catalog);
+        mgmt._catalog.recordEvents = async (id, records) => {
+            for (const record of records) if (record.eventType === "session.end_requested") order.push("mark");
+            return recordEvents(id, records);
+        };
         await transport.completeSession(userId, "Finished here");
+        // G1 residual: the person's done is marked on the session once, before its command.
+        const marks = events.filter((event) => event.eventType === "session.end_requested");
+        assertEqual(marks.length, 1, "one end mark for the person's session");
+        assertEqual(marks[0].id, userId, "it is on that session");
+        assertEqual(marks[0].data.cmd, "done", "it marks the done");
+        assertEqual(order.join(","), "mark,done", "the mark comes before the done command");
         assertEqual(sent.length, 1, "one done command for the person's session");
         assertEqual(sent[0].id, userId, "it goes to that session");
         assertEqual(sent[0].command.cmd, "done", "it is the done command");
