@@ -3477,37 +3477,43 @@ test("timeline: a running Workflow is Live; it follows new visits, lights the la
     expect(errors).toEqual([]);
 });
 
-for (const [name, size] of [["portrait", { width: 390, height: 844 }], ["landscape", { width: 844, height: 390 }]]) {
-    test(`timeline: on a phone (${name}) the bar is one row of 44 px targets under a graph that keeps its height`, async ({ page }) => {
-        const errors = [];
-        page.on("pageerror", collectPageErrors(errors));
-        const { events, model } = replayFixture();
-        await routeApi(page, { workflowEvents: events, workflowState: { title: "Workflow: watch-v2", status: "completed" },
-            onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: model } }) });
-        await page.setViewportSize(size);
-        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
-        const phone = workflowTab(page);
-        await phone.waitFor({ state: "visible", timeout: 10_000 }).catch(() => showWorkflowPane(page));
-        const { bar, slider, button } = timelineOf(phone);
-        await expect(bar).toBeVisible();
-        await button("Step back").click();
-        const rows = new Set();
-        for (const control of [button("Step back"), button("Play"), button("Step on"), button("Latest"), slider]) {
-            const box = await control.boundingBox();
-            expect(box.height, "44 px tall").toBeGreaterThanOrEqual(44 - 0.01);
-            if (control !== slider) expect(box.width, "44 px wide").toBeGreaterThanOrEqual(44 - 0.01);
-            rows.add(Math.round(box.y + box.height / 2));
-        }
-        // One row: every control's middle on one line (within a pixel).
-        const middles = [...rows];
-        expect(Math.max(...middles) - Math.min(...middles)).toBeLessThanOrEqual(1);
-        const graph = await phone.getByRole("group", { name: "Workflow graph" }).boundingBox();
-        expect(graph.height).toBeGreaterThanOrEqual(150 - 0.01);
-        await panelTab(phone, "Log").click();
-        const line = bottomPanel(phone, "log").getByRole("button", { name: /^● poll started$/ });
-        expect((await line.boundingBox()).height).toBeGreaterThanOrEqual(44);
-        await shot(page, `timeline-phone-${name}`);
-        expect(errors).toEqual([]);
+// A phone held sideways is a touch screen: the portal takes 844 x 390 for a phone only with a coarse pointer
+// (PHONE_LANDSCAPE_MEDIA_QUERY, ui/core moa.js), as FUI-F1 below. With a mouse it is a short desktop window, whose
+// Workflow tool buttons keep their 32 px.
+for (const [name, size, touch] of [["portrait", { width: 390, height: 844 }, false], ["landscape", { width: 844, height: 390 }, true]]) {
+    test.describe(`timeline on a phone (${name})`, () => {
+        if (touch) test.use({ hasTouch: true, isMobile: true });
+        test(`timeline: on a phone (${name}) the bar is one row of 44 px targets under a graph that keeps its height`, async ({ page }) => {
+            const errors = [];
+            page.on("pageerror", collectPageErrors(errors));
+            const { events, model } = replayFixture();
+            await routeApi(page, { workflowEvents: events, workflowState: { title: "Workflow: watch-v2", status: "completed" },
+                onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: model } }) });
+            await page.setViewportSize(size);
+            await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+            const phone = workflowTab(page);
+            await phone.waitFor({ state: "visible", timeout: 10_000 }).catch(() => showWorkflowPane(page));
+            const { bar, slider, button } = timelineOf(phone);
+            await expect(bar).toBeVisible();
+            await button("Step back").click();
+            const rows = new Set();
+            for (const control of [button("Step back"), button("Play"), button("Step on"), button("Latest"), slider]) {
+                const box = await control.boundingBox();
+                expect(box.height, "44 px tall").toBeGreaterThanOrEqual(44 - 0.01);
+                if (control !== slider) expect(box.width, "44 px wide").toBeGreaterThanOrEqual(44 - 0.01);
+                rows.add(Math.round(box.y + box.height / 2));
+            }
+            // One row: every control's middle on one line (within a pixel).
+            const middles = [...rows];
+            expect(Math.max(...middles) - Math.min(...middles)).toBeLessThanOrEqual(1);
+            const graph = await phone.getByRole("group", { name: "Workflow graph" }).boundingBox();
+            expect(graph.height).toBeGreaterThanOrEqual(150 - 0.01);
+            await panelTab(phone, "Log").click();
+            const line = bottomPanel(phone, "log").getByRole("button", { name: /^● poll started$/ });
+            expect((await line.boundingBox()).height).toBeGreaterThanOrEqual(44);
+            await shot(page, `timeline-phone-${name}`);
+            expect(errors).toEqual([]);
+        });
     });
 }
 
