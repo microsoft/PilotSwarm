@@ -16,13 +16,16 @@ test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 2, 
 test.afterAll(async () => { if (stub) await new Promise(resolve => stub.server.close(resolve)); });
 
 async function openTheme(page, viewport, soundOn = true, activeSessionId = sessionId) {
+    const soundSettings = typeof soundOn === "boolean"
+        ? { themeSound: { on: soundOn, volume: 40 }, themeSoundMobile: { on: soundOn, volume: 40 } }
+        : soundOn;
     const failed = [];
     page.on("requestfailed", request => failed.push(request.url()));
     page.on("response", response => { if (response.status() >= 400 && /horizon-dawn|sora|\.svg|\.woff2/i.test(response.url())) failed.push(`${response.status()} ${response.url()}`); });
     await page.route("**/api/v1/**", route => {
         const url = new URL(route.request().url());
         if (url.pathname.endsWith("/me/profile")) return route.fulfill({ json: { ok: true, result: { profileSettings: {
-            themeId: "horizon-dawn", themeSound: { on: soundOn, volume: 40 }, themeSoundMobile: { on: soundOn, volume: 40 },
+            themeId: "horizon-dawn", ...soundSettings,
         } } } });
         return route.fallback();
     });
@@ -60,8 +63,7 @@ test("selected session: the stronger theme fill survives pinned and hovered row 
     expect(await other.evaluate(el => getComputedStyle(el).backgroundImage)).not.toBe(selected.fill);
 });
 
-for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }])
-for (const soundOn of [true, false]) test(`cyan accent ${viewport.width}px: appearance cue respects sounds ${soundOn ? "on" : "off"}`, async ({ page }) => {
+async function trackAccentDings(page) {
     await page.addInitScript(() => {
         Math.random = () => 0;
         window.accentDings = 0;
@@ -77,12 +79,66 @@ for (const soundOn of [true, false]) test(`cyan accent ${viewport.width}px: appe
         };
     });
     await page.clock.install();
+}
+
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }])
+for (const soundOn of [true, false]) test(`cyan accent ${viewport.width}px: appearance cue respects sounds ${soundOn ? "on" : "off"}`, async ({ page }) => {
+    await trackAccentDings(page);
     await openTheme(page, viewport, soundOn);
     await page.locator(".portal-header-brand").click();
     await page.clock.runFor(500);
     await page.clock.fastForward(30_001);
     await expect(page.locator(".portal-header-accent")).toHaveAttribute("data-active", "true");
     expect(await page.evaluate(() => window.accentDings)).toBe(soundOn ? 1 : 0);
+});
+
+for (const mode of ["keyboard takeover", "hidden page chrome"])
+for (const active of [false, true]) test(`cyan accent: ${mode} stops ${active ? "an active pass" : "a waiting pass"} and its cue`, async ({ page }) => {
+    await trackAccentDings(page);
+    await openTheme(page, mode === "keyboard takeover" ? { width: 390, height: 844 } : { width: 1440, height: 900 });
+    await page.locator(".portal-header-brand").click();
+    await page.clock.runFor(500);
+    const accent = page.locator(".portal-header-accent");
+    await expect(accent).toHaveAttribute("data-enabled", "true");
+    if (active) {
+        await page.clock.fastForward(30_001);
+        await expect(accent).toHaveAttribute("data-active", "true");
+    }
+    const count = await page.evaluate(() => window.accentDings);
+    await page.evaluate(mode => {
+        if (mode === "keyboard takeover") document.body.classList.add("ps-kb-takeover");
+        else document.querySelector(".portal-app-shell").classList.add("is-chromeless");
+    }, mode);
+    await page.clock.runFor(100);
+    await expect(page.locator(".portal-header")).toBeHidden();
+    await expect(accent).toHaveAttribute("data-enabled", "false");
+    await expect(accent).toHaveAttribute("data-active", "false");
+    await page.clock.fastForward(65_000);
+    expect(await page.evaluate(() => window.accentDings)).toBe(count);
+    await page.evaluate(mode => {
+        if (mode === "keyboard takeover") document.body.classList.remove("ps-kb-takeover");
+        else document.querySelector(".portal-app-shell").classList.remove("is-chromeless");
+    }, mode);
+    await page.clock.runFor(100);
+    await expect(accent).toHaveAttribute("data-enabled", "true");
+    await page.clock.fastForward(29_000);
+    await expect(accent).not.toHaveAttribute("data-active", "true");
+    await page.clock.runFor(1_500);
+    await expect(accent).toHaveAttribute("data-active", "true");
+    expect(await page.evaluate(() => window.accentDings)).toBe(count + 1);
+});
+
+for (const width of [390, 1440]) test(`cyan accent ${width}px: cue uses this device's sound preference`, async ({ page }) => {
+    await trackAccentDings(page);
+    await openTheme(page, { width, height: 900 }, {
+        themeSound: { on: width === 390, volume: 40 },
+        themeSoundMobile: { on: width !== 390, volume: 40 },
+    });
+    await page.locator(".portal-header-brand").click();
+    await page.clock.runFor(500);
+    await page.clock.fastForward(30_001);
+    await expect(page.locator(".portal-header-accent")).toHaveAttribute("data-active", "true");
+    expect(await page.evaluate(() => window.accentDings)).toBe(0);
 });
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {

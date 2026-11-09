@@ -478,9 +478,13 @@ function PortalHeaderAccent({ controller }) {
     const ref = React.useRef(null);
     React.useEffect(() => {
         const element = ref.current;
+        const header = element.closest(".portal-header");
+        const isRendered = () => element.getClientRects().length > 0;
+        let headerVisible = isRendered();
         const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
         const accent = createHeaderAccent({
             start: () => {
+                if (!isRendered()) return;
                 element.dataset.active = "true";
                 themeSoundPlayer().cue("accent");
             },
@@ -488,17 +492,23 @@ function PortalHeaderAccent({ controller }) {
         });
         const sync = () => {
             const enabled = controller.getState().ui?.themeId === "horizon-dawn"
-                && !motion.matches && document.visibilityState === "visible";
+                && headerVisible && !motion.matches && document.visibilityState === "visible";
             const value = String(enabled);
             if (element.dataset.enabled !== value) element.dataset.enabled = value;
             accent.setEnabled(enabled);
         };
+        const resize = new ResizeObserver(() => {
+            headerVisible = isRendered();
+            sync();
+        });
+        if (header) resize.observe(header);
         const unsubscribe = controller.subscribe(sync);
         motion.addEventListener("change", sync);
         document.addEventListener("visibilitychange", sync);
         sync();
         return () => {
             accent.dispose();
+            resize.disconnect();
             unsubscribe();
             motion.removeEventListener("change", sync);
             document.removeEventListener("visibilitychange", sync);
