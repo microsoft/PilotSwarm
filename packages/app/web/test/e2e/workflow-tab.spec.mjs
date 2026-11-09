@@ -3517,6 +3517,70 @@ for (const [name, size, touch] of [["portrait", { width: 390, height: 844 }, fal
     });
 }
 
+// UXP-TL-02 (owner, TEST at 390 x 844, a running Workflow, Live): the graph's zoom controls (bottom left) covered the
+// current step's card at the bottom of the fitted graph. On a phone the fit leaves the controls' strip clear: the first
+// fit and Fit to screen both; a desktop's fit is unchanged.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "UXP-TL-02" (from packages/app/web, after build).
+const CHAIN_STATES = [
+    ...[1, 2, 3, 4, 5, 6].map((n) => ({ id: `s${n}`, type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["ok"], next: { ok: `s${n + 1}` } })),
+    { id: "s7", type: "wait", seconds: 30, outcomes: ["elapsed"], next: { elapsed: "s1" } },
+];
+function chainFixture() {
+    let seqs = 0;
+    const event = (eventType, data, seconds) => ({ sessionId: WORKFLOW_ID, seq: ++seqs, eventType, createdAt: replayAt(seconds), data: { runId: "run-1", ...data } });
+    const events = [event("workflow.started", { ...V2_EVENTS[0].data, name: "chain-v2", initial: "s1", states: CHAIN_STATES }, 0)];
+    const rows = [];
+    for (const [index, state] of CHAIN_STATES.entries()) {
+        const id = `nx-${state.id}-1`;
+        const last = index === CHAIN_STATES.length - 1;
+        events.push(event("workflow.state_started", { nodeExecutionId: id, stateId: state.id, scopeId: "root", ordinal: index + 1, type: state.type, step: index + 1,
+            kvRevision: 1 }, index * 10));
+        if (!last) events.push(event("workflow.state_completed", { nodeExecutionId: id, stateId: state.id, step: index + 1, outcome: "ok", resultKind: "business" }, index * 10 + 5));
+        rows.push({ nodeExecutionId: id, stateId: state.id, ordinal: 1, state: last ? "pending" : "completed", outcome: last ? null : "ok", resultKind: "business",
+            winner: "controller", attempts: 0, kvRevision: 1, enteredAt: replayAt(index * 10), endedAt: last ? null : replayAt(index * 10 + 5) });
+    }
+    const model = { ...V2_READ_MODEL, revision: { ...V2_READ_MODEL.revision, name: "chain-v2" }, graph: { revision: 1, initial: "s1", states: CHAIN_STATES },
+        runs: [{ runId: "run-1", mode: "live", status: "running", revision: 1, outcome: null }],
+        run: { ...V2_READ_MODEL.run, status: "running", nodeExecutions: rows } };
+    return { events, model };
+}
+
+for (const [name, size, touch] of [["a phone (390 x 844, touch)", { width: 390, height: 844 }, true], ["a desktop (1440 x 900)", { width: 1440, height: 900 }, false]]) {
+    test.describe(`UXP-TL-02: ${name}`, () => {
+        if (touch) test.use({ hasTouch: true, isMobile: true });
+        test(`UXP-TL-02: on ${name} the fitted graph's current step is clear of the graph's controls`, async ({ page }) => {
+            await page.setViewportSize(size);
+            const errors = [];
+            page.on("pageerror", collectPageErrors(errors));
+            const { events, model } = chainFixture();
+            await routeApi(page, { workflowEvents: events, workflowState: { title: "Workflow: chain-v2", status: "running" },
+                onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: model } }) });
+            await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+            const main = workflowTab(page);
+            await main.waitFor({ state: "visible", timeout: 10_000 }).catch(() => showWorkflowPane(page));
+            const graph = main.getByRole("group", { name: "Workflow graph" });
+            await expect(graph).toHaveAttribute("data-renderer", "flow");
+            const card = stepOf(main, "s7");
+            // Live: the current step is the newest visit's, at the bottom of the chain.
+            await expect.poll(() => litOf(card)).toEqual([expect.any(String), "0", "true"]);
+            const controls = main.locator(".ps-workflow-graph-controls");
+            const clear = async () => {
+                const [a, b, area] = [await card.boundingBox(), await controls.boundingBox(), await graph.boundingBox()];
+                const apart = a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y;
+                const inside = a.y >= area.y - 0.5 && a.y + a.height <= area.y + area.height + 0.5;
+                return apart && inside;
+            };
+            // The first fit, then Fit to screen after the person zoomed in.
+            await expect.poll(clear, { timeout: 5_000 }).toBe(true);
+            await main.getByRole("button", { name: "Zoom in", exact: true }).click();
+            await main.getByRole("button", { name: "Fit to screen", exact: true }).click();
+            await expect.poll(clear, { timeout: 5_000 }).toBe(true);
+            await shot(page, `uxp-tl-02-fit-${size.width}`);
+            expect(errors).toEqual([]);
+        });
+    });
+}
+
 // Final review FUI-F1: on a phone held sideways (844 x 390, a touch screen) the Workflow tab shows maximized over the page,
 // and the Workflow's touch targets keep 44 px there too, as at 390 px: a Workflow dialog's controls (portalled out of the
 // tab), a finished Workflow's replay controls, and the drafts' Show it and Start…. Before, those rules applied only to
@@ -4392,8 +4456,9 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
             await pill.dispatchEvent("pointerup", { pointerType: "touch" });
             await expect(page.getByRole("tooltip")).toHaveCount(0);
             // Two rows above the graph; the meta line is relocated: the time taken joins the state, its start and revision
-            // are in the state's tooltip.
-            expect(await graphTopBelowTab(page)).toBeLessThanOrEqual(150);
+            // are in the state's tooltip. UXP-TL-01 (owner, 2026-11-09): at 390 px the state keeps its words and its time
+            // whole, so Pause and Stop… take a line of their own under it: one 44 px row more (and the 4 px between).
+            expect(await graphTopBelowTab(page)).toBeLessThanOrEqual(150 + 48);
             await expect(bar.locator(".ps-wf-bar-text")).toHaveCount(0);
             await expect(bar.locator(".ps-wf-state")).toHaveText(/^Running · \d+:\d{2}(:\d{2})?$/);
             await expect(bar.locator(".ps-wf-state")).toHaveAttribute("title", /^Started \d.* · revision 1$/);
@@ -4403,8 +4468,13 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
             for (const control of [main.getByRole("combobox", { name: "Workflow definition", exact: true }), shown]) {
                 expect(await control.evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(16);
             }
-            const rows = await main.locator(".ps-wf-tab-head, .ps-wf-bar.is-run").evaluateAll(elements => elements.map(element => element.getBoundingClientRect().height));
-            for (const height of rows) expect(height).toBeLessThan(60);
+            const [head, run] = await main.locator(".ps-wf-tab-head, .ps-wf-bar.is-run").evaluateAll(elements => elements.map(element => element.getBoundingClientRect().height));
+            expect(head).toBeLessThan(60);
+            // UXP-TL-01: the run bar is the picker and the state on one line, the buttons on the next.
+            expect(run).toBeLessThan(60 + 48);
+            const middle = async (locator) => { const box = await locator.boundingBox(); return box.y + box.height / 2; };
+            expect(Math.abs(await middle(bar.locator(".ps-wf-state")) - await middle(shown))).toBeLessThanOrEqual(1);
+            expect(await middle(bar.getByRole("button", { name: "Pause", exact: true }))).toBeGreaterThan(await middle(shown) + 40);
         } else {
             await expect(bar.locator(".ps-wf-bar-text")).toHaveText(/^revision 1 · \d/);
             await expect(bar.locator(".ps-wf-state")).toHaveText("Running");

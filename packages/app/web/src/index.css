@@ -13529,6 +13529,17 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 /* UXP-GEM-03 (WebKit at 390 px, measured): the Workflow picker's group shrank below its words and its picker (flex: none)
    painted over the start of the state chip beside it. In the run bar the group keeps its width; the chip gives way. */
 .ps-wf-tab.is-phone .ps-wf-bar.is-run > .ps-wf-picker-group { flex: none; }
+/* UXP-TL-01 (owner, TEST at 390 px, a running Workflow): beside Pause, Stop… and Run again… the chip gave way to nothing
+   ("·"). Now the chip keeps its words and its time; the Workflow picker gives way first (its face ends in an ellipsis,
+   down to a few characters), and when the row still cannot hold them the buttons go to a line of their own, at its end.
+   The picker's group lays its label and picker out in the row itself, so the row breaks on the picker's narrowest width
+   and the picker then takes back the room left, up to its whole face. */
+.ps-wf-tab.is-phone .ps-wf-body > .ps-wf-bar.is-run { flex-wrap: wrap; row-gap: 4px; }
+.ps-wf-tab.is-phone .ps-wf-bar.is-run > .ps-wf-picker-group { display: contents; }
+.ps-wf-tab.is-phone .ps-wf-bar.is-run > .ps-wf-picker-group > .ps-wf-picker-label { flex: none; }
+.ps-wf-tab.is-phone .ps-wf-bar.is-run > .ps-wf-picker-group > .ps-wf-picker.is-faced { flex: 1 1 4.5rem; min-width: 4.5rem; max-width: max-content; }
+.ps-wf-tab.is-phone .ps-wf-bar.is-run > .ps-wf-picker-group > .ps-wf-picker.is-faced > .ps-wf-picker-face { flex: 1 1 auto; width: 100%; }
+.ps-wf-tab.is-phone .ps-wf-bar.is-run > .ps-wf-state { flex: none; max-width: 100%; }
 .ps-wf-state.has-time > .ps-wf-state-label {
   flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; direction: ltr;
 }

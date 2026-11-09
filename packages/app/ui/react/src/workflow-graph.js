@@ -1,4 +1,5 @@
 import React from "react";
+import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
 import { layoutWorkflowGraphTB, workflowGraphEdgeKey, WORKFLOW_GRAPH_LABEL_HEIGHT } from "../../core/src/workflow-graph-layout.js";
 import { workflowV1NodeCard } from "../../core/src/workflow-words.js";
 
@@ -220,11 +221,13 @@ function loadFlow() {
  * `onPlaces` is told the new places at the end of each drag (null after Reset layout); the plain picture keeps the
  * automatic layout. `mode` is the display mode it is shown in ("normal", "zen", "full"): a change fits an untouched view
  * again (owner, 2026-11-06T19:40Z, F8). Owner 2026-11-09 (the timeline): `lit`, the last four transitions up to the visit
- * shown and its step (workflowV2LitTransitions), drawn the same by both renderers.
+ * shown and its step (workflowV2LitTransitions), drawn the same by both renderers. `mobile`: the tab's mobile layout; with
+ * the phone query (PHONE_MEDIA_QUERY, as the tab's own) the flow is fitted clear of its controls (UXP-TL-02).
  */
 export function WorkflowGraph({ definition, nodes, selected, select, scope = null, viewport = null, onViewport = null, places = null, onPlaces = null,
-    mode = "normal", lit = null }) {
+    mode = "normal", lit = null, mobile = false }) {
     const key = workflowGraphKey(definition);
+    const phone = useMediaQuery(PHONE_MEDIA_QUERY) && mobile;
     // The key holds everything of the definition the layout reads.
     const layout = React.useMemo(() => layoutWorkflowGraphTB(definition), [key]);
     const remembered = viewport && viewport.key === key ? viewport : null;
@@ -237,6 +240,7 @@ export function WorkflowGraph({ definition, nodes, selected, select, scope = nul
         return () => { live = false; };
     }, [Flow]);
     return h("div", { className: "ps-workflow-graph", role: "group", "aria-label": "Workflow graph", "data-renderer": Flow ? "flow" : "static" },
-        Flow ? h(Flow, { key: `${scope ?? ""}\u0000${key}`, layout, nodes, selected, select, viewport: remembered, onViewport: report, places, onPlaces, mode, lit })
+        Flow ? h(Flow, { key: `${scope ?? ""}\u0000${key}`, layout, nodes, selected, select, viewport: remembered, onViewport: report, places, onPlaces, mode, lit,
+            phone })
             : h(WorkflowGraphStatic, { layout, nodes, selected, select, lit }));
 }

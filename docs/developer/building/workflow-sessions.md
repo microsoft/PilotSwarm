@@ -225,7 +225,10 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   older workflow screen (`workflow-workspace.js`) is no longer shown anywhere
   but still holds them in its code until stage 2 removes it.
 - **Phone (390 px):** the Workflow tab opens as a sheet over the chat; in a
-  panel, **← Graph** returns to the graph.
+  panel, **← Graph** returns to the graph. A run's state keeps its words and
+  its time ("Running · 2:45"): the Workflow picker shortens first, and when
+  the row still cannot hold them, the run's buttons move to a line of their
+  own. Fitting the graph keeps it clear of its zoom controls at the bottom.
 - **Terminal UI:** the same model. `w` opens the Workflow pane for the chat
   (its selected Workflow, an agent node chat's own Workflow at that node, else
   its newest Workflow); Esc goes back to the chat. In the session list, `c`,

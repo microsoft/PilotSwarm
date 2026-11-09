@@ -57,6 +57,9 @@ const MODE_REFIT_MS = 1000;
 /** The fitted view never enlarges the steps past their own size, and leaves this share of the area around the graph. */
 const FIT_MAX_ZOOM = 1;
 const FIT_PADDING = 0.06;
+/** UXP-TL-02: on a phone, the room kept between a fitted graph and its controls, and the least height left to fit it in. */
+const FIT_CONTROLS_GAP_PX = 4;
+const FIT_MIN_CLEAR_HEIGHT_PX = 120;
 const FIT_DURATION_MS = 200;
 const ZOOM_DURATION_MS = 150;
 /** A press on a step that moves less than this is a click; a longer one drags the box (f-03). */
@@ -89,6 +92,16 @@ export function workflowGraphBounds(layout, moved = null) {
 /** The view that shows the whole graph (`bounds`, from workflowGraphBounds) centred in an area of `area` pixels. */
 export function workflowFitViewport(bounds, area) {
     return getViewportForBounds(bounds, area.width, area.height, MIN_ZOOM, FIT_MAX_ZOOM, FIT_PADDING);
+}
+
+/**
+ * UXP-TL-02 (owner, TEST at 390 x 844): on a phone the graph is fitted above the strip its controls take at the bottom
+ * (`reserve` pixels from the area's bottom to the controls' top, and a small gap), so no step sits under them after a fit.
+ * An area too short to give the strip up keeps its whole height. Pure.
+ */
+export function workflowFitArea(area, reserve) {
+    const height = area.height - Math.max(0, reserve) - FIT_CONTROLS_GAP_PX;
+    return Number.isFinite(reserve) && reserve > 0 && height >= FIT_MIN_CLEAR_HEIGHT_PX ? { width: area.width, height } : area;
 }
 
 /** A remembered view React Flow can start from: finite x and y, and a zoom it allows. */
@@ -194,16 +207,22 @@ const panZoomReady = state => Boolean(state.panZoom);
 /**
  * The controls, and the automatic fits: `fitted` is true once the view was fitted or started from a remembered one;
  * `touched` is true while the person has panned or zoomed since the last fit; `modeChanged` is when the display mode last
- * changed (F8): until MODE_REFIT_MS after it, the area's new size fits the view again unless it was touched.
+ * changed (F8): until MODE_REFIT_MS after it, the area's new size fits the view again unless it was touched. `phone`
+ * (UXP-TL-02): every fit leaves the controls' strip at the bottom of the area (`host`, the flow's element) clear.
  */
-function GraphView({ bounds, area, fitted, touched, modeChanged, hand, onHand, onReset, refit = 0, onInteract = null }) {
+function GraphView({ bounds, area, fitted, touched, modeChanged, hand, onHand, onReset, refit = 0, onInteract = null, phone = false, host = null }) {
     const flow = useReactFlow();
     const ready = useStore(panZoomReady);
+    const panel = React.useRef(null);
     const fit = React.useCallback(options => {
         if (!area) return;
         touched.current = false;
-        flow.setViewport(workflowFitViewport(bounds, area), options);
-    }, [flow, bounds, area, touched]);
+        let shown = area;
+        if (phone && host?.current && panel.current) {
+            shown = workflowFitArea(area, host.current.getBoundingClientRect().bottom - panel.current.getBoundingClientRect().top);
+        }
+        flow.setViewport(workflowFitViewport(bounds, shown), options);
+    }, [flow, bounds, area, touched, phone, host]);
     React.useEffect(() => {
         if (!ready || !area || fitted.current) return;
         fitted.current = true;
@@ -224,7 +243,7 @@ function GraphView({ bounds, area, fitted, touched, modeChanged, hand, onHand, o
         if (by > 0) flow.zoomIn({ duration: ZOOM_DURATION_MS });
         else flow.zoomOut({ duration: ZOOM_DURATION_MS });
     };
-    return h(Panel, { position: "bottom-left", className: "ps-workflow-graph-controls", role: "group", "aria-label": "Graph view" },
+    return h(Panel, { ref: panel, position: "bottom-left", className: "ps-workflow-graph-controls", role: "group", "aria-label": "Graph view" },
         h(WorkflowToolButton, { label: "Zoom in", glyph: "zoom-in", onClick: () => zoom(1) }),
         h(WorkflowToolButton, { label: "Zoom out", glyph: "zoom-out", onClick: () => zoom(-1) }),
         h(WorkflowToolButton, { label: "Fit to screen", glyph: "fit", onClick: () => { onInteract?.(); fit({ duration: FIT_DURATION_MS }); } }),
@@ -239,10 +258,11 @@ function GraphView({ bounds, area, fitted, touched, modeChanged, hand, onHand, o
  * `layout` from layoutWorkflowGraphTB; `nodes` the step views; `select(id)` selects a step (and may open its details);
  * `viewport` the remembered view this flow starts from (read when it mounts), `onViewport(view)` told each view once it
  * settles; `places` the person's saved step places and `onPlaces(places | null)` told them at the end of each drag;
- * `mode` the display mode the graph is shown in ("normal", "zen" or "full"; F8).
+ * `mode` the display mode the graph is shown in ("normal", "zen" or "full"; F8); `phone`, a phone's flow, fitted clear of
+ * its controls (UXP-TL-02).
  */
 export function WorkflowFlow({ layout, nodes, selected, select, viewport = null, onViewport = null, places = null, onPlaces = null, mode = "normal",
-    lit = null }) {
+    lit = null, phone = false }) {
     const [hand, setHand] = React.useState(true);
     const hostRef = React.useRef(null);
     const [start] = React.useState(() => workflowViewportOf(viewport));
@@ -423,5 +443,6 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
         className: `ps-workflow-flow${hand ? " is-hand" : " is-still"}`,
     },
     h(Background, { variant: BackgroundVariant.Dots, gap: 18, size: 1 }),
-    h(GraphView, { bounds, area, fitted, touched, modeChanged, hand, onHand: setHand, onReset: moved.size ? reset : null, refit, onInteract }));
+    h(GraphView, { bounds, area, fitted, touched, modeChanged, hand, onHand: setHand, onReset: moved.size ? reset : null, refit, onInteract, phone,
+        host: hostRef }));
 }

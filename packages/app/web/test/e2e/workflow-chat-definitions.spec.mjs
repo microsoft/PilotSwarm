@@ -58,9 +58,10 @@ const viewSwitch = (tab, name) => tab.getByRole("group", { name: "Definition or 
 /**
  * The chat, its two definitions (hn-top-watch: revision 1 by the chat, 2 by Affan Dar, 3 by the chat with errors; Workflows
  * #1 on revision 1, completed, and #2 on revision 2, running; alpha: one revision, no Workflows) and the definition routes,
- * each recorded. `reader`: the signed-in person can read the chat but not change it.
+ * each recorded. `reader`: the signed-in person can read the chat but not change it. `controls`: a running Workflow offers
+ * the person its run controls (Pause, Stop…), as the server does.
  */
-async function routeChat(page, { reader = false, tested = false, emptyList = false } = {}) {
+async function routeChat(page, { reader = false, tested = false, emptyList = false, controls = false } = {}) {
     const revision = (number, actor, valid = true) => ({ definitionId: "def-hn", revision: number, valid, semver: `1.${number - 1}.0`, yamlSha256: `y${number}`,
         irSha256: valid ? `ir${number}` : null, basedOn: number > 1 ? number - 1 : null, actor, imported: false, createdAt: iso(-300_000 + number * 60_000),
         errorCount: valid ? 0 : 1 });
@@ -108,6 +109,8 @@ async function routeChat(page, { reader = false, tested = false, emptyList = fal
                 nodeExecutions: failed ? [{ nodeExecutionId: "nx-poll-1", stateId: "poll", ordinal: 1, state: "completed", outcome: "execution_failed",
                     resultKind: "runtime_error", errorPreview: FAILED_ERROR, winner: "effect", attempts: 0, kvRevision: 1 }] : [],
                 inbox: [], outbox: [] },
+            ...(controls && status === "running" ? { personCommands: { operations: ["pause", "resume", "stop", "cancel"], viewer: { allowed: true },
+                run: { runId: `run-${row.sessionId}`, stop: true } } } : {}),
         };
     };
     await page.routeWebSocket("**/api/v1/ws", () => {});
@@ -1459,6 +1462,52 @@ test("UX2D-F12: at 390 px the Workflows list wraps nothing, and the run bar's pi
     expect(fits).toBe(true);
     await shot(page, "ux2d-f12-run-bar-390");
     expect(errors).toEqual([]);
+});
+
+// UXP-TL-01 (owner, TEST at 390 x 844, a running Workflow): the run bar's state chip collapsed to an empty pill ("·") beside
+// Pause, Stop… and Run again…. The chip keeps its words and its time: the Workflow picker gives way first, then the buttons
+// go to a line of their own; nothing overlaps and everything stays inside the screen.
+// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "UXP-TL-01" (from packages/app/web, after build).
+test.describe("UXP-TL-01: a phone (390 x 844, touch)", () => {
+    test.use({ hasTouch: true, isMobile: true });
+
+    test("UXP-TL-01: a running Workflow's state chip keeps its words beside Pause, Stop… and Run again…", async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 844 });
+        const errors = [];
+        page.on("pageerror", collectPageErrors(errors));
+        await routeChat(page, { controls: true });
+        const startedAt = new Date(Date.now() - (2 * 3600 + 3 * 60 + 4) * 1000).toISOString();
+        await page.route(`**/api/v1/**/sessions/${W2}/events**`, (route) => route.fulfill({ json: { ok: true, result: [
+            { sessionId: W2, seq: 1, eventType: "workflow.started", createdAt: startedAt, data: { runId: `run-${W2}`, mode: "live", name: "hn-top-watch" } },
+        ] } }));
+        const main = await openTab(page);
+        await viewSwitch(main, "Workflows").click();
+        await main.getByRole("table", { name: "Workflows of hn-top-watch" }).getByRole("button", { name: "Open hn-top-watch #2", exact: true }).click();
+        const bar = main.locator(".ps-wf-bar.is-run");
+        const buttons = ["Pause", "Stop…", "Run again…"].map((name) => bar.getByRole("button", { name, exact: true }));
+        for (const button of buttons) await expect(button).toBeVisible();
+        const chip = bar.locator(".ps-wf-state");
+        await expect(chip).toHaveText(/^Running · 2:03:\d{2}$/);
+        await expect(chip.locator(".ps-wf-state-label")).toHaveText("Running");
+        const cut = (locator) => locator.evaluate((element) => ({ scroll: element.scrollWidth, client: element.clientWidth }));
+        for (const part of [chip, chip.locator(".ps-wf-state-label"), chip.locator(".ps-wf-state-time")]) {
+            const size = await cut(part);
+            expect(size.scroll, `not cut: ${JSON.stringify(size)}`).toBeLessThanOrEqual(size.client + 1);
+        }
+        const face = bar.locator(".ps-wf-picker.is-number");
+        const boxes = [await face.boundingBox(), await chip.boundingBox(), ...await Promise.all(buttons.map((button) => button.boundingBox()))];
+        for (const box of boxes) expect(box.x + box.width, "inside the screen").toBeLessThanOrEqual(390 + 0.5);
+        const apart = (a, b) => a.x + a.width <= b.x + 0.5 || b.x + b.width <= a.x + 0.5 || a.y + a.height <= b.y + 0.5 || b.y + b.height <= a.y + 0.5;
+        for (let i = 0; i < boxes.length; i += 1) {
+            for (let j = i + 1; j < boxes.length; j += 1) expect(apart(boxes[i], boxes[j]), `boxes ${i} and ${j} do not overlap`).toBe(true);
+        }
+        for (const button of buttons) {
+            const box = await button.boundingBox();
+            expect(Math.min(box.width, box.height), "44 px target").toBeGreaterThanOrEqual(44 - 0.01);
+        }
+        await shot(page, "uxp-tl-01-run-bar-390");
+        expect(errors).toEqual([]);
+    });
 });
 // Review S2UI-F3: Make a copy while a Workflow of the locked definition is the session shown opens the copy, as choosing it
 // in the picker would.
