@@ -6907,7 +6907,9 @@ export class WorkflowStore {
      * branch's end decides it. A result that won its node's
      * compare-and-swap first stands. Returns every node execution of these
      * scopes that any of these cancellations decided, this call's and an
-     * earlier one's, with why, so a retry still asks their effects to stop.
+     * earlier one's, with why, so a retry still asks their effects to stop;
+     * and every agent state of these scopes decided otherwise whose child's
+     * end is still owed (review R3-PS1), with this call's reason.
      * A run that has ended, or whose session was deleted, changes nothing
      * here: its end decided what was pending.
      */
@@ -6940,12 +6942,23 @@ export class WorkflowStore {
                     await this.project(client, input.projection?.(now, scopes, branchScopeNameList(scopes, names)));
                 }
             }
+            // Review R3-PS1: also the cut scopes' agent states decided otherwise (by their agent, their own time limit) whose
+            // child's end is still owed (as listOwedAgentInvocations reads it): the cut drops their cursors, so no collection
+            // would end their children; the caller ends them with the cancelled ones (and owes the branch while it cannot).
             const { rows } = await client.query(
-                `SELECT node_execution_id, node_type, winner FROM ${this.t.nodes}
-                  WHERE run_id = $1 AND scope_id = ANY($2::text[]) AND winner = ANY($3::text[]) ORDER BY node_execution_id`,
+                `SELECT n.node_execution_id, n.node_type, n.winner FROM ${this.t.nodes} n
+                  WHERE n.run_id = $1 AND n.scope_id = ANY($2::text[])
+                    AND (n.winner = ANY($3::text[])
+                      OR (n.node_type = 'agent' AND n.state = 'completed' AND EXISTS (SELECT 1 FROM ${this.t.agentInvocations} i
+                            WHERE i.node_execution_id = n.node_execution_id
+                              AND (i.end_sent_at IS NULL OR (i.end_child_status = 'NotFound' AND i.spawn_attempts > 0)))))
+                  ORDER BY n.node_execution_id`,
                 [input.runId, input.scopeIds, BRANCH_CANCEL_WINNER_VALUES]);
-            return { active, cancelled: rows.map(row => ({ nodeExecutionId: str(row, "node_execution_id"), nodeType: str(row, "node_type"),
-                reason: branchCancelReasonOf(str(row, "winner")) })) };
+            return { active, cancelled: rows.map(row => {
+                const winner = strOrNull(row, "winner");
+                return { nodeExecutionId: str(row, "node_execution_id"), nodeType: str(row, "node_type"),
+                    reason: winner !== null && BRANCH_CANCEL_WINNER_VALUES.includes(winner) ? branchCancelReasonOf(winner) : reason };
+            }) };
         });
     }
 

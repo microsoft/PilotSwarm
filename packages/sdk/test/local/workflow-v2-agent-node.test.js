@@ -1710,6 +1710,91 @@ function failingFor(client, childSessionId, method = "enqueueEvent") {
 // a recover ends the run of a dead controller, then its child cleanup is interrupted twice (the child's queue cannot be
 // reached; then the end is sent but its record is lost). Repeats of that recover, and a new one, finish the cleanup with
 // one stable command id and never create another child.
+/**
+ * Review R3-PS1 (formal r3, paused.r3-cut-timedout-endfail and r3-cut-done): a parallel state's time limit cuts a branch whose
+ * agent state was already decided, by its own time limit or by its agent, while that state's child's end is still owed. A
+ * timed parallel over one agent branch (`agent`: the agent state's time limit) whose time-limit route waits, so the run
+ * goes on after the cut.
+ */
+const TIMED_CUT_YAML = ({ agent = 3600, parallel = 4 } = {}) => PARALLEL_AGENT_YAML
+    .replace("    timeoutSeconds: 3\n", `    timeoutSeconds: ${parallel}\n`)
+    .replace("          timeoutSeconds: 3600\n", `          timeoutSeconds: ${agent}\n`)
+    .replace("timed_out: late", "timed_out: hold")
+    .replace("  late: { type: terminal", "  hold: { type: wait, seconds: 600, transition: { next: { elapsed: late } } }\n  late: { type: terminal");
+
+describe("workflow v2: a parallel state's time limit ends a cut branch's decided agent child (review R3-PS1; controller 1.9.0, test-only)", () => {
+    it("paused: an agent state timed out while its child's end failed is ended by the cut's owed retries, while the run is still paused", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const yaml = TIMED_CUT_YAML({ agent: 1, parallel: 4 });
+            expect(yaml).toContain("type: wait, seconds: 600");
+            const { workflowSessionId, runId } = await started(h, yaml);
+            const [spawn] = await until(async () => (h.spawns.length > 0 ? h.spawns : null), "the branch's agent child");
+            await until(async () => (await h.store.readAgentInvocation(spawn.nodeExecutionId))?.spawnedAt ?? null, "the spawn to be recorded");
+            // Fault injection: the child's end fails until the parallel state's time limit has cut its branch.
+            const recordAgentEnd = h.store.recordAgentEnd.bind(h.store);
+            const blocked = { on: true, attempts: 0 };
+            h.store.recordAgentEnd = async (nodeExecutionId, end) => {
+                if (nodeExecutionId === spawn.nodeExecutionId && blocked.on) {
+                    blocked.attempts += 1;
+                    throw new Error("The store is not available (test).");
+                }
+                return await recordAgentEnd(nodeExecutionId, end);
+            };
+            await pauseRun(h, workflowSessionId);
+            const fan = nodeExecutionIdFor(runId, "root", "fan", 1);
+            await until(async () => (await h.store.readNodeExecution(spawn.nodeExecutionId))?.outcome === "timed_out" || null, "the agent state's time limit");
+            await until(async () => (await h.store.readNodeExecution(fan))?.state === "completed" || null, "the parallel state's time limit", 90_000);
+            // Its one branch can no longer succeed by then: blocked (Q3), its branch cut either way.
+            expect(["blocked", "timed_out"]).toContain((await h.store.readNodeExecution(fan)).outcome);
+            expect(blocked.attempts).toBeGreaterThan(0);
+            expect(await commandsOf(h, spawn.childSessionId)).toEqual([]);
+            blocked.on = false;
+            // Still paused: the cut owes the branch, and its retries end the child.
+            expect(await lifecycleCommand(h, spawn.childSessionId)).toMatchObject({ cmd: "cancel", id: `workflow-agent-end:${spawn.nodeExecutionId}` });
+            expect(await h.store.readAgentInvocation(spawn.nodeExecutionId)).toMatchObject({ endRequested: "cancel", endSentAt: expect.any(Date) });
+            expect(await h.store.readRun(runId)).toMatchObject({ status: "paused" });
+            await resumeRun(h, workflowSessionId);
+            await ended(h, runId);
+            expect(await commandsOf(h, spawn.childSessionId)).toHaveLength(1);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("not paused: an agent state its agent completed just as the time limit was asked (not collected) is ended by the cut, while the run goes on", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const { workflowSessionId, runId } = await started(h, TIMED_CUT_YAML({ parallel: 3 }));
+            const [spawn] = await until(async () => (h.spawns.length > 0 ? h.spawns : null), "the branch's agent child");
+            await until(async () => (await h.store.readAgentInvocation(spawn.nodeExecutionId))?.spawnedAt ?? null, "the spawn to be recorded");
+            // Fault injection: the agent completes its state right as the parallel state's time limit is asked, after its
+            // deadline (so it does not count), before any collection reads it.
+            const elapseParallelNode = h.store.elapseParallelNode.bind(h.store);
+            let completed = null;
+            h.store.elapseParallelNode = async (...args) => {
+                if (completed === null) {
+                    completed = await completeAs(h, spawn.childSessionId, { outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-late" });
+                }
+                return await elapseParallelNode(...args);
+            };
+            const fan = nodeExecutionIdFor(runId, "root", "fan", 1);
+            await until(async () => (await h.store.readNodeExecution(fan))?.state === "completed" || null, "the parallel state's time limit", 60_000);
+            expect(completed).toMatchObject({ ok: true });
+            expect(await h.store.readNodeExecution(fan)).toMatchObject({ outcome: "timed_out" });
+            expect(await h.store.readNodeExecution(spawn.nodeExecutionId)).toMatchObject({ outcome: "accepted", winner: "agent" });
+            // The run waits in its time-limit route; the cut ended the child (done: its agent's own result), not the run's end.
+            await until(async () => (await h.store.listNodeExecutions(runId)).some(node => node.nodeId === "hold") || null, "the time-limit route");
+            expect(await lifecycleCommand(h, spawn.childSessionId)).toMatchObject({ cmd: "done", id: `workflow-agent-end:${spawn.nodeExecutionId}` });
+            expect(await h.store.readRun(runId)).toMatchObject({ status: "running" });
+            await controlWorkflowV2Run(h.host, workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-r3" });
+            await ended(h, runId);
+        } finally {
+            await h.stop();
+        }
+    });
+});
+
 describe("workflow v2 recover ends a dead controller's agent children (verification of RT-3, M-09; controller 1.9.0, test-only)", () => {
     it("M-09: a recover whose child cleanup fails, then loses the record of a sent end, is finished by its repeats and a new recover, with one command id and no new child", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
