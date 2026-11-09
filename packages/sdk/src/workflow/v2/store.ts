@@ -102,8 +102,12 @@ export const WORKFLOW_V2_SESSION_DELETED_MESSAGE = "The workflow session was del
 export function runEndedByDeletion(run: Pick<WorkflowRunRow, "status" | "terminalError">): boolean {
     if (run.status !== "cancelled" || !isJsonObject(run.terminalError)) return false;
     const error = run.terminalError;
-    if (error.code === "cancelled" && error.message === WORKFLOW_V2_SESSION_DELETED_MESSAGE) return true;
-    return isJsonObject(error.details) && error.details.command === "delete";
+    // Review DRR-5: the stored command decides first: a cancel, a done or an end before begin is not a deletion, whatever
+    // its reason says (a person's reason can be the deletion's own words). The deletion trigger's end is recognised only
+    // in its exact shape (migrations 0090 and 0091): its code and message, and nothing else.
+    if (error.details !== undefined) return isJsonObject(error.details) && error.details.command === "delete";
+    const keys = Object.keys(error);
+    return keys.length === 2 && error.code === "cancelled" && error.message === WORKFLOW_V2_SESSION_DELETED_MESSAGE;
 }
 
 /** Open KV limits (design D07: proposed defaults, enforced on every update). */

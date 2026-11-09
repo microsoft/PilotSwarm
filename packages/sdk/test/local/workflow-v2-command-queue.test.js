@@ -732,6 +732,16 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
             ["a person's cancel", async (h, run) => controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "stopped by a person" },
                 { actor: { kind: "user", provider: "test", subject: `person-${randomUUID()}` }, operationId: "person-cancel" }), "cancelled", "cancelled"],
             ["the chat's own end", async (h, _run, parent) => h.catalog.updateSession(parent, { state: "cancelled" }), "cancelled", "cancelled"],
+            // Review DRR-5: a person's reason that reads as the deletion's own words is still a cancel (its stored command).
+            ["a person's cancel whose reason is the deletion's words", async (h, run) => controlWorkflowV2Run(h.host, run.workflowSessionId,
+                { operation: "cancel", runId: null, reason: "The workflow session was deleted." },
+                { actor: { kind: "user", provider: "test", subject: `person-${randomUUID()}` }, operationId: "person-cancel-words" }), "cancelled", "cancelled"],
+            ["an operator's done whose reason is the deletion's words", async (h, run) => {
+                const command = { type: "cmd", cmd: "done", id: "done-words-1", args: { reason: "The workflow session was deleted." } };
+                expect(await applyOperatorCommandToWorkflowV2({ store: h.store, deleteSessionFacts: null, duroxideClient: h.client },
+                    { targetSessionId: run.workflowSessionId, command })).toEqual({ action: "enqueue" });
+                await h.client.enqueueEvent(run.controller, "messages", JSON.stringify(command));
+            }, "cancelled", ""],
         ]) {
             it(`${label}, then the workflow's deletion, while the controller is held: the parent is told once, of that end`, { timeout: TIMEOUT }, async () => {
                 const held = heldPlan();
