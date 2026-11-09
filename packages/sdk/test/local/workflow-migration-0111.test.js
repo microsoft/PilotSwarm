@@ -11,9 +11,11 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { CMS_MIGRATIONS } from "../../src/cms-migrations.ts";
 import { childBudgetCountSql } from "../../src/child-budget.ts";
 import { sessionsParentSessionIndexMigration } from "../../src/migrations/workflow-v2-0111.ts";
+import { runMigrations } from "../../src/pg-migrator.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
+const CMS_LOCK_SEED = 0x63_6D_73;
 
 describe("migration 0111: the lookups by parent_session_id use an index", () => {
     it("is registered after 0110 as autocommit steps; the trigger lookups and the child budget count use it; it is idempotent", { timeout: TIMEOUT }, async () => {
@@ -52,6 +54,58 @@ describe("migration 0111: the lookups by parent_session_id use an index", () => 
                 JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2`, [env.cmsSchema, index]);
             expect(valid.rows).toEqual([{ indisvalid: true }]);
         } finally {
+            await direct.end();
+            await catalog.close();
+        }
+    });
+
+    // Review DS2-004: a concurrent build that failed leaves an invalid index; 0111's first step drops it. That drop needs an
+    // exclusive lock on sessions, so a transaction holding sessions makes it fail fast (lock_timeout 5 s), with 0111 left
+    // unrecorded, instead of queueing every later reader and writer behind it. Once nothing blocks, the retry drops the
+    // leftover, builds the index and records 0111 once.
+    it("an invalid leftover index: a blocked drop fails fast and 0111 stays unrecorded; the retry rebuilds it valid", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        const direct = new pg.Pool({ connectionString: env.store, max: 3 });
+        const s = `"${env.cmsSchema}"`;
+        const index = `idx_${env.cmsSchema}_sessions_parent`;
+        const entry = CMS_MIGRATIONS(env.cmsSchema).find(item => item.version === "0111");
+        const state = async () => (await direct.query(`SELECT i.indisvalid AS valid, i.indisunique AS unique FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2`,
+            [env.cmsSchema, index])).rows;
+        const recorded = async () => (await direct.query(`SELECT count(*)::int AS n FROM ${s}.schema_migrations WHERE version = '0111'`)).rows[0].n;
+        const blocker = await direct.connect();
+        try {
+            // A failed concurrent build: a unique build over duplicate parents fails and leaves the index invalid; 0111 unrecorded.
+            await direct.query(`DROP INDEX ${s}.${index}`);
+            await direct.query(`DELETE FROM ${s}.schema_migrations WHERE version = '0111'`);
+            await direct.query(`INSERT INTO ${s}.sessions (session_id, parent_session_id) VALUES ('dup-1', 'dup-parent'), ('dup-2', 'dup-parent')`);
+            await expect(direct.query(`CREATE UNIQUE INDEX CONCURRENTLY ${index} ON ${s}.sessions(parent_session_id)`)).rejects.toThrow();
+            expect(await state()).toEqual([{ valid: false, unique: true }]);
+
+            // A transaction that holds sessions blocks the drop: the step fails within its lock timeout.
+            await blocker.query("BEGIN");
+            await blocker.query(`SELECT 1 FROM ${s}.sessions LIMIT 1`);
+            // Bounded here too: a drop with no lock timeout would wait on the blocker for ever (then it is let go, so the
+            // suite's teardown does not wait on it as well).
+            const outcome = await Promise.race([
+                runMigrations(direct, env.cmsSchema, [entry], CMS_LOCK_SEED).then(() => "applied", error => error),
+                new Promise(resolve => setTimeout(() => resolve("still waiting on the lock after 15 s"), 15_000)),
+            ]);
+            if (typeof outcome === "string") await blocker.query("ROLLBACK");
+            expect(outcome).toMatchObject({ code: "55P03" });
+            expect(await recorded()).toBe(0);
+            expect(await state()).toEqual([{ valid: false, unique: true }]);
+
+            // Nothing blocks: the retry drops the leftover, builds the index valid and records 0111 once.
+            await blocker.query("COMMIT");
+            await runMigrations(direct, env.cmsSchema, [entry], CMS_LOCK_SEED);
+            expect(await state()).toEqual([{ valid: true, unique: false }]);
+            expect(await recorded()).toBe(1);
+        } finally {
+            await blocker.query("ROLLBACK").catch(() => {});
+            blocker.release();
             await direct.end();
             await catalog.close();
         }
