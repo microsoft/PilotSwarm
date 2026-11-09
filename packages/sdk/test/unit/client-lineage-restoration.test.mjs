@@ -256,3 +256,24 @@ test("an unreadable creation record cannot silently substitute structural depth"
     await h.send("child");
     assert.equal(h.starts[0].input.nestingLevel, 4);
 });
+
+// Review G1 backstop: duroxide ignores a start for an instance that exists and drops what is queued to one that ended.
+test("a first send on another client to an ended orchestration is refused in words: nothing is started, queued or marked running", async () => {
+    for (const status of ["Completed", "Failed", "Terminated"]) {
+        const h = fixture([ROOT, CHILD]);
+        h.client.duroxideClient.getStatus = async () => ({ status });
+        await assert.rejects(h.send("child"), /is a terminal orchestration and cannot accept new messages/);
+        assert.equal(h.starts.length, 0);
+        assert.equal(h.messages.length, 0);
+        assert.equal(h.updates.length, 0);
+        assert.equal(h.client.activeOrchestrations.has("child"), false);
+    }
+    // Controls: a live or missing instance is sent to, and a status read that fails is not a refusal.
+    for (const read of [async () => ({ status: "Running" }), async () => ({ status: "NotFound" }), async () => { throw new Error("transient"); }]) {
+        const h = fixture([ROOT, CHILD]);
+        h.client.duroxideClient.getStatus = read;
+        await h.send("child");
+        assert.equal(h.starts.length, 1);
+        assert.equal(h.messages.length, 1);
+    }
+});

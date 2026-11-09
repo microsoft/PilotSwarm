@@ -290,7 +290,7 @@ function* chatChild(ctx) {
  * (its catalog row and its orchestration) and gives it each visit's prompt; the catalog's turn control is a spy that
  * records each Stop (the double runs no turns, so it answers no_turn).
  */
-async function harness(env, { storeHooks = null, storeBefore = null, beforeCreate = null, deferVisible = false } = {}) {
+async function harness(env, { storeHooks = null, storeBefore = null, beforeCreate = null, deferVisible = false, createAlways = false } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
@@ -326,6 +326,9 @@ async function harness(env, { storeHooks = null, storeBefore = null, beforeCreat
             if (beforeCreate) await beforeCreate(request);
             const instanceId = `session-${request.childSessionId}`;
             const message = JSON.stringify({ prompt: request.prompt, clientMessageIds: [request.clientMessageId] });
+            // createAlways: as the real host (createChild through a client), the chat's catalog row is created on every
+            // visit, which brings a soft-deleted row back (migration 0082's cms_create_session).
+            if (createAlways) await catalog.createSession(request.childSessionId, {});
             if (deferVisible && (await client.getStatus(instanceId)).status === "NotFound") {
                 await catalog.createSession(request.childSessionId, {}).catch(() => {});
                 unseen.set(request.childSessionId, [...(unseen.get(request.childSessionId) ?? []), message]);
@@ -723,6 +726,57 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
             await h.stop();
         }
     });
+    for (const [label, endChat, gone] of [
+        ["deleted", async (h, chat) => {
+            await h.catalog.softDeleteSession(chat);
+            await h.client.cancelInstance(`session-${chat}`, "deleted by a person");
+        }, "deleted"],
+        ["ended", async (h, chat) => {
+            await h.client.cancelInstance(`session-${chat}`, "ended by a person");
+        }, "ended"],
+    ]) {
+        it(`G1: a chat ${label} by a person after the next visit's admission gets no prompt: the visit fails unavailable at once, and a deleted chat stays deleted`, { timeout: TIMEOUT }, async () => {
+            // Fault injection: the chat is deleted or ended as the second visit's spawn begins (after its admission chose it).
+            let beforeSpawn = null;
+            const h = await harness(getEnv(), {
+                createAlways: true,
+                storeBefore: { beginAgentSpawn: async ([nodeExecutionId]) => {
+                    if (beforeSpawn) {
+                        const hook = beforeSpawn;
+                        beforeSpawn = null;
+                        await hook(nodeExecutionId);
+                    }
+                } },
+            });
+            try {
+                const run = await started(h, CHAT_YAML());
+                const chat = workflowAgentChatSessionId(run.runId, "talk");
+                const first = await spawnedVisit(h, 1);
+                let second = null;
+                beforeSpawn = async (nodeExecutionId) => {
+                    second = nodeExecutionId;
+                    await endChat(h, chat);
+                    await until(async () => ["Completed", "Failed", "Terminated"].includes((await h.client.getStatus(`session-${chat}`)).status),
+                        "the chat's orchestration to end");
+                };
+                expect(await completeAs(h, chat, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
+                    .toMatchObject({ ok: true });
+                const asked = Date.now();
+                expect(await ended(h, run.runId)).toMatchObject({ status: "failed", terminalOutcome: "failed" });
+                expect(Date.now() - asked).toBeLessThan(30_000);
+                expect(second).not.toBeNull();
+                expect(await h.store.readNodeExecution(second)).toMatchObject({ state: "completed", outcome: "unavailable", winner: "controller",
+                    error: { code: "unavailable", message: expect.stringContaining(`The agent session ${chat} that this step continues was ${gone}`),
+                        details: { childSessionId: chat } } });
+                // Nothing was sent to it, and the host was not asked: a deleted chat is not brought back.
+                expect(h.spawns).toHaveLength(1);
+                expect(await h.store.isSessionDeleted(chat)).toBe(label === "deleted");
+                expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => data.nodeExecutionId)).toEqual([first.nodeExecutionId]);
+            } finally {
+                await h.stop();
+            }
+        });
+    }
     for (const [label, finish] of [
         ["the run completes", async (h, run, chat, nx) => {
             expect(await completeAs(h, chat, { outcome: "finish", output: { fact: "one" }, operation_id: "op-1", node_execution_id: nx }))

@@ -1070,6 +1070,20 @@ export class PilotSwarmClient {
         }
 
         if (!this.activeOrchestrations.has(sessionId)) {
+            // Review G1 backstop: duroxide ignores a start for an instance that exists and drops what is queued to one that
+            // has ended, so a send to an ended orchestration would vanish. Refused in words instead; a status read that
+            // fails is not a refusal (as the management client's live check).
+            let existing: string | undefined;
+            try {
+                existing = (await this.duroxideClient.getStatus(orchestrationId))?.status;
+            } catch {
+                existing = undefined;
+            }
+            if (existing === "Completed" || existing === "Failed" || existing === "Terminated") {
+                throw new Error(
+                    `Session ${sessionId.slice(0, 8)} is a terminal orchestration and cannot accept new messages.`,
+                );
+            }
             const { parentSessionId, nestingLevel } = await this._restoreLineageForStart(sessionId, cmsRow, bootstrapNestingLevel);
             // Explicit local identity keeps its precedence; another process
             // reconstructs the named agent's startup contract from the row.

@@ -3410,11 +3410,30 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     const continuedChatOf = async (client: WorkflowV2AgentEndClient | null, runId: string, stateId: string): Promise<string> => {
         const { count: visits, previous: last } = await store.readAgentVisitsBefore(runId, stateId, null);
         if (!last || !workflowAgentChatContinues(last)) return workflowAgentChatSessionId(runId, stateId);
+        const ended = (await chatEndedOnItsOwn(client, last)) !== null;
+        return ended ? workflowAgentChatSessionId(runId, stateId, visits + 1) : last.childSessionId;
+    };
+    /**
+     * How the chat of `last` (a visit of a state that continues its chat) ended on its own, or null while it goes on or
+     * was never created: deleted, or ended (its session orchestration ended, or is gone after the chat was created).
+     */
+    const chatEndedOnItsOwn = async (client: WorkflowV2AgentEndClient | null, last: WorkflowAgentInvocation): Promise<"deleted" | "ended" | null> => {
         const deleted = await store.isSessionDeleted(last.childSessionId);
         const status = client ? (await client.getStatus(`session-${last.childSessionId}`)).status : null;
         const created = last.spawnedAt !== null || (status !== null && status !== "NotFound");
-        const ended = created && (deleted || status === "NotFound" || (status !== null && TERMINAL_ORCHESTRATION_STATUSES.includes(status)));
-        return ended ? workflowAgentChatSessionId(runId, stateId, visits + 1) : last.childSessionId;
+        if (!created) return null;
+        if (deleted) return "deleted";
+        return status === "NotFound" || (status !== null && TERMINAL_ORCHESTRATION_STATUSES.includes(status)) ? "ended" : null;
+    };
+    /**
+     * Review G1: whether the chat a later visit's admission chose (the chat of the state's previous visit) ended on its
+     * own since (chatEndedOnItsOwn); null for a visit whose chat is not its previous visit's.
+     */
+    const continuedChatGone = async (client: WorkflowV2AgentEndClient, runId: string, stateId: string, invocation: WorkflowAgentInvocation)
+        : Promise<"deleted" | "ended" | null> => {
+        const { previous } = await store.readAgentVisitsBefore(runId, stateId, invocation.nodeExecutionId);
+        if (!previous || previous.childSessionId !== invocation.childSessionId) return null;
+        return chatEndedOnItsOwn(client, previous);
     };
     /** The bindings of a state: its run's inputs, its incoming value, its pinned KV, the runtime error, and a branch's own `branch`. */
     const scopeFor = (run: WorkflowRunRow, incoming: JsonValue, runtimeErrorValue: JsonValue, kv: JsonValue, branch: BranchBinding | null = null): BindingScope => ({
@@ -4975,6 +4994,18 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             // while the visit is open. A retried spawn of a visit whose result arrived meanwhile sends nothing and creates no
             // new chat (so the log shows no "new chat" for a visit already done); the controller's collection ends the visit.
             if (continues && (await store.readNodeExecution(input.nodeExecutionId))?.state !== "pending") return { wake: false };
+            // Review G1: a later visit goes to the chat its admission chose (continuedChatOf). When a person deleted or ended
+            // that chat after the admission, its prompt would be dropped (an ended session reads no queue), and creating the
+            // chat again would bring a deleted session back. The visit fails unavailable now, decided as the admission
+            // decides an ended chat, and the state's next visit starts a new agent session.
+            if (continues && cycle !== null && restartFrom === null) {
+                const gone = await continuedChatGone(client, run.runId, begun.node.nodeId, invocation);
+                if (gone !== null) {
+                    return fail({ ...runtimeError("unavailable", `The agent session ${invocation.childSessionId} that this step continues was ${gone} `
+                        + "before this cycle's prompt was sent, so nothing was sent to it. The next cycle of this step starts a new agent session.",
+                    { childSessionId: invocation.childSessionId }), winner: "controller" });
+                }
+            }
             // A stored map that cannot be read fails the node in words; the node never silently takes the chat's model.
             const stored = readStoredAgentModels(run.agentModels);
             if ("error" in stored) return fail({ ...runtimeError("invalid_input", stored.error), winner: "controller" });
