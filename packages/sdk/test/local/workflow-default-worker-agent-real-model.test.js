@@ -19,8 +19,8 @@
  *   chat's CLI session, the state off, nothing owned);
  * - asked in prose to load the Workflow authoring skill: it loads workflow-authoring and gets its body, with load_skill or
  *   with the CLI's own `skill` tool (a TEST check at 27b2eaef found a model using it; the worker gives it the Workflow
- *   skills directory). The load must succeed. Turning Workflows on first is allowed. Held (runs with PS_TEST_RUN_HELD=1)
- *   until the owner decides how the CLI's tool serves these skills.
+ *   skills directory). The load must succeed. Turning Workflows on first is allowed. Owner 2026-11-09T06:40Z approved how
+ *   the CLI's tool serves these skills (A), so it runs with the other cases.
  *
  * UXP-AC-01 (a real user's chat invented state types and said there was no script node): on a worker with script nodes
  * on, a new chat is asked, with no YAML words, "Create and start a Workflow that checks every minute whether a counter
@@ -239,13 +239,8 @@ const TITLE_STAYS_OFF = "Workflows on demand: a new chat asked an ordinary quest
 const TITLE_LOAD_SKILL = "Workflows on demand: a new chat asked in prose to load the Workflow authoring skill loads it (load_skill or the CLI's skill tool) and gets its body";
 const TITLE_SCRIPT = "UXP-AC-01: a new chat asked in plain words for a counter check with a small script saves a valid revision with a script state within 3 saves and starts it";
 const TITLE_PERSON_CONTROL = "UXP-AD-01: a chat that paused its Workflow on request does not pause it again after a person resumed it through the API, the Workflow wrote to it and the person asked about it";
-/** Cases held until the owner decides; PS_TEST_RUN_HELD=1 runs them. */
-const RUN_HELD = process.env.PS_TEST_RUN_HELD === "1";
-const HELD = {
-    [TITLE_LOAD_SKILL]: "held: how the CLI's own skill tool serves the Workflow skills awaits the owner's decision",
-};
-/** `it`, or a skip that says why the case is held. */
-const caseOf = title => (RUN_HELD || !HELD[title] ? it : (name, _options, _body) => it.skip(`${name} — ${HELD[name]}`, () => {}));
+/** Every case runs: none is held any more (owner 2026-11-09T06:40Z decided A, I1 and I2). */
+const caseOf = () => it;
 
 /** Where a case's receipt goes: PS_WORKFLOW_V2_REAL_MODEL_RECEIPT, with an on-demand case's key before its extension. */
 function receiptPath(key) {
