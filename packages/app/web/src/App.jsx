@@ -517,6 +517,7 @@ function PortalHeaderAccent({ controller }) {
     return React.createElement("div", {
         className: "portal-header-accent",
         ref,
+        "data-active": "false",
         "aria-hidden": "true",
     }, React.createElement("span", { className: "portal-header-accent-pass" },
         React.createElement("span", { className: "portal-header-accent-trail" }),
