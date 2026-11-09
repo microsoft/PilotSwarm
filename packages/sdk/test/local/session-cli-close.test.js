@@ -156,4 +156,46 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
             }
         });
     });
+
+    // Review DRR-4: a credential, transport or workspace-root change moves the session to another client. The previous
+    // client's session is closed in its CLI and dropped from its SDK map at that rebind (files kept); before, only the new
+    // client was ever closed. The previous client is a stand-in (its own CLI is not started); the new one is the worker's.
+    it("DRR-4: a rebind closes the session on the previous client; after its release neither client keeps it", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        await withScriptedModel(env, { worker: { logLevel: "warning" } }, async ({ client, worker, model, qualifiedModel }) => {
+            const manager = worker.sessionManager;
+            const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
+            const id = chat.sessionId;
+            await chat.sendAndWait(FIRST, TURN_MS);
+            const currentKey = manager.sessionClientKeys.get(id);
+            const current = manager.clients.get(currentKey);
+            const previousKey = "drr4-previous-client";
+            const previousCloses = [];
+            const previous = {
+                sessions: new Map([[id, { sessionId: id }]]),
+                rpc: { sessions: { close: async params => { previousCloses.push(params.sessionId); } } },
+                stop: async () => [], forceStop: async () => {},
+            };
+            const lastTurn = () => model.sessionRequests(FIRST).at(-1).position;
+            manager.clients.set(previousKey, previous);
+            try {
+                // The previous client served the session's last turn; the next turn binds it to the worker's client again.
+                manager.sessionClientKeys.set(id, previousKey);
+                await chat.sendAndWait("turn 2 on another client", TURN_MS);
+                expect(lastTurn()).toMatchObject({ turn: 2, firstUserText: expect.stringContaining(FIRST) });
+                expect(manager.sessionClientKeys.get(id)).toBe(currentKey);
+                expect(previousCloses, "the rebind closed it on the previous client").toEqual([id]);
+                expect(previous.sessions.has(id), "and dropped the previous SDK's object").toBe(false);
+                // Its release closes it on the current client; nothing is owed and neither client keeps it.
+                manager.sessionLastTouchedAt.set(id, Date.now() - 60_000);
+                expect(await manager.sweepIdleSessions(1_000)).toBeGreaterThanOrEqual(1);
+                expect(current.sessions.has(id)).toBe(false);
+                expect(previous.sessions.has(id)).toBe(false);
+                expect(previousCloses).toEqual([id]);
+                expect(manager.cliClosesOwed?.has(id) ?? false).toBe(false);
+            } finally {
+                manager.clients.delete(previousKey);
+            }
+        });
+    });
 });

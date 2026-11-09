@@ -2457,6 +2457,11 @@ export class SessionManager {
                 try { await existingWarm.destroy(); } catch {}
                 this._forgetWarmSession(sessionId);
             }
+            // Review DRR-4: the previous client's session is closed in its CLI and dropped from its SDK map before the
+            // binding moves (files kept), also when a workspace release already dropped the warm handle. Otherwise only the
+            // new client is ever closed and the old one keeps the session until the worker stops. A close that is not
+            // confirmed is owed to the previous client (DRR-3), and the sweep tries it again.
+            await this._closeCliSession(sessionId, previousClientKey);
         }
         const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root);
         this.sessionClientKeys.set(sessionId, desiredClientKey);
