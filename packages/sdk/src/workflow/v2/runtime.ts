@@ -3019,8 +3019,20 @@ export async function endWorkflowV2RunAgents(store: WorkflowStore, client: Workf
  */
 export async function endWorkflowV2RunChats(store: WorkflowStore, client: WorkflowV2AgentEndClient, runId: string,
     options: { stopTurn?: WorkflowV2AgentTurnStop } = {}): Promise<void> {
-    await endWorkflowV2RunAgents(store, client, runId, options);
-    await endWorkflowV2ContinuedChats(store, client, runId);
+    // Review G3: the continued chats are looked at even when a visit's own child could not be ended; then the call fails.
+    const errors: unknown[] = [];
+    try {
+        await endWorkflowV2RunAgents(store, client, runId, options);
+    } catch (error) {
+        errors.push(error);
+    }
+    try {
+        await endWorkflowV2ContinuedChats(store, client, runId);
+    } catch (error) {
+        errors.push(error);
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new Error(errors.map(error => workflowErrorMessage(error)).join(" "));
 }
 
 /** The child status a continued chat's visit end is settled with: no command to the chat, which stays open for the next visit. */
@@ -3167,7 +3179,8 @@ async function endContinuedChatLocked(store: WorkflowStore, client: WorkflowV2Ag
 /**
  * End the continued chats of a run (chat: continue; owner decision agent-node-continue-20261106): every one when the
  * run has ended; only the idle ones while it is stopping (formal Q5); none while it runs. Each chat once
- * (endContinuedChat).
+ * (endContinuedChat), and each on its own (review G3): a chat that cannot be ended now does not keep the others from
+ * being ended; the call fails after them, so its activity (or the next recover) looks at it again.
  */
 export async function endWorkflowV2ContinuedChats(store: WorkflowStore, client: WorkflowV2AgentEndClient, runId: string): Promise<void> {
     const run = await store.readRun(runId);
@@ -3176,12 +3189,21 @@ export async function endWorkflowV2ContinuedChats(store: WorkflowStore, client: 
     for (const invocation of await store.listAgentInvocations(runId, 10_000)) {
         if (workflowAgentChatContinues(invocation)) chats.add(invocation.childSessionId);
     }
+    const failed: string[] = [];
     for (const childSessionId of chats) {
-        await endContinuedChat(store, client, run, childSessionId);
-        // Formal t3 (1): a chat whose end is still owed (created but not visible yet, or not created yet by an attempt in
-        // flight) is looked at again by a detached retry, so the run's own end, and its notice to the parent after it,
-        // never wait for it.
-        if (await continuedChatEndOwed(store, childSessionId)) await startContinuedChatEndRetry(client, run, childSessionId);
+        try {
+            await endContinuedChat(store, client, run, childSessionId);
+            // Formal t3 (1): a chat whose end is still owed (created but not visible yet, or not created yet by an attempt in
+            // flight) is looked at again by a detached retry, so the run's own end, and its notice to the parent after it,
+            // never wait for it.
+            if (await continuedChatEndOwed(store, childSessionId)) await startContinuedChatEndRetry(client, run, childSessionId);
+        } catch (error) {
+            failed.push(`${childSessionId} (${redactThenClip(workflowErrorMessage(error), 300)})`);
+        }
+    }
+    if (failed.length > 0) {
+        const shown = failed.slice(0, 10).join(", ");
+        throw new Error(`The agent sessions ${shown}${failed.length > 10 ? ` and ${failed.length - 10} more` : ""} were not ended yet.`);
     }
 }
 
