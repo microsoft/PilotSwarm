@@ -511,16 +511,14 @@ needs a test. People do not run tests themselves.
 - The Definition view says `Last test · passed 17:42` (or `failed`, or
   `Test running`) beside the revision picker, only for a revision that was
   tested (`revisions[].lastTest` of `listChatWorkflowDefinitions`).
-- Every deployment runs tests (every worker runs controller 1.9.0), on a
-  chat's workflow request turn: a turn of session orchestration 1.0.83, as
-  every chat's is. Only such a turn declares `test` (with `fixtures` and `test_id`) and
-  teaches testing; a turn of a previous-release chat still on 1.0.82 declares
-  `workflow_definition` without it, and its guidance says a test cannot run
-  there (stage 2.5). A call of
-  `test` there is still refused (`WORKFLOW_TEST_UNAVAILABLE`), a test read
-  again by its `test_id` too. A revision
-  with errors, or with a script node where scripts are off, is refused
-  (`Nothing was tested.`).
+- Every deployment runs tests (every worker runs controller 1.9.0). Every
+  turn declares `test` (with `fixtures` and `test_id`) and its guidance
+  teaches testing, a turn of a previous-release chat still on 1.0.82
+  included: every turn's host runs Workflow tests. Only a host that cannot
+  run one (a client created without requests) refuses a call of `test`
+  (`WORKFLOW_TEST_UNAVAILABLE`), and a test read again by its `test_id` too.
+  A revision with errors, one this version no longer compiles, or one with a
+  script node where scripts are off, is refused (`Nothing was tested.`).
 
 **Model SDK echo (stage 2.2, FU-21).** The 1.0.83 SDK records the system
 prompt it composed as a `system.message` with the model's role `system` and
