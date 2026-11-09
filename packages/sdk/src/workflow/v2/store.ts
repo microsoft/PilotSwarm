@@ -3462,9 +3462,12 @@ export class WorkflowStore {
                 if (accepted[0]) {
                     const { rows: definitions } = await client.query(
                         `SELECT parent_session_id FROM ${this.t.definitions} WHERE workflow_session_id = $1`, [run.workflowSessionId]);
+                    const parent = definitions[0] ? strOrNull(definitions[0], "parent_session_id") : null;
+                    // RLR-F7: the cancel this applies is the parent's (attributed as requestedBy is, never to a person), so its
+                    // event names the parent as its actor and read_workflow's lastControl shows it.
                     const ended = await this.cancelBeforeBegin(client, run, { workflowSessionId: run.workflowSessionId,
                         operationId: str(accepted[0], "operation_id"), reason: "Cancelled before it began",
-                        requestedBy: definitions[0] ? strOrNull(definitions[0], "parent_session_id") : null, attributedFrom: "update_workflow" }, true);
+                        requestedBy: parent, attributedFrom: "update_workflow", ...(parent ? { actor: { kind: "agent", sessionId: parent } } : {}) }, true);
                     return { run: ended, transitioned: false };
                 }
             }

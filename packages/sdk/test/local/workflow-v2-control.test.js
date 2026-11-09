@@ -34,7 +34,7 @@ import { evaluateBindingTemplate, parseBindingExpression, WorkflowBindingError }
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson, jsonSha256 } from "../../src/workflow/v2/json.ts";
 import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
-import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
+import { readWorkflowFromTool, runControlView, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import {
     registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_ADMISSION_EVALUATIONS, WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION,
     WORKFLOW_V2_STORE_RETRY, workflowEffectInstanceId, workflowNotifyInstanceId,
@@ -726,6 +726,25 @@ describe("workflow v2 run control on the real runtime", () => {
                     canonicalJson({ workflowSessionId: id, operation: "cancel", runId: run.runId, status: "admitted", kvRevision: 1 })]);
                 await dropped(run.controllerInstanceId);
             };
+            // RLR-F7: before the cancel is applied, a person paused the run (an actor-bearing control, read_workflow's lastControl).
+            const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+            const pausedByPerson = async (id) => {
+                await controlWorkflowV2Run(h.host, id, { operation: "pause", runId: null, reason: "hold it" },
+                    { actor: { kind: "user", provider: "test", subject: "rlr-f7-person" }, operationId: "pause-person" });
+                expect((await parent.read(id)).run).toMatchObject({ status: "paused", lastControl: { operation: "pause", by: "a person", at: expect.stringMatching(ISO) } });
+            };
+            // The cancel begin applies is the parent's: its event names the parent, so the latest control is that cancel, read
+            // by the parent ("this session") or by any other session ("another session"), never the person's earlier pause.
+            const parentCancel = async (id, run) => {
+                const [cancelled] = await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.cancelled"]);
+                expect(cancelled.data).toMatchObject({ runId: run.runId, command: "cancel", attributedFrom: "update_workflow", beforeBegin: true, repaired: true,
+                    actor: { kind: "agent", sessionId: parent.parentId } });
+                const shown = { operation: "cancel", at: expect.stringMatching(ISO), reason: "Cancelled before it began" };
+                expect((await parent.read(id)).run.lastControl).toEqual({ ...shown, by: "this session" });
+                expect(runControlView(await h.store.readLastRunControl(id, run.runId), randomUUID()))
+                    .toEqual({ ...shown, by: "another session", sessionId: parent.parentId });
+                return (await parent.read(id)).run.lastControl;
+            };
             const endedByBegin = async (id, run) => {
                 expect((await h.client.waitForOrchestration(run.controllerInstanceId, 30_000)).status).toBe("Completed");
                 expect(await h.store.readRun(run.runId)).toMatchObject({ status: "cancelled", terminalError: { code: "cancelled",
@@ -734,15 +753,21 @@ describe("workflow v2 run control on the real runtime", () => {
                 expect(await h.store.listNodeExecutions(run.runId)).toEqual([]);
                 expect(await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.started"])).toEqual([]);
                 expect(await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.cancelled"])).toHaveLength(1);
+                const attributed = await parentCancel(id, run);
+                // Begin again (a retried activity) and the parent's repeat of that cancel: one cancelled event, the same attribution.
+                expect(await h.store.beginRun(run.runId)).toMatchObject({ transitioned: false, run: { status: "cancelled" } });
                 // The parent's own repeat of that cancel returns the stored receipt and is not reported to it either.
                 expect(await parent.update(id, { operation: "cancel", operation_id: "old", reason: "old cancel" }))
                     .toEqual({ ok: true, workflowId: id, operation: "cancel", replayed: true, runId: run.runId, status: "admitted", kvRevision: 1 });
+                expect(await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.cancelled"])).toHaveLength(1);
+                expect((await parent.read(id)).run.lastControl).toEqual(attributed);
                 expect((await h.client.getStatus(workflowNotifyInstanceId(run.runId))).status).toBe("NotFound");
                 expect(h.notified.filter(item => item.clientMessageId === stableId(id, run.runId))).toEqual([]);
                 expect(await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.parent_notified", "workflow.parent_notification_skipped"])).toEqual([]);
             };
             const z = randomUUID();
             const runZ = await lost(z);
+            await pausedByPerson(z);
             await seedEarlierCancel(z, runZ);
             // Its first begin is interrupted after the transaction that ended the run; the retry ends nothing twice.
             interruptBeginOf = runZ.runId;
@@ -751,6 +776,7 @@ describe("workflow v2 run control on the real runtime", () => {
             expect(interruptBeginOf).toBeNull();
             const w = randomUUID();
             const runW = await lost(w);
+            await pausedByPerson(w);
             await seedEarlierCancel(w, runW);
             await h.client.startOrchestrationVersioned(runW.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, { v: 2, workflowSessionId: w, runId: runW.runId },
                 WORKFLOW_V2_CONTROLLER_VERSION);
