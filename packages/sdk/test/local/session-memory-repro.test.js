@@ -17,6 +17,11 @@
  * the numbers: the executor compares them at main, at the side branch before the leak fixes and after them. A build
  * without Workflow v2 (main) runs the chats only, and says so (agentSteps: false).
  *
+ * The second case: one long chat (PS_SESSION_LEAK_LONG_TURNS turns, default 300) is summarized once (the session
+ * orchestration's summarizeSession activity, called as the worker registers it), while the RSS of this process and of
+ * every process below it is sampled every 50 ms. It prints the baseline, the peak and the peak minus the baseline of
+ * both, and the processes the summarization started. Over 300 MiB above the baseline it says so.
+ *
  * Run: PS_SESSION_LEAK_REPRO=1 npx vitest run test/local/session-memory-repro.test.js
  */
 import { describe, it } from "vitest";
@@ -29,6 +34,7 @@ import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
+import { registerActivities } from "../../src/session-proxy.ts";
 
 const RUN = process.env.PS_SESSION_LEAK_REPRO === "1";
 const STEPS = (process.env.PS_SESSION_LEAK_STEPS || "0,50,100,200").split(",").map(value => Number(value.trim())).filter(Number.isFinite);
@@ -80,6 +86,24 @@ function childrenOf(pid) {
         }
     }
     return children;
+}
+
+/** The VmRSS (MiB) of every process below this one, by pid. */
+function descendantsRssMiB() {
+    const out = new Map();
+    const visit = (pid) => {
+        for (const child of childrenOf(pid)) {
+            try {
+                const match = /^VmRSS:\s+(\d+)\s+kB/m.exec(fs.readFileSync(`/proc/${child.pid}/status`, "utf8"));
+                if (match) out.set(child.pid, { mib: Number(match[1]) / 1024, cmd: child.cmd.slice(0, 120) });
+            } catch {
+                // Gone meanwhile.
+            }
+            visit(child.pid);
+        }
+    };
+    if (fs.existsSync("/proc/self/stat")) visit(process.pid);
+    return out;
 }
 
 /** VmRSS (MiB) of the Copilot CLI children of this process (and of their children). */
@@ -184,5 +208,65 @@ describe.skipIf(!RUN)("per-session memory on one worker (opt-in repro)", () => {
                 + `heap ${((last.heapMiB - first.heapMiB) / sessions).toFixed(3)} MiB, CLI ${((last.cliMiB - first.cliMiB) / sessions).toFixed(3)} MiB`);
         }
         console.table(rows);
+    });
+
+    it("measures the peak RSS of a long chat's summarization (node and the processes below it)", { timeout: 2 * 60 * 60_000 }, async () => {
+        const turns = Number(process.env.PS_SESSION_LEAK_LONG_TURNS || 300);
+        const env = getEnv();
+        await withScriptedModel(env, { respond, worker: { logLevel: "warning" } }, async ({ client, worker, qualifiedModel }) => {
+            const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+            await catalog.initialize();
+            try {
+                const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
+                for (let turn = 0; turn < turns; turn += 1) await chat.sendAndWait(`Turn ${turn}: say ok about item ${turn}.`, 120_000);
+                const events = (await catalog.getSessionEvents(chat.sessionId, undefined, 100_000)).length;
+                // The worker's own summarizeSession activity, registered on a capture runtime with the worker's session manager.
+                const handlers = {};
+                registerActivities({ registerActivity: (name, fn) => { handlers[name] = fn; } }, worker.sessionManager, null, undefined, catalog);
+                if (typeof handlers.summarizeSession !== "function") throw new Error("this build registers no summarizeSession activity");
+                await catalog.updateSession(chat.sessionId, { titleLocked: false }).catch(() => {});
+                collect();
+                await pause(1_000);
+                const before = descendantsRssMiB();
+                const baseline = { nodeMiB: process.memoryUsage().rss / MIB, childrenMiB: [...before.values()].reduce((sum, item) => sum + item.mib, 0) };
+                const peak = { ...baseline, newProcesses: 0 };
+                const started = new Map();
+                let sampling = true;
+                const sampler = (async () => {
+                    while (sampling) {
+                        const now = descendantsRssMiB();
+                        peak.nodeMiB = Math.max(peak.nodeMiB, process.memoryUsage().rss / MIB);
+                        peak.childrenMiB = Math.max(peak.childrenMiB, [...now.values()].reduce((sum, item) => sum + item.mib, 0));
+                        for (const [pid, item] of now) {
+                            if (before.has(pid)) continue;
+                            started.set(pid, { cmd: item.cmd, peakMiB: Math.max(started.get(pid)?.peakMiB ?? 0, item.mib) });
+                        }
+                        peak.newProcesses = Math.max(peak.newProcesses, [...now.keys()].filter(pid => !before.has(pid)).length);
+                        await pause(50);
+                    }
+                })();
+                const startedAt = Date.now();
+                let title = null;
+                let error = null;
+                try {
+                    title = await handlers.summarizeSession({ traceInfo: () => {}, traceWarn: () => {} }, { sessionId: chat.sessionId });
+                } catch (caught) {
+                    error = String(caught?.message ?? caught);
+                } finally {
+                    sampling = false;
+                    await sampler;
+                }
+                const result = {
+                    turns, events, ms: Date.now() - startedAt, title, error,
+                    baseline, peak, nodePeakAboveBaselineMiB: peak.nodeMiB - baseline.nodeMiB, childrenPeakAboveBaselineMiB: peak.childrenMiB - baseline.childrenMiB,
+                    startedProcesses: [...started.values()],
+                };
+                console.log(`[session-memory-repro] summarization ${JSON.stringify(result)}`);
+                const above = result.nodePeakAboveBaselineMiB + result.childrenPeakAboveBaselineMiB;
+                if (above > 300) console.log(`[session-memory-repro] summarization peak is ${above.toFixed(1)} MiB above the baseline (over 300 MiB)`);
+            } finally {
+                await catalog.close();
+            }
+        });
     });
 });
