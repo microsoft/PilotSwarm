@@ -485,9 +485,10 @@ export class ChatDefinitionStore {
      * that are running and its Workflows whose live run is active. Not its system sessions or service sessions (an agent's
      * test benches, stage 2.2).
      */
-    async runningChildren(ownerSessionId: string): Promise<number> {
-        // S2RT-F3: the shared budget's count (child-budget.ts), the same as spawn_agent's.
-        const { rows } = await this.pool.query(childBudgetCountSql(`"${this.schema}"`), [ownerSessionId, ""]);
+    async runningChildren(ownerSessionId: string, excludeSessionId = ""): Promise<number> {
+        // S2RT-F3: the shared budget's count (child-budget.ts), the same as spawn_agent's. `excludeSessionId`: a Workflow whose
+        // own claim is its reservation (review PRA-F2: a resumed Start is not counted against itself).
+        const { rows } = await this.pool.query(childBudgetCountSql(`"${this.schema}"`), [ownerSessionId, excludeSessionId]);
         return Number(rows[0]?.n ?? 0);
     }
 

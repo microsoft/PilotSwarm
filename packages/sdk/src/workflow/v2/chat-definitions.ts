@@ -55,8 +55,8 @@ export const WORKFLOW_START_MAX_RUNNING_CHILDREN = WORKFLOW_CHILD_BUDGET_MAX;
  * Start, a person's included (S2RT-F4); a level the caller gives (the chat's own tools know theirs) is used when deeper.
  * The budget is counted again, atomically, when the Workflow is claimed (S2RT-F3).
  */
-export async function requireWorkflowStartLimits(host: Pick<WorkflowV2Host, "store">, ownerSessionId: string, given: number | null = null)
-    : Promise<void> {
+export async function requireWorkflowStartLimits(host: Pick<WorkflowV2Host, "store">, ownerSessionId: string, given: number | null = null,
+    options: { claimedWorkflowSessionId?: string } = {}): Promise<void> {
     const derived = await host.store.chat.nestingLevel(ownerSessionId);
     const nestingLevel = Math.max(derived, Number.isSafeInteger(given) ? given as number : 0);
     if (nestingLevel + 1 > WORKFLOW_START_MAX_NESTING_LEVEL) {
@@ -64,7 +64,9 @@ export async function requireWorkflowStartLimits(host: Pick<WorkflowV2Host, "sto
             + "and a Workflow it starts would be one level deeper than any session may be. Ask a chat nearer the top to start it. Nothing was started.",
         { nestingLevel, maxNestingLevel: WORKFLOW_START_MAX_NESTING_LEVEL });
     }
-    const running = await host.store.chat.runningChildren(ownerSessionId);
+    const running = options.claimedWorkflowSessionId
+        ? await host.store.chat.runningChildren(ownerSessionId, options.claimedWorkflowSessionId)
+        : await host.store.chat.runningChildren(ownerSessionId);
     if (running >= WORKFLOW_START_MAX_RUNNING_CHILDREN) {
         throw new WorkflowStoreError("CHILD_LIMIT", `This chat already has ${running} running sub-agents and Workflows (max `
             + `${WORKFLOW_START_MAX_RUNNING_CHILDREN}). Wait for some to end before starting another. Nothing was started.`,
@@ -270,6 +272,20 @@ async function replayChatStart(host: WorkflowV2Host, request: Parameters<typeof 
     }
     const saved = await host.store.chat.readRevision(prior.definitionId, prior.revision);
     if (!saved) throw new WorkflowStoreError("REVISION_NOT_FOUND", `${pinned.name} has no revision ${prior.revision}.`);
+    // Review PRA-F2: a Start interrupted after its claim, before its Workflow was stored, is checked again as a first Start
+    // is (the build or the chat may have changed since): the revision compiles in this version, the scripts gate, and the
+    // depth limit and budget, its own claim not counted. One whose Workflow was stored is answered from what it made.
+    const resumedClaim = !(await host.store.readDefinition(workflowSessionId));
+    if (resumedClaim) {
+        const again = compileWorkflowV2ForHost(host, saved.yaml);
+        if (!again.valid) {
+            const first = again.diagnostics.find(item => item.severity !== "warning");
+            throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${prior.revision} of ${pinned.name} does not compile in this version`
+                + `${first ? ` (${first.path}): ${first.message}` : "."} Save it again with that change. Nothing was started.`, { revision: prior.revision });
+        }
+        requireWorkflowScripts(host, again.ir, "start");
+        await requireWorkflowStartLimits(host, request.ownerSessionId, request.nestingLevel ?? null, { claimedWorkflowSessionId: workflowSessionId });
+    }
     const binding = typeof request.binding === "function" ? await request.binding() : request.binding ?? null;
     const agentModels = await startAgentModelsOf(host, request);
     const stored = await createWorkflowV2(host, {
@@ -278,6 +294,7 @@ async function replayChatStart(host: WorkflowV2Host, request: Parameters<typeof 
         start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}), ...(agentModels ? { agentModels } : {}) },
         notifyParent: request.notifyParent !== false, ...(binding ? { binding } : {}),
         chatPin: { ownerSessionId: request.ownerSessionId, definitionId: prior.definitionId, revision: prior.revision },
+        ...(resumedClaim ? { childBudget: { max: WORKFLOW_START_MAX_RUNNING_CHILDREN } } : {}),
     });
     return { operation: "start", definitionId: prior.definitionId, name: pinned.name, revision: prior.revision, workflowId: stored.receipt.workflowSessionId,
         runId: stored.receipt.run?.runId ?? null, replayed: stored.replayed, ...(agentModels ? { agentModels } : {}) };
