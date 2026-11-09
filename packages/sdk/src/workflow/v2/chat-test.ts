@@ -36,7 +36,7 @@ import {
 } from "./service.js";
 import { requireWorkflowScripts } from "./scripts-gate.js";
 import { TERMINAL_OUTCOMES, WORKFLOW_V2_MILESTONE_IR_VERSION } from "./compiler.js";
-import { definitionOf } from "./chat-definitions.js";
+import { definitionOf, requireChatDefinitionsWritable } from "./chat-definitions.js";
 import { matchTestFixture, storedTestFixtures, testResultFor, WORKFLOW_V2_TEST_NOTICE, type WorkflowTestFixture } from "./test-mode.js";
 import type { WorkflowIR, WorkflowIRNode } from "./compiler.js";
 import { branchScopeNames, parseBranchScope } from "./parallel.js";
@@ -395,6 +395,7 @@ export async function startChatWorkflowTest(host: WorkflowV2Host, request: {
     binding: () => Promise<WorkflowToolBinding | null>;
 }): Promise<ChatTestBench & { runId: string; expect: ChatTestExpect | null }> {
     requireTestHost(host);
+    await requireChatDefinitionsWritable(host, request.ownerSessionId);
     const definition = await definitionOf(host, request.ownerSessionId, request.definition);
     const revision = request.revision ?? await host.store.chat.newestValidRevision(definition.definitionId);
     if (revision === null) throw new WorkflowStoreError("DEFINITION_INVALID", `${definition.name} has no valid revision yet, so it cannot be tested. Nothing was tested.`);

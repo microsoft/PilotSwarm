@@ -27,7 +27,7 @@ test("S2RT-F7: the same first save again is answered from its receipt, not refus
         readDefinitionByName: async () => { calls.push("name"); return { definitionId: "def-1", currentRevision: 1 }; },
         save: async (input) => { calls.push(["save", input.operationId, input.expected]); return { receipt, replayed: true }; },
     };
-    const host = { catalog: untouchable("catalog"), store: { chat }, scripts: true };
+    const host = { catalog: untouchable("catalog"), store: { chat, readWorkflowLineage: async () => null }, scripts: true };
     const call = (toolCallId) => workflowDefinitionFromTool({ operation: "save", name: "waiter", yaml: YAML },
         { callerSessionId: "chat", host, toolCallId, owner: null, binding: async () => null }).then((text) => JSON.parse(text));
     const again = await call("call-1");
@@ -52,7 +52,7 @@ test("S2RT-F10: a repeated Make a copy answers its receipt (the copy names its s
     const receipt = { operation: "save", definitionId: "def-copy", name: "release-watch", revision: 1, created: true, valid: true };
     const copy = { definitionId: "def-copy", ownerSessionId: "chat", name: "release-watch", locked: false, deletedAt: null,
         copiedFrom: { definitionId: "def-pkg", name: "release-tools/release-watch", revision: 1, package: null } };
-    const host = { store: { chat: {
+    const host = { store: { readWorkflowLineage: async () => null, chat: {
         readStoredOperation: async (owner, operationId) => (operationId === "copy-1" ? { kind: "save", receipt } : null),
         readDefinition: async (id) => (id === "def-copy" ? copy : { definitionId: "def-pkg", ownerSessionId: "chat", name: "release-tools/release-watch",
             locked: true, currentRevision: 2, deletedAt: null }),

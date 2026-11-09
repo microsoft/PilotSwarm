@@ -188,7 +188,7 @@ test("d52e5ed2: a chat definition's Start gates the revision it would start befo
     };
     // Its chat definitions read, and whether this start's Workflow exists (none); anything else of the store (what creating
     // the Workflow would use) fails the test.
-    const store = new Proxy({ chat, readDefinition: async () => null },
+    const store = new Proxy({ chat, readDefinition: async () => null, readWorkflowLineage: async () => null },
         { get: (target, name) => { if (name in target) return target[name]; throw new Error(`store.${String(name)} was used`); } });
     const host = { catalog: claimReadsOnly(), store, duroxideClient: untouchable("duroxide"), scripts: false };
     let captured = 0;
@@ -220,7 +220,7 @@ test("stage 2.4: Start keeps spawn_agent's depth limit and its budget of 50 runn
         nestingLevel: async () => level,
     };
     let level = 0;
-    const store = new Proxy({ chat, readDefinition: async () => made },
+    const store = new Proxy({ chat, readDefinition: async () => made, readWorkflowLineage: async () => null },
         { get: (target, name) => { if (name in target) return target[name]; throw new Error(`store.${String(name)} was used`); } });
     const host = { catalog: claimReadsOnly(), store, duroxideClient: untouchable("duroxide"), scripts: true };
     let captured = 0;

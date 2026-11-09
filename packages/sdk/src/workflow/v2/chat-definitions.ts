@@ -25,6 +25,7 @@ import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
 import { canonicalJson, isJsonObject, sha256Hex, type JsonObject, type JsonValue } from "./json.js";
 import { WorkflowStoreError, type WorkflowActor, type WorkflowDefinitionReceipt } from "./store.js";
+import { WORKFLOW_HUMAN_INPUT_DENIED, workflowHumanInputError } from "./input-policy.js";
 import { parseWorkflowAgentModels, readStoredAgentModels, type WorkflowAgentModels } from "./agent-models.js";
 import { compileWorkflowV2ForHost, createWorkflowV2, requireNoAgentBringsWorkflows, type WorkflowV2Host } from "./service.js";
 import { requireWorkflowScripts } from "./scripts-gate.js";
@@ -167,6 +168,20 @@ export async function definitionOf(host: Pick<WorkflowV2Host, "store">, ownerSes
  * refuses a definition with a script node (scripts-gate.ts). `by`: "chat" (the chat's own tool: it has seen what it saved)
  * or "person" (a note for the chat, `personWords` naming them).
  */
+/**
+ * Review PRS-002: a chat's Workflow Definitions change only for a chat that is not inside a Workflow. A session that runs an
+ * agent step (or is a descendant of one) takes no human input (input-policy.ts), and a definition change would queue a note
+ * into its next prompt: save, start, test, copy, a package's attach or update, and delete are refused for it
+ * (WORKFLOW_HUMAN_INPUT_DENIED, 403), by its stored lineage, before anything is read or written; reads stay allowed.
+ * The one guard for every caller: a person's management or HTTP call, and the chat's own tool (which A1 refuses first).
+ */
+export async function requireChatDefinitionsWritable(host: Pick<WorkflowV2Host, "store">, ownerSessionId: string): Promise<void> {
+    const lineage = await host.store.readWorkflowLineage(ownerSessionId);
+    if (!lineage?.agentRoot) return;
+    const denied = workflowHumanInputError(ownerSessionId, "definitions", lineage);
+    throw new WorkflowStoreError(WORKFLOW_HUMAN_INPUT_DENIED, `${denied.message} Nothing was changed.`, denied.details as JsonValue);
+}
+
 export async function saveChatWorkflowDefinition(host: WorkflowV2Host, request: {
     ownerSessionId: string;
     name: string;
@@ -182,6 +197,7 @@ export async function saveChatWorkflowDefinition(host: WorkflowV2Host, request: 
     copiedFrom?: ChatCopiedFrom | null;
 }): Promise<StoredChatOperation<ChatSaveReceipt>> {
     requireOperationId(request.operationId);
+    await requireChatDefinitionsWritable(host, request.ownerSessionId);
     // DS-1 (TEST check at 406550a9): a save aimed at a package's locked definition (by its id, or by its <package>/<name>)
     // is refused as locked, in words that say Make a copy, before its name or YAML is checked. The store refuses it again
     // under its lock.
@@ -289,6 +305,7 @@ export async function startChatWorkflowDefinition(host: WorkflowV2Host, request:
     agentModels?: unknown;
 }): Promise<ChatStartReceipt> {
     requireOperationId(request.operationId);
+    await requireChatDefinitionsWritable(host, request.ownerSessionId);
     const workflowSessionId = systemChildAgentUUID(request.ownerSessionId, `workflow:start:${request.operationId}`);
     // S2RT-F5: a Start is receipt-first. When this operation already made its Workflow (or claimed it and was interrupted
     // before admitting it), it continues with the definition and revision it pinned then, never with a default chosen again
@@ -408,6 +425,7 @@ export async function deleteChatWorkflowDefinition(host: Pick<WorkflowV2Host, "s
     ownerSessionId: string; definitionId: string; actor: ChatDefinitionActor; operationId: string;
 }): Promise<StoredChatOperation<ChatDeleteReceipt>> {
     requireOperationId(request.operationId);
+    await requireChatDefinitionsWritable(host, request.ownerSessionId);
     return host.store.chat.deleteDefinition({ ...request, requestSha256: sha256Hex(canonicalJson({ kind: "delete", definitionId: request.definitionId })) });
 }
 
@@ -482,6 +500,7 @@ export async function attachChatPackageWorkflow(host: WorkflowV2Host, request: {
     newerOnly?: boolean;
 }): Promise<StoredChatOperation<ChatAttachReceipt>> {
     requireOperationId(request.operationId);
+    await requireChatDefinitionsWritable(host, request.ownerSessionId);
     const parsedRef = requirePackageRef(request.ref).ref;
     // Formal L2 (as G2 for a save): a retry of an attach that was stored is answered from its receipt, before the registry is
     // read again: its active version may have moved since (a republish), which would make the same call another request.
@@ -532,6 +551,7 @@ export async function copyChatPackageWorkflow(host: WorkflowV2Host, request: {
     personWords?: string | null;
 }): Promise<StoredChatOperation<ChatSaveReceipt>> {
     requireOperationId(request.operationId);
+    await requireChatDefinitionsWritable(host, request.ownerSessionId);
     // S2RT-F10: a repeat of this copy is answered from its receipt, before the source's newest revision is chosen again (a
     // newer package version attached since would make the same request another one). The copy records its source (L1).
     const stored = await host.store.chat.readStoredOperation?.<ChatSaveReceipt>(request.ownerSessionId, request.operationId);

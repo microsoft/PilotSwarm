@@ -25,7 +25,8 @@ function hostWith(pinnedBy) {
         runningChildren: async () => { reads.push(["budget"]); return 0; },
         nestingLevel: async () => 0,
     };
-    const store = new Proxy({ chat, readDefinition: async () => (pinnedBy === "row"
+    // PRS-002: these chats are in no Workflow (the definitions guard reads the lineage first).
+    const store = new Proxy({ chat, readWorkflowLineage: async () => null, readDefinition: async () => (pinnedBy === "row"
         ? { workflowSessionId: "w", parentSessionId: "chat", state: "published", chatDefinitionId: "def-1", chatRevision: 1 } : null) },
     { get: (target, name) => { if (name in target) return target[name]; throw new Error(`store.${String(name)} was used`); } });
     const catalog = new Proxy({ getSessionCreationConfig: async () => (pinnedBy === "claim"

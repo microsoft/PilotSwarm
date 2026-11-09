@@ -29,7 +29,8 @@ async function saveOperation(args, toolCallId = "call-1") {
     const seen = [];
     const host = {
         catalog: {}, duroxideClient: {},
-        store: { chat: {
+        // PRS-002: this chat is in no Workflow (the definitions guard reads the lineage first).
+        store: { readWorkflowLineage: async () => null, chat: {
             // Code check G2: the compat path reads its save receipt by operation id first; none here.
             readStoredOperation: async () => null,
             readDefinitionByName: async () => null,

@@ -215,3 +215,39 @@ test("UX2D-F1: a stale save's refusal reaches the page with who saved and when, 
         await close();
     }
 });
+
+// Review PRS-002: the HTTP save of a session that runs a Workflow's agent step, by its owner, reaches the management
+// client's real save (here over a stand-in catalog and store whose lineage says the session runs a step), and is refused
+// with the human-input refusal (403 WORKFLOW_HUMAN_INPUT_DENIED) before the store is asked to write anything.
+test("PRS-002: the HTTP save of an agent step's session is refused with the human-input words, and nothing is written", async () => {
+    const { runtime } = harness();
+    const writes = [];
+    const chat = new Proxy({}, { get: (_target, name) => async (...args) => { writes.push([String(name), ...args]); throw new Error(`store.chat.${String(name)} was used`); } });
+    const store = {
+        chat,
+        readWorkflowLineage: async (sessionId) => ({ sessionId, level: 2, agentRoot: { childSessionId: sessionId, nodeExecutionId: "nx-1",
+            workflowSessionId: "wf-1", controllingSessionId: "chat-1", distance: 0 } }),
+    };
+    const mgmt = Object.assign(Object.create(PilotSwarmManagementClient.prototype), {
+        config: { workflowCommands: { requests: true } },
+        _ensureStarted() {},
+        _catalog: { getSession: async (sessionId) => ({ sessionId, sessionKind: "agent", deletedAt: null, owner }), workflowStore: () => store },
+        _artifactStore: null,
+        _duroxideClient: null,
+    });
+    runtime.transport.saveChatWorkflowDefinition = (sessionId, request, options) =>
+        PilotSwarmManagementClient.prototype.saveChatWorkflowDefinition.call(mgmt, sessionId, request, options);
+    const { transport, close } = await serve(runtime);
+    try {
+        let caught = null;
+        try {
+            await transport("alice").saveChatWorkflowDefinition("step-1", { name: "hn-top-watch", yaml: "y", operationId: "op-step" });
+        } catch (error) { caught = error; }
+        assert.equal(caught?.status, 403);
+        assert.equal(caught?.code, "WORKFLOW_HUMAN_INPUT_DENIED");
+        assert.match(String(caught?.message), /Session step-1 runs a step of workflow wf-1: people cannot save, start, test, copy, update or delete its Workflow Definitions\./);
+        assert.deepEqual(writes, []);
+    } finally {
+        await close();
+    }
+});

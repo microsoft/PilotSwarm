@@ -45,7 +45,7 @@ test("S2SF-F6: 1.1.0 attached and 1.0.0 active (a rollback) is no offer; neither
     }
     // The card the chat reads says no newer version either.
     for (const [active, offered] of [[at("1.0.0"), null], [at("2.0.0", "pkg-own-copy"), null], [at("1.2.0"), "1.2.0"]]) {
-        const host = { ...hostWith(active), store: { chat: {
+        const host = { ...hostWith(active), store: { readWorkflowLineage: async () => null, chat: {
             readDefinitionByName: async () => ({ definitionId: "def-pkg", currentRevision: 1 }),
             readRevision: async () => ({ revision: 1, valid: false, package: at("1.1.0"),
                 card: { name: "release-watch", description: "Watches a train.", whenToUse: "A train.", inputs: { example: null, schema: null },
@@ -59,7 +59,7 @@ test("S2SF-F6: 1.1.0 attached and 1.0.0 active (a rollback) is no offer; neither
 test("L2: a retried attach is answered from its stored receipt, before the registry is read; another request under its id is refused", async () => {
     const receipt = { operation: "attach", definitionId: "def-pkg", name: "release-tools/release-watch", revision: 2, created: false, changed: true,
         package: at("1.1.0"), attachedAt: "2026-11-07T10:00:00.000Z" };
-    const host = { store: { chat: { readStoredOperation: async (owner, operationId) => (operationId === "definition:call-1:attach"
+    const host = { store: { readWorkflowLineage: async () => null, chat: { readStoredOperation: async (owner, operationId) => (operationId === "definition:call-1:attach"
         ? { kind: "attach", receipt } : null) } },
     packageWorkflows: { find: async () => { throw new Error("the registry was read"); }, readYaml: async () => { throw new Error("read"); } } };
     const request = { ownerSessionId: "chat-1", ref: "release-tools/release-watch", viewer: null, actor: { kind: "chat", sessionId: "chat-1" },
@@ -77,7 +77,7 @@ test("L1: Make a copy saves the chat's own definition and names what it was copi
     const yaml = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: release-watch, version: \"1.1.0\" }\ninitial: hold\n"
         + "states:\n  hold: { type: wait, seconds: 30, transition: { next: { elapsed: done } } }\n  done: { type: terminal, outcome: succeeded }\n";
     const saves = [];
-    const host = { store: { chat: {
+    const host = { store: { readWorkflowLineage: async () => null, chat: {
         readDefinition: async () => ({ definitionId: "def-pkg", ownerSessionId: "chat-1", name: "release-tools/release-watch", currentRevision: 2,
             locked: true, deletedAt: null }),
         readRevision: async (definitionId, revision) => ({ revision, yaml, package: at("1.1.0") }),
@@ -98,7 +98,7 @@ test("L1: Make a copy saves the chat's own definition and names what it was copi
 test("DS-1: a save aimed at a locked definition is DEFINITION_LOCKED by its id or its <package>/<name>, whatever name it gives", async () => {
     const locked = { definitionId: "def-pkg", ownerSessionId: "chat-1", name: "release-tools/release-watch", currentRevision: 1, locked: true,
         packageName: "release-tools", deletedAt: null };
-    const host = { store: { chat: {
+    const host = { store: { readWorkflowLineage: async () => null, chat: {
         readDefinition: async (id) => (id === "def-pkg" ? locked : null),
         readDefinitionByName: async (owner, name) => (owner === "chat-1" && name === locked.name ? locked : null),
         save: async () => { throw new Error("the store's save was reached"); },

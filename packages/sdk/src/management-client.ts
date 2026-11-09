@@ -174,7 +174,7 @@ import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerso
 import {
     attachChatPackageWorkflow, chatCompletionRefusal, copyChatPackageWorkflow, deleteChatWorkflowDefinition, findPackageWorkflow, listChatWorkflowDefinitions,
     packageWorkflowFacts,
-    readChatWorkflowDefinition, saveChatWorkflowDefinition, startChatWorkflowDefinition, withPackageUpdates,
+    readChatWorkflowDefinition, requireChatDefinitionsWritable, saveChatWorkflowDefinition, startChatWorkflowDefinition, withPackageUpdates,
 } from "./workflow/v2/chat-definitions.js";
 import { createPackageWorkflowSource, type PackageViewer, type PackageWorkflowSource } from "./workflow/v2/chat-packages.js";
 import { coordinatingInstructions, workflowEffectFactsWords, workflowModelHintWords } from "./workflow/v2/package-card.js";
@@ -2434,6 +2434,8 @@ export class PilotSwarmManagementClient {
         try {
             this._requirePersonCommands();
             const host = await this._chatForDefinitions(chatSessionId);
+            // Review PRS-002: refused for a session inside a Workflow before the definition is looked up (as the attach it makes).
+            await requireChatDefinitionsWritable(host, chatSessionId);
             const definition = await host.store.chat.readDefinition(request.definitionId);
             if (!definition || definition.ownerSessionId !== chatSessionId || definition.deletedAt !== null || !definition.locked) {
                 throw new WorkflowStoreError("DEFINITION_NOT_FOUND", "This chat has no package Workflow Definition with that id.");
