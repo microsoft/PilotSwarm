@@ -318,4 +318,31 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
             }
         });
     });
+
+    // Review CI-1 (CI run 114): CI runs every worker with a GitHub token (GITHUB_TOKEN). The session, with no per-user key,
+    // was bound to a client key without the worker's token while its client was pooled under the key with it: the binding
+    // named no client, and the release's close in the CLI found nothing to close (the cases above failed there). Here the
+    // worker has a token whatever the environment: the binding names the client the session runs on, and the release
+    // closes it there.
+    it("CI-1: on a worker with a GitHub token, the binding names the session's client, and its release closes it there", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const githubToken = process.env.GITHUB_TOKEN || "ci1-not-a-real-token";
+        await withScriptedModel(env, { worker: { logLevel: "warning", githubToken } }, async ({ client, worker, qualifiedModel }) => {
+            const manager = worker.sessionManager;
+            const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
+            const id = chat.sessionId;
+            await chat.sendAndWait(FIRST, TURN_MS);
+            const copilot = manager.clients.get(manager.sessionClientKeys.get(id));
+            expect(copilot, "the binding names a pooled client").toBeDefined();
+            expect(copilot.sessions.has(id), "that client holds the session").toBe(true);
+            const closes = [];
+            const close = copilot.rpc.sessions.close;
+            copilot.rpc.sessions.close = async params => { closes.push(params.sessionId); return close(params); };
+            manager.sessionLastTouchedAt.set(id, Date.now() - 60_000);
+            expect(await manager.sweepIdleSessions(1_000)).toBeGreaterThanOrEqual(1);
+            expect(closes).toEqual([id]);
+            expect(copilot.sessions.has(id)).toBe(false);
+            expect(manager.cliClosesOwed?.has(id) ?? false).toBe(false);
+        });
+    });
 });

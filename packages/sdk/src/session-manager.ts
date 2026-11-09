@@ -1578,15 +1578,12 @@ export class SessionManager {
     }
 
     /**
-     * The pooled CopilotClient for this token, transport and workspace root.
-     * It may not be started yet: create and resume sessions on it through
-     * `_createCopilotSession` / `_resumeCopilotSession`.
+     * The GitHub token a pooled client is created with: the override (a
+     * per-user GitHub Copilot key, cms.users.github_copilot_key), else the
+     * worker's token, else the first registry GitHub provider's resolved
+     * token. Undefined when there is none.
      */
-    private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string): Promise<CopilotClient> {
-        // Resolve the effective token: explicit override > worker default >
-        // first registry github provider's resolved token. The override is
-        // how per-user GitHub Copilot keys (cms.users.github_copilot_key)
-        // get plumbed through to a dedicated CopilotClient.
+    private _effectiveClientToken(tokenOverride?: string): string | undefined {
         let token = tokenOverride;
         if (!token) token = this.githubToken;
         if (!token && this.workerDefaults.modelProviders) {
@@ -1599,9 +1596,31 @@ export class SessionManager {
                 }
             }
         }
+        return token || undefined;
+    }
 
-        const clientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (token || "")
+    /**
+     * The pool key of the client for a token (already resolved by
+     * _effectiveClientToken), transport and workspace root. Review CI-1 (CI run
+     * 114): a session's binding (sessionClientKeys) is built here too, from the
+     * same resolved token, so it names the client the session runs on. It used
+     * to leave out the worker's token, so on a worker with GITHUB_TOKEN and a
+     * session with no per-user key the binding named no client, and the CLI
+     * closes (L1, DRR-4, DR2-004) found nothing to close.
+     */
+    private _clientPoolKey(token: string | undefined, byokOpenAi: boolean, workspaceRoot?: string): string {
+        return (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (token || "")
             + (workspaceRoot ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceRoot : "");
+    }
+
+    /**
+     * The pooled CopilotClient for this token, transport and workspace root.
+     * It may not be started yet: create and resume sessions on it through
+     * `_createCopilotSession` / `_resumeCopilotSession`.
+     */
+    private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string): Promise<CopilotClient> {
+        const token = this._effectiveClientToken(tokenOverride);
+        const clientKey = this._clientPoolKey(token, byokOpenAi, workspaceRoot);
         const existing = this.clients.get(clientKey);
         if (existing) return existing;
 
@@ -2471,8 +2490,9 @@ export class SessionManager {
             );
         }
         const byokOpenAi = needsByokRequestCompatibility(resolvedProviderConfig.provider);
-        const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (userGithubToken || "")
-            + (workspaceAttach ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceAttach.root : "");
+        // Review CI-1: the binding is the pool key of the client the session runs on (the worker's token included).
+        const clientToken = this._effectiveClientToken(userGithubToken);
+        const desiredClientKey = this._clientPoolKey(clientToken, byokOpenAi, workspaceAttach?.root);
         const previousClientKey = this.sessionClientKeys.get(sessionId);
         if (previousClientKey !== undefined && previousClientKey !== desiredClientKey) {
             // The credential or native/BYOK transport changed since we last
@@ -2503,7 +2523,7 @@ export class SessionManager {
                     + "the turn does not resume it on another client yet.");
             }
         }
-        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root);
+        const client = await this.ensureClient(clientToken, byokOpenAi, workspaceAttach?.root);
         this.sessionClientKeys.set(sessionId, desiredClientKey);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
 
@@ -3295,12 +3315,23 @@ export class SessionManager {
      * cliCloseTimeoutMs, is owed (cliClosesOwed: the sweep tries it again; the SDK's object and the binding stay), and one
      * still in flight is a barrier: a turn of the session waits for it before it resumes (awaitCliClose). A late answer
      * settles it then (closed: the SDK's object is dropped and nothing is owed; failed: still owed). Never throws.
+     *
+     * Review CI-1: a session with no binding was never served here: nothing to close (confirmed). A binding is the pool
+     * key of its client (_clientPoolKey), so a binding with no pooled client means that client left the pool (the
+     * worker stopped it, or its CLI exited and could not start again): that CLI holds nothing any more, and the close is
+     * confirmed. That is decided by looking, not by the missing key alone: a pooled client that still holds the session
+     * (its SDK map has it) means the binding does not name its client; the close goes to that client instead, and
+     * counts only if it is confirmed there.
      */
     private async _closeCliSession(sessionId: string, key: string | undefined = this.sessionClientKeys.get(sessionId)): Promise<boolean> {
         const client = key != null ? this.clients.get(key) : undefined;
         if (!client || key == null) {
-            if (key != null) this._settleOwedCliClose(sessionId, key);
-            return true;
+            if (key == null) return true;
+            this._settleOwedCliClose(sessionId, key);
+            const holder = this._pooledKeyHolding(sessionId);
+            if (holder == null) return true;
+            console.error(`[SessionManager] session ${sessionId} is bound to a client that is not pooled, but a pooled client holds it; it is closed there`);
+            return this._closeCliSession(sessionId, holder);
         }
         // One close of a session at a time: closes in flight to other clients are waited for first (each bounded).
         const flights = this.cliClosesInFlight.get(sessionId) ?? new Map<string, Promise<boolean>>();
@@ -3346,6 +3377,15 @@ export class SessionManager {
         const pending = this.cliClosesInFlight.get(sessionId)?.get(key);
         if (!pending) return false;
         return (await settledWithin(pending, this.cliCloseSettleMs)) === true;
+    }
+
+    /** Review CI-1: the pool key of a pooled client whose SDK map still holds `sessionId`, if any. */
+    private _pooledKeyHolding(sessionId: string): string | undefined {
+        for (const [key, pooled] of this.clients) {
+            const held = (pooled as unknown as { sessions?: { has?: (id: string) => boolean } }).sessions;
+            if (typeof held?.has === "function" && held.has(sessionId)) return key;
+        }
+        return undefined;
     }
 
     /** Review DR2-006: whether a close of `sessionId` is owed or still in flight on any client. */
