@@ -1945,6 +1945,10 @@ export class SessionManager {
      * Review DR2-006: the final sweep spends its time (the worker's shutdown deadline) on the files: it does not retry the
      * owed closes first, it takes the sessions with no unconfirmed close first, and it does not wait again on a close that
      * is owed or still in flight (it was tried; the process exits). Each session's turn lock still excludes it.
+     * Review D3-002: it takes the sessions whose local files may be the only copy (no committed snapshot marker) before the
+     * ones the store already holds, so a first close that has no answer for a committed session's cache cleanup cannot use
+     * up the deadline before a legacy session is uploaded; and a close that had no answer in this sweep is not waited on
+     * again by that session's upload.
      */
     async sweepIdleSessions(evictAfterMs: number, options: { final?: boolean } = {}): Promise<number> {
         if (!(evictAfterMs > 0)) return 0;
@@ -1962,9 +1966,16 @@ export class SessionManager {
         // Review DRR-3: the closes an earlier sweep, end or dehydrate could not confirm (not in the final sweep, DR2-006).
         if (!options.final) await this._retryOwedCliCloses();
         let reclaimed = 0;
-        const ordered = options.final
-            ? [...candidates].sort((a, b) => Number(this._cliCloseUnresolved(a)) - Number(this._cliCloseUnresolved(b)))
-            : [...candidates];
+        let ordered = [...candidates];
+        if (options.final) {
+            // Files that may be the only copy first, then the stores' cached ones; in each, no unconfirmed close first.
+            const rank = new Map<string, number>(ordered.map((sessionId): [string, number] => {
+                const dir = path.join(this.sessionStateDir, sessionId);
+                const onlyCopy = fs.existsSync(dir) && !readSnapshotMarker(dir);
+                return [sessionId, (onlyCopy ? 0 : 2) + Number(this._cliCloseUnresolved(sessionId))];
+            }));
+            ordered = ordered.sort((a, b) => rank.get(a)! - rank.get(b)!);
+        }
         for (const sessionId of ordered) {
             if (this.sessionLocks.has(sessionId)) continue; // busy — never race a turn
             const sessionDir = path.join(this.sessionStateDir, sessionId);
@@ -1992,6 +2003,8 @@ export class SessionManager {
                     // time): it is not reclaimed, and the next sweep evicts it again.
                     // Review DR2-006: the final sweep does not wait again on a close that is owed or in flight.
                     const finalUnresolved = options.final === true && this._cliCloseUnresolved(sessionId);
+                    // Review D3-002: a close not waited on again before the upload (owed before, or tried in this sweep).
+                    let skipCliClose = finalUnresolved;
                     if (finalUnresolved) {
                         emitSessionManagerTrace(sessionId, "final release: its close in the Copilot CLI is still owed; its files are kept as before");
                     } else if (!(await this._closeCliSession(sessionId))) {
@@ -2000,6 +2013,7 @@ export class SessionManager {
                             return;
                         }
                         emitSessionManagerTrace(sessionId, "final release: its close in the Copilot CLI is not confirmed; its files are kept as before");
+                        skipCliClose = true;
                     }
                     if (!dirExists) {
                         this.sessionLastTouchedAt.delete(sessionId);
@@ -2025,7 +2039,7 @@ export class SessionManager {
                             emitSessionManagerTrace(sessionId, `evicted (store versioned at v${versioned.version}); stale unmarked cache reclaimed`);
                         } else {
                             // Legacy session: its local files may be the only copy.
-                            await this._dehydrateUnlocked(sessionId, "eviction", finalUnresolved ? { skipCliClose: true } : undefined);
+                            await this._dehydrateUnlocked(sessionId, "eviction", skipCliClose ? { skipCliClose: true } : undefined);
                             emitSessionManagerTrace(sessionId, "evicted via legacy dehydrate (no committed marker)");
                         }
                     } else {
