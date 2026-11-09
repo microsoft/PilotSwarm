@@ -149,6 +149,48 @@ describe("Workflows on demand: declarations and instructions", () => {
         expect(owns).toHaveBeenCalledTimes(1);
     });
 
+    // Review L2 (per-session memory on TEST): what the worker derived for a session's turns is forgotten when it lets the
+    // session go (eviction, dehydrate, its end); the next turn sets it again. An in-process client's own config is kept
+    // until the session ends.
+    it("L2: eviction and dehydrate forget the turn config, prompt digests and the owns-none cache, keep the client's config; the session's end forgets it too", async () => {
+        const f = fixture();
+        const hooks = { onPreToolUse: vi.fn() };
+        f.manager.setConfig("chat", { hooks });
+        const owns = vi.fn(async () => false);
+        const letGoes = [
+            ["eviction", async () => {
+                rmSync(join(f.manager.sessionStateDir, "chat"), { recursive: true, force: true });
+                f.manager.sessionLastTouchedAt.set("chat", Date.now() - 60_000);
+                expect(await f.manager.sweepIdleSessions(1_000)).toBe(1);
+            }],
+            ["dehydrate", async () => f.manager.dehydrate("chat", "l2-check")],
+        ];
+        for (const [index, [label, letGo]] of letGoes.entries()) {
+            // Turn 0 each time: the fake client creates the session afresh (an evicted one has no files here to resume).
+            const t = await f.turn(0, { workflowContextOwnsCheck: owns });
+            expect(t.config.workflowContext, label).toBe("off");
+            expect(t.config.hooks, label).toBe(hooks);
+            expect(owns, label).toHaveBeenCalledTimes(index + 1);
+            f.manager.promptSectionDigests.set("chat", { base: { sha: "abc", chars: 3 } });
+            expect(f.manager.sessionConfigs.has("chat"), label).toBe(true);
+            expect(f.manager.workflowContextOwnsNone.has("chat"), label).toBe(true);
+            await letGo();
+            expect(f.manager.sessionConfigs.has("chat"), label).toBe(false);
+            expect(f.manager.promptSectionDigests.has("chat"), label).toBe(false);
+            expect(f.manager.workflowContextOwnsNone.has("chat"), label).toBe(false);
+            expect(f.manager.clientSessionConfigs.get("chat"), label).toEqual({ hooks });
+        }
+        // The next turn sets them again: the client's hooks are its base, and the owns-check is read again.
+        const again = await f.turn(0, { workflowContextOwnsCheck: owns });
+        expect(again.config.hooks).toBe(hooks);
+        expect(owns).toHaveBeenCalledTimes(3);
+        expect(f.manager.sessionConfigs.has("chat")).toBe(true);
+        // The session's end forgets the client's config too.
+        await f.manager.destroySession("chat");
+        expect(f.manager.sessionConfigs.has("chat")).toBe(false);
+        expect(f.manager.clientSessionConfigs.has("chat")).toBe(false);
+    });
+
     it("a lasting trigger turns them on and saves the flag; a trigger that could not be read turns them on for this turn only", async () => {
         const lasting = fixture();
         expect((await lasting.turn(0, { workflowContextTrigger: "lasting" })).config.workflowContext).toBe("on");

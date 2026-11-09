@@ -1018,6 +1018,12 @@ export class SessionManager {
     private sessionStore: SessionStateStore | null = null;
     /** In-memory configs with non-serializable fields (tools, hooks). */
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
+    /**
+     * Review L2: the config an in-process client gave (setConfig: its tools and hooks), kept apart from the turn-derived
+     * sessionConfigs, which the worker forgets when it lets a session go (eviction, dehydrate) and the next turn sets again.
+     * The client's own part is a fallback for that next turn on this worker. Forgotten with the session (destroySession).
+     */
+    private clientSessionConfigs = new Map<string, ManagedSessionConfig>();
     private workflowParentConfigs = new Map<string, SerializableSessionConfig & { excludedTools?: string[] }>();
     /** Every open workflow tool executor (each script state's own; RT-2), for shutdown. */
     private workflowExecutors = new Set<WorkflowToolExecutor>();
@@ -1117,6 +1123,7 @@ export class SessionManager {
     /** Store full config (with tools/hooks) for a session. Called by PilotSwarmClient. */
     setConfig(sessionId: string, config: ManagedSessionConfig): void {
         this.sessionConfigs.set(sessionId, config);
+        this.clientSessionConfigs.set(sessionId, config);
         if (config.tools?.length) this.sessionApplicationTools.set(sessionId, [...config.tools]);
         else this.sessionApplicationTools.delete(sessionId);
     }
@@ -1945,6 +1952,7 @@ export class SessionManager {
                     await this._closeCliSession(sessionId);
                     if (!dirExists) {
                         this.sessionLastTouchedAt.delete(sessionId);
+                        this._forgetTurnState(sessionId);
                         reclaimed++;
                         return;
                     }
@@ -1974,6 +1982,7 @@ export class SessionManager {
                     }
                     this.sessionLastTouchedAt.delete(sessionId);
                     this.sessionClientKeys.delete(sessionId);
+                    this._forgetTurnState(sessionId);
                     reclaimed++;
                 });
             } catch (error: unknown) {
@@ -2138,7 +2147,8 @@ export class SessionManager {
         const sessionOwnerKey = effectiveSerializableConfig.boundAgentName
             ? await this._sessionAgentOwnerKey(sessionId)
             : null;
-        const storedConfig = this.sessionConfigs.get(sessionId);
+        // L2: after the worker let the session go, the in-process client's own config (tools, hooks) is the base again.
+        const storedConfig = this.sessionConfigs.get(sessionId) ?? this.clientSessionConfigs.get(sessionId);
         let boundAgentCopy: AgentCopyEntry | undefined;
         let resolvedTools: Tool<any>[];
         try {
@@ -3461,6 +3471,8 @@ export class SessionManager {
         } else {
             emitSessionManagerTrace(sessionId, `dehydrate complete reason=${reason}`, { trace });
         }
+        // L2: the session's state is in the store; what its turns derived here is set again by its next turn.
+        this._forgetTurnState(sessionId);
     }
 
     /**
@@ -3738,7 +3750,21 @@ export class SessionManager {
         this._forgetWarmSession(sessionId);
         await this._closeCliSession(sessionId);
         this.sessionApplicationTools.delete(sessionId);
+        this.clientSessionConfigs.delete(sessionId);
+        this._forgetTurnState(sessionId);
+    }
+
+    /**
+     * Review L2 (per-session memory on TEST): what the worker derived for a session's turns: its saved turn config (it
+     * held the turn's closures), its prompt-section digests and its cached "owns no Workflow". Forgotten when the worker
+     * lets the session go (its end, eviction, dehydrate); the next turn on this worker sets them again, as a turn on
+     * another worker would (a first prompt-sections event, one owns-check while Workflows are off). The in-process
+     * client's own config and tools are kept (clientSessionConfigs, sessionApplicationTools) until the session ends.
+     */
+    private _forgetTurnState(sessionId: string): void {
         this.sessionConfigs.delete(sessionId);
+        this.promptSectionDigests.delete(sessionId);
+        this.workflowContextOwnsNone.delete(sessionId);
     }
 
     /**
@@ -3840,6 +3866,8 @@ export class SessionManager {
         this.sessionBindingFingerprints.clear();
         this.sessionApplicationTools.clear();
         this.sessionConfigs.clear();
+        this.clientSessionConfigs.clear();
+        this.promptSectionDigests.clear();
         this.sessionClientKeys.clear();
         // Each process gets the same deadline concurrently; one stuck client
         // cannot block another or multiply the worker's termination budget.
