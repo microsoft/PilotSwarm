@@ -1,8 +1,10 @@
 /**
  * Workflow Simplified: an agent node that continues its chat (owner decision agent-node-continue-20261106; YAML key
  * `chat: new | continue`):
- * - the compiler accepts `chat: new` (the default; the IR is unchanged) and `chat: continue` (the IR carries it), refuses
- *   any other value, and refuses `chat: continue` inside a parallel (For each) body in words; a stored IR keeps it;
+ * - the compiler accepts `chat: new` (the IR carries no mode) and `chat: continue` (the IR carries it), refuses any other
+ *   value, and refuses `chat: continue` inside a parallel (For each) body in words; a stored IR keeps it. Owner
+ *   2026-11-09T05:38Z: an agent state that sets no `chat` continues (the IR carries `continue`) outside a parallel body,
+ *   and gets a new chat each visit inside one (a For each body or a named branch);
  * - the chat ids are derived (one per run and state; a replacement names its visit) and a continued chat is told apart
  *   from a visit's own;
  * - the first prompt of a continued chat says it continues and asks for node_execution_id, the cycle prompt says
@@ -74,25 +76,84 @@ states:
   failed: { type: terminal, outcome: failed }
 `;
 
-test("the compiler: chat new is the default and leaves the IR as it was; continue is carried; anything else is refused", () => {
+const BRANCHES = chat => `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: lanes, version: "1.0.0" }
+initial: fan
+states:
+  fan:
+    type: parallel
+    timeoutSeconds: 600
+    branches:
+      left:
+        initial: left_talk
+        states:
+          left_talk:
+            type: agent
+            invoke: { prompt: "Tell one fact." }
+${chat === undefined ? "" : `            chat: ${chat}\n`}            timeoutSeconds: 60
+            transition: { next: { said: left_done, failure: left_failed } }
+          left_done: { type: terminal, outcome: succeeded }
+          left_failed: { type: terminal, outcome: failed }
+      right:
+        initial: right_talk
+        states:
+          right_talk:
+            type: agent
+            invoke: { prompt: "Tell another fact." }
+            timeoutSeconds: 60
+            transition: { next: { said: right_done, failure: right_failed } }
+          right_done: { type: terminal, outcome: succeeded }
+          right_failed: { type: terminal, outcome: failed }
+    transition: { next: { joined: sum_up, blocked: failed, timed_out: failed, failure: failed } }
+  sum_up:
+    type: agent
+    invoke: { prompt: "Sum up." }
+    timeoutSeconds: 60
+    transition: { next: { done: done, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+
+test("the compiler: continue is the default where it is allowed and is carried; new leaves the IR without a mode; anything else is refused", () => {
     const plain = compileWorkflowV2(LOOP(undefined), AGENTS);
     const fresh = compileWorkflowV2(LOOP("new"), AGENTS);
     const continued = compileWorkflowV2(LOOP("continue"), AGENTS);
     for (const result of [plain, fresh, continued]) assert.deepEqual(errors(result), [], JSON.stringify(result.diagnostics));
-    assert.equal(fresh.irSha256, plain.irSha256);
-    assert.equal(Object.hasOwn(plain.ir.nodes.talk, "chat"), false);
-    assert.equal(continued.ir.nodes.talk.chat, "continue");
-    assert.notEqual(continued.irSha256, plain.irSha256);
-    // A stored IR keeps the mode, and an invalid stored value is refused.
+    // Owner 2026-11-09T05:38Z: a loop's agent state that sets no chat continues; its IR is the explicit continue's.
+    assert.equal(plain.ir.nodes.talk.chat, "continue");
+    assert.equal(plain.irSha256, continued.irSha256);
+    assert.equal(Object.hasOwn(fresh.ir.nodes.talk, "chat"), false);
+    assert.notEqual(continued.irSha256, fresh.irSha256);
+    // A stored IR keeps the mode it was compiled with: absent is still new (a revision compiled before keeps it), and an
+    // invalid stored value is refused.
     assert.equal(parseWorkflowIr(JSON.parse(JSON.stringify(continued.ir)), READ).nodes.talk.chat, "continue");
-    assert.equal(Object.hasOwn(parseWorkflowIr(JSON.parse(JSON.stringify(plain.ir)), READ).nodes.talk, "chat"), false);
+    assert.equal(Object.hasOwn(parseWorkflowIr(JSON.parse(JSON.stringify(fresh.ir)), READ).nodes.talk, "chat"), false);
     const bad = JSON.parse(JSON.stringify(continued.ir));
     bad.nodes.talk.chat = "sometimes";
     assert.throws(() => parseWorkflowIr(bad, READ), /stored IR agent state talk is invalid/);
 
     const wrong = compileWorkflowV2(LOOP("sometimes"), AGENTS);
     assert.deepEqual(errors(wrong).map(item => [item.code, item.path]), [["WORKFLOW_FIELD_INVALID", "states.talk.chat"]]);
-    assert.match(errors(wrong)[0].message, /chat must be new .* or continue/);
+    assert.match(errors(wrong)[0].message, /^chat must be continue \(one agent session across the state's visits, the default\) or new /);
+});
+
+test("the compiler: in a For each body or a named branch an agent state that sets no chat gets a new chat each visit", () => {
+    const forEach = compileWorkflowV2(FOR_EACH.replace("          chat: continue\n", ""), PARALLEL);
+    assert.deepEqual(errors(forEach), [], JSON.stringify(forEach.diagnostics));
+    assert.equal(Object.hasOwn(forEach.ir.nodes.talk, "chat"), false);
+    assert.equal(forEach.irSha256, compileWorkflowV2(FOR_EACH.replace("chat: continue", "chat: new"), PARALLEL).irSha256);
+    const branches = compileWorkflowV2(BRANCHES(undefined), PARALLEL);
+    assert.deepEqual(errors(branches), [], JSON.stringify(branches.diagnostics));
+    for (const id of ["left_talk", "right_talk"]) assert.equal(Object.hasOwn(branches.ir.nodes[id], "chat"), false, id);
+    // Outside the parallel state the same Workflow's agent state continues.
+    assert.equal(branches.ir.nodes.sum_up.chat, "continue");
+    // An explicit continue in a branch is still refused, in today's words; an explicit new is accepted.
+    const refused = errors(compileWorkflowV2(BRANCHES("continue"), PARALLEL)).filter(item => item.path === "states.fan.branches.left.states.left_talk.chat");
+    assert.equal(refused.length, 1);
+    assert.equal(refused[0].message, "state 'left_talk' cannot continue its chat: it runs inside branch 'left' of parallel state 'fan'. Use chat: new.");
+    assert.deepEqual(errors(compileWorkflowV2(BRANCHES("new"), PARALLEL)), []);
 });
 
 test("the compiler refuses chat: continue inside a For each body, in words", () => {
@@ -170,7 +231,7 @@ test("the prompts: a continued chat's first asks for node_execution_id; the cycl
 
 test("the graph shows the mode only when the chat continues; the reminder names the cycle; the tool takes node_execution_id", () => {
     const continued = compileWorkflowV2(LOOP("continue"), AGENTS);
-    const plain = compileWorkflowV2(LOOP(undefined), AGENTS);
+    const plain = compileWorkflowV2(LOOP("new"), AGENTS);
     assert.equal(describeWorkflowV2State(continued.ir.nodes.talk).chat, "continue");
     assert.equal(Object.hasOwn(describeWorkflowV2State(plain.ir.nodes.talk), "chat"), false);
     assert.equal(workflowAgentReminderText("talk", "nx-2"), "Reminder from the workflow: step 'talk' is still open. If you have finished, call "
@@ -187,17 +248,23 @@ test("the graph shows the mode only when the chat continues; the reminder names 
 test("the skills every Workflow author reads explain both chat modes and when to choose each", () => {
     const skill = name => fs.readFileSync(path.join(WORKFLOW_V2_SKILLS_DIR, name, "SKILL.md"), "utf8").replace(/\s+/g, " ");
     assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("call `load_skill` with name `workflow-authoring`"));
+    // Owner 2026-11-09T05:38Z: continue is the default; new only when the person asks; For each and branches use new.
     const authoring = skill("workflow-authoring");
-    assert.ok(authoring.includes("`chat: new` (default) gives each visit a new chat. `chat: continue` keeps one chat across the state's visits, "
-        + "for memory of earlier cycles; its context grows. Not in a parallel body."));
+    assert.ok(authoring.includes("`chat: continue` (default): one agent session keeps the step's memory across visits. `chat: new` (a new agent "
+        + "session each visit) only if the person asks; For each and branches: `new`. Session lifecycle: workflow-reference."));
     // The formal review's known limit, in plain words.
     assert.ok(authoring.includes("Limit: after a visit times out, the next visit's prompt can wait behind the old turn until its abort lands, "
         + "and the next visit's time limit runs during that wait."));
     const reference = skill("workflow-reference");
-    assert.ok(reference.includes("| `chat` | Optional. `new` (default) or `continue`. Refused in a parallel body. |"));
-    assert.ok(reference.includes("`chat: new` gives each visit a new chat: clean, cheaper, no drift; use it when visits are independent."));
-    assert.ok(reference.includes("Use it for memory of earlier cycles (no repeats, incremental work); its context grows, so it costs more."));
-    assert.ok(reference.includes("Another Workflow (Run again) starts new chats."));
+    assert.ok(reference.includes("| `chat` | Optional. `continue` (default) or `new`. In a parallel body (For each or branch) only `new`, its default there. |"));
+    assert.ok(reference.includes("`chat: continue` (the default) keeps one agent session across the state's visits in a Workflow"));
+    assert.ok(reference.includes("The step remembers earlier cycles (no repeats, incremental work); its context grows, so it costs more."));
+    assert.ok(reference.includes("Use `chat: new` (a fresh agent session each visit: clean, cheaper, no drift) only when the person asks for it, "
+        + "or the visits are independent and the person wants that."));
+    assert.ok(reference.includes("In a For each or a parallel branch each visit has its own agent session: `new` is the default there and "
+        + "`continue` is refused."));
+    assert.ok(reference.includes("Another Workflow (Run again) starts new agent sessions."));
     assert.ok(reference.includes("Each completion gives `node_execution_id` from its prompt."));
+    assert.ok(reference.includes("Session lifecycle: the time limit is per visit; the agent session ends with the Workflow"));
 });
 

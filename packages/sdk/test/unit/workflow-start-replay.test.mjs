@@ -9,6 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { startChatWorkflowDefinition, storedStartPin } from "../../dist/workflow/v2/chat-definitions.js";
+import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
 
 const ACTOR = { kind: "agent", sessionId: "chat" };
 const YAML = (seconds) => `apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: waiter, version: "1.0.0" }\ninitial: hold\n`
@@ -21,6 +22,8 @@ function hostWith(pinnedBy) {
         readDefinition: async (id) => (id === "def-1" ? { definitionId: "def-1", ownerSessionId: "chat", name: "waiter", currentRevision: 2, deletedAt: null } : null),
         readRevision: async (id, revision) => { reads.push(["revision", revision]); return { definitionId: id, revision, valid: true, yaml: YAML(revision * 10) }; },
         newestValidRevision: async () => { reads.push(["newest"]); return 2; },
+        // The revision's stored IR (a Start compiles its YAML with the IR's chat modes; owner 2026-11-09T05:38Z).
+        readRevisionIr: async (id, revision) => compileWorkflowV2(YAML(revision * 10)).ir,
         listWorkflows: async () => [{ workflowSessionId: "w-earlier", revision: 1 }, { workflowSessionId: "w-later", revision: 2 }],
         runningChildren: async () => { reads.push(["budget"]); return 0; },
         nestingLevel: async () => 0,

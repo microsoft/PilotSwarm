@@ -323,8 +323,10 @@ export interface WorkflowIRAgent {
     next: Record<string, string>;
     /**
      * Owner decision agent-node-continue-20261106: `continue` keeps ONE agent chat for this state across its visits in a
-     * run (each later visit is a new cycle prompt in the same chat); absent for `new` (the default: a new chat each visit),
-     * so the IR of a definition that does not set it is unchanged.
+     * run (each later visit is a new cycle prompt in the same chat); absent for `new` (a new chat each visit). Owner
+     * 2026-11-09T05:38Z: `continue` is the default where it is allowed, so a compile writes it for an agent state outside a
+     * parallel state's body (a For each body or a named branch) that does not set `chat`; in a body an unset `chat` is
+     * `new`. The IR's meaning is unchanged (absent is still `new`): a stored revision runs as it was compiled.
      */
     chat?: "continue";
     /**
@@ -479,6 +481,13 @@ export interface WorkflowCompileOptions {
      * host does, sets it). Off by default: `at` is refused with WORKFLOW_FEATURE_UNSUPPORTED.
      */
     enableClockWaits?: boolean;
+    /**
+     * Owner 2026-11-09T05:38Z (continue is the default where it is allowed): the agent states of the outer graph whose stored
+     * IR continues its chat, when this compiles a revision compiled before (a chat definition's revision at its Start, Run
+     * again or test). An agent state that sets no `chat` then takes its stored mode (continue when listed, else new) instead
+     * of the default, so a revision saved before the default changed runs as it was compiled. Absent: the default.
+     */
+    storedContinuedChats?: readonly string[] | null;
 }
 
 /** True when the text declares the v2 apiVersion (used to route spawn_workflow; legacy YAML keeps its path). */
@@ -1040,7 +1049,8 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
     let chat: "continue" | null = null;
     if (raw.chat !== undefined && raw.chat !== "new") {
         if (raw.chat === "continue") chat = "continue";
-        else diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.chat`, "chat must be new (a new agent chat for each visit, the default) or continue (one chat across the state's visits).");
+        else diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.chat`, "chat must be continue (one agent session across the state's visits, the default) "
+            + "or new (a new agent session for each visit, the only choice inside a For each or a parallel branch).");
     }
     // FU-17: `tools: none` or a list of tool names limits what the state's agent may use; absent, it has its session's tools.
     let tools: string[] | null = null;
@@ -1621,6 +1631,10 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
             if (node) nodes[id] = node;
         } else if (type === "agent" && enableAgents) {
             const node = compileAgent(id, rawNode, nodeIds, schemas, catchAllApplies, into);
+            // Owner 2026-11-09T05:38Z: an agent state that does not set `chat` continues its agent session across its visits,
+            // where it may: outside a parallel state's body. In a body (For each items, named branches) it is `new`.
+            const stored = options.storedContinuedChats;
+            if (node && body === null && rawNode.chat === undefined && (stored ? stored.includes(id) : true)) node.chat = "continue";
             if (node) nodes[id] = node;
         } else if (type === "parallel" && enableParallel && body !== null) {
             into.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.type`, "a parallel state's body cannot hold another parallel state.");

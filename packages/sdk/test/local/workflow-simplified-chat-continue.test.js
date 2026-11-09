@@ -29,7 +29,8 @@ import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/se
 import { completeWorkflowNodeFromTool } from "../../src/workflow/v2/agent-node-service.ts";
 import { readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
 import {
-    registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowAgentChatSessionId, workflowLiveControllerInstanceId,
+    registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowAgentChatSessionId, workflowAgentChildSessionId,
+    workflowLiveControllerInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 import { spawnNesting, WORKFLOW_V2_MAX_DESCENDANT_LEVEL } from "../../src/workflow/v2/input-policy.ts";
@@ -54,8 +55,11 @@ async function until(check, label, timeoutMs = 60_000) {
     throw new Error(`timed out waiting for ${label}: ${JSON.stringify(last)}`);
 }
 
-/** One agent node that continues its chat, visited again after a wait until it says finish. */
-const CHAT_YAML = ({ limit = "3600", wait = 1 } = {}) => `
+/**
+ * One agent node that continues its chat, visited again after a wait until it says finish. `chat`: what the state sets
+ * (null: nothing, the default; owner 2026-11-09T05:38Z: continue outside a parallel body).
+ */
+const CHAT_YAML = ({ limit = "3600", wait = 1, chat = "continue" } = {}) => `
 apiVersion: pilotswarm.dev/v2-draft
 kind: Workflow
 metadata: { name: chatter, version: "1.0.0" }
@@ -65,8 +69,7 @@ states:
   talk:
     type: agent
     invoke: { prompt: "${TASK}" }
-    chat: continue
-    timeoutSeconds: ${limit}
+${chat === null ? "" : `    chat: ${chat}\n`}    timeoutSeconds: ${limit}
     transition: { next: { again: pause, finish: done, timed_out: pause, failure: failed } }
   pause: { type: wait, seconds: ${wait}, transition: { next: { elapsed: talk } } }
   done: { type: terminal, outcome: succeeded, output: "\${input}" }
@@ -441,6 +444,99 @@ const completeAs = (h, chat, args) => completeWorkflowNodeFromTool(args, { calle
     .then(text => JSON.parse(text));
 const eventsOf = async (h, workflowSessionId, type) => (await h.catalog.getSessionEvents(workflowSessionId, 0, 500))
     .filter(event => event.eventType === type).map(event => event.data);
+
+/** A For each over two items whose body's agent state sets no chat (owner 2026-11-09T05:38Z: new, the only choice there). */
+const FOR_EACH_YAML = `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: fan-talk, version: "1.0.0" }
+initialInput: { items: [a, b] }
+initial: fan
+states:
+  fan:
+    type: parallel
+    forEach: "\${input.items}"
+    concurrency: 2
+    body:
+      initial: talk
+      states:
+        talk:
+          type: agent
+          invoke: { prompt: "${TASK}" }
+          timeoutSeconds: 3600
+          transition: { next: { said: said_it, failure: gave_up } }
+        said_it: { type: terminal, outcome: succeeded }
+        gave_up: { type: terminal, outcome: blocked }
+    transition: { next: { joined: done, blocked: failed, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+
+// Owner 2026-11-09T05:38Z: an agent state that sets no chat continues one agent session across its visits where it may (a
+// loop of the outer graph); inside a For each each item's visit has its own; an explicit `chat: new` still gets one each visit.
+describe("the default chat mode on controller 1.9.0 (test-only registration)", () => {
+    it("a loop's agent state that sets no chat keeps one agent session across its visits", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const run = await started(h, CHAT_YAML({ chat: null }));
+            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const first = await spawnedVisit(h, 1);
+            expect(first.childSessionId).toBe(chat);
+            expect(first.prompt.split("\n")[0]).toContain("This chat continues");
+            expect(await completeAs(h, chat, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
+                .toMatchObject({ ok: true, outcome: "again" });
+            const second = await spawnedVisit(h, 2);
+            expect(second.childSessionId).toBe(chat);
+            expect(second.prompt).toMatch(/^\[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE 2\./);
+            expect(await completeAs(h, chat, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
+                .toMatchObject({ ok: true, outcome: "finish" });
+            expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+            expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => [data.childSessionId, data.chat, data.cycle]))
+                .toEqual([[chat, "continue", 1], [chat, "continue", 2]]);
+            expect((await readWorkflowV2View(h.store, run.workflowSessionId)).graph.states.find(state => state.id === "talk")).toMatchObject({ chat: "continue" });
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("an explicit chat: new gets a new agent session each visit", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const run = await started(h, CHAT_YAML({ chat: "new" }));
+            const first = await spawnedVisit(h, 1);
+            expect(first.childSessionId).toBe(workflowAgentChildSessionId(first.nodeExecutionId));
+            expect(first.prompt.split("\n")[0]).not.toContain("This chat continues");
+            expect(await completeAs(h, first.childSessionId, { outcome: "again", output: { fact: "one" }, operation_id: "op-1" })).toMatchObject({ ok: true });
+            const second = await spawnedVisit(h, 2);
+            expect(second.childSessionId).toBe(workflowAgentChildSessionId(second.nodeExecutionId));
+            expect(second.childSessionId).not.toBe(first.childSessionId);
+            expect(await completeAs(h, second.childSessionId, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2" })).toMatchObject({ ok: true });
+            expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+            expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => data.chat ?? null)).toEqual([null, null]);
+            expect((await readWorkflowV2View(h.store, run.workflowSessionId)).graph.states.find(state => state.id === "talk")).not.toHaveProperty("chat");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("a For each body's agent state that sets no chat gets a new agent session for each item", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const run = await started(h, FOR_EACH_YAML);
+            const items = [await spawnedVisit(h, 1), await spawnedVisit(h, 2)];
+            for (const item of items) expect(item.childSessionId).toBe(workflowAgentChildSessionId(item.nodeExecutionId));
+            expect(new Set(items.map(item => item.childSessionId)).size).toBe(2);
+            for (const [index, item] of items.entries()) {
+                expect(await completeAs(h, item.childSessionId, { outcome: "said", output: { fact: String(index) }, operation_id: `op-${index}` }))
+                    .toMatchObject({ ok: true, outcome: "said" });
+            }
+            expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+            expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => data.chat ?? null)).toEqual([null, null]);
+        } finally {
+            await h.stop();
+        }
+    });
+});
 
 describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
     it("two visits share one chat; the second is cycle 2 with the variables now; a time limit stops the turn, not the chat; the chat ends once with the Workflow", { timeout: TIMEOUT }, async () => {

@@ -34,6 +34,7 @@ import { spawnWorkflowCompatFromTool, workflowDefinitionFromTool } from "../../s
 import { readStoredAgentModels, readWorkflowAgentModels } from "../../src/workflow/v2/agent-models.ts";
 import { createWorkflowAgentNodeHost } from "../../src/workflow/v2/agent-host.ts";
 import { readWorkflowV2 } from "../../src/workflow/v2/tools.ts";
+import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -577,6 +578,54 @@ states:
                 revision: null, inputs: {}, actor: ENGINE, operationId: `start-${randomUUID()}` })).agentModels).toBeUndefined();
         } finally {
             await mgmt.stop();
+            await h.stop();
+        }
+    });
+    // Owner 2026-11-09T05:38Z: an agent state that sets no chat continues its agent session by default. A revision saved before
+    // that keeps the mode it was compiled with at its Start and Run again (its stored IR, not a new compile of its YAML); a
+    // re-save of the same YAML compiles to continue.
+    it("continue default: a revision saved before keeps a new chat each visit at Start and Run again; a re-save of its YAML continues", { timeout: TIMEOUT }, async () => {
+        const { h, host, chat } = await harness();
+        const AGENTS = `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: triage, version: "1.0.0" }
+initial: classify
+states:
+  classify:
+    type: agent
+    invoke: { prompt: "Classify it." }
+    timeoutSeconds: 600
+    transition: { next: { again: hold, done: done, failure: failed } }
+  hold: { type: wait, seconds: 30, transition: { next: { elapsed: classify } } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+        const agentsHost = { ...host, requests: true };
+        const FLAGS = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true };
+        const chatOf = async workflowId => (await readWorkflowV2(agentsHost, workflowId, {}, "tool")).graph.states.find(state => state.id === "classify").chat ?? "new";
+        try {
+            // Revision 1 as a build before the default changed compiled it: no chat mode in its IR (a new chat each visit).
+            const before = compileWorkflowV2(AGENTS, { ...FLAGS, storedContinuedChats: [] });
+            expect(Object.hasOwn(before.ir.nodes.classify, "chat")).toBe(false);
+            const old = (await saveChatWorkflowDefinition(agentsHost, { ownerSessionId: chat, name: "triage", yaml: AGENTS, expected: null, compiled: before,
+                actor: { kind: "chat", sessionId: chat }, operationId: `save-${randomUUID()}`, by: "chat" })).receipt;
+            expect(old).toMatchObject({ revision: 1, valid: true });
+            const first = await start(agentsHost, chat, old.definitionId, { revision: 1 });
+            expect(await chatOf(first.workflowId)).toBe("new");
+            const again = await start(agentsHost, chat, old.definitionId, { runAgainOf: first.workflowId });
+            expect(again.revision).toBe(1);
+            expect(await chatOf(again.workflowId)).toBe("new");
+            // The same YAML saved again (revision 2) compiles to continue; its Start continues one agent session.
+            const resaved = (await save(agentsHost, chat, AGENTS, { definitionId: old.definitionId, revision: 1 }, { name: "triage" })).receipt;
+            expect(resaved).toMatchObject({ revision: 2, valid: true });
+            expect(resaved.irSha256).not.toBe(before.irSha256);
+            expect(resaved.irSha256).toBe(compileWorkflowV2(AGENTS, FLAGS).irSha256);
+            const now = await start(agentsHost, chat, old.definitionId, { revision: 2 });
+            expect(await chatOf(now.workflowId)).toBe("continue");
+            // Revision 1 still starts as it was compiled.
+            expect(await chatOf((await start(agentsHost, chat, old.definitionId, { revision: 1 })).workflowId)).toBe("new");
+        } finally {
             await h.stop();
         }
     });

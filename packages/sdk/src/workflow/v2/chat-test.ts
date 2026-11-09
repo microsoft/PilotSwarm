@@ -31,7 +31,7 @@ import {
 import { advanceWorkflowV2Test, controlWorkflowV2Run, createWorkflowV2, sendWorkflowInputV2, startWorkflowV2Test, type WorkflowV2Host } from "./service.js";
 import { requireWorkflowScripts } from "./scripts-gate.js";
 import { TERMINAL_OUTCOMES, WORKFLOW_V2_MILESTONE_IR_VERSION } from "./compiler.js";
-import { definitionOf } from "./chat-definitions.js";
+import { definitionOf, storedContinuedChatsOf } from "./chat-definitions.js";
 import { matchTestFixture, storedTestFixtures, testResultFor, WORKFLOW_V2_TEST_NOTICE, type WorkflowTestFixture } from "./test-mode.js";
 import type { WorkflowIR, WorkflowIRNode } from "./compiler.js";
 import { branchScopeNames, parseBranchScope } from "./parallel.js";
@@ -381,6 +381,7 @@ export async function startChatWorkflowTest(host: WorkflowV2Host, request: {
         workflowSessionId: benchId, parentSessionId: request.ownerSessionId, ...(owner ? { owner } : {}), yaml: saved.yaml, actor: request.actor,
         operationId: `test-bench:${request.operationId}`, publish: false, notifyParent: false, ...(binding ? { binding } : {}),
         testBench: { definitionId: definition.definitionId, revision, ...(expect ? { expect } : {}) },
+        storedContinuedChats: await storedContinuedChatsOf(host, definition.definitionId, revision),
     });
     const started = await startWorkflowV2Test(host, benchId, {
         expectedRevision: created.receipt.revision, definitionHash: created.receipt.yamlSha256, inputs: request.inputs,

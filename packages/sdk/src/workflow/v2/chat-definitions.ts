@@ -236,6 +236,16 @@ export async function storedStartPin(host: Pick<WorkflowV2Host, "store" | "catal
         ? { definitionId: pin.definitionId, revision: Number(pin.revision) } : null;
 }
 
+/**
+ * Owner 2026-11-09T05:38Z: the agent states a stored revision's IR continues (its compile then), so a Start, Run again or
+ * test compiles the revision's YAML as it was compiled when it was saved (a revision saved before continue became the
+ * default keeps a new chat each visit).
+ */
+export async function storedContinuedChatsOf(host: Pick<WorkflowV2Host, "store">, definitionId: string, revision: number): Promise<string[]> {
+    const ir = await host.store.chat.readRevisionIr(definitionId, revision, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION });
+    return Object.values(ir.nodes).flatMap(node => node.type === "agent" && node.chat === "continue" ? [node.id] : []);
+}
+
 /** A Start operation that already ran: its pinned revision again (refused when the request names another), then its receipt. */
 async function replayChatStart(host: WorkflowV2Host, request: Parameters<typeof startChatWorkflowDefinition>[1], workflowSessionId: string,
     prior: { definitionId: string; revision: number }): Promise<ChatStartReceipt> {
@@ -262,6 +272,7 @@ async function replayChatStart(host: WorkflowV2Host, request: Parameters<typeof 
         start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}), ...(agentModels ? { agentModels } : {}) },
         notifyParent: request.notifyParent !== false, ...(binding ? { binding } : {}),
         chatPin: { ownerSessionId: request.ownerSessionId, definitionId: prior.definitionId, revision: prior.revision },
+        storedContinuedChats: await storedContinuedChatsOf(host, prior.definitionId, prior.revision),
     });
     return { operation: "start", definitionId: prior.definitionId, name: pinned.name, revision: prior.revision, workflowId: stored.receipt.workflowSessionId,
         runId: stored.receipt.run?.runId ?? null, replayed: stored.replayed, ...(agentModels ? { agentModels } : {}) };
@@ -330,6 +341,7 @@ export async function startChatWorkflowDefinition(host: WorkflowV2Host, request:
         start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}), ...(agentModels ? { agentModels } : {}) },
         notifyParent: request.notifyParent !== false, ...(binding ? { binding } : {}),
         chatPin: { ownerSessionId: request.ownerSessionId, definitionId: definition.definitionId, revision },
+        storedContinuedChats: await storedContinuedChatsOf(host, definition.definitionId, revision),
         // S2RT-F3: the budget again, under the chat's exclusive lock, in the claim's transaction.
         childBudget: { max: WORKFLOW_START_MAX_RUNNING_CHILDREN },
     });

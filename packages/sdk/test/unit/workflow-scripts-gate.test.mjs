@@ -214,6 +214,8 @@ test("stage 2.4: Start keeps spawn_agent's depth limit and its budget of 50 runn
     const chat = {
         readDefinition: async () => ({ definitionId: "def-1", ownerSessionId: "chat", name: "waiter", currentRevision: 1, deletedAt: null }),
         readRevision: async () => ({ definitionId: "def-1", revision: 1, valid: true, irSha256: compiled.irSha256, yaml: WAIT_YAML }),
+        // The revision's stored IR (a Start compiles its YAML with the IR's chat modes; owner 2026-11-09T05:38Z).
+        readRevisionIr: async () => compiled.ir,
         newestValidRevision: async () => 1,
         listWorkflows: async () => [],
         runningChildren: async () => running,

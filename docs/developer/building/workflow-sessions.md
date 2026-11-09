@@ -155,16 +155,25 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   has no tabs of its own; the Log has the runs. The read model gives each graph
   state its `about` (description, inline prompt) and each visit its
   `enteredAt` and `endedAt` for this.
-- **Agent node chats: `chat: new | continue`.** `new` (the default) gives
-  each visit of an agent node a new chat. `continue` keeps one chat per
-  Workflow and node (its id derived from the run and the node): each later
+- **Agent node chats: `chat: continue | new`.** `continue` (the default
+  since 1.0.83, owner 2026-11-09) keeps one agent session per Workflow and
+  node (its id derived from the run and the node): each later
   visit's prompt arrives in that chat as cycle N, with the input, the
-  variables now, which changed and the previous result. Every completion of
+  variables now, which changed and the previous result. `new` gives each
+  visit of an agent node a new chat; inside a For each or a parallel branch
+  it is the default and the only choice (`continue` is refused there). The
+  compiler writes the default into the IR: an agent state outside a parallel
+  state's body that does not set `chat` compiles to `chat: "continue"`; the
+  IR's meaning is unchanged (absent is `new`). A revision stored before keeps
+  its compiled IR and runs as before: a chat definition's Start, Run again and
+  test compile the revision's YAML again with the modes of its stored IR
+  (`storedContinuedChats`). Only a new compile (a save, a re-save of a draft,
+  a package's definition attached to a chat) gets the new default. Every completion of
   a continued chat must name its visit (`node_execution_id`); a missing or
   foreign id is refused. A decided visit stops the chat's running turn, not
   the chat; the chat ends when the run ends, and a graceful stop ends an
   idle chat at once. If the chat ended on its own, the next open visit starts
-  a new chat and says so. `continue` is refused inside a For each. Migration
+  a new chat and says so. Migration
   0106 drops the UNIQUE on `workflow_agent_invocations.child_session_id`.
   Each turn of a continued chat works for one visit, its turn visit: the
   open visit its prompt names, or, for a turn a timer or a sub-agent's update

@@ -338,10 +338,17 @@ async function requireRunsRevision(host: Pick<WorkflowV2Host, "store" | "request
         { revision, irVersion, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, hostControllerVersion: WORKFLOW_V2_CONTROLLER_VERSION });
 }
 
-/** A definition as a host compiles it (WorkflowV2Host.requests): a host that starts 1.9.0 runs compiles request, agent and parallel states. */
-export function compileWorkflowV2ForHost(host: Pick<WorkflowV2Host, "requests">, yaml: string): WorkflowCompileResult {
-    return compileWorkflowV2(yaml, host.requests === true ? { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true,
-        enableClockWaits: true } : {});
+/**
+ * A definition as a host compiles it (WorkflowV2Host.requests): a host that starts 1.9.0 runs compiles request, agent and
+ * parallel states. `storedContinuedChats`: a stored revision's agent states that continue their chat, when this compiles
+ * that revision again (WorkflowCompileOptions; owner 2026-11-09T05:38Z).
+ */
+export function compileWorkflowV2ForHost(host: Pick<WorkflowV2Host, "requests">, yaml: string,
+    storedContinuedChats: readonly string[] | null = null): WorkflowCompileResult {
+    return compileWorkflowV2(yaml, {
+        ...(host.requests === true ? { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true } : {}),
+        ...(storedContinuedChats ? { storedContinuedChats } : {}),
+    });
 }
 
 /** How a host reads stored IR: a host that starts 1.9.0 runs reads its request, agent and parallel states (IR 7 and 8). */
@@ -385,6 +392,11 @@ export interface CreateWorkflowV2Request {
      * transaction that admits the run (requireChatStartLocked).
      */
     chatPin?: { ownerSessionId: string; definitionId: string; revision: number } | null;
+    /**
+     * Owner 2026-11-09T05:38Z: the agent states the stored revision's IR continues, when `yaml` is a stored revision compiled
+     * again (a chat definition's Start, Run again or test): it compiles as it was compiled then (compileWorkflowV2ForHost).
+     */
+    storedContinuedChats?: readonly string[] | null;
     /**
      * Stage 2.2: the Workflow is an agent's test bench for this revision of a chat's definition (chat-test.ts): a service
      * session (service_kind workflow-test; its definition and revision in its creation config) that no list shows, never a Workflow of the definition.
@@ -810,7 +822,7 @@ function sameOwner(stored: SessionOwnerInfo | null | undefined, requested: Sessi
 export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWorkflowV2Request): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
     requireOperationId(request.operationId);
     requireStorableYaml(request.yaml);
-    const compiled = compileWorkflowV2ForHost(host, request.yaml);
+    const compiled = compileWorkflowV2ForHost(host, request.yaml, request.storedContinuedChats ?? null);
     // Stage 2.0: script nodes on a host that runs none are refused at save, before the claim (scripts-gate.ts).
     requireWorkflowScripts(host, compiled.ir, request.start ? "start" : "save");
     const publish = request.publish === true || Boolean(request.start);

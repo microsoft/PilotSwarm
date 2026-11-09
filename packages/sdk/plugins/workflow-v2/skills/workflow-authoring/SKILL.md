@@ -161,12 +161,12 @@ for its typed result.
   final chat text does not. Three invalid completions fail the state with
   `invalid_output`.
 - `timeoutSeconds` (1 to 86,400) is the outer deadline (`timed_out`).
-- `chat: new` (default) gives each visit a new chat. `chat: continue` keeps
-  one chat across the state's visits, for memory of earlier cycles; its
-  context grows. Not in a parallel body. See workflow-reference. Limit:
-  after a visit times out, the next visit's prompt can wait behind the old
-  turn until its abort lands, and the next visit's time limit runs during
-  that wait.
+- `chat: continue` (default): one agent session keeps the step's memory
+  across visits. `chat: new` (a new agent session each visit) only if the
+  person asks; For each and branches: `new`. Session lifecycle:
+  workflow-reference. Limit: after a visit times out, the next visit's
+  prompt can wait behind the old turn until its abort lands, and the next
+  visit's time limit runs during that wait.
 - Write the task so the agent can work from its input: name the input
   fields it uses, give `inputSchema` real `properties`, and say whether it
   may fetch more data (it is told not to fetch its input again).

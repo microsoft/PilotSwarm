@@ -132,23 +132,26 @@ deadline is `timed_out`. The recipient answers with
 | `input` | Optional template; checked against `inputSchema`. |
 | `inputSchema`, `outputSchema` | Optional. |
 | `outcomes` | Optional list of business outcomes; default: its routes that are not runtime routes. |
-| `chat` | Optional. `new` (default) or `continue`. Refused in a parallel body. |
+| `chat` | Optional. `continue` (default) or `new`. In a parallel body (For each or branch) only `new`, its default there. |
 | `tools` | Optional. `none` or tool names: all the agent and its sub-agents get (plus `complete_workflow_node`). |
 
 Output: the agent's validated output. The agent may report `needs_input` or
 `execution_failed`. The workflow decides `timed_out`, `invalid_output` (three
 invalid completions), `unavailable`, `forbidden` and `cancelled`.
 
-`chat: new` gives each visit a new chat: clean, cheaper, no drift; use it
-when visits are independent. `chat: continue` keeps one chat across the
-state's visits in a Workflow: each later visit arrives as "cycle N" with the
-input, the variables now, which changed, and the previous result. Use it for
-memory of earlier cycles (no repeats, incremental work); its context grows,
-so it costs more. Another Workflow (Run again) starts new chats. Each
-completion gives `node_execution_id` from its prompt.
-The time limit is per visit; the chat ends with the Workflow (a stop ends an
-idle one at once). A chat that ended on its own is replaced, and the prompt
-says so.
+`chat: continue` (the default) keeps one agent session across the state's
+visits in a Workflow: each later visit arrives as "cycle N" with the input,
+the variables now, which changed, and the previous result. The step
+remembers earlier cycles (no repeats, incremental work); its context grows,
+so it costs more. Use `chat: new` (a fresh agent session each visit: clean,
+cheaper, no drift) only when the person asks for it, or the visits are
+independent and the person wants that. In a For each or a parallel branch
+each visit has its own agent session: `new` is the default there and
+`continue` is refused. Another Workflow (Run again) starts new agent
+sessions. Each completion gives `node_execution_id` from its prompt.
+Session lifecycle: the time limit is per visit; the agent session ends with
+the Workflow (a stop ends an idle one at once). An agent session that ended
+on its own is replaced, and the prompt says so.
 
 `interface: <name>@<version>` (for example `review_change@1`) names the
 workflow interface its package agent exports. `ps_list_agents` lists it as
