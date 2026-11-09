@@ -3435,6 +3435,22 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (!previous || previous.childSessionId !== invocation.childSessionId) return null;
         return chatEndedOnItsOwn(client, previous);
     };
+    /**
+     * Review G2: end the earlier visits of `invocation`'s chat whose end is not sent yet (endAgentChild: their turn's Stop,
+     * then the visit's end). A visit that cannot be ended yet throws, and so fails the calling attempt.
+     */
+    const endEarlierVisitsOf = async (client: WorkflowV2AgentEndClient, runId: string, invocation: WorkflowAgentInvocation): Promise<void> => {
+        let after: string | null = null;
+        for (;;) {
+            const page: WorkflowAgentInvocation[] = await store.listOwedAgentInvocations(runId, after, WORKFLOW_V2_OWED_AGENT_PAGE);
+            for (const earlier of page) {
+                if (earlier.childSessionId !== invocation.childSessionId || earlier.nodeExecutionId === invocation.nodeExecutionId) continue;
+                if (earlier.endSentAt === null) await endAgentChild(client, earlier.nodeExecutionId);
+            }
+            if (page.length < WORKFLOW_V2_OWED_AGENT_PAGE) return;
+            after = page[page.length - 1].nodeExecutionId;
+        }
+    };
     /** The bindings of a state: its run's inputs, its incoming value, its pinned KV, the runtime error, and a branch's own `branch`. */
     const scopeFor = (run: WorkflowRunRow, incoming: JsonValue, runtimeErrorValue: JsonValue, kv: JsonValue, branch: BranchBinding | null = null): BindingScope => ({
         inputs: run.inputs, input: incoming, kv: isJsonObject(kv) ? kv : {}, runtime: { error: runtimeErrorValue },
@@ -5005,6 +5021,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                         + "before this cycle's prompt was sent, so nothing was sent to it. The next cycle of this step starts a new agent session.",
                     { childSessionId: invocation.childSessionId }), winner: "controller" });
                 }
+                // Review G2: an earlier visit of this chat whose end was not sent (its turn's Stop failed past its retries) is
+                // ended now, before this visit's prompt, which would otherwise wait behind that visit's turn. A failure fails
+                // this attempt, and the spawn's retries try again.
+                await endEarlierVisitsOf(client, run.runId, invocation);
             }
             // A stored map that cannot be read fails the node in words; the node never silently takes the chat's model.
             const stored = readStoredAgentModels(run.agentModels);

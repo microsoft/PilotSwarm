@@ -290,7 +290,8 @@ function* chatChild(ctx) {
  * (its catalog row and its orchestration) and gives it each visit's prompt; the catalog's turn control is a spy that
  * records each Stop (the double runs no turns, so it answers no_turn).
  */
-async function harness(env, { storeHooks = null, storeBefore = null, beforeCreate = null, deferVisible = false, createAlways = false } = {}) {
+async function harness(env, { storeHooks = null, storeBefore = null, beforeCreate = null, deferVisible = false, createAlways = false,
+    beforeStop = null } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
@@ -346,7 +347,9 @@ async function harness(env, { storeHooks = null, storeBefore = null, beforeCreat
         get(target, key) {
             if (key === "turnControlAdd") {
                 return async (sessionId, kind, text, requestId) => {
-                    stops.push({ sessionId, kind, text, requestId });
+                    // beforeStop: a fault a test injects (it throws to fail this Stop).
+                    if (beforeStop) await beforeStop({ sessionId, kind, requestId });
+                    stops.push({ sessionId, kind, text, requestId, spawnsBefore: spawns.length });
                     return { refused: "no_turn" };
                 };
             }
@@ -777,6 +780,49 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
             }
         });
     }
+    it("G2: a visit whose turn Stop failed past its retries is ended before the next visit's prompt is sent; a failure there retries the spawn", { timeout: TIMEOUT }, async () => {
+        // Fault injection: the first visit's Stop fails 5 times (the controller's end of that visit gives up), and then once
+        // more as the second visit's spawn ends it (that attempt fails, and its retry ends it).
+        let firstVisit = null;
+        let failures = 0;
+        const endSentAtSpawn = [];
+        const h = await harness(getEnv(), {
+            beforeStop: async ({ requestId }) => {
+                if (firstVisit && requestId === `workflow-cycle-stop:${firstVisit}` && failures < 6) {
+                    failures += 1;
+                    throw new Error(`injected: Stop ${failures} of the first visit fails`);
+                }
+            },
+            beforeCreate: async request => {
+                if (firstVisit && request.nodeExecutionId !== firstVisit) endSentAtSpawn.push((await h.store.readAgentInvocation(firstVisit))?.endSentAt ?? null);
+            },
+        });
+        try {
+            const run = await started(h, CHAT_YAML({ limit: `"\${kv.limit}"` }), { limit: 2 });
+            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            firstVisit = (await visit(h, 1)).nodeExecutionId;
+            // The first visit is decided by its 2-second time limit; the next one has an hour.
+            await controlWorkflowV2Run(h.host, run.workflowSessionId,
+                { operation: "set_vars", runId: null, set: { limit: 3600 }, delete: [], expectedKvRevision: 1 }, { actor: ACTOR, operationId: "vars-1" });
+            const second = await spawnedVisit(h, 2);
+            expect(second.childSessionId).toBe(chat);
+            expect(failures).toBe(6);
+            // The first visit's Stop was added, and its end marked sent, before the second visit's prompt was sent.
+            expect(h.stops.filter(stop => stop.requestId === `workflow-cycle-stop:${firstVisit}`))
+                .toEqual([expect.objectContaining({ sessionId: chat, kind: "stop", spawnsBefore: 1 })]);
+            expect(endSentAtSpawn.at(-1)).not.toBeNull();
+            expect(await h.store.readAgentInvocation(firstVisit)).toMatchObject({ endChildStatus: "ChatContinues" });
+            expect(await h.store.readNodeExecution(firstVisit)).toMatchObject({ outcome: "timed_out" });
+            // The second visit goes on: it is not timed out, and its agent's result decides it.
+            expect(await h.store.readNodeExecution(second.nodeExecutionId)).toMatchObject({ state: "pending" });
+            expect(await completeAs(h, chat, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
+                .toMatchObject({ ok: true, outcome: "finish" });
+            expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+        } finally {
+            await h.stop();
+        }
+    });
+
     for (const [label, finish] of [
         ["the run completes", async (h, run, chat, nx) => {
             expect(await completeAs(h, chat, { outcome: "finish", output: { fact: "one" }, operation_id: "op-1", node_execution_id: nx }))
