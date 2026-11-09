@@ -52,8 +52,9 @@ for (const theme of ["horizon-dawn", "win95"]) test(`${theme}: a narrow picker b
     await expect(select.locator("option")).toHaveCount(3);
     for (const [index, name] of names.entries()) await expect(select.locator("option").nth(index)).toContainText(name);
 
-    // Constrain the picker inside the real pane, independently of screen width.
-    await picker.evaluate(el => { el.style.flex = "0 0 64px"; el.style.width = "64px"; });
+    // Let the real flex layout allocate 64 px after the two arrow buttons.
+    const controls = pane.locator(".ps-canvas-slot-controls");
+    await controls.evaluate(el => { el.style.flex = "0 0 120px"; el.style.width = "120px"; });
     await expect.poll(async () => (await pickerLook(picker)).opacity).toBe("0");
     expect(await pickerLook(picker)).toEqual({ width: 64, selectWidth: 64, opacity: "0", chevron: "flex", hitIsSelect: true });
     await select.focus();
@@ -73,7 +74,7 @@ for (const theme of ["horizon-dawn", "win95"]) test(`${theme}: a narrow picker b
     await expect(select).toHaveValue("2");
     await page.screenshot({ path: test.info().outputPath("compact-picker.png") });
 
-    await picker.evaluate(el => { el.style.flex = "0 0 120px"; el.style.width = "120px"; });
+    await controls.evaluate(el => { el.style.flex = "0 0 176px"; el.style.width = "176px"; });
     await expect.poll(async () => (await pickerLook(picker)).opacity).toBe("1");
     expect((await pickerLook(picker)).chevron).toBe("none");
     await expect(select).toHaveValue("2");
