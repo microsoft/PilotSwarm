@@ -2942,6 +2942,26 @@ export async function carryMarkedEnd(client: WorkflowV2AgentEndClient | null, ch
 }
 
 /**
+ * Review DRR-1b: the end of a deleted agent session whose orchestration still runs, carried by the Workflow that acts on
+ * the deletion. A person's delete of a session that had no orchestration yet (just created by a spawn, before its first
+ * prompt) is a catalog delete only; the spawn's send then starts the orchestration, which no one ends (a run's end skips
+ * deleted sessions). The Workflow queues the command a delete sends to a running session (delete: it ends the session and
+ * its descendants), with the stable id `workflow-deleted-end:<session id>`, as the session's parent. A session that is
+ * NotFound or already ended gets nothing. Throws (the attempt retries) without a durable client.
+ */
+export async function carryDeletedEnd(client: WorkflowV2AgentEndClient | null, childSessionId: string, workflowSessionId: string): Promise<boolean> {
+    if (!client) throw new Error(`The deletion of agent session ${childSessionId} cannot be carried: this worker has no durable client here.`);
+    const instance = `session-${childSessionId}`;
+    const status = (await client.getStatus(instance)).status;
+    if (status === "NotFound" || TERMINAL_ORCHESTRATION_STATUSES.includes(status)) return false;
+    await client.enqueueEvent(instance, "messages", JSON.stringify({
+        type: "cmd", cmd: "delete", id: `workflow-deleted-end:${childSessionId}`, requestedBy: workflowSessionId,
+        args: { reason: "This session was deleted." },
+    }));
+    return true;
+}
+
+/**
  * End the child of a decided agent state (controller 1.9.0; IR 8): done
  * after the agent's own typed completion, cancel after anything else (its
  * deadline, a cancel, a stop, a deletion or the run's end). The first end
@@ -3505,7 +3525,12 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      */
     const agentSessionGone = async (childSessionId: string, carry: { client: WorkflowV2AgentEndClient | null; workflowSessionId: string })
         : Promise<"deleted" | "ended" | null> => {
-        if (await store.isSessionDeleted(childSessionId)) return "deleted";
+        if (await store.isSessionDeleted(childSessionId)) {
+            // Review DRR-1b: a deletion that found no orchestration yet (a session just created, deleted before its first
+            // prompt started it) leaves the orchestration a later send starts running; it is ended here (carryDeletedEnd).
+            await carryDeletedEnd(carry.client, childSessionId, carry.workflowSessionId);
+            return "deleted";
+        }
         const mark = await store.readSessionEndMark(childSessionId);
         if (mark === null) return null;
         await carryMarkedEnd(carry.client, childSessionId, mark, carry.workflowSessionId);

@@ -317,8 +317,11 @@ function* chatChild(ctx) {
     const received = [];
     for (;;) {
         const raw = yield ctx.dequeueEvent("messages");
-        received.push(typeof raw === "string" ? JSON.parse(raw) : raw);
+        const message = typeof raw === "string" ? JSON.parse(raw) : raw;
+        received.push(message);
         ctx.setCustomStatus(JSON.stringify(received));
+        // A delete ends a session (its orchestration's delete handler); a done or cancel is only recorded here.
+        if (message?.type === "cmd" && message.cmd === "delete") return "deleted";
     }
 }
 
@@ -328,7 +331,7 @@ function* chatChild(ctx) {
  * records each Stop (the double runs no turns, so it answers no_turn).
  */
 async function harness(env, { storeHooks = null, storeBefore = null, beforeCreate = null, deferVisible = false, createAlways = false,
-    beforeStop = null, realHost = false } = {}) {
+    beforeStop = null, realHost = false, beforeSend = null } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
@@ -366,6 +369,8 @@ async function harness(env, { storeHooks = null, storeBefore = null, beforeCreat
         createChild: async spec => {
             if (beforeCreate) await beforeCreate(spec);
             await catalog.createSession(spec.sessionId, { parentSessionId: spec.parentSessionId, refuseDeleted: true });
+            // `beforeSend` (review DRR-1b): after the catalog create, before the send that starts the session's orchestration.
+            if (beforeSend) await beforeSend(spec);
             const instanceId = `session-${spec.sessionId}`;
             if ((await client.getStatus(instanceId)).status === "NotFound") await client.startOrchestrationVersioned(instanceId, CHILD, {}, "1.0.0");
             await client.enqueueEvent(instanceId, "messages", JSON.stringify({ prompt: spec.prompt, clientMessageIds: [spec.clientMessageId] }));
@@ -932,6 +937,49 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
             }
         });
     }
+    // Review DRR-1b: a person deletes the agent session after the spawn's create and before its send. The session has no
+    // orchestration yet, so the delete is a catalog delete only, and the send then starts its orchestration. The visit is
+    // decided unavailable (the send-side guard), the row stays deleted, and the Workflow ends that orchestration.
+    it("DRR-1b: a session deleted between its create and its first send is ended, stays deleted, and its visit is unavailable", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        let gate = null;
+        const h = await harness(env, { realHost: true, beforeSend: async spec => {
+            if (gate) {
+                const hook = gate;
+                gate = null;
+                await hook(spec);
+            }
+        } });
+        const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema });
+        await mgmt.start();
+        try {
+            let deleted = null;
+            gate = async spec => {
+                expect((await h.client.getStatus(`session-${spec.sessionId}`)).status).toBe("NotFound");
+                await mgmt.deleteSession(spec.sessionId, "deleted by a person");
+                deleted = spec.sessionId;
+            };
+            const run = await started(h, CHAT_YAML());
+            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            expect(await ended(h, run.runId)).toMatchObject({ status: "failed", terminalOutcome: "failed" });
+            expect(deleted).toBe(chat);
+            const first = await visit(h, 1);
+            expect(await h.store.readNodeExecution(first.nodeExecutionId)).toMatchObject({ state: "completed", outcome: "unavailable", winner: "controller",
+                error: { code: "unavailable", message: expect.stringContaining(`The agent session ${chat} of this step was deleted`) } });
+            expect(await h.store.isSessionDeleted(chat)).toBe(true);
+            // The orchestration the send started is ended by the Workflow's carried delete.
+            const status = await until(async () => {
+                const read = (await h.client.getStatus(`session-${chat}`)).status;
+                return read !== "Running" ? read : null;
+            }, "the deleted session's orchestration to end", 30_000);
+            expect(["Completed", "Failed", "Terminated"]).toContain(status);
+            expect((await chatMessages(h, chat)).find(message => message.type === "cmd"))
+                .toMatchObject({ cmd: "delete", id: `workflow-deleted-end:${chat}`, requestedBy: run.workflowSessionId });
+        } finally {
+            await mgmt.stop();
+            await h.stop();
+        }
+    });
     // Review DRR-1: an attempt created the session and stopped before recording it; a person deleted the session during the
     // retry's backoff. The retry does not create it again: a first visit, and a replacement session, are checked too.
     for (const which of ["first", "replacement"]) {
