@@ -6014,6 +6014,24 @@ export class WorkflowStore {
         return rows.length > 0;
     }
 
+    /**
+     * Review DRR-2: the first end asked of session `sessionId` (its earliest session.end_requested mark): the command
+     * (done, or cancel for anything else), the mark's own id, and who asked (null: a person through the management API).
+     * Null when no end was asked.
+     */
+    async readSessionEndMark(sessionId: string): Promise<{ cmd: "done" | "cancel"; id: string; requestedBy: string | null } | null> {
+        if (!storableId(sessionId)) return null;
+        const { rows } = await this.pool.query(
+            `SELECT seq, data FROM ${this.t.sessionEvents} WHERE session_id = $1 AND event_type = 'session.end_requested' ORDER BY seq LIMIT 1`, [sessionId]);
+        if (!rows[0]) return null;
+        const data = rows[0].data && typeof rows[0].data === "object" ? rows[0].data as Record<string, unknown> : {};
+        return {
+            cmd: data.cmd === "done" ? "done" : "cancel",
+            id: typeof data.id === "string" && data.id ? data.id : `seq-${rows[0].seq}`,
+            requestedBy: typeof data.requestedBy === "string" && data.requestedBy ? data.requestedBy : null,
+        };
+    }
+
     /** Whether session `sessionId` has a row that was deleted (false: no row, or a row not deleted). */
     async isSessionDeleted(sessionId: string): Promise<boolean> {
         if (!storableId(sessionId)) return false;

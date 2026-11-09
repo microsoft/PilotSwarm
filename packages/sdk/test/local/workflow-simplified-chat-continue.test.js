@@ -38,6 +38,7 @@ import { spawnNesting, WORKFLOW_V2_MAX_DESCENDANT_LEVEL } from "../../src/workfl
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 import { PilotSwarmManagementClient, PilotSwarmClient } from "../helpers/local-workers.js";
 import { createWorkflowAgentNodeHost } from "../../src/workflow/v2/agent-host.ts";
+import { recordSessionEndRequested } from "../../src/session-end-mark.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
@@ -858,8 +859,13 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
             expect(await h.store.readNodeExecution(first.nodeExecutionId)).toMatchObject({ outcome: "timed_out" });
             expect(await eventsOf(h, run.workflowSessionId, "workflow.agent_chat_restarted"))
                 .toEqual([expect.objectContaining({ endedChatSessionId: chat, childSessionId: replacement, cycle: 2 })]);
-            // Nothing more went to the ending session after its end; the next visit completes in the new one.
-            expect((await chatMessages(h, chat)).map(message => message.prompt ?? message.cmd)).toEqual([first.prompt, "done"]);
+            // Nothing more went to the ending session after its end; the next visit completes in the new one. Review DRR-2:
+            // the Workflow carried the marked end too (its own id): a second end, which the session never reads, fails nothing.
+            const sent = await chatMessages(h, chat);
+            expect(sent.map(message => message.prompt ?? message.cmd)).toEqual([first.prompt, "done", "done"]);
+            const mark = await h.store.readSessionEndMark(chat);
+            expect(sent[2]).toMatchObject({ type: "cmd", cmd: "done", id: `workflow-mark-end:${mark.id}`, requestedBy: run.workflowSessionId,
+                args: { reason: "A person asked to end this session." } });
             expect(await completeAs(h, replacement, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
                 .toMatchObject({ ok: true, outcome: "finish" });
             expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
@@ -965,6 +971,54 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
                 expect(h.spawns).toHaveLength(visitOf);
                 expect(await h.store.isSessionDeleted(target)).toBe(true);
             } finally {
+                await h.stop();
+            }
+        });
+    }
+
+    // Review DRR-2: the mark commits and the asker's command is not queued (its queue write throws, or its process stops
+    // after the mark). The Workflow acts on the mark (the next visit gets a new agent session) and carries the end itself:
+    // the old session receives it, so it never stays live beside its replacement.
+    for (const label of ["the queue write throws", "the asker stops after the mark"]) {
+        it(`DRR-2: when ${label}, the next visit replaces the session and the old session still receives the marked end`, { timeout: TIMEOUT }, async () => {
+            const env = getEnv();
+            const h = await harness(env);
+            const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema });
+            await mgmt.start();
+            try {
+                const run = await started(h, CHAT_YAML({ limit: `"\${kv.limit}"` }), { limit: 3 });
+                const chat = workflowAgentChatSessionId(run.runId, "talk");
+                const first = await spawnedVisit(h, 1);
+                if (label === "the queue write throws") {
+                    const enqueue = mgmt._duroxideClient.enqueueEvent;
+                    mgmt._duroxideClient.enqueueEvent = async () => { throw new Error("the queue write failed"); };
+                    try {
+                        await expect(mgmt.cancelSession(chat, "ended by a person")).rejects.toThrow(/the queue write failed/);
+                    } finally {
+                        mgmt._duroxideClient.enqueueEvent = enqueue;
+                    }
+                } else {
+                    await recordSessionEndRequested(h.catalog, chat, { cmd: "cancel", id: "person-cancel-1" });
+                }
+                const mark = await h.store.readSessionEndMark(chat);
+                expect(mark).toMatchObject({ cmd: "cancel", requestedBy: null });
+                // The asker's command never reached the session.
+                expect(await commandsOf(h, chat)).toEqual([]);
+                await controlWorkflowV2Run(h.host, run.workflowSessionId,
+                    { operation: "set_vars", runId: null, set: { limit: 3600 }, delete: [], expectedKvRevision: 1 }, { actor: ACTOR, operationId: "vars-drr2" });
+                const second = await spawnedVisit(h, 2);
+                const replacement = workflowAgentChatSessionId(run.runId, "talk", 2);
+                expect(second.childSessionId).toBe(replacement);
+                // The Workflow carried the marked end before it acted on the mark.
+                const carried = await chatEnd(h, chat);
+                expect(carried).toMatchObject({ type: "cmd", cmd: "cancel", id: `workflow-mark-end:${mark.id}`, requestedBy: run.workflowSessionId,
+                    args: { reason: "A person asked to end this session." } });
+                expect((await chatMessages(h, chat)).filter(message => message.prompt).map(message => message.prompt)).toEqual([first.prompt]);
+                expect(await completeAs(h, replacement, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
+                    .toMatchObject({ ok: true, outcome: "finish" });
+                expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+            } finally {
+                await mgmt.stop();
                 await h.stop();
             }
         });

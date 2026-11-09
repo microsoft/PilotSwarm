@@ -2920,6 +2920,28 @@ export interface WorkflowV2AgentEndClient {
 }
 
 /**
+ * Review DRR-2: the end a person (or a parent) asked of agent session `childSessionId`, carried by the Workflow that acts on
+ * its mark (session-end-mark.ts). The asker records the mark, then queues its command; when that queue write failed, or
+ * its process stopped between the two, only the mark is left. Before a Workflow acts on a mark (it gives the next visit a
+ * new agent session, or decides a visit unavailable), it queues the marked command itself: the mark's done or cancel,
+ * with the stable id `workflow-mark-end:<mark id>`, as the session's parent (the Workflow). A session already ended or
+ * gone gets nothing; one whose own end is still queued gets a second end, which it never reads (it ends at the first).
+ * Throws (the calling attempt retries) when it cannot queue it, so a Workflow never acts on a mark it did not carry.
+ */
+export async function carryMarkedEnd(client: WorkflowV2AgentEndClient | null, childSessionId: string,
+    mark: { cmd: "done" | "cancel"; id: string; requestedBy: string | null }, workflowSessionId: string): Promise<boolean> {
+    if (!client) throw new Error(`The end asked of agent session ${childSessionId} cannot be carried: this worker has no durable client here.`);
+    const instance = `session-${childSessionId}`;
+    const status = (await client.getStatus(instance)).status;
+    if (status === "NotFound" || TERMINAL_ORCHESTRATION_STATUSES.includes(status)) return false;
+    const reason = mark.requestedBy === null ? "A person asked to end this session." : `Session ${mark.requestedBy} asked to end this session.`;
+    await client.enqueueEvent(instance, "messages", JSON.stringify({
+        type: "cmd", cmd: mark.cmd, id: `workflow-mark-end:${mark.id}`, requestedBy: workflowSessionId, args: { reason },
+    }));
+    return true;
+}
+
+/**
  * End the child of a decided agent state (controller 1.9.0; IR 8): done
  * after the agent's own typed completion, cancel after anything else (its
  * deadline, a cancel, a stop, a deletion or the run's end). The first end
@@ -3467,7 +3489,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     const chatEndedOnItsOwn = async (client: WorkflowV2AgentEndClient | null, last: WorkflowAgentInvocation): Promise<"deleted" | "ended" | null> => {
         // Review DRR-1: a deleted row, or an end's mark, means the session was created (by this visit's spawn, perhaps one
         // that stopped before recording it), whatever spawnedAt and its orchestration say: the next visit does not reuse it.
-        const gone = await agentSessionGone(last.childSessionId);
+        const gone = await agentSessionGone(last.childSessionId, { client, workflowSessionId: last.workflowSessionId });
         if (gone !== null) return gone;
         const status = client ? (await client.getStatus(`session-${last.childSessionId}`)).status : null;
         const created = last.spawnedAt !== null || (status !== null && status !== "NotFound");
@@ -3477,12 +3499,17 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     /**
      * Whether a person (or a parent) deleted agent session `childSessionId`, or asked to end it: "deleted", "ended" (its
      * end's mark: an end asked while one of its turns runs reads Running until that turn ends, G1 residual, TLA+
-     * limit.cc-g1-end-during-turn; session-end-mark.ts), or null. Store reads only.
+     * limit.cc-g1-end-during-turn; session-end-mark.ts), or null. Every caller acts on "ended" (a replacement session, or
+     * a visit decided unavailable), so the marked end is carried first (review DRR-2, carryMarkedEnd): the session is never
+     * left live beside its replacement when the asker's own command was not queued.
      */
-    const agentSessionGone = async (childSessionId: string): Promise<"deleted" | "ended" | null> => {
+    const agentSessionGone = async (childSessionId: string, carry: { client: WorkflowV2AgentEndClient | null; workflowSessionId: string })
+        : Promise<"deleted" | "ended" | null> => {
         if (await store.isSessionDeleted(childSessionId)) return "deleted";
-        if (await store.sessionEndRequested(childSessionId)) return "ended";
-        return null;
+        const mark = await store.readSessionEndMark(childSessionId);
+        if (mark === null) return null;
+        await carryMarkedEnd(carry.client, childSessionId, mark, carry.workflowSessionId);
+        return "ended";
     };
     /**
      * Review G1: whether the chat a later visit's admission chose (the chat of the state's previous visit) ended on its
@@ -5094,7 +5121,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             } else {
                 // Review DRR-1: a first visit, a replacement session and a retried attempt (an earlier one may have created the
                 // session before it stopped) are checked too: a session a person deleted or asked to end gets no prompt.
-                const gone = await agentSessionGone(invocation.childSessionId);
+                const gone = await agentSessionGone(invocation.childSessionId, { client, workflowSessionId: run.workflowSessionId });
                 if (gone !== null) {
                     return fail({ ...runtimeError("unavailable", `The agent session ${invocation.childSessionId} of this step was ${gone} `
                         + `before its prompt was sent, so nothing was sent to it.${nextCycle}`,
@@ -5120,7 +5147,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             // Review DRR-1, the send-side guard: a deletion or an end asked after the checks above (the create refuses only a
             // deletion that committed before it) decides the visit unavailable now, through the visit's own compare-and-set.
             // The prompt it was just sent waits behind that end, or in a deleted session, and is harmless: its visit is decided.
-            const goneAfterSend = await agentSessionGone(invocation.childSessionId);
+            const goneAfterSend = await agentSessionGone(invocation.childSessionId, { client, workflowSessionId: run.workflowSessionId });
             if (goneAfterSend !== null) {
                 return fail({ ...runtimeError("unavailable", `The agent session ${invocation.childSessionId} of this step was ${goneAfterSend} `
                     + `while its prompt was being sent, so this step does not wait for it.${nextCycle}`,
