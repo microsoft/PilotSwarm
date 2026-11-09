@@ -33,7 +33,8 @@ import { requireTestHost } from "../../dist/workflow/v2/chat-test.js";
 import { workflowDefinitionToolSpec } from "../../dist/workflow/v2/definition-tool.js";
 
 const {
-    SKILLS_INDEX_HEADING, WORKFLOW_INSIDE_GUIDANCE, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR,
+    SKILLS_INDEX_HEADING, WORKFLOW_INSIDE_GUIDANCE, WORKFLOW_PERSON_CONTROL_GUIDANCE, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_V2_SKILLS_DIR,
+    WORKFLOW_V2_TEST_MODE_SKILLS_DIR,
     isWorkflowSkill, skillsIndexLine, skillsIndexSection, withWorkflowSkillsListed, workflowSessionGuidance,
 } = guidance;
 
@@ -64,7 +65,8 @@ test("G-1: inside a Workflow the guidance has one sentence for the definition pa
         assert.equal(workflowSessionGuidance(testMode, { scripts, clockWaits, requests: true, insideWorkflow: false }), outside, label);
     }
     assert.equal(workflowSessionGuidance(false, { insideWorkflow: true, requests: false }),
-        `## Workflows\n\n${WORKFLOW_INSIDE_GUIDANCE}\n\n${WORKFLOW_SESSION_GUIDANCE.split("\n\n").at(-1).replace(` ${REQUEST_SENTENCE}`, "")}`);
+        `## Workflows\n\n${WORKFLOW_INSIDE_GUIDANCE}\n\n${WORKFLOW_SESSION_GUIDANCE.split("\n\n").at(-1)
+            .replace(` ${REQUEST_SENTENCE} ${WORKFLOW_PERSON_CONTROL_GUIDANCE}`, "")}`);
 });
 
 test("G-1 (wiring): a session inside a Workflow carries the inside guidance; a chat outside every Workflow, the full guidance", () => {
@@ -110,7 +112,8 @@ test("G-2 (wiring): a session inside a Workflow is declared read_workflow withou
 // ─── G-3: respond_session_request on a frozen 1.0.82 turn ───
 
 test("G-3: the request sentence names respond_session_request only where it is declared", () => {
-    assert.ok(WORKFLOW_SESSION_GUIDANCE.endsWith(REQUEST_SENTENCE));
+    // UXP-AD-01: the person's control sentence follows it (a chat that controls its Workflows).
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.endsWith(`${REQUEST_SENTENCE} ${WORKFLOW_PERSON_CONTROL_GUIDANCE}`));
     for (const testMode of [false, true]) for (const scripts of [false, true]) {
         const frozen = workflowSessionGuidance(testMode, { scripts, requests: false });
         assert.ok(!frozen.includes("respond_session_request") && !frozen.includes("`request`:"), `${testMode} ${scripts}`);

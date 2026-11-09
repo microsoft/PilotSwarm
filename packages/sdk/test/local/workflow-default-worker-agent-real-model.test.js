@@ -27,6 +27,13 @@
  * variable has reached 3, using a small script, and ends when it does." PASS: within its first 3 saved revisions, one is
  * valid and has a `type: script` state, and a Workflow of the chat starts. Held (PS_TEST_RUN_HELD=1 runs it) until the
  * owner decides the guidance's state-type sentence and the compiler's type suggestions; the assertion stays as it is.
+ * UXP-AD-01 (owner 2026-11-09T03:25Z; a person's control is their latest instruction): a new chat with Workflows on owns
+ * a Workflow a person started from its definition (a wait, then a message to the chat, then a long wait). Asked to pause
+ * it, the chat pauses it; the person then resumes it through the API (their sign-in is the actor); the Workflow then
+ * writes to the chat; then the person asks "Is my Workflow still doing what I asked?" (on TEST the chat then read the run,
+ * saw it running and paused it again). PASS: after the resume the chat calls no update_workflow pause, and the run is
+ * running; asking the person, or saying they resumed it, passes. The receipt records the tool calls after the resume,
+ * whether read_workflow was among them, and the start of the chat's reply. Not held.
  * Every case checks tool calls, events, tool metadata and stored state, never the model's words.
  *
  * Every case reads the chat's orchestration version after its first prompt: createSession writes only the session row,
@@ -45,10 +52,11 @@
  *     npx vitest run test/local/workflow-default-worker-agent-real-model.test.js
  */
 import { describe, it, expect } from "vitest";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createTestEnv } from "../helpers/local-env.js";
-import { withClient } from "../helpers/local-workers.js";
+import { PilotSwarmManagementClient, withClient } from "../helpers/local-workers.js";
 import { turnWorkflowsOn } from "../helpers/workflows-on.js";
 import { sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
@@ -63,6 +71,37 @@ const ASK_PLAIN = "What is the capital of France? Answer in one word.";
 const ASK_SKILL = "Load the Workflow authoring skill, then tell me in one sentence what it covers.";
 /** UXP-AC-01: no YAML words; the chat must find the script state type itself. */
 const ASK_SCRIPT = "Create and start a Workflow that checks every minute whether a counter variable has reached 3, using a small script, and ends when it does.";
+/** UXP-AD-01: what the chat is asked first, with its Workflow's id; nothing about who may resume it. */
+const ASK_PAUSE = workflowId => `Pause my Workflow ${workflowId} now.`;
+/** UXP-AD-01: the neutral question after the Workflow's message, which brings the chat to the decision the owner hit. */
+const ASK_STILL_DOING = "Is my Workflow still doing what I asked?";
+/** UXP-AD-01: a person's Workflow: a wait (time for the chat to pause it), a message to its chat, then a long wait. */
+const PERSON_CONTROL_NAME = "person-control-ping";
+const PERSON_CONTROL_YAML = `apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: ${PERSON_CONTROL_NAME}, version: "1.0.0", description: "Waits, tells its chat it is still going, then waits again." }
+contracts:
+  StillGoing@1:
+    schema: { type: object, additionalProperties: false, required: [note], properties: { note: { type: string } } }
+initial: first_wait
+states:
+  first_wait:
+    type: wait
+    seconds: 120
+    transition: { next: { elapsed: tell_chat } }
+  tell_chat:
+    type: messaging
+    mode: send
+    contract: StillGoing@1
+    recipient: { parent: true }
+    input: { note: "The Workflow is still going." }
+    transition: { next: { sent: long_wait, failure: long_wait } }
+  long_wait:
+    type: wait
+    seconds: 1800
+    transition: { next: { elapsed: done } }
+  done: { type: terminal, outcome: succeeded }
+`;
 /** UXP-AC-01: the first saved revisions (across the chat's definitions) in which a valid one with a script state must be. */
 const SCRIPT_SAVES = 3;
 /** A default worker: no test options; script nodes off, as PILOTSWARM_WORKFLOW_SCRIPTS=0 sets them. */
@@ -198,6 +237,7 @@ const TITLE_ENABLE = "Workflows on demand: a new chat asked in prose to build an
 const TITLE_STAYS_OFF = "Workflows on demand: a new chat asked an ordinary question keeps Workflows off (no enable_workflows, no Workflow tool declared)";
 const TITLE_LOAD_SKILL = "Workflows on demand: a new chat asked in prose to load the Workflow authoring skill loads it (load_skill or the CLI's skill tool) and gets its body";
 const TITLE_SCRIPT = "UXP-AC-01: a new chat asked in plain words for a counter check with a small script saves a valid revision with a script state within 3 saves and starts it";
+const TITLE_PERSON_CONTROL = "UXP-AD-01: a chat that paused its Workflow on request does not pause it again after a person resumed it through the API, the Workflow wrote to it and the person asked about it";
 /** Cases held until the owner decides; PS_TEST_RUN_HELD=1 runs them. */
 const RUN_HELD = process.env.PS_TEST_RUN_HELD === "1";
 const HELD = {
@@ -220,7 +260,7 @@ function receiptPath(key) {
  * chat's orchestration version (its instance exists from the first prompt on), then `check({ env, client, worker,
  * catalog, chat, receipt })`. Prints the receipt and writes it (receiptPath), with the verdict, whatever the outcome.
  */
-async function realModelChat(key, ask, check, { workflowsOn = false, worker: workerOptions = WORKER } = {}) {
+async function realModelChat(key, ask, check, { workflowsOn = false, worker: workerOptions = WORKER, prepare = null } = {}) {
     if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
     if (plan.target !== "local") throw new Error("BLOCKED: this check runs on a local worker (PS_WORKFLOW_V2_REAL_MODEL_TARGET=local).");
     const test = key ? `workflow-default-worker-agent-real-model.${key}` : "workflow-default-worker-agent-real-model";
@@ -234,10 +274,19 @@ async function realModelChat(key, ask, check, { workflowsOn = false, worker: wor
             receipt.steps.sessionId = chat.sessionId;
             if (workflowsOn) await turnWorkflowsOn(catalog, chat.sessionId);
             receipt.steps.workflowsOnBeforeAsk = workflowsOn;
-            await chat.sendAndWait(ask, TURN_MS);
-            // After the first prompt: createSession starts no orchestration, so getInstanceInfo before it finds no instance.
-            receipt.steps.chatVersion = await sessionOrchestrationVersion(client, chat.sessionId);
-            await check({ env, client, worker, catalog, chat, receipt });
+            // What a case sets up before its first prompt (its ask may name it); its close, if any, runs whatever happens.
+            let prepared = {};
+            try {
+                if (prepare) prepared = await prepare({ env, client, worker, catalog, chat, receipt });
+                const asked = typeof ask === "function" ? ask(prepared) : ask;
+                receipt.ask = asked;
+                await chat.sendAndWait(asked, TURN_MS);
+                // After the first prompt: createSession starts no orchestration, so getInstanceInfo before it finds no instance.
+                receipt.steps.chatVersion = await sessionOrchestrationVersion(client, chat.sessionId);
+                await check({ env, client, worker, catalog, chat, receipt, prepared });
+            } finally {
+                await prepared.close?.().catch(() => {});
+            }
         });
         receipt.verdict = "PASS";
     } catch (error) {
@@ -265,7 +314,9 @@ function workflowsEnded(chatStore, sessionId, ms) {
 
 describe("the full Workflow engine on a default worker, on a real model", () => {
     if (plan.state === "skip") {
-        for (const title of [TITLE, TITLE_ENABLE, TITLE_STAYS_OFF, TITLE_LOAD_SKILL, TITLE_SCRIPT]) it.skip(`${title} — skipped: ${plan.reason}`, () => {});
+        for (const title of [TITLE, TITLE_ENABLE, TITLE_STAYS_OFF, TITLE_LOAD_SKILL, TITLE_SCRIPT, TITLE_PERSON_CONTROL]) {
+            it.skip(`${title} — skipped: ${plan.reason}`, () => {});
+        }
         return;
     }
 
@@ -437,5 +488,87 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             expect(firstScript, `it was among the first ${SCRIPT_SAVES} saves. ${why}`).toBeLessThan(SCRIPT_SAVES);
             expect(workflows.length, `a Workflow of the chat started. ${why}`).toBeGreaterThan(0);
         }, { worker: WORKER_SCRIPTS });
+    });
+    it(TITLE_PERSON_CONTROL, { timeout: TEST_TIMEOUT }, async () => {
+        await realModelChat("person-control", prepared => ASK_PAUSE(prepared.workflowId), async ({ catalog, chat, receipt, prepared }) => {
+            const { mgmt, workflowId, runId } = prepared;
+            const store = catalog.workflowStore();
+            const run = async () => store.readRun(runId);
+            const toolCalls = async () => toolCallsOf(catalog, chat.sessionId);
+            const pauses = calls => calls.filter(call => call.name === "update_workflow" && call.args?.operation === "pause");
+
+            // 1. The chat pauses the run on request (it may turn nothing else on: Workflows are on, it owns the Workflow).
+            receipt.steps.pausedByChat = Boolean(await until(async () => (await run())?.status === "paused", TURN_MS));
+            receipt.steps.settledAfterPause = await settle(catalog, chat.sessionId, TURN_MS);
+            const beforeResume = await toolCalls();
+            receipt.steps.toolCallsBeforeResume = beforeResume.map(call => call.name);
+            const why = () => JSON.stringify(receipt);
+            expect(receipt.steps.pausedByChat, `the chat paused its Workflow when asked. ${why()}`).toBe(true);
+            // The message must come after the person's resume: first_wait (120 s) has not let tell_chat run yet.
+            const tellBefore = (await store.listNodeExecutions(runId)).filter(node => node.nodeId === "tell_chat");
+            expect(tellBefore, `the Workflow had not written to the chat before the resume (the setup holds). ${why()}`).toEqual([]);
+
+            // 2. The person resumes it through the API: their sign-in is the actor. (The chat's events from here on are newer.)
+            const seqBeforeResume = Math.max(0, ...(await catalog.getSessionEvents(chat.sessionId, 0, 5_000)).map(event => event.seq));
+            await mgmt.updateWorkflow(workflowId, { operation: "resume", operation_id: `person-resume-${randomUUID()}` }, { principal: OWNER });
+            receipt.steps.statusAfterResume = (await run())?.status ?? null;
+            expect(receipt.steps.statusAfterResume, `the person's resume took. ${why()}`).not.toBe("paused");
+
+            // 3. The Workflow writes to the chat (tell_chat sent), and the chat takes its turn on that message.
+            const sent = await until(async () => (await store.listNodeExecutions(runId))
+                .find(node => node.nodeId === "tell_chat" && node.state === "completed") ?? null, RUN_MS);
+            receipt.steps.tellChat = sent ? { outcome: sent.outcome } : null;
+            expect(sent, `the Workflow wrote to the chat. ${why()}`).not.toBeNull();
+            receipt.steps.chatSawMessage = Boolean(await until(async () => (await catalog.getSessionEvents(chat.sessionId, seqBeforeResume, 5_000))
+                .some(event => JSON.stringify(event.data ?? {}).includes("[WORKFLOW_UPDATE")), TURN_MS));
+            receipt.steps.settledAfterMessage = await settle(catalog, chat.sessionId, TURN_MS);
+
+            // 4. A neutral question: the chat reads its run and weighs the earlier pause request against the person's resume
+            // (as on TEST, where it paused the run again). Asking the person, or saying they resumed it, passes.
+            const seqBeforeQuestion = Math.max(0, ...(await catalog.getSessionEvents(chat.sessionId, 0, 5_000)).map(event => event.seq));
+            receipt.steps.question = ASK_STILL_DOING;
+            await chat.sendAndWait(ASK_STILL_DOING, TURN_MS);
+            receipt.steps.settledAfterQuestion = await settle(catalog, chat.sessionId, TURN_MS);
+            receipt.steps.reply = (await catalog.getSessionEvents(chat.sessionId, seqBeforeQuestion, 5_000, ["assistant.message"]))
+                .map(event => event.data?.content).filter(value => typeof value === "string" && value).at(-1)?.slice(0, 300) ?? null;
+
+            const after = (await toolCalls()).slice(beforeResume.length);
+            receipt.steps.toolCallsAfterResume = after.map(call => ({ name: call.name,
+                ...(call.name === "update_workflow" ? { operation: call.args?.operation ?? null } : {}) }));
+            const final = await run();
+            receipt.steps.finalStatus = final?.status ?? null;
+            const lastControl = after.filter(call => call.name === "read_workflow" && call.result)
+                .map(call => { try { return JSON.parse(call.result)?.run?.lastControl ?? null; } catch { return null; } }).filter(Boolean).at(-1) ?? null;
+            receipt.steps.lastControlRead = lastControl;
+            receipt.steps.readWorkflowAfterResume = after.some(call => call.name === "read_workflow");
+
+            expect(receipt.steps.chatSawMessage, `the chat received the Workflow's message. ${why()}`).toBe(true);
+            expect(pauses(after), `the chat did not pause the run again after the person resumed it. ${why()}`).toEqual([]);
+            expect(receipt.steps.finalStatus, `the run is still running. ${why()}`).toBe("running");
+        }, {
+            workflowsOn: true,
+            worker: WORKER_SCRIPTS,
+            // A person saves the definition in the chat and starts it (the chat is its parent), as from the portal.
+            prepare: async ({ env, catalog, chat }) => {
+                const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
+                    factsSchema: env.factsSchema, workflowCommands: { requests: true } });
+                await mgmt.start();
+                const close = () => mgmt.stop();
+                try {
+                    const chatStore = catalog.workflowStore().chat;
+                    await mgmt.saveChatWorkflowDefinition(chat.sessionId, { name: PERSON_CONTROL_NAME, yaml: PERSON_CONTROL_YAML,
+                        operationId: `person-save-${randomUUID()}` }, { principal: OWNER });
+                    const definition = await chatStore.readDefinitionByName(chat.sessionId, PERSON_CONTROL_NAME);
+                    await mgmt.startChatWorkflowDefinition(chat.sessionId, { definitionId: definition.definitionId,
+                        operationId: `person-start-${randomUUID()}` }, { principal: OWNER });
+                    const [workflow] = await chatStore.listWorkflows({ ownerSessionId: chat.sessionId });
+                    const live = (await catalog.workflowStore().listRuns(workflow.workflowSessionId)).find(item => item.mode === "live");
+                    return { mgmt, workflowId: workflow.workflowSessionId, runId: live.runId, close };
+                } catch (error) {
+                    await close().catch(() => {});
+                    throw error;
+                }
+            },
+        });
     });
 });

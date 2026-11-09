@@ -45,6 +45,19 @@ export type WorkflowActor =
     | { kind: "user"; provider: string; subject: string }
     | { kind: "system"; name: string };
 
+/**
+ * UXP-AD-01: a run's latest control action that names who took it (WorkflowStore.readLastRunControl). `displayName`: a
+ * person's name from the users table, when it has one; null otherwise and for any other actor. `reason`: as stored (its
+ * secrets hidden, at most 500 characters), null when none.
+ */
+export interface WorkflowRunControl {
+    operation: "pause" | "resume" | "stop" | "cancel" | "set_vars";
+    actor: WorkflowActor;
+    displayName: string | null;
+    at: Date;
+    reason: string | null;
+}
+
 export type WorkflowDefinitionState = "draft" | "published" | "deleted";
 /** `stopped` (migration 0100): a run that ended by a graceful stop (requestRunStop, finishStoppedRun); only controller 1.9.0 stops a run. */
 export type WorkflowRunStatus = "admitted" | "running" | "paused" | "completed" | "failed" | "cancelled" | "stopped";
@@ -2937,6 +2950,8 @@ export class WorkflowStore {
         requestSha256: string;
         reason: string;
         requestedBy: string | null;
+        /** UXP-AD-01: who cancelled, kept with the run's workflow.cancelled event (readLastRunControl). */
+        actor?: WorkflowActor;
     }): Promise<StoredOperation<WorkflowRunCommandReceipt> & { run: WorkflowRunRow }> {
         return this.transaction(async client => {
             if (!await this.lockLiveSession(client, input.workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
@@ -2947,7 +2962,7 @@ export class WorkflowStore {
             const end = (repaired: boolean): Promise<WorkflowRunRow> => !ACTIVE_RUN_STATUSES.includes(run.status) ? Promise.resolve(run)
                 : runNotBegun(run) ? this.cancelBeforeBegin(client, run, input, repaired)
                     : this.endRunForCommandIn(client, run, { command: "cancel", reason: input.reason, requestedBy: input.requestedBy,
-                        operationId: input.operationId, repaired });
+                        operationId: input.operationId, repaired, ...(input.actor ? { actor: input.actor } : {}) });
             if (prior) {
                 // The request hash names the run, so the stored receipt is this run's.
                 return { receipt: prior, replayed: true, run: await end(true) };
@@ -2966,7 +2981,8 @@ export class WorkflowStore {
      * whose command did not end the run.
      */
     private async cancelBeforeBegin(client: PoolClient, run: WorkflowRunRow,
-        input: { workflowSessionId: string; operationId: string; reason: string; requestedBy: string | null; command?: "cancel" | "done"; attributedFrom?: string },
+        input: { workflowSessionId: string; operationId: string; reason: string; requestedBy: string | null; command?: "cancel" | "done"; attributedFrom?: string;
+            actor?: WorkflowActor },
         repaired: boolean): Promise<WorkflowRunRow> {
         const command = input.command ?? "cancel";
         const marks: { [key: string]: JsonValue } = { beforeBegin: true, operationId: input.operationId };
@@ -2990,7 +3006,7 @@ export class WorkflowStore {
               WHERE run_id = $1 AND state = 'pending'`,
             [run.runId, canonicalJson({ code: "cancelled", message: "The workflow run was cancelled." })]);
         await this.project(client, { sessionId: input.workflowSessionId, events: [{ eventType: "workflow.cancelled", data: {
-            runId: run.runId, reason: redactThenClip(input.reason, 500), command, ...marks,
+            runId: run.runId, reason: redactThenClip(input.reason, 500), command, ...marks, ...(input.actor ? { actor: actorJson(input.actor) } : {}),
         } }], update: { state: "cancelled", lastError: redactThenClip(input.reason, 500), touch: true } }, run);
         return runFrom(rows[0]);
     }
@@ -3050,9 +3066,12 @@ export class WorkflowStore {
                 await client.query(`SELECT ${this.t.softDeleteSession}($1)`, [input.workflowSessionId]);
                 if (run) run = runFrom((await client.query(`SELECT * FROM ${this.t.runs} WHERE run_id = $1`, [run.runId])).rows[0]);
             };
+            // UXP-AD-01: a parent's command names it as the cancel's actor (an operator's, with no requester, names none).
+            const actor: WorkflowActor | undefined = input.requestedBy ? { kind: "agent", sessionId: input.requestedBy } : undefined;
             /** End a begun active run for this cancel or done (S7-DX2); the controller is then woken. */
             const endBegun = async (current: WorkflowRunRow, command: "cancel" | "done", repaired: boolean): Promise<WorkflowRunRow> =>
-                this.endRunForCommandIn(client, current, { command, reason: input.reason, requestedBy: input.requestedBy, operationId: input.operationId, repaired });
+                this.endRunForCommandIn(client, current, { command, reason: input.reason, requestedBy: input.requestedBy, operationId: input.operationId, repaired,
+                    ...(actor ? { actor } : {}) });
             if (priorRows[0]) {
                 const prior = parseSessionCommandReceipt(parseStoredJson(str(priorRows[0], "receipt"), "receipt"));
                 // An accepted delete holds whatever the run did since; the session is live here, so it was not applied yet.
@@ -3081,7 +3100,7 @@ export class WorkflowStore {
                 status = run.status;
                 wake = true;
             } else if (run !== null && runNotBegun(run)) {
-                run = await this.cancelBeforeBegin(client, run, { ...input, command: input.command }, false);
+                run = await this.cancelBeforeBegin(client, run, { ...input, command: input.command, ...(actor ? { actor } : {}) }, false);
                 applied = "store";
                 status = run.status;
             } else {
@@ -3350,6 +3369,36 @@ export class WorkflowStore {
     async readRun(runId: string): Promise<WorkflowRunRow | null> {
         const { rows } = await this.pool.query(`SELECT * FROM ${this.t.runs} WHERE run_id = $1`, [runId]);
         return rows[0] ? runFrom(rows[0]) : null;
+    }
+
+    /**
+     * UXP-AD-01: a run's latest control action that names who took it: the newest of its Workflow's workflow.paused,
+     * workflow.resumed, workflow.vars_set, workflow.stop_requested and workflow.cancelled events (a cancel command's; a
+     * "done" is no control action) whose data names an actor, with the reason as it was stored and, for a person, the
+     * display name the users table has for them. Null when the run has none. A read of the projected events; it changes
+     * nothing, and an actor of another shape is not shown.
+     */
+    async readLastRunControl(workflowSessionId: string, runId: string): Promise<WorkflowRunControl | null> {
+        const { rows } = await this.pool.query(
+            `SELECT e.event_type, e.data, e.created_at, u.display_name
+               FROM ${this.t.sessionEvents} e
+               LEFT JOIN ${this.t.users} u ON e.data #>> '{actor,kind}' = 'user'
+                    AND u.provider = e.data #>> '{actor,provider}' AND u.subject = e.data #>> '{actor,subject}'
+              WHERE e.session_id = $1 AND e.event_type = ANY($2::text[]) AND e.data ->> 'runId' = $3
+                AND jsonb_typeof(e.data -> 'actor') = 'object'
+                AND (e.event_type <> 'workflow.cancelled' OR COALESCE(e.data ->> 'command', 'cancel') = 'cancel')
+              ORDER BY e.seq DESC
+              LIMIT 1`,
+            [workflowSessionId, Object.keys(RUN_CONTROL_EVENTS), runId]);
+        const row = rows[0];
+        if (!row) return null;
+        const data = isJsonObject(row.data) ? row.data : {};
+        const actor = storedActor(data.actor);
+        const operation = RUN_CONTROL_EVENTS[str(row, "event_type")];
+        if (!actor || !operation) return null;
+        const displayName = actor.kind === "user" && typeof row.display_name === "string" && row.display_name.trim()
+            ? jsonbSafeText(row.display_name.trim(), 200) : null;
+        return { operation, actor, displayName, at: new Date(row.created_at), reason: typeof data.reason === "string" ? data.reason : null };
     }
 
     /**
@@ -6661,7 +6710,8 @@ export class WorkflowStore {
      * `repaired` marks a cancel or done an older build accepted and only queued, applied when its request is repeated.
      */
     private async endRunForCommandIn(client: PoolClient, run: WorkflowRunRow,
-        input: { command: "cancel" | "done"; reason: string; requestedBy: string | null; operationId: string; repaired?: boolean }): Promise<WorkflowRunRow> {
+        input: { command: "cancel" | "done"; reason: string; requestedBy: string | null; operationId: string; repaired?: boolean; actor?: WorkflowActor })
+        : Promise<WorkflowRunRow> {
         const marks: { [key: string]: JsonValue } = { accepted: true, operationId: input.operationId, ...(input.repaired ? { repaired: true } : {}) };
         return this.endRunIn(client, run, {
             status: "cancelled", terminalNodeId: null, terminalOutcome: null, outputText: null,
@@ -6672,6 +6722,7 @@ export class WorkflowStore {
             endPending: { winner: "cancel", message: "The workflow run was cancelled." },
             projection: { sessionId: run.workflowSessionId, events: [{ eventType: "workflow.cancelled", data: {
                 runId: run.runId, reason: redactThenClip(input.reason, 500), command: input.command, ...marks,
+                ...(input.actor ? { actor: actorJson(input.actor) } : {}),
             } }], update: { state: "cancelled", lastError: redactThenClip(input.reason, 500), touch: true } },
         });
     }
@@ -7654,6 +7705,25 @@ function parseRunCommandReceipt(value: JsonValue): WorkflowRunCommandReceipt {
         throw invalid();
     }
     return { workflowSessionId, operation, runId, status, kvRevision };
+}
+
+/** UXP-AD-01: the events that record a run's control actions, and the operation each records (readLastRunControl). */
+const RUN_CONTROL_EVENTS: Readonly<Record<string, WorkflowRunControl["operation"]>> = Object.freeze({
+    "workflow.paused": "pause",
+    "workflow.resumed": "resume",
+    "workflow.stop_requested": "stop",
+    "workflow.cancelled": "cancel",
+    "workflow.vars_set": "set_vars",
+});
+
+/** An actor as actorJson stored it; null for any other shape. */
+function storedActor(value: unknown): WorkflowActor | null {
+    if (!isJsonObject(value)) return null;
+    const text = (key: string) => (typeof value[key] === "string" && value[key] ? value[key] as string : null);
+    if (value.kind === "agent" && text("sessionId")) return { kind: "agent", sessionId: text("sessionId")! };
+    if (value.kind === "user" && text("provider") && text("subject")) return { kind: "user", provider: text("provider")!, subject: text("subject")! };
+    if (value.kind === "system" && text("name")) return { kind: "system", name: text("name")! };
+    return null;
 }
 
 function actorJson(actor: WorkflowActor): JsonValue {

@@ -1131,7 +1131,7 @@ export async function controlWorkflowV2Run(
             : context.actor.kind === "user" ? "Cancelled by a person" : "Cancelled by an operator");
         const requestedBy = context.actor.kind === "agent" ? context.actor.sessionId : null;
         const stored = await host.store.recordRunCancelRequest({ workflowSessionId, runId: run.runId, operationId: context.operationId, requestSha256,
-            reason, requestedBy });
+            reason, requestedBy, actor: context.actor });
         // S7-DX2: the store ended a begun run as it accepted the cancel. Its controller is told at once (a repeat tells it
         // again): the command, as before, which it applies to the ended run (its post-end work) when it reads it; if this
         // message is late or lost, its next store call finds the run ended and does the same.

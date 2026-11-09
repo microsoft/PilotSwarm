@@ -49,6 +49,7 @@ import {
     type WorkflowActor,
     type WorkflowDefinitionReceipt,
     type WorkflowRunCommandReceipt,
+    type WorkflowRunControl,
     type WorkflowStore,
     type WorkflowAgentInvocation,
     type WorkflowInboxMessage,
@@ -128,6 +129,7 @@ export const READ_WORKFLOW_TOOL_SPEC = {
     description:
         "Read one of your Workflows; reading changes nothing. Returns JSON: its definition, graph and runs, and one run (run_id, default the "
         + "live run) with its step executions, variables (kv, kvRevision), the inputs it received (inbox) and the messages it sent (outbox). "
+        + "Its lastControl says who last paused, resumed, stopped or cancelled it or set its variables, and when. "
         + `Use it, not list_sessions, for a Workflow's status.${READ_WORKFLOW_RECOVER_WORDS}`,
     parameters: {
         type: "object",
@@ -1550,6 +1552,21 @@ function agentViewOf(invocation: WorkflowAgentInvocation): { [key: string]: Json
     };
 }
 
+/**
+ * UXP-AD-01: a run's latest control action as read_workflow shows it to `callerSessionId`: what it was, who took it and
+ * when, and its reason when it had one. Who: "this session" (the calling session), "another session" (with its sessionId), "a
+ * person" (with the name the portal knows them by, when it has one; never their sign-in identity) or "system" (with its
+ * name). Pure.
+ */
+export function runControlView(control: WorkflowRunControl, callerSessionId: string | null): { [key: string]: JsonValue } {
+    const actor = control.actor;
+    const by: { [key: string]: JsonValue } = actor.kind === "agent"
+        ? (actor.sessionId === callerSessionId ? { by: "this session" } : { by: "another session", sessionId: actor.sessionId })
+        : actor.kind === "user" ? { by: "a person", ...(control.displayName ? { name: control.displayName } : {}) }
+            : { by: "system", name: actor.name };
+    return { operation: control.operation, ...by, at: control.at.toISOString(), ...(control.reason ? { reason: control.reason } : {}) };
+}
+
 export async function readWorkflowFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
     try {
         const workflowSessionId = requiredString(args, "workflow_id");
@@ -1560,6 +1577,11 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
             executionId: args.execution_id, kvRevision: args.kv_revision, kvKey: args.kv_key, agentVersions: args.agent_versions,
             definitionRevision: args.definition_revision, stepInput: args.step_input,
         }, "tool");
+        // UXP-AD-01: who took the run's latest control action, as the calling session reads it (the view only).
+        if (isJsonObject(view.run) && typeof view.run.runId === "string") {
+            const control = await context.host.store.readLastRunControl(workflowSessionId, view.run.runId);
+            if (control) view.run = { ...view.run, lastControl: runControlView(control, context.callerSessionId) };
+        }
         // Report (never change) whether an active run's controller can still end it; the view only (a page, an execution's value
         // or a read of its own has no run object).
         const shown = isJsonObject(view.run) && typeof view.run.runId === "string" ? await context.host.store.readRun(view.run.runId) : null;
