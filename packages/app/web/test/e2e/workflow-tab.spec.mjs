@@ -626,6 +626,9 @@ test("the main workflow graph follows live ticks and selection drives canvas nod
     await expect(graphView.locator(".ps-workflow-node.is-running")).toHaveCount(0);
     await expectEdgesDrawn(graphView, liveEdges);
     await expect(details.locator(NODE_NAME)).toHaveText("summarize");
+    // The graph was fitted once, before the Node panel took its share of the column (workflow-flow.js, f-06): the last step
+    // can sit under the panel (WebKit at 1440 px), so the test fits the graph again, as a person would, before choosing it.
+    await graphView.getByRole("group", { name: "Graph view", exact: true }).getByRole("button", { name: "Fit to screen", exact: true }).click();
     await graphView.getByRole("button", { name: "Inspect published", exact: true }).click();
     await expect(details.locator(NODE_NAME)).toHaveText("published");
     await expect(details).toContainText("succeeded");
