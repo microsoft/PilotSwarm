@@ -32,9 +32,19 @@ function fixture(overrides = {}) {
     };
 }
 
-for (const name of ["wait", "cron_at", "spawn_agent", "task", "tools/spawn_workflow", "session.create_session", "use_package"]) {
+for (const name of ["wait", "cron_at", "spawn_agent", "task", "tools/spawn_workflow", "session.create_session", "use_package",
+    "workflow_definition", "respond_session_request", "complete_workflow_node"]) {
     test(`workflow control is excluded: ${name}`, () => assert.equal(isWorkflowControlTool(name), true));
 }
+test("review PRW-T1: a parent's grant never captures the Workflow tools that edit, answer or complete", () => {
+    const workflowTools = ["workflow_definition", "respond_session_request", "complete_workflow_node"]
+        .map(name => ({ name, description: "workflow", input_schema: { type: "object" } }));
+    const grants = captureWorkflowTools([...metadata, ...workflowTools]);
+    assert.deepEqual(grants.map(grant => grant.name).sort(), ["bash", "facts_read", "view"]);
+    for (const tool of workflowTools) {
+        assert.throws(() => resolveWorkflowTool(tool.name, grants, [...metadata, ...workflowTools]), /not permitted/);
+    }
+});
 for (const name of ["bash", "view", "apply_patch", "rg", "read_bash", "stop_bash", "facts/read"]) {
     test(`ordinary tool remains eligible: ${name}`, () => assert.equal(isWorkflowControlTool(name), false));
 }

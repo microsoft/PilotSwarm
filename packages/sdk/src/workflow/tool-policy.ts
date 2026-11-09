@@ -80,6 +80,9 @@ const controls = new Set([
     "run_factory", "factories_manage", "execute_sampling", "mcp_sampling",
     "manage_system_session_model", "force_terminate_session", "cleanup_session", "prune_orchestrations",
     "manage_embedder", "context_health",
+    // Review PRW-T1: a Workflow's tool and script states never edit definitions, answer a Workflow's request or complete a
+    // Workflow agent state through the parent's grant.
+    "workflow_definition", "respond_session_request", "complete_workflow_node",
 ]);
 
 export function isWorkflowControlTool(name: string): boolean {
