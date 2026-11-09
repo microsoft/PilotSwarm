@@ -547,6 +547,10 @@ export function createFactTools(opts: {
             if (args.to_file && !ctx?.sessionId) {
                 return { error: "Error: to_file requires a session context to own the failure artifact." };
             }
+            // Review DSS-001: the failure artifact never replaces a Workflow agent's base instructions (no fact is written either).
+            if (args.to_file && isOwnerOnlyArtifact(String(args.to_file))) {
+                return { error: `Error: ${ARTIFACT_OWNER_ONLY}: ${ownerOnlyArtifactMessage(String(args.to_file))} Nothing was written.` };
+            }
 
             // ── Acquire the records ─────────────────────────────────
             let records: Array<Record<string, unknown>>;

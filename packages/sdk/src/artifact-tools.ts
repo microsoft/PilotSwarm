@@ -227,6 +227,8 @@ export function createArtifactTools(opts: {
                     const jailed = resolveJailedPath(params.fromFile, true);
                     if (jailed.error) return toolError("PATH_OUTSIDE_WORKDIR", jailed.error);
                     const filename = params.filename || path.basename(jailed.path!);
+                    // Review DSS-001: the name the store writes, after the path is resolved (a link's target names it).
+                    if (isOwnerOnlyArtifact(filename)) return ownerOnlyRefusal(filename);
                     const metadata = await blobStore.uploadArtifactFromFile(
                         sessionId, filename, jailed.path!, contentType, { pinned },
                     );

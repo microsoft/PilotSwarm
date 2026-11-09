@@ -153,11 +153,17 @@ export function evaluateSessionAccess(accessClass, snapshot, { isAdmin = false, 
  */
 export const OWNER_ONLY_ARTIFACT_PATTERN = /^base-instructions-[0-9a-f]{16,64}\.md$/i;
 
-/** Whether `filename` names an owner-only artifact (see OWNER_ONLY_ARTIFACT_PATTERN). */
+/**
+ * Whether `filename` names an owner-only artifact (see OWNER_ONLY_ARTIFACT_PATTERN). Review DSS-001: the name a store
+ * writes is tested too (path.basename of the trimmed name, which drops trailing separators: `NAME/` writes `NAME`), so a
+ * write cannot reach the protected name through a form this check reads differently.
+ */
 export function isOwnerOnlyArtifact(filename) {
     if (typeof filename !== "string") return false;
-    const name = filename.trim().split(/[\\/]/).pop()?.trim() ?? "";
-    return OWNER_ONLY_ARTIFACT_PATTERN.test(name);
+    const trimmed = filename.trim();
+    const last = trimmed.split(/[\\/]/).pop()?.trim() ?? "";
+    const stored = trimmed.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
+    return OWNER_ONLY_ARTIFACT_PATTERN.test(last) || OWNER_ONLY_ARTIFACT_PATTERN.test(stored) || OWNER_ONLY_ARTIFACT_PATTERN.test(stored.trim());
 }
 
 /**
