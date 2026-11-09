@@ -1635,12 +1635,18 @@ body.is-resizing-pane-y iframe {
   color: var(--ps-accent);
 }
 
-/* The Manage dialog's fixed agent-name prefix, in front of the title field. */
+/* Keep the fixed agent name above the editable title, not beside it. */
+.ps-share-add-row:has(> .ps-manage-title-prefix) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
 .ps-manage-title-prefix {
-  flex: none;
-  align-self: center;
+  grid-column: 1 / -1;
+  min-width: 0;
+  max-width: 100%;
   color: var(--ps-muted);
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 /* The rename box's character count: quiet, right-aligned under the field. */
@@ -5200,6 +5206,7 @@ body.is-resizing-pane-y iframe {
 
 .ps-manage-model-current {
   flex: 1;
+  min-width: 0;
   font-family: var(--ps-mono, monospace);
   font-size: 1.04rem;
   color: var(--ps-foreground);
@@ -5259,6 +5266,7 @@ body.is-resizing-pane-y iframe {
 
 .ps-share-add-input {
   flex: 1;
+  min-width: 0;
   padding: 6px 8px;
   border: 1px solid var(--ps-modal-border);
   border-radius: var(--ps-radius-sm);
@@ -7651,6 +7659,7 @@ body.is-resizing-pane-y iframe {
 .ps-share-modal-head { flex: 0 0 auto; }
 .ps-share-modal-body {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   overflow-y: auto;
   scrollbar-gutter: stable;
