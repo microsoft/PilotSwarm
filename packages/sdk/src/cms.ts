@@ -1942,6 +1942,11 @@ export class PgSessionCatalog implements SessionCatalog {
         try {
             await client.query("BEGIN");
             if (opts?.refuseDeleted) {
+                // Review DR2-002: creates of the same id with refuseDeleted take turns (a transaction-scoped advisory lock on
+                // the id), so one that found no row cannot run its upsert after another created the row and a person
+                // deleted it: it reads the tombstone after the other commits. A row lock alone locks nothing when the row
+                // is absent. Other creates are unchanged.
+                await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`pilotswarm:create-session:${sessionId}`]);
                 // Review DRR-1: the row is locked first, so a deletion either committed before (refused here) or waits for
                 // this creation and applies after it; a deleted row is never revived by cms_create_session's upsert.
                 const { rows } = await client.query(

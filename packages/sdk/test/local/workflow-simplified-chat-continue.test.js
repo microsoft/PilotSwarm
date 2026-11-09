@@ -111,6 +111,64 @@ describe("review DRR-1: a Workflow agent session's create never brings a deleted
     });
 });
 
+describe("review DR2-002: Workflow agent session creates of one id take turns", () => {
+    it("a create that found no row holds the id until it commits: another create of the id waits, so no create revives a later deletion", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const a = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await a.initialize();
+        const b = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await b.initialize();
+        // A's paused create; let go in any case, so a failing check does not leave it holding a connection.
+        let release = null;
+        let first = null;
+        try {
+            const id = randomUUID();
+            // A pauses right after its row read found no row (two connections: A's and B's own pools).
+            let paused = null;
+            const reached = new Promise(resolve => { paused = resolve; });
+            const connect = a.pool.connect.bind(a.pool);
+            // pool.query takes its connection with a callback: only the transaction's own connect() is watched.
+            a.pool.connect = (...args) => args.length > 0 ? connect(...args) : (async () => {
+                const conn = await connect();
+                const query = conn.query.bind(conn);
+                conn.query = async (...args) => {
+                    const out = await query(...args);
+                    const text = typeof args[0] === "string" ? args[0] : args[0]?.text ?? "";
+                    if (/SELECT deleted_at FROM .*sessions WHERE session_id = \$1 FOR UPDATE/s.test(text) && release === null) {
+                        expect(out.rows).toEqual([]);
+                        const gate = new Promise(resolve => { release = resolve; });
+                        paused();
+                        await gate;
+                    }
+                    return out;
+                };
+                return conn;
+            })();
+            first = a.createSession(id, { refuseDeleted: true });
+            await reached;
+            // B's create of the same id waits while A holds it: it cannot create the row (for a person to delete) under A.
+            let secondDone = false;
+            const second = b.createSession(id, { refuseDeleted: true }).then(() => { secondDone = true; }, error => { secondDone = true; throw error; });
+            await pause(1_000);
+            expect(secondDone).toBe(false);
+            expect(await b.getSession(id)).toBeNull();
+            release();
+            await first;
+            await second;
+            // Then a person deletes the row: no create with refuseDeleted brings it back.
+            await b.softDeleteSession(id);
+            await expect(a.createSession(id, { refuseDeleted: true })).rejects.toMatchObject({ code: "SESSION_DELETED" });
+            await expect(b.createSession(id, { refuseDeleted: true })).rejects.toMatchObject({ code: "SESSION_DELETED" });
+            expect(await a.workflowStore().isSessionDeleted(id)).toBe(true);
+        } finally {
+            if (release) release();
+            await first?.catch(() => {});
+            await a.close();
+            await b.close();
+        }
+    });
+});
+
 // ─── The store ────────────────────────────────────────────────
 
 describe("chat: continue in the store (migration 0106)", () => {
