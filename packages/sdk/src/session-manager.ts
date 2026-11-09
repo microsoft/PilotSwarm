@@ -72,6 +72,8 @@ const DEHYDRATE_STORE_MAX_RETRIES = 1;
 const DEHYDRATE_STORE_RETRY_BASE_DELAY_MS = 0;
 const SESSION_LOCK_BACKOFF_MS = [5_000, 10_000, 20_000] as const;
 const SESSION_LOCK_MAX_WAIT_MS = 120_000;
+/** Review L1: how long a session's close in the Copilot CLI may take when the worker lets the session go. */
+export const CLI_SESSION_CLOSE_TIMEOUT_MS = 10_000;
 const COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS = 10_000;
 export const SESSION_LOCK_ACQUIRE_TIMEOUT_CODE = "PILOTSWARM_SESSION_LOCK_ACQUIRE_TIMEOUT";
 
@@ -1939,6 +1941,8 @@ export class SessionManager {
                         try { await existing.destroy(); } catch {}
                         this._forgetWarmSession(sessionId);
                     }
+                    // L1: before the files are removed or uploaded (the close flushes the session's events to them).
+                    await this._closeCliSession(sessionId);
                     if (!dirExists) {
                         this.sessionLastTouchedAt.delete(sessionId);
                         reclaimed++;
@@ -3186,6 +3190,39 @@ export class SessionManager {
     }
 
     /**
+     * Review L1 (per-session memory on TEST): when the worker lets a session go (its end, eviction, dehydrate), the warm
+     * handle's disconnect only detaches it. The Copilot CLI keeps the session active (it closes none on its own) and the
+     * SDK keeps its session object in CopilotClient.sessions, so each finished session stayed in both processes. This
+     * closes it in the CLI (sessions.close: flushes its events to disk, releases its lock and disposes it; idempotent;
+     * files stay) and drops the SDK's object. Not deleteSession: that removes the files a dehydrate uploads and a
+     * destroyed session keeps; the worker's own steps decide the files, as before. A later turn resumes from the files
+     * (hydrated, or kept), as after a worker restart. Only the client that served the session is asked (none is started
+     * for it); a close that fails or takes longer than CLI_SESSION_CLOSE_TIMEOUT_MS is logged, never thrown. The caller
+     * holds the session's lock, so no turn resumes it meanwhile.
+     */
+    private async _closeCliSession(sessionId: string): Promise<void> {
+        const key = this.sessionClientKeys.get(sessionId);
+        const client = key != null ? this.clients.get(key) : undefined;
+        if (!client) return;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            await Promise.race([
+                client.rpc.sessions.close({ sessionId }),
+                new Promise<never>((_resolve, reject) => {
+                    timer = setTimeout(() => reject(new Error(`no answer within ${CLI_SESSION_CLOSE_TIMEOUT_MS} ms`)), CLI_SESSION_CLOSE_TIMEOUT_MS);
+                    timer.unref?.();
+                }),
+            ]);
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.warn(`[SessionManager] closing ${sessionId} in the Copilot CLI failed: ${message}`);
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+        (client as unknown as { sessions?: Map<string, unknown> }).sessions?.delete(sessionId);
+    }
+
+    /**
      * Destroy the in-memory ManagedSession only — disk state untouched.
      * Used by the lifecycle preamble before overwriting local files with a
      * hydrated snapshot (a warm session bound to the old files must not
@@ -3337,6 +3374,9 @@ export class SessionManager {
                 }
             }
         }
+
+        // L1: the session is closed in the CLI before its files are uploaded (the close flushes its events to them).
+        await this._closeCliSession(sessionId);
 
         // Phase 2: Persist to the session store (always attempt, even if destroy failed)
         if (this.sessionStore) {
@@ -3696,6 +3736,7 @@ export class SessionManager {
         const session = this.sessions.get(sessionId);
         if (session) await session.destroy();
         this._forgetWarmSession(sessionId);
+        await this._closeCliSession(sessionId);
         this.sessionApplicationTools.delete(sessionId);
         this.sessionConfigs.delete(sessionId);
     }
