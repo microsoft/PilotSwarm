@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { TEST_RUNTIME_PROVIDER, useSuiteEnv } from "../helpers/local-env.js";
 import {
     requestFixture, REQUEST_ACTOR, REQUEST_TIMEOUT, checkpoint, reachedDuring, holdSession, observeBlocked, requestClock, requestLockSnapshot,
     requestWaitState,
@@ -8,6 +8,15 @@ import { canonicalJson, jsonSha256 } from "../../src/workflow/v2/json.ts";
 import { WORKFLOW_V2_MAX_REQUEST_OPERATIONS } from "../../src/workflow/v2/store.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
+
+// CI run 114 (HorizonDB): a probe that hits its lock_timeout (55P03) cannot be rolled back there; the server answers its
+// ROLLBACK with an internal error. The two cases that expire a request behind such a probe are skipped on HorizonDB only
+// (reported to HorizonDB); on PostgreSQL they run as before.
+const HORIZONDB_PROBE_ROLLBACK = "HorizonDB answers the ROLLBACK after a lock_timeout (55P03) with "
+    + "\"error: ResourceOwnerEnlarge called after release started\" (CI run 114)";
+const itUnlessHorizonDb = (title, options, fn) => (TEST_RUNTIME_PROVIDER === "horizondb"
+    ? it.skip(`${title} — skipped on HorizonDB: ${HORIZONDB_PROBE_ROLLBACK}`, () => {})
+    : it(title, options, fn));
 const YES = { response: { approved: true } };
 const NO = { response: { approved: false } };
 const DECLINE = { decline: { reason: "not now" } };
@@ -259,7 +268,7 @@ describe("workflow v2 requests: real-store races, deadlines and rollback", () =>
         } finally { await h.stop(); }
     });
 
-    it("expires after a real session-lock wait crosses its deadline, not from the transaction's early start", { timeout: REQUEST_TIMEOUT }, async () => {
+    itUnlessHorizonDb("expires after a real session-lock wait crosses its deadline, not from the transaction's early start", { timeout: REQUEST_TIMEOUT }, async () => {
         const h = await requestFixture(getEnv());
         let holder;
         let settled;
@@ -314,7 +323,7 @@ describe("workflow v2 requests: real-store races, deadlines and rollback", () =>
         }
     });
 
-    it("keeps a before-deadline decision held before COMMIT when the commit is after the deadline", { timeout: REQUEST_TIMEOUT }, async () => {
+    itUnlessHorizonDb("keeps a before-deadline decision held before COMMIT when the commit is after the deadline", { timeout: REQUEST_TIMEOUT }, async () => {
         const h = await requestFixture(getEnv());
         const atCommit = checkpoint();
         let settled;
