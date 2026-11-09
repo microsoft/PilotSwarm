@@ -431,8 +431,8 @@ test("runtime manifests fail before staging when BYO settings or versions are mi
   assert.equal(existsSync(join(stagingDir, "gitops")), false);
 });
 
-test("stageManifests(worker): PILOTSWARM_NATIVE_SUBAGENTS reaches the worker-env config, off unless set", () => {
-  for (const [extra, expected] of [[{}, "off"], [{ PILOTSWARM_NATIVE_SUBAGENTS: "sync" }, "sync"]]) {
+test("stageManifests(worker): PILOTSWARM_NATIVE_SUBAGENTS reaches the worker-env config, sync unless set", () => {
+  for (const [extra, expected] of [[{}, "sync"], [{ PILOTSWARM_NATIVE_SUBAGENTS: "sync" }, "sync"]]) {
     const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-native-"));
     try {
       const root = stageManifests({

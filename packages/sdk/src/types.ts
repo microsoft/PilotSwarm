@@ -1400,7 +1400,11 @@ export interface PilotSwarmWorkerOptions {
      * when `useManagedIdentity` is `true`.
      */
     aadDbUser?: string;
-    /** Experimental same-worker native Copilot delegation. Default: PILOTSWARM_NATIVE_SUBAGENTS or off. */
+    /**
+     * Same-worker native Copilot delegation. Always on: unset, "off" and
+     * "sync" all mean "sync" (an explicit "off" logs one warning per process).
+     * Default: PILOTSWARM_NATIVE_SUBAGENTS, then sync.
+     */
     nativeSubagents?: "off" | "sync";
 
     /**

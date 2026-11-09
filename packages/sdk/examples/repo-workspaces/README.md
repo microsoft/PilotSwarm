@@ -121,9 +121,9 @@ like) for sessions whose working folder is in that repo's clone. Only an exact
 hooks never run, whatever it says. Proposal section 4.6 has the rules.
 duroxide has `.github/copilot-instructions.md` and a skill, so a session in a
 duroxide clone gets both. tfenv adds agents. An adopted agent runs as a native
-task on the session's model (its own `model` line is dropped), so it needs
-workers with `PILOTSWARM_NATIVE_SUBAGENTS=sync` and the `copilot.native_tasks`
-feature flag on (Admin Console, Features). Agents that work through GitHub
+task on the session's model (its own `model` line is dropped). Native tasks
+are always on: workers run with `PILOTSWARM_NATIVE_SUBAGENTS=sync` (an `off`
+is ignored) and the `copilot.native_tasks` feature flag is always on. Agents that work through GitHub
 issues or `gh` cannot do their job against the sandbox remote.
 
 ## Each person's own folder

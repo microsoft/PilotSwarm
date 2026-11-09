@@ -153,7 +153,7 @@ group membership is per-viewer state, not a property of the session. See
 | cancelSession | `POST /api/v1/management/sessions/:sessionId/cancel` | sessionId (path) | Cancel a session. |
 | completeSession | `POST /api/v1/management/sessions/:sessionId/complete` | sessionId (path), reason (body) | Mark a session completed. |
 | stopSessionTurn | `POST /api/v1/management/sessions/:sessionId/stop-turn` | sessionId (path), options (body: `reason?`, `timeoutMs?`, `requestId?`) | Stop the running turn. Stop discards the turn: the agent does not remember the stopped request or its partial work; send it again to continue. Outcome `stopped`, `too_late`, `no_active_turn` (`detail` names any other refusal), `timeout` (with `controlSeq` when the Stop was accepted) or `stop_forced` (turns of orchestration 1.0.80 and older). See [Stop and Steer](#stop-and-steer). |
-| steerSessionTurn | `POST /api/v1/management/sessions/:sessionId/steer` | sessionId (path), options (body: `text`, `requestId`, `replacesClientMessageId?`) | Add guidance to the running turn; with `replacesClientMessageId`, convert that queued message. Access `session:write`; needs the `sessions.steering` feature. Outcome `accepted` (`steerId`, `turn`, `repeat?`) or a refusal. See [Stop and Steer](#stop-and-steer). |
+| steerSessionTurn | `POST /api/v1/management/sessions/:sessionId/steer` | sessionId (path), options (body: `text`, `requestId`, `replacesClientMessageId?`) | Add guidance to the running turn; with `replacesClientMessageId`, convert that queued message. Access `session:write`; the `sessions.steering` feature is always on. Outcome `accepted` (`steerId`, `turn`, `repeat?`) or a refusal. See [Stop and Steer](#stop-and-steer). |
 | setSessionModel | `POST /api/v1/management/sessions/:sessionId/model` | sessionId (path), options (body) | Switch the session model ({ model, reasoningEffort? }). |
 | restartSystemSession | `POST /api/v1/management/sessions/:agentIdOrSessionId/restart-system` | agentIdOrSessionId (path), options (body) | Restart a system session (complete \| terminate \| hard_delete). With `startReplacement: false`, remove it and start nothing; refused (409 `SYSTEM_AGENT_LOADED`) while a live worker loads the agent. |
 | exportExecutionHistory | `POST /api/v1/management/sessions/:sessionId/export-execution-history` | sessionId (path) | Export execution history to an artifact; returns artifact meta. |
@@ -366,13 +366,13 @@ on the turn-control path; list rows do not carry these fields).
 
 | Operation | Answer |
 | --- | --- |
-| `steerSessionTurn` | `{ outcome: "accepted", steerId, turn, repeat? }`, or `{ outcome }` with a refusal: `no_turn` (no running turn), `legacy_turn` (the turn does not listen for controls), `not_found`, `too_many` (20 open controls on the turn), `request_id_reused` (the id was used for a different request), `steering_disabled`, `already_received` (the queued message named by `replacesClientMessageId` already reached a turn) |
+| `steerSessionTurn` | `{ outcome: "accepted", steerId, turn, repeat? }`, or `{ outcome }` with a refusal: `no_turn` (no running turn), `legacy_turn` (the turn does not listen for controls), `not_found`, `too_many` (20 open controls on the turn), `request_id_reused` (the id was used for a different request), `steering_disabled` (not returned while `sessions.steering` is always on; kept for compatibility), `already_received` (the queued message named by `replacesClientMessageId` already reached a turn) |
 | `stopSessionTurn` | `stopped`, `too_late` (the turn had already finished its model run), `no_active_turn`, `timeout` (no outcome observed before `timeoutMs`; `controlSeq` identifies an accepted Stop), or `stop_forced` on the earlier path |
 
 - **Caller.** The Web API sets `options.caller` (the sender recorded on the
-  control and the viewer for which `sessions.steering` resolves) from the
-  authenticated request and ignores body values. Direct-mode callers may pass
-  `caller`; without a viewer the flag resolves at cluster scope.
+  control and its viewer) from the authenticated request and ignores body
+  values. Direct-mode callers may pass `caller`. `sessions.steering` is
+  always on, so the viewer does not change whether a steer is allowed.
 - **Request ids.** `requestId` is required for Steer and optional for Stop.
   Retry with the same id only after a transport failure: the retry returns
   the first answer and records nothing new. After a definite `no_turn` or
@@ -400,16 +400,15 @@ on the turn-control path; list rows do not carry these fields).
 - **Limits.** Steer `text` must be non-empty; the request body has the same
   2 MB JSON limit as an ordinary message (413 `PAYLOAD_TOO_LARGE`). Stop
   `timeoutMs` is 0 to 300,000 ms (default 30,000). Stop is never gated by a
-  feature flag or refused for the open-control cap. `sessions.steering` gates new steers only: a retry of an
-  already recorded request id still returns its first answer after the flag
-  is turned off.
+  feature flag or refused for the open-control cap. `sessions.steering` is
+  always on and cannot be turned off; a retry of an already recorded request
+  id returns its first answer.
 - **Parent agents.** An agent controls its own sub-agent's running turn with
   two tools on the same paths: `message_agent` with `deliver: "now"` steers
-  it (after a `no_turn`, `legacy_turn`, `steering_disabled` or `too_many`
-  refusal the message is queued for the next turn instead), and
-  `stop_agent_turn` stops the turn and keeps the sub-agent alive. The
-  control's sender is the parent agent (`kind: "agent"`), and
-  `sessions.steering` resolves for the parent session's owner.
+  it (after a `no_turn`, `legacy_turn` or `too_many` refusal the message is
+  queued for the next turn instead), and `stop_agent_turn` stops the turn
+  and keeps the sub-agent alive. The control's sender is the parent agent
+  (`kind: "agent"`).
 
 ## Message of the day
 
@@ -506,13 +505,38 @@ and `requestId` as query parameters. It removes the setting: cluster reset resto
 published defaults, user unset restores inheritance. No per-session setting exists.
 All mutations return the committed revision. Stale writes return 409
 `FEATURE_CONFLICT`; identical retries with the same actor/request/input return the
-original result. Reads include `effective`, `source`, `userOverrideIgnored`, and
-configured cluster/user settings. A successful save does not prove worker adoption;
-workers report applied revisions/capability in their `feature-flags` state.
+original result. Reads include `effective`, `source`, `userOverrideIgnored`,
+`alwaysOn`, and configured cluster/user settings. A successful save does not prove
+worker adoption; workers report applied revisions/capability in their
+`feature-flags` state.
 
-`sessions.steering` gates Steer in the management client, the Web API, MCP,
-the portal and the TUI. It is off by default and users cannot override it until
-an operator allows it (`allowUserOverride` on the cluster setting).
+### Always-on flags
+
+The code registry can mark a flag `alwaysOn` (one line in
+`packages/sdk/src/feature-flags.ts`). Such a flag is on everywhere before any
+stored setting is read: worker resolution, the management client, the Web API,
+MCP and the management agents' tools, the portal and the TUI. Stored definition
+and setting rows for it are ignored and need no migration. Today
+`copilot.native_tasks`, `agents.base_v2` and `sessions.steering` are always on;
+`debug.enable_model_event_logging` is a normal flag, off by default.
+
+- Read rows for an always-on flag carry `alwaysOn: true`, `effective: true`,
+  `source: "always_on"`, `userOverrideIgnored: false`, and
+  `notice: "This switch is now always on and may be removed in a future release."`.
+  Other rows carry `alwaysOn: false` and no `notice`. `supported` keeps its meaning.
+- Every set, reset or unset of an always-on flag, at cluster or user scope and for
+  any caller, is refused with 409 `FEATURE_ALWAYS_ON` (the message contains the
+  notice) before anything is written. Route access checks still run first, so a
+  non-admin calling an admin route gets 403.
+- Runtime resolution returns `{ enabled: true, source: "always_on", revision: null,
+  stale: false }` even before the worker's feature cache has loaded, after a failed
+  poll, or when the catalog lacks the key; `{ required: true }` does not throw.
+- The portal shows such a flag as a checked, disabled, greyed switch with
+  "Always on." and the notice, and no cluster or personal controls.
+
+`sessions.steering` is always on: the management client, the Web API, MCP,
+the portal and the TUI offer Steer for every viewer, and the turn-control
+procedures always receive `p_steering_allowed = true`.
 
 The SDK management client exposes the same operation names with a trusted
 `FeatureViewer` first argument. Web clients derive the viewer from authentication.

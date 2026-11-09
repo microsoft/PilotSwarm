@@ -1238,7 +1238,9 @@ export class PortalRuntime {
             case "cancelPendingMessage":
                 return this.transport.cancelPendingMessage(safeParams.sessionId, safeParams.clientMessageIds);
             case "renameSession":
-                return this.transport.renameSession(safeParams.sessionId, safeParams.title);
+                // The caller's own view of the agent catalog: another user's
+                // private package must never shape this session's title.
+                return this.transport.renameSession(safeParams.sessionId, safeParams.title, { viewer: owner, isAdmin: resourceAdmin });
             case "cancelSession":
                 return this.transport.cancelSession(safeParams.sessionId);
             case "cancelSessionGroup":

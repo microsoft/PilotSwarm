@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.8.10 — 2026-11-07
+
+**Always-on feature flags.** The code registry can mark a feature flag
+always on with one line. Such a flag is on everywhere before any stored
+setting is read: on workers, in the management client, the Web API, MCP,
+the management agents' tools, the portal and the TUI. Stored settings for it
+are ignored and need no migration. Changing it, at cluster or user scope, is
+refused with 409 `FEATURE_ALWAYS_ON`, and feature reads mark its row
+`alwaysOn` with source `always_on`. Settings → Feature flags shows it as a
+greyed, checked switch: "Always on. This switch is now always on and may be
+removed in a future release."
+
+Native Copilot tasks (`copilot.native_tasks`), Base Agent V2
+(`agents.base_v2`) and Steer running turns (`sessions.steering`) are now
+always on. Model event logging stays a normal flag, off by default. System,
+service and tuner sessions still run without native tasks.
+
+**Native tasks on every worker.** `PILOTSWARM_NATIVE_SUBAGENTS` now defaults
+to `sync`. An explicit `off` is ignored with one warning per process
+("PILOTSWARM_NATIVE_SUBAGENTS=off is ignored: native tasks are always on.");
+any other value is still refused. The Azure deploy env template and the
+worker overlay default to `sync`, and an older env file's `off` deploys as
+`sync`.
+
+**Code font.** Settings › Appearance has a code font choice: the theme's
+default, JetBrains Mono or the system monospace. JetBrains Mono is bundled
+(variable woff2, latin and latin-ext, with its SIL OFL 1.1 text in
+`THIRD-PARTY-NOTICES.txt`); column probes re-measure once web fonts load.
+
+**Phone navigation.** A two-finger sideways swipe goes back or forward on
+every phone screen: chat, diagnostics, the canvas (inset or full screen) and
+full-screen artifact previews. One finger, a pinch and a scroll always belong
+to the page. Landscape keeps the phone layout and opens a canvas full screen;
+canvas pinch zooms inside the canvas box only. The view history records the
+phone screen and the full-screen preview, and older saved entries still load.
+
+**Artifact preview full screen.** On the desktop a Full screen button in the
+preview's bar makes the reader cover the workspace, as the canvas can; Escape
+steps down to the column, then closes. On a phone it hides the bar and the
+page header, and one corner button brings them back. A full-screen canvas's
+header controls sit on a solid plate wherever a theme draws art behind the
+header.
+
+**Header.** The middle buttons (New, filter, Back, Forward, canvas,
+diagnostics) sit on the centre of the screen, not of the space between the
+brand and the account controls. The left side keeps at least 360 px for the
+full-screen canvas controls, so Back and Forward stay at the same place on
+every screen. Below 1,040 px of tools the desktop header takes two rows.
+
+**Session rename.** A person's title keeps up to 100 characters; a named
+agent's prefix is extra and is never dropped, and a title that contains `: `
+or ` - ` stays whole everywhere it is shown. The rename box and the Manage
+dialog show a character count. `renameSession` gains an optional
+`{ agentTitles }` argument; existing callers are unchanged.
+
+**Agent messages (#264).** A mid-turn message from a model that sends no
+message phase (Claude) shows in full like one marked commentary, and a turn
+that ends by waiting (ask_user, a timer, a cron, a sub-agent wait) keeps its
+last message as the answer instead of an "Agent update" box.
+
+**Base prompt V2: native tasks.** Rule 11 and the native-delegation block now
+say when to hand work to a native task: test runs and triage, long logs or
+diffs, multi-file searches, debug loops and screenshot checks, asking for a
+verdict with evidence pointers, with independent tasks run in parallel.
+
+**Plain HTTP portals.** Saving a feature flag and splitting or adding Master
+of Agents panels no longer fail on a portal reached over plain HTTP, where
+browsers have no `crypto.randomUUID`.
+
+**Smaller portal fixes.** A dismissed "manifest is broken" canvas notice stays
+dismissed; a reload no longer puts a sessionless screen in front of the saved
+view history; loading older chat history keeps a running fling on the page it
+was reading.
+
+**Azure deploy: HorizonDB pool (#263).** Bicep PUTs the HorizonDB pool only
+to create it. Later deploys refer to the existing pool and attach the
+settings group with a PATCH, which clusters migrated from the old API need.
+
 ## 0.8.9 — 2026-11-04
 
 **Phone session list.** The session list no longer sits in a strip above the

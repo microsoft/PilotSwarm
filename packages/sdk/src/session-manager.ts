@@ -11,7 +11,7 @@ import type { FeatureFlagCache } from "./feature-flag-cache.js";
 import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js";
 import { createMotdTools, MOTD_OPERATION_SPECS } from "./motd-tools.js";
 import { MotdError, MOTD_IMAGE_MAX_BYTES } from "./motd-store.js";
-import { FeatureFlagError, type FeatureOwner } from "./feature-flags.js";
+import { FeatureFlagError, isAlwaysOn, type FeatureOwner } from "./feature-flags.js";
 import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
@@ -238,6 +238,11 @@ export interface WorkerDefaults {
     getCapabilitySources?: () => CapabilitySource[];
     /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
     reservedFactPrefixes?: string[];
+    /**
+     * Resolved by PilotSwarmWorker through resolveNativeSubagents (always
+     * "sync"). Only a SessionManager built directly (tests, embedders) can
+     * still pass "off" to run without native tasks.
+     */
     nativeSubagents?: "off" | "sync";
     frameworkBasePrompt?: string;
     frameworkBaseToolNames?: string[];
@@ -2387,9 +2392,12 @@ export class SessionManager {
         const nativeOwner = catalogRow?.owner ?? null;
         // An unreadable owner must not bypass a user-level OFF by resolving
         // cluster policy. Ownerless resolution is only for standalone managers.
+        // An always-on flag has no user-level OFF: it is on for every owner,
+        // with or without a feature cache. System, service and tuner sessions
+        // stay excluded below.
         const nativeOwnerKnown = !this.sessionCatalog || Boolean(nativeOwner?.provider && nativeOwner?.subject);
-        config.nativeFeatureAllowed = () => nativeOwnerKnown
-            && (this.featureFlags?.resolve("copilot.native_tasks", nativeOwner, { fallback: false }).enabled ?? false);
+        config.nativeFeatureAllowed = () => isAlwaysOn("copilot.native_tasks") || (nativeOwnerKnown
+            && (this.featureFlags?.resolve("copilot.native_tasks", nativeOwner, { fallback: false }).enabled ?? false));
         const nativeEnabled = this.workerDefaults.nativeSubagents === "sync" && config.nativeFeatureAllowed()
             && !catalogRow?.isSystem && !isServiceSession && !isTunerSession
             && config.promptLayering?.kind !== "pilotswarm-system-agent";

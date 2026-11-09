@@ -284,3 +284,11 @@ test("publishing works on a plain-HTTP origin without crypto.randomUUID", async 
         if (original) Object.defineProperty(globalThis.crypto, "randomUUID", original);
     }
 });
+
+test("randomUuid falls back to a version 4 UUID without crypto.randomUUID", async () => {
+    const { randomUuid } = await import("../src/random-id.js");
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    assert.match(randomUuid({ getRandomValues: bytes => globalThis.crypto.getRandomValues(bytes) }), uuid);
+    assert.match(randomUuid({}), uuid);
+    assert.equal(randomUuid({ randomUUID: () => "native" }), "native");
+});

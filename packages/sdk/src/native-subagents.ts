@@ -1,13 +1,29 @@
 import type { NativeTaskAccess } from "./native-task-policy.js";
 import type { CopilotSession, CustomAgentConfig, SessionHooks, Tool } from "@github/copilot-sdk";
 
+/** "off" remains in the type for per-session state (system sessions, a session without native access). */
 export type NativeSubagentMode = "off" | "sync";
 
-export function resolveNativeSubagents(value: unknown = process.env.PILOTSWARM_NATIVE_SUBAGENTS): NativeSubagentMode {
-    if (value == null || value === "" || value === "off") return "off";
-    if (value === "sync") return "sync";
+export const NATIVE_SUBAGENTS_OFF_IGNORED = "PILOTSWARM_NATIVE_SUBAGENTS=off is ignored: native tasks are always on.";
+let warnedOffIgnored = false;
+
+/**
+ * The worker setting. Native tasks are always on: unset, "", "off" and "sync"
+ * all resolve to "sync". An explicit "off" logs one warning per process.
+ * Any other value still fails, so a typo is not silently accepted.
+ */
+export function resolveNativeSubagents(value: unknown = process.env.PILOTSWARM_NATIVE_SUBAGENTS,
+    warn: (message: string) => void = message => console.warn(message)): NativeSubagentMode {
+    if (value === "off") {
+        if (!warnedOffIgnored) { warnedOffIgnored = true; warn(NATIVE_SUBAGENTS_OFF_IGNORED); }
+        return "sync";
+    }
+    if (value == null || value === "" || value === "sync") return "sync";
     throw new Error("nativeSubagents / PILOTSWARM_NATIVE_SUBAGENTS must be off or sync");
 }
+
+/** Test hook: let the next explicit "off" warn again. */
+export function resetNativeSubagentsWarning(): void { warnedOffIgnored = false; }
 
 // Scope native workers to CLI tools. In particular, do not inherit the
 // parent's PilotSwarm tools or loaded durable-agent definitions.
@@ -75,6 +91,10 @@ export const NATIVE_SUBAGENT_GUIDANCE_V2 = `
 ## Native local delegation
 Native task(agent_type="swarm-explore", mode="sync") performs bounded investigation;
 task(agent_type="swarm-task", mode="sync") performs bounded commands or builds.
+Use them to keep verbose, verdict-shaped work out of your own context: test runs and failure triage,
+log or diff reading, searches, debug loops, screenshot checks. Ask for a short verdict, the evidence
+(file:line, counts, artifact paths) and what remains uncertain.
+A task call runs alongside the other tool calls in the same response.
 Native tasks run on the immediate parent's worker, share its files and turn budget, and return results directly.
 They are not independent durable sessions. Follow the base and selected workflow instructions when choosing direct, native or durable execution.
 Provide the objective, relevant instructions, exact scope, input/artifact locations and expected evidence.

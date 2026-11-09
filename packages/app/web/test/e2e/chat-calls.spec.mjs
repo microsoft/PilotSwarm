@@ -34,6 +34,10 @@ test('live calls retain their disclosure through updates and reload with no empt
     const row=page.locator('.ps-chat-call').filter({hasText:'bash'});
     await expect(row).toHaveCount(1);
     await expect(row).not.toHaveAttribute('open');
+    const firstRun=page.locator('.ps-activity-run').first();
+    await expect(firstRun).not.toHaveAttribute('open');
+    await expect(firstRun.locator(':scope > summary')).toContainText('Working');
+    await firstRun.locator(':scope > summary').click();
     await expect(row.locator('summary')).toContainText('bash — git diff --stat');
     await expect(row.locator('summary')).not.toContainText('git status');
     await row.locator('summary').click();
@@ -90,12 +94,17 @@ for(const theme of ['terminal-green','win95','winamp','ms-dos'])test(`${theme}: 
         })).toBe(true);
     };
     await expect(page.locator('.ps-chat-call')).toHaveCount(2);
-    for(const width of [1600,1024,820,390,320]){await page.setViewportSize({width,height:900});await check();}
+    const expand=async()=>{
+        for(const run of await page.locator('.ps-activity-run:visible').all())
+            if(await run.getAttribute('open')===null)await run.locator(':scope > summary').click();
+    };
+    for(const width of [1600,1024,820,390,320]){await page.setViewportSize({width,height:900});await expand();await check();}
     await page.getByRole('button',{name:'Master of Agents',exact:true}).click();
     await expect(page.locator('.ps-moa-workspace .ps-chat-call')).toHaveCount(2);
-    for(const width of [320,390,820,1024,1600]){await page.setViewportSize({width,height:900});await check();}
+    for(const width of [320,390,820,1024,1600]){await page.setViewportSize({width,height:900});await expand();await check();}
     await page.screenshot({path:`/tmp/chat-calls-${theme}-desktop.png`});
     await page.setViewportSize({width:390,height:844});
+    await expand();
     await check();
     await page.screenshot({path:`/tmp/chat-calls-${theme}-mobile.png`});
     expect(f.errors).toEqual([]);
