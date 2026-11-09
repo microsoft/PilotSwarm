@@ -5229,7 +5229,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         traceWarn(`[runTurn] activity cancelled for ${input.sessionId}; this run of the attempt does not start, and nothing is sent`);
                         return { type: "error", message: INTAKE_ENDED_BEFORE_SEND_MESSAGE } as TurnResult;
                     }
-                    intakeAdmission = intakeAdmissionFor(prompt, run, eligible);
+                    // Review PRR-2: a refused intake omits only its Workflow items; the chat's notes stay in the prompt (they are
+                    // marked read when this turn succeeds).
+                    intakeAdmission = intakeAdmissionFor(notedPrompt, run, eligible);
                 }
                 const ran = await targetSession.runTurn(modelPrompt, {
                     ...(intakeAdmission ? { intakeAdmission } : {}),

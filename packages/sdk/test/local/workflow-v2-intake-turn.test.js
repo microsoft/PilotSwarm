@@ -476,6 +476,37 @@ describe("runTurnV5: the store admits the carried items before a run includes th
         }
     });
 
+    // Review PRR-2: a refusal omits only the Workflow items. A Workflow Definition note the turn read stays in the prompt the
+    // model gets, and is marked read once when the turn succeeds; a turn that fails leaves it for its retry.
+    it("PRR-2: refused, the run keeps the chat's pending note in its prompt and consumes it once on success; a failed turn leaves it pending", async () => {
+        for (const [outcome, consumed] of [["completed", 1], ["error", 0]]) {
+            const v4 = turnControlCatalog();
+            const store = admissionStore({ allowed: false, reason: "exposed" });
+            const consumes = [];
+            store.chat = {
+                pendingNotes: vi.fn(async () => [{ noteId: 7, text: "Ada Lovelace saved hn-top-watch revision 1." }]),
+                consumeNotes: vi.fn(async (sessionId, ids) => { consumes.push([sessionId, ids]); }),
+            };
+            let sent = null;
+            const h = intakeHarness({
+                catalogExtras: v4.extras, store,
+                turn: async (opts) => {
+                    sent = await admitted(opts);
+                    return outcome === "completed" ? { type: "completed", content: "noted" } : { type: "error", message: "the model did not answer" };
+                },
+            });
+            const result = await h.runTurnV5("s", { turnIndex: 2, intake: INTAKE });
+            expect(sent, outcome).toBe("omit");
+            const [modelPrompt, opts] = h.session.runTurn.mock.calls[0];
+            // The prompt with the items has the note too; the prompt without them is the note and the ordinary prompt.
+            expect(modelPrompt, outcome).toBe(`${TEXT}\n\n[SYSTEM: Ada Lovelace saved hn-top-watch revision 1.]\n\ngo`);
+            expect(opts.intakeAdmission.promptWithoutIntake, outcome).toBe("[SYSTEM: Ada Lovelace saved hn-top-watch revision 1.]\n\ngo");
+            expect(opts.intakeAdmission.promptWithoutIntake, outcome).not.toContain(TEXT);
+            expect(result, outcome).toMatchObject({ type: outcome, intakeDispatch: { invocationId: "inv-1", sent: false, refused: "exposed" } });
+            expect(consumes, outcome).toEqual(consumed ? [["s", [7]]] : []);
+        }
+    });
+
     it("a transient failure is asked again in place with the same request: a COMMIT whose answer was lost is reconfirmed, and the run includes the items once", async () => {
         const h = intakeHarness({
             catalogExtras: turnControlCatalog().extras, store: admissionStore(transient(), { allowed: true }), turn: sends({ type: "completed", content: "ok" }),
