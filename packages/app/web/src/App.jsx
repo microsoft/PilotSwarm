@@ -479,12 +479,12 @@ function PortalHeaderAccent({ controller }) {
     React.useEffect(() => {
         const element = ref.current;
         const header = element.closest(".portal-header");
-        const isRendered = () => element.getClientRects().length > 0;
-        let headerVisible = isRendered();
+        const isHeaderRendered = () => Boolean(header?.getClientRects().length);
+        let headerVisible = isHeaderRendered();
         const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
         const accent = createHeaderAccent({
             start: () => {
-                if (!isRendered()) return;
+                if (!element.getClientRects().length) return;
                 element.dataset.active = "true";
                 themeSoundPlayer().cue("accent");
             },
@@ -498,7 +498,7 @@ function PortalHeaderAccent({ controller }) {
             accent.setEnabled(enabled);
         };
         const resize = new ResizeObserver(() => {
-            headerVisible = isRendered();
+            headerVisible = isHeaderRendered();
             sync();
         });
         if (header) resize.observe(header);
