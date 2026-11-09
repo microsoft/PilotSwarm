@@ -3464,6 +3464,16 @@ function useElementBox(ref) {
 // click handlers, and leaves "#" links, targets and downloads alone.
 const CANVAS_LINK_GUARD = `<script>addEventListener('click',function(e){var a=e.target&&e.target.closest&&e.target.closest('a[href],area[href]');if(!a||e.defaultPrevented||a.hasAttribute('download'))return;var h=a.getAttribute('href')||'';if(!h||h.charAt(0)==='#'||/^javascript:/i.test(h))return;var t=a.getAttribute('target');if(t&&t!=='_self')return;e.preventDefault();try{window.open(new URL(h,document.baseURI).href,'_blank','noopener')}catch(x){}});</script>`;
 
+// The canvas document's own answer channel (review CANVAS-1). Before any of the
+// page's scripts run, the document hands the portal one end of a MessageChannel;
+// the portal sends the bridges' answers and later events (canvas-ws, canvas-kv)
+// through it, and this script delivers each to the page as a window "message"
+// event, as before. The port belongs to this document: once the frame moves to
+// another page, the port goes with the old document and nothing reaches the new
+// page. A frame's window object outlives its navigation, so a reply posted to the
+// window could land on the page the canvas moved to.
+const CANVAS_ANSWER_PORT = `<script>(function(){try{var c=new MessageChannel();c.port1.onmessage=function(e){var m=e.data||{};var init={data:m.data,origin:typeof m.origin==='string'?m.origin:''};try{init.source=parent}catch(x){}var ev;try{ev=new MessageEvent('message',init)}catch(x){delete init.source;ev=new MessageEvent('message',init)}dispatchEvent(ev)};c.port1.start();parent.postMessage({type:'canvas-answer-port'},'*',[c.port2])}catch(x){}})();</script>`;
+
 // A pinch on a canvas zooms the canvas, not the page. Inside the frame the
 // browser's own pinch is switched off and the two fingers are reported to the
 // portal, which magnifies the frame within its box. A page that handles two
@@ -3558,7 +3568,7 @@ function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys =
             // artifact preview keeps its exact document bytes, except that a
             // phone's preview reports two fingers for Back and Forward.
             const bridge = (panelKeys ? `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.metaKey&&!e.ctrlKey&&(e.key==='Tab'||e.key==='Escape')){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>` : "")
-                + (linkGuard ? CANVAS_LINK_GUARD + CANVAS_PINCH_BRIDGE : "")
+                + (linkGuard ? CANVAS_ANSWER_PORT + CANVAS_LINK_GUARD + CANVAS_PINCH_BRIDGE : "")
                 + (touchBridge ? ARTIFACT_TOUCH_BRIDGE : "");
             let parts = [bytes];
             if (bridge) {
@@ -8789,6 +8799,17 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
     const stagingIframeElRef = React.useRef(null);
     // canvas-ws: the page windows that asked to watch, and a download in flight.
     const canvasWatchersRef = React.useRef(new WeakSet());
+    // Review CANVAS-1: each canvas document's answer port (CANVAS_ANSWER_PORT), by the frame window it was handed from.
+    // Answers and later events go through it, so they reach that document only, never a page the frame moved to.
+    const answerPortsRef = React.useRef(new WeakMap());
+    const postToCanvas = React.useCallback((frameWindow, message) => {
+        const port = answerPortsRef.current.get(frameWindow);
+        if (port) {
+            try { port.postMessage({ data: message, origin: window.location.origin }); } catch { /* the document is gone */ }
+            return;
+        }
+        try { frameWindow.postMessage(message, "*"); } catch { /* frame mid-teardown */ }
+    }, []);
     const canvasDownloadRef = React.useRef(false);
     // canvas-ws: why the server refused this app's manifest, shown until a redraw.
     // A page shows only its own guess; the owner needs the real reason.
@@ -8891,6 +8912,13 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             // window that asked). Writes and actions stay live-frame only.
             const fromStaging = Boolean(stagingIframeElRef.current && event.source === stagingIframeElRef.current.contentWindow && stagingIframeElRef.current.dataset.session === sessionId);
             if (!fromLive && !fromStaging) return;
+            if (payload.type === "canvas-answer-port") {
+                // The document's first script hands it over before the page runs (CANVAS_ANSWER_PORT). Only the first port
+                // a frame window gives counts: a page the frame later moves to cannot take the canvas's answers.
+                const port = event.ports?.[0];
+                if (port && !answerPortsRef.current.has(event.source)) answerPortsRef.current.set(event.source, port);
+                return;
+            }
             if (payload.type === "canvas-pinch") {
                 // Only the canvas the person is looking at: the frame stays
                 // mounted while hidden, and a hidden page must not zoom
@@ -8982,11 +9010,10 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
                 const id = payload.id;
                 const transport = controller.transport;
                 // Reply to the window that ASKED (live or staging), never to
-                // whichever frame is live by the time the request lands.
+                // whichever frame is live by the time the request lands, and
+                // through its document's answer port (CANVAS-1).
                 const source = event.source;
-                const post = (message) => {
-                    try { source.postMessage(message, "*"); } catch { /* frame mid-teardown */ }
-                };
+                const post = (message) => postToCanvas(source, message);
                 const fail = (error, code = "ERROR") => post({ type: "canvas-kv-result", id, ok: false, error: String(error?.message || error || "failed"), code: error?.code || code });
                 if (typeof transport?.readCanvasKv !== "function") { fail("the canvas KV store is not available on this deployment", "UNAVAILABLE"); return; }
                 const op = String(payload.op || "");
@@ -9036,9 +9063,8 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
                 const id = payload.id;
                 const transport = controller.transport;
                 const source = event.source;
-                const post = (message) => {
-                    try { source.postMessage(message, "*"); } catch { /* frame mid-teardown */ }
-                };
+                // Through the asking document's answer port (CANVAS-1): a late answer never reaches a page the frame moved to.
+                const post = (message) => postToCanvas(source, message);
                 const fail = (error, code = "ERROR") => {
                     const message = String(error?.message || error || "failed");
                     if (error?.code === "CANVAS_WS_UNDECLARED" && /manifest is broken/i.test(message)) {
@@ -9089,7 +9115,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
         };
         window.addEventListener("message", onMessage);
         return () => window.removeEventListener("message", onMessage);
-    }, [controller, sessionId, slot]);
+    }, [controller, sessionId, slot, postToCanvas]);
 
     // canvas-ws watch: tell a page that asked when the session's files may
     // have changed — an agent tool call finished, or someone changed files
@@ -9101,8 +9127,8 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
         if (liveIframeElRef.current?.dataset.leftPage) return;
         const frameWindow = liveIframeElRef.current?.contentWindow;
         if (!frameWindow || !canvasWatchersRef.current.has(frameWindow)) return;
-        try { frameWindow.postMessage({ type: "canvas-ws-change", reason }, "*"); } catch { /* frame mid-teardown */ }
-    }, []);
+        postToCanvas(frameWindow, { type: "canvas-ws-change", reason });
+    }, [postToCanvas]);
     const lastToolCalls = React.useRef(finishedToolCalls);
     React.useEffect(() => {
         if (finishedToolCalls === lastToolCalls.current) return undefined;
@@ -9135,16 +9161,14 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             if (liveIframeElRef.current?.dataset.leftPage) return;
             const frameWindow = liveIframeElRef.current?.contentWindow;
             if (!frameWindow) return;
-            const deliver = (entry) => {
-                try { frameWindow.postMessage({ type: "canvas-kv-change", key: change.key, rev: change.rev, op: change.op, ...(entry ? { v: entry.v, by: entry.by, at: entry.at } : {}) }, "*"); } catch { /* frame mid-teardown */ }
-            };
+            const deliver = (entry) => postToCanvas(frameWindow, { type: "canvas-kv-change", key: change.key, rev: change.rev, op: change.op, ...(entry ? { v: entry.v, by: entry.by, at: entry.at } : {}) });
             if (change.op === "delete") { deliver(null); return; }
             if (change.value && typeof change.value === "object") { deliver({ v: change.value.v, by: change.value.by, at: change.value.at }); return; }
             controller.transport?.readCanvasKv?.(sessionId, slot, { key: change.key })
                 .then((read) => deliver(read?.entries?.[0] ?? null))
                 .catch(() => { /* the page's next list catches up */ });
         });
-    }, [controller, sessionId, slot]);
+    }, [controller, sessionId, slot, postToCanvas]);
 
     React.useEffect(() => {
         if (!controller || !sessionId || !latestRev) return undefined;
@@ -9240,26 +9264,22 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
     // allowed; a page with no listener ignores it.
     React.useEffect(() => {
         if (!live || !dataRev || dataPayload === null || liveIframeElRef.current?.dataset.leftPage) return;
-        try {
-            liveIframeElRef.current?.contentWindow?.postMessage(
-                { type: "canvas-data", data: dataPayload, dataRev }, "*",
-            );
+        const frameWindow = liveIframeElRef.current?.contentWindow;
+        if (frameWindow) {
+            // Through the document's answer port (CANVAS-1), as the bridges' answers.
+            postToCanvas(frameWindow, { type: "canvas-data", data: dataPayload, dataRev });
             // The delta that produced this state, for pages that registered a
             // canvas-patch listener (targeted DOM updates, transitions). The
             // whole-state message above ALWAYS accompanies it — applyData
             // stays the mandatory floor; the patch is the opt-in fast path.
-            if (dataPatch) {
-                liveIframeElRef.current?.contentWindow?.postMessage(
-                    { type: "canvas-patch", patch: dataPatch, dataRev }, "*",
-                );
-            }
-        } catch { /* frame mid-teardown */ }
+            if (dataPatch) postToCanvas(frameWindow, { type: "canvas-patch", patch: dataPatch, dataRev });
+        }
         // On-screen injection = seen; hidden injection leaves the badge lit
         // until the user actually looks (the catch-up below files it then).
         if (controller && sessionId && visibleRef.current) {
             controller.dispatch({ type: "canvas/viewed", sessionId, slot, dataRev });
         }
-    }, [live, dataRev, dataPayload, dataPatch, controller, sessionId]);
+    }, [live, dataRev, dataPayload, dataPatch, controller, sessionId, postToCanvas]);
 
     // Catch-up receipt: becoming visible with a live revision on screen IS
     // viewing it — this is what clears a badge earned while hidden.
@@ -9355,7 +9375,13 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             referrerPolicy: "no-referrer",
             onLoad: frame === staging
                 ? () => promote(frame)
-                : (event) => { event.currentTarget.dataset.leftPage = "1"; setLeftPage(true); },
+                : (event) => {
+                    event.currentTarget.dataset.leftPage = "1";
+                    // CANVAS-1: the page it moved to watches nothing (its answer port is already gone with the old document).
+                    const moved = event.currentTarget.contentWindow;
+                    if (moved) canvasWatchersRef.current.delete(moved);
+                    setLeftPage(true);
+                },
         })),
         leftPage && !loadError
             ? React.createElement("div", { className: "ps-canvas-load-error", role: "status" },
