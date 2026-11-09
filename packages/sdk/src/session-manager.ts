@@ -1942,6 +1942,9 @@ export class SessionManager {
      * Review DRR-3b: `final` is the worker's last sweep before it stops (gracefulShutdown). Its clients stop right after,
      * so a close the CLI does not confirm does not keep a session's files here: the sweep logs it and goes on, as before
      * DRR-3 (a legacy session is still uploaded). Every other sweep keeps such a session for the next one.
+     * Review DR2-006: the final sweep spends its time (the worker's shutdown deadline) on the files: it does not retry the
+     * owed closes first, it takes the sessions with no unconfirmed close first, and it does not wait again on a close that
+     * is owed or still in flight (it was tried; the process exits). Each session's turn lock still excludes it.
      */
     async sweepIdleSessions(evictAfterMs: number, options: { final?: boolean } = {}): Promise<number> {
         if (!(evictAfterMs > 0)) return 0;
@@ -1956,10 +1959,13 @@ export class SessionManager {
             ...this.sessionLastTouchedAt.keys(),
         ]);
 
-        // Review DRR-3: the closes an earlier sweep, end or dehydrate could not confirm.
-        await this._retryOwedCliCloses();
+        // Review DRR-3: the closes an earlier sweep, end or dehydrate could not confirm (not in the final sweep, DR2-006).
+        if (!options.final) await this._retryOwedCliCloses();
         let reclaimed = 0;
-        for (const sessionId of candidates) {
+        const ordered = options.final
+            ? [...candidates].sort((a, b) => Number(this._cliCloseUnresolved(a)) - Number(this._cliCloseUnresolved(b)))
+            : [...candidates];
+        for (const sessionId of ordered) {
             if (this.sessionLocks.has(sessionId)) continue; // busy — never race a turn
             const sessionDir = path.join(this.sessionStateDir, sessionId);
             const lastTouched = this.sessionLastTouchedAt.get(sessionId);
@@ -1984,7 +1990,11 @@ export class SessionManager {
                     // L1: before the files are removed or uploaded (the close flushes the session's events to them).
                     // Review DRR-3: a close that is not confirmed keeps the session here (its files, its binding, its idle
                     // time): it is not reclaimed, and the next sweep evicts it again.
-                    if (!(await this._closeCliSession(sessionId))) {
+                    // Review DR2-006: the final sweep does not wait again on a close that is owed or in flight.
+                    const finalUnresolved = options.final === true && this._cliCloseUnresolved(sessionId);
+                    if (finalUnresolved) {
+                        emitSessionManagerTrace(sessionId, "final release: its close in the Copilot CLI is still owed; its files are kept as before");
+                    } else if (!(await this._closeCliSession(sessionId))) {
                         if (!options.final) {
                             emitSessionManagerTrace(sessionId, "eviction deferred: its close in the Copilot CLI is not confirmed");
                             return;
@@ -2015,7 +2025,7 @@ export class SessionManager {
                             emitSessionManagerTrace(sessionId, `evicted (store versioned at v${versioned.version}); stale unmarked cache reclaimed`);
                         } else {
                             // Legacy session: its local files may be the only copy.
-                            await this._dehydrateUnlocked(sessionId, "eviction");
+                            await this._dehydrateUnlocked(sessionId, "eviction", finalUnresolved ? { skipCliClose: true } : undefined);
                             emitSessionManagerTrace(sessionId, "evicted via legacy dehydrate (no committed marker)");
                         }
                     } else {
@@ -3324,6 +3334,11 @@ export class SessionManager {
         return (await settledWithin(pending, this.cliCloseSettleMs)) === true;
     }
 
+    /** Review DR2-006: whether a close of `sessionId` is owed or still in flight on any client. */
+    private _cliCloseUnresolved(sessionId: string): boolean {
+        return (this.cliClosesOwed.get(sessionId)?.size ?? 0) > 0 || (this.cliClosesInFlight.get(sessionId)?.size ?? 0) > 0;
+    }
+
     /** Review DS2-003: `key`'s close of `sessionId` is owed, beside any other client's. */
     private _oweCliClose(sessionId: string, key: string): void {
         const owed = this.cliClosesOwed.get(sessionId) ?? new Set<string>();
@@ -3445,7 +3460,7 @@ export class SessionManager {
         return this._dehydrateUnlocked(sessionId, reason, options);
     }
 
-    private async _dehydrateUnlocked(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter }): Promise<void> {
+    private async _dehydrateUnlocked(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter; skipCliClose?: boolean }): Promise<void> {
         const DESTROY_MAX_RETRIES = 3;
         const trace = options?.trace;
         let lastDestroyError: Error | undefined;
@@ -3536,8 +3551,9 @@ export class SessionManager {
             }
         }
 
-        // L1: the session is closed in the CLI before its files are uploaded (the close flushes its events to them).
-        await this._closeCliSession(sessionId);
+        // L1: the session is closed in the CLI before its files are uploaded (the close flushes its events to them). The final
+        // sweep skips a close that is already owed or in flight (DR2-006).
+        if (!options?.skipCliClose) await this._closeCliSession(sessionId);
 
         // Phase 2: Persist to the session store (always attempt, even if destroy failed)
         if (this.sessionStore) {
