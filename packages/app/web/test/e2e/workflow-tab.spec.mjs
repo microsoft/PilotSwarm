@@ -156,6 +156,8 @@ test("the new-session dialog offers no workflow start: an agent starts workflows
 });
 
 test("failed process results remain failed and node output is rendered as text", async ({ page }) => {
+    // A desktop's layout: one click opens a node's details (a phone's first tap only selects; its own test covers that).
+    await page.setViewportSize({ width: 1440, height: 900 });
     const events = [
         WORKFLOW_EVENTS[0],
         { sessionId: WORKFLOW_ID, seq: 2, eventType: "workflow.state_started", data: { stateId: "collect", step: 1 } },
@@ -535,6 +537,8 @@ states:
 `;
 
 test("the main workflow graph follows live ticks and selection drives canvas node details", async ({ page }) => {
+    // A desktop's layout: one click opens a node's details (a phone's first tap only selects; its own test covers that).
+    await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     const graph = compileWorkflow(LIVE_YAML);
