@@ -10,8 +10,8 @@ import { withWorkspaceLoad } from "./capability-catalog.js";
 import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, nativeSubagentGuidance, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools, limitNativeAgents, nativeWorkflowToolLimit } from "./native-subagents.js";
 import type { FeatureFlagCache } from "./feature-flag-cache.js";
 import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js";
-import { createMotdTools, MOTD_OPERATION_SPECS } from "./motd-tools.js";
-import { MotdError, MOTD_IMAGE_MAX_BYTES } from "./motd-store.js";
+import { createMotdTools, MOTD_OPERATION_SPECS, type MotdArtifactImage } from "./motd-tools.js";
+import { MotdError, MOTD_IMAGE_MAX_BYTES, type MotdImageInput, type MotdViewer } from "./motd-store.js";
 import { FeatureFlagError, isAlwaysOn, type FeatureOwner } from "./feature-flags.js";
 import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
@@ -42,7 +42,8 @@ import { attachWorkloadIdentity } from "./wif-credentials.js";
 import { pinToolsNeverDefer } from "./tool-pinning.js";
 import type { SessionCatalog } from "./cms.js";
 import { resolveEffectiveSpawnOwner, SYSTEM_USER_PRINCIPAL } from "./cms.js";
-import { evaluateRoleObservation, evaluateSessionAccess, systemSessionsReadable } from "../api/src/session-authz.js";
+import { evaluateRoleObservation, evaluateSessionAccess, isOwnerOnlyArtifact, systemSessionsReadable } from "../api/src/session-authz.js";
+import { ownerOnlyArtifactMessage } from "./artifact-tools.js";
 import { validateAdminScope, type AdminScope } from "../api/src/admin-scope.js";
 
 /**
@@ -2568,24 +2569,9 @@ export class SessionManager {
             && ["agent-manager", "generic-superagent"].includes(effectiveSerializableConfig.agentIdentity ?? "")
             ? await this._resolveFeatureViewer(sessionId) : null;
         const motdTools = this.sessionCatalog?.motds && motdViewer
-            ? createMotdTools(this.sessionCatalog.motds, () => this._resolveFeatureViewer(sessionId), async (image, viewer) => {
-                if (!this.artifactStore || !viewer.principal) throw new MotdError("MOTD_UNAVAILABLE", "Picture artifact storage is unavailable", 503);
-                const source = image.sessionId ?? sessionId;
-                if (!image.filename || /[/\\]/.test(image.filename)) throw new MotdError("MOTD_INVALID", "Picture filename must be a single path segment");
-                const snapshot = await this.sessionCatalog!.getSessionAccess(source, viewer.principal);
-                // The deployment's admin scope, even for a system agent: a
-                // picture is published fleet-wide, so a cluster-scoped admin
-                // must not reach a private user session through it. System
-                // source sessions stay readable under either scope.
-                if (!snapshot || !evaluateSessionAccess("session:read", snapshot, {
-                    isAdmin: viewer.isAdmin, adminScope: this.adminScope, systemReadable: systemSessionsReadable(),
-                }).allowed) throw new MotdError("MOTD_FORBIDDEN", "Picture source session is not readable", 403);
-                const metadata = await this.artifactStore.statArtifact(source, image.filename);
-                if (!metadata) throw new MotdError("MOTD_NOT_FOUND", "Picture artifact not found", 404);
-                if (metadata.sizeBytes > MOTD_IMAGE_MAX_BYTES) throw new MotdError("MOTD_INVALID", "A picture must be at most 2 MB");
-                const picture = await this.artifactStore.downloadArtifact(source, image.filename);
-                return { base64: picture.body.toString("base64"), contentType: picture.contentType, alt: image.alt };
-            }, { includeAdmin: motdViewer.isAdmin }) : [];
+            ? createMotdTools(this.sessionCatalog.motds, () => this._resolveFeatureViewer(sessionId),
+                (image, viewer) => readMotdArtifactPicture({ artifactStore: this.artifactStore, sessionCatalog: this.sessionCatalog, adminScope: this.adminScope },
+                    sessionId, image, viewer), { includeAdmin: motdViewer.isAdmin }) : [];
         // Handler refresh alone cannot change the CLI's tool declarations.
         // Role transitions must recreate the warm SDK handle at the next turn.
         config.featureToolFingerprint = createHash("sha256")
@@ -5046,4 +5032,31 @@ export class SessionManager {
             layerManifest: layerManifest.length > 0 ? layerManifest : undefined,
         });
     }
+}
+
+/**
+ * A message-of-the-day picture taken from an artifact a model names (the motd tools): the source session's file, read only
+ * when the viewer may read that session. A Workflow agent's base instructions are refused first (review PRS-001).
+ */
+export async function readMotdArtifactPicture(
+    deps: { artifactStore: import("./session-store.js").ArtifactStore | null | undefined; sessionCatalog: SessionCatalog | null | undefined; adminScope: AdminScope },
+    sessionId: string, image: MotdArtifactImage, viewer: MotdViewer): Promise<MotdImageInput> {
+    if (!deps.artifactStore || !viewer.principal) throw new MotdError("MOTD_UNAVAILABLE", "Picture artifact storage is unavailable", 503);
+    const source = image.sessionId ?? sessionId;
+    if (!image.filename || /[/\\]/.test(image.filename)) throw new MotdError("MOTD_INVALID", "Picture filename must be a single path segment");
+    // Review PRS-001: a Workflow agent's base instructions are the Workflow owner's only, never a published picture.
+    if (isOwnerOnlyArtifact(image.filename)) throw new MotdError("MOTD_FORBIDDEN", ownerOnlyArtifactMessage(image.filename), 403);
+    const snapshot = await deps.sessionCatalog!.getSessionAccess(source, viewer.principal);
+    // The deployment's admin scope, even for a system agent: a
+    // picture is published fleet-wide, so a cluster-scoped admin
+    // must not reach a private user session through it. System
+    // source sessions stay readable under either scope.
+    if (!snapshot || !evaluateSessionAccess("session:read", snapshot, {
+        isAdmin: viewer.isAdmin, adminScope: deps.adminScope, systemReadable: systemSessionsReadable(),
+    }).allowed) throw new MotdError("MOTD_FORBIDDEN", "Picture source session is not readable", 403);
+    const metadata = await deps.artifactStore.statArtifact(source, image.filename);
+    if (!metadata) throw new MotdError("MOTD_NOT_FOUND", "Picture artifact not found", 404);
+    if (metadata.sizeBytes > MOTD_IMAGE_MAX_BYTES) throw new MotdError("MOTD_INVALID", "A picture must be at most 2 MB");
+    const picture = await deps.artifactStore.downloadArtifact(source, image.filename);
+    return { base64: picture.body.toString("base64"), contentType: picture.contentType, alt: image.alt };
 }

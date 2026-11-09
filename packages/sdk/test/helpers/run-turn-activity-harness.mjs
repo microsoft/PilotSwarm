@@ -26,6 +26,7 @@ export function makeRunTurnHarness({
     workspaceProvider = null,
     cancelled = () => false,
     testOptions = undefined,
+    artifactStore = null,
 } = {}) {
     const handlers = {};
     const runtime = { registerActivity(name, handler) { handlers[name] = handler; } };
@@ -59,7 +60,7 @@ export function makeRunTurnHarness({
         ...catalogExtras,
     };
     registerActivities(runtime, sessionManager, sessionStore, undefined, catalog,
-        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "worker-1", undefined, null, testOptions);
+        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "worker-1", undefined, artifactStore, testOptions);
 
     const traces = { info: [], warn: [] };
     const activityCtx = {

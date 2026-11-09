@@ -3,6 +3,8 @@ import type { Tool } from "@github/copilot-sdk";
 import { createHash } from "node:crypto";
 import type { EnhancedFactStore, FactStore } from "./facts-store.js";
 import type { ArtifactStore } from "./session-store.js";
+import { isOwnerOnlyArtifact } from "../api/src/session-authz.js";
+import { ARTIFACT_OWNER_ONLY, ownerOnlyArtifactMessage } from "./artifact-tools.js";
 
 // ─── Knowledge Pipeline Namespace Access Control ────────────────────────────
 const FACTS_MANAGER_AGENT_ID = "facts-manager";
@@ -554,6 +556,8 @@ export function createFactTools(opts: {
                 const from = args.from!;
                 const filename = String(from.filename || "").trim();
                 if (!filename) return { error: "Error: from.filename is required." };
+                // Review PRS-001: a Workflow agent's base instructions are the Workflow owner's only (read_artifact's refusal).
+                if (isOwnerOnlyArtifact(filename)) return { error: `Error: ${ARTIFACT_OWNER_ONLY}: ${ownerOnlyArtifactMessage(filename)} Nothing was written.` };
                 // Store-side cross-session read — the same worker-trusted
                 // stance as draw_canvas fromArtifact and read_artifact.
                 const sourceSessionId = String(from.session_id || ctx?.sessionId || "").trim();

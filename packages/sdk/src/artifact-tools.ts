@@ -50,11 +50,21 @@ function toolError(code: string, message: string, hint?: string): string {
 /**
  * A Workflow agent's whole base instructions (isOwnerOnlyArtifact) are its Workflow owner's to read, in the portal
  * (review SF-3). These tools act for any session and check no owner, so they neither read, copy nor write such a file:
- * only the runtime keeps it (session-proxy, keepWorkflowBaseInstructions).
+ * only the runtime keeps it (session-proxy, keepWorkflowBaseInstructions). Every other model-facing reader of an
+ * artifact a model names (draw_canvas fromArtifact, bulk_store_facts from, a message-of-the-day picture) refuses it in
+ * the same words (review PRS-001).
  */
+export const ARTIFACT_OWNER_ONLY = "ARTIFACT_OWNER_ONLY";
+
+/** The words of an owner-only artifact's refusal (see ARTIFACT_OWNER_ONLY). */
+export function ownerOnlyArtifactMessage(filename: unknown): string {
+    const name = String(filename ?? "").trim().split(/[\\/]/).pop()?.trim() ?? "";
+    return `'${name}' holds a Workflow agent's base instructions. `
+        + "Only the Workflow's owner can read them, in the portal; agent tools cannot read, copy or write this file.";
+}
+
 function ownerOnlyRefusal(filename: string): string {
-    return toolError("ARTIFACT_OWNER_ONLY", `'${path.basename(String(filename))}' holds a Workflow agent's base instructions. `
-        + "Only the Workflow's owner can read them, in the portal; agent tools cannot read, copy or write this file.");
+    return toolError(ARTIFACT_OWNER_ONLY, ownerOnlyArtifactMessage(filename));
 }
 
 /**

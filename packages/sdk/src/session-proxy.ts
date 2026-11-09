@@ -26,7 +26,8 @@ import { appendSystemContextBlock, splitSystemContextBlock } from "./prompt-syst
 import { buildCheckAgentsReport, CHECK_AGENTS_MEMO_EVENT, type CheckAgentsMemo } from "./check-agents-report.js";
 // One predicate, every surface: the portal, the viewer spine and the control
 // bridge all decide "is this principal an admin?" the same way.
-import { evaluateRoleObservation } from "../api/src/session-authz.js";
+import { evaluateRoleObservation, isOwnerOnlyArtifact } from "../api/src/session-authz.js";
+import { ARTIFACT_OWNER_ONLY, ownerOnlyArtifactMessage } from "./artifact-tools.js";
 import { loadAdminScope } from "../api/src/admin-scope.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
@@ -4132,6 +4133,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 drawCanvas: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename: string; expectedSha256?: string }; note?: string; responseContract?: Record<string, any>; slot?: number; name?: string; session_id?: string }) => {
                     if (!artifactStore) return { error: "this worker has no artifact store" };
                     if (!catalog) return { error: "canvas requires the CMS catalog" };
+                    // Review PRS-001: a Workflow agent's base instructions are the Workflow owner's only; a canvas is no way to read
+                    // them. Refused before anything is read or written, in read_artifact's words, whatever the source session.
+                    if (args.fromArtifact && isOwnerOnlyArtifact(args.fromArtifact.filename)) {
+                        return { error: `${ARTIFACT_OWNER_ONLY}: ${ownerOnlyArtifactMessage(args.fromArtifact.filename)} Nothing was drawn.` };
+                    }
                     const slot = normalizeCanvasSlot(args.slot);
                     if (slot === null) return { error: "slot must be an integer 1-5" };
                     const rawName = args.name === undefined ? undefined : String(args.name).trim();
