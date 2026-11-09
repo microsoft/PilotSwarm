@@ -57,7 +57,7 @@ for (const [theme, width, height] of [
     ["horizon-dawn", 844, 390],
     ["horizon-dawn", 1440, 900],
     ["win95", 390, 844],
-]) test(`Manage ${theme} ${width}px: long prefix leaves the title editable without horizontal overflow`, async ({ page }) => {
+]) test(`Manage ${theme} ${width}px: long prefix leaves the title editable without horizontal overflow`, async ({ page }, testInfo) => {
     const id = "11111111-2222-3333-4444-555555555551";
     const prefix = "Blackfinger - PilotSwarm Engineer: Session Title Layout";
     let title = `${prefix}: nightly`;
@@ -92,6 +92,7 @@ for (const [theme, width, height] of [
     await expect(row).toContainText("nightly");
     if (width <= 600) await page.getByRole("button", { name: "Sessions", exact: true }).click();
     await row.click();
+    if (width <= 600) await page.getByRole("button", { name: "Sessions", exact: true }).click();
     await page.getByRole("button", { name: /^Manage session/ }).first().click();
     const modal = page.locator(".ps-share-modal");
     const input = modal.getByRole("textbox", { name: `Session title after ${prefix}`, exact: true });
@@ -109,6 +110,7 @@ for (const [theme, width, height] of [
     expect(prefixBox.y + prefixBox.height).toBeLessThanOrEqual(inputBox.y);
     expect(saveBox.x + saveBox.width).toBeLessThanOrEqual(width);
     expect(await modal.locator(".ps-share-modal-body").evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    await modal.screenshot({ path: testInfo.outputPath(`manage-${theme}-${width}.png`) });
     // Freeze the catalog poll: only Save's own refresh can update the list.
     await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now() + 1000)));
     await save.click();
