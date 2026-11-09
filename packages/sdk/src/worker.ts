@@ -1104,6 +1104,9 @@ export class PilotSwarmWorker {
                     catalog: this._catalog,
                     deploymentAgents: () => ({ userAgents: [...this._rawLoadedAgents], systemAgents: [...this._loadedSystemAgents] }),
                     clientOptions: { store: storage.duroxide.url, cmsSchema: storage.runtime.cmsSchema, ...internalClientConfig },
+                    // Review L4: each child's client borrows this worker's provider, catalog and fact store.
+                    shared: this._provider && this._catalog && this.factStore
+                        ? { provider: this._provider, catalog: this._catalog, factStore: this.factStore } : null,
                 }),
             });
         }

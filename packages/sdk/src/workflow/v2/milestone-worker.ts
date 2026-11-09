@@ -1,6 +1,7 @@
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../activity-routing.js";
 import { PilotSwarmClient } from "../../client.js";
 import type { SessionCatalog } from "../../cms.js";
+import type { FactStore } from "../../facts-store.js";
 import { isReasoningEffort } from "../../model-providers.js";
 import type { PilotSwarmClientOptions } from "../../types.js";
 import { clientWorkflowAgentChildCreator, createWorkflowAgentNodeHost, type WorkflowAgentSessionClient } from "./agent-host.js";
@@ -39,13 +40,25 @@ export function registerWorkflowMilestoneSessions(runtime: {
 }
 
 /**
+ * The worker's own duroxide provider, session catalog and fact store, lent to the clients that create agent-step children
+ * (PilotSwarmClient._startOnShared): no client opens pools or runs migrations of its own, and stopping one leaves them open.
+ */
+export interface WorkflowChildSharedStorage {
+    provider: unknown;
+    catalog: SessionCatalog;
+    factStore: FactStore;
+}
+
+/**
  * A PilotSwarm client of the worker's own store (new sessions at the latest version, 1.0.83), as the child creator uses
  * it. The controlling session's reasoning effort is plain text on its row: the child takes it only when it names one.
+ * Review L4: with `shared` (every worker that has all three), the client borrows the worker's storage instead of
+ * starting its own duroxide provider, CMS and facts pools for each child (stop() never closed the provider).
  */
-function childSessionClient(options: PilotSwarmClientOptions): WorkflowAgentSessionClient {
+function childSessionClient(options: PilotSwarmClientOptions, shared: WorkflowChildSharedStorage | null): WorkflowAgentSessionClient {
     const client = new PilotSwarmClient(options);
     return {
-        start: () => client.start(),
+        start: () => (shared ? client._startOnShared(shared) : client.start()),
         stop: () => client.stop(),
         createSession: ({ reasoningEffort, contextTier, ...config }) => client.createSession({
             ...config, ...(isReasoningEffort(reasoningEffort) ? { reasoningEffort } : {}),
@@ -64,10 +77,12 @@ export function workflowMilestoneAgentNodes(deps: {
     catalog: Pick<SessionCatalog, "getSession" | "getAgentPackagesInstallManifest" | "updateSession">;
     deploymentAgents: () => WorkflowHostAgents;
     clientOptions: PilotSwarmClientOptions;
+    /** Review L4: the worker's own storage, lent to each child's client; null starts each client on its own (tests). */
+    shared?: WorkflowChildSharedStorage | null;
 }): WorkflowAgentNodeHost {
     return createWorkflowAgentNodeHost({
         getSession: sessionId => deps.catalog.getSession(sessionId),
         resolveAgent: createWorkflowAgentResolver({ catalog: deps.catalog, deploymentAgents: deps.deploymentAgents }),
-        createChild: clientWorkflowAgentChildCreator(() => childSessionClient(deps.clientOptions), deps.catalog),
+        createChild: clientWorkflowAgentChildCreator(() => childSessionClient(deps.clientOptions, deps.shared ?? null), deps.catalog),
     });
 }
