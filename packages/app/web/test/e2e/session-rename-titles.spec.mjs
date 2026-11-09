@@ -90,9 +90,10 @@ for (const [theme, width, height] of [
     await page.goto(base + `/?session=${id}`);
     const row = page.locator(`.ps-session-list-button[data-session-id="${id}"]`);
     await expect(row).toContainText("nightly");
-    if (width <= 600) await page.getByRole("button", { name: "Sessions", exact: true }).click();
+    const sessions = page.getByRole("button", { name: "Sessions", exact: true });
+    if (await sessions.isVisible()) await sessions.click();
     await row.click();
-    if (width <= 600) await page.getByRole("button", { name: "Sessions", exact: true }).click();
+    if (await sessions.isVisible()) await sessions.click();
     await page.getByRole("button", { name: /^Manage session/ }).first().click();
     const modal = page.locator(".ps-share-modal");
     const input = modal.getByRole("textbox", { name: `Session title after ${prefix}`, exact: true });
