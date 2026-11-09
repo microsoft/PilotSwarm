@@ -107,12 +107,11 @@ Runs of the implementation cases (TLC 2.19, two workers):
 | cc6b | `69d07073`, `5451a22e` | 67, 600 s | 67 of 67 as expected; the DRR-1 and DRR-2 cases pass (largest `impl.cc-drr-safety`, 1,630,717 distinct states); every reduced liveness case passes |
 | cc6l | `69d07073`, `5451a22e` | 5 full-size liveness cases, 1,800 s | 4 PASS (`fix.cc-drr1-live`, `impl.cc-drr1-live`, `fix.cc-drr2-carry-live`, `impl.cc-drr2-carry-live`, up to 1,709,892 distinct states); `cc.drr2-crash-live` not checked (1,695,724 distinct states at 1,800 s; its two-visit version passes) |
 | cc7 | `7bd79a46` | 11, 1,800 s | 11 of 11 as expected; `limit.cc-drr1b-start-not-visible` violates `Inv_NoOrphanRun`, `impl.cc-drr1b-orphan-ended` passes |
-| cc9 | `781441bf` (the code at `0df9e8a4`) | 83, 600 s | running at publish |
-| cc9l | `781441bf` | `cc.drr2-crash-live` and `impl.cc-final-live`, 3,600 s | running at publish |
+| cc9 | `781441bf` (the code at `0df9e8a4`) | 83, 600 s | 83 of 83 as expected; `limit.cc-dr2-001-turn-before-delete` violates `Inv_NoTurnOnDeleted` and `limit.cc-dr2-003-mark-notfound` `Inv_NoFailOnLive` (the code before those fixes); every fix case passes, `fix.cc-dr2-safety` with 1,644,649 distinct states |
+| cc9l | `781441bf` | `cc.drr2-crash-live` and `impl.cc-final-live`, 3,600 s | 2 of 2 PASS: `impl.cc-final-live` (every fix, 659,197 distinct states, 371 s); `cc.drr2-crash-live` (1,771,490 distinct states, 3,356 s) |
 
-Not checked so far: `cc.drr2-crash-live` (full size; a design case of the lost command without a fix, not the code).
-The cases at the final code (`fix.cc-dr2-*`, `limit.cc-dr2-*`, `impl.cc-final-live`) have no TLC result yet: their
-verdicts in `cases.json` are predictions until cc9 and cc9l report.
+Every one of the 89 cases has a TLC result as expected; none is left unchecked (`cc.drr2-crash-live`, not checked
+within 1,800 s in cc6l, passed at 3,600 s in cc9l).
 
 ## How to run
 
