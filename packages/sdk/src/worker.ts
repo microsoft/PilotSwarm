@@ -1396,7 +1396,8 @@ export class PilotSwarmWorker {
         if (this.sessionStore) {
             await bounded("the release sweep", async () => {
                 try {
-                    const released = await this.sessionManager.sweepIdleSessions(1);
+                    // Review DRR-3b: the final sweep; a close that is not confirmed does not keep a session's files here.
+                    const released = await this.sessionManager.sweepIdleSessions(1, { final: true });
                     console.error(`[PilotSwarmWorker] drain released ${released} warm session(s)`);
                 } catch (err: any) {
                     console.warn(`[PilotSwarmWorker] drain release sweep failed: ${err?.message ?? err}`);

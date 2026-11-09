@@ -1935,8 +1935,12 @@ export class SessionManager {
      * the next runTurn self-validates and hydrates); unmarked (legacy)
      * sessions are dehydrated the old way so their only copy is preserved.
      * Returns the number of sessions reclaimed.
+     *
+     * Review DRR-3b: `final` is the worker's last sweep before it stops (gracefulShutdown). Its clients stop right after,
+     * so a close the CLI does not confirm does not keep a session's files here: the sweep logs it and goes on, as before
+     * DRR-3 (a legacy session is still uploaded). Every other sweep keeps such a session for the next one.
      */
-    async sweepIdleSessions(evictAfterMs: number): Promise<number> {
+    async sweepIdleSessions(evictAfterMs: number, options: { final?: boolean } = {}): Promise<number> {
         if (!(evictAfterMs > 0)) return 0;
         const now = Date.now();
         // Only sessions THIS manager has actually served since boot are
@@ -1978,8 +1982,11 @@ export class SessionManager {
                     // Review DRR-3: a close that is not confirmed keeps the session here (its files, its binding, its idle
                     // time): it is not reclaimed, and the next sweep evicts it again.
                     if (!(await this._closeCliSession(sessionId))) {
-                        emitSessionManagerTrace(sessionId, "eviction deferred: its close in the Copilot CLI is not confirmed");
-                        return;
+                        if (!options.final) {
+                            emitSessionManagerTrace(sessionId, "eviction deferred: its close in the Copilot CLI is not confirmed");
+                            return;
+                        }
+                        emitSessionManagerTrace(sessionId, "final release: its close in the Copilot CLI is not confirmed; its files are kept as before");
                     }
                     if (!dirExists) {
                         this.sessionLastTouchedAt.delete(sessionId);
