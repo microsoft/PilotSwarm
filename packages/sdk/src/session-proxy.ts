@@ -2510,6 +2510,22 @@ export function registerActivities(
         const workflowLineage = workflowRequestTurn && catalog?.workflowStore
             ? await catalog.workflowStore().readWorkflowLineage(input.sessionId)
             : null;
+        // Review DR2-001: a session whose row is deleted (its tombstone, read with this lineage) runs no model and no tool.
+        // Its turn ends here, before the session is created or resumed, as the budget and workspace gates end one, and
+        // queues the session's own delete (the command a delete sends to a running session), which its next drain applies.
+        // So a session deleted before its first prompt started it (a Workflow agent session, or any other) never runs a
+        // turn, whatever the Workflow's carried delete does meanwhile. Every turn of orchestration 1.0.83 reads the lineage.
+        if (workflowLineage?.deleted === true) {
+            const reason = "This session was deleted; this turn was not run.";
+            const durable = activityCtx.getClient?.() ?? null;
+            if (durable) {
+                await durable.enqueueEvent(`session-${input.sessionId}`, "messages", JSON.stringify({
+                    type: "cmd", cmd: "delete", id: `deleted-session-turn:${input.sessionId}`, args: { reason },
+                }));
+            }
+            activityCtx.traceInfo(`[runTurn] session=${input.sessionId} not run: the session is deleted`);
+            return { type: "stopped", reason } as TurnResult;
+        }
         const workflowAgentChild = workflowLineage?.agentRoot?.distance === 0;
         if (workflowAgentChild) (runConfig as ManagedSessionConfig).workflowAgentChild = true;
         // A1 (Workflow Simplified, spec 14): a session inside a Workflow (an agent node's chat or one of its sub-agents) is

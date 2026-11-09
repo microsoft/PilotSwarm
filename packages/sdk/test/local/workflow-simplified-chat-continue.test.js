@@ -182,8 +182,8 @@ describe("chat: continue in the store (migration 0106)", () => {
             const mini = randomUUID();
             await catalog.createSession(mini, { parentSessionId: chat });
             const root = { childSessionId: chat, nodeExecutionId: second, workflowSessionId, controllingSessionId: parent };
-            expect(await store.readWorkflowLineage(chat)).toEqual({ sessionId: chat, level: 2, agentRoot: { ...root, distance: 0 } });
-            expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 3, agentRoot: { ...root, distance: 1 } });
+            expect(await store.readWorkflowLineage(chat)).toEqual({ sessionId: chat, level: 2, agentRoot: { ...root, distance: 0 }, deleted: false });
+            expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 3, agentRoot: { ...root, distance: 1 }, deleted: false });
             expect(spawnNesting(1, 2, await store.readWorkflowLineage(chat)))
                 .toEqual({ childNestingLevel: 3, maxNestingLevel: WORKFLOW_V2_MAX_DESCENDANT_LEVEL });
             // A real-agent test's scope (workflowTestAgentScope) is the agent root's visit: the open one, not the first.
@@ -269,7 +269,7 @@ describe("chat: continue in the store (migration 0106)", () => {
                 nodeExecutionId: second })).toMatchObject({ kind: "accepted", receipt: { nodeExecutionId: second, outcome: "finish" } });
             expect(await store.recordAgentReminder({ childSessionId: chat, turn: 8, visit: second })).toMatchObject({ recorded: false, reason: "decided" });
             // With no visit open, the lineage's agent root is the newest visit, still one row.
-            expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 3, agentRoot: { ...root, nodeExecutionId: second, distance: 1 } });
+            expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 3, agentRoot: { ...root, nodeExecutionId: second, distance: 1 }, deleted: false });
         } finally {
             await catalog.close();
             await direct.end();

@@ -767,6 +767,8 @@ export interface WorkflowLineage {
      * state's subtree.
      */
     agentRoot: { childSessionId: string; nodeExecutionId: string; workflowSessionId: string; controllingSessionId: string | null; distance: number } | null;
+    /** Review DR2-001: the session's own row is deleted (a tombstone). A turn of such a session runs no model and no tool. */
+    deleted?: boolean;
 }
 
 /** The longest lineage readWorkflowLineage follows. */
@@ -5926,13 +5928,13 @@ export class WorkflowStore {
         if (!storableId(sessionId)) return null;
         const lineageSql = (withInvocations: boolean) => `
             WITH RECURSIVE lineage AS (
-                SELECT session_id, parent_session_id, 0 AS distance FROM ${this.t.sessions} WHERE session_id = $1
+                SELECT session_id, parent_session_id, 0 AS distance, deleted_at IS NOT NULL AS deleted FROM ${this.t.sessions} WHERE session_id = $1
                 UNION ALL
-                SELECT parent.session_id, parent.parent_session_id, lineage.distance + 1
+                SELECT parent.session_id, parent.parent_session_id, lineage.distance + 1, parent.deleted_at IS NOT NULL
                   FROM ${this.t.sessions} parent JOIN lineage ON parent.session_id = lineage.parent_session_id
                  WHERE lineage.distance < ${WORKFLOW_V2_LINEAGE_MAX_DEPTH}
             )
-            SELECT lineage.session_id, lineage.parent_session_id, lineage.distance,
+            SELECT lineage.session_id, lineage.parent_session_id, lineage.distance, lineage.deleted,
                    ${withInvocations ? "invocation.node_execution_id, invocation.workflow_session_id, invocation.controlling_session_id"
                        : "NULL::text AS node_execution_id, NULL::text AS workflow_session_id, NULL::text AS controlling_session_id"}
               FROM lineage
@@ -5968,7 +5970,7 @@ export class WorkflowStore {
         }
         const top = rows[rows.length - 1];
         const level = !cyclic && strOrNull(top, "parent_session_id") === null ? int(top, "distance") : null;
-        return { sessionId, level, agentRoot };
+        return { sessionId, level, agentRoot, deleted: rows[0].deleted === true };
     }
 
     // ─── Agent states (IR 8, migration 0101) ──
