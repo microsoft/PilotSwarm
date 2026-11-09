@@ -779,7 +779,11 @@ test("of-03: the Workflow tab's right block resizes by drag, keys and double-cli
     // comes back at the dragged width, on the Workflow tab.
     await dragSeam(page, seam, -150);
     await expect.poll(pane).toBeGreaterThanOrEqual(788);
-    await expect.poll(() => profile.settings?.sessionViews?.[AGENT_ID]?.desktop?.layout?.canvasPaneAdjust ?? 0).toBeGreaterThanOrEqual(148);
+    // The drag's own width is saved before the reload: an earlier save (the key steps' wider one) can still be the stored one.
+    await expect.poll(() => {
+        const adjust = profile.settings?.sessionViews?.[AGENT_ID]?.desktop?.layout?.canvasPaneAdjust ?? 0;
+        return adjust >= 148 && adjust <= 152;
+    }).toBe(true);
     await shot(page, "of-03-workflow-tab-widened");
     await page.reload();
     await expect(workflowTab(page).getByRole("group", { name: "Workflow graph" })).toBeVisible();
