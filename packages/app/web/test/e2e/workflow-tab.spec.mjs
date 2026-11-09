@@ -3325,6 +3325,8 @@ test("timeline: a finished Workflow's visits by buttons, slider keys and Play; L
     await expect.poll(() => litOf(edgeOf(main, "pause", "poll"))).toEqual(["1", "1", null]);
     await expect.poll(() => litOf(edgeOf(main, "poll", "pause"))).toEqual(["1", "2", null]);
     await expect(edgeOf(main, "poll", "failed")).not.toHaveAttribute("data-lit");
+    // Owner 2026-11-09T06:40Z: an ended run's lit edges are still (no moving light), in Latest and in history.
+    await expect(main.locator(".ps-workflow-edge-flow")).toHaveCount(0);
 
     // Step back once: the visit before the newest (poll's second); poll runs, pause is done, the end is not reached.
     await button("Step back").click();
@@ -3337,6 +3339,7 @@ test("timeline: a finished Workflow's visits by buttons, slider keys and Play; L
     await expect.poll(() => litOf(stepOf(main, "poll"))).toEqual(["2", "0", "true"]);
     await expect.poll(() => litOf(stepOf(main, "done"))).toEqual([null, null, null]);
     await expect(button("Latest")).toBeEnabled();
+    await expect(main.locator(".ps-workflow-edge-flow")).toHaveCount(0);
 
     // The Log marks that visit's line; a click on pause's line shows it.
     await panelTab(main, "Log").click();
@@ -3476,6 +3479,74 @@ test("timeline: a running Workflow is Live; it follows new visits, lights the la
     await button("Live").click();
     await expect(bar).toHaveAttribute("data-mode", "live");
     await expect(button("Live")).toBeDisabled();
+    expect(errors).toEqual([]);
+});
+
+// Owner 2026-11-09T06:40Z ("can we have the edges animate a little bit. maybe a soft light moving from source to target in the
+// direction of the flow and cycling"): while the run is active, each lit edge, and only those, carries a light that keeps
+// running (Live and history); a live update does not restart it; with reduced motion there is none.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "flow light" (from packages/app/web, after build).
+test("timeline flow light: an active run's lit edges carry a moving light in Live and history; a live update keeps it; reduced motion has none", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", collectPageErrors(errors));
+    const { events: all, model, visit } = replayFixture();
+    const events = all.filter(item => !(item.eventType === "workflow.completed" || item.data.stateId === "done"
+        || (item.eventType === "workflow.state_completed" && item.data.nodeExecutionId === "nx-poll-2")));
+    const running = { ...model, runs: [{ ...model.runs[0], status: "running", outcome: null }],
+        run: { ...model.run, status: "running", outcome: null, terminalState: null,
+            nodeExecutions: [...model.run.nodeExecutions.slice(0, 2), { ...model.run.nodeExecutions[2], state: "pending", outcome: null, endedAt: null }] } };
+    const sockets = [];
+    let subscribed = false;
+    await routeApi(page, {
+        workflowEvents: events,
+        workflowState: { title: "Workflow: watch-v2", status: "running" },
+        onSocket: (socket) => {
+            sockets.push(socket);
+            socket.onMessage((raw) => { if (JSON.parse(raw).type === "subscribeSession") subscribed = true; });
+        },
+        onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: running } }),
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = workflowTab(page);
+    const { bar, button } = timelineOf(main);
+    const graph = main.getByRole("group", { name: "Workflow graph" });
+    await expect(graph).toHaveAttribute("data-renderer", "flow");
+    await expect(bar).toHaveAttribute("data-mode", "live");
+    // Live: poll 1 -> pause 1 -> poll 2 lights poll->pause and pause->poll; each carries one running light, no other edge any.
+    const lit = graph.locator("g.ps-workflow-edge[data-lit]");
+    await expect(lit).toHaveCount(2);
+    await expect(graph.locator("g.ps-workflow-edge:not([data-lit]) .ps-workflow-edge-flow")).toHaveCount(0);
+    const lights = graph.locator("g.ps-workflow-edge[data-lit] .ps-workflow-edge-flow");
+    const runningLights = () => lights.evaluateAll(elements => elements.map(element => element.getAnimations()
+        .filter(animation => animation.playState === "running").map(animation => animation.animationName ?? "running")));
+    await expect.poll(runningLights).toEqual([["ps-wf-edge-flow"], ["ps-wf-edge-flow"]]);
+    await expect(lights.first()).toHaveAttribute("pathLength", "1");
+    // A live update that adds no visit (poll 2 completes) keeps the same light running on: the same Animation, its time on.
+    await expect.poll(() => subscribed).toBe(true);
+    const light = 'g.ps-workflow-edge[data-from="pause"][data-to="poll"] .ps-workflow-edge-flow';
+    await page.evaluate((selector) => {
+        const element = [...document.querySelectorAll(selector)].find(item => item.getBoundingClientRect().width > 0);
+        window.__flowLight = { element, animation: element.getAnimations()[0], time: element.getAnimations()[0].currentTime };
+    }, light);
+    const done = visit("poll", 2, "unchanged", 40, 50, "script").slice(1);
+    for (const socket of sockets) for (const item of done) socket.send(JSON.stringify({ type: "sessionEvent", sessionId: WORKFLOW_ID, event: item }));
+    await page.waitForTimeout(800);
+    expect(await page.evaluate((selector) => {
+        const element = [...document.querySelectorAll(selector)].find(item => item.getBoundingClientRect().width > 0);
+        const animation = element.getAnimations()[0];
+        return { element: element === window.__flowLight.element, animation: animation === window.__flowLight.animation,
+            on: animation.currentTime > window.__flowLight.time, playing: animation.playState };
+    }, light)).toEqual({ element: true, animation: true, on: true, playing: "running" });
+    // History keeps it: the lit edges up to the visit shown carry it.
+    await button("Step back").click();
+    await expect(bar).toHaveAttribute("data-mode", "history");
+    await expect.poll(async () => (await runningLights()).every(names => names.length === 1) && (await lights.count()) > 0).toBe(true);
+    // Reduced motion: no light moves.
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await expect.poll(async () => (await runningLights()).flat()).toEqual([]);
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await expect.poll(async () => (await runningLights()).every(names => names.length === 1)).toBe(true);
     expect(errors).toEqual([]);
 });
 

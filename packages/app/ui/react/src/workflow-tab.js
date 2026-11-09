@@ -945,8 +945,11 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     } : null;
     // The last four transitions up to the visit shown (Live: up to the newest), drawn on the graph.
     const shownIndex = replayIndex ?? newest;
-    const lit = React.useMemo(() => (timeline && frames.length ? workflowV2LitTransitions(transitions, shownIndex, WORKFLOW_LIT_TRANSITIONS) : null),
-        [timeline, transitions, shownIndex, frames.length]);
+    // Owner 2026-11-09T06:40Z: while the run is active (running, paused, stopping), in Live and in history, a soft light moves
+    // along each lit edge (`flow`); an ended run's lit edges are still.
+    const lit = React.useMemo(() => (timeline && frames.length
+        ? { ...workflowV2LitTransitions(transitions, shownIndex, WORKFLOW_LIT_TRANSITIONS), flow: !ended } : null),
+    [timeline, transitions, shownIndex, frames.length, ended]);
     const logReplay = React.useMemo(() => replay ? {
         visits: new Set(frames.map(item => item.nodeExecutionId)), current: frame?.nodeExecutionId ?? null,
         onVisit: id => { const index = frames.findIndex(item => item.nodeExecutionId === id); if (index >= 0) { setPlaying(false); goTo(index); } },

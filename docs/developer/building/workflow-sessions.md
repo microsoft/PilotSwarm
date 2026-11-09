@@ -443,7 +443,12 @@ lists them; a connection without them keeps the stage 1 grouping above):
     visit entered by a catch-all route, and the run's first visit, light their
     step only; a parallel step drawn as a box leaves from its join bar, and
     the lines into a join bar are never lit. The Node panel and the Log say
-    the same in words.
+    the same in words. While the run is active (running, paused or
+    stopping), in Live and in history, a soft light travels each lit edge
+    from its source to its target, one pass every 1.6 s whatever the edge's
+    length, as bright as its edge's age; the passes ripple from the oldest lit
+    edge to the newest. An ended run's edges are still, and so is every edge
+    when the system asks for reduced motion. Nothing else moves.
   - The Log marks the visit shown's `Node … started` line; a click on such a
     line shows that visit. The Log lists 200 lines: the newest, or, for a
     visit older than those, the lines around it ("Around the visit shown").

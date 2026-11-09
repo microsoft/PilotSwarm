@@ -152,6 +152,15 @@ test("both renderers draw the lit parts: data-lit, data-lit-age and the current 
     assert.ok(!/data-lit/.test(edge("check", "done")));
     // A lit edge has its own arrowhead in the lit colour; the others share the graph's.
     assert.equal((html.match(/class="ps-workflow-edge-lit-arrow"/g) || []).length, 2);
+    // Owner 2026-11-09T06:40Z: an active run's lit edges carry the moving light (pathLength 1); an ended run's do not.
+    assert.equal((html.match(/class="ps-workflow-edge-flow"/g) || []).length, 0, "no flow without lit.flow");
+    const flowing = renderToStaticMarkup(React.createElement(WorkflowGraph, { definition: LOOP, nodes, selected: nodes[1], select() {},
+        lit: { ...lit, flow: true } }));
+    const lights = flowing.match(/<path class="ps-workflow-edge-flow"[^>]*>/g) || [];
+    assert.equal(lights.length, 2);
+    for (const light of lights) assert.match(light, /pathLength="1"/);
+    assert.match(flowing, /data-from="check" data-to="done"(?:(?!<\/g>).)*<\/g>/s);
+    assert.ok(!/data-from="check" data-to="done"[^>]*>(?:(?!<\/g>).)*ps-workflow-edge-flow/s.test(flowing), "an unlit edge has no light");
 });
 
 // ─── The timeline bar (workflow-tab.js ReplayBar, timelineVisitAt) ───

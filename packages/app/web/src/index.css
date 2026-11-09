@@ -5474,6 +5474,29 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 .ps-workflow-edge[data-lit-age="1"] .ps-workflow-edge-lit-arrow { fill-opacity: 0.75; }
 .ps-workflow-edge[data-lit-age="2"] .ps-workflow-edge-lit-arrow { fill-opacity: 0.5; }
 .ps-workflow-edge[data-lit-age="3"] .ps-workflow-edge-lit-arrow { fill-opacity: 0.35; }
+/* Owner 2026-11-09T06:40Z: while the run is active, a soft light travels each lit edge from its source to its target, one pass
+   every 1.6 s whatever the edge's length (pathLength 1), as bright as its edge's age; the passes ripple from the oldest lit
+   edge to the newest. An ended run's edges, and every edge with reduced motion, are still. No other motion. */
+@keyframes ps-wf-edge-flow { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+.ps-workflow-edge-flow {
+  fill: none;
+  stroke: var(--ps-wf-lit, var(--ps-warning));
+  stroke-width: 3.5;
+  stroke-linecap: round;
+  stroke-dasharray: 0.14 0.86;
+  stroke-dashoffset: 1;
+  pointer-events: none;
+  filter: drop-shadow(0 0 3px var(--ps-wf-lit, var(--ps-warning)));
+  animation: ps-wf-edge-flow 1.6s linear infinite;
+}
+.ps-workflow-edge[data-lit="2"] .ps-workflow-edge-flow { stroke-width: 5.5; }
+.ps-workflow-edge[data-lit-age="3"] .ps-workflow-edge-flow { opacity: 0.35; animation-delay: 0s; }
+.ps-workflow-edge[data-lit-age="2"] .ps-workflow-edge-flow { opacity: 0.5; animation-delay: 0.2s; }
+.ps-workflow-edge[data-lit-age="1"] .ps-workflow-edge-flow { opacity: 0.75; animation-delay: 0.4s; }
+.ps-workflow-edge[data-lit-age="0"] .ps-workflow-edge-flow { animation-delay: 0.6s; }
+@media (prefers-reduced-motion: reduce) {
+  .ps-workflow-edge-flow { animation: none; display: none; }
+}
 .ps-workflow-node[data-lit] { outline: 1.5px solid var(--ps-wf-lit, var(--ps-warning)); outline-offset: 3px; }
 .ps-workflow-node[data-lit="2"] { outline-width: 3px; }
 .ps-workflow-node[data-lit-age="1"] { outline-color: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 75%, transparent); }

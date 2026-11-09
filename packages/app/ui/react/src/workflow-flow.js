@@ -186,7 +186,7 @@ function JoinNode({ data }) {
  */
 function StepEdge({ data, markerEnd, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition }) {
     const edge = data.edge;
-    const lit = { litCount: data.litCount ?? 0, litAge: data.litAge ?? null };
+    const lit = { litCount: data.litCount ?? 0, litAge: data.litAge ?? null, flowing: data.litFlow === true };
     if (!data.motion) return h(WorkflowEdgeShape, { edge, markerEnd, ...lit });
     if (data.motion.offset) {
         return h("g", { transform: `translate(${data.motion.offset[0]},${data.motion.offset[1]})` }, h(WorkflowEdgeShape, { edge, markerEnd, ...lit }));
@@ -381,10 +381,11 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
     const motionKey = JSON.stringify(motions);
     // Owner 2026-11-09 (the timeline): each edge's lit count and age, as plain values.
     const edgeLit = layout.edges.map(edge => lit?.edges?.get(workflowGraphEdgeKey(edge.from, edge.to)) ?? null);
-    const litKey = JSON.stringify(edgeLit.map(item => (item ? [item.count, item.age] : 0)));
+    const litFlow = lit?.flow === true;
+    const litKey = JSON.stringify([litFlow, edgeLit.map(item => (item ? [item.count, item.age] : 0))]);
     const flowEdges = React.useMemo(() => layout.edges.map((edge, index) => ({
         id: `e${index}`, source: edge.from, target: edge.to, type: "workflowEdge",
-        data: { edge, motion: motions[index], litCount: edgeLit[index]?.count ?? 0, litAge: edgeLit[index]?.age ?? null },
+        data: { edge, motion: motions[index], litCount: edgeLit[index]?.count ?? 0, litAge: edgeLit[index]?.age ?? null, litFlow },
         markerEnd: MARKER, selectable: false, deletable: false, focusable: false, reconnectable: false,
     })), [layout, motionKey, litKey]);
     // A box follows the pointer while it is dragged (the flow is controlled: React Flow says where, this keeps it). A box

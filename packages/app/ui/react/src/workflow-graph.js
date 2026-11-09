@@ -103,7 +103,7 @@ function edgeTitle(edge, error) {
  * An edge without a label (into a branch box or a join bar, H2) draws none. Owner 2026-11-09 (the timeline): a lit edge
  * (`litCount` taken among the last four transitions, `litAge` how long ago) has its own arrowhead in the lit colour.
  */
-export function WorkflowEdgeShape({ edge, markerEnd, litCount = 0, litAge = null }) {
+export function WorkflowEdgeShape({ edge, markerEnd, litCount = 0, litAge = null, flowing = false }) {
     const error = edge.kind === "error";
     const width = edge.labelWidth ?? 60;
     const markerId = `wf-lit-${React.useId().replace(/:/g, "")}`;
@@ -115,6 +115,9 @@ export function WorkflowEdgeShape({ edge, markerEnd, litCount = 0, litAge = null
         markerUnits: "userSpaceOnUse" }, h("path", { className: "ps-workflow-edge-lit-arrow", d: "M0 0L10 5L0 10z" }))) : null,
     h("path", { className: "ps-workflow-edge-path", d: edge.path, fill: "none", markerEnd: lit["data-lit"] ? `url(#${markerId})` : markerEnd,
         strokeDasharray: error ? "5 4" : undefined }),
+    // Owner 2026-11-09T06:40Z: a lit edge of an active run carries a soft light from its source to its target (the stylesheet
+    // moves it; pathLength 1 makes a pass take as long on every edge). Always in this place, so it keeps running.
+    lit["data-lit"] && flowing ? h("path", { className: "ps-workflow-edge-flow", d: edge.path, fill: "none", pathLength: 1, "aria-hidden": "true" }) : null,
     width > 0 ? h("g", { className: "ps-workflow-edge-label", transform: `translate(${edge.labelX},${edge.labelY})` },
         h("rect", { x: -width / 2, y: -WORKFLOW_GRAPH_LABEL_HEIGHT / 2, width, height: WORKFLOW_GRAPH_LABEL_HEIGHT, rx: 4 }),
         h("text", { textAnchor: "middle", dominantBaseline: "central" }, edge.labelText ?? edge.outcome, h("title", null, edgeTitle(edge, error)))) : null);
@@ -191,7 +194,8 @@ function WorkflowGraphStatic({ layout, nodes, selected, select, lit = null }) {
                 layout.edges.map(edge => {
                     const key = workflowGraphEdgeKey(edge.from, edge.to);
                     const shown = lit?.edges?.get(key) ?? null;
-                    return h(WorkflowEdgeShape, { key, edge, markerEnd: `url(#${markerId})`, litCount: shown?.count ?? 0, litAge: shown?.age ?? null });
+                    return h(WorkflowEdgeShape, { key, edge, markerEnd: `url(#${markerId})`, litCount: shown?.count ?? 0, litAge: shown?.age ?? null,
+                        flowing: lit?.flow === true });
                 })),
             nodes.map(node => {
                 const box = layout.positions.get(node.id);
