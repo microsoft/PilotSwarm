@@ -729,7 +729,11 @@ states:
 | Size limits | YAML at most 256 KB. A state's output at most 256 KB of JSON: store larger data as a fact or artifact and pass its key. |
 | Run limits | `limits.maxNodeExecutions` (default 1,000, at most 10,000) bounds the visits of a run, so a loop cannot run forever. `limits.timeoutSeconds` is an optional deadline of up to 30 days. |
 
-The `workflow-reference` skill has every field of every state type.
+The `workflow-reference` skill has every field of every state type. A type
+the compiler does not know is refused with the types it takes and, when one
+is near, the one most likely meant (`'code' is not a workflow state type. The
+types are script, wait, messaging, agent, parallel, terminal. Did you mean
+script?`; owner 2026-11-09, I2).
 
 ## What a script sees
 

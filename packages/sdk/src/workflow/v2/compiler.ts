@@ -140,6 +140,53 @@ export const SUPPORTED_NODE_TYPES = ["script", "wait", "messaging", "terminal"] 
 export const SUPPORTED_MESSAGING_MODES = ["receive", "send"] as const;
 const KNOWN_NODE_TYPES = ["script", "terminal", "wait", "messaging", "agent", "parallel", "join"];
 
+/**
+ * I2 (owner 2026-11-09T06:40Z; UXP-AC-01: a real user's chat invented state types): words a writer uses for a state type,
+ * and the type that does it (a messaging mode is its own `type` nowhere).
+ */
+const STATE_TYPE_WORDS: Readonly<Record<string, string>> = Object.freeze({
+    send: "messaging with mode: send", receive: "messaging with mode: receive", request: "messaging with mode: request",
+    message: "messaging", messages: "messaging", notify: "messaging with mode: send", ask: "messaging with mode: request",
+    code: "script", js: "script", javascript: "script", node: "script", python: "script", function: "script", tool: "script",
+    task: "script", action: "script", step: "script", check: "script", compute: "script", http: "script", fetch: "script",
+    sleep: "wait", delay: "wait", timer: "wait", pause: "wait", schedule: "wait", poll: "wait",
+    llm: "agent", ai: "agent", prompt: "agent", model: "agent", assistant: "agent", subagent: "agent", "sub-agent": "agent",
+    end: "terminal", done: "terminal", stop: "terminal", finish: "terminal", final: "terminal", exit: "terminal", success: "terminal",
+    foreach: "parallel", for_each: "parallel", "for-each": "parallel", map: "parallel", fork: "parallel", fanout: "parallel",
+    fan_out: "parallel", "fan-out": "parallel", branch: "parallel", branches: "parallel",
+});
+
+/** The edit distance of two short words (I2's nearest type). Pure. */
+function editDistance(a: string, b: string): number {
+    const row = Array.from({ length: b.length + 1 }, (_, index) => index);
+    for (let i = 1; i <= a.length; i += 1) {
+        let diagonal = row[0];
+        row[0] = i;
+        for (let j = 1; j <= b.length; j += 1) {
+            const above = row[j];
+            row[j] = Math.min(row[j] + 1, row[j - 1] + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1));
+            diagonal = above;
+        }
+    }
+    return row[b.length];
+}
+
+/**
+ * I2: the type a writer most likely meant by `word`, of `types` (the ones this compile takes): a known word for one
+ * (STATE_TYPE_WORDS), else the nearest by spelling (at most 2 edits, or a third of the word), else null. Pure.
+ */
+export function workflowNearestStateType(word: string, types: readonly string[]): string | null {
+    const key = word.trim().toLowerCase();
+    const meant = STATE_TYPE_WORDS[key];
+    if (meant && types.includes(meant.split(" ")[0])) return meant;
+    let best: { type: string; distance: number } | null = null;
+    for (const type of types) {
+        const distance = editDistance(key, type);
+        if (!best || distance < best.distance) best = { type, distance };
+    }
+    return best && best.distance <= Math.max(2, Math.floor(key.length / 3)) ? best.type : null;
+}
+
 export type TerminalOutcome = typeof TERMINAL_OUTCOMES[number];
 export type RuntimeErrorCode = typeof RUNTIME_ERROR_CODES[number];
 
@@ -1664,7 +1711,11 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
         } else if (typeof type === "string" && KNOWN_NODE_TYPES.includes(type)) {
             into.error("WORKFLOW_NODE_TYPE_UNSUPPORTED", `${path}.type`, `state type '${type}' is not supported by this build yet (supported: ${SUPPORTED_NODE_TYPES.join(", ")}).`);
         } else {
-            into.error("WORKFLOW_NODE_TYPE_UNKNOWN", `${path}.type`, `'${String(type)}' is not a workflow state type.`);
+            // I2: the types this compile takes, and the one most likely meant.
+            const types = ["script", "wait", "messaging", ...(enableAgents ? ["agent"] : []), ...(enableParallel ? ["parallel"] : []), "terminal"];
+            const meant = typeof type === "string" ? workflowNearestStateType(type, types) : null;
+            into.error("WORKFLOW_NODE_TYPE_UNKNOWN", `${path}.type`, `'${String(type)}' is not a workflow state type. The types are ${types.join(", ")}.`
+                + (meant ? ` Did you mean ${meant}?` : ""));
         }
     };
     if (!isJsonObject(root.states)) {
