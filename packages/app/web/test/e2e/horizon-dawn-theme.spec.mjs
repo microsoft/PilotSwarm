@@ -170,7 +170,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
 test("cyan accent: no early pass or immediate repeat, and reduced motion cancels it", async ({ page }) => {
     await page.addInitScript(() => { Math.random = () => 0; });
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await page.clock.install();
+    await page.clock.install({ time: new Date("2026-01-01T00:00:00Z") });
+    await page.clock.pauseAt(new Date("2026-01-01T00:00:01Z"));
     await openTheme(page, { width: 1440, height: 900 });
     const accent = page.locator(".portal-header-accent");
     await page.emulateMedia({ reducedMotion: "no-preference" });
