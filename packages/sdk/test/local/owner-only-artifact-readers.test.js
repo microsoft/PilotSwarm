@@ -171,4 +171,43 @@ describe("owner-only artifacts are read by no model-facing tool (PRS-001)", () =
             s.cleanup();
         }
     });
+
+    // Review DS2-001: a blank filename falls back to the source's name in the store; the check sees that same name. A source
+    // file named for the artifact, directly or through a link with an innocent name, is refused whatever blank filename
+    // (spaces, a tab and a newline) is given; the bytes stay. A blank filename with inline content is refused as missing.
+    it("DS2-001: a blank filename with a source named for it, directly or through a link, cannot overwrite it", async () => {
+        const s = storeDir();
+        try {
+            await s.store.uploadArtifact("wf-alice", NAME, SECRET_TEXT, "text/markdown");
+            const before = await s.store.statArtifact("wf-alice", NAME);
+            const unchanged = async () => {
+                expect((await s.store.downloadArtifact("wf-alice", NAME)).body.toString("utf8")).toBe(SECRET_TEXT);
+                expect(await s.store.statArtifact("wf-alice", NAME)).toEqual(before);
+            };
+            const tools = Object.fromEntries(createArtifactTools({ blobStore: s.store }).map(tool => [tool.name, tool]));
+            const write = async params => JSON.parse(String(await tools.write_artifact.handler(params, { durableSessionId: "wf-alice" })));
+            const named = path.join(s.dir, "named", NAME);
+            fs.mkdirSync(path.dirname(named), { recursive: true });
+            fs.writeFileSync(named, "replacement text");
+            const link = path.join(s.dir, "innocent-blank.txt");
+            fs.symlinkSync(named, link);
+            for (const filename of [" ", "\t\n", "   \t "]) {
+                for (const fromFile of [named, link]) {
+                    expect(await write({ filename, fromFile }), JSON.stringify({ filename, fromFile })).toMatchObject({ error: "ARTIFACT_OWNER_ONLY" });
+                }
+                expect(await write({ filename, content: "replacement text" })).toMatchObject({ error: "FILENAME_REQUIRED" });
+            }
+            await unchanged();
+
+            // Ordinary writes: an omitted or blank filename takes the source's name; an explicit one is trimmed.
+            const ordinary = path.join(s.dir, "ordinary-2.txt");
+            fs.writeFileSync(ordinary, "ordinary text");
+            expect(await write({ fromFile: ordinary })).toMatchObject({ success: true, filename: "ordinary-2.txt" });
+            expect(await write({ filename: "  ", fromFile: ordinary })).toMatchObject({ success: true, filename: "ordinary-2.txt" });
+            expect(await write({ filename: "  kept.txt ", fromFile: ordinary })).toMatchObject({ success: true, filename: "kept.txt" });
+            expect(await write({ filename: " notes.md ", content: "hello" })).toMatchObject({ success: true, filename: "notes.md" });
+        } finally {
+            s.cleanup();
+        }
+    });
 });

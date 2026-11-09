@@ -88,6 +88,18 @@ function allowedFileRoots(): string[] {
     });
 }
 
+/**
+ * Review DS2-001: the one name a write_artifact destination gets, decided once and passed to the store unchanged: the
+ * given filename's last part, trimmed, or, when that is empty, `fallback`'s (the source file's resolved path, or the
+ * source artifact's name). Empty when neither gives one. The stores apply their own basename and trim to it and get the
+ * same value back, so the name the owner-only check sees is the name that is written.
+ */
+function artifactDestinationName(filename: unknown, fallback: string | null): string {
+    const explicit = typeof filename === "string" ? path.basename(filename.trim()).trim() : "";
+    if (explicit) return explicit;
+    return fallback ? path.basename(String(fallback).trim()).trim() : "";
+}
+
 function resolveJailedPath(candidate: string, mustExist: boolean): { path?: string; error?: string } {
     const resolved = path.resolve(String(candidate || ""));
     // realpath the deepest existing ancestor so symlinks can't tunnel out.
@@ -217,8 +229,8 @@ export function createArtifactTools(opts: {
 
             const contentType = params.contentType ?? params.content_type;
             const pinned = params.pin === true;
-            const targetName = params.filename
-                ?? (params.fromFile ? path.basename(String(params.fromFile)) : params.fromArtifact ? path.basename(String(params.fromArtifact.filename)) : "");
+            const targetName = artifactDestinationName(params.filename,
+                params.fromFile ? String(params.fromFile) : params.fromArtifact ? String(params.fromArtifact.filename) : null);
             if (isOwnerOnlyArtifact(targetName)) return ownerOnlyRefusal(targetName);
             if (params.fromArtifact && isOwnerOnlyArtifact(params.fromArtifact.filename)) return ownerOnlyRefusal(params.fromArtifact.filename);
 
@@ -226,8 +238,9 @@ export function createArtifactTools(opts: {
                 if (params.fromFile) {
                     const jailed = resolveJailedPath(params.fromFile, true);
                     if (jailed.error) return toolError("PATH_OUTSIDE_WORKDIR", jailed.error);
-                    const filename = params.filename || path.basename(jailed.path!);
-                    // Review DSS-001: the name the store writes, after the path is resolved (a link's target names it).
+                    // Review DSS-001, DS2-001: the name the store writes, after the path is resolved (a link's target names it,
+                    // and a blank filename falls back to it).
+                    const filename = artifactDestinationName(params.filename, jailed.path!);
                     if (isOwnerOnlyArtifact(filename)) return ownerOnlyRefusal(filename);
                     const metadata = await blobStore.uploadArtifactFromFile(
                         sessionId, filename, jailed.path!, contentType, { pinned },
@@ -242,7 +255,8 @@ export function createArtifactTools(opts: {
 
                 if (params.fromArtifact) {
                     const from = params.fromArtifact;
-                    const filename = params.filename || path.basename(from.filename);
+                    const filename = artifactDestinationName(params.filename, String(from.filename));
+                    if (isOwnerOnlyArtifact(filename)) return ownerOnlyRefusal(filename);
                     // Source session defaults to self: the canonical save-as
                     // ("copy my canvas.html to app-<name>.html") should not
                     // require the model to know its own session id.
@@ -265,14 +279,16 @@ export function createArtifactTools(opts: {
                     });
                 }
 
-                if (!params.filename) {
+                const filename = artifactDestinationName(params.filename, null);
+                if (!filename) {
                     return toolError(
                         "FILENAME_REQUIRED",
                         "filename is required when writing inline content.",
                     );
                 }
+                if (isOwnerOnlyArtifact(filename)) return ownerOnlyRefusal(filename);
                 const metadata = await blobStore.uploadArtifact(
-                    sessionId, params.filename, params.content!, contentType,
+                    sessionId, filename, params.content!, contentType,
                     { encoding: params.encoding, pinned },
                 );
                 return JSON.stringify({
