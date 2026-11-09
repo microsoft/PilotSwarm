@@ -13264,7 +13264,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 }
 .ps-wf-panel-resize.is-vertical::after { left: 4px; top: 50%; width: 3px; height: 40px; margin: -20px 0 0 0; }
 .ps-wf-facts { display: grid; gap: 4px; }
-.ps-wf-fact { display: grid; grid-template-columns: 8em 1fr; gap: 8px; }
+.ps-wf-fact { display: grid; grid-template-columns: 8em minmax(0, 1fr); gap: 8px; }
 .ps-wf-fact > span { color: var(--ps-muted); }
 .ps-wf-fact > strong { font-weight: 500; overflow-wrap: anywhere; }
 .ps-wf-node { display: grid; gap: 6px; }
@@ -13291,6 +13291,14 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-next { display: grid; gap: 4px; justify-items: start; }
 .ps-wf-next ul { margin: 0; padding-left: 18px; }
 .ps-wf-next p, .ps-wf-summary > p.ps-wf-muted { margin: 0; }
+/* The Node panel never runs past its pane (GEM lane, WebKit at 390 px: its head, its description and a Result box were cut
+   at the right edge). A grid's items have no minimum width of their own, so a long head or value wraps and a code box
+   scrolls inside itself; the panel never scrolls sideways. */
+.ps-wf-node, .ps-wf-summary, .ps-wf-def-node, .ps-wf-facts, .ps-wf-more-list, .ps-wf-agent, .ps-wf-next { grid-template-columns: minmax(0, 1fr); }
+.ps-wf-node > *, .ps-wf-summary > *, .ps-wf-def-node > *, .ps-wf-facts > *, .ps-wf-more-list > *, .ps-wf-agent > *, .ps-wf-next > * {
+  min-width: 0;
+  max-width: 100%;
+}
 /* An agent node's Log (finding 8): one group per visit; Prompt, Agent and Workflow rows told apart by label and edge. */
 .ps-wf-log-panel { display: grid; gap: 8px; }
 .ps-wf-switch.is-log { justify-self: start; }

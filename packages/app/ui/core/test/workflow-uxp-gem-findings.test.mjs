@@ -150,6 +150,27 @@ test("UXP-GEM-02: a failed Workflow's line on a phone holds its toggle's words; 
     assert.ok(!("padding-left" in declared(".ps-wf-tab.is-phone .ps-wf-failure > .ps-wf-line.is-error")));
 });
 
+// Coordinator 00:17Z, with UXP-GEM-02 (WebKit at 390 px): the Node panel's head, its description and a Result box ran past
+// the right edge. A code box (white-space: pre) set the panel's grids' minimum width, so every row widened with it.
+test("UXP-GEM-02: the Node panel never runs past its pane: its grids' items have no minimum width; values wrap, code scrolls", () => {
+    const grids = [".ps-wf-node", ".ps-wf-summary", ".ps-wf-def-node", ".ps-wf-facts", ".ps-wf-more-list", ".ps-wf-agent", ".ps-wf-next"];
+    for (const grid of grids) {
+        assert.equal(declared(grid)["grid-template-columns"], "minmax(0, 1fr)", grid);
+        assert.deepEqual(pick(declared(`${grid} > *`), ["min-width", "max-width"]), { "min-width": "0", "max-width": "100%" }, grid);
+    }
+    // A fact's value column too (its label keeps 8em).
+    assert.equal(declared(".ps-wf-fact")["grid-template-columns"], "8em minmax(0, 1fr)");
+    // The head and the description wrap anywhere; a Result box wraps; a code box scrolls inside itself.
+    for (const selector of [".ps-wf-node-head", ".ps-wf-what"]) assert.equal(declared(selector)["overflow-wrap"], "anywhere", selector);
+    assert.deepEqual(pick(declared(".ps-wf-result pre"), ["white-space", "overflow-wrap", "overflow"]),
+        { "white-space": "pre-wrap", "overflow-wrap": "anywhere", overflow: "auto" });
+    assert.deepEqual(pick(declared(".ps-wf-more-body > pre.ps-wf-code"), ["white-space", "overflow"]), { "white-space": "pre", overflow: "auto" });
+    assert.equal(declared(".ps-wf-more-body")["min-width"], "0");
+    // Nothing in the panel keeps its words on one line.
+    const panelRules = RULES.filter(rule => rule.selectors.some(one => /\.ps-wf-(node|summary|what|fact|result|def-node)\b/.test(one)));
+    assert.ok(panelRules.every(rule => !/white-space:\s*nowrap/.test(rule.body)), JSON.stringify(panelRules.map(rule => rule.selectors)));
+});
+
 test("UXP-GEM-06: win95's pickers and YAML box have top and left edges seen on the window face (3:1); other themes keep theirs", () => {
     const vars = declared(':root[data-ps-theme="win95"]');
     const resolve = value => value.replace(/var\((--[\w-]+)\)/g, (_, name) => vars[name]);
