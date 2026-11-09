@@ -2211,9 +2211,13 @@ export class SessionManager {
         // must not survive a clear.
         if (!effectiveSerializableConfig.workspace) delete config.workspace;
         for (const key of ["workspaceAttach", "workspaceToolsBlocked", "workspaceCleared", "workflowMilestoneTurn", "workflowAgentChild", "workflowInsideWorkflow",
-            "workflowToolLimit", "workflowContextTrigger", "workflowContextOwnsCheck"] as const) {
+            "workflowToolLimit", "workflowContextTrigger"] as const) {
             if (!(effectiveSerializableConfig as ManagedSessionConfig)[key]) delete config[key];
         }
+        // Review L3: this turn's owns-check is a closure of the runTurn activity; it is used once below and never kept in the
+        // saved config (or the warm session's), where it held the whole scope of the session's last turn.
+        const workflowContextOwnsCheck = config.workflowContextOwnsCheck;
+        delete config.workflowContextOwnsCheck;
         // Section 4.11: with no record, a turn still attaches the deployment's
         // default home folder as its working folder.
         const workspaceAttach = config.workspace || config.workspaceAttach?.homeIsWorkingFolder ? config.workspaceAttach : undefined;
@@ -2438,6 +2442,7 @@ export class SessionManager {
             restricted: isTunerSession || effectiveSerializableConfig.agentIdentity === "regen-distiller",
             manager: holdsManagerBundle(effectiveSerializableConfig.agentIdentity),
             workflowTools: Boolean(options?.workflowTools),
+            ownsCheck: workflowContextOwnsCheck,
         });
         const workflowContext = workflowDecision.mode;
         config.workflowContext = workflowContext;
@@ -4882,7 +4887,7 @@ export class SessionManager {
      * enable_workflows whether they are on or off.
      */
     private async _workflowContextMode(sessionId: string, config: ManagedSessionConfig, state: CapabilityState,
-        flags: { restricted: boolean; manager: boolean; workflowTools: boolean }): Promise<{ mode: WorkflowContextMode; onDemand: boolean }> {
+        flags: { restricted: boolean; manager: boolean; workflowTools: boolean; ownsCheck?: () => Promise<boolean> }): Promise<{ mode: WorkflowContextMode; onDemand: boolean }> {
         if (flags.restricted) return { mode: "none", onDemand: false };
         const catalog = this.sessionCatalog;
         if (flags.workflowTools || config.workflowMilestoneTurn !== true || !catalog?.getSessionCapabilities || !catalog.saveSessionCapabilities) {
@@ -4899,9 +4904,9 @@ export class SessionManager {
         let lasting = config.workflowContextTrigger === "lasting" || this.workflowContextPendingOn.has(sessionId);
         if (lasting) this.workflowContextOwnsNone.delete(sessionId);
         if (!lasting && config.workflowContextTrigger === "turn") return on;
-        if (!lasting && config.workflowContextOwnsCheck && !this.workflowContextOwnsNone.has(sessionId)) {
+        if (!lasting && flags.ownsCheck && !this.workflowContextOwnsNone.has(sessionId)) {
             try {
-                if (await config.workflowContextOwnsCheck()) lasting = true;
+                if (await flags.ownsCheck()) lasting = true;
                 else this.workflowContextOwnsNone.add(sessionId);
             } catch {
                 return on;

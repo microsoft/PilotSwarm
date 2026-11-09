@@ -133,6 +133,22 @@ describe("Workflows on demand: declarations and instructions", () => {
         expect(f.opened.at(-2).handle.disconnect).toHaveBeenCalled();
     });
 
+    // Review L3 (per-session memory on TEST): the owns-check is a closure of the runTurn activity, so a saved config that
+    // kept it held the whole scope of the session's last turn. It is used once by its turn and kept nowhere.
+    it("L3: the owns-check decides its turn and is kept in neither the saved config nor the warm session's", async () => {
+        const f = fixture();
+        const owns = vi.fn(async () => true);
+        const t = await f.turn(0, { workflowContextOwnsCheck: owns });
+        expect(t.config.workflowContext).toBe("on");
+        expect(owns).toHaveBeenCalledTimes(1);
+        expect(f.manager.sessionConfigs.get("chat")).not.toHaveProperty("workflowContextOwnsCheck");
+        expect(t.config).not.toHaveProperty("workflowContextOwnsCheck");
+        expect(f.manager.sessions.get("chat").config).not.toHaveProperty("workflowContextOwnsCheck");
+        // A later turn without one still finds Workflows on (the flag was saved), and calls no stale check.
+        expect((await f.turn(1)).config.workflowContext).toBe("on");
+        expect(owns).toHaveBeenCalledTimes(1);
+    });
+
     it("a lasting trigger turns them on and saves the flag; a trigger that could not be read turns them on for this turn only", async () => {
         const lasting = fixture();
         expect((await lasting.turn(0, { workflowContextTrigger: "lasting" })).config.workflowContext).toBe("on");
