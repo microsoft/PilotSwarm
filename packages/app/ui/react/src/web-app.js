@@ -8339,13 +8339,15 @@ function CanvasSlotControls({ controller, view, compact = false }) {
             type: "button", className: "ps-artifact-pane-btn",
             onClick: () => go(-1), title: "Previous canvas", "aria-label": "Previous canvas",
         }, "\u2039"),
-        React.createElement("select", {
-            className: "ps-canvas-slot-select",
-            value: view.slot,
-            onChange: (e) => controller.dispatch({ type: "ui/canvasSlot", slot: Number(e.target.value) }),
-            "aria-label": "Choose canvas",
-            title: "Choose canvas",
-        }, slots.map((s2) => React.createElement("option", { key: s2.slot, value: s2.slot }, labelFor(s2)))),
+        React.createElement("span", { className: "ps-canvas-slot-picker" },
+            React.createElement("select", {
+                className: "ps-canvas-slot-select",
+                value: view.slot,
+                onChange: (e) => controller.dispatch({ type: "ui/canvasSlot", slot: Number(e.target.value) }),
+                "aria-label": "Choose canvas",
+                title: `Choose canvas: ${labelFor(slots[at])}`,
+            }, slots.map((s2) => React.createElement("option", { key: s2.slot, value: s2.slot }, labelFor(s2)))),
+            React.createElement("span", { className: "ps-canvas-slot-chevron", "aria-hidden": "true" }, "\u2304")),
         React.createElement("button", {
             type: "button", className: "ps-artifact-pane-btn",
             onClick: () => go(1), title: "Next canvas", "aria-label": "Next canvas",
