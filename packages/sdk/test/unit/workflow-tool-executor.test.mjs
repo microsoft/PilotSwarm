@@ -33,11 +33,11 @@ function fixture(overrides = {}) {
 }
 
 for (const name of ["wait", "cron_at", "spawn_agent", "task", "tools/spawn_workflow", "session.create_session", "use_package",
-    "workflow_definition", "respond_session_request", "complete_workflow_node"]) {
+    "workflow_definition", "respond_session_request", "complete_workflow_node", "send_session_message", "reply_session_message"]) {
     test(`workflow control is excluded: ${name}`, () => assert.equal(isWorkflowControlTool(name), true));
 }
-test("review PRW-T1: a parent's grant never captures the Workflow tools that edit, answer or complete", () => {
-    const workflowTools = ["workflow_definition", "respond_session_request", "complete_workflow_node"]
+test("review PRW-T1: a parent's grant never captures the Workflow tools that edit, answer or complete, or session messaging", () => {
+    const workflowTools = ["workflow_definition", "respond_session_request", "complete_workflow_node", "send_session_message", "reply_session_message"]
         .map(name => ({ name, description: "workflow", input_schema: { type: "object" } }));
     const grants = captureWorkflowTools([...metadata, ...workflowTools]);
     assert.deepEqual(grants.map(grant => grant.name).sort(), ["bash", "facts_read", "view"]);

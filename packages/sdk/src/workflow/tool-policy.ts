@@ -83,6 +83,8 @@ const controls = new Set([
     // Review PRW-T1: a Workflow's tool and script states never edit definitions, answer a Workflow's request or complete a
     // Workflow agent state through the parent's grant.
     "workflow_definition", "respond_session_request", "complete_workflow_node",
+    // A Workflow messages sessions through its own send and request states, never as its parent.
+    "send_session_message", "reply_session_message",
 ]);
 
 export function isWorkflowControlTool(name: string): boolean {
