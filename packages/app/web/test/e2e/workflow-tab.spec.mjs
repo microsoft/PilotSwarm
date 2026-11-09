@@ -3525,6 +3525,12 @@ test("timeline flow light: an active run's lit edges carry a moving light in Liv
     // A live update that adds no visit (poll 2 completes) keeps the same light running on: the same Animation, its time on.
     await expect.poll(() => subscribed).toBe(true);
     const light = 'g.ps-workflow-edge[data-from="pause"][data-to="poll"] .ps-workflow-edge-flow';
+    // A fresh WebKit reports a new animation "running" while it is still pending (startTime null, currentTime 0): wait for it
+    // to start before its time is taken (DEV classification at a1772a01).
+    await expect.poll(() => page.evaluate((selector) => {
+        const element = [...document.querySelectorAll(selector)].find(item => item.getBoundingClientRect().width > 0);
+        return element?.getAnimations()[0]?.startTime ?? null;
+    }, light), { timeout: 5_000 }).not.toBeNull();
     await page.evaluate((selector) => {
         const element = [...document.querySelectorAll(selector)].find(item => item.getBoundingClientRect().width > 0);
         window.__flowLight = { element, animation: element.getAnimations()[0], time: element.getAnimations()[0].currentTime };
