@@ -155,8 +155,8 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
         maxBuffer: 1_000_000,
     });
     const location = JSON.parse(child.stdout.trim().split("\n").at(-1));
-    assert.match(location.telemetryPath, /consumer[/\\]node_modules[/\\]pilotswarm-sdk[/\\]dist[/\\]telemetry\.js$/);
-    assert.match(location.sdkPath, /consumer[/\\]node_modules[/\\]pilotswarm-sdk[/\\]dist[/\\]index\.js$/);
+    assert.match(location.telemetryPath, /node_modules[/\\]pilotswarm-sdk[/\\]dist[/\\]telemetry\.js$/);
+    assert.match(location.sdkPath, /node_modules[/\\]pilotswarm-sdk[/\\]dist[/\\]index\.js$/);
     assert.ok(requests.length > 0, "the packed consumer must flush to the local receiver");
     assert.ok(requests.every(request => request.path === "/v1/metrics"));
     const metrics = requests.flatMap(request => request.body.resourceMetrics)
