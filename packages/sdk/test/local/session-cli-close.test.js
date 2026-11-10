@@ -9,7 +9,7 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 
 const getEnv = useSuiteEnv(import.meta.url);
@@ -263,6 +263,15 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
             const currentKey = manager.sessionClientKeys.get(id);
             const current = manager.clients.get(currentKey);
             const resume = current.resumeSession;
+            const settleClose = manager._settleCliClose;
+            const settlements = [];
+            let settling = 0;
+            manager._settleCliClose = async (...args) => {
+                settling += 1;
+                const closed = await settleClose.apply(manager, args);
+                settlements.push(closed);
+                return closed;
+            };
             const order = [];
             let gate = null;
             const previous = { sessions: new Map([[id, { sessionId: id }]]), stop: async () => [], forceStop: async () => {},
@@ -272,7 +281,7 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
                 } } } };
             const hold = () => {
                 let release;
-                gate = { promise: new Promise(resolve => { release = resolve; }) };
+                gate = { promise: new Promise(resolve => { release = resolve; }), release: () => release() };
                 return () => { const held = gate; gate = null; release(); return held; };
             };
             current.resumeSession = async (...args) => { order.push("resume B"); return resume.apply(current, args); };
@@ -285,22 +294,25 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
                 manager.sessionClientKeys.set(id, "dr2-004-a");
                 let release = hold();
                 const turn2 = chat.sendAndWait("turn 2 after leaving A", TURN_MS);
-                await new Promise(resolve => setTimeout(resolve, 2_000));
+                await expect.poll(() => settling, { timeout: testTime.ms(30_000) }).toBeGreaterThan(0);
                 expect(order, "B does not resume while A's close is held").toEqual([]);
+                expect([...(manager.cliClosesOwed.get(id) ?? [])]).toEqual(["dr2-004-a"]);
                 release();
                 await turn2;
+                expect(settlements).toContain(true);
                 expect(order).toEqual(["closed A", "resume B"]);
                 expect(manager.sessionClientKeys.get(id)).toBe(currentKey);
                 expect(lastTurn()).toMatchObject({ turn: 2, firstUserText: expect.stringContaining(FIRST) });
 
                 // 2. A's close does not settle within the settle time (1 s): the turn fails, keeping A's binding and owed close.
                 order.length = 0;
+                settlements.length = 0;
                 previous.sessions.set(id, { sessionId: id });
                 manager.cliCloseSettleMs = 1_000;
                 manager.sessionClientKeys.set(id, "dr2-004-a");
                 release = hold();
                 const turn3 = chat.sendAndWait("turn 3 after leaving A again", TURN_MS);
-                await new Promise(resolve => setTimeout(resolve, 5_000));
+                await expect.poll(() => settlements, { timeout: testTime.ms(30_000) }).toContain(false);
                 expect(order, "nothing resumes on B").toEqual([]);
                 expect(manager.sessionClientKeys.get(id)).toBe("dr2-004-a");
                 expect([...(manager.cliClosesOwed.get(id) ?? [])]).toEqual(["dr2-004-a"]);
@@ -312,8 +324,10 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
                 expect(manager.sessionClientKeys.get(id)).toBe(currentKey);
                 expect(lastTurn()).toMatchObject({ turn: 3, firstUserText: expect.stringContaining(FIRST) });
             } finally {
-                if (gate) gate = null;
+                gate?.release();
+                gate = null;
                 current.resumeSession = resume;
+                manager._settleCliClose = settleClose;
                 manager.clients.delete("dr2-004-a");
             }
         });

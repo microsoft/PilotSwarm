@@ -405,8 +405,11 @@ states:
             expect(node).toMatchObject({ state: "pending", effectAttempts: 0 });
             await h.host.catalog.softDeleteSession(id);
             current.open();
-            const effect = await h.client.waitForOrchestration(workflowEffectInstanceId(node.nodeExecutionId), 30_000);
-            expect(effect.status, JSON.stringify(effect)).toBe("Completed");
+            const effect = await h.client.waitForOrchestration(workflowEffectInstanceId(node.nodeExecutionId), testTime.ms(30_000));
+            // The entry fence may return first, or observeEnd may stop the still-preparing effect.
+            // Only the deletion's exact cancellation is another legal end; unrelated failures still fail.
+            if (effect.status === "Failed") expect(effect.error, JSON.stringify(effect)).toBe("canceled: Deleted");
+            else expect(effect.status, JSON.stringify(effect)).toBe("Completed");
             expect(probe.count("/start")).toBe(1);
             expect(await h.store.readNodeExecution(node.nodeExecutionId)).toMatchObject({
                 state: "completed", outcome: "cancelled", winner: "delete", effectAttempts: 0,
@@ -1304,4 +1307,3 @@ states:
         }
     });
 });
-

@@ -1728,6 +1728,18 @@ describe("workflow: a parallel state's time limit ends a cut branch's decided ag
             expect(await h.store.readAgentInvocation(spawn.nodeExecutionId)).toMatchObject({ endRequested: "cancel", endSentAt: expect.any(Date) });
             expect(await h.store.readRun(runId)).toMatchObject({ status: "paused" });
             await resumeRun(h, workflowSessionId);
+            // A timed_out fork routes into a 600 s wait; a blocked fork routes to a terminal. End the
+            // former explicitly instead of timing out on cleanup after the child-end proof above.
+            await until(async () => {
+                const run = await h.store.readRun(runId);
+                if (["completed", "failed", "cancelled"].includes(run?.status)) return true;
+                const hold = (await h.store.listNodeExecutions(runId)).find(node => node.nodeId === "hold" && node.scopeId === "root");
+                return hold?.state === "pending";
+            }, "the resumed run's route");
+            if ((await h.store.readRun(runId)).status === "running") {
+                await controlWorkflowRun(h.host, workflowSessionId, { operation: "cancel", runId: null, reason: "child end verified" },
+                    { actor: ACTOR, operationId: "cancel-r3-paused" });
+            }
             await ended(h, runId);
             expect(await commandsOf(h, spawn.childSessionId)).toHaveLength(1);
         } finally {

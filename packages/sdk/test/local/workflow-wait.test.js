@@ -342,7 +342,9 @@ describe("workflow wait states", () => {
             expect((await parent.read(id)).run).toMatchObject({ status: "paused", pauseSettled: true });
             // A sustained pause: the decided wait has no deadline left, so the controller does not elapse it again.
             const before = h.elapses.length;
-            await new Promise(resolve => setTimeout(resolve, 3_000));
+            const collections = h.withheld.filter(id => id === runId).length;
+            await until(async () => h.withheld.filter(id => id === runId).length >= collections + 2,
+                "two more paused collections that keep the decided wait");
             expect(h.elapses.slice(before)).toEqual([]);
             expect((await h.store.readRun(runId)).status).toBe("paused");
             expect(await parent.update(id, { operation: "resume", operation_id: "resume" })).toMatchObject({ ok: true, status: "running" });
