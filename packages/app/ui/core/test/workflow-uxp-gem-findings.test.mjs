@@ -19,8 +19,8 @@ import fs from "node:fs";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { contrastRatio, getTheme, listThemes } from "../src/themes/index.js";
-import { workflowV2DraftMarks } from "../src/workflow-v2-commands.js";
-import { WorkflowV2Diagnostics, WorkflowV2YamlBox } from "../../react/src/workflow-v2-panels.js";
+import { workflowDraftMarks } from "../src/workflow-commands.js";
+import { WorkflowDiagnostics, WorkflowYamlBox } from "../../react/src/workflow-panels.js";
 import { revisionLine } from "../../react/src/workflow-tab.js";
 
 const h = React.createElement;
@@ -50,9 +50,9 @@ test("UXP-GEM-04: on a phone the chat's YAML editor's box scrolls inside itself 
     // YAML box component draws, not wrapped).
     const chat = source("workflow-chat-tab.js");
     assert.match(chat, /h\("div", \{ className: "ps-wf-chat-editor", "data-base-revision": draft\.base \},\n\s*h\("div", \{ className: "ps-wf-bar is-yaml" \},/);
-    assert.match(chat, /\n\s*h\(WorkflowV2YamlBox, \{ value: draft\.text \?\? "", marks, changed: draft\.dirty,/);
+    assert.match(chat, /\n\s*h\(WorkflowYamlBox, \{ value: draft\.text \?\? "", marks, changed: draft\.dirty,/);
     const drawn = renderToStaticMarkup(h("div", { className: "ps-wf-chat-editor" },
-        h(WorkflowV2YamlBox, { value: "name: a\n", marks: { lines: [], unplaced: 0 }, changed: false, onChange: () => {} })));
+        h(WorkflowYamlBox, { value: "name: a\n", marks: { lines: [], unplaced: 0 }, changed: false, onChange: () => {} })));
     assert.match(drawn, /^<div class="ps-wf-chat-editor"><div class="ps-workflow-yaml">/);
     // The draft editor keeps its 55vh cap; the chat's editor fills its view instead (the next test).
     assert.deepEqual(pick(declared(".ps-wf-tab.is-phone .ps-workflow-draft-editor > .ps-workflow-yaml"), ["max-height", "overflow"]),
@@ -117,19 +117,19 @@ test("the plain Definition picker is drawn by the page in every browser: theme g
 });
 
 test("UXP-GEM-05: the marks under the YAML box say what the diagnostics list says; the code and path only in their tooltip", () => {
-    const marks = workflowV2DraftMarks(DIAGNOSTICS);
+    const marks = workflowDraftMarks(DIAGNOSTICS);
     assert.deepEqual(marks.lines, [
         { line: 9, severity: "error", texts: ["Duplicate key \"required\" at line 9 (first at line 8): a mapping may name each key once."],
             codes: ["WORKFLOW_YAML_INVALID · $"] },
         { line: 12, severity: "warning", texts: ["Warning: This input is JSON text in quotes."], codes: ["WORKFLOW_INPUT_JSON_TEXT · states.ask.input"] },
     ]);
-    const box = renderToStaticMarkup(h(WorkflowV2YamlBox, { value: "a: 1\n".repeat(12), marks, changed: false, onChange: () => {} }));
+    const box = renderToStaticMarkup(h(WorkflowYamlBox, { value: "a: 1\n".repeat(12), marks, changed: false, onChange: () => {} }));
     const list = box.slice(box.indexOf("<ul"), box.indexOf("</ul>"));
     const items = [...list.matchAll(/<li data-mark="(\w+)">(.*?)<\/li>/g)].map(([, mark, item]) => ({ mark, item }));
     assert.equal(items.length, 2);
     assert.ok(!words(list).includes("WORKFLOW_"), words(list));
     // The diagnostics list's words for each, its "Line N: " being the mark's own Line N button.
-    const listed = renderToStaticMarkup(h(WorkflowV2Diagnostics, { diagnostics: DIAGNOSTICS }));
+    const listed = renderToStaticMarkup(h(WorkflowDiagnostics, { diagnostics: DIAGNOSTICS }));
     const said = [...listed.matchAll(/<li [^>]*title="([^"]*)"[^>]*>(.*?)<\/li>/g)].map(([, title, item]) => ({ title, text: words(item) }));
     for (const [at, { item }] of items.entries()) {
         const line = DIAGNOSTICS[at].line;

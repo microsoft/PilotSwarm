@@ -7,7 +7,7 @@
  */
 import { workflowChildrenOf, workflowStateOf } from "./workflow-owner.js";
 import { WORKFLOW_RUN_STATE_WORDS, workflowShortTime } from "./workflow-words.js";
-import { workflowV2LineDiff, workflowV2RunCommandFailure } from "./workflow-v2-commands.js";
+import { workflowLineDiff, workflowRunCommandFailure } from "./workflow-commands.js";
 import { formatLocalTime } from "./formatting.js";
 
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -381,7 +381,7 @@ export function chatRevisionCompare(readFrom, readTo, from, to) {
     const failed = [before, after].find(item => item.phase === "failed") ?? null;
     const hidden = [before, after].find(item => item.hidden) ?? null;
     const ready = before.text !== null && after.text !== null;
-    const diff = ready ? workflowV2LineDiff(before.text, after.text) : null;
+    const diff = ready ? workflowLineDiff(before.text, after.text) : null;
     const summary = failed ? `Revision ${failed.revision} could not be read: ${failed.error ?? "no reason given"}`
         : hidden ? "Only people who can change this definition can read its YAML."
             : !ready ? `Reading revisions ${from} and ${to}…`
@@ -396,7 +396,7 @@ export function chatRevisionCompare(readFrom, readTo, from, to) {
  * stale (REVISION_STALE: the newest revision, to reload) }.
  */
 export function chatDefinitionFailure(error, { timeOf = workflowShortTime } = {}) {
-    const failure = workflowV2RunCommandFailure(error);
+    const failure = workflowRunCommandFailure(error);
     const details = isRecord(error?.details) ? error.details : null;
     if (failure.code === "REVISION_STALE" && Number.isSafeInteger(details?.currentRevision)) {
         const by = chatRevisionAuthorWords({ actor: isRecord(details.savedBy) ? details.savedBy : null }) ?? "someone";

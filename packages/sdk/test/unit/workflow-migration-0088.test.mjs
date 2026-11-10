@@ -15,13 +15,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { CMS_MIGRATIONS } from "../../dist/cms-migrations.js";
 import { workflowMigration } from "../../dist/migrations/workflow-0088.js";
-import { sessionPairLockOrder } from "../../dist/workflow/v2/store.js";
+import { sessionPairLockOrder } from "../../dist/workflow/store.js";
 
 const flat = (sql) => sql.replace(/\s+/g, " ");
 const [objects, dropLeftover, buildIndex] = workflowMigration("s");
 const chatEnded = () => {
     const sql = flat(objects);
-    return sql.slice(sql.indexOf('CREATE OR REPLACE FUNCTION "s".workflow_v2_on_chat_ended()'), sql.indexOf("$$ LANGUAGE plpgsql; DO $sessions_triggers$"));
+    return sql.slice(sql.indexOf('CREATE OR REPLACE FUNCTION "s".workflow_on_chat_ended()'), sql.indexOf("$$ LANGUAGE plpgsql; DO $sessions_triggers$"));
 };
 
 test("one Workflow migration, 0088, registered last after main's 0087, as three steps", () => {
@@ -59,7 +59,7 @@ test("what it adds to sessions it adds only when the catalog lacks it, so a run 
         assert.match(sql, new RegExp(`IF NOT EXISTS \\(SELECT 1 FROM pg_attribute WHERE attrelid = '"s"\\.sessions'::regclass AND attname = '${column}' AND NOT attisdropped\\) THEN ALTER TABLE "s"\\.sessions ADD COLUMN ${column} `));
     }
     assert.match(sql, /IF NOT EXISTS \(SELECT 1 FROM pg_constraint WHERE conrelid = '"s"\.sessions'::regclass AND conname = 'sessions_session_kind_check'\) THEN/);
-    for (const trigger of ["workflow_v2_session_deleted", "workflow_v2_chat_ended"]) {
+    for (const trigger of ["workflow_session_deleted", "workflow_chat_ended"]) {
         assert.match(sql, new RegExp(`IF NOT EXISTS \\(SELECT 1 FROM pg_trigger WHERE tgrelid = '"s"\\.sessions'::regclass AND tgname = '${trigger}'\\) THEN CREATE TRIGGER ${trigger} `));
     }
 });

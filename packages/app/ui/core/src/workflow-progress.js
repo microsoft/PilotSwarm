@@ -129,7 +129,7 @@ export function appendWorkflowProgress(chat, event, message) {
     const runId = runIdOf(data);
     const sessionId = message.sessionId;
     if (event.eventType === "workflow.started") {
-        // A v2 run names itself, and its rows never merge into another run's. Another run's summaries go on (re-check
+        // A run names itself, and its rows never merge into another run's. Another run's summaries go on (re-check
         // UI-RC2-1: test runs run beside each other and the live run); each ends with its own run.
         chat.push({ ...message, workflowDefinition: Array.isArray(data.states) ? data.states : [], workflowRunId: runId });
         return;

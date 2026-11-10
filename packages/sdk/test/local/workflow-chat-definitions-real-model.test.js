@@ -12,13 +12,13 @@
  * PASS: the definition, revisions, authors, bases and Workflows as above; the person's note consumed; no "No response was
  * returned"; the chat idle at the end. The model's answers and tool calls are recorded, not judged.
  *
- * It spends model tokens, so it runs only when asked: PS_WORKFLOW_V2_REAL_MODEL=run with PS_WORKFLOW_V2_REAL_MODEL_REF
- * (provider:model) and optionally PS_WORKFLOW_V2_REAL_MODEL_EFFORT, on a local worker whose model catalog
- * (PS_MODEL_PROVIDERS_PATH) serves it (test/helpers/workflow-v2-real-model.mjs). Asked but unable to run, it fails as
- * BLOCKED. The receipt goes to PS_WORKFLOW_V2_REAL_MODEL_RECEIPT when set; a summary is printed. Two asked turns, plus
+ * It spends model tokens, so it runs only when asked: PS_WORKFLOW_REAL_MODEL=run with PS_WORKFLOW_REAL_MODEL_REF
+ * (provider:model) and optionally PS_WORKFLOW_REAL_MODEL_EFFORT, on a local worker whose model catalog
+ * (PS_MODEL_PROVIDERS_PATH) serves it (test/helpers/workflow-real-model.mjs). Asked but unable to run, it fails as
+ * BLOCKED. The receipt goes to PS_WORKFLOW_REAL_MODEL_RECEIPT when set; a summary is printed. Two asked turns, plus
  * the turns the Workflows' ending notices start.
  *
- *   PS_WORKFLOW_V2_REAL_MODEL=run PS_WORKFLOW_V2_REAL_MODEL_REF=<provider:model> \
+ *   PS_WORKFLOW_REAL_MODEL=run PS_WORKFLOW_REAL_MODEL_REF=<provider:model> \
  *     npx vitest run test/local/workflow-chat-definitions-real-model.test.js
  */
 import { describe, it, expect } from "vitest";
@@ -27,7 +27,7 @@ import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createTestEnv } from "../helpers/local-env.js";
 import { PilotSwarmManagementClient, withClient } from "../helpers/local-workers.js";
-import { realModelPlan } from "../helpers/workflow-v2-real-model.mjs";
+import { realModelPlan } from "../helpers/workflow-real-model.mjs";
 import { loadModelProviders } from "../../src/index.ts";
 
 const OWNER = { provider: "test", subject: "workflow-chat-definitions-real-model" };
@@ -43,7 +43,7 @@ const ASK_SAVE = `Save a Workflow Definition named ${NAME} that waits 5 seconds 
 const ASK_CHANGE_AND_START = `Change ${NAME} so that it waits 3 seconds instead, save that change, and then start one Workflow of it. `
     + "Then tell me in one line which revision you started.";
 const PERSON_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: ${NAME}, version: "1.0.1" }
 initial: hold
@@ -76,7 +76,7 @@ describe("Workflow Definitions with revisions (stage 2.1), on a real model", () 
     }
     it(TITLE, { timeout: TEST_TIMEOUT }, async () => {
         if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
-        if (plan.target !== "local") throw new Error("BLOCKED: this check runs on a local worker (PS_WORKFLOW_V2_REAL_MODEL_TARGET=local).");
+        if (plan.target !== "local") throw new Error("BLOCKED: this check runs on a local worker (PS_WORKFLOW_REAL_MODEL_TARGET=local).");
         const receipt = { test: "workflow-chat-definitions-real-model", startedAt: new Date().toISOString(),
             model: { ref: plan.model.ref, effort: plan.effort ?? "the model's default" }, steps: {}, verdict: null };
         const env = createTestEnv("workflow-chat-definitions-real-model");
@@ -177,7 +177,7 @@ describe("Workflow Definitions with revisions (stage 2.1), on a real model", () 
         } finally {
             receipt.endedAt = new Date().toISOString();
             console.log(`[workflow-chat-definitions-real-model] ${JSON.stringify(receipt)}`);
-            const path = process.env.PS_WORKFLOW_V2_REAL_MODEL_RECEIPT;
+            const path = process.env.PS_WORKFLOW_REAL_MODEL_RECEIPT;
             if (path) {
                 mkdirSync(dirname(path), { recursive: true });
                 writeFileSync(path, `${JSON.stringify(receipt, null, 2)}\n`);

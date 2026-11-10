@@ -1,5 +1,5 @@
 /**
- * Workflow v2 readWorkflow (GET /api/v1/sessions/:sessionId/workflow,
+ * Workflow readWorkflow (GET /api/v1/sessions/:sessionId/workflow,
  * decision read-workflow-transport, option A): one protocol row, access
  * session:read. The portal runtime's session gate decides first, with the
  * standard not-found privacy, and only then does the transport read the
@@ -147,7 +147,7 @@ test("with the ownership switch off, other session:read operations are still onl
 /**
  * The actual HTTP route, end to end in-process: the generated Express route, the real PortalRuntime gate, the real
  * NodeSdkTransport.readWorkflow and the real PilotSwarmManagementClient.readWorkflow adapter (its runId validation, its
- * session lookup and readWorkflowV2View), over a stand-in catalog and workflow store (no database): alice owns every
+ * session lookup and readWorkflowView), over a stand-in catalog and workflow store (no database): alice owns every
  * session; wf1 is a version 2 workflow with a live run, an earlier run R and a test run T kept from while test mode was on
  * (which the read hides while it is off: review SF-5); any other session is an agent session. The adapter has
  * no options unless `config` is given (the test-only workflowCommands option, INACTIVE).

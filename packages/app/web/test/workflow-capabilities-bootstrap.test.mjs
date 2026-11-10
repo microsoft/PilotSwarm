@@ -79,7 +79,7 @@ test("a deployment as configured today advertises version 2 reads and a person's
         assert.deepEqual(body.workflows, {
             schema: 1,
             enabled: true,
-            apiVersion: "pilotswarm.dev/v2-draft", read: true, create: false, input: false,
+            apiVersion: "pilotswarm.dev/v1", read: true, create: false, input: false,
             commands: { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
         });
         // The advertised refusal is the adapter's own: a person's command to this deployment changes nothing and gets it.
@@ -207,7 +207,7 @@ test("an advertisement that is not an object is malformed, never an older host: 
 });
 
 test("the portal's runtime options are exactly its storage options and mode, and its runtime takes a person's commands on the full engine", async () => {
-    // The Workflow V2 test environment switch is retired (owner decision 2026-11-08T15:30Z): nothing reads it.
+    // The Workflow test environment switch is retired (owner decision 2026-11-08T15:30Z): nothing reads it.
     const storageOptions = { store: "sqlite::memory:", useManagedIdentity: false, cmsFactsDatabaseUrl: undefined, aadDbUser: undefined };
     const options = portalRuntimeOptions(storageOptions, "local");
     assert.deepEqual(options, { ...storageOptions, mode: "local" });

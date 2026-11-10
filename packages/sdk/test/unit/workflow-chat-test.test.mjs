@@ -14,13 +14,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { matchTestFixture, parseTestFixtures, storedTestFixtures } from "../../dist/workflow/v2/test-mode.js";
-import { workflowDefinitionFromTool } from "../../dist/workflow/v2/definition-tool.js";
-import { chatTestReport, testAnswerShapeWords, waitChatWorkflowTest, WORKFLOW_DEFINITION_TEST_WAIT_MS } from "../../dist/workflow/v2/chat-test.js";
-import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
-import { isWorkflowTestBench, WORKFLOW_TEST_BENCH_KIND } from "../../dist/workflow/v2/test-bench.js";
-import { workflowScriptsDisabledText } from "../../dist/workflow/v2/scripts-gate.js";
-import { WORKFLOW_V2_TEST_EPOCH } from "../../dist/workflow/v2/store.js";
+import { matchTestFixture, parseTestFixtures, storedTestFixtures } from "../../dist/workflow/test-mode.js";
+import { workflowDefinitionFromTool } from "../../dist/workflow/definition-tool.js";
+import { chatTestReport, testAnswerShapeWords, waitChatWorkflowTest, WORKFLOW_DEFINITION_TEST_WAIT_MS } from "../../dist/workflow/chat-test.js";
+import { compileWorkflow } from "../../dist/workflow/compiler.js";
+import { isWorkflowTestBench, WORKFLOW_TEST_BENCH_KIND } from "../../dist/workflow/test-bench.js";
+import { workflowScriptsDisabledText } from "../../dist/workflow/scripts-gate.js";
+import { WORKFLOW_TEST_EPOCH } from "../../dist/workflow/store.js";
 import { WORKFLOW_TOOL_POLICY } from "../../dist/workflow/tool-policy.js";
 
 const sha = text => createHash("sha256").update(text).digest("hex");
@@ -82,7 +82,7 @@ const visit = (nodeId, ordinal, extra) => ({ nodeExecutionId: `nx-${nodeId}-${or
     output: null, error: null, outcome: null, resultKind: null, inputSha256: sha("null"), ...extra });
 const bench = { testId: "bench-1", definitionId: "def-1", name: "hn-top-watch", revision: 3 };
 const run = extra => ({ runId: "run-1", status: "completed", terminalOutcome: "succeeded", terminalNodeId: "done", terminalError: null, stop: null,
-    virtualNow: new Date(Date.parse(WORKFLOW_V2_TEST_EPOCH) + 90_000), createdAt: new Date(Date.now() - 4_000), finishedAt: new Date(), ...extra });
+    virtualNow: new Date(Date.parse(WORKFLOW_TEST_EPOCH) + 90_000), createdAt: new Date(Date.now() - 4_000), finishedAt: new Date(), ...extra });
 
 test("the report of a passed test: its path, outputs, mocked answers and the virtual time of its waits", async () => {
     const nodes = [
@@ -147,7 +147,7 @@ test("the report of a failed test names its first error in words, or the call it
 // Agent Smith 1.4.2 smoke (F-SM2): a prepared answer of the wrong shape was refused silently, and the test then said
 // "no prepared answer" (TEST_UNANSWERED). Now the test fails at once with TEST_ANSWER_REFUSED: why, and the shape it needs.
 const AGENT_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: triage, version: "1.0.0" }
 initial: classify
@@ -162,7 +162,7 @@ states:
 `;
 
 test("F-SM2: a prepared answer of the wrong shape fails the test at once, saying why and the shape it needs", async () => {
-    const compiled = compileWorkflowV2(AGENT_YAML, { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true });
+    const compiled = compileWorkflow(AGENT_YAML, { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true });
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     let current = run({ workflowSessionId: "bench-1", mode: "test", status: "running", revision: 3, irSha256: compiled.irSha256, terminalOutcome: null,
         terminalNodeId: null, finishedAt: null });
@@ -212,7 +212,7 @@ test("F-SM2: the shape each kind of call's answer needs, with what a failure loo
 // refused answer and a missing one each end the test at once, saying the shape a request's answer needs; the step's first
 // error is the cancel's reason; a right answer is left to the run.
 const REQUEST_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: security, version: "1.0.0" }
 initial: security_review
@@ -237,7 +237,7 @@ states:
 
 /** One wait of a test whose run holds one request (security_review) open, with these fixtures; what it cancelled with, and its report. */
 async function requestTest(fixtures) {
-    const compiled = compileWorkflowV2(REQUEST_YAML, { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true });
+    const compiled = compileWorkflow(REQUEST_YAML, { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true });
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     let current = run({ workflowSessionId: "bench-1", mode: "test", status: "running", revision: 3, irSha256: compiled.irSha256, terminalOutcome: null,
         terminalNodeId: null, finishedAt: null });
@@ -299,11 +299,11 @@ test("a request step: { response } and { decline: { reason } } are not refused (
 });
 
 test("the test operation's answer shapes and a two-fixture example are in the workflow-tools skill its declaration names", async () => {
-    const { workflowDefinitionToolSpec } = await import("../../dist/workflow/v2/definition-tool.js");
+    const { workflowDefinitionToolSpec } = await import("../../dist/workflow/definition-tool.js");
     const fs = await import("node:fs");
     const spec = workflowDefinitionToolSpec();
     assert.match(spec.parameters.properties.fixtures.description, /call load_skill with name workflow-tools/);
-    const tools = fs.readFileSync(new URL("../../plugins/workflow-v2/skills/workflow-tools/SKILL.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+    const tools = fs.readFileSync(new URL("../../plugins/workflow/skills/workflow-tools/SKILL.md", import.meta.url), "utf8").replace(/\s+/g, " ");
     assert.ok(tools.includes("a tool call's result; an agent step's `{ outcome, output }`; a request step's `{ response }` or `{ decline: { reason } }`; a send step's any value; "
         + "a receive's message, as its contract's schema says."));
     assert.ok(tools.includes('- { operation: agent, state: classify, response: { kind: success, value: { outcome: bug, output: { label: "bug" } } } }'));

@@ -22,15 +22,15 @@ import os from "node:os";
 import path from "node:path";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmManagementClient } from "../helpers/local-workers.js";
-import { openWorkflowStore } from "../helpers/workflow-v2-request-fixture.js";
+import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 import { FilesystemArtifactStore, publishAgentPackageDir } from "../../src/index.ts";
-import { createPackageWorkflowSource } from "../../src/workflow/v2/chat-packages.ts";
-import { createRegistryWorkflowAgentResolver } from "../../src/workflow/v2/agent-resolver.ts";
+import { createPackageWorkflowSource } from "../../src/workflow/chat-packages.ts";
+import { createRegistryWorkflowAgentResolver } from "../../src/workflow/agent-resolver.ts";
 import {
     attachChatPackageWorkflow, copyChatPackageWorkflow, listChatWorkflowDefinitions, saveChatWorkflowDefinition, startChatWorkflowDefinition,
     withPackageUpdates,
-} from "../../src/workflow/v2/chat-definitions.ts";
-import { workflowDefinitionFromTool } from "../../src/workflow/v2/definition-tool.ts";
+} from "../../src/workflow/chat-definitions.ts";
+import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -39,7 +39,7 @@ const VIEWER = { provider: OWNER.provider, subject: OWNER.subject };
 const ENGINE = { kind: "system", name: "package-definitions-test" };
 
 const WATCH_YAML = (seconds, version) => `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: release-watch, version: "${version}" }
 inputs:
@@ -62,7 +62,7 @@ effects: No scripts; one wait.
 Start it with the train's name.
 `;
 const DIGEST_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: incident-digest, version: "0.4.1" }
 initial: hold
@@ -89,7 +89,7 @@ You are ${name}.
 `;
 /** A definition with one agent state that uses `agent` of `pkg`. */
 const DELEGATE = (agent, pkg) => `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: delegate, version: "1.0.0" }
 initial: ask

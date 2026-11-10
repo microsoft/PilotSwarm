@@ -13,15 +13,15 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
+import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { ManagedSession } from "../../dist/managed-session.js";
 import { loadSkillsSync } from "../../dist/skills.js";
 import {
-    WORKFLOW_CONTEXT_STUB, WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR, workflowSessionGuidance,
+    WORKFLOW_CONTEXT_STUB, WORKFLOW_SKILLS_DIR, WORKFLOW_TEST_MODE_SKILLS_DIR, workflowSessionGuidance,
 } from "../../dist/workflow/guidance.js";
-import { workflowDefinitionToolSpec } from "../../dist/workflow/v2/definition-tool.js";
+import { workflowDefinitionToolSpec } from "../../dist/workflow/definition-tool.js";
 
-const MIXED = `apiVersion: pilotswarm.dev/v2-draft
+const MIXED = `apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: ux-defs, version: "1.0.0" }
 inputs:
@@ -37,14 +37,14 @@ states:
 `;
 
 test("UXFD-F2: a duplicated key names the key and both lines", () => {
-    const compiled = compileWorkflowV2(MIXED);
+    const compiled = compileWorkflow(MIXED);
     assert.equal(compiled.valid, false);
     const duplicate = compiled.diagnostics.find(item => item.code === "WORKFLOW_YAML_INVALID");
     assert.ok(duplicate, JSON.stringify(compiled.diagnostics));
     assert.equal(duplicate.line, 10);
     assert.match(duplicate.message, /^Duplicate key "required" at line 10 \(first at line 7\): a mapping may name each key once\.$/);
     // Another parse error keeps the parser's own words.
-    const other = compileWorkflowV2("apiVersion: [unclosed\n");
+    const other = compileWorkflow("apiVersion: [unclosed\n");
     assert.ok(other.diagnostics.some(item => item.code === "WORKFLOW_YAML_INVALID" && !item.message.startsWith("Duplicate key")));
 });
 
@@ -60,7 +60,7 @@ function chatTexts() {
             if (/workflow|respond_session_request|enable_workflows/.test(tool.name)) texts.push([`tool ${tool.name}`, `${tool.description} ${JSON.stringify(tool.parameters)}`]);
         }
     }
-    for (const skill of [...loadSkillsSync(WORKFLOW_V2_SKILLS_DIR), ...loadSkillsSync(WORKFLOW_V2_TEST_MODE_SKILLS_DIR)]) {
+    for (const skill of [...loadSkillsSync(WORKFLOW_SKILLS_DIR), ...loadSkillsSync(WORKFLOW_TEST_MODE_SKILLS_DIR)]) {
         texts.push([`skill ${skill.name}`, `${skill.description}\n${skill.prompt}`]);
     }
     return texts;
@@ -84,10 +84,10 @@ test("UXFD-F4: the guidance has a stop rule for a repeated error, and workflow_d
     const description = workflowDefinitionToolSpec({ tests: true }).description;
     const example = /inputs: (\{ schema: \{ type: object, required: \[topic\], properties: \{ topic: \{ type: string \} \} \} \})/.exec(description)?.[1];
     assert.ok(example, description);
-    const yaml = ["apiVersion: pilotswarm.dev/v2-draft", "kind: Workflow", 'metadata: { name: ux-defs, version: "1.0.0" }', `inputs: ${example}`,
+    const yaml = ["apiVersion: pilotswarm.dev/v1", "kind: Workflow", 'metadata: { name: ux-defs, version: "1.0.0" }', `inputs: ${example}`,
         "initial: pause", "states:", "  pause: { type: wait, seconds: 1, transition: { next: { elapsed: done } } }",
         "  done: { type: terminal, outcome: succeeded }", ""].join("\n");
-    const compiled = compileWorkflowV2(yaml);
+    const compiled = compileWorkflow(yaml);
     assert.deepEqual(compiled.diagnostics.filter(item => item.severity === "error"), []);
     assert.equal(compiled.valid, true);
 });

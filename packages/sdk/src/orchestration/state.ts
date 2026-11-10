@@ -17,7 +17,7 @@ import {
     type IntakeCarryingInput, type IntakeState,
 } from "./intake-state.js";
 import type { IntakeAttemptDispatch, IntakeStimulus } from "./intake-machine.js";
-import { IntakeShapeError, intakeId, intakeObject } from "../workflow/v2/intake.js";
+import { IntakeShapeError, intakeId, intakeObject } from "../workflow/intake.js";
 import { restoreWorkflowTurnFailure, type WorkflowTurnFailureReport } from "./workflow-turn-failure.js";
 
 export interface ActiveTimer {

@@ -787,7 +787,7 @@ Current grouped npm scripts are:
 - `test:local:system-agents`
 - `test:local:session-policy`
 - `test:local:reliability`
-- `test:local:workflows` (Workflows: the workflow unit tests of the SDK and the portal, and every local Workflow test on PostgreSQL, the kitchen-sink run included; the real-model ones run only when asked, with `PS_WORKFLOW_V2_REAL_MODEL=run`)
+- `test:local:workflows` (Workflows: the workflow unit tests of the SDK and the portal, and every local Workflow test on PostgreSQL, the kitchen-sink run included; the real-model ones run only when asked, with `PS_WORKFLOW_REAL_MODEL=run`)
 
 One improvement here would be to add a dedicated grouped runner for nested-spawn or other especially slow/high-risk sub-agent scenarios when debugging regressions locally.
 

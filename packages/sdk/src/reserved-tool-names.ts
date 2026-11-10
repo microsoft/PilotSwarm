@@ -87,7 +87,7 @@ const SESSION_ATTACHED_TOOL_NAMES = [
 ] as const;
 
 /**
- * Workflow v2 turn tools (ManagedSession.subAgentToolDefs):
+ * Workflow turn tools (ManagedSession.subAgentToolDefs):
  * respond_session_request on every turn of session orchestration 1.0.83 (a
  * workflow request turn), complete_workflow_node for an agent state's own
  * child. Reserved whatever a session declares, for the reason above: not

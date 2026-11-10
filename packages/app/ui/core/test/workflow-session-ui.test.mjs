@@ -28,7 +28,7 @@ function event(eventType, data) {
     return { sessionId: "wf", seq, eventType, data, createdAt: new Date(Date.UTC(2026, 9, 29, 12, 0, seq)) };
 }
 
-// Payload shapes are the ones the runtime writes (packages/sdk/src/workflow/v2/runtime.ts).
+// Payload shapes are the ones the runtime writes (packages/sdk/src/workflow/runtime.ts).
 const RUN = "run-1";
 const STARTED = event("workflow.started", {
     runId: RUN, mode: "live", revision: 1, definitionHash: "h1", irSha256: "i1",

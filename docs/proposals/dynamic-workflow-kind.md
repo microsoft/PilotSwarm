@@ -79,7 +79,7 @@ The comparison with GitHub's workflow features is in
   `workflow_chat_revisions`, migration 0107). Start makes a Workflow from one
   revision.
 - The controller is one durable orchestration per run
-  (`workflow-v2-controller` 1.0.0 in `packages/sdk/src/workflow/v2/runtime.ts`).
+  (`workflow-controller` 1.0.0 in `packages/sdk/src/workflow/runtime.ts`).
   Each visit of a state is a row in PostgreSQL. The run records the
   controller version it started at (`workflow_runs.controller_version`,
   migration 0100).
@@ -92,7 +92,7 @@ The comparison with GitHub's workflow features is in
   (fixtures) on a hidden test bench.
 - A package can ship definitions as `workflows/<name>/workflow.yaml` with an
   interface card, `card.md` (`WorkflowCard` in
-  `packages/sdk/src/workflow/v2/package-card.ts`).
+  `packages/sdk/src/workflow/package-card.ts`).
 
 ### Copilot dynamic workflows
 
@@ -140,7 +140,7 @@ All from public documentation, fetched 2026-11-08 [S12, S13, S14, S15]:
 
 | Concern | State-machine kind (today) | Dynamic kind (proposed) |
 |---|---|---|
-| Source | YAML (`apiVersion: pilotswarm.dev/v2-draft`, `kind: Workflow`), at most 256 KB and 100 states | One JavaScript module that calls `defineWorkflow` |
+| Source | YAML (`apiVersion: pilotswarm.dev/v1`, `kind: Workflow`), at most 256 KB and 100 states | One JavaScript module that calls `defineWorkflow` |
 | Validation | Compiled to an IR graph | Parsed; `meta` checked; the interface extracted; no graph |
 | Orchestration | The controller plus effect, send, request and agent orchestrations | One new host orchestration |
 | Plan | The IR: states, routes, limits | The source hash, `meta` and the journal |
@@ -204,17 +204,17 @@ export function kindOf(row: { kind?: string | null }): WorkflowKind;
 
 | Today | Becomes |
 |---|---|
-| `compileWorkflowV2` (pure) | the state-machine kind's `compile` |
-| `registerWorkflowV2` | its `register` |
+| `compileWorkflow` (pure) | the state-machine kind's `compile` |
+| `registerWorkflow` | its `register` |
 | `controllerVersionFor`, `requireRunsController` | `orchestration` and `replayable` |
 | the `graph` part of `readOverview` (`tools.ts`) | its `readRun` |
 | `workflowCardInterface` | its `interfaceOf` |
 | fixtures and interceptions | `test.match` |
 
-**What has to move.** The callers of `compileWorkflowV2ForHost`, the places
+**What has to move.** The callers of `compileWorkflowForHost`, the places
 that read `graph`, the package loader's `workflow.yaml` file name, and the
 view projection, which today refuses any shape but the graph
-(`projectWorkflowV2` in `packages/app/ui/core/src/workflow-v2-view.js`). The
+(`projectWorkflow` in `packages/app/ui/core/src/workflow-view.js`). The
 `yaml` argument of `workflow_definition save` gains a `source` alias. It is
 not renamed: the Workflow skills and many prompts use it.
 
@@ -428,7 +428,7 @@ A unit test fails when the shim exposes a name that is not in the fixture.
 
 ### 8. Formal verification (TLA+)
 
-**Reuse.** `docs/formal/workflow-v2/` already models run lifecycle and
+**Reuse.** `docs/formal/workflow/` already models run lifecycle and
 early cancel, session commands, agent children and the chat's queue, and the
 request exchange. They apply unchanged, because the host uses the same rows
 and commands.
@@ -514,7 +514,7 @@ Public documentation, fetched 2026-11-08:
 
 Repository:
 
-- `packages/sdk/src/workflow/v2/`: `compiler.ts`, `runtime.ts`, `store.ts`,
+- `packages/sdk/src/workflow/`: `compiler.ts`, `runtime.ts`, `store.ts`,
   `service.ts`, `tools.ts`, `agent-host.ts`, `agent-node-service.ts`,
   `request-service.ts`, `package-card.ts`, `test-bench.ts`, `test-mode.ts`,
   `redact.ts`.
@@ -522,8 +522,8 @@ Repository:
   guard and tool policy.
 - `packages/sdk/src/migrations/workflow-0088.ts`: the tables.
 - `packages/app/ui/react/src/workflow-tab.js` and
-  `packages/app/ui/core/src/workflow-v2-view.js`: the Workflow tab and its
+  `packages/app/ui/core/src/workflow-view.js`: the Workflow tab and its
   projection.
-- `docs/formal/workflow-v2/`: the TLA+ models.
+- `docs/formal/workflow/`: the TLA+ models.
 - The `duroxide` npm package (README, `lib/duroxide.js`): generator
   orchestrations, the key-value limits and worker tags.

@@ -7,8 +7,8 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { workflowVisitOfPromptId, workflowVisitOfStopRequestId } from "../../dist/workflow/v2/store.js";
-import { workflowAgentClientMessageId } from "../../dist/workflow/v2/runtime.js";
+import { workflowVisitOfPromptId, workflowVisitOfStopRequestId } from "../../dist/workflow/store.js";
+import { workflowAgentClientMessageId } from "../../dist/workflow/runtime.js";
 
 const NX = `nx-${"ab12".repeat(10)}`;
 

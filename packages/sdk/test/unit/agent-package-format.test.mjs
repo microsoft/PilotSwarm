@@ -380,7 +380,7 @@ test("agent skip reasons are named honestly", async () => {
     assert.match(result.errors.find((e) => e.code === "unsupported_agent_schema_version").message, /use 1, 2, 3, 4, or 5/);
 });
 
-// ─── workflow interfaces (schemaVersion 5; workflow/v2/package-interface.ts) ───
+// ─── workflow interfaces (schemaVersion 5; workflow/package-interface.ts) ───
 
 const REVIEW_RESULT = { type: "object", required: ["verdict"], properties: { verdict: { type: "string" } }, additionalProperties: false };
 

@@ -12,7 +12,7 @@ import {
     PilotSwarmUiController, UI_COMMANDS, appReducer, createInitialState, createStore, selectWorkflowInputNote, selectWorkflowViewModal,
     workflowPaneTarget,
 } from "../src/index.js";
-import { readModel } from "./workflow-v2-fixtures.mjs";
+import { readModel } from "./workflow-fixtures.mjs";
 
 const states = [
     { id: "fetch", type: "script", runtime: "node", timeoutSeconds: 60, outcomes: ["done"], next: { done: "review", failure: "failed", timed_out: "failed" } },

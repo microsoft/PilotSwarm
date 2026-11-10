@@ -1,5 +1,5 @@
 /**
- * Workflow v2 (INACTIVE): NodeSdkTransport.updateWorkflow, the portal's and
+ * Workflow (INACTIVE): NodeSdkTransport.updateWorkflow, the portal's and
  * the TUI direct mode's way to a person's workflow command. The portal always
  * names the signed-in caller (null without one) and that caller is passed as
  * it is; the TUI names none, and its own user is the caller. The command is

@@ -92,7 +92,7 @@ import { createSessionProxy, registerActivities } from "../../dist/session-proxy
 import {
     INTAKE_MAX_TEXT_BYTES, IntakeShapeError, WORKFLOW_INTAKE_ACTIVITIES, composeIntakePrompt, intakeBoundItem, intakeEnvelopeClientMessageId,
     intakeItemBytes, parseIntakeTurnField,
-} from "../../dist/workflow/v2/intake.js";
+} from "../../dist/workflow/intake.js";
 
 // ─── Fixtures ────────────────────────────────────────────────
 

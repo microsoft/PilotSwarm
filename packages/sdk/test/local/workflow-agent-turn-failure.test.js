@@ -1,6 +1,6 @@
 /**
- * PR 270 (owner decision): the report of a Workflow agent chat's failed turn (workflow/v2/agent-turn-failure.ts) on
- * the Workflow controller with a test-double host (as workflow-v2-agent-node.test.js and workflow-simplified-chat-continue.test.js).
+ * PR 270 (owner decision): the report of a Workflow agent chat's failed turn (workflow/agent-turn-failure.ts) on
+ * the Workflow controller with a test-double host (as workflow-agent-node.test.js and workflow-simplified-chat-continue.test.js).
  * The report is the activity session orchestration 1.0.83 makes when a turn of the chat fails for good; here the test
  * calls it as that activity does (reportWorkflowAgentTurnFailure over the store and the durable client).
  *
@@ -22,13 +22,13 @@ import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
-import { completeWorkflowNodeFromTool } from "../../src/workflow/v2/agent-node-service.ts";
+import { createWorkflow } from "../../src/workflow/service.ts";
+import { completeWorkflowNodeFromTool } from "../../src/workflow/agent-node-service.ts";
 import {
-    registerWorkflowV2, sessionQueueTransport, workflowAgentChatSessionId, workflowAgentChildSessionId, workflowAgentClientMessageId,
-} from "../../src/workflow/v2/runtime.ts";
-import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
-import { reportWorkflowAgentTurnFailure } from "../../src/workflow/v2/agent-turn-failure.ts";
+    registerWorkflow, sessionQueueTransport, workflowAgentChatSessionId, workflowAgentChildSessionId, workflowAgentClientMessageId,
+} from "../../src/workflow/runtime.ts";
+import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
+import { reportWorkflowAgentTurnFailure } from "../../src/workflow/agent-turn-failure.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
@@ -52,7 +52,7 @@ async function until(check, label, timeoutMs = 60_000) {
 
 /** One agent state with a one-hour deadline and a failure route, then terminals. */
 const REVIEW_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: reviewer, version: "1.0.0" }
 initialInput: { head: "abc" }
@@ -74,7 +74,7 @@ states:
 
 /** One agent state that continues its chat, visited again after its execution_failed (its own route) or on `again`. */
 const CHAT_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: chatter, version: "1.0.0" }
 initialInput: { round: 1 }
@@ -139,7 +139,7 @@ async function harness(env) {
             return typeof value === "function" ? value.bind(target) : value;
         },
     });
-    registerWorkflowV2({
+    registerWorkflow({
         registerActivity: (name, fn) => runtime.registerActivity(name, fn),
         registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
     }, {
@@ -169,7 +169,7 @@ async function started(h, yaml) {
     const parent = randomUUID();
     await h.catalog.createSession(parent, {});
     const workflowSessionId = randomUUID();
-    const created = await createWorkflowV2(h.host, { workflowSessionId, parentSessionId: parent, yaml, actor: ACTOR, operationId: "start", start: { inputs: {} } });
+    const created = await createWorkflow(h.host, { workflowSessionId, parentSessionId: parent, yaml, actor: ACTOR, operationId: "start", start: { inputs: {} } });
     expect(created.receipt.valid, JSON.stringify(created.receipt.diagnostics)).toBe(true);
     return { parent, workflowSessionId, runId: created.receipt.run.runId };
 }

@@ -589,7 +589,7 @@ test("the manager bundle exposes exactly the expected tools", () => {
 // configured catalog (the names the worker gives it), as a person's publication does.
 test("publish refuses a Workflow card hint that names a model of the worker's configured catalog", async () => {
     const yaml = [
-        "apiVersion: pilotswarm.dev/v2-draft", "kind: Workflow", "metadata: { name: triage, version: \"1.0.0\" }", "initial: classify", "states:",
+        "apiVersion: pilotswarm.dev/v1", "kind: Workflow", "metadata: { name: triage, version: \"1.0.0\" }", "initial: classify", "states:",
         "  classify:", "    type: agent", "    invoke: { prompt: \"Classify it.\" }", "    timeoutSeconds: 600",
         "    transition: { next: { done: done, failure: failed } }",
         "  done: { type: terminal, outcome: succeeded }", "  failed: { type: terminal, outcome: failed }", "",

@@ -1,0 +1,165 @@
+// Owner batch 5 (g-03), batch 6 (r-1, r-3): the workflow's main pane shows its header and the graph (or the YAML) only;
+// the step log, the run's activity, the notices and a test run's calls each show in the side pane from their own icon
+// button (aria-label the plain name, aria-expanded while the side pane shows that panel), one at a time, each with its
+// title and a way back to Step details, remembered in the workflow's view state. Notices and Test calls carry a count.
+//
+// Run: node --test packages/app/ui/core/test/workflow-pane-panels.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
+import { workflowNoticeLevel, workflowOpenCalls, workflowShownNotices, projectWorkflow } from "../src/workflow-view.js";
+import { workflowStepLogLines, WORKFLOW_STEP_LOG_EMPTY_TEXT, WORKFLOW_STEP_LOG_LOADING_TEXT } from "../src/workflow-sessions.js";
+import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
+import { readModel, done } from "./workflow-fixtures.mjs";
+
+function mount(view, { sideOpen = false } = {}) {
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
+    store.dispatch({ type: "sessions/selected", sessionId: "wf" });
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModelRunId: null, ...view } });
+    // The side pane on screen: the canvas column open on its canvas side.
+    if (sideOpen) store.dispatch({ type: "canvas/flip", sessionId: "wf", slot: 1 });
+    return { store, controller: new PilotSwarmUiController({ store, transport: {} }) };
+}
+const LOG = React.createElement("p", { className: "fake-log" }, "LOG LINES");
+const main = ({ controller }) => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, icon: null }));
+const side = ({ controller }) => renderToStaticMarkup(React.createElement(WorkflowNodePane, { controller, log: LOG }));
+
+/** A live run that ended (its activity says why) on a published revision with a newer draft (one notice). */
+const ended = () => readModel({ revision: { revision: 2 }, run: { status: "completed", outcome: "succeeded", terminalState: "done" },
+    nodeExecutions: [done("poll", 1, "changed"), done("notify", 1, "sent"), done("await_ack", 1, "received")] });
+const DRAFT_NOTICE = "Showing published revision 1. Revision 2 is a newer draft.";
+
+/** A running test run with two held calls, one of them waiting for an answer. */
+const testing = () => readModel({ run: { mode: "test", test: {
+    notice: "TEST — scripts run normally; workflow tools are mocked.", agentMode: "mocked", scenario: null, testedRevision: 1, stale: false,
+    virtualClock: { now: "9000-01-01T01:00:00.000Z", elapsedSeconds: 3600 },
+    interceptions: [
+        { interceptionId: "nx-poll-1/call-1", operation: "tool.call", tool: "read_build", stateId: "poll", state: "responded",
+            arguments: "{}", responseSchema: { type: "object" }, response: { kind: "success", disposition: "fixture" } },
+        { interceptionId: "nx-notify-1/send", operation: "send", tool: null, stateId: "notify", state: "awaiting_parent",
+            arguments: "{}", responseSchema: { type: "object" }, response: null },
+    ],
+    coverage: { unanswered: ["nx-notify-1/send"] },
+} } });
+
+const tool = (html, name) => html.match(new RegExp(`<button [^>]*aria-label="${name}"[^>]*>`))?.[0] ?? null;
+
+test("the main pane holds the header, Graph | YAML and the graph only: no step log, run activity, notices or test calls", () => {
+    const html = main(mount({ readModel: ended(), sidePanel: "log" }));
+    assert.ok(html.includes("aria-label=\"Workflow graph\""));
+    assert.ok(!html.includes("class=\"ps-workflow-log\"") && !html.includes("LOG LINES") && !html.includes("Resize the step log"));
+    assert.ok(!html.includes("<section class=\"ps-workflow-run-activity\"") && !html.includes("Why it ended"));
+    assert.ok(!html.includes("class=\"ps-workflow-banners\"") && !html.includes(DRAFT_NOTICE));
+    // r-1: two tabs, Graph chosen by default, its panel the graph.
+    assert.match(html, /<div class="ps-workflow-main-tabs" role="tablist" aria-label="Workflow view">/);
+    const graphTab = html.match(/<button id="([^"]+)-graph" type="button" role="tab" aria-selected="true" aria-controls="\1-graph-panel" tabindex="0">Graph<\/button>/);
+    assert.ok(graphTab, "Graph is the chosen tab");
+    assert.match(html, /<button id="[^"]+-yaml" type="button" role="tab" aria-selected="false" aria-controls="[^"]+-yaml-panel" tabindex="-1">YAML<\/button>/);
+    assert.match(html, new RegExp(`<div id="${graphTab[1]}-graph-panel" class="ps-workflow-graph-region" role="tabpanel" aria-labelledby="${graphTab[1]}-graph">`));
+    // Their buttons are there, not pressed while the side pane is closed; Test calls only with a test run.
+    for (const name of ["Step log", "Run activity", "Notices", "Step details"]) assert.match(tool(html, name), /aria-expanded="false"/, name);
+    assert.equal(tool(html, "Test calls"), null);
+});
+
+test("each button shows its own panel in the side pane, one at a time, with its title and a way back; its button is pressed", () => {
+    const shown = {
+        log: html => assert.match(html, /<div class="ps-workflow-side-body"><div class="ps-workflow-log"><p class="fake-log">LOG LINES<\/p><\/div><\/div>/),
+        activity: html => {
+            assert.ok(html.includes("<section class=\"ps-workflow-run-activity\""));
+            assert.ok(html.includes("Why it ended: Reached done · succeeded"));
+        },
+        notices: html => assert.ok(html.includes("class=\"ps-workflow-banners\"") && html.includes(DRAFT_NOTICE)),
+    };
+    const names = { log: "Step log", activity: "Run activity", notices: "Notices" };
+    for (const [panel, check] of Object.entries(shown)) {
+        const harness = mount({ readModel: ended(), sidePanel: panel }, { sideOpen: true });
+        const head = main(harness);
+        for (const [other, name] of Object.entries(names)) assert.match(tool(head, name), new RegExp(`aria-expanded="${other === panel}"`), `${panel}: ${name}`);
+        assert.match(tool(head, "Step details"), /aria-expanded="false"/);
+        const html = side(harness);
+        assert.ok(html.startsWith(`<div class="ps-workflow-side-panel is-${panel}" data-panel="${panel}"><div class="ps-workflow-side-bar"><h2>${names[panel]}</h2>`), html);
+        assert.ok(tool(html, "Back to Step details"), "a way back to Step details");
+        assert.ok(!html.includes("aria-label=\"Workflow step details\""), "one panel at a time");
+        check(html);
+        for (const [other, otherCheck] of Object.entries(shown)) if (other !== panel) assert.throws(() => otherCheck(html), `${panel} does not show ${other}`);
+    }
+    // Step details is the side pane's own view, pressed while it shows.
+    const details = mount({ readModel: ended() }, { sideOpen: true });
+    assert.match(tool(main(details), "Step details"), /aria-expanded="true"/);
+    assert.ok(side(details).includes("aria-label=\"Workflow step details\""));
+    // A panel the workflow does not offer now (no test run, so no test calls) shows Step details.
+    assert.ok(side(mount({ readModel: ended(), sidePanel: "calls" })).includes("aria-label=\"Workflow step details\""));
+});
+
+test("Notices counts its notices with the most serious tint; Test calls counts the calls that wait, and shows them with the clock", () => {
+    const published = main(mount({ readModel: ended() }));
+    assert.match(published, /aria-label="Notices" data-title="1 notice about this workflow and its run\."[^>]*>.*?<span class="ps-workflow-tool-badge" data-level="info" aria-hidden="true">1<\/span>/);
+    const view = { readModel: testing() };
+    const html = main(mount(view));
+    assert.match(html, /aria-label="Notices" data-title="3 notices about this workflow and its run\."[^>]*>.*?<span class="ps-workflow-tool-badge" data-level="warning" aria-hidden="true">3<\/span>/);
+    assert.match(html, /aria-label="Test calls" data-title="1 call waits for an answer\."[^>]*>.*?<span class="ps-workflow-tool-badge" data-level="warning" aria-hidden="true">1<\/span>/);
+    assert.ok(!html.includes("Calls (2)") && !side(mount(view)).includes("Calls (2)"));
+    const open = mount({ ...view, sidePanel: "calls" }, { sideOpen: true });
+    assert.ok(side(open).includes("Calls (2)"), "the held calls");
+    assert.match(tool(main(open), "Test calls"), /aria-expanded="true"/);
+});
+
+test("which panel the side pane shows is the workflow's view state, kept per workflow", () => {
+    const harness = mount({ readModel: ended() });
+    harness.store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { sidePanel: "log" } });
+    assert.equal(harness.store.getState().ui.workflowViews.wf.sidePanel, "log");
+    assert.ok(side(harness).includes("LOG LINES"));
+    harness.store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { sidePanel: null } });
+    assert.ok(!side(harness).includes("LOG LINES"));
+});
+
+test("the counts and tint come from the notices and the test's calls", () => {
+    assert.deepEqual(workflowShownNotices([{ level: "info", text: "a" }, null, { level: "warning", text: "" }, { text: "b" }]),
+        [{ level: "info", text: "a" }, { text: "b" }]);
+    assert.deepEqual(workflowShownNotices(undefined), []);
+    assert.equal(workflowNoticeLevel([{ level: "info" }, { level: "warning" }]), "warning");
+    assert.equal(workflowNoticeLevel([{ level: "info" }, { level: "error" }, { level: "warning" }]), "error");
+    assert.equal(workflowNoticeLevel([{ level: "info" }]), "info");
+    assert.equal(workflowNoticeLevel([]), null);
+    assert.equal(workflowOpenCalls(null), 0);
+    assert.equal(workflowOpenCalls({ coverage: { unanswered: ["a", "b"] }, interceptions: [] }), 2);
+    assert.equal(workflowOpenCalls({ interceptions: [{ state: "awaiting_parent" }, { state: "responded" }, null] }), 1);
+});
+
+// Batch 5 (g-07): "Not started" is said once, by the run's status in the header.
+test("with no run, 'No run yet' appears once: in the status, not in the notices or a run picker", () => {
+    const projected = projectWorkflow({ readModel: readModel({ noRun: true }) });
+    assert.deepEqual(projected.banners.filter(banner => banner.code === "no-run").map(banner => banner.text), ["Not started yet."], "the terminal still lists it");
+    assert.deepEqual(workflowShownNotices(projected.banners), []);
+    const html = main(mount({ readModel: readModel({ noRun: true }), sidePanel: "notices" }));
+    assert.equal(html.match(/<span class="ps-workflow-status">Not started<\/span>/g)?.length, 1);
+    assert.ok(!html.includes("Not started yet"), "not repeated in the notices or a run picker");
+    assert.match(html, /<span class="ps-workflow-status">Not started<\/span>/);
+    assert.ok(!html.includes("aria-label=\"Workflow run\""), "no run picker until a run exists");
+    assert.equal(tool(html, "Notices"), null, "nothing else to say, so no Notices button");
+    // Other runs: the notice that names them stays.
+    const othersView = mount({ readModel: readModel({ noRun: true, runs: [{ runId: "old", mode: "test", status: "completed", revision: 1, outcome: "succeeded" }] }),
+        sidePanel: "notices" });
+    assert.ok(side(othersView).includes("No Workflow selected · 1 other"));
+    assert.ok(main(othersView).includes("aria-label=\"Workflow run\""));
+});
+
+// Batch 5 (g-06): an empty step log says so in words, never with the splash art or "No messages yet."
+test("an empty step log says 'No step output yet.', while loading says so, and keeps a failed read's words", () => {
+    const splash = { kind: "markup", value: "P I L O T S W A R M", splashAlt: null };
+    const words = [{ text: WORKFLOW_STEP_LOG_EMPTY_TEXT, color: "gray" }];
+    assert.deepEqual(workflowStepLogLines([splash], { chat: [], loadState: "loaded" }), words);
+    assert.deepEqual(workflowStepLogLines([{ text: "No messages yet.", color: "gray" }], null), words);
+    assert.deepEqual(workflowStepLogLines([splash, [{ text: "", color: null }]], { chat: [] }), words);
+    assert.deepEqual(workflowStepLogLines([splash], { chat: [], loadState: "loading" }), [{ text: WORKFLOW_STEP_LOG_LOADING_TEXT, color: "gray" }]);
+    const failed = [{ text: "Could not load this conversation. Select the session again to retry.", color: "gray" }];
+    assert.equal(workflowStepLogLines(failed, { chat: [], loadState: "failed" }), failed);
+    // A warning the transcript shows without a message follows the words; a log with output is left as it is.
+    const warning = [{ text: "⚠ The session ended with an error.", color: "red" }];
+    assert.deepEqual(workflowStepLogLines([splash, warning], { chat: [] }), [...words, warning]);
+    const output = [[{ text: "Step 1: poll → changed", color: "green" }]];
+    assert.equal(workflowStepLogLines(output, { chat: [{ id: "m1" }] }), output);
+});

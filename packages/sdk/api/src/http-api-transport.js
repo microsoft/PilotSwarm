@@ -256,7 +256,7 @@ export class HttpApiTransport {
     }
 
     /**
-     * Workflow v2: the read-only view of a workflow session (readWorkflow, session:read), a section's next page
+     * Workflow: the read-only view of a workflow session (readWorkflow, session:read), a section's next page
      * (`cursor`, a nextCursor a read returned) or one execution's whole value (`executionId`); `limit` sets the rows per
      * page. The options are the operation's declared parameters: the request builder leaves out an absent (or null) one,
      * and any other value is sent for the server to check. The session id is always the argument's.
@@ -265,7 +265,7 @@ export class HttpApiTransport {
         return this.api.call("readWorkflow", { ...options, sessionId });
     }
 
-    /** Workflow v2: a person's command to a workflow session (updateWorkflow, session:manage; inactive unless the deployment enables it). */
+    /** Workflow: a person's command to a workflow session (updateWorkflow, session:manage; inactive unless the deployment enables it). */
     async updateWorkflow(sessionId, command) {
         return this.api.call("updateWorkflow", { sessionId, command });
     }

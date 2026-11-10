@@ -30,7 +30,7 @@ import { normalizeCapabilityState, withWorkflowsOn, withWorkspaceLoad } from "..
 import { nextCapabilityState } from "../../src/capability-runtime.ts";
 import {
     ENABLE_WORKFLOWS_TOOL_SPEC, WORKFLOW_CONTEXT_STUB, WORKFLOW_INSIDE_GUIDANCE, WORKFLOW_SCHEDULING_HINT, WORKFLOW_SCHEDULING_HINT_OFF, WORKFLOW_SESSION_GUIDANCE,
-    WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR,
+    WORKFLOW_SKILLS_DIR, WORKFLOW_TEST_MODE_SKILLS_DIR,
 } from "../../src/workflow/guidance.ts";
 
 const owner = { provider: "test", subject: "workflow-context-owner", email: null, displayName: null };
@@ -290,7 +290,7 @@ describe("Workflows on demand: the CLI's skill directories (its own `skill` tool
     // As worker.ts gives them: the Workflow skill directories (_loadSdkSkillDir; test-mode ones with test mode) and a
     // deployment's own, to Base V1 (skillDirectories) and Base V2 (getBaseV2SkillDirectories).
     const OTHER = "/deployment/skills";
-    const dirs = [WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR, OTHER];
+    const dirs = [WORKFLOW_SKILLS_DIR, WORKFLOW_TEST_MODE_SKILLS_DIR, OTHER];
     const workerDefaults = { skillDirectories: dirs, getBaseV2SkillDirectories: () => dirs };
     const given = f => f.opened.at(-1).config.skillDirectories;
 
@@ -329,8 +329,8 @@ describe("Workflows on demand: the CLI's skill directories (its own `skill` tool
         const off = buildBindingFingerprintInput(parts);
         expect(Object.hasOwn(off, "workflowSkillDirectories")).toBe(false);
         expect(Object.hasOwn(buildBindingFingerprintInput({ ...parts, workflowSkillDirectories: [] }), "workflowSkillDirectories")).toBe(false);
-        const on = buildBindingFingerprintInput({ ...parts, workflowSkillDirectories: [WORKFLOW_V2_SKILLS_DIR] });
-        expect(on.workflowSkillDirectories).toEqual([WORKFLOW_V2_SKILLS_DIR]);
+        const on = buildBindingFingerprintInput({ ...parts, workflowSkillDirectories: [WORKFLOW_SKILLS_DIR] });
+        expect(on.workflowSkillDirectories).toEqual([WORKFLOW_SKILLS_DIR]);
         expect(bindingFingerprintDigest(on)).not.toBe(bindingFingerprintDigest(off));
     });
 });

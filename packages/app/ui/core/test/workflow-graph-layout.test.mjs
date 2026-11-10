@@ -9,9 +9,9 @@ import {
     WORKFLOW_GRAPH_GROUP_HEADER, WORKFLOW_GRAPH_NODE_WIDTH, WORKFLOW_GRAPH_NODE_HEIGHT,
 } from "../src/workflow-graph-layout.js";
 import {
-    workflowV2Definition as checkedDefinition, workflowV2Definition,
-} from "../src/workflow-v2-view.js";
-import { startedData } from "./workflow-v2-fixtures.mjs";
+    workflowDefinition as checkedDefinition, workflowDefinition,
+} from "../src/workflow-view.js";
+import { startedData } from "./workflow-fixtures.mjs";
 
 /** A graph's states as the runtime describes them: a script state lists its outcomes (the keys of its next). */
 const described = list => list.map(node => (node && typeof node === "object" && node.type !== "terminal"
@@ -164,7 +164,7 @@ test("version 2: merged outcomes, runtime-error routes, the loop back to poll, a
 
 // Owner batch 7 (H2): fork, branch box, join bar. An agent review leads to a parallel step whose body is a script and a
 // branch end; the parallel step joins to done, and a blocked join or the review's timeout goes to failed.
-const fanned = () => workflowV2Definition({ revision: 1, initial: "review", states: [
+const fanned = () => workflowDefinition({ revision: 1, initial: "review", states: [
     { id: "review", type: "agent", invoke: { source: "agent", name: "code-reviewer", package: "review-kit", version: "1.2.0" }, timeoutSeconds: 600,
         outcomes: ["accepted"], next: { accepted: "fan", timed_out: "failed" } },
     { id: "fan", type: "parallel", forEach: "${input.items}", concurrency: 2, join: "all_required", failFast: false,

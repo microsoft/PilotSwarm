@@ -100,7 +100,7 @@ export interface AgentConfig {
      * (schemaVersion 5; design 04 "Package-agent I/O export"): name, version,
      * outcomes, and the package files of its output and optional input
      * schemas. The package validator reads and checks the files and exports
-     * the interface in the package manifest (workflow/v2/package-interface.ts);
+     * the interface in the package manifest (workflow/package-interface.ts);
      * nothing else reads this field.
      */
     workflowInterface?: AgentWorkflowInterfaceDeclaration;
@@ -274,7 +274,7 @@ const unquoteFrontmatterValue = (text: string): string => {
  * field on its own two-space-indented line (`  name: review_change`), a list
  * inline (`  outcomes: [accepted, changes_required]`) or as four-space
  * `    - item` lines under an empty field. The values are checked by the
- * package validator (workflow/v2/package-interface.ts). Throws on a
+ * package validator (workflow/package-interface.ts). Throws on a
  * malformed or duplicate entry, so the agent fails to load instead of
  * losing its contract.
  */

@@ -6,7 +6,7 @@ import type { ServerContext } from "../context.js";
 import { jsonResult, errorResult, withToolErrors, type ToolResult } from "../util/respond.js";
 
 /**
- * Workflow v2 over MCP (design 04 REST/SDK/MCP mapping; R01, R26):
+ * Workflow over MCP (design 04 REST/SDK/MCP mapping; R01, R26):
  *
  * Workflows are always on (owner 2026-11-08T08:03Z), with the full engine and a person's commands (2026-11-08T15:30Z):
  *

@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ChatDefinitionStore, requireBenchLiveLocked } from "../../dist/workflow/v2/chat-definition-store.js";
+import { ChatDefinitionStore, requireBenchLiveLocked } from "../../dist/workflow/chat-definition-store.js";
 
 const flat = (sql) => sql.replace(/\s+/g, " ").trim();
 

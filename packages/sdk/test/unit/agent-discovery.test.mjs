@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createAgentDiscoveryTool, listAgentDefinitionsForCaller } from '../../dist/agent-discovery.js';
 import { resolveAgentDefinitionForCaller } from '../../dist/session-proxy.js';
 import { PilotSwarmWorker } from '../../dist/worker.js';
-import { workflowInterfaceDigest } from '../../dist/workflow/v2/package-interface.js';
+import { workflowInterfaceDigest } from '../../dist/workflow/package-interface.js';
 
 const alice = { provider: 'test', subject: 'alice' };
 const bob = { provider: 'test', subject: 'bob' };

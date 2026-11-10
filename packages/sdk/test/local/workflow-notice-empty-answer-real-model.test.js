@@ -10,12 +10,12 @@
  * repeat answered with nothing and recorded as a quiet empty answer. NOT EXERCISED (fails, named so): the model answered
  * every repeat with text, so the quiet path was not reached. Its answers are recorded, not judged.
  *
- * It spends model tokens, so it runs only when asked: PS_WORKFLOW_V2_REAL_MODEL=run with PS_WORKFLOW_V2_REAL_MODEL_REF
- * (provider:model) and optionally PS_WORKFLOW_V2_REAL_MODEL_EFFORT, on a local worker whose model catalog
- * (PS_MODEL_PROVIDERS_PATH) serves it (test/helpers/workflow-v2-real-model.mjs). Asked but unable to run, it fails as
- * BLOCKED. The receipt goes to PS_WORKFLOW_V2_REAL_MODEL_RECEIPT when set; a summary is printed. At most 5 model turns.
+ * It spends model tokens, so it runs only when asked: PS_WORKFLOW_REAL_MODEL=run with PS_WORKFLOW_REAL_MODEL_REF
+ * (provider:model) and optionally PS_WORKFLOW_REAL_MODEL_EFFORT, on a local worker whose model catalog
+ * (PS_MODEL_PROVIDERS_PATH) serves it (test/helpers/workflow-real-model.mjs). Asked but unable to run, it fails as
+ * BLOCKED. The receipt goes to PS_WORKFLOW_REAL_MODEL_RECEIPT when set; a summary is printed. At most 5 model turns.
  *
- *   PS_WORKFLOW_V2_REAL_MODEL=run PS_WORKFLOW_V2_REAL_MODEL_REF=<provider:model> PS_WORKFLOW_V2_REAL_MODEL_EFFORT=medium \
+ *   PS_WORKFLOW_REAL_MODEL=run PS_WORKFLOW_REAL_MODEL_REF=<provider:model> PS_WORKFLOW_REAL_MODEL_EFFORT=medium \
  *     npx vitest run test/local/workflow-notice-empty-answer-real-model.test.js
  */
 import { describe, it, expect } from "vitest";
@@ -23,9 +23,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createTestEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
-import { realModelPlan } from "../helpers/workflow-v2-real-model.mjs";
+import { realModelPlan } from "../helpers/workflow-real-model.mjs";
 import { loadModelProviders } from "../../src/index.ts";
-import { workflowRuntimeSender } from "../../src/workflow/v2/parent-messages.ts";
+import { workflowRuntimeSender } from "../../src/workflow/parent-messages.ts";
 
 const OWNER = { provider: "test", subject: "workflow-notice-real-model" };
 const TURN_MS = 180_000;
@@ -57,7 +57,7 @@ describe("a workflow notice that needs no answer, on a real model (owner No resp
     }
     it(TITLE, { timeout: TEST_TIMEOUT }, async () => {
         if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
-        if (plan.target !== "local") throw new Error("BLOCKED: this check runs on a local worker (PS_WORKFLOW_V2_REAL_MODEL_TARGET=local).");
+        if (plan.target !== "local") throw new Error("BLOCKED: this check runs on a local worker (PS_WORKFLOW_REAL_MODEL_TARGET=local).");
         const receipt = { test: "workflow-notice-empty-answer-real-model", startedAt: new Date().toISOString(),
             model: { ref: plan.model.ref, effort: plan.effort ?? "the model's default" }, notices: [], verdict: null };
         const env = createTestEnv("notice-real-model");
@@ -100,7 +100,7 @@ describe("a workflow notice that needs no answer, on a real model (owner No resp
         } finally {
             receipt.endedAt = new Date().toISOString();
             console.log(`[notice-real-model] ${JSON.stringify(receipt)}`);
-            const path = process.env.PS_WORKFLOW_V2_REAL_MODEL_RECEIPT;
+            const path = process.env.PS_WORKFLOW_REAL_MODEL_RECEIPT;
             if (path) {
                 mkdirSync(dirname(path), { recursive: true });
                 writeFileSync(path, `${JSON.stringify(receipt, null, 2)}\n`);

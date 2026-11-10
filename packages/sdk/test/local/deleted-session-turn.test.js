@@ -20,7 +20,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { createManagementClient } from "../helpers/local-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { workflowAgentChatSessionId, workflowAgentChildSessionId } from "../../src/workflow/v2/agent-ids.ts";
+import { workflowAgentChatSessionId, workflowAgentChildSessionId } from "../../src/workflow/agent-ids.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 240_000;

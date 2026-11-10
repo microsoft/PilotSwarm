@@ -14,8 +14,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { PilotSwarmUiController, appReducer, buildHistoryModel, createInitialState, createStore, formatWorkflowEventText, selectWorkflowViewModal } from "../src/index.js";
 import { WORKFLOW_STATE_MARKS, workflowReasonShown, workflowRunStateWord } from "../src/workflow-words.js";
-import { workflowV2ExecutionValueKey } from "../src/workflow-v2-view.js";
-import { RUN, done, readModel, row } from "./workflow-v2-fixtures.mjs";
+import { workflowExecutionValueKey } from "../src/workflow-view.js";
+import { RUN, done, readModel, row } from "./workflow-fixtures.mjs";
 
 const AGENT_STATES = [
     { id: "review", type: "agent", invoke: { source: "agent", name: "code-reviewer" }, timeoutSeconds: 600, outcomes: ["accepted"],
@@ -26,7 +26,7 @@ const AGENT_STATES = [
 /** The TUI's view of the workflow session wf over `model`, with `sessions` loaded besides it; `node` selected. */
 function view(model, { sessions = [], node = "poll", events = [] } = {}) {
     const store = createStore(appReducer, createInitialState({ mode: "local" }));
-    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-v2", status: "running", sessionKind: "workflow", parentSessionId: "chat" },
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-flow", status: "running", sessionKind: "workflow", parentSessionId: "chat" },
         { sessionId: "chat", title: "Release chat", status: "idle" }, ...sessions] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel(events) });
@@ -49,14 +49,14 @@ test("D-W12: the rows' marks are the words module's: ✕ for a failed node, neve
 
 test("D-W13: one word in the title; Canceled at once and Pausing say their detail on a notice line", () => {
     const pausing = view(readModel({ run: { status: "paused", pausedFrom: "running", pauseSettled: false }, nodeExecutions: [row("poll", 1, "pending")] }));
-    assert.equal(pausing.shown.title, "Workflow: watch-v2 · Pausing");
+    assert.equal(pausing.shown.title, "Workflow: watch-flow · Pausing");
     assert.ok(pausing.lines.includes("! Pausing · waiting for started nodes to finish"), pausing.lines.join("\n"));
     const canceled = view(readModel({ run: { status: "cancelled" } }));
-    assert.equal(canceled.shown.title, "Workflow: watch-v2 · Canceled");
+    assert.equal(canceled.shown.title, "Workflow: watch-flow · Canceled");
     // Why it ended carries the kind: "Canceled at once", with no server reason that is only the state word.
     assert.ok(canceled.lines.some(line => line.startsWith("Why it ended: Canceled at once")), canceled.lines.join("\n"));
     const stopped = view(readModel({ run: { status: "stopped" } }));
-    assert.equal(stopped.shown.title, "Workflow: watch-v2 · Canceled");
+    assert.equal(stopped.shown.title, "Workflow: watch-flow · Canceled");
     assert.ok(stopped.lines.some(line => line.startsWith("Why it ended: Canceled after started nodes finished")), stopped.lines.join("\n"));
     assert.ok(!stopped.lines.some(line => /Stopped/.test(line)), "never Stopped");
 });
@@ -118,10 +118,10 @@ test("the step log's table counts visits, never steps or runs; a preview too lon
 
     const whole = readModel({ nodeExecutions: [done("poll", 1, "changed", { outputPreview: "{\"a\":1" })] });
     const store = createStore(appReducer, createInitialState({ mode: "local" }));
-    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-v2", status: "running", sessionKind: "workflow" }] });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-flow", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: whole, readModelRunId: null,
-        executionValues: { [workflowV2ExecutionValueKey(RUN, "nx-poll-1")]: { runId: RUN, executionId: "nx-poll-1", phase: "loaded",
+        executionValues: { [workflowExecutionValueKey(RUN, "nx-poll-1")]: { runId: RUN, executionId: "nx-poll-1", phase: "loaded",
             result: { kind: "output", bytes: 2_000_000, whole: false, limitBytes: 1_048_576, preview: "{\"a\":1" } } } } });
     store.dispatch({ type: "ui/modal", modal: { type: "workflowView", sessionId: "wf", selectedNodeId: "poll", detailsScroll: 0 } });
     new PilotSwarmUiController({ store, transport: {} });

@@ -16,10 +16,10 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { projectWorkflowV2, workflowV2ContinueWords, workflowV2ItemCountsText, workflowV2NodeLabel } from "../src/workflow-v2-view.js";
+import { projectWorkflow, workflowContinueWords, workflowItemCountsText, workflowNodeLabel } from "../src/workflow-view.js";
 import { workflowOutcomeWord } from "../src/workflow-words.js";
 import { WorkflowStepCard } from "../../react/src/workflow-graph.js";
-import { done, readModel, row } from "./workflow-v2-fixtures.mjs";
+import { done, readModel, row } from "./workflow-fixtures.mjs";
 
 const branch = (fan, index) => ({ scopeId: `${fan}#${index}`, branch: { parallelNodeExecutionId: fan, index } });
 
@@ -41,19 +41,19 @@ const byId = (projection, id) => projection.nodes.find(node => node.id === id);
 const card = node => renderToStaticMarkup(React.createElement(WorkflowStepCard, { node, selected: false, onSelect() {} }));
 
 test("each node says its type in a word (03, F5)", () => {
-    assert.equal(workflowV2NodeLabel({ id: "a", type: "script", runtime: "node" }), "Script", "never 'script · node'");
-    assert.equal(workflowV2NodeLabel({ id: "a", type: "agent", invoke: { source: "prompt" } }), "Agent");
-    assert.equal(workflowV2NodeLabel({ id: "a", type: "agent", invoke: { source: "agent", name: "reviewer" } }), "Agent · reviewer");
-    assert.equal(workflowV2NodeLabel({ id: "a", type: "wait", seconds: 90 }), "Wait · 1 min 30 s");
-    assert.equal(workflowV2NodeLabel({ id: "a", type: "messaging", mode: "request", contract: "Approval@1" }), "Ask · Approval@1");
-    assert.equal(workflowV2NodeLabel({ id: "a", type: "messaging", mode: "send", contract: "Note@1" }), "Send · Note@1");
-    assert.equal(workflowV2NodeLabel({ id: "a", type: "messaging", mode: "receive", contract: "Build@1" }), "Receive · Build@1");
-    assert.equal(workflowV2NodeLabel({ id: "a", type: "parallel", concurrency: 3 }), "For each · up to 3 at a time");
-    assert.equal(workflowV2NodeLabel({ id: "a", type: "terminal", outcome: "cancelled" }), "End · canceled", "O8: one l on screens");
+    assert.equal(workflowNodeLabel({ id: "a", type: "script", runtime: "node" }), "Script", "never 'script · node'");
+    assert.equal(workflowNodeLabel({ id: "a", type: "agent", invoke: { source: "prompt" } }), "Agent");
+    assert.equal(workflowNodeLabel({ id: "a", type: "agent", invoke: { source: "agent", name: "reviewer" } }), "Agent · reviewer");
+    assert.equal(workflowNodeLabel({ id: "a", type: "wait", seconds: 90 }), "Wait · 1 min 30 s");
+    assert.equal(workflowNodeLabel({ id: "a", type: "messaging", mode: "request", contract: "Approval@1" }), "Ask · Approval@1");
+    assert.equal(workflowNodeLabel({ id: "a", type: "messaging", mode: "send", contract: "Note@1" }), "Send · Note@1");
+    assert.equal(workflowNodeLabel({ id: "a", type: "messaging", mode: "receive", contract: "Build@1" }), "Receive · Build@1");
+    assert.equal(workflowNodeLabel({ id: "a", type: "parallel", concurrency: 3 }), "For each · up to 3 at a time");
+    assert.equal(workflowNodeLabel({ id: "a", type: "terminal", outcome: "cancelled" }), "End · canceled", "O8: one l on screens");
     assert.equal(workflowOutcomeWord("cancelled"), "canceled");
-    assert.equal(workflowV2ItemCountsText({ ok: 2, failed: 1, canceled: 0, running: 0 }), "2 ok · 1 failed");
-    assert.equal(workflowV2ContinueWords({ join: "all_required" }), "Joins when all succeed");
-    assert.equal(workflowV2ContinueWords({ join: { first: 2 }, forEach: { count: 3 } }), "Joins at the first 2 of 3");
+    assert.equal(workflowItemCountsText({ ok: 2, failed: 1, canceled: 0, running: 0 }), "2 ok · 1 failed");
+    assert.equal(workflowContinueWords({ join: "all_required" }), "Joins when all succeed");
+    assert.equal(workflowContinueWords({ join: { first: 2 }, forEach: { count: 3 } }), "Joins at the first 2 of 3");
 });
 
 test("a failed For each item makes its node red, counted with nouns: never the green of the item that ended last (finding 1)", () => {
@@ -66,7 +66,7 @@ test("a failed For each item makes its node red, counted with nouns: never the g
             completedAt: "2026-11-05T07:20:02Z", errorPreview: JSON.stringify({ message: "cherry is out of stock" }), ...branch(fan, 2) }),
         done("check", 1, "ok", { nodeExecutionId: "nx-b", completedAt: "2026-11-05T07:20:03Z", ...branch(fan, 1) }),
     ];
-    const projection = projectWorkflowV2({ readModel: readModel({ graph: forEach(), nodeExecutions: rows,
+    const projection = projectWorkflow({ readModel: readModel({ graph: forEach(), nodeExecutions: rows,
         run: { status: "completed", terminalState: "stuck", outcome: "failed" } }) });
     const check = byId(projection, "check");
     assert.equal(check.state, "failed", "red: an item failed");
@@ -97,7 +97,7 @@ test("an item canceled because the first k already succeeded is not a failure (f
         done("check", 1, "ok", { nodeExecutionId: "nx-b", ...branch(fan, 1) }),
         row("check", 1, "completed", { nodeExecutionId: "nx-c", outcome: "cancelled", resultKind: "runtime_error", winner: "join", ...branch(fan, 2) }),
     ];
-    const projection = projectWorkflowV2({ readModel: readModel({ graph: forEach({ first: 2 }), nodeExecutions: rows,
+    const projection = projectWorkflow({ readModel: readModel({ graph: forEach({ first: 2 }), nodeExecutions: rows,
         run: { status: "completed", terminalState: "done", outcome: "succeeded" } }) });
     const check = byId(projection, "check");
     assert.notEqual(check.state, "failed");
@@ -111,7 +111,7 @@ test("a node that ran several times says so as a badge with its words in the tit
         { id: "end", type: "terminal", outcome: "succeeded" },
     ] };
     const rows = [done("poll", 1, "again"), done("poll", 2, "again"), row("poll", 3, "pending")];
-    const poll = byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: rows }) }), "poll");
+    const poll = byId(projectWorkflow({ readModel: readModel({ graph, nodeExecutions: rows }) }), "poll");
     const html = card(poll);
     assert.ok(html.includes(">↻ 3<") && html.includes('title="Ran 3 times"') && !html.includes("×3"), html);
     // Its type is the icon; the word is in its title, never a row of the card.
@@ -119,12 +119,12 @@ test("a node that ran several times says so as a badge with its words in the tit
 });
 
 test("the Workflow's own state words: Canceled (immediately or after started nodes finished), Canceling…, Completed · outcome (05, O8)", () => {
-    const status = run => projectWorkflowV2({ readModel: readModel({ run }) }).status.label;
+    const status = run => projectWorkflow({ readModel: readModel({ run }) }).status.label;
     assert.equal(status({ status: "cancelled" }), "Canceled");
     assert.equal(status({ status: "stopped" }), "Canceled");
     // Review 18:45Z: how it was stopped is the tooltip.
-    assert.equal(projectWorkflowV2({ readModel: readModel({ run: { status: "stopped" } }) }).status.title, "Canceled after started nodes finished");
-    assert.equal(projectWorkflowV2({ readModel: readModel({ run: { status: "cancelled" } }) }).status.title, "Canceled at once");
+    assert.equal(projectWorkflow({ readModel: readModel({ run: { status: "stopped" } }) }).status.title, "Canceled after started nodes finished");
+    assert.equal(projectWorkflow({ readModel: readModel({ run: { status: "cancelled" } }) }).status.title, "Canceled at once");
     assert.match(status({ status: "running", stop: { requestedAt: "2026-11-05T07:00:00Z", deadline: "2026-11-05T07:01:00Z", graceSeconds: 60 } }), /^Canceling · started nodes finish by /);
     assert.equal(status({ status: "completed", outcome: "blocked", terminalState: "done" }), "Completed · blocked");
     assert.equal(status({ status: "admitted" }), "Running", "accepted but not begun reads Running");

@@ -4,9 +4,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "../../dist/session-manager.js";
 import { loadSkillsSync } from "../../dist/skills.js";
-import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
+import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import {
-    WORKFLOW_AUTHORING_SKILL, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR,
+    WORKFLOW_AUTHORING_SKILL, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_SKILLS_DIR, WORKFLOW_TEST_MODE_SKILLS_DIR,
 } from "../../dist/workflow/guidance.js";
 
 // The base's workflow guidance mentions testing only with workflow test mode on (Workflow Simplified, spec 16); these
@@ -21,14 +21,14 @@ process.env.PILOTSWARM_WORKFLOW_TEST_MODE = "on";
 
 const PLUGINS = fileURLToPath(new URL("../../plugins", import.meta.url));
 const MILESTONE = { enableRequests: true, enableAgents: true, enableParallel: true };
-const skills = () => loadSkillsSync(WORKFLOW_V2_SKILLS_DIR);
+const skills = () => loadSkillsSync(WORKFLOW_SKILLS_DIR);
 // The testing guide is hidden with test mode (Workflow Simplified, spec 16): apart from the guides agents read.
-const testModeSkills = () => loadSkillsSync(WORKFLOW_V2_TEST_MODE_SKILLS_DIR);
+const testModeSkills = () => loadSkillsSync(WORKFLOW_TEST_MODE_SKILLS_DIR);
 
 test("the workflow skills load from their own plugin directory, which no worker tier loads", () => {
-    assert.equal(path.resolve(WORKFLOW_V2_SKILLS_DIR), path.join(PLUGINS, "workflow-v2", "skills"));
+    assert.equal(path.resolve(WORKFLOW_SKILLS_DIR), path.join(PLUGINS, "workflow", "skills"));
     assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-authoring", "workflow-patterns", "workflow-reference", "workflow-tools"]);
-    assert.equal(path.resolve(WORKFLOW_V2_TEST_MODE_SKILLS_DIR), path.join(PLUGINS, "workflow-v2", "test-mode-skills"));
+    assert.equal(path.resolve(WORKFLOW_TEST_MODE_SKILLS_DIR), path.join(PLUGINS, "workflow", "test-mode-skills"));
     assert.deepEqual(testModeSkills().map(skill => skill.name), ["workflow-testing"]);
     for (const skill of [...skills(), ...testModeSkills()]) {
         // The skills index clips a description at 240 characters; each body stays small enough to load on demand: 20 KiB,
@@ -94,7 +94,7 @@ test("every complete example in the workflow skills compiles as written, with no
             "workflow-reference/change-review", "workflow-testing/release-notes"]);
     const kinds = new Set();
     for (const example of examples) {
-        const compiled = compileWorkflowV2(example.yaml, MILESTONE);
+        const compiled = compileWorkflow(example.yaml, MILESTONE);
         assert.equal(compiled.valid, true, `${example.name}: ${JSON.stringify(compiled.diagnostics)}`);
         assert.deepEqual(compiled.diagnostics, [], example.name);
         assert.equal(compiled.name, example.name);

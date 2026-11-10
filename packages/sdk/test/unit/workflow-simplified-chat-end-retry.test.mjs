@@ -5,9 +5,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    endOwedContinuedChat, endWorkflowV2ContinuedChats, registerWorkflowV2, WORKFLOW_V2_CHAT_END_NAME, WORKFLOW_V2_ACTIVITIES,
+    endOwedContinuedChat, endWorkflowContinuedChats, registerWorkflow, WORKFLOW_CHAT_END_NAME, WORKFLOW_ACTIVITIES,
     workflowAgentChatSessionId, workflowChatEndInstanceId,
-} from "../../dist/workflow/v2/runtime.js";
+} from "../../dist/workflow/runtime.js";
 
 const CHAT = workflowAgentChatSessionId("run-1", "talk");
 
@@ -47,23 +47,23 @@ test("O1: one detached end retry runs at a time; once it ended with the end stil
     const w = world();
     const first = workflowChatEndInstanceId(CHAT);
     assert.equal(first, `wfc-${CHAT}`);
-    await endWorkflowV2ContinuedChats(w.store, w.client, "run-1");
-    assert.deepEqual(w.log.started, [[first, WORKFLOW_V2_CHAT_END_NAME]]);
+    await endWorkflowContinuedChats(w.store, w.client, "run-1");
+    assert.deepEqual(w.log.started, [[first, WORKFLOW_CHAT_END_NAME]]);
     // While it runs, a recover looks once and starts nothing.
-    await endWorkflowV2ContinuedChats(w.store, w.client, "run-1");
+    await endWorkflowContinuedChats(w.store, w.client, "run-1");
     assert.equal(w.log.started.length, 1);
     // Its schedule ran out (it ended), the end still owed: the next one.
     w.statuses.set(first, "Completed");
-    await endWorkflowV2ContinuedChats(w.store, w.client, "run-1");
+    await endWorkflowContinuedChats(w.store, w.client, "run-1");
     assert.deepEqual(w.log.started.map(([id]) => id), [first, `wfc-${CHAT}-2`]);
     w.statuses.set(`wfc-${CHAT}-2`, "Failed");
-    await endWorkflowV2ContinuedChats(w.store, w.client, "run-1");
+    await endWorkflowContinuedChats(w.store, w.client, "run-1");
     assert.deepEqual(w.log.started.map(([id]) => id), [first, `wfc-${CHAT}-2`, `wfc-${CHAT}-3`]);
     assert.deepEqual(w.log.enqueued, []);
     // The chat is visible now: the look ends it, once, and no retry is started.
     w.statuses.set(`wfc-${CHAT}-3`, "Completed");
     w.statuses.set(`session-${CHAT}`, "Running");
-    await endWorkflowV2ContinuedChats(w.store, w.client, "run-1");
+    await endWorkflowContinuedChats(w.store, w.client, "run-1");
     assert.deepEqual(w.log.enqueued, [[`session-${CHAT}`, "cancel"]]);
     assert.equal(w.invocation.endChildStatus, "ChatEnded");
     assert.equal(w.log.started.length, 3);
@@ -86,7 +86,7 @@ test("O2: a look that cannot take the chat's end lock leaves the end to the hold
 /** The detached retry's activities over a world's fake store. */
 function activitiesOf(w) {
     const activities = new Map();
-    registerWorkflowV2({ registerActivity: (name, fn) => activities.set(name, fn), registerOrchestrationVersioned: () => {} }, {
+    registerWorkflow({ registerActivity: (name, fn) => activities.set(name, fn), registerOrchestrationVersioned: () => {} }, {
         store: w.store, catalog: {}, enabled: () => true,
         resolveToolBinding: async () => null, openToolExecutor: async () => { throw new Error("no tools"); },
         authorizeParentNotification: async () => true, notifyParent: async () => {}, deleteSession: async () => {},
@@ -95,7 +95,7 @@ function activitiesOf(w) {
 }
 
 test("O2: the last look reports another look holding the end, or a chat never seen, on the newest visit's node", async () => {
-    const last = (w) => activitiesOf(w).get(WORKFLOW_V2_ACTIVITIES.endOwedChatLast)({ getClient: () => w.client }, { runId: "run-1", childSessionId: CHAT });
+    const last = (w) => activitiesOf(w).get(WORKFLOW_ACTIVITIES.endOwedChatLast)({ getClient: () => w.client }, { runId: "run-1", childSessionId: CHAT });
     const held = world({ locked: false });
     assert.deepEqual(await last(held), { result: "held_elsewhere" });
     assert.deepEqual(held.log.events.map((event) => [event.eventType, event.data.reason, event.data.stateId, event.data.error]), [

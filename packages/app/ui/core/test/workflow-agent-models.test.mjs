@@ -13,7 +13,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
     PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowViewModal,
 } from "../src/index.js";
-import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
+import { projectWorkflow } from "../src/workflow-view.js";
 import { workflowNodeSummary } from "../src/workflow-node-summary.js";
 import { workflowAgentNodeLog } from "../src/workflow-agent-log.js";
 import { workflowAgentModel, workflowModelFromKey, workflowModelWords, workflowSessionModel, workflowSessionModelKey, workflowSpawnedModels,
@@ -21,9 +21,9 @@ import { workflowAgentModel, workflowModelFromKey, workflowModelWords, workflowS
 import { StartDialog } from "../../react/src/workflow-tab.js";
 import { workflowPickerItems } from "../src/controller.js";
 import { workflowPickerDetailsLines } from "../src/selectors.js";
-import { WorkflowV2AgentLog, WorkflowV2NodeSummary } from "../../react/src/workflow-v2-panels.js";
+import { WorkflowAgentLog, WorkflowNodeSummary } from "../../react/src/workflow-panels.js";
 import { WorkflowStepCard } from "../../react/src/workflow-graph.js";
-import { done, readModel } from "./workflow-v2-fixtures.mjs";
+import { done, readModel } from "./workflow-fixtures.mjs";
 
 process.env.TZ = "UTC";
 
@@ -65,21 +65,21 @@ test("the words: a model with its reasoning and context; chosen at start, else f
 });
 
 test("the Node panel and the node's tooltip: chosen at start for a node its run mapped, from the chat for the others", () => {
-    const projection = projectWorkflowV2({ readModel: model({ agentModels: CHOSEN }), chatModel: CHAT });
+    const projection = projectWorkflow({ readModel: model({ agentModels: CHOSEN }), chatModel: CHAT });
     const classify = projection.nodes.find(node => node.id === "classify");
     const review = projection.nodes.find(node => node.id === "review");
     assert.equal(classify.model.text, "Model: anthropic:fast · low reasoning · long context · chosen at start");
     assert.equal(review.model.text, "Model: from the chat · now azure:chat-model · medium reasoning");
     assert.equal(projection.nodes.find(node => node.id === "done").model, undefined, "only agent nodes have a model");
     assert.equal(workflowNodeSummary(classify).agent.model, "anthropic:fast · low reasoning · long context · chosen at start");
-    const panel = renderToStaticMarkup(React.createElement(WorkflowV2NodeSummary, { selected: classify, nodes: projection.nodes, select: () => {} }));
+    const panel = renderToStaticMarkup(React.createElement(WorkflowNodeSummary, { selected: classify, nodes: projection.nodes, select: () => {} }));
     assert.match(panel, /data-fact="model"[^>]*><span>Model<\/span><strong>anthropic:fast · low reasoning · long context · chosen at start<\/strong>/);
     const card = renderToStaticMarkup(React.createElement(WorkflowStepCard, { node: review, onSelect() {} }));
     assert.match(card, /title="review · Agent · [^"]* · Model: from the chat · now azure:chat-model · medium reasoning"/);
     // A run without a map, or the definition alone: every agent node uses its chat's.
-    const plain = projectWorkflowV2({ readModel: model(), chatModel: CHAT });
+    const plain = projectWorkflow({ readModel: model(), chatModel: CHAT });
     assert.equal(plain.nodes.find(node => node.id === "classify").model.source, "chat");
-    const definitionOnly = projectWorkflowV2({ workflowModel: model({ agentModels: CHOSEN }), chatModel: CHAT });
+    const definitionOnly = projectWorkflow({ workflowModel: model({ agentModels: CHOSEN }), chatModel: CHAT });
     assert.equal(definitionOnly.nodes.find(node => node.id === "classify").model.source, "chat", "a run's choice shows only on its own run");
 });
 
@@ -116,19 +116,19 @@ const VISITS = [1, 2].map(n => done("classify", n, "ok", { enteredAt: `2026-11-0
     agent: { childSessionId: "child-1", spawned: true } }));
 
 test("review OF7-R8: an agent node's Log says what each visit ran on from its spawn's record; else the chat's model now", () => {
-    const node = projectWorkflowV2({ readModel: model({ nodeExecutions: VISITS }) }).nodes.find(item => item.id === "classify");
+    const node = projectWorkflow({ readModel: model({ nodeExecutions: VISITS }) }).nodes.find(item => item.id === "classify");
     const log = workflowAgentNodeLog({ node, events: SPAWNED, chats: new Map([["child-1", []]]), runId: "run-1",
         chatModels: new Map([["child-1", { model: "anthropic:model-b", reasoningEffort: "low" }]]) });
     const byVisit = Object.fromEntries(log.groups.map(group => [group.ordinal, [group.model, group.modelNow]]));
     // Visit 1 recorded its model; visit 2 has no record (an older worker), so its line is the chat's model now.
     assert.deepEqual(byVisit, { 1: ["azure:model-a · high reasoning", false], 2: ["anthropic:model-b · low reasoning", true] });
-    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "classify" }));
+    const html = renderToStaticMarkup(React.createElement(WorkflowAgentLog, { log, nodeId: "classify" }));
     assert.match(html, /<p class="ps-wf-muted ps-wf-alog-model" data-model="used">Model: azure:model-a · high reasoning<\/p>/);
     assert.match(html, /<p class="ps-wf-muted ps-wf-alog-model" data-model="now">Model now: anthropic:model-b · low reasoning<\/p>/);
     // Nothing known: no model line, never a guess.
     const unread = workflowAgentNodeLog({ node, chats: new Map([["child-1", []]]), runId: "run-1" });
     assert.deepEqual(unread.groups.map(group => group.model), [null, null]);
-    assert.ok(!renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log: unread, nodeId: "classify" })).includes("ps-wf-alog-model"));
+    assert.ok(!renderToStaticMarkup(React.createElement(WorkflowAgentLog, { log: unread, nodeId: "classify" })).includes("ps-wf-alog-model"));
     // Another run's record is not this run's.
     assert.equal(workflowSpawnedModels(SPAWNED, "run-2").size, 0);
     assert.equal(workflowSpawnedModels(SPAWNED, "run-1").get("nx-classify-1").model, "azure:model-a");
@@ -136,12 +136,12 @@ test("review OF7-R8: an agent node's Log says what each visit ran on from its sp
 
 test("review OF7-R8: the Node panel shows what the shown visit ran on, from its spawn's record, not the chat's model now", () => {
     const rows = [VISITS[0]];
-    const projection = projectWorkflowV2({ readModel: model({ nodeExecutions: rows }), events: [SPAWNED[0]], chatModel: { model: "anthropic:model-b" } });
+    const projection = projectWorkflow({ readModel: model({ nodeExecutions: rows }), events: [SPAWNED[0]], chatModel: { model: "anthropic:model-b" } });
     const classify = projection.nodes.find(node => node.id === "classify");
     assert.equal(classify.model.text, "Model: azure:model-a · high reasoning · from the chat");
     assert.equal(workflowNodeSummary(classify).agent.model, "azure:model-a · high reasoning · from the chat");
     // Without the record: the chat's model, said as now.
-    const without = projectWorkflowV2({ readModel: model({ nodeExecutions: rows }), chatModel: { model: "anthropic:model-b" } });
+    const without = projectWorkflow({ readModel: model({ nodeExecutions: rows }), chatModel: { model: "anthropic:model-b" } });
     assert.equal(without.nodes.find(node => node.id === "classify").model.text, "Model: from the chat · now anthropic:model-b");
 });
 
@@ -184,7 +184,7 @@ test("DEV at fed7e7ac: a run whose stored choices cannot be read says so for its
     assert.equal(workflowAgentModel(null, CHAT, null, { unreadable: true }).text, "Model: model choices cannot be read");
     // A visit's record still wins: it is what that visit ran on.
     assert.equal(workflowAgentModel(null, CHAT, { model: "azure:old", source: "chat" }, { unreadable: true }).text, "Model: azure:old · from the chat");
-    const projection = projectWorkflowV2({ readModel: model({ agentModelsUnreadable: true }), chatModel: CHAT });
+    const projection = projectWorkflow({ readModel: model({ agentModelsUnreadable: true }), chatModel: CHAT });
     assert.equal(projection.nodes.find(node => node.id === "classify").model.text, "Model: model choices cannot be read");
-    assert.equal(projectWorkflowV2({ readModel: model(), chatModel: CHAT }).nodes.find(node => node.id === "classify").model.now, true);
+    assert.equal(projectWorkflow({ readModel: model(), chatModel: CHAT }).nodes.find(node => node.id === "classify").model.now, true);
 });

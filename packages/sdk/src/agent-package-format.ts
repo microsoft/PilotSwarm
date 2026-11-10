@@ -31,12 +31,12 @@ import * as os from "os";
 import * as crypto from "crypto";
 import { spawn } from "child_process";
 import { agentFrontmatterProblem, loadAgentFiles, validateAgentDefinition, type AgentConfig } from "./agent-loader.js";
-import { exportWorkflowInterface, type WorkflowInterfaceExport } from "./workflow/v2/package-interface.js";
-import { compileWorkflowV2, type WorkflowIR } from "./workflow/v2/compiler.js";
+import { exportWorkflowInterface, type WorkflowInterfaceExport } from "./workflow/package-interface.js";
+import { compileWorkflow, type WorkflowIR } from "./workflow/compiler.js";
 import {
     parseWorkflowCard, parseWorkflowPackageRef, workflowCardDigest, workflowCardInterface, workflowCardMismatches, WORKFLOW_PACKAGE_DEFINITION_NAME,
     WORKFLOW_PACKAGE_MAX_DEFINITIONS, type WorkflowCard, type WorkflowCardInterface,
-} from "./workflow/v2/package-card.js";
+} from "./workflow/package-card.js";
 import { loadSkillsSync, type Skill } from "./skills.js";
 
 // ─── Reserved artifact identity ──────────────────────────────────
@@ -657,7 +657,7 @@ export interface AgentPackageManifest {
         // outcomes and its digest. Present only when the agent declares one.
         // The registry keeps it with each published version, so a workflow
         // publication matches and pins the interface of the exact revision it
-        // pins (workflow/v2/package-interface.ts).
+        // pins (workflow/package-interface.ts).
         workflowInterface?: WorkflowInterfaceExport;
         // Workflow Simplified stage 2.3 (P4): the Workflow Definitions this
         // agent's chat may start, as its front matter names them. Rides the
@@ -973,7 +973,7 @@ export async function validateAgentPackageDir(
                     if (extra === "workflow.yaml" || extra === "card.md") continue;
                     warnings.push({ code: "workflow_extra_file", message: `${rel}/${extra} is shipped but not read: a Workflow Definition is its workflow.yaml and card.md`, file: `${rel}/${extra}` });
                 }
-                const compiled = compileWorkflowV2(fs.readFileSync(yamlPath, "utf8"),
+                const compiled = compileWorkflow(fs.readFileSync(yamlPath, "utf8"),
                     { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true });
                 if (!compiled.valid || !compiled.ir || !compiled.irSha256) {
                     const problems = compiled.diagnostics.filter((item) => item.severity !== "warning").slice(0, 5)

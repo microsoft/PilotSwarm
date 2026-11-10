@@ -13,7 +13,7 @@
  *   complete_workflow_node. A bash call it guesses anyway is refused by the child hook, in the limit's words.
  * - Without a limit, the same chat's native task gets its usual tools (bash among them).
  *
- * The local PostgreSQL case test/local/workflow-v2-agent-tool-limit.test.js shows a started Workflow agent node's turn
+ * The local PostgreSQL case test/local/workflow-agent-tool-limit.test.js shows a started Workflow agent node's turn
  * gives its chat exactly this config (workflowAgentChild, workflowToolLimit); this file takes that config through the
  * real session manager and CLI. No PostgreSQL is needed here.
  *
@@ -67,7 +67,7 @@ async function stateChatTurn(workflowToolLimit) {
     manager.setFeatureFlagCache(policy.cache);
     const stored = [];
     manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }), storeFact: async (...args) => { stored.push(args); return { stored: true }; }, deleteFact: async () => ({ deleted: true }) });
-    // The config a Workflow agent node's turn gives its chat (workflow-v2-agent-tool-limit.test.js on PostgreSQL).
+    // The config a Workflow agent node's turn gives its chat (workflow-agent-tool-limit.test.js on PostgreSQL).
     const config = { model: `fixture:${MODEL}`, workingDirectory: home, workflowAgentChild: true, ...(workflowToolLimit ? { workflowToolLimit } : {}) };
     manager.setConfig(sessionId, config);
     try {

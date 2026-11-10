@@ -20,7 +20,7 @@ import { createCatalog } from "../helpers/cms-helpers.js";
 import { withClient } from "../helpers/local-workers.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { FilesystemArtifactStore, publishAgentPackageDir } from "../../src/index.ts";
-import { workflowInterfaceDigest } from "../../src/workflow/v2/package-interface.ts";
+import { workflowInterfaceDigest } from "../../src/workflow/package-interface.ts";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -314,7 +314,7 @@ describe("agent-package worker install", () => {
     });
 
     it("lists a package agent's workflow interface from its installed version, as the version's manifest exports it", { timeout: TIMEOUT }, async () => {
-        // Only Workflow V2 publication matches an interface. Discovery shows it for authors.
+        // Only Workflow publication matches an interface. Discovery shows it for authors.
         const env = await getEnv();
         const catalog = await createCatalog(env);
         const artifactStore = new FilesystemArtifactStore(path.join(path.dirname(env.sessionStateDir), "artifacts"));

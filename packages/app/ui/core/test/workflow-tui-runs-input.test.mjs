@@ -30,9 +30,9 @@ import {
     workflowInputNoteText,
     WORKFLOW_INPUT_DENIED_TEXT,
 } from "../src/index.js";
-import { workflowV2RunPickerModel as coreRunPicker } from "../src/workflow-v2-run-picker.js";
-import { workflowV2RunPickerModel as portalRunPicker } from "../../react/src/workflow-v2-panels.js";
-import { readModel, row, done } from "./workflow-v2-fixtures.mjs";
+import { workflowRunPickerModel as coreRunPicker } from "../src/workflow-run-picker.js";
+import { workflowRunPickerModel as portalRunPicker } from "../../react/src/workflow-panels.js";
+import { readModel, row, done } from "./workflow-fixtures.mjs";
 
 const states = [
     { id: "review", type: "agent", invoke: { source: "agent", name: "code-reviewer" }, timeoutSeconds: 600,

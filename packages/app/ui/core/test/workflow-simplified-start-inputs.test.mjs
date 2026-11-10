@@ -12,7 +12,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { workflowV2DrawableInput, workflowV2InputsShape, workflowV2RunInputs, workflowV2StartAnotherShape } from "../src/workflow-v2-commands.js";
+import { workflowDrawableInput, workflowInputsShape, workflowRunInputs, workflowStartAnotherShape } from "../src/workflow-commands.js";
 import { workflowStartAnotherText } from "../src/workflow-owner.js";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 
@@ -21,13 +21,13 @@ const INPUTS_JSON = 'title="JSON">Inputs</label>';
 import { StartDialog } from "../../react/src/workflow-tab.js";
 
 test("the form's shape: none only when no input can be asked for; a JSON box for what it cannot draw", () => {
-    assert.equal(workflowV2InputsShape(null), "none");
+    assert.equal(workflowInputsShape(null), "none");
     // Review UI-D8: an open object takes any inputs (a JSON box); only a closed empty contract takes none.
-    assert.equal(workflowV2InputsShape({ type: "object" }), "json");
-    assert.equal(workflowV2InputsShape({ type: "object", additionalProperties: true }), "json");
-    assert.equal(workflowV2InputsShape({ type: "object", properties: {}, additionalProperties: false }), "none");
-    assert.equal(workflowV2InputsShape({ type: "object", properties: { region: { type: "string" } } }), "form");
-    assert.equal(workflowV2InputsShape({ type: "object", properties: { cfg: { type: "object" } } }), "json", "a field it cannot draw");
+    assert.equal(workflowInputsShape({ type: "object" }), "json");
+    assert.equal(workflowInputsShape({ type: "object", additionalProperties: true }), "json");
+    assert.equal(workflowInputsShape({ type: "object", properties: {}, additionalProperties: false }), "none");
+    assert.equal(workflowInputsShape({ type: "object", properties: { region: { type: "string" } } }), "form");
+    assert.equal(workflowInputsShape({ type: "object", properties: { cfg: { type: "object" } } }), "json", "a field it cannot draw");
     for (const schema of [
         { type: "object", minProperties: 1, additionalProperties: { type: "string" } },
         { type: "object", oneOf: [{ required: ["a"] }, { required: ["b"] }] },
@@ -35,19 +35,19 @@ test("the form's shape: none only when no input can be asked for; a JSON box for
         { type: "object", required: ["x"] },
         { type: "object", patternProperties: { "^x-": { type: "string" } } },
         { type: "array" },
-    ]) assert.equal(workflowV2InputsShape(schema), "json", JSON.stringify(schema));
-    assert.equal(workflowV2DrawableInput({ enum: ["a", "b"] }), true);
-    assert.equal(workflowV2DrawableInput({ type: "array", items: { type: "string" } }), true);
-    assert.equal(workflowV2DrawableInput({ type: "object" }), false);
+    ]) assert.equal(workflowInputsShape(schema), "json", JSON.stringify(schema));
+    assert.equal(workflowDrawableInput({ enum: ["a", "b"] }), true);
+    assert.equal(workflowDrawableInput({ type: "array", items: { type: "string" } }), true);
+    assert.equal(workflowDrawableInput({ type: "object" }), false);
 });
 
 test("a run's inputs from its read: an object, or none when the read has none or cut them", () => {
-    assert.deepEqual(workflowV2RunInputs({ run: { inputs: '{"region":"east"}' } }), { region: "east" });
-    assert.deepEqual(workflowV2RunInputs({ run: { inputs: { region: "east" } } }), { region: "east" });
-    assert.equal(workflowV2RunInputs({ run: { inputs: '{"region":"ea…' } }), null, "a cut preview");
-    assert.equal(workflowV2RunInputs({ run: { inputs: "[1]" } }), null);
-    assert.equal(workflowV2RunInputs({ run: {} }), null);
-    assert.equal(workflowV2RunInputs(null), null);
+    assert.deepEqual(workflowRunInputs({ run: { inputs: '{"region":"east"}' } }), { region: "east" });
+    assert.deepEqual(workflowRunInputs({ run: { inputs: { region: "east" } } }), { region: "east" });
+    assert.equal(workflowRunInputs({ run: { inputs: '{"region":"ea…' } }), null, "a cut preview");
+    assert.equal(workflowRunInputs({ run: { inputs: "[1]" } }), null);
+    assert.equal(workflowRunInputs({ run: {} }), null);
+    assert.equal(workflowRunInputs(null), null);
 });
 
 const SCHEMA = { type: "object", properties: { region: { type: "string", examples: ["west"] } }, required: ["region"] };
@@ -83,7 +83,7 @@ test("UI-D8: Start another keeps known inputs for an open, additionalProperties 
     const original = { region: "east", limit: 3 };
     for (const schema of [{ type: "object" }, { type: "object", additionalProperties: true }, null]) {
         const label = JSON.stringify(schema);
-        assert.equal(workflowV2StartAnotherShape(schema), "json", label);
+        assert.equal(workflowStartAnotherShape(schema), "json", label);
         const html = render({ publication: publication(schema), onAsk: async () => ({ ok: true }), source: { number: 2, inputs: original } });
         assert.ok(!html.includes("Takes no inputs.") && html.includes(INPUTS_JSON) && html.includes("Filled with the inputs of #2."), html);
         // The JSON box holds the original object exactly: what Ask sends.
@@ -91,9 +91,9 @@ test("UI-D8: Start another keeps known inputs for an open, additionalProperties 
         assert.deepEqual(JSON.parse(box[1].replaceAll("&quot;", "\"")), original, label);
     }
     // Only a closed empty contract takes none (review UI-F4: a missing schema is not that).
-    assert.equal(workflowV2StartAnotherShape(null), "json");
-    assert.equal(workflowV2StartAnotherShape(undefined), "json");
-    assert.equal(workflowV2StartAnotherShape({ type: "object", additionalProperties: false }), "none");
+    assert.equal(workflowStartAnotherShape(null), "json");
+    assert.equal(workflowStartAnotherShape(undefined), "json");
+    assert.equal(workflowStartAnotherShape({ type: "object", additionalProperties: false }), "none");
     // The message: the inputs as given, "It takes no inputs." only for a contract that takes none.
     assert.match(workflowStartAnotherText({ name: "check-items", inputs: original }), /\nInputs \(data, JSON\): \{"region":"east","limit":3\}$/);
     assert.match(workflowStartAnotherText({ name: "check-items", inputs: {} }), /\nInputs \(data, JSON\): \{\}$/);
@@ -134,9 +134,9 @@ test("UI-F4: a missing schema with unavailable or empty source inputs offers the
 // UX2D-F9: Run again of a chat's definition showed an Inputs JSON box holding {} for a Workflow with no inputs, where
 // the same definition's Start says "Takes no inputs.": once its revision is read, its schema is the contract, as Start's.
 test("UX2D-F9: Run again of a revision read with no input schema takes no inputs, as Start says; an unread schema keeps the JSON box", () => {
-    assert.equal(workflowV2StartAnotherShape(null, { schemaKnown: true }), "none");
-    assert.equal(workflowV2StartAnotherShape(SCHEMA, { schemaKnown: true }), workflowV2InputsShape(SCHEMA));
-    assert.equal(workflowV2StartAnotherShape(null), "json", "a schema not read is no contract (UI-F4)");
+    assert.equal(workflowStartAnotherShape(null, { schemaKnown: true }), "none");
+    assert.equal(workflowStartAnotherShape(SCHEMA, { schemaKnown: true }), workflowInputsShape(SCHEMA));
+    assert.equal(workflowStartAnotherShape(null), "json", "a schema not read is no contract (UI-F4)");
     const runAgain = (inputsSchemaKnown) => render({ publication: { ...publication(null), inputsSchemaKnown }, source: { number: 1, inputs: {} },
         startWith: async () => ({ ok: true }) });
     const read = runAgain(true);

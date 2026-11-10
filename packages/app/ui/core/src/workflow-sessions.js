@@ -8,14 +8,14 @@
  * which the worker draws and updates (packages/sdk workflow/canvas.ts).
  */
 
-import { workflowEventText } from "./workflow-v2-view.js";
+import { workflowEventText } from "./workflow-view.js";
 import { WORKFLOW_STATE_MARKS, workflowDuration, workflowFailureDetail, workflowFailureReason, workflowOutcomeWord, workflowReasonShown } from "./workflow-words.js";
 
 export const WORKFLOW_SESSION_GLYPH = "◇";
 
 /** The v2 events that report a control action or a side effect, not a step of the run. They never end or split a poll summary. */
 export const WORKFLOW_CONTROL_EVENT_TYPES = [
-    // Workflow v2 control events (packages/sdk/src/workflow/v2 runtime.ts, service.ts, store.ts).
+    // Workflow control events (packages/sdk/src/workflow/runtime.ts, service.ts, store.ts).
     "workflow.paused",
     "workflow.resumed",
     "workflow.vars_set",
@@ -87,7 +87,7 @@ const failureWords = (outcome) => (!nonEmpty(outcome) || workflowFailureReason(o
     ? workflowFailureDetail(outcome) : inline(workflowFailureDetail(outcome), 60));
 
 /**
- * Text, a one-line summary and a colour for a workflow v2 control event: its long form in the one sentence table the
+ * Text, a one-line summary and a colour for a workflow control event: its long form in the one sentence table the
  * activity list also uses (workflowEventText). Missing or malformed fields leave a part out; nothing here throws. Null
  * for any other event.
  */

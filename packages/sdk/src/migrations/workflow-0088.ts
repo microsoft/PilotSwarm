@@ -4,16 +4,16 @@
  * On `sessions` (an existing table): `session_kind` ('agent' or 'workflow'; existing rows are agents), `workflow_ref`,
  * the two Workflow triggers and an index on `parent_session_id`.
  *
- * - cms_create_workflow_session_v2: claims a session row for a Workflow; an existing row of any kind is never changed.
+ * - cms_create_workflow_session: claims a session row for a Workflow; an existing row of any kind is never changed.
  * - A Workflow (workflow_definitions: its own pinned copy of a chat's definition) has revisions, operations, runs, the
  *   runs' KV revisions and node executions; its messages (workflow_inbox, workflow_outbox), requests and their responses,
  *   operations and wakes; the durable intake of what it sends to a chat (workflow_intake, its invocations and exposures);
  *   the agents it runs (workflow_agent_invocations and their completions) and the interceptions of a test run.
  * - A chat owns its named Workflow Definitions (workflow_chat_definitions) and their immutable revisions, its operations,
  *   the newest revision it has seen of each and the notes a person's save leaves for it.
- * - Deleting a Workflow session ends its Workflow in the same transaction (workflow_v2_on_session_deleted): the definition
+ * - Deleting a Workflow session ends its Workflow in the same transaction (workflow_on_session_deleted): the definition
  *   becomes a permanent tombstone, active runs are cancelled and their pending node executions lose to the deletion.
- * - A chat that ends ends its Workflows (workflow_v2_on_chat_ended): a deleted chat has its definitions deleted and its
+ * - A chat that ends ends its Workflows (workflow_on_chat_ended): a deleted chat has its definitions deleted and its
  *   Workflow sessions deleted (each one's own trigger then ends its runs); a completed, cancelled or failed chat has its
  *   Workflows' active runs (live and test) cancelled. It locks in the runtime's order: the chat's row (the UPDATE that
  *   fired it), then its Workflow session rows in session_id order, then their active runs in run_id order.
@@ -63,7 +63,7 @@ $sessions$;
 -- Exclusive creation of a Workflow session row. The INSERT is the claim: when any row with this id exists (live or
 -- deleted, of any kind, committed or being inserted concurrently), nothing is changed and FALSE is returned. Root, group
 -- and visibility resolve as in cms_create_session.
-CREATE OR REPLACE FUNCTION ${s}.cms_create_workflow_session_v2(
+CREATE OR REPLACE FUNCTION ${s}.cms_create_workflow_session(
     p_session_id        TEXT,
     p_parent_session_id TEXT,
     p_creation_config   JSONB
@@ -335,7 +335,7 @@ CREATE TABLE IF NOT EXISTS ${s}.workflow_outbox (
 CREATE INDEX IF NOT EXISTS workflow_outbox_by_run ON ${s}.workflow_outbox (run_id, created_at);
 
 -- The intake fence: only the first counted attempt decides the mode, and a durable row is counted only with a new token.
-CREATE OR REPLACE FUNCTION ${s}.workflow_v2_outbox_intake_fence() RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION ${s}.workflow_outbox_intake_fence() RETURNS TRIGGER AS $$
 BEGIN
     IF NEW.intake_mode IS DISTINCT FROM OLD.intake_mode
        AND NOT (OLD.intake_mode IS NULL AND OLD.attempts IS NOT DISTINCT FROM 0 AND NEW.attempts IS NOT DISTINCT FROM 1) THEN
@@ -356,7 +356,7 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS workflow_outbox_intake_fence ON ${s}.workflow_outbox;
 CREATE TRIGGER workflow_outbox_intake_fence BEFORE UPDATE ON ${s}.workflow_outbox
-    FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_v2_outbox_intake_fence();
+    FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_outbox_intake_fence();
 
 CREATE TABLE IF NOT EXISTS ${s}.workflow_requests (
     exchange_id            TEXT PRIMARY KEY REFERENCES ${s}.workflow_outbox (exchange_id),
@@ -422,7 +422,7 @@ CREATE INDEX IF NOT EXISTS workflow_response_wakes_due ON ${s}.workflow_response
 
 -- A request and its response are written once; an operation binding changes only its repeat counters; a settled wake
 -- never changes. None of these rows is deleted.
-CREATE OR REPLACE FUNCTION ${s}.workflow_v2_request_rows_guard() RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION ${s}.workflow_request_rows_guard() RETURNS TRIGGER AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN
         RAISE EXCEPTION '% rows are kept: a % is never deleted', TG_TABLE_NAME, TG_TABLE_NAME;
@@ -452,16 +452,16 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS workflow_requests_guard ON ${s}.workflow_requests;
 CREATE TRIGGER workflow_requests_guard BEFORE UPDATE OR DELETE ON ${s}.workflow_requests
-    FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_v2_request_rows_guard();
+    FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_request_rows_guard();
 DROP TRIGGER IF EXISTS workflow_request_responses_guard ON ${s}.workflow_request_responses;
 CREATE TRIGGER workflow_request_responses_guard BEFORE UPDATE OR DELETE ON ${s}.workflow_request_responses
-    FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_v2_request_rows_guard();
+    FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_request_rows_guard();
 DROP TRIGGER IF EXISTS workflow_request_operations_guard ON ${s}.workflow_request_operations;
 CREATE TRIGGER workflow_request_operations_guard BEFORE UPDATE OR DELETE ON ${s}.workflow_request_operations
-    FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_v2_request_rows_guard();
+    FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_request_rows_guard();
 DROP TRIGGER IF EXISTS workflow_response_wakes_guard ON ${s}.workflow_response_wakes;
 CREATE TRIGGER workflow_response_wakes_guard BEFORE UPDATE OR DELETE ON ${s}.workflow_response_wakes
-    FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_v2_request_rows_guard();
+    FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_request_rows_guard();
 
 -- An invocation's complete membership, written once by its first bind. Every bind, end and cancel of the invocation
 -- first takes a transaction-scoped advisory lock on its identity (store.ts lockIntakeInvocation), the first bind
@@ -475,7 +475,7 @@ CREATE TABLE IF NOT EXISTS ${s}.workflow_intake_invocations (
     CONSTRAINT workflow_intake_invocations_count CHECK ((member_count BETWEEN 1 AND 64) IS TRUE)
 );
 
-CREATE OR REPLACE FUNCTION ${s}.workflow_v2_intake_invocation_guard() RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION ${s}.workflow_intake_invocation_guard() RETURNS TRIGGER AS $$
 BEGIN
     RAISE EXCEPTION 'intake invocation %: an invocation is written once and is never changed or deleted', OLD.invocation_id;
 END;
@@ -483,7 +483,7 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS workflow_intake_invocations_guard ON ${s}.workflow_intake_invocations;
 CREATE TRIGGER workflow_intake_invocations_guard BEFORE UPDATE OR DELETE ON ${s}.workflow_intake_invocations
-    FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_v2_intake_invocation_guard();
+    FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_intake_invocation_guard();
 
 CREATE TABLE IF NOT EXISTS ${s}.workflow_intake (
     exchange_id          TEXT PRIMARY KEY REFERENCES ${s}.workflow_outbox (exchange_id),
@@ -522,7 +522,7 @@ CREATE INDEX IF NOT EXISTS workflow_intake_by_invocation ON ${s}.workflow_intake
 
 -- An intake row keeps its identity and text; its state and processing move forward once; nothing goes back; none is
 -- deleted.
-CREATE OR REPLACE FUNCTION ${s}.workflow_v2_intake_guard() RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION ${s}.workflow_intake_guard() RETURNS TRIGGER AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN
         RAISE EXCEPTION 'workflow_intake rows are kept: intake row % is never deleted', OLD.exchange_id;
@@ -561,7 +561,7 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS workflow_intake_guard ON ${s}.workflow_intake;
 CREATE TRIGGER workflow_intake_guard BEFORE UPDATE OR DELETE ON ${s}.workflow_intake
-    FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_v2_intake_guard();
+    FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_intake_guard();
 
 CREATE TABLE IF NOT EXISTS ${s}.workflow_intake_exposures (
     invocation_id        TEXT PRIMARY KEY REFERENCES ${s}.workflow_intake_invocations (invocation_id),
@@ -571,7 +571,7 @@ CREATE TABLE IF NOT EXISTS ${s}.workflow_intake_exposures (
 );
 
 -- An exposure is inserted once and is never changed or deleted.
-CREATE OR REPLACE FUNCTION ${s}.workflow_v2_intake_exposure_guard() RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION ${s}.workflow_intake_exposure_guard() RETURNS TRIGGER AS $$
 BEGIN
     RAISE EXCEPTION 'intake exposure %: an exposure is written once and is never changed or deleted', OLD.invocation_id;
 END;
@@ -579,7 +579,7 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS workflow_intake_exposures_guard ON ${s}.workflow_intake_exposures;
 CREATE TRIGGER workflow_intake_exposures_guard BEFORE UPDATE OR DELETE ON ${s}.workflow_intake_exposures
-    FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_v2_intake_exposure_guard();
+    FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_intake_exposure_guard();
 
 -- One row per visit of an agent node: a chat that continues across visits has one row per visit, so child_session_id
 -- is not unique.
@@ -730,7 +730,7 @@ CREATE INDEX IF NOT EXISTS workflow_chat_notes_pending ON ${s}.workflow_chat_not
 
 -- Deleting a Workflow session ends its Workflow in the same transaction, whatever deletes it. Every Workflow transition
 -- locks the session row first and re-checks deleted_at, so nothing admits, starts or completes work after this commits.
-CREATE OR REPLACE FUNCTION ${s}.workflow_v2_on_session_deleted() RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION ${s}.workflow_on_session_deleted() RETURNS TRIGGER AS $$
 DECLARE
     v_envelope CONSTANT TEXT := '{"code":"cancelled","message":"The workflow session was deleted."}';
 BEGIN
@@ -758,7 +758,7 @@ $$ LANGUAGE plpgsql;
 
 
 -- A chat that ends ends its Workflows, locking in the runtime's order (see the header).
-CREATE OR REPLACE FUNCTION ${s}.workflow_v2_on_chat_ended() RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION ${s}.workflow_on_chat_ended() RETURNS TRIGGER AS $$
 DECLARE
     v_envelope CONSTANT TEXT := '{"code":"cancelled","message":"The chat that owns this Workflow ended, so the Workflow was canceled."}';
 BEGIN
@@ -813,19 +813,19 @@ $$ LANGUAGE plpgsql;
 DO $sessions_triggers$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_trigger
-                    WHERE tgrelid = '${s}.sessions'::regclass AND tgname = 'workflow_v2_session_deleted') THEN
-        CREATE TRIGGER workflow_v2_session_deleted
+                    WHERE tgrelid = '${s}.sessions'::regclass AND tgname = 'workflow_session_deleted') THEN
+        CREATE TRIGGER workflow_session_deleted
             AFTER UPDATE OF deleted_at ON ${s}.sessions
-            FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_v2_on_session_deleted();
+            FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_on_session_deleted();
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_trigger
-                    WHERE tgrelid = '${s}.sessions'::regclass AND tgname = 'workflow_v2_chat_ended') THEN
-        CREATE TRIGGER workflow_v2_chat_ended
+                    WHERE tgrelid = '${s}.sessions'::regclass AND tgname = 'workflow_chat_ended') THEN
+        CREATE TRIGGER workflow_chat_ended
             AFTER UPDATE OF state, deleted_at ON ${s}.sessions
             FOR EACH ROW
             WHEN (NEW.session_kind IS DISTINCT FROM 'workflow'
                   AND (NEW.state IS DISTINCT FROM OLD.state OR NEW.deleted_at IS DISTINCT FROM OLD.deleted_at))
-            EXECUTE FUNCTION ${s}.workflow_v2_on_chat_ended();
+            EXECUTE FUNCTION ${s}.workflow_on_chat_ended();
     END IF;
 END
 $sessions_triggers$;

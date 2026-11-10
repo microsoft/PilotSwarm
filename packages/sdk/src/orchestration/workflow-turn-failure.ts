@@ -1,6 +1,6 @@
 /**
  * Orchestration 1.0.83 (changed in place; PR 270): the report of a Workflow agent chat's failed turn
- * (workflow/v2/agent-turn-failure.ts). A turn that fails for good (its retries spent, a non-retryable error, a
+ * (workflow/agent-turn-failure.ts). A turn that fails for good (its retries spent, a non-retryable error, a
  * credential failure) of a session that has an agent chat's id owes one report, made at once, before the session idles.
  * The report decides every visit the turn worked on that is still pending (execution_failed) and wakes the Workflow.
  *
@@ -13,7 +13,7 @@
  * - A turn that succeeds drops an owed report (turn.ts handleTurnResult): the chat recovered, so its visit goes on.
  * - A session without an agent chat's id owes nothing and makes no report: its history is unchanged.
  */
-import { isWorkflowAgentSessionIdShape } from "../workflow/v2/agent-ids.js";
+import { isWorkflowAgentSessionIdShape } from "../workflow/agent-ids.js";
 import type { DurableSessionRuntime } from "./state.js";
 
 /** The owed report: the failed turns' prompt ids and the last failure's words. */

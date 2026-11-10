@@ -1,5 +1,5 @@
 // Unit test: read_workflow, a person's workflow read over MCP (always registered: the view, a section's next page, one
-// execution's whole value), update_workflow, a person's workflow command over MCP (Workflow v2, INACTIVE), and the
+// execution's whole value), update_workflow, a person's workflow command over MCP (Workflow, INACTIVE), and the
 // workflow support get_capabilities and the pilotswarm://capabilities resource describe (design 04 "Advertise
 // capability/version in bootstrap", D11; R01, R26).
 //
@@ -164,7 +164,7 @@ for (const [workflowCommands, controllerVersion, stop] of [[{}, "1.0.0", true]])
 {
     const advertised = {
         schema: 1,
-        apiVersion: "pilotswarm.dev/v2-draft", read: true, create: false, input: false,
+        apiVersion: "pilotswarm.dev/v1", read: true, create: false, input: false,
         commands: { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
     };
     const { tool, resource } = await describedBy(capabilityCtx(webClient({ ok: true, workflows: advertised }), { workflowCommands: true, webMode: true }));

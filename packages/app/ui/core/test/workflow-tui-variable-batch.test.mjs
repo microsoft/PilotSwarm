@@ -1,7 +1,7 @@
 // Several of the shown run's variables in one update in the TUI's workflow view (design 02 open KV: set_vars is one
 // atomic batch of set and delete; R04, R05; INACTIVE: only a deployment that takes a person's workflow commands offers
 // it): V opens a form with two fields, Set (a JSON object of names and their JSON values) and Remove (a JSON list of
-// names), checked by the shared workflowV2VariableBatchDraft. The form reviews what Enter sends: each name added, or
+// names), checked by the shared workflowVariableBatchDraft. The form reviews what Enter sends: each name added, or
 // replacing the value it has (whole), each removed, at the revision the view shows; every other variable stays as it
 // is. Enter sends it as ONE set_vars command of that run through the shared controller (sendWorkflowRunCommand), never
 // as several mutations; an update that removes any asks first (the shared confirm dialog, which returns to the form).
@@ -18,8 +18,8 @@ import {
     PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowVariableBatchModal,
     selectWorkflowViewModal,
 } from "../src/index.js";
-import { workflowV2VariableBatchDraft } from "../src/workflow-v2-commands.js";
-import { RUN, SUBTREE_REASON as SUBTREE, readModel } from "./workflow-v2-fixtures.mjs";
+import { workflowVariableBatchDraft } from "../src/workflow-commands.js";
+import { RUN, SUBTREE_REASON as SUBTREE, readModel } from "./workflow-fixtures.mjs";
 
 const states = [
     { id: "review", type: "agent", invoke: { source: "agent", name: "code-reviewer" }, timeoutSeconds: 600, outcomes: ["accepted"],
@@ -91,20 +91,20 @@ async function opened(initial, answers = []) {
 }
 
 test("several variables are one batch: a JSON object to set and a JSON list to remove, each name once; malformed, other shapes and empty updates are refused", () => {
-    assert.deepEqual(workflowV2VariableBatchDraft('{"limit": 5, "mode": "fast", "cfg": {"a": [1, null]}}', '["old", "stale key"]'),
+    assert.deepEqual(workflowVariableBatchDraft('{"limit": 5, "mode": "fast", "cfg": {"a": [1, null]}}', '["old", "stale key"]'),
         { ok: true, set: { limit: 5, mode: "fast", cfg: { a: [1, null] } }, delete: ["old", "stale key"] });
-    assert.deepEqual(workflowV2VariableBatchDraft('{"a": null}', ""), { ok: true, set: { a: null }, delete: [] }, "null is a value; Remove may be empty");
-    assert.deepEqual(workflowV2VariableBatchDraft("  ", '["a", "b"]'), { ok: true, set: {}, delete: ["a", "b"] }, "Set may be empty");
+    assert.deepEqual(workflowVariableBatchDraft('{"a": null}', ""), { ok: true, set: { a: null }, delete: [] }, "null is a value; Remove may be empty");
+    assert.deepEqual(workflowVariableBatchDraft("  ", '["a", "b"]'), { ok: true, set: {}, delete: ["a", "b"] }, "Set may be empty");
     // A name is kept exactly as typed and stays plain data, "__proto__" included.
-    const proto = workflowV2VariableBatchDraft('{"__proto__": {"polluted": true}, " spaced ": 1}', "");
+    const proto = workflowVariableBatchDraft('{"__proto__": {"polluted": true}, " spaced ": 1}', "");
     assert.equal(proto.ok, true);
     assert.deepEqual(Object.keys(proto.set), ["__proto__", " spaced "]);
     assert.equal(Object.hasOwn(proto.set, "__proto__"), true);
     assert.equal(Object.getPrototypeOf(proto.set), Object.prototype);
     assert.equal({}.polluted, undefined);
-    assert.equal(workflowV2VariableBatchDraft(JSON.stringify({ ["k".repeat(128)]: 1 }), "").ok, true);
+    assert.equal(workflowVariableBatchDraft(JSON.stringify({ ["k".repeat(128)]: 1 }), "").ok, true);
 
-    const refused = (set, remove) => workflowV2VariableBatchDraft(set, remove).error;
+    const refused = (set, remove) => workflowVariableBatchDraft(set, remove).error;
     for (const [set, remove] of [["", ""], ["{}", "[]"], [" ", "  "]]) {
         assert.equal(refused(set, remove), "Nothing to update: set at least one variable or remove one.", JSON.stringify([set, remove]));
     }
@@ -121,7 +121,7 @@ test("several variables are one batch: a JSON object to set and a JSON list to r
     assert.equal(refused('{"a\\u0062": 1, "ab": 2}', ""), "Set names 'ab' more than once; give each name once.");
     assert.equal(refused('{"x\\"y": 1, "z": "x\\"y", "x\\"y" : 2}', ""), "Set names 'x\"y' more than once; give each name once.");
     // Only the top level names variables: a value is any JSON, a string value that looks like a name included.
-    assert.equal(workflowV2VariableBatchDraft('{"a": {"x": 1, "x": 2}, "b": "a", "c": ["a", {"a": 1}]}', "").ok, true);
+    assert.equal(workflowVariableBatchDraft('{"a": {"x": 1, "x": 2}, "b": "a", "c": ["a", {"a": 1}]}', "").ok, true);
     assert.equal(refused("", '["a", "b", "a"]'), "Remove lists 'a' more than once; give each name once.");
     assert.equal(refused('{"a": 1, "b": 2}', '["b"]'), "'b' is both set and removed; give each name once.");
     assert.equal(refused('{"": 1}', ""), "Each name is 1 to 128 characters; an empty name is not one.");

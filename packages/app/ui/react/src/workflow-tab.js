@@ -3,19 +3,19 @@ import { createPortal } from "react-dom";
 import { useControllerSelector } from "./use-controller-state.js";
 import {
     selectWorkflowViewSnapshotFor, workflowParentWorking, workflowReadModelView, workflowViewSnapshotEqual, formatSeconds,
-    projectWorkflowV2, workflowLogEvents, workflowLogWindow, workflowV2Activity, workflowV2BranchPickKey, workflowV2ExecutionOfRow,
-    workflowV2ReplayBranchIndex, workflowV2ReplayFrames, workflowV2ReplayLabel, workflowV2SelectionAfterBranchChange,
-} from "../../core/src/workflow-v2-view.js";
+    projectWorkflow, workflowLogEvents, workflowLogWindow, workflowActivity, workflowBranchPickKey, workflowExecutionOfRow,
+    workflowReplayBranchIndex, workflowReplayFrames, workflowReplayLabel, workflowSelectionAfterBranchChange,
+} from "../../core/src/workflow-view.js";
 import {
-    WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT, workflowV2DefinitionControls, workflowV2DraftEditor, workflowV2JsonObjectDraft, workflowV2RunCommandNotice,
-    workflowV2RunControls, workflowV2RunVariables, workflowV2SampleInputs, workflowV2TestControls, workflowV2TestModeListed, workflowV2TestResponder,
-    workflowV2DrawableInput, workflowV2InputsShape, workflowV2RunInputs, workflowV2StartAnotherShape,
-} from "../../core/src/workflow-v2-commands.js";
+    WORKFLOW_TEST_NEEDS_DRAFT_TEXT, workflowDefinitionControls, workflowDraftEditor, workflowJsonObjectDraft, workflowRunCommandNotice,
+    workflowRunControls, workflowRunVariables, workflowSampleInputs, workflowTestControls, workflowTestModeListed, workflowTestResponder,
+    workflowDrawableInput, workflowInputsShape, workflowRunInputs, workflowStartAnotherShape,
+} from "../../core/src/workflow-commands.js";
 import { workflowModelFromKey, workflowRefusalText, workflowSessionModelKey, workflowShortTime, workflowTimeTitle,
 } from "../../core/src/workflow-words.js";
 import { AUTO_HISTORY_EVENT_SOFT_CAP, SESSION_NAV_SETTLE_MS } from "../../core/src/controller.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
-import { WORKFLOW_LIT_TRANSITIONS, workflowV2LitTransitions, workflowV2Transitions } from "../../core/src/workflow-v2-transitions.js";
+import { WORKFLOW_LIT_TRANSITIONS, workflowLitTransitions, workflowTransitions } from "../../core/src/workflow-transitions.js";
 import {
     WORKFLOW_AGENT_LOG_VISITS, workflowAgentLogChats, workflowAgentNodeLog, workflowBaseInstructionsMatch, workflowBaseInstructionsReadable,
 } from "../../core/src/workflow-agent-log.js";
@@ -29,11 +29,11 @@ import {
     WORKFLOW_GRAPH_MIN_WIDTH, WORKFLOW_PANEL_HEIGHT_MIN, WORKFLOW_PANEL_WIDTH_MIN, WORKFLOW_RUN_PANELS,
 } from "../../core/src/workflow-owner.js";
 import {
-    WorkflowV2AgentLog, WorkflowV2Diagnostics, WorkflowV2DraftEditor, WorkflowV2FailureDetails, WorkflowV2NoGraph, WorkflowV2NodeSummary, WorkflowV2RevisionCompare,
-    WorkflowV2RunCommandNotice, WorkflowV2VersionCompare,
-    WorkflowV2RunPicker, WorkflowV2TestAnswer, WorkflowV2TestClock, WorkflowV2TestInterceptions, WorkflowV2TestPanel, WorkflowV2Variables,
-    WorkflowV2YamlView,
-} from "./workflow-v2-panels.js";
+    WorkflowAgentLog, WorkflowDiagnostics, WorkflowDraftEditor, WorkflowFailureDetails, WorkflowNoGraph, WorkflowNodeSummary, WorkflowRevisionCompare,
+    WorkflowRunCommandNotice, WorkflowVersionCompare,
+    WorkflowRunPicker, WorkflowTestAnswer, WorkflowTestClock, WorkflowTestInterceptions, WorkflowTestPanel, WorkflowVariables,
+    WorkflowYamlView,
+} from "./workflow-panels.js";
 import { WorkflowGraph } from "./workflow-graph.js";
 import { workflowLifecycleAtOf } from "../../core/src/workflow-lifecycle.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
@@ -85,10 +85,10 @@ function useWorkflowChild(controller, sessionId) {
     const chatModel = React.useMemo(() => workflowModelFromKey(chatModelKey), [chatModelKey]);
     const projection = React.useMemo(() => {
         if (!view.definition && !readModel && !workflowModel) return null;
-        return projectWorkflowV2({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq, olderHistory, chatModel });
+        return projectWorkflow({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq, olderHistory, chatModel });
     }, [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory, chatModel]);
     // Stage 2.4 (FU-26, the replay): the same projection as it stood at a moment (epoch milliseconds).
-    const projectAt = React.useCallback(asOf => projectWorkflowV2({ definition: view.definition, readModel, workflowModel, selectedRunId, events,
+    const projectAt = React.useCallback(asOf => projectWorkflow({ definition: view.definition, readModel, workflowModel, selectedRunId, events,
         readModelAfterSeq, olderHistory, asOf, chatModel }), [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory, chatModel]);
     return { sessionId, session, view, places, events, olderEvents: history?.hasOlderEvents === true, projection, projectAt, readModel, workflowModel, readError: error,
         definition: projection ? projection.definition : null, nodes: projection ? projection.nodes : EMPTY_NODES };
@@ -99,7 +99,7 @@ function useDefinitionProjection(child) {
     const { view, workflowModel } = child;
     return React.useMemo(() => {
         if (!view.definition && !workflowModel) return null;
-        return projectWorkflowV2({ definition: view.definition, readModel: null, workflowModel, selectedRunId: null, events: EMPTY_EVENTS });
+        return projectWorkflow({ definition: view.definition, readModel: null, workflowModel, selectedRunId: null, events: EMPTY_EVENTS });
     }, [view.definition, workflowModel]);
 }
 
@@ -625,9 +625,9 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
     const nodes = projection ? projection.nodes : EMPTY_NODES;
     const selected = nodes.find(node => node.id === view.selectedNodeId) || nodes.find(node => node.id === graph?.initial) || nodes[0] || null;
     const runCommand = view.runCommand ?? null;
-    const publication = React.useMemo(() => workflowV2DefinitionControls(workflowModel, runCommand), [workflowModel, runCommand]);
+    const publication = React.useMemo(() => workflowDefinitionControls(workflowModel, runCommand), [workflowModel, runCommand]);
     const editor = React.useMemo(() => {
-        const made = workflowV2DraftEditor(workflowModel, runCommand);
+        const made = workflowDraftEditor(workflowModel, runCommand);
         return made ? { ...made, sessionId } : null;
     }, [workflowModel, runCommand, sessionId]);
     const startControl = definition.startable && publication
@@ -652,7 +652,7 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
         if (startedAlready) setAsking(true);
     }, [tab.another, startedAlready]);
     // Test mode (spec 16): hidden unless the server lists a test operation for this workflow (PILOTSWARM_WORKFLOW_TEST_MODE=on).
-    const testing = workflowV2TestModeListed(workflowModel);
+    const testing = workflowTestModeListed(workflowModel);
     const panels = testing ? [...WORKFLOW_DEFINITION_PANELS, "test"] : WORKFLOW_DEFINITION_PANELS;
     const panel = panels.includes(tab.definitionPanel) ? tab.definitionPanel : null;
     // OF-S2-1: full screen and zen on a desktop put the panel beside the graph.
@@ -667,7 +667,7 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
     const onGraphView = React.useCallback(graphView => controller.dispatch({ type: "ui/workflowView", sessionId, view: { graphView } }), [controller, sessionId]);
     const line = revisionLine(workflowModel, { writing: ownerWorking, writer: ownerTitle });
     const revision = Number.isSafeInteger(workflowModel?.revision?.revision) ? workflowModel.revision.revision : null;
-    const notice = workflowV2RunCommandNotice(runCommand);
+    const notice = workflowRunCommandNotice(runCommand);
     const nextNumber = definition.workflows.length + 1;
     // F9 (owner, 2026-11-06T19:40Z): which definition this is: its version, and while it has not started, a draft (or not
     // started) and when it was made. A child not started that is not the newest says so, with the way to the newest.
@@ -699,7 +699,7 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
             : null,
         line ? h("p", { className: `ps-wf-line ${line.calm ? "is-quiet" : "is-error"}`, role: "status", "data-drafting": line.calm ? "true" : undefined },
             line.text) : null,
-        notice ? h(WorkflowV2RunCommandNotice, { controller, sessionId, notice }) : null,
+        notice ? h(WorkflowRunCommandNotice, { controller, sessionId, notice }) : null,
         h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels, panel, mobile, side, onPanel: id => setTab({ definitionPanel: id }) },
             panel === "node" ? h(NodeFacts, { node: selected, ...nodeCode })
                 : panel === "test" ? h(TestPanel, { controller, child, runCommand })
@@ -708,9 +708,9 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
                     // revisions when it has more than one.
                     ? (versions.length >= 2 || (revision !== null && revision >= 2)
                         ? h(React.Fragment, null,
-                            versions.length >= 2 ? h(WorkflowV2VersionCompare, { controller, versions, chosen: chosenVersion }) : null,
+                            versions.length >= 2 ? h(WorkflowVersionCompare, { controller, versions, chosen: chosenVersion }) : null,
                             revision !== null && revision >= 2
-                                ? h(WorkflowV2RevisionCompare, { controller, sessionId, latest: revision, reads: view.definitionRevisions ?? null }) : null)
+                                ? h(WorkflowRevisionCompare, { controller, sessionId, latest: revision, reads: view.definitionRevisions ?? null }) : null)
                         : h("p", { className: "ps-wf-muted" }, revision === null ? "Loading…" : "1 version · 1 revision"))
                     : null) },
         h("div", { className: "ps-wf-main", hidden: mode !== "graph" || undefined },
@@ -718,19 +718,19 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
                 places: places ?? null, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)) })
                 // No graph to draw: the line above says why; its errors are listed under it (folded while the chat writes).
                 : projection && line ? (line.calm
-                    ? h("details", { className: "ps-wf-errors" }, h("summary", null, "Errors so far"), h(WorkflowV2Diagnostics, { diagnostics: projection.diagnostics }))
-                    : h("div", { className: "ps-wf-errors" }, h(WorkflowV2Diagnostics, { diagnostics: projection.diagnostics })))
-                : projection ? h(WorkflowV2NoGraph, { projection })
+                    ? h("details", { className: "ps-wf-errors" }, h("summary", null, "Errors so far"), h(WorkflowDiagnostics, { diagnostics: projection.diagnostics }))
+                    : h("div", { className: "ps-wf-errors" }, h(WorkflowDiagnostics, { diagnostics: projection.diagnostics })))
+                : projection ? h(WorkflowNoGraph, { projection })
                 : h("p", { className: "ps-wf-muted" }, view.error || "Loading the definition…")),
         mode === "yaml" ? h("div", { className: "ps-wf-main ps-wf-yaml" },
-            editor ? h(WorkflowV2DraftEditor, { key: sessionId, controller, sessionId, model: editor, savedEdit: view.draftEdit ?? null })
-                : h(WorkflowV2YamlView, { key: sessionId, controller, sessionId, model: workflowModel, reads: view.definitionRevisions ?? null })) : null),
+            editor ? h(WorkflowDraftEditor, { key: sessionId, controller, sessionId, model: editor, savedEdit: view.draftEdit ?? null })
+                : h(WorkflowYamlView, { key: sessionId, controller, sessionId, model: workflowModel, reads: view.definitionRevisions ?? null })) : null),
         starting && startControl ? h(StartDialog, { controller, sessionId, publication, control: startControl, name: definition.name, number: nextNumber,
             onClose: () => setStarting(false), onStarted: () => { setStarting(false); onStarted(sessionId); } }) : null,
         // Review UI-13: Start another repeats the definition's newest Workflow, filled with its own inputs when the read has them.
         asking ? h(StartDialog, { controller, sessionId, name: definition.name, number: nextNumber,
             source: { number: definition.workflows.find(item => item.sessionId === definition.newestId)?.number ?? null,
-                inputs: workflowV2RunInputs(workflowModel) },
+                inputs: workflowRunInputs(workflowModel) },
             publication: { inputsSchema: publication?.inputsSchema ?? graphInputsSchema(workflowModel), revision, publishedRevision: revision,
                 state: "published", valid: true },
             onAsk: ({ inputs, vars, noInputs }) => controller.startAnotherWorkflow(sessionId, { inputs, vars, noInputs }),
@@ -751,22 +751,22 @@ function graphInputsSchema(model) {
  */
 function TestPanel({ controller, child, runCommand }) {
     const { sessionId, session, view, readModel, workflowModel, readError } = child;
-    const controls = React.useMemo(() => workflowV2TestControls(readModel ?? workflowModel, runCommand), [readModel, workflowModel, runCommand]);
-    const responder = React.useMemo(() => workflowV2TestResponder(readModel, runCommand), [readModel, runCommand]);
+    const controls = React.useMemo(() => workflowTestControls(readModel ?? workflowModel, runCommand), [readModel, workflowModel, runCommand]);
+    const responder = React.useMemo(() => workflowTestResponder(readModel, runCommand), [readModel, runCommand]);
     const run = readModel?.run && readModel.run.mode === "test" ? readModel.run : null;
     const answering = view.answeringInterceptionId ?? null;
     return h("div", { className: "ps-wf-test", "data-panel": "test" },
-        controls ? h(WorkflowV2TestPanel, { controller, sessionId, model: controls })
-            : h("p", { className: "ps-wf-muted" }, workflowModel?.definition?.state === "published" ? WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT
+        controls ? h(WorkflowTestPanel, { controller, sessionId, model: controls })
+            : h("p", { className: "ps-wf-muted" }, workflowModel?.definition?.state === "published" ? WORKFLOW_TEST_NEEDS_DRAFT_TEXT
                 : "This workflow takes no test from people."),
-        h(WorkflowV2RunPicker, { controller, sessionId, workflowModel, selectedRunId: view.selectedRunId ?? null, ownModelLoaded: readModel != null,
+        h(WorkflowRunPicker, { controller, sessionId, workflowModel, selectedRunId: view.selectedRunId ?? null, ownModelLoaded: readModel != null,
             error: readError }),
         run?.test ? h("div", { className: "ps-workflow-test-calls" },
-            h(WorkflowV2TestInterceptions, { test: run.test, controller, sessionId, responder, answering, history: run.history ?? null,
+            h(WorkflowTestInterceptions, { test: run.test, controller, sessionId, responder, answering, history: run.history ?? null,
                 onLoadOlder: restart => controller.loadOlderWorkflowHistory(sessionId, { restart }), parentSessionId: session?.parentSessionId ?? null }),
-            responder?.advance ? h(WorkflowV2TestClock, { controller, sessionId, responder }) : null,
+            responder?.advance ? h(WorkflowTestClock, { controller, sessionId, responder }) : null,
             responder?.respond && answering
-                ? h(WorkflowV2TestAnswer, { controller, sessionId, responder, interceptionId: answering, parentSessionId: session?.parentSessionId ?? null })
+                ? h(WorkflowTestAnswer, { controller, sessionId, responder, interceptionId: answering, parentSessionId: session?.parentSessionId ?? null })
                 : null) : null);
 }
 
@@ -863,16 +863,16 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     // older than its loaded lines), so the timeline keeps every visit of the run it has seen (workflowTimelineVisits): a
     // visit shown never leaves it, and a Step back can go on to the visits seen before it.
     // An older page read for this run is taken as it came, even when the run's newest page has moved on since and the read
-    // view leaves it out until it joins again (workflowV2RunRows' gaps), so a Step back can always reach what it loaded.
+    // view leaves it out until it joins again (workflowRunRows' gaps), so a Step back can always reach what it loaded.
     const seen = React.useRef(null);
     const olderRows = view.olderHistory?.runId === projection?.runId ? view.olderHistory?.sections?.executions?.items : null;
     const visits = React.useMemo(() => {
-        const older = Array.isArray(olderRows) ? olderRows.map(workflowV2ExecutionOfRow).filter(Boolean) : [];
+        const older = Array.isArray(olderRows) ? olderRows.map(workflowExecutionOfRow).filter(Boolean) : [];
         seen.current = workflowTimelineVisits(seen.current, projection?.runId ?? null, [...older, ...(projection?.allExecutions ?? [])]);
         return seen.current.list;
     }, [projection?.runId, projection?.allExecutions, olderRows]);
-    const frames = React.useMemo(() => workflowV2ReplayFrames(visits), [visits]);
-    const transitions = React.useMemo(() => workflowV2Transitions(visits, child.definition), [visits, child.definition]);
+    const frames = React.useMemo(() => workflowReplayFrames(visits), [visits]);
+    const transitions = React.useMemo(() => workflowTransitions(visits, child.definition), [visits, child.definition]);
     const [replayId, setReplayId] = React.useState(null);
     const [playing, setPlaying] = React.useState(false);
     React.useEffect(() => { setReplayId(null); setPlaying(false); }, [sessionId]);
@@ -946,7 +946,7 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     // Owner 2026-11-09T06:40Z: while the run is active (running, paused, stopping), in Live and in history, a soft light moves
     // along each lit edge (`flow`); an ended run's lit edges are still.
     const lit = React.useMemo(() => (timeline && frames.length
-        ? { ...workflowV2LitTransitions(transitions, shownIndex, WORKFLOW_LIT_TRANSITIONS), flow: !ended } : null),
+        ? { ...workflowLitTransitions(transitions, shownIndex, WORKFLOW_LIT_TRANSITIONS), flow: !ended } : null),
     [timeline, transitions, shownIndex, frames.length, ended]);
     const logReplay = React.useMemo(() => replay ? {
         visits: new Set(frames.map(item => item.nodeExecutionId)), current: frame?.nodeExecutionId ?? null,
@@ -961,9 +961,9 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
         || nodes.find(node => node.id === graph?.initial) || nodes[0] || null;
     const state = workflowStateOf(session, view);
     const runCommand = view.runCommand ?? null;
-    const runControls = React.useMemo(() => workflowV2RunControls(readModel, runCommand), [readModel, runCommand]);
-    const variables = React.useMemo(() => workflowV2RunVariables(readModel, runCommand), [readModel, runCommand]);
-    const notice = workflowV2RunCommandNotice(runCommand);
+    const runControls = React.useMemo(() => workflowRunControls(readModel, runCommand), [readModel, runCommand]);
+    const variables = React.useMemo(() => workflowRunVariables(readModel, runCommand), [readModel, runCommand]);
+    const notice = workflowRunCommandNotice(runCommand);
     const runId = projection?.runId ?? readModel?.run?.runId ?? null;
     const times = workflowRunTimes(events, runId);
     // Stage 2.1b: a Workflow of a chat's definition says the definition's revision it runs (its own copy is revision 1).
@@ -1033,11 +1033,11 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
             h("p", { className: "ps-wf-line is-error", role: "status" },
                 phone ? h("button", { type: "button", className: "ps-wf-failure-toggle", "aria-expanded": failureOpen, title: failure.headline,
                     onClick: () => setFailureOpen(open => !open) }, failure.headline) : failure.headline),
-            h(WorkflowV2FailureDetails, { failure, runId, executionValues: view.executionValues ?? null,
+            h(WorkflowFailureDetails, { failure, runId, executionValues: view.executionValues ?? null,
                 onReadWholeValue: executionId => { controller.loadWorkflowExecutionValue(sessionId, { runId, executionId }).catch(() => {}); } })) : null,
         readError ? h("p", { className: "ps-wf-line is-error", role: "alert" }, `This Workflow could not be read: ${readError} `,
             h("button", { type: "button", className: "ps-mini-button", onClick: () => controller.ensureWorkflowReadModel(sessionId, { force: true }) }, "Retry")) : null,
-        notice ? h(WorkflowV2RunCommandNotice, { controller, sessionId, notice }) : null,
+        notice ? h(WorkflowRunCommandNotice, { controller, sessionId, notice }) : null,
         h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels: variables ? WORKFLOW_RUN_PANELS : WORKFLOW_RUN_PANELS.filter(id => id !== "variables"),
             panel, mobile, side, onPanel: id => setTab({ runPanel: id }) },
             panel === "node" ? h(RunNodePanel, { controller, child: replayed ? { ...child, nodes } : child, selected, replayFrame: replayed ? frame : null,
@@ -1045,12 +1045,12 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
             panel === "log" ? h(RunLogPanel, { controller, workflowSessionId: sessionId, events, runId,
                 runs: Array.isArray(readModel?.runs) ? readModel.runs : null, selected, scope: logScope, onScope: setLogScope,
                 instructionsReadable: workflowBaseInstructionsReadable(readModel), replay: logReplay }) : null,
-            panel === "variables" ? (variables ? h(WorkflowV2Variables, { controller, sessionId, model: variables }) : h("p", { className: "ps-wf-muted" }, "No variables."))
+            panel === "variables" ? (variables ? h(WorkflowVariables, { controller, sessionId, model: variables }) : h("p", { className: "ps-wf-muted" }, "No variables."))
                 : null) },
         h("div", { className: "ps-wf-main" },
             graph ? h(WorkflowGraph, { definition: graph, nodes, selected, select, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView,
                 places: places ?? null, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)), lit })
-                : projection ? h(WorkflowV2NoGraph, { projection })
+                : projection ? h(WorkflowNoGraph, { projection })
                 : h("p", { className: "ps-wf-muted" }, view.error || "Loading the Workflow…")),
         // The timeline stays with the graph (OF-S2-1).
         graph && replay ? h(ReplayBar, replay) : null),
@@ -1146,8 +1146,8 @@ export function ReplayBar({ frames, index, playing, ended = false, startMs = nul
     };
     const liveWord = ended ? "Latest" : "Live";
     const words = count === 0 ? "No steps yet"
-        : live ? `${liveWord} · ${workflowV2ReplayLabel(frames[newest])}`
-            : `${workflowV2ReplayLabel(frames[index])} · ${newest - index} newer`;
+        : live ? `${liveWord} · ${workflowReplayLabel(frames[newest])}`
+            : `${workflowReplayLabel(frames[index])} · ${newest - index} newer`;
     return h("div", { className: "ps-wf-replay", role: "group", "aria-label": "Timeline", "data-replaying": live ? "false" : "true",
         "data-mode": count === 0 ? "empty" : live ? "live" : "history" },
         h(WorkflowToolButton, { label: "Step back", glyph: "step-back", "data-action": "replay-back", disabled: count < 2 || (position <= 0 && !onOlder),
@@ -1257,7 +1257,7 @@ export function useWorkflowRevisionYaml(controller, sessionId, view, model, want
 /**
  * The Node panel of a Workflow (W10; owner feedback 2026-11-06, finding 7): one view that says what the node does, where
  * it is now, how often it ran, its last result, an agent node's chat and what its agent is told, and where each outcome
- * goes (WorkflowV2NodeSummary). No Details / Output / History tabs inside the panel's tab: the Log has the visits.
+ * goes (WorkflowNodeSummary). No Details / Output / History tabs inside the panel's tab: the Log has the visits.
  */
 export function RunNodePanel({ controller, child, selected, onLog = null, replayFrame = null }) {
     const { sessionId, view, projection } = child;
@@ -1271,14 +1271,14 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
     React.useEffect(() => { setReplayPick(null); }, [replayVisit]);
     if (!selected) return h("p", { className: "ps-wf-muted" }, "Select a node to see it.");
     const runId = projection?.runId ?? null;
-    const pickKey = workflowV2BranchPickKey(sessionId, runId, selected);
+    const pickKey = workflowBranchPickKey(sessionId, runId, selected);
     const replayKey = replayFrame ? JSON.stringify([replayFrame.nodeExecutionId, pickKey]) : null;
     const branchIndex = replayFrame
-        ? (replayPick?.key === replayKey ? replayPick.index : workflowV2ReplayBranchIndex(selected, replayFrame))
+        ? (replayPick?.key === replayKey ? replayPick.index : workflowReplayBranchIndex(selected, replayFrame))
         : (branchPick?.key === pickKey ? branchPick.index : null);
     return h("section", { className: "ps-wf-node", "aria-label": "Node details" },
         h("p", { className: "ps-wf-node-head" }, h("strong", null, selected.id), ` · ${selected.label}`),
-        h(WorkflowV2NodeSummary, {
+        h(WorkflowNodeSummary, {
             selected, nodes: child.nodes, runId,
             // An agent node's visits, with its chat, are in its Log (finding 8).
             onLog: selected.kind === "agent" ? onLog : null,
@@ -1291,7 +1291,7 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
             onBranch: index => {
                 if (replayFrame) setReplayPick({ key: replayKey, index });
                 else setBranchPick({ key: pickKey, index });
-                if (workflowV2SelectionAfterBranchChange(view.selectedExecution ?? null, selected.id) === null && view.selectedExecution) {
+                if (workflowSelectionAfterBranchChange(view.selectedExecution ?? null, selected.id) === null && view.selectedExecution) {
                     controller.selectWorkflowExecution(sessionId, null);
                 }
             },
@@ -1377,7 +1377,7 @@ function AgentNodeLog({ controller, workflowSessionId = null, node, events, runI
     };
     const onInstructions = instructionsReadable
         ? ref => { controller.ensureFilePreview(ref.sessionId, ref.artifact, { force: true }).catch(() => {}); } : null;
-    return h(WorkflowV2AgentLog, { log, failed, nodeId: node.id, readInstructions, onInstructions, onOlderChat, olderChatLoading, onOlderVisits,
+    return h(WorkflowAgentLog, { log, failed, nodeId: node.id, readInstructions, onInstructions, onOlderChat, olderChatLoading, onOlderVisits,
         onMore: () => setLimit(limit + WORKFLOW_AGENT_LOG_VISITS), onOpenChat: id => { controller.loadSession(id).catch(() => {}); } });
 }
 
@@ -1388,7 +1388,7 @@ function AgentNodeLog({ controller, workflowSessionId = null, node, events, runI
  * (workflowLogEvents; review SF-D5).
  */
 export function WorkflowLog({ events, runId, runs = null, replay = null }) {
-    const all = React.useMemo(() => workflowV2Activity(workflowLogEvents(events, { runId, runs }), { runId: null, limit: Infinity }), [events, runId, runs]);
+    const all = React.useMemo(() => workflowActivity(workflowLogEvents(events, { runId, runs }), { runId: null, limit: Infinity }), [events, runId, runs]);
     const listRef = React.useRef(null);
     // Stage 2.4 (FU-26): the replay's visit is the marked line, kept in view as the replay moves. Review S2UI-F7: the Log
     // lists the lines around that visit when its line is older than the newest ones.
@@ -1507,7 +1507,7 @@ function StopDialog({ controller, sessionId, runId, title, stop, cancel, onClose
 
 
 /** Whether the Start form can draw a field for one input property (F-1); anything else is edited as JSON (F-4). */
-const drawable = workflowV2DrawableInput;
+const drawable = workflowDrawableInput;
 
 /** What a field's type is called (F-1). */
 function typeWords(property) {
@@ -1578,8 +1578,8 @@ export function StartDialog({ controller, sessionId, publication, control = null
     const repeating = Boolean(onAsk) || Boolean(startWith && source);
     const repeated = repeating && source?.inputs && typeof source.inputs === "object" ? source.inputs : null;
     // Review UI-D8: Start another never erases the inputs its Workflow had: with no schema, its known inputs stay, as JSON.
-    const shape = repeating ? workflowV2StartAnotherShape(schema, { schemaKnown: publication.inputsSchemaKnown === true }) : workflowV2InputsShape(schema);
-    const sample = React.useMemo(() => (onAsk ? repeated ?? {} : repeated ?? workflowV2SampleInputs(schema) ?? {}),
+    const shape = repeating ? workflowStartAnotherShape(schema, { schemaKnown: publication.inputsSchemaKnown === true }) : workflowInputsShape(schema);
+    const sample = React.useMemo(() => (onAsk ? repeated ?? {} : repeated ?? workflowSampleInputs(schema) ?? {}),
         [JSON.stringify(schema ?? null), JSON.stringify(repeated)]);
     const [asJson, setAsJson] = React.useState(shape === "json");
     const [values, setValues] = React.useState(() => ({ ...sample }));
@@ -1598,13 +1598,13 @@ export function StartDialog({ controller, sessionId, publication, control = null
         if (shape === "none") inputs = {};
         else if (sameInputs) inputs = undefined;
         else if (asJson) {
-            const parsed = workflowV2JsonObjectDraft(jsonText, { label: "Inputs" });
+            const parsed = workflowJsonObjectDraft(jsonText, { label: "Inputs" });
             if (!parsed.ok) { setError(parsed.error); return; }
             inputs = parsed.value;
         }
         let vars;
         if (varsOpen) {
-            const parsed = workflowV2JsonObjectDraft(varsText, { label: "Variables", optional: true });
+            const parsed = workflowJsonObjectDraft(varsText, { label: "Variables", optional: true });
             if (!parsed.ok) { setError(parsed.error); return; }
             vars = parsed.value && Object.keys(parsed.value).length ? parsed.value : undefined;
         }

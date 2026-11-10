@@ -1,5 +1,5 @@
 import { NodeSdkTransport } from "pilotswarm/host";
-import { workflowV2ReaderView } from "pilotswarm-sdk";
+import { workflowReaderView } from "pilotswarm-sdk";
 import { adminCanAccessResource, adminCapabilities, ADMIN_SCOPE_POLICY_VERSION, getOperation, isOwnerOnlyArtifact } from "pilotswarm-sdk/api";
 import { projectFleetAccounting, projectUserAccounting, projectAgentWorkerState, projectWorker } from "pilotswarm-sdk/api";
 import {
@@ -207,7 +207,7 @@ export function portalRuntimeOptions(storageOptions, mode) {
 
 export class PortalRuntime {
     constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands } = {}) {
-        // workflowCommands (Workflow v2): a person's workflow commands; unset, the management client's default (taken). Only a
+        // workflowCommands (Workflow): a person's workflow commands; unset, the management client's default (taken). Only a
         // test passes null.
         this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser,
             ...(workflowCommands !== undefined ? { workflowCommands } : {}) });
@@ -446,7 +446,7 @@ export class PortalRuntime {
     }
 
     /**
-     * Workflow v2: whether the signed-in caller may send a person's
+     * Workflow: whether the signed-in caller may send a person's
      * workflow commands to the session a read was for, as updateWorkflow's own
      * gate decides it (session:manage: owner or admin, enforced whatever the
      * ownership switch says), on that read's access snapshot. Nothing is
@@ -803,7 +803,7 @@ export class PortalRuntime {
                 return this.transport.getSessionFootprint(safeParams.sessionId);
             case "getSessionWorkspace":
                 return this.transport.getSessionWorkspace(safeParams.sessionId);
-            // Workflow v2: the read-only view of a workflow session, after the session:read gate above (its not-found
+            // Workflow: the read-only view of a workflow session, after the session:read gate above (its not-found
             // privacy comes first). Only an absent run is omitted: a run given, empty or not a string included, reaches the
             // adapter's own validation unchanged. The run is looked up within the authorized workflow; nothing is changed.
             // A section's next page (cursor) and one execution's whole value (executionId) are reads of the same workflow
@@ -812,7 +812,7 @@ export class PortalRuntime {
             // takes, and this adds whether the caller may send them (updateWorkflow's own gate, decided on this read's access).
             // A draft's YAML (personCommands.draft: the scripts and prompts the graph does not show) is for a caller who may
             // change the draft; it is left out for anyone else. So are the values the definition's author wrote in its input
-            // schema and its diagnostics' paths and messages (adversarial review R2-SF-2, workflowV2ReaderView): a caller who
+            // schema and its diagnostics' paths and messages (adversarial review R2-SF-2, workflowReaderView): a caller who
             // can read the session but not change the workflow cannot read its YAML either.
             case "readWorkflow": {
                 // The read's options are the operation's declared query parameters (protocol.js), each passed only when given.
@@ -829,7 +829,7 @@ export class PortalRuntime {
                 }
                 const read = await this.transport.readWorkflow(safeParams.sessionId, readOptions);
                 const viewer = this._workflowCommandViewer(gate.snapshot, isAdmin);
-                const readerView = viewer.allowed ? read : workflowV2ReaderView(read);
+                const readerView = viewer.allowed ? read : workflowReaderView(read);
                 if (!readerView || typeof readerView !== "object" || Array.isArray(readerView)) return readerView;
                 // Review SF-D4: whether this viewer may read the Workflow's owner-only files (its whole base instructions),
                 // on every Workflow read, whether or not the deployment takes a person's workflow commands; the portal shows
@@ -843,7 +843,7 @@ export class PortalRuntime {
                 const { draft, ...personCommands } = view.personCommands;
                 return { ...view, personCommands: { ...personCommands, ...(viewer.allowed && draft !== undefined ? { draft } : {}), viewer } };
             }
-            // Workflow v2: a person's command, after the session:manage gate
+            // Workflow: a person's command, after the session:manage gate
             // above, which is enforced for it even while the ownership switch is off. The actor is the signed-in caller,
             // never a field of the command; the command is passed as it is, and the adapter refuses what is not one.
             // Stage 2.1: a chat's Workflow Definitions, after the gate above (session:read for list and read, session:manage for
@@ -852,14 +852,14 @@ export class PortalRuntime {
                 return this.transport.listChatWorkflowDefinitions(safeParams.sessionId, { includeDeleted: safeParams.includeDeleted === true });
             // Stage 2.1b: the read says whether this caller may save, start and delete (updateWorkflow's own gate on this read's
             // access, as a Workflow's read says it). A revision's YAML is for one who may; anyone else who can read the chat gets
-            // no YAML, and the input schema and diagnostics as a Workflow's reader gets them (workflowV2ReaderView, R2-SF-2).
+            // no YAML, and the input schema and diagnostics as a Workflow's reader gets them (workflowReaderView, R2-SF-2).
             case "readChatWorkflowDefinition": {
                 const read = await this.transport.readChatWorkflowDefinition(safeParams.sessionId, { definitionId: safeParams.definitionId ?? null,
                     name: safeParams.name ?? null, revision: safeParams.revision ?? null });
                 if (!read || typeof read !== "object" || Array.isArray(read)) return read;
                 const viewer = this._workflowCommandViewer(gate.snapshot, isAdmin);
                 if (viewer.allowed) return { ...read, viewer };
-                const reader = workflowV2ReaderView(read);
+                const reader = workflowReaderView(read);
                 if (!reader.revision || typeof reader.revision !== "object") return { ...reader, viewer };
                 const { yaml: _yaml, ...revision } = reader.revision;
                 return { ...reader, revision, viewer };

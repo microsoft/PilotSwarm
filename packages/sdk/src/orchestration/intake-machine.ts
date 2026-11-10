@@ -64,7 +64,7 @@ import {
     intakeTextWithinCap,
     parseIntakeEnvelope,
     type IntakeEnvelope,
-} from "../workflow/v2/intake.js";
+} from "../workflow/intake.js";
 import {
     INTAKE_MAX_HELD_ENTRY_BYTES,
     INTAKE_MAX_UNCLAIMED,

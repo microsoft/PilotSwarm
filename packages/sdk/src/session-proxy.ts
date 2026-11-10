@@ -71,8 +71,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCursor, savedTurnVisitFence, type TurnLifecycleContext } from "./session-lifecycle.js";
 import { readTurnCommitFile, supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 import { LiveTurnControl } from "./turn-control.js";
-import { workflowVisitOfStopRequestId, type WorkflowTurnVisit } from "./workflow/v2/store.js";
-import { WORKFLOW_AGENT_TURN_FAILURE_ACTIVITY } from "./workflow/v2/agent-turn-failure.js";
+import { workflowVisitOfStopRequestId, type WorkflowTurnVisit } from "./workflow/store.js";
+import { WORKFLOW_AGENT_TURN_FAILURE_ACTIVITY } from "./workflow/agent-turn-failure.js";
 import { CARRIED_STEERS_WAKE_PROMPT } from "./turn-control-contract.js";
 import { parentControlRequestId, steerChildTurn, stopChildTurn, type MessageAgentDelivery } from "./parent-turn-control.js";
 import { faultPoint, faultPointAsync } from "./fault-injection.js";
@@ -81,23 +81,23 @@ import { STREAMING_EVENT_TYPES, keepOrchestrationTurnEvents, turnResultSizeWarni
 import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } from "./model-event-logging.js";
 import type { NativeTasksPayload } from "./native-task-observer.js";
 import { spawnWorkflowFromTool } from "./workflow/spawn.js";
-import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, workflowToolErrorPayload, type WorkflowToolHost } from "./workflow/v2/tools.js";
-import { WORKFLOW_UPDATE_DATA_LINE, isWorkflowRuntimeSender, parseWorkflowUpdateHeader, workflowRuntimeSender } from "./workflow/v2/parent-messages.js";
-import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher, workflowRespondFailure } from "./workflow/v2/request-service.js";
-import { completeWorkflowNodeFromTool, workflowCompletionFailure } from "./workflow/v2/agent-node-service.js";
-import { keepWorkflowBaseInstructions, sdkSystemPromptEchoContent, workflowBaseInstructionsRef, workflowBaseInstructionsText } from "./workflow/v2/base-instructions.js";
-import { publishedScheduleActive } from "./workflow/v2/agent-reminder.js";
-import { createWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
-import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
-import { workflowDefinitionFromTool } from "./workflow/v2/definition-tool.js";
-import { createPackageWorkflowSource, manifestAgentWorkflows } from "./workflow/v2/chat-packages.js";
-import { requireWorkflowScriptsInYaml } from "./workflow/v2/scripts-gate.js";
-import { chatCompletionRefusal } from "./workflow/v2/chat-definitions.js";
-import { authorizeWorkflowTestNotice, workflowTestAgentScope, workflowTestAgentToolCall } from "./workflow/v2/test-agent-tools.js";
-import { sessionInsideWorkflow, spawnNesting, spawnNestingRefusal, workflowDefinitionToolsRefusal, workflowDefinitionToolsRefused } from "./workflow/v2/input-policy.js";
-import { applyOperatorCommandToWorkflowV2, applySessionCommandToWorkflowV2 } from "./workflow/v2/service.js";
-import { composeIntakePrompt, intakeExposedWitness, parseIntakeTurnField, type IntakeTurnField } from "./workflow/v2/intake.js";
-import { admitWorkflowIntake, WorkflowIntakeAdmissionError } from "./workflow/v2/intake-admission.js";
+import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, workflowToolErrorPayload, type WorkflowToolHost } from "./workflow/tools.js";
+import { WORKFLOW_UPDATE_DATA_LINE, isWorkflowRuntimeSender, parseWorkflowUpdateHeader, workflowRuntimeSender } from "./workflow/parent-messages.js";
+import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher, workflowRespondFailure } from "./workflow/request-service.js";
+import { completeWorkflowNodeFromTool, workflowCompletionFailure } from "./workflow/agent-node-service.js";
+import { keepWorkflowBaseInstructions, sdkSystemPromptEchoContent, workflowBaseInstructionsRef, workflowBaseInstructionsText } from "./workflow/base-instructions.js";
+import { publishedScheduleActive } from "./workflow/agent-reminder.js";
+import { createWorkflowAgentResolver } from "./workflow/agent-resolver.js";
+import { workflowTestModeFromEnv } from "./workflow/test-mode-switch.js";
+import { workflowDefinitionFromTool } from "./workflow/definition-tool.js";
+import { createPackageWorkflowSource, manifestAgentWorkflows } from "./workflow/chat-packages.js";
+import { requireWorkflowScriptsInYaml } from "./workflow/scripts-gate.js";
+import { chatCompletionRefusal } from "./workflow/chat-definitions.js";
+import { authorizeWorkflowTestNotice, workflowTestAgentScope, workflowTestAgentToolCall } from "./workflow/test-agent-tools.js";
+import { sessionInsideWorkflow, spawnNesting, spawnNestingRefusal, workflowDefinitionToolsRefusal, workflowDefinitionToolsRefused } from "./workflow/input-policy.js";
+import { applyOperatorCommandToWorkflow, applySessionCommandToWorkflow } from "./workflow/service.js";
+import { composeIntakePrompt, intakeExposedWitness, parseIntakeTurnField, type IntakeTurnField } from "./workflow/intake.js";
+import { admitWorkflowIntake, WorkflowIntakeAdmissionError } from "./workflow/intake-admission.js";
 import type { SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
@@ -128,7 +128,7 @@ export type RequiredToolAgentResolution =
     | { status: "not_found"; candidates: string[] }
     | { status: "ambiguous"; candidates: string[] };
 
-/** Same lineage principal for inline and durable agent selection (and a workflow v2 publication's named agents, agent-resolver.ts). */
+/** Same lineage principal for inline and durable agent selection (and a workflow publication's named agents, agent-resolver.ts). */
 export async function resolveCallerAgentOwnerKey(catalog: Pick<SessionCatalog, "getSession"> | null | undefined, sessionId?: string): Promise<string | null> {
     const owner = catalog && sessionId
         ? await resolveEffectiveSpawnOwner((id) => catalog.getSession(id), sessionId).catch(() => null)
@@ -1295,7 +1295,7 @@ export function createSessionManagerProxy(
         },
         /**
          * 1.0.83 (PR 270): report a Workflow agent chat's turn that failed for good, so the visits it worked on that are
-         * still pending fail execution_failed and their Workflow is woken (workflow/v2/agent-turn-failure.ts). Routed with
+         * still pending fail execution_failed and their Workflow is woken (workflow/agent-turn-failure.ts). Routed with
          * the workflow-request tag, which every worker that runs 1.0.83 declares.
          */
         reportWorkflowAgentTurnFailure(input: { sessionId: string; clientMessageIds: string[]; cause: string }) {
@@ -1731,7 +1731,7 @@ export function registerActivities(
         if (!orchestrationSupportsWorkspaces(activityCtx?.orchestrationVersion)) {
             (runConfig as ManagedSessionConfig).workspaceToolsBlocked = true;
         }
-        // Workflow v2: the session's permission handler can refuse MCP
+        // Workflow: the session's permission handler can refuse MCP
         // tools while it runs under a real-agent test.
         if (workflowRequestTurn) (runConfig as ManagedSessionConfig).workflowMilestoneTurn = true;
         // Session workspaces: a cleared workspace still sends its revision;
@@ -2734,7 +2734,7 @@ export function registerActivities(
         // version's turn included (a chat of the previous release, until its continue-as-new): the workflow tools take
         // request, agent and parallel states and the stop and test operations, and a publication pins its named agents: package agents at the registry's
         // exact revision, this worker's deployment and system agents by name (agent-resolver.ts).
-        const workflowV2Host = async (): Promise<WorkflowToolHost> => {
+        const workflowHost = async (): Promise<WorkflowToolHost> => {
             if (!catalog?.workflowStore) throw new Error("Workflow storage is unavailable on this worker.");
             const sdkClient = await getInlineClient();
             return {
@@ -2789,7 +2789,7 @@ export function registerActivities(
         const workflowBridgeHost = async (): Promise<Pick<WorkflowToolHost, "store" | "duroxideClient">> => {
             if (!catalog?.workflowStore) throw new Error("Workflow storage is unavailable on this worker.");
             if (!provider) {
-                const host = await workflowV2Host();
+                const host = await workflowHost();
                 return { store: host.store, duroxideClient: host.duroxideClient };
             }
             if (!workflowBridgeClient) {
@@ -3119,7 +3119,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             return `[SYSTEM: session ${targetId.slice(0, 8)} was already ${target.state} and has been deleted. Reason: ${reason}]`;
                         }
                         const deleteCommand = { type: "cmd", cmd: "delete", id: `delete-mgr-${Date.now()}`, args: { reason } };
-                        // S7-DX2 follow-up: a v2 workflow is deleted in its store at once; any other session gets the command queued.
+                        // S7-DX2 follow-up: a workflow is deleted in its store at once; any other session gets the command queued.
                         if (!await operatorCommandApplied(sdkClient, targetId, deleteCommand)) {
                             await sdkClient._getDuroxideClient().enqueueEvent(`session-${targetId}`, "messages", JSON.stringify(deleteCommand));
                         }
@@ -3128,7 +3128,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
                     const cmd = action === "complete" ? "done" : "cancel";
                     const command = { type: "cmd", cmd, id: `${cmd}-mgr-${Date.now()}`, args: { reason } };
-                    // S7-DX2 follow-up: a v2 workflow's active run ends in its store at once; the command is then queued only when
+                    // S7-DX2 follow-up: a workflow's active run ends in its store at once; the command is then queued only when
                     // its controller is to finish it (any other session gets it queued as before).
                     if (!await operatorCommandApplied(sdkClient, targetId, command)) {
                         // G1 residual: the end is marked on the session before its command is queued (session-end-mark.ts).
@@ -3155,7 +3155,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     ? resolveEffectiveSpawnOwner((id) => catalog!.getSession(id), input.sessionId)
                     : null,
                 captureToolBinding: () => sessionManager.captureWorkflowToolBinding(input.sessionId),
-                workflowV2Host,
+                workflowHost,
             }),
 
             /**
@@ -3167,7 +3167,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // A1: refused inside a Workflow, before anything else is read.
                 try { if (await definitionToolsRefused()) return workflowDefinitionToolsRefusal(); } catch (error) { return workflowToolErrorPayload(error); }
                 let host: WorkflowToolHost;
-                try { host = await workflowV2Host(); } catch (error) { return workflowToolErrorPayload(error); }
+                try { host = await workflowHost(); } catch (error) { return workflowToolErrorPayload(error); }
                 return updateWorkflowFromTool(args, { callerSessionId: input.sessionId, host });
             },
             /**
@@ -3182,7 +3182,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     try { requireWorkflowScriptsInYaml(sessionManager.workflowScriptsEnabled, args.yaml, "save"); } catch (error) { return workflowToolErrorPayload(error); }
                 }
                 let host: WorkflowToolHost;
-                try { host = await workflowV2Host(); } catch (error) { return workflowToolErrorPayload(error); }
+                try { host = await workflowHost(); } catch (error) { return workflowToolErrorPayload(error); }
                 const owner = catalog ? await resolveEffectiveSpawnOwner((id) => catalog!.getSession(id), input.sessionId).catch(() => null) : null;
                 return workflowDefinitionFromTool(args, {
                     callerSessionId: input.sessionId, host, toolCallId: call?.toolCallId ?? null, owner, nestingLevel: input.nestingLevel ?? 0,
@@ -3194,13 +3194,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             },
             readWorkflow: async (args: Record<string, unknown>) => {
                 let host: WorkflowToolHost;
-                try { host = await workflowV2Host(); } catch (error) { return workflowToolErrorPayload(error); }
+                try { host = await workflowHost(); } catch (error) { return workflowToolErrorPayload(error); }
                 return readWorkflowFromTool(args, { callerSessionId: input.sessionId, host });
             },
             /** send_workflow_input: the calling session is the host-stamped sender. */
             sendWorkflowInput: async (args: Record<string, unknown>) => {
                 let host: WorkflowToolHost;
-                try { host = await workflowV2Host(); } catch (error) { return workflowToolErrorPayload(error); }
+                try { host = await workflowHost(); } catch (error) { return workflowToolErrorPayload(error); }
                 return sendWorkflowInputFromTool(args, { callerSessionId: input.sessionId, host });
             },
             /** respond_session_request (request states): the calling session is the host-stamped responder. */
@@ -4049,7 +4049,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     const sdkClient = await getInlineClient();
                     const cmdId = `done-inline-${Date.now()}`;
                     const command = { type: "cmd", cmd: "done", id: cmdId, args: { reason: "Completed by parent" }, requestedBy: input.sessionId };
-                    // S7-DX2: a v2 workflow child's command goes through the store first, as the orchestration's path sends it.
+                    // S7-DX2: a workflow child's command goes through the store first, as the orchestration's path sends it.
                     if (!await workflowChildCommandApplied(activityCtx, child.sessionId, command)) {
                         // G1 residual: the end is marked on the child before its command is queued (session-end-mark.ts).
                         if (catalog) await recordSessionEndRequested(catalog, child.sessionId, command, input.sessionId);
@@ -4089,7 +4089,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     const sdkClient = await getInlineClient();
                     const cmdId = `cancel-inline-${Date.now()}`;
                     const command = { type: "cmd", cmd: "cancel", id: cmdId, args: { reason: args.reason ?? "Cancelled by parent" }, requestedBy: input.sessionId };
-                    // S7-DX2: a v2 workflow child's command goes through the store first, as the orchestration's path sends it.
+                    // S7-DX2: a workflow child's command goes through the store first, as the orchestration's path sends it.
                     if (!await workflowChildCommandApplied(activityCtx, child.sessionId, command)) {
                         // G1 residual: the end is marked on the child before its command is queued (session-end-mark.ts).
                         if (catalog) await recordSessionEndRequested(catalog, child.sessionId, command, input.sessionId);
@@ -4126,7 +4126,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }
                     const cmdId = `delete-inline-${Date.now()}`;
                     const command = { type: "cmd", cmd: "delete", id: cmdId, args: { reason: args.reason ?? "Deleted by parent" }, requestedBy: input.sessionId };
-                    // S7-DX2: a v2 workflow child's delete is applied in the store, as the orchestration's path sends it.
+                    // S7-DX2: a workflow child's delete is applied in the store, as the orchestration's path sends it.
                     if (!await workflowChildCommandApplied(activityCtx, child.sessionId, command)) {
                         await sdkClient._getDuroxideClient().enqueueEvent(child.orchId, "messages", JSON.stringify(command));
                     }
@@ -5195,7 +5195,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 intakeTexts: turnIntake ? turnIntake.items.map(item => item.text) : null, attachments: requestedAttachments.length,
             });
             const quietEmptyAnswer = quietSystemOnly || quietWorkflowNotice;
-            // Owner decision Q2 (workflow/v2/agent-reminder.ts): an agent state's own child is reminded inside its turn
+            // Owner decision Q2 (workflow/agent-reminder.ts): an agent state's own child is reminded inside its turn
             // when the turn would end with nothing pending. The gate ManagedSession asks: no cron or cron_at schedule is
             // active (this session's published status, unless the turn queued a cancel), then the store checks the step
             // and records the reminder (recordAgentReminder).
@@ -6636,16 +6636,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         }
     });
 
-    // ── Workflow v2 lifecycle commands (S7-DX2) ────────────────
+    // ── Workflow lifecycle commands (S7-DX2) ────────────────
     /**
      * An operator's lifecycle command (the agent manager's manage_agent_session) for `targetSessionId`, which its caller has
-     * authorized: a v2 workflow's is applied in the store (applyOperatorCommandToWorkflowV2). True when nothing more is to
+     * authorized: a workflow's is applied in the store (applyOperatorCommandToWorkflow). True when nothing more is to
      * be sent; false when the caller queues the command.
      */
     const operatorCommandApplied = async (sdkClient: any, targetSessionId: string, command: unknown): Promise<boolean> => {
         if (!catalog?.workflowStore) return false;
         const facts = factStore ?? null;
-        const applied = await applyOperatorCommandToWorkflowV2({
+        const applied = await applyOperatorCommandToWorkflow({
             store: catalog.workflowStore(),
             deleteSessionFacts: facts ? (sessionId: string) => facts.deleteSessionFactsForSession(sessionId) : null,
             duroxideClient: sdkClient._getDuroxideClient(),
@@ -6656,7 +6656,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
     /**
      * A lifecycle command (cancel, done or delete) from the session whose orchestration runs `activityCtx` to its child
-     * `targetSessionId`, for a v2 workflow child: the v2 store applies it (applySessionCommandToWorkflowV2: only the
+     * `targetSessionId`, for a workflow child: the v2 store applies it (applySessionCommandToWorkflow: only the
      * child's parent may send it; delete always deletes the child; cancel and done end its active run, S7-DX2). True when
      * nothing more is to be sent; false when the caller queues the command (a cancel or done that ended a begun run, for
      * its controller to finish, or any other target). Used by the sendCommandToSession activity and by the inline control
@@ -6672,7 +6672,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     const workflowChildCommandApplied = async (activityCtx: any, targetSessionId: string, command: unknown): Promise<boolean> => {
         if (!catalog?.workflowStore) return false;
         const facts = factStore ?? null;
-        const applied = await applySessionCommandToWorkflowV2({
+        const applied = await applySessionCommandToWorkflow({
             store: catalog.workflowStore(),
             deleteSessionFacts: facts ? (sessionId: string) => facts.deleteSessionFactsForSession(sessionId) : null,
         }, { callerInstanceId: String(activityCtx.instanceId ?? ""), targetSessionId, command });
@@ -6697,7 +6697,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             const r4 = await chatCompletionRefusalText(input.sessionId);
             if (r4) throw new Error(r4);
         }
-        // A v2 workflow child's lifecycle command is applied in the v2 store
+        // A workflow child's lifecycle command is applied in the v2 store
         // for the child's own parent (workflowChildCommandApplied); it is
         // queued only when that says so. Every other target keeps the queued
         // command. The activity's input and result are unchanged.

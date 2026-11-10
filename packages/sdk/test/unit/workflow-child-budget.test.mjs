@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { CHILD_BUDGET_AGENT_STATES, CHILD_BUDGET_RUN_STATUSES, childBudgetCountSql, childBudgetWords, spawnAgentAdmission, spawnAgentCreationBudget,
     WORKFLOW_CHILD_BUDGET_MAX } from "../../dist/child-budget.js";
 import { PgSessionCatalog } from "../../dist/cms.js";
-import { ChatDefinitionStore } from "../../dist/workflow/v2/chat-definition-store.js";
+import { ChatDefinitionStore } from "../../dist/workflow/chat-definition-store.js";
 
 /** A client that answers the lock, an existing-row read and the count, and records each statement. */
 function clientWith({ exists = false, count, chat = { state: "running", deleted_at: null, session_kind: null } }) {
@@ -31,7 +31,7 @@ test("the count: sub-agents pending or running, Workflows with an active live ru
     assert.deepEqual([...CHILD_BUDGET_RUN_STATUSES], ["admitted", "running", "paused"]);
     const sql = childBudgetCountSql('"s"').replace(/\s+/g, " ");
     for (const part of ["c.parent_session_id = $1 AND c.session_id <> $2", "c.is_system IS NOT TRUE AND c.service_kind IS NULL",
-        "c.state IN ('pending', 'running')", "r.mode = 'live' AND r.status IN ('admitted', 'running', 'paused')", "c.creation_config -> 'workflowV2' ? 'chatPin'"]) {
+        "c.state IN ('pending', 'running')", "r.mode = 'live' AND r.status IN ('admitted', 'running', 'paused')", "c.creation_config -> 'workflow' ? 'chatPin'"]) {
         assert.ok(sql.includes(part), part);
     }
     assert.equal(childBudgetWords(50), "This chat already has 50 running sub-agents and Workflows (max 50). Wait for some to end before starting another.");

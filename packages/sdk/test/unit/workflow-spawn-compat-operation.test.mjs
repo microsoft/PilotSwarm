@@ -3,17 +3,17 @@
  * tool call) and the YAML (aa5bb84a run; coordinator ruling): an exact repeat is the same operation (answered from its
  * receipt), and a corrected YAML under the same key is another operation, so it saves the next revision and starts it, as
  * stage 1 allowed, instead of conflicting with the first (OPERATION_CONFLICT). The database side is
- * test/local/workflow-v2-spawn-refusal.test.js.
+ * test/local/workflow-spawn-refusal.test.js.
  *
  * Run: node --test test/unit/workflow-spawn-compat-operation.test.mjs
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnWorkflowFromTool } from "../../dist/workflow/spawn.js";
-import { sha256Hex } from "../../dist/workflow/v2/json.js";
+import { sha256Hex } from "../../dist/workflow/json.js";
 
 const YAML = next => `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: one-second, version: "1.0.0" }
 initial: pause
@@ -39,7 +39,7 @@ async function saveOperation(args, toolCallId = "call-1") {
     };
     const answer = await spawnWorkflowFromTool(args, { toolCallId }, {
         parentSessionId: "chat-1", enabled: () => true, resolveOwner: async () => null,
-        captureToolBinding: async () => ({}), workflowV2Host: async () => host,
+        captureToolBinding: async () => ({}), workflowHost: async () => host,
     });
     assert.equal(seen.length, 1, answer);
     return seen[0];

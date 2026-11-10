@@ -1,6 +1,6 @@
 // A person's run controls in the TUI's workflow view (design 04, 07, mocks M04, M16; R17, R26; INACTIVE: only a
 // deployment that takes a person's workflow commands offers any): p pause, r resume, s stop and c cancel for the run
-// the view shows, the portal's controls (workflowV2RunControls) sent as the portal sends them (the shared controller's
+// the view shows, the portal's controls (workflowRunControls) sent as the portal sends them (the shared controller's
 // sendWorkflowRunCommand, an updateWorkflow command through the transport). Stop and cancel ask first, and the dialog
 // returns to the view. One command at a time, and what is being sent is shown. A refusal and an answer that never
 // came are shown with what to press; the same control then sends the same command (the same operation id) again, and
@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import {
     PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowViewModal,
 } from "../src/index.js";
-import { RUN, SUBTREE_REASON as SUBTREE, readModel } from "./workflow-v2-fixtures.mjs";
+import { RUN, SUBTREE_REASON as SUBTREE, readModel } from "./workflow-fixtures.mjs";
 
 const states = [
     { id: "review", type: "agent", invoke: { source: "agent", name: "code-reviewer" }, timeoutSeconds: 600, outcomes: ["accepted"],

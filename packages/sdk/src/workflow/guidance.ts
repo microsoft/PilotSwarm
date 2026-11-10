@@ -110,17 +110,17 @@ export function workflowSessionGuidance(testMode: boolean,
 /**
  * The Workflow skills (design 04; R24): `workflow-authoring` (the core), `workflow-reference` (every field),
  * `workflow-tools` (every tool argument) and `workflow-patterns` (one Workflow that runs different nodes per branch), in
- * the SDK package's plugins/workflow-v2/skills (`workflow-testing` is apart, hidden with test mode:
- * WORKFLOW_V2_TEST_MODE_SKILLS_DIR). Every worker loads this directory with the SDK's system skills (worker.ts), so every
+ * the SDK package's plugins/workflow/skills (`workflow-testing` is apart, hidden with test mode:
+ * WORKFLOW_TEST_MODE_SKILLS_DIR). Every worker loads this directory with the SDK's system skills (worker.ts), so every
  * chat can load them; the Workflow guidance names the first three.
  */
-export const WORKFLOW_V2_SKILLS_DIR = fileURLToPath(new URL("../../plugins/workflow-v2/skills", import.meta.url));
+export const WORKFLOW_SKILLS_DIR = fileURLToPath(new URL("../../plugins/workflow/skills", import.meta.url));
 export const WORKFLOW_AUTHORING_SKILL = "workflow-authoring";
 /**
  * The workflow-testing skill, hidden with test mode (Workflow Simplified, spec 16): kept apart from the authoring skills,
  * so an agent reads it only where a worker passes this directory as well, with PILOTSWARM_WORKFLOW_TEST_MODE=on.
  */
-export const WORKFLOW_V2_TEST_MODE_SKILLS_DIR = fileURLToPath(new URL("../../plugins/workflow-v2/test-mode-skills", import.meta.url));
+export const WORKFLOW_TEST_MODE_SKILLS_DIR = fileURLToPath(new URL("../../plugins/workflow/test-mode-skills", import.meta.url));
 
 /** The skills index of a Base V1 chat (worker.ts appends it to the framework base prompt): its heading and how to use it. */
 export const SKILLS_INDEX_HEADING = "## Skills available on demand";
@@ -138,11 +138,11 @@ export function skillsIndexSection(lines: readonly string[]): string {
     return `${SKILLS_INDEX_HEADING}\n\n${SKILLS_INDEX_INTRO}\n\n${lines.join("\n")}`;
 }
 
-/** A Workflow skill: one of the SDK's Workflow skill directories (WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR). */
+/** A Workflow skill: one of the SDK's Workflow skill directories (WORKFLOW_SKILLS_DIR, WORKFLOW_TEST_MODE_SKILLS_DIR). */
 export function isWorkflowSkill(skill: { dir?: string }): boolean {
     if (typeof skill?.dir !== "string") return false;
     const parent = path.resolve(path.dirname(skill.dir));
-    return parent === path.resolve(WORKFLOW_V2_SKILLS_DIR) || parent === path.resolve(WORKFLOW_V2_TEST_MODE_SKILLS_DIR);
+    return parent === path.resolve(WORKFLOW_SKILLS_DIR) || parent === path.resolve(WORKFLOW_TEST_MODE_SKILLS_DIR);
 }
 
 const indexedName = (line: string): string => /^- `([^`]*)`/.exec(line)?.[1] ?? line;

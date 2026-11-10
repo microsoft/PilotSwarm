@@ -11,11 +11,11 @@ import test from "node:test";
 import fs from "node:fs";
 import assert from "node:assert/strict";
 import { ManagedSession } from "../../dist/managed-session.js";
-import { WORKFLOW_DEFINITION_TOOL, WORKFLOW_DEFINITION_TOOL_SPEC, workflowDefinitionFromTool, workflowDefinitionToolSpec } from "../../dist/workflow/v2/definition-tool.js";
-import { chatActorWords, chatSaveRequestSha256, CHAT_ENDED_STATES } from "../../dist/workflow/v2/chat-definition-store.js";
-import { workflowCommandStatus } from "../../dist/workflow/v2/human-commands.js";
+import { WORKFLOW_DEFINITION_TOOL, WORKFLOW_DEFINITION_TOOL_SPEC, workflowDefinitionFromTool, workflowDefinitionToolSpec } from "../../dist/workflow/definition-tool.js";
+import { chatActorWords, chatSaveRequestSha256, CHAT_ENDED_STATES } from "../../dist/workflow/chat-definition-store.js";
+import { workflowCommandStatus } from "../../dist/workflow/human-commands.js";
 import { workflowMigration } from "../../dist/migrations/workflow-0088.js";
-import { WORKFLOW_DEFINITION_TOOLS } from "../../dist/workflow/v2/input-policy.js";
+import { WORKFLOW_DEFINITION_TOOLS } from "../../dist/workflow/input-policy.js";
 
 /** A host whose store must not be read: every refusal here comes before it. */
 const untouched = () => ({ store: new Proxy({}, { get: (_target, name) => { throw new Error(`the store was used (${String(name)})`); } }) });
@@ -40,7 +40,7 @@ test("the tool: one name, list, read, save, start and (stage 2.2) test, the guar
         "Call load_skill with name workflow-tools for every argument."]) {
         assert.ok(text.includes(phrase), phrase);
     }
-    const tools = fs.readFileSync(new URL("../../plugins/workflow-v2/skills/workflow-tools/SKILL.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+    const tools = fs.readFileSync(new URL("../../plugins/workflow/skills/workflow-tools/SKILL.md", import.meta.url), "utf8").replace(/\s+/g, " ");
     for (const phrase of ["every save is a new revision, and a Workflow runs the revision it started with", "A save based on an older revision is refused",
         "Read again and redo your change on the newest revision.", "A call with no prepared answer fails the test, which names it.",
         "Test only when the user asks (for example \"test it before you start it\") or before you publish it in a package; never on your own, and `start` never needs a test.",
@@ -97,7 +97,7 @@ test("the chat definition tables (migration 0088): one live definition per name;
     const sql = workflowMigration("s")[0];
     assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS workflow_chat_definitions_live_name\s+ON "s"\.workflow_chat_definitions \(owner_session_id, name\) WHERE deleted_at IS NULL;/);
     assert.match(sql, /CONSTRAINT workflow_chat_revisions_valid_ir CHECK \(valid = \(ir IS NOT NULL AND ir_sha256 IS NOT NULL\)\)/);
-    assert.match(sql, /CREATE TRIGGER workflow_v2_chat_ended\s+AFTER UPDATE OF state, deleted_at ON "s"\.sessions/);
+    assert.match(sql, /CREATE TRIGGER workflow_chat_ended\s+AFTER UPDATE OF state, deleted_at ON "s"\.sessions/);
     assert.match(sql, /WHEN \(NEW\.session_kind IS DISTINCT FROM 'workflow'/);
     assert.match(sql, /ELSIF NEW\.state IN \('completed', 'cancelled', 'failed'\)/);
 });

@@ -1,6 +1,6 @@
 /**
  * CI run 114: the suite's fixed waits and limits were set on local PostgreSQL. On HorizonDB the same work takes about ten
- * times as long (workflow-v2-join-robust: 329 s on local PostgreSQL, 2,909 s on HorizonDB), so a test's own time limit, a
+ * times as long (workflow-join-robust: 329 s on local PostgreSQL, 2,909 s on HorizonDB), so a test's own time limit, a
  * poll's timeout or a bound on how long something took must grow with the database the suite runs on. A test multiplies
  * those numbers by the scale here; what it proves does not change.
  *

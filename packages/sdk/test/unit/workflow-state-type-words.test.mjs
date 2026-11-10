@@ -6,11 +6,11 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { compileWorkflowV2, workflowNearestStateType } from "../../dist/workflow/v2/compiler.js";
+import { compileWorkflow, workflowNearestStateType } from "../../dist/workflow/compiler.js";
 
 const FLAGS = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true };
 const ALL = ["script", "wait", "messaging", "agent", "parallel", "terminal"];
-const typeError = (type, flags = FLAGS) => compileWorkflowV2(`apiVersion: pilotswarm.dev/v2-draft
+const typeError = (type, flags = FLAGS) => compileWorkflow(`apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: types, version: "1.0.0" }
 initial: a

@@ -12,7 +12,7 @@
  * only what is recorded. Long text is folded (`more`). Pure.
  */
 import { callText, firstCallLine } from "./chat-activity.js";
-import { workflowEventText } from "./workflow-v2-view.js";
+import { workflowEventText } from "./workflow-view.js";
 import { workflowNodeClock } from "./workflow-node-summary.js";
 import { workflowDuration, workflowFailureDetail, workflowModelWords, workflowOutcomeWord, workflowSpawnedModels } from "./workflow-words.js";
 import { sha256Hex } from "./sha256.js";

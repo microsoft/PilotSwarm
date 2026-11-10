@@ -11,13 +11,13 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { EMPTY_WORKFLOW_VIEW, selectWorkflowViewSnapshot, workflowViewSnapshotEqual } from "../src/workflow-v2-view.js";
-import { WorkflowV2DraftEditor } from "../../react/src/workflow-v2-panels.js";
+import { EMPTY_WORKFLOW_VIEW, selectWorkflowViewSnapshot, workflowViewSnapshotEqual } from "../src/workflow-view.js";
+import { WorkflowDraftEditor } from "../../react/src/workflow-panels.js";
 
 const A = "wf-a";
 const B = "wf-b";
-const YAML_A = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: a, version: 1.0.0 }\n# A\n";
-const YAML_B = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: b, version: 1.0.0 }\n# B\n";
+const YAML_A = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: a, version: 1.0.0 }\n# A\n";
+const YAML_B = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: b, version: 1.0.0 }\n# B\n";
 
 function stateWith(active) {
     const sessions = { [A]: { sessionId: A, title: "Workflow: a" }, [B]: { sessionId: B, title: "Workflow: b" } };
@@ -64,7 +64,7 @@ test("snapshots compare equal only when every part is the same object", () => {
 
 const editorModel = (sessionId, yaml, revision = 1) => ({ sessionId, revision, definitionHash: `hash-${sessionId}`, yaml, semver: "1.0.0", current: true,
     busy: false, pending: false, diagnostics: [] });
-const render = props => renderToStaticMarkup(React.createElement(WorkflowV2DraftEditor, { controller: { dispatch() {}, sendWorkflowRunCommand() { throw new Error("no save"); } }, ...props }));
+const render = props => renderToStaticMarkup(React.createElement(WorkflowDraftEditor, { controller: { dispatch() {}, sendWorkflowRunCommand() { throw new Error("no save"); } }, ...props }));
 
 test("the editor takes only its own session's model: another session's (same revision) renders nothing", () => {
     const own = render({ sessionId: B, model: editorModel(B, YAML_B) });

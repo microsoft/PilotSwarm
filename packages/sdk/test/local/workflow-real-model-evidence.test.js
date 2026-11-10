@@ -1,14 +1,14 @@
 /**
- * The real-model harness's evidence (test/helpers/workflow-v2-real-model-evidence.mjs), over a stand-in catalog and store
+ * The real-model harness's evidence (test/helpers/workflow-real-model-evidence.mjs), over a stand-in catalog and store
  * with the real store's method names and row fields (no database): each saved revision's YAML with its secrets hidden and
  * cut at 8 KB, with its diagnostics; each Workflow's and each test's runs with status, outcome and error; each node
  * execution's state, outcome and error, secrets hidden; a read that fails is recorded, never thrown.
  */
 import { describe, it, expect } from "vitest";
-import { EVIDENCE_YAML_MAX_BYTES, realModelWorkflowEvidence } from "../helpers/workflow-v2-real-model-evidence.mjs";
+import { EVIDENCE_YAML_MAX_BYTES, realModelWorkflowEvidence } from "../helpers/workflow-real-model-evidence.mjs";
 
 const SECRET = "Bearer abcdefghijklmnopqrstuvwxyz0123456789";
-const VALID = `apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: counter, version: "1.0.0" }\n# Authorization: ${SECRET}\n`;
+const VALID = `apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: counter, version: "1.0.0" }\n# Authorization: ${SECRET}\n`;
 
 function standIn({ failNodes = false, fail = null } = {}) {
     const runs = {
@@ -37,7 +37,7 @@ function standIn({ failNodes = false, fail = null } = {}) {
             },
             listRevisions: async () => [{ revision: 1, valid: false, createdAt: "t1" }, { revision: 2, valid: true, createdAt: "t2" }],
             readRevision: async (_id, revision) => { if (fail?.revision) throw new Error(fail.revision); return (revision === 1
-                ? { yaml: `${"x".repeat(EVIDENCE_YAML_MAX_BYTES + 100)}`, diagnostics: [{ severity: "error", code: "WFV2_STATE_TYPE", path: "states.count.type",
+                ? { yaml: `${"x".repeat(EVIDENCE_YAML_MAX_BYTES + 100)}`, diagnostics: [{ severity: "error", code: "WORKFLOW_STATE_TYPE", path: "states.count.type",
                     line: 9, message: "count has an unknown type" }] }
                 : { yaml: VALID, diagnostics: [] }); },
             listTests: async () => [{ testId: "bench-1", definitionId: "def-1", revision: 2, verdict: "passed" }],
@@ -54,7 +54,7 @@ describe("the real-model receipt's Workflow evidence", () => {
         expect(text).not.toContain("abcdefghijklmnopqrstuvwxyz0123456789");
         const [first, second] = evidence.revisions;
         expect(first).toMatchObject({ definitionId: "def-1", name: "counter", revision: 1, valid: false,
-            diagnostics: [{ severity: "error", code: "WFV2_STATE_TYPE", path: "states.count.type", line: 9, message: "count has an unknown type" }] });
+            diagnostics: [{ severity: "error", code: "WORKFLOW_STATE_TYPE", path: "states.count.type", line: 9, message: "count has an unknown type" }] });
         expect(Buffer.byteLength(first.yaml.split("…")[0], "utf8")).toBe(EVIDENCE_YAML_MAX_BYTES);
         expect(first.yaml).toMatch(/… \[cut: \d+ bytes in all\]$/);
         expect(second).toMatchObject({ revision: 2, valid: true, diagnostics: [] });

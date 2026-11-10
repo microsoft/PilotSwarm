@@ -6,7 +6,7 @@ restarts. Use one for a finite procedure with clear steps: scripts, waits,
 typed messages, requests for an answer, agent steps and fan-out.
 
 - **Definitions.** A chat writes a **Workflow Definition** as YAML
-  (`apiVersion: pilotswarm.dev/v2-draft`, `kind: Workflow`) and saves it with
+  (`apiVersion: pilotswarm.dev/v1`, `kind: Workflow`) and saves it with
   its `workflow_definition` tool. Each save is a new revision that never
   changes. A person can also edit and save the YAML in the Workflow tab.
 - **Workflows.** **Start** makes a Workflow from one revision. The Workflow
@@ -40,7 +40,7 @@ typed messages, requests for an answer, agent steps and fan-out.
   [A package's Workflow Definitions](#a-packages-workflow-definitions-stage-23).
 
 Models learn the details from the Workflow skills in
-`packages/sdk/plugins/workflow-v2/skills/`: `workflow-authoring`,
+`packages/sdk/plugins/workflow/skills/`: `workflow-authoring`,
 `workflow-reference` (every field, and what the engine guarantees on retries,
 restarts, timers, joins and stops), `workflow-tools` and `workflow-patterns`.
 
@@ -666,7 +666,7 @@ script is a Node ES module: use `await setResult(...)`, not a top-level
 `return`. Preserve data needed by later steps in the output you pass forward.
 
 ```yaml
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: nightly-report, version: "1.0.0" }
 description: Reads the facts that match a key pattern and stores a short report.
@@ -707,7 +707,7 @@ states:
 
 | Rule | Detail |
 |---|---|
-| Document | `apiVersion: pilotswarm.dev/v2-draft`, `kind: Workflow`, `metadata.name` and `metadata.version` (a semantic version; quote it, as in `"1.0.0"`) are required. |
+| Document | `apiVersion: pilotswarm.dev/v1`, `kind: Workflow`, `metadata.name` and `metadata.version` (a semantic version; quote it, as in `"1.0.0"`) are required. |
 | States | 1 to 100 states. An id is a letter, then up to 63 letters, digits, `_` or `-`. `initial` is not a terminal, and every state the run can reach must be able to reach a terminal. |
 | Routes | `transition.next` maps each outcome a state can report, and each runtime error you handle (by its code, or `failure` for all), to a state. A runtime error with no route goes to `catchAll` when there is one, else it fails the run. |
 | Data | Each state's output is the next state's input. A binding is one whole string, such as `"${input.count}"` or `"${inputs.keyPattern}"`. |
@@ -825,7 +825,7 @@ script can catch it.
   stale call saves the YAML as the next revision of the chat's definition
   and, with `state: published` and `start: true`, starts it, as
   `workflow_definition` does. Its YAML must say
-  `apiVersion: pilotswarm.dev/v2-draft`; any other document is refused with
+  `apiVersion: pilotswarm.dev/v1`; any other document is refused with
   `WORKFLOW_API_VERSION`, and there is no converter.
 
 A workflow session does not accept chat messages, answers, steers or session
@@ -1076,7 +1076,7 @@ The MCP `read_workflow` description names no test part. The flag changes
 nothing else. A chat's revision test (`workflow_definition` `test`, stage 2.2)
 does not need it: it runs on every deployment. The `workflow-testing`
 guide is kept apart from the authoring skills, in
-`packages/sdk/plugins/workflow-v2/test-mode-skills`, so an agent reads it only
+`packages/sdk/plugins/workflow/test-mode-skills`, so an agent reads it only
 where test mode is on. The SDK's local tests run with the flag on.
 
 ### Scripts
@@ -1304,7 +1304,7 @@ Isolation, in this version:
 ## Durability
 
 Each Workflow run has one durable controller orchestration
-(`workflow-v2-controller`, version 1.0.0), separate from the chat's own
+(`workflow-controller`, version 1.0.0), separate from the chat's own
 orchestration. The controller keeps the exact ids of the work it started in
 its own history. Each visit of a state, with its input, outcome and output, is
 a row in PostgreSQL. So a worker restart loses nothing: the controller goes on

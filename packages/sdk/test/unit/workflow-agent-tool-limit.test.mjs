@@ -2,14 +2,14 @@
  * Workflow Simplified stage 2.1c, FU-17: an agent node's tool limit (`tools: none` or a list of tool names).
  * - The compiler takes `tools: none` (no tools but complete_workflow_node) or a list of 1 to 64 distinct tool names; it
  *   refuses anything else in words. The IR has `tools` only when it is set (`[]` for none), and a stored IR keeps it.
- * - The graph (describeWorkflowV2States) says the limit, so the portal and the TUI show it.
+ * - The graph (describeWorkflowStates) says the limit, so the portal and the TUI show it.
  * - A session in the subtree of a state that limits its tools is offered only those (the Copilot session's
  *   availableTools); the state's own chat also keeps complete_workflow_node; another session is offered every tool. A
  *   change of the limit is a new binding (the handle is made again). PilotSwarm's own tools (the SDK `tools`) are cut to the
  *   limit by the session manager: the CLI's availableTools does not cut them (Copilot CLI 1.0.83). The real CLI case is
  *   test/local/workflow-agent-native-always-on.test.js.
  * The runTurn activity reads the limit from the state's run revision (store.readAgentToolLimit, on PostgreSQL in
- * test/local/workflow-v2-agent-tool-limit.test.js).
+ * test/local/workflow-agent-tool-limit.test.js).
  *
  * Run: node --test test/unit/workflow-agent-tool-limit.test.mjs
  */
@@ -18,14 +18,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compileWorkflowV2, parseWorkflowIr, WORKFLOW_V2_MILESTONE_IR_VERSION, WORKFLOW_V2_AGENT_TOOLS_MAX } from "../../dist/workflow/v2/compiler.js";
-import { describeWorkflowV2States } from "../../dist/workflow/v2/runtime.js";
+import { compileWorkflow, parseWorkflowIr, WORKFLOW_MILESTONE_IR_VERSION, WORKFLOW_AGENT_TOOLS_MAX } from "../../dist/workflow/compiler.js";
+import { describeWorkflowStates } from "../../dist/workflow/runtime.js";
 import { SessionManager, buildBindingFingerprintInput, workflowAgentToolAllowlist, workflowLimitedSdkTools } from "../../dist/session-manager.js";
 
 const OPTIONS = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true };
-const READ = { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION };
+const READ = { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION };
 const yaml = (tools) => `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: limited, version: "1.0.0" }
 initial: analyze
@@ -37,7 +37,7 @@ states:
     transition: { next: { done: finish } }
   finish: { type: terminal, outcome: succeeded }
 `;
-const compile = (tools) => compileWorkflowV2(yaml(tools), OPTIONS);
+const compile = (tools) => compileWorkflow(yaml(tools), OPTIONS);
 const errors = (compiled) => compiled.diagnostics.filter(item => item.severity === "error");
 
 test("tools: none, a list, or absent; the IR keeps it only when set, and a stored IR keeps it", () => {
@@ -63,7 +63,7 @@ test("tools: none, a list, or absent; the IR keeps it only when set, and a store
 });
 
 test("anything else is refused in words", () => {
-    const tooMany = `[${Array.from({ length: WORKFLOW_V2_AGENT_TOOLS_MAX + 1 }, (_, index) => `tool_${index}`).join(", ")}]`;
+    const tooMany = `[${Array.from({ length: WORKFLOW_AGENT_TOOLS_MAX + 1 }, (_, index) => `tool_${index}`).join(", ")}]`;
     for (const value of ["all", "[]", "[web_fetch, web_fetch]", "[\"two words\"]", "7", "{ web_fetch: true }", tooMany]) {
         const compiled = compile(value);
         assert.equal(compiled.valid, false, value);
@@ -73,8 +73,8 @@ test("anything else is refused in words", () => {
         assert.match(error.message, /^tools must be none \(no tools but complete_workflow_node\) or a list of 1 to 64 distinct tool names/, value);
     }
     // Only an agent state takes it.
-    const script = compileWorkflowV2(`
-apiVersion: pilotswarm.dev/v2-draft
+    const script = compileWorkflow(`
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: s, version: "1.0.0" }
 initial: hold
@@ -87,10 +87,10 @@ states:
 });
 
 test("the graph says the limit, so the portal and the terminal show it", () => {
-    const states = new Map(describeWorkflowV2States(compile("[read_facts]").ir).map(state => [state.id, state]));
+    const states = new Map(describeWorkflowStates(compile("[read_facts]").ir).map(state => [state.id, state]));
     assert.deepEqual(states.get("analyze").tools, ["read_facts"]);
-    assert.deepEqual(new Map(describeWorkflowV2States(compile("none").ir).map(state => [state.id, state])).get("analyze").tools, []);
-    assert.equal(Object.hasOwn(new Map(describeWorkflowV2States(compile(undefined).ir).map(state => [state.id, state])).get("analyze"), "tools"), false);
+    assert.deepEqual(new Map(describeWorkflowStates(compile("none").ir).map(state => [state.id, state])).get("analyze").tools, []);
+    assert.equal(Object.hasOwn(new Map(describeWorkflowStates(compile(undefined).ir).map(state => [state.id, state])).get("analyze"), "tools"), false);
 });
 
 test("the allowlist: the limit, with complete_workflow_node for the state's own chat; none without a limit; in the binding", () => {

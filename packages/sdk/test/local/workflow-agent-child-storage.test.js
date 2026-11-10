@@ -12,7 +12,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { PilotSwarmClient } from "../../src/client.ts";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
+import { createWorkflow } from "../../src/workflow/service.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 300_000;
@@ -20,7 +20,7 @@ const OWNER = { provider: "test", subject: "agent-child-storage", email: null, d
 const ACTOR = { kind: "system", name: "agent-child-storage" };
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const STEP_WORKFLOW = JSON.stringify({
-    apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "child-storage", version: "1.0.0" },
+    apiVersion: "pilotswarm.dev/v1", kind: "Workflow", metadata: { name: "child-storage", version: "1.0.0" },
     initial: "step",
     states: {
         step: { type: "agent", invoke: { prompt: "Say done." }, session: "new", timeoutSeconds: 600, transition: { next: { done: "finished", failure: "failed" } } },
@@ -56,7 +56,7 @@ describe("a Workflow agent step's child client borrows the worker's storage (rev
                     const borrowed = vi.spyOn(PilotSwarmClient.prototype, "_startOnShared");
                     const before = await connections();
                     for (let index = 0; index < 3; index += 1) {
-                        const created = await createWorkflowV2({ catalog, store, duroxideClient: duroxide }, {
+                        const created = await createWorkflow({ catalog, store, duroxideClient: duroxide }, {
                             workflowSessionId: randomUUID(), parentSessionId: parent, yaml: STEP_WORKFLOW, actor: ACTOR, operationId: `child-${index}`,
                             publish: true, start: { inputs: {} }, notifyParent: false,
                         });

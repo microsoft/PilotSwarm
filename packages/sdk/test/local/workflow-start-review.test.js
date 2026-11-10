@@ -18,9 +18,9 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmManagementClient } from "../helpers/local-workers.js";
-import { openWorkflowStore } from "../helpers/workflow-v2-request-fixture.js";
-import { saveChatWorkflowDefinition, startChatWorkflowDefinition } from "../../src/workflow/v2/chat-definitions.ts";
-import { workflowDefinitionFromTool } from "../../src/workflow/v2/definition-tool.ts";
+import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
+import { saveChatWorkflowDefinition, startChatWorkflowDefinition } from "../../src/workflow/chat-definitions.ts";
+import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 import { WORKFLOW_CHILD_BUDGET_MAX } from "../../src/child-budget.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
@@ -29,7 +29,7 @@ const OWNER = { provider: "test", subject: "start-review" };
 const ENGINE = { kind: "system", name: "start-review-test" };
 
 const YAML = (seconds, name = "waiter") => `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: ${name}, version: "1.0.0" }
 initial: hold

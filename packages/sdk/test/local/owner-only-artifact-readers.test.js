@@ -15,7 +15,7 @@ import { FilesystemArtifactStore } from "../../src/session-store.ts";
 import { createArtifactTools } from "../../src/artifact-tools.ts";
 import { createFactTools } from "../../src/facts-tools.ts";
 import { readMotdArtifactPicture } from "../../src/session-manager.ts";
-import { workflowBaseInstructionsArtifact } from "../../src/workflow/v2/base-instructions.ts";
+import { workflowBaseInstructionsArtifact } from "../../src/workflow/base-instructions.ts";
 import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
 
 const SECRET_TEXT = "Alice's confidential role text: the Q3 acquisition plan.";

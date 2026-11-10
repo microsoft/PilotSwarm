@@ -9,10 +9,10 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { workflowDefinitionFromTool } from "../../dist/workflow/v2/definition-tool.js";
-import { copyChatPackageWorkflow } from "../../dist/workflow/v2/chat-definitions.js";
+import { workflowDefinitionFromTool } from "../../dist/workflow/definition-tool.js";
+import { copyChatPackageWorkflow } from "../../dist/workflow/chat-definitions.js";
 
-const YAML = `apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: waiter, version: "1.0.0" }\ninitial: hold\n`
+const YAML = `apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: waiter, version: "1.0.0" }\ninitial: hold\n`
     + `states:\n  hold: { type: wait, seconds: 30, transition: { next: { elapsed: done } } }\n  done: { type: terminal, outcome: succeeded }\n`;
 const untouchable = (what) => new Proxy({}, { get: (_target, name) => { throw new Error(`${what}.${String(name)} was used`); } });
 

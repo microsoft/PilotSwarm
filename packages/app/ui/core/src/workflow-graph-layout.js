@@ -1,5 +1,5 @@
 import { Graph, layout as dagreLayout } from "@dagrejs/dagre";
-import { annotateWorkflowV2Edges } from "./workflow-v2-view.js";
+import { annotateWorkflowEdges } from "./workflow-view.js";
 
 /**
  * The portal's workflow graph layout (owner batch 5, g-01): top to bottom, laid out by dagre, with smooth curved edges.
@@ -9,7 +9,7 @@ import { annotateWorkflowV2Edges } from "./workflow-v2-view.js";
  * cut crossings, and routes every edge through the gaps between the rows, with room reserved for its label. The edge is
  * drawn as a smooth B-spline through dagre's points, which stays inside the corridor dagre kept clear of other steps.
  *
- * The result keeps the edge contract the web graph and annotateWorkflowV2Edges use: one edge per pair of steps (several
+ * The result keeps the edge contract the web graph and annotateWorkflowEdges use: one edge per pair of steps (several
  * outcomes to one target share it, their labels joined with " / "), a parallel state's "each branch" edge to its body's
  * first state, and for a version 2 graph each edge's kind (outcome, error, mixed or branch). Pure and deterministic: the
  * same definition gives the same layout. The terminal's graph order keeps its own layout (layoutWorkflowGraph).
@@ -398,7 +398,7 @@ export function layoutWorkflowGraphTB(definition) {
     const edges = graphEdges(states, parts);
     // OF-S2-2: a graph's runtime-error routes are one label, "✕ error" (the title lists them): the kinds are known before
     // the labels' widths are reserved.
-    if (Array.isArray(definition?.states)) annotateWorkflowV2Edges(definition, { edges });
+    if (Array.isArray(definition?.states)) annotateWorkflowEdges(definition, { edges });
     for (const edge of edges) {
         // The edge into a branch box has no label (H2); every other edge's label is drawn.
         edge.labelText ??= workflowEdgeLabelTextOf(edge, states);
@@ -578,5 +578,5 @@ export function workflowPlaceKey(layout, id) {
 }
 
 function finish(definition, layout) {
-    return Array.isArray(definition?.states) ? annotateWorkflowV2Edges(definition, layout) : layout;
+    return Array.isArray(definition?.states) ? annotateWorkflowEdges(definition, layout) : layout;
 }

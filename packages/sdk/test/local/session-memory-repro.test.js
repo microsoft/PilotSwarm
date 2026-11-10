@@ -15,7 +15,7 @@
  *
  * It prints one table row per step and the MiB per session between the first and the last step. It asserts nothing about
  * the numbers: the executor compares them at main, at the side branch before the leak fixes and after them. A build
- * without Workflow v2 (main) runs the chats only, and says so (agentSteps: false).
+ * without Workflow (main) runs the chats only, and says so (agentSteps: false).
  *
  * The second case: one long chat (PS_SESSION_LEAK_LONG_TURNS turns, default 300) is summarized once (the session
  * orchestration's summarizeSession activity, called as the worker registers it), while the RSS of this process and of
@@ -46,7 +46,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /** One agent step (session: new) that its agent completes at once. As a document (JSON is YAML). */
 const STEP_WORKFLOW = JSON.stringify({
-    apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "leak-step", version: "1.0.0" },
+    apiVersion: "pilotswarm.dev/v1", kind: "Workflow", metadata: { name: "leak-step", version: "1.0.0" },
     initial: "step",
     states: {
         step: { type: "agent", invoke: { prompt: "Say done." }, session: "new", timeoutSeconds: 600, transition: { next: { done: "finished", failure: "failed" } } },
@@ -154,8 +154,8 @@ describe.skipIf(!RUN)("per-session memory on one worker (opt-in repro)", () => {
             await withScriptedModel(env, { respond, worker: { logLevel: "warning" } }, async ({ client, worker, qualifiedModel }) => {
                 const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
                 await catalog.initialize();
-                // Workflow v2 is in this build (not on main): the agent steps run too.
-                const service = await import("../../src/workflow/v2/service.ts").catch(() => null);
+                // Workflow is in this build (not on main): the agent steps run too.
+                const service = await import("../../src/workflow/service.ts").catch(() => null);
                 const store = service && typeof catalog.workflowStore === "function" ? catalog.workflowStore() : null;
                 const duroxide = client._getDuroxideClient();
                 const manager = worker.sessionManager;
@@ -182,7 +182,7 @@ describe.skipIf(!RUN)("per-session memory on one worker (opt-in repro)", () => {
                         const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
                         await chat.sendAndWait("Say ok.", 120_000);
                         if (!store) continue;
-                        const created = await service.createWorkflowV2({ catalog, store, duroxideClient: duroxide }, {
+                        const created = await service.createWorkflow({ catalog, store, duroxideClient: duroxide }, {
                             workflowSessionId: randomUUID(), parentSessionId: parent, yaml: STEP_WORKFLOW, actor: ACTOR, operationId: `leak-${done}`,
                             publish: true, start: { inputs: {} }, notifyParent: false,
                         });

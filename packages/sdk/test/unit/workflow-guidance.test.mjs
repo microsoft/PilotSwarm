@@ -4,12 +4,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { SessionManager } from "../../dist/session-manager.js";
 import { SPAWN_WORKFLOW_TOOL_SPEC } from "../../dist/workflow/tool-spec.js";
-import { UPDATE_WORKFLOW_TOOL_SPEC } from "../../dist/workflow/v2/tools.js";
-import { WORKFLOW_SESSION_GUIDANCE, WORKFLOW_V2_SKILLS_DIR, workflowSessionGuidance } from "../../dist/workflow/guidance.js";
+import { UPDATE_WORKFLOW_TOOL_SPEC } from "../../dist/workflow/tools.js";
+import { WORKFLOW_SESSION_GUIDANCE, WORKFLOW_SKILLS_DIR, workflowSessionGuidance } from "../../dist/workflow/guidance.js";
 
 // Owner 2026-11-08T16:55Z: the Workflow guidance is trimmed to its rules for every chat; the details are in the Workflow
 // skills (workflow-authoring, workflow-reference, workflow-tools), which the guidance names.
-const skill = name => fs.readFileSync(path.join(WORKFLOW_V2_SKILLS_DIR, name, "SKILL.md"), "utf8").replace(/\s+/g, " ");
+const skill = name => fs.readFileSync(path.join(WORKFLOW_SKILLS_DIR, name, "SKILL.md"), "utf8").replace(/\s+/g, " ");
 
 test("the guidance keeps its rules in about 2,000 characters, whatever the turn and worker add", () => {
     // UXP-AD-01 (owner 2026-11-09T03:25Z) added the person's control sentence (254 characters): core 2,048, default 2,222.
@@ -28,11 +28,11 @@ test("the guidance keeps its rules in about 2,000 characters, whatever the turn 
 // guidance names the real state types, exactly the compiler's, and says there is no other.
 test("I1: the guidance names every state type the compiler takes, and only those", async () => {
     assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("A state's `type` is `script`, `wait`, `messaging` (`mode: send`, `request` or `receive`), `agent`, `parallel` or `terminal`; there is no other."), WORKFLOW_SESSION_GUIDANCE);
-    const { compileWorkflowV2 } = await import("../../dist/workflow/v2/compiler.js");
+    const { compileWorkflow } = await import("../../dist/workflow/compiler.js");
     const FLAGS = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true };
     const named = ["script", "wait", "messaging", "agent", "parallel", "terminal"];
     for (const type of [...named, "send", "receive", "request", "http", "task", "join"]) {
-        const result = compileWorkflowV2(`apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: t, version: "1.0.0" }\ninitial: a\n`
+        const result = compileWorkflow(`apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: t, version: "1.0.0" }\ninitial: a\n`
             + `states:\n  a: { type: ${type} }\n  done: { type: terminal, outcome: succeeded }\n`, FLAGS);
         const typeError = result.diagnostics.find(item => item.path === "states.a.type");
         // A named type is a type (its other fields may be missing); every other word is refused as a type.
@@ -124,7 +124,7 @@ test("spawn_workflow says it is kept one release, saves a revision and starts it
     assert.ok(text.length <= 600, `${text.length}`);
     assert.match(text, /^Kept for one release; prefer workflow_definition\./);
     assert.match(text, /is saved as the next revision of this chat's definition its metadata\.name names; with state: published and start: true that revision also starts\./);
-    assert.match(text, /The yaml \(apiVersion pilotswarm\.dev\/v2-draft\) is saved/);
+    assert.match(text, /The yaml \(apiVersion pilotswarm\.dev\/v1\) is saved/);
     assert.ok(!/v1alpha1|version 1/.test(text), "one Workflow format: no other is named");
     const { state, start, key } = SPAWN_WORKFLOW_TOOL_SPEC.parameters.properties;
     assert.deepEqual(state.enum, ["draft", "published"]);

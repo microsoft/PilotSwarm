@@ -46,7 +46,7 @@ describe("migration 0088: the Workflow schema in one migration", () => {
             // Not vacuous: the Workflow tables, functions and both triggers on sessions are there.
             expect(before.relations.filter(relation => relation.relkind === "r" && relation.relname.startsWith("workflow_"))).toHaveLength(23);
             expect(before.triggers.filter(trigger => trigger.relname === "sessions").map(trigger => trigger.tgname))
-                .toEqual(["workflow_v2_chat_ended", "workflow_v2_session_deleted"]);
+                .toEqual(["workflow_chat_ended", "workflow_session_deleted"]);
             expect(before.indexes.find(index => index.index === "idx_<schema>_sessions_parent")).toMatchObject({ table: "sessions", indisvalid: true });
 
             const ledger = await pool.query(`SELECT version, name FROM "${fresh}".schema_migrations WHERE version > '0087' ORDER BY version`);

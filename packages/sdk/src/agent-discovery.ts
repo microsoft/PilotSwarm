@@ -1,11 +1,11 @@
 import { defineTool } from "@github/copilot-sdk";
 import { resolveAgentDefinitionForCaller } from "./session-proxy.js";
-import { readWorkflowInterfaceExport } from "./workflow/v2/package-interface.js";
-import type { JsonValue } from "./workflow/v2/json.js";
+import { readWorkflowInterfaceExport } from "./workflow/package-interface.js";
+import type { JsonValue } from "./workflow/json.js";
 
 /**
  * A package agent's workflow interface as discovery shows it (design 04
- * "Package-agent I/O export"; R09): the contract a Workflow V2 agent state
+ * "Package-agent I/O export"; R09): the contract a Workflow agent state
  * names with `invoke.agent: { name, package, interface: <ref> }` and must
  * match exactly at publication (its outcomes and schemas, copied without
  * change), and the digest that publication pins.

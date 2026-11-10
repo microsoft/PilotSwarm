@@ -4,13 +4,13 @@
  * process on its own test schemas and the model catalog of
  * PS_MODEL_PROVIDERS_PATH.
  *
- * It spends model tokens, so it runs only when asked: PS_WORKFLOW_V2_REAL_MODEL=run with PS_WORKFLOW_V2_REAL_MODEL_REF
+ * It spends model tokens, so it runs only when asked: PS_WORKFLOW_REAL_MODEL=run with PS_WORKFLOW_REAL_MODEL_REF
  * (the chat's provider:model). The node's choice: PS_WORKFLOW_AGENT_MODEL_REF (another provider:model from the same
  * catalog; default the chat's model) and PS_WORKFLOW_AGENT_MODEL_EFFORT (default low, so a choice of the same model still
  * differs from the chat's default effort). Asked but unable to run, it fails as BLOCKED. One start, no retry. The receipt
- * goes to PS_WORKFLOW_V2_REAL_MODEL_RECEIPT when set; a bounded summary is printed.
+ * goes to PS_WORKFLOW_REAL_MODEL_RECEIPT when set; a bounded summary is printed.
  *
- *   PS_WORKFLOW_V2_REAL_MODEL=run PS_WORKFLOW_V2_REAL_MODEL_REF=<provider:model> PS_WORKFLOW_AGENT_MODEL_REF=<provider:model> \
+ *   PS_WORKFLOW_REAL_MODEL=run PS_WORKFLOW_REAL_MODEL_REF=<provider:model> PS_WORKFLOW_AGENT_MODEL_REF=<provider:model> \
  *     npx vitest run test/local/workflow-agent-models-real-model.test.js
  */
 import { describe, it, expect } from "vitest";
@@ -19,11 +19,11 @@ import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createTestEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
-import { childRecord, realModelPlan, servesModel } from "../helpers/workflow-v2-real-model.mjs";
+import { childRecord, realModelPlan, servesModel } from "../helpers/workflow-real-model.mjs";
 import { loadModelProviders } from "../../src/index.ts";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
-import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
+import { createWorkflow } from "../../src/workflow/service.ts";
+import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 
 const OWNER = { provider: "test", subject: "workflow-agent-models-real-model", email: null, displayName: null };
 const ACTOR = { kind: "system", name: "workflow-agent-models-real-model-test" };
@@ -34,7 +34,7 @@ const CHILD_END_MS = 60_000;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 const YAML = JSON.stringify({
-    apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "agent-models-real", version: "1.0.0" },
+    apiVersion: "pilotswarm.dev/v1", kind: "Workflow", metadata: { name: "agent-models-real", version: "1.0.0" },
     initialInput: { n: 7 }, initial: "classify",
     states: {
         classify: {
@@ -87,7 +87,7 @@ describe("OF-S2-7: per-node models on a real model (local target)", () => {
     }
     it(TITLE, { timeout: RUN_MS + CHILD_END_MS + 300_000 }, async () => {
         if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
-        if (plan.target !== "local") throw new Error("BLOCKED: this test runs on the local target only (PS_WORKFLOW_V2_REAL_MODEL_TARGET=local).");
+        if (plan.target !== "local") throw new Error("BLOCKED: this test runs on the local target only (PS_WORKFLOW_REAL_MODEL_TARGET=local).");
         const node = nodeChoice();
         if (node.blocked) throw new Error(`BLOCKED: ${node.blocked}`);
         const receipt = { test: "workflow-agent-models-real-model", startedAt: new Date().toISOString(), chat: { model: plan.model.ref, effort: plan.effort ?? null },
@@ -107,7 +107,7 @@ describe("OF-S2-7: per-node models on a real model (local target)", () => {
                     const parent = randomUUID();
                     await catalog.createSession(parent, { owner: OWNER, model: plan.model.ref, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });
                     const workflowSessionId = randomUUID();
-                    const created = await createWorkflowV2(host, {
+                    const created = await createWorkflow(host, {
                         workflowSessionId, parentSessionId: parent, yaml: YAML, actor: ACTOR, operationId: "create", publish: true, notifyParent: false,
                         start: { inputs: {}, agentModels: { classify: node.choice } },
                     });
@@ -146,7 +146,7 @@ describe("OF-S2-7: per-node models on a real model (local target)", () => {
         } finally {
             await env.cleanup();
             receipt.endedAt = new Date().toISOString();
-            const path = process.env.PS_WORKFLOW_V2_REAL_MODEL_RECEIPT;
+            const path = process.env.PS_WORKFLOW_REAL_MODEL_RECEIPT;
             if (path) {
                 mkdirSync(dirname(path), { recursive: true });
                 writeFileSync(path, `${JSON.stringify(receipt, null, 2)}\n`);

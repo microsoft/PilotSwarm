@@ -1,11 +1,11 @@
 # Workflow messaging: durable recipient intake (design A, revision 3, amendment 2)
 
-> **As built (2026-11-10, owner decision: Workflow V2 was deployed nowhere, so its versions and migrations were
-> collapsed).** Each Workflow orchestration has one version: `workflow-v2-controller` 1.0.0 is the controller this
-> document calls 1.9.0 (the request controller); `workflow-v2-effect`, `-notify` and `-send` 1.0.0 are its tagged
-> 1.1.0 orchestrations; `workflow-v2-request`, `-agent` and `-chat-end` stay 1.0.0. Controller 1.8.0, the pre-release
+> **As built (2026-11-10, owner decision: Workflow was deployed nowhere, so its versions and migrations were
+> collapsed).** Each Workflow orchestration has one version: `workflow-controller` 1.0.0 is the controller this
+> document calls 1.9.0 (the request controller); `workflow-effect`, `-notify` and `-send` 1.0.0 are its tagged
+> 1.1.0 orchestrations; `workflow-request`, `-agent` and `-chat-end` stay 1.0.0. Controller 1.8.0, the pre-release
 > controllers 1.0.0 to 1.7.0, the untagged orchestrations and activities, and the `workflowRequests` and
-> `WorkflowV2Host.requests` switches are gone: every activity is `workflow.v2.<name>` with the workflow-request tag.
+> `WorkflowHost.requests` switches are gone: every activity is `workflow.<name>` with the workflow-request tag.
 > The CMS migrations this document numbers 0088 to 0111 are one migration, 0088 (`migrations/workflow-0088.ts`), which
 > creates their final schema. Version and migration numbers below are the design's history.
 
@@ -1015,7 +1015,7 @@ Commits, each with DEV tests and independent review:
    `read_workflow` outbox fields, fingerprints.
 4. Sender: the capability, the envelope on durable rows, the receipt, the
    README.
-5. Formal model `WorkflowV2Intake.tla` for an agent recipient: copies,
+5. Formal model `WorkflowIntake.tla` for an agent recipient: copies,
    claims with lost replies, the refuse rows, one placement per claim, the
    intake queue, the wake as an action, logical invocations (binding,
    unsent and sent attempts with cumulative `sent`, error after a possible
@@ -1023,7 +1023,7 @@ Commits, each with DEV tests and independent review:
    Stop before the model, an unknown interruption, parking and its
    stimuli, settlement failure), tombstones, continue-as-new and session
    end; mutations for each fix. It counts invocation bindings, not only
-   final row updates. `WorkflowV2Send.tla` is not this model.
+   final row updates. `WorkflowSend.tla` is not this model.
 
 | Obligation | Test |
 |---|---|
@@ -1047,9 +1047,9 @@ Commits, each with DEV tests and independent review:
 | Cancels | Before arrival, in a pass, for a `held` item, in the sweep, in an unsent and in a sent invocation. |
 | Parse | Carried intake state that does not validate fails the execution with the field; FIFO parsing is unchanged. |
 | CAN | The intake queue, the invocation (its batch, `sent`, the parked cause and a pending settlement) and rows survive continue-as-new, including one forced by the iteration cap; 1.0.82 inputs run on 1.0.83. |
-| Native (inactive) | On the native duroxide runtime and PostgreSQL, with 1.0.83 registered by the test alone and the real worker and intake activities (`workflow-v2-intake-orchestration.test.js`): an arrival claimed, bound, carried by its own turn as `runTurnV5` under the workflow-request tag, completed, recorded once in the transcript, then a continue-as-new on 1.0.83; a sent attempt's error retried across a continue-as-new that carries the marker and the retry's count, the same invocation completed, recorded once; a run that ends before its send settled `not_dispatched`; a closed workspace gate refusing before any model run, and a person's message delivering the same invocation (decision A1). Not an activation, mixed-version, crash-redelivery or model qualification. |
-| Native, owed retry and adoption (inactive) | The same, with the real session lifecycle over a versioned `FilesystemSessionStore` (`workflow-v2-intake-adoption.test.js`, review Q-W2-7): an attempt that saved its turn under key T and then failed at the worker's fault point after the commit; while its retry waits, a child's summary, a follow-up and a `set_model` whose continue-as-new comes before the retry's dispatch; the retry sends T with its count and its own prompt alone and adopts the saved turn (one model run of the turn, no new version), and the model notice, the summary and the follow-up ride later turns under keys of their own. An attempt that failed before its commit (fault point before the compare-and-swap): the retry sends T, rehydrates the last saved version and runs the turn again, saved under T; the failed run is not in the store. Review W2-WIT3: the retry of an attempt that carried no workflow item adopts its saved turn, which has no witness, and carries nothing; a copy that arrived while it waited is bound after it, and the next attempt carries, sends and completes it. Lossy-fresh control: completions lost to a closed connection (a transport double) retry with T and adopt; the lossy handoff's retry (count 0, no key) never adopts and runs the turn again under a key of its own. The forced continue-as-new is `set_model`'s (the iteration and history-size caps are unit-tested); the child is a tracked entry only; the store is the filesystem one. |
-| Native, decide's own turn (inactive) | The same (`workflow-v2-intake-own-turn.test.js`, 6.2 and section 3): a copy that arrives while the agent's wait is armed and a child's summary is buffered; drain releases the wait as for queued work, and decide's turn for the item alone has the internal prompt with the released wait's note and the digest in its system context, the item in its own field; the model gets the canonical text first, unchanged; turn start records the turn's system note and then the item once, with its canonical id and the system sender; the invocation completes, and the wait resumes with the time it had left and ends in a turn of its own that carries nothing. The cron and cron_at notes take the same release path and are unit-tested. |
+| Native (inactive) | On the native duroxide runtime and PostgreSQL, with 1.0.83 registered by the test alone and the real worker and intake activities (`workflow-intake-orchestration.test.js`): an arrival claimed, bound, carried by its own turn as `runTurnV5` under the workflow-request tag, completed, recorded once in the transcript, then a continue-as-new on 1.0.83; a sent attempt's error retried across a continue-as-new that carries the marker and the retry's count, the same invocation completed, recorded once; a run that ends before its send settled `not_dispatched`; a closed workspace gate refusing before any model run, and a person's message delivering the same invocation (decision A1). Not an activation, mixed-version, crash-redelivery or model qualification. |
+| Native, owed retry and adoption (inactive) | The same, with the real session lifecycle over a versioned `FilesystemSessionStore` (`workflow-intake-adoption.test.js`, review Q-W2-7): an attempt that saved its turn under key T and then failed at the worker's fault point after the commit; while its retry waits, a child's summary, a follow-up and a `set_model` whose continue-as-new comes before the retry's dispatch; the retry sends T with its count and its own prompt alone and adopts the saved turn (one model run of the turn, no new version), and the model notice, the summary and the follow-up ride later turns under keys of their own. An attempt that failed before its commit (fault point before the compare-and-swap): the retry sends T, rehydrates the last saved version and runs the turn again, saved under T; the failed run is not in the store. Review W2-WIT3: the retry of an attempt that carried no workflow item adopts its saved turn, which has no witness, and carries nothing; a copy that arrived while it waited is bound after it, and the next attempt carries, sends and completes it. Lossy-fresh control: completions lost to a closed connection (a transport double) retry with T and adopt; the lossy handoff's retry (count 0, no key) never adopts and runs the turn again under a key of its own. The forced continue-as-new is `set_model`'s (the iteration and history-size caps are unit-tested); the child is a tracked entry only; the store is the filesystem one. |
+| Native, decide's own turn (inactive) | The same (`workflow-intake-own-turn.test.js`, 6.2 and section 3): a copy that arrives while the agent's wait is armed and a child's summary is buffered; drain releases the wait as for queued work, and decide's turn for the item alone has the internal prompt with the released wait's note and the digest in its system context, the item in its own field; the model gets the canonical text first, unchanged; turn start records the turn's system note and then the item once, with its canonical id and the system sender; the invocation completes, and the wait resumes with the time it had left and ends in a turn of its own that carries nothing. The cron and cron_at notes take the same release path and are unit-tested. |
 | Fingerprints | The declared 1.0.83 delta (section 8); the drive and ordinary-message goldens change only by the turn activity names. |
 | Baseline | Full suite and baseline are a separate grant. |
 

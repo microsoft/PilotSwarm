@@ -263,7 +263,7 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
                 res.end(JSON.stringify({ ok: true, result: { sessions: SESSIONS, hasMore: false, nextCursor: null } }));
                 return;
             }
-            // readWorkflow (the workflow v2 read model): every fixture session here is an agent or a version 1 workflow,
+            // readWorkflow (the workflow read model): every fixture session here is an agent or a version 1 workflow,
             // so it answers as the portal does for one. A test that needs a v2 read model routes this path itself.
             if (/\/sessions\/[^/]+\/workflow$/.test(pathname) && req.method === "GET") {
                 res.writeHead(404, { "content-type": "application/json" });

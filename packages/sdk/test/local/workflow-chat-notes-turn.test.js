@@ -6,14 +6,14 @@
  */
 import { describe, it, expect } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
-import { intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-v2-intake-native-fixture.js";
-import { saveChatWorkflowDefinition } from "../../src/workflow/v2/chat-definitions.ts";
+import { intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
+import { saveChatWorkflowDefinition } from "../../src/workflow/chat-definitions.ts";
 import { workflowParentNotifier } from "../../src/workflow/parent-delivery.ts";
-import { workflowV2ParentNotification } from "../../src/workflow/v2/runtime.ts";
+import { workflowParentNotification } from "../../src/workflow/runtime.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: hn-top-watch, version: "1.0.0" }
 initial: hold
@@ -55,7 +55,7 @@ describe("a person's save note reaches the chat's next turn once (E2-4, F3)", ()
         });
     });
     // Deployed check DS-2: a chat made without a first message has no session orchestration. The worker's delivery of a
-    // Workflow's end says so, and the runtime keeps the notice as the chat's note (workflow-v2-notify-parent "DS-2" runs that
+    // Workflow's end says so, and the runtime keeps the notice as the chat's note (workflow-notify-parent "DS-2" runs that
     // end to end on the real controller); nothing starts the chat. Its first turn reads the note once.
     it("DS-2: a Workflow's end kept for a chat that has not started is read by its first turn, once", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
         const prompts = [];
@@ -67,7 +67,7 @@ describe("a person's save note reaches the chat's next turn once (E2-4, F3)", ()
             managerExtras: { workflowScriptsEnabled: true } }, async h => {
             const delivery = await workflowParentNotifier(h.client)(h.sessionId, "ended", { kind: "system", display: "workflow" }, "ds2-id");
             expect(delivery).toEqual({ delivered: false, notStarted: true });
-            const notice = workflowV2ParentNotification({ sessionId: "wf-ds2", runId: "run-ds2-0001", name: "hn-top-watch", version: "1.0.0",
+            const notice = workflowParentNotification({ sessionId: "wf-ds2", runId: "run-ds2-0001", name: "hn-top-watch", version: "1.0.0",
                 status: "completed", outcome: "succeeded", stateId: "done", failure: null }, "{}");
             await h.store.chat.keepNote(h.sessionId, "wf-ds2", 1, notice);
             // A retried notice keeps it once.

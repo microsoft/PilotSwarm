@@ -1,6 +1,6 @@
 /**
  * Exact package revisions for sessions that must not follow a republish
- * (workflow v2 package pins, design 03 "package agents", R09 and R18;
+ * (workflow package pins, design 03 "package agents", R09 and R18;
  * test plan T070). Only a workflow agent state's child is bound this way:
  * a publication pins each named package agent (agent-resolver.ts).
  *

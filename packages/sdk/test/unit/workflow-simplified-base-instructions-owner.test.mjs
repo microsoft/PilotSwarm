@@ -14,7 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import {
     SDK_SYSTEM_PROMPT_PREFIX, workflowBaseInstructionsArtifact, workflowBaseInstructionsRef, workflowBaseInstructionsText,
-} from "../../dist/workflow/v2/base-instructions.js";
+} from "../../dist/workflow/base-instructions.js";
 import { createArtifactTools } from "../../dist/artifact-tools.js";
 import { FilesystemArtifactStore } from "../../dist/session-store.js";
 import { isOwnerOnlyArtifact } from "../../api/src/session-authz.js";

@@ -5,11 +5,11 @@
 // Run: node --test packages/app/ui/core/test/workflow-simplified-test-mode.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { workflowV2RunPickerModel } from "../src/workflow-v2-run-picker.js";
-import { workflowV2TestControls, workflowV2TestResponder, workflowV2TestRunsShown } from "../src/workflow-v2-commands.js";
+import { workflowRunPickerModel } from "../src/workflow-run-picker.js";
+import { workflowTestControls, workflowTestResponder, workflowTestRunsShown } from "../src/workflow-commands.js";
 import { workflowSessionProjection } from "../src/workflow-tui.js";
-import { readModel, subtreeCommands } from "./workflow-v2-fixtures.mjs";
-import { workflowLogEvents } from "../src/workflow-v2-view.js";
+import { readModel, subtreeCommands } from "./workflow-fixtures.mjs";
+import { workflowLogEvents } from "../src/workflow-view.js";
 import { PilotSwarmUiController } from "../src/controller.js";
 import { createStore } from "../src/store.js";
 import { appReducer } from "../src/reducer.js";
@@ -27,24 +27,24 @@ const withCommands = (operations, extra = {}) => ({ ...readModel({ runs: RUNS })
 // on), never inferred from the commands a reader may send: a read without it shows none, a commandless or restricted one too.
 test("test runs are shown only where the server says its test mode is on", () => {
     const hidden = model => ({ ...model, testMode: undefined });
-    assert.equal(workflowV2TestRunsShown(hidden(withCommands([...EVERY, "stop", "test", "test_respond", "test_advance"]))), false,
+    assert.equal(workflowTestRunsShown(hidden(withCommands([...EVERY, "stop", "test", "test_respond", "test_advance"]))), false,
         "test operations listed, but no word that test runs are shown");
-    assert.equal(workflowV2TestRunsShown(withCommands([...EVERY, "stop", "test", "test_respond", "test_advance"])), true);
-    assert.equal(workflowV2TestRunsShown(hidden(readModel({ runs: RUNS }))), false, "a commandless read");
-    assert.equal(workflowV2TestRunsShown(hidden({ ...readModel({ runs: RUNS }), personCommands: subtreeCommands() })), false, "a restricted read");
-    assert.equal(workflowV2TestRunsShown({ ...readModel({ runs: RUNS }), personCommands: subtreeCommands() }), true);
-    for (const value of [null, undefined, 5, "x", [], { testMode: "true" }, { testMode: 1 }]) assert.equal(workflowV2TestRunsShown(value), false, JSON.stringify(value));
+    assert.equal(workflowTestRunsShown(withCommands([...EVERY, "stop", "test", "test_respond", "test_advance"])), true);
+    assert.equal(workflowTestRunsShown(hidden(readModel({ runs: RUNS }))), false, "a commandless read");
+    assert.equal(workflowTestRunsShown(hidden({ ...readModel({ runs: RUNS }), personCommands: subtreeCommands() })), false, "a restricted read");
+    assert.equal(workflowTestRunsShown({ ...readModel({ runs: RUNS }), personCommands: subtreeCommands() }), true);
+    for (const value of [null, undefined, 5, "x", [], { testMode: "true" }, { testMode: 1 }]) assert.equal(workflowTestRunsShown(value), false, JSON.stringify(value));
 });
 
 test("the run picker leaves test runs out with tests: false, and lists them by default", () => {
-    const off = workflowV2RunPickerModel({ workflowModel: readModel({ runs: RUNS }), tests: false, ownModelLoaded: true });
+    const off = workflowRunPickerModel({ workflowModel: readModel({ runs: RUNS }), tests: false, ownModelLoaded: true });
     assert.deepEqual(off.options.map(option => option.value), [""]);
     assert.equal(off.runCount, 1);
-    const on = workflowV2RunPickerModel({ workflowModel: readModel({ runs: RUNS }), ownModelLoaded: true });
+    const on = workflowRunPickerModel({ workflowModel: readModel({ runs: RUNS }), ownModelLoaded: true });
     assert.deepEqual(on.options.map(option => option.value), ["", "run-t1", "run-t2"]);
     assert.equal(on.runCount, 3);
     // Only test runs: "Not started yet." while they are hidden.
-    const only = workflowV2RunPickerModel({ workflowModel: readModel({ runs: RUNS.slice(1) }), tests: false, ownModelLoaded: true });
+    const only = workflowRunPickerModel({ workflowModel: readModel({ runs: RUNS.slice(1) }), tests: false, ownModelLoaded: true });
     assert.equal(only.runCount, 0);
     assert.ok(only.notes.some(note => note.text === "Not started yet."));
 });
@@ -64,12 +64,12 @@ test("the terminal UI's projection lists test runs only while the server's test 
 test("without a test operation listed, no test control and no test answers are offered", () => {
     const draft = { ...readModel({ runs: RUNS, definition: { state: "draft", publishedRevision: null } }),
         personCommands: { operations: [...EVERY, "stop"], restriction: null, run: null } };
-    assert.equal(workflowV2TestControls(draft), null);
+    assert.equal(workflowTestControls(draft), null);
     const testRun = { ...readModel({ runs: RUNS, run: { runId: "run-t2", mode: "test", status: "running", test: { interceptions: [] } } }),
         personCommands: { operations: [...EVERY, "stop"], restriction: null, run: null } };
-    assert.equal(workflowV2TestResponder(testRun), null);
+    assert.equal(workflowTestResponder(testRun), null);
     const on = { ...draft, personCommands: { ...draft.personCommands, operations: [...EVERY, "stop", "test", "test_respond", "test_advance"] } };
-    assert.notEqual(workflowV2TestControls(on), null);
+    assert.notEqual(workflowTestControls(on), null);
 });
 
 // Review SF-D5: the Workflow Log's runs are the server's word (its read model's runs and their mode), not inferred from a

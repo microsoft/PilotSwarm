@@ -1,6 +1,6 @@
 // Workflow Simplified: an agent node that continues its chat (owner decision agent-node-continue-20261106). The Node
 // details say the mode in words in the portal and the TUI ("New each visit" / "Same each visit"), from the
-// graph's `chat` (describeWorkflowV2State shows it only for `continue`); the Workflow log says a later visit reuses the
+// graph's `chat` (describeWorkflowState shows it only for `continue`); the Workflow log says a later visit reuses the
 // chat, that a visit ended while its chat stays open, that the chat ended with the Workflow, and that a chat which had
 // ended on its own was replaced.
 //
@@ -12,9 +12,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
     PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowViewModal,
 } from "../src/index.js";
-import { projectWorkflowV2, workflowEventText, workflowV2AgentChatMode } from "../src/workflow-v2-view.js";
-import { WorkflowV2NodeContent } from "../../react/src/workflow-v2-panels.js";
-import { readModel } from "./workflow-v2-fixtures.mjs";
+import { projectWorkflow, workflowEventText, workflowAgentChatMode } from "../src/workflow-view.js";
+import { WorkflowNodeContent } from "../../react/src/workflow-panels.js";
+import { readModel } from "./workflow-fixtures.mjs";
 
 process.env.TZ = "UTC";
 
@@ -25,15 +25,15 @@ const states = [
     { id: "done", type: "terminal", outcome: "succeeded" },
 ];
 const model = readModel({ graph: { revision: 1, initial: "talk", states } });
-const nodeOf = id => projectWorkflowV2({ readModel: model }).nodes.find(node => node.id === id);
+const nodeOf = id => projectWorkflow({ readModel: model }).nodes.find(node => node.id === id);
 
 test("the chat mode in words, from the graph", () => {
-    assert.equal(workflowV2AgentChatMode(nodeOf("talk")), "Same each visit");
-    assert.equal(workflowV2AgentChatMode(nodeOf("fresh")), "New each visit");
-    assert.equal(workflowV2AgentChatMode(null), "New each visit");
-    const projection = projectWorkflowV2({ readModel: model });
+    assert.equal(workflowAgentChatMode(nodeOf("talk")), "Same each visit");
+    assert.equal(workflowAgentChatMode(nodeOf("fresh")), "New each visit");
+    assert.equal(workflowAgentChatMode(null), "New each visit");
+    const projection = projectWorkflow({ readModel: model });
     for (const [id, words] of [["talk", "Same each visit"], ["fresh", "New each visit"]]) {
-        const html = renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, {
+        const html = renderToStaticMarkup(React.createElement(WorkflowNodeContent, {
             tab: "details", selected: projection.nodes.find(node => node.id === id), nodes: projection.nodes, select: () => {},
         }));
         assert.ok(html.includes(words), `${id}: ${words}`);

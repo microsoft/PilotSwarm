@@ -17,19 +17,19 @@ import assert from "node:assert/strict";
 import {
     resolveWorkflowTestMode, WORKFLOW_TEST_MODE_ENABLED, WORKFLOW_TEST_MODE_OFF_TEXT, WORKFLOW_TEST_MODE_OPERATIONS, WORKFLOW_TEST_MODE_VARIABLE,
     workflowTestModeFromEnv, workflowTestModeNotice,
-} from "../../dist/workflow/v2/test-mode-switch.js";
-import { workflowReadCursor } from "../../dist/workflow/v2/read-pages.js";
+} from "../../dist/workflow/test-mode-switch.js";
+import { workflowReadCursor } from "../../dist/workflow/read-pages.js";
 import {
-    READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC, READ_WORKFLOW_MILESTONE_TOOL_SPEC, READ_WORKFLOW_TOOL_SPEC, readWorkflowToolSpec, readWorkflowV2,
+    READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC, READ_WORKFLOW_MILESTONE_TOOL_SPEC, READ_WORKFLOW_TOOL_SPEC, readWorkflowToolSpec, readWorkflowModel,
     UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC, UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC, UPDATE_WORKFLOW_TOOL_SPEC, updateWorkflowFromTool, updateWorkflowToolSpec,
-} from "../../dist/workflow/v2/tools.js";
+} from "../../dist/workflow/tools.js";
 import {
     updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowHumanMilestoneOperations, WORKFLOW_HUMAN_OPERATIONS,
-} from "../../dist/workflow/v2/human-commands.js";
+} from "../../dist/workflow/human-commands.js";
 import { WORKFLOW_SESSION_GUIDANCE, workflowSessionGuidance } from "../../dist/workflow/guidance.js";
 import { ManagedSession } from "../../dist/managed-session.js";
 import { SessionManager } from "../../dist/session-manager.js";
-import { RESPOND_SESSION_REQUEST_TOOL } from "../../dist/workflow/v2/request-service.js";
+import { RESPOND_SESSION_REQUEST_TOOL } from "../../dist/workflow/request-service.js";
 import * as sdk from "../../dist/index.js";
 
 // Off by default: this file runs without the flag, whatever the shell exported.
@@ -258,7 +258,7 @@ test("base guidance: with test mode off, the guidance does not mention test runs
 });
 
 // Review SF-5: with test mode off, a test run kept from while it was on is not a run of the workflow to any server read
-// (the SDK, REST and MCP reads all run readWorkflowV2): the view lists none, and its id, as a run, a cursor's run, an
+// (the SDK, REST and MCP reads all run readWorkflowModel): the view lists none, and its id, as a run, a cursor's run, an
 // execution's or a KV revision's, is refused exactly as an unknown run's is. With test mode on, it reads as before.
 test("server reads: with test mode off, test runs are not listed, and a test run's id is refused as an unknown one", async () => {
     const testRun = { runId: "run-t", workflowSessionId: "wf", mode: "test", status: "completed", revision: 1, terminalOutcome: "done", kvRevision: 2 };
@@ -270,7 +270,7 @@ test("server reads: with test mode off, test runs are not listed, and a test run
         readRun: async runId => (runId === "run-t" ? testRun : null),
         readNodeExecution: async () => ({ nodeExecutionId: "nx-1", runId: "run-t" }),
     };
-    const read = (request, testMode) => readWorkflowV2({ store, testMode }, "wf", request, "api");
+    const read = (request, testMode) => readWorkflowModel({ store, testMode }, "wf", request, "api");
     const refusal = async (request, testMode = false) => {
         try {
             await read(request, testMode);

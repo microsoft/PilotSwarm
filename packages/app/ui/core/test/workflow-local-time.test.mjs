@@ -8,8 +8,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { formatLocalTime } from "../src/formatting.js";
 import { appendEventToHistory, buildHistoryModel } from "../src/index.js";
-import { projectWorkflowV2, workflowEventText, workflowV2EventTime, workflowV2JoinLimit } from "../src/workflow-v2-view.js";
-import { readModel, row } from "./workflow-v2-fixtures.mjs";
+import { projectWorkflow, workflowEventText, workflowEventTime, workflowJoinLimit } from "../src/workflow-view.js";
+import { readModel, row } from "./workflow-fixtures.mjs";
 
 process.env.TZ = "America/Los_Angeles";
 
@@ -27,21 +27,21 @@ test("a time in a named zone: its date, its time and the zone's short name; the 
     assert.equal(formatLocalTime("2026-11-05T08:00:00Z", { timeZone: "America/Los_Angeles" }), "2026-11-05 00:00:00 PST");
     assert.equal(formatLocalTime("2026-11-05T07:59:59Z", { timeZone: "America/Los_Angeles" }), "2026-11-04 23:59:59 PST");
     for (const value of [null, undefined, "", "not a time", Number.NaN, {}]) assert.equal(formatLocalTime(value), null);
-    assert.equal(workflowV2EventTime(WINTER, "UTC"), "2026-11-04 20:30:00 UTC");
-    assert.equal(workflowV2EventTime("no time"), null);
+    assert.equal(workflowEventTime(WINTER, "UTC"), "2026-11-04 20:30:00 UTC");
+    assert.equal(workflowEventTime("no time"), null);
 });
 
 test("with no zone named, the reader's own (here America/Los_Angeles): event times, deadlines, the join's time limit and the step log", () => {
-    assert.equal(workflowV2EventTime(WINTER), "2026-11-04 12:30:00 PST");
-    assert.equal(workflowV2EventTime(SUMMER), "2026-07-01 05:00:05 PDT");
+    assert.equal(workflowEventTime(WINTER), "2026-11-04 12:30:00 PST");
+    assert.equal(workflowEventTime(SUMMER), "2026-07-01 05:00:05 PDT");
     assert.equal(formatLocalTime(WINTER, { clock: true }), "12:30:00 PST");
-    assert.deepEqual(workflowV2JoinLimit({ timeoutSeconds: 120 }, { deadline: WINTER }, { running: true }),
+    assert.deepEqual(workflowJoinLimit({ timeoutSeconds: 120 }, { deadline: WINTER }, { running: true }),
         { text: "limit 2026-11-04 12:30:00", title: "Time limit 2 min from the node's start; it passes at 2026-11-04 12:30:00 PST." });
     // A time an event carries as ISO text is shown the same way.
     assert.equal(workflowEventText("workflow.stop_requested", { deadlineAt: WINTER, reason: "release" }).text,
         "Stop asked · started nodes may finish until 2026-11-04 12:30:00: release");
     // A wait's deadline in its step's description.
-    const view = projectWorkflowV2({ readModel: readModel({ nodeExecutions: [row("pause", 1, "pending", { deadline: WINTER })] }) });
+    const view = projectWorkflow({ readModel: readModel({ nodeExecutions: [row("pause", 1, "pending", { deadline: WINTER })] }) });
     assert.deepEqual(view.nodes.find(node => node.id === "pause").description, ["Waiting until 2026-11-04 12:30:00."]);
     // The step log's "last checked" time, on a polling step's row.
     let seq = 0;

@@ -1,6 +1,6 @@
 // A test run of the definition from the TUI's workflow view (design 05 test; mocks M18 to M20; R19, R20, R26, R28;
 // INACTIVE: only where the portal's test review offers a person a test): t opens a review of exactly the current
-// revision and definition hash the view shows (the portal's workflowV2TestControls), with the test notice (scripts run
+// revision and definition hash the view shows (the portal's workflowTestControls), with the test notice (scripts run
 // normally and their direct effects are real; framework tools are mocked; not a sandbox), mocked agents by default and
 // real agents only when chosen (ctrl-a), with the real-agent notice (they spend model tokens). ctrl-t asks first in a
 // confirm dialog that names the revision, hash, agent mode, inputs, variables and scenario, and returns to the review;
@@ -18,8 +18,8 @@ import {
     PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowTestModal,
     selectWorkflowViewModal, workflowTestChange, workflowTestConfirm, workflowTestPin, workflowViewTestRefusal,
 } from "../src/index.js";
-import { WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT } from "../src/workflow-v2-commands.js";
-import { SUBTREE_REASON as SUBTREE, readModel, states } from "./workflow-v2-fixtures.mjs";
+import { WORKFLOW_TEST_NOTICE_TEXT, WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT } from "../src/workflow-commands.js";
+import { SUBTREE_REASON as SUBTREE, readModel, states } from "./workflow-fixtures.mjs";
 
 /** Every command a 1.9.0 host takes from people (human-commands.ts), in its order; a host without 1.9.0 takes the first eight. */
 const ALL = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "stop",
@@ -41,7 +41,7 @@ function workflow({ state = "draft", revision = 2, valid = true, diagnostics = [
         graph: valid ? { revision, initial: "poll", states } : null,
         definition: { state, semver: "1.0.0", currentRevision: revision, publishedRevision: published ? revision : null,
             publishedDefinitionHash: published ? hashOf(revision) : null },
-        revision: { revision, definitionHash: hashOf(revision), valid, diagnostics, name: "watch-v2" },
+        revision: { revision, definitionHash: hashOf(revision), valid, diagnostics, name: "watch-flow" },
     });
     if (!commands) return base;
     return { ...base, personCommands: { operations, restriction, run: null, ...(viewer ? { viewer } : {}) } };
@@ -49,7 +49,7 @@ function workflow({ state = "draft", revision = 2, valid = true, diagnostics = [
 
 /** The server's receipt for a started test; it now serves the workflow with that test run. */
 const started = (command, serve) => {
-    serve(workflow({ revision: command.expected_revision, testRun: { runId: TEST_RUN, test: { notice: WORKFLOW_V2_TEST_NOTICE_TEXT,
+    serve(workflow({ revision: command.expected_revision, testRun: { runId: TEST_RUN, test: { notice: WORKFLOW_TEST_NOTICE_TEXT,
         agentMode: command.agent_mode, testedRevision: command.expected_revision, virtualClock: { elapsedSeconds: 0 }, coverage: { unanswered: [] },
         interceptions: [] } } }));
     return { workflowSessionId: "wf", operation: "test", revision: command.expected_revision, definitionHash: command.definition_hash,
@@ -76,7 +76,7 @@ function harness(initial, answers = []) {
     };
     const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
-    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-v2", status: "running", sessionKind: "workflow" }] });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-flow", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel([]) });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: initial, readModelRunId: null } });
@@ -133,12 +133,12 @@ test("the view says what t reviews; the review is of the exact revision and hash
     assert.equal(statusOf(h.store), "Test review — ctrl-t start the test (asks first) · ctrl-a agents mocked/real · Esc back");
     const shown = review(h.store);
     assert.equal(shown.title, "Test review · draft revision 2");
-    assert.ok(joined(shown.lines).startsWith(WORKFLOW_V2_TEST_NOTICE_TEXT), "the test notice comes first");
-    for (const line of ["Definition: watch-v2 1.0.0", "Draft revision: 2", "Validity: Valid",
+    assert.ok(joined(shown.lines).startsWith(WORKFLOW_TEST_NOTICE_TEXT), "the test notice comes first");
+    for (const line of ["Definition: watch-flow 1.0.0", "Draft revision: 2", "Validity: Valid",
         "Agent nodes: mocked; the parent answers for each · ctrl-a real agents", "ctrl-t Start test"]) {
         assert.ok(texts(shown.lines).includes(line), line);
     }
-    assert.ok(!joined(shown.lines).includes(WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT), "no real-agent notice for mocked agents");
+    assert.ok(!joined(shown.lines).includes(WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT), "no real-agent notice for mocked agents");
     assert.deepEqual([shown.fields, shown.field, shown.inputs, shown.vars, shown.scenario, shown.agentMode, shown.changed],
         [true, "inputs", "{}", "", "", "mocked", false]);
     assert.equal(shown.hint, "ctrl-t start the test (asks first) · ctrl-a agents mocked/real · Tab inputs/variables/scenario · Esc back");
@@ -146,8 +146,8 @@ test("the view says what t reviews; the review is of the exact revision and hash
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_START);
     const confirm = modalOf(h.store);
     assert.deepEqual([confirm.type, confirm.title, confirm.confirmLabel], ["confirm", "Start Test Run", "Start Test"]);
-    assert.equal(confirm.message, `Start a test of draft revision 2 of watch-v2 1.0.0 with mocked agents: `
-        + `the parent answers for each agent node; inputs {}? ${WORKFLOW_V2_TEST_NOTICE_TEXT} The Workflow is not changed.`);
+    assert.equal(confirm.message, `Start a test of draft revision 2 of watch-flow 1.0.0 with mocked agents: `
+        + `the parent answers for each agent node; inputs {}? ${WORKFLOW_TEST_NOTICE_TEXT} The Workflow is not changed.`);
     assert.deepEqual(confirm.workflowRunCommand, { sessionId: "wf", operation: "test", runId: null, expectedRevision: 2, definitionHash: hashOf(2),
         inputs: {}, agentMode: "mocked" });
     await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
@@ -175,11 +175,11 @@ test("ctrl-a chooses real agents, with their notice; the confirm and the test na
     assert.equal(statusOf(h.store), "Agent nodes: real agents. They spend model tokens; their Workflow tool calls are mocked");
     let shown = review(h.store);
     assert.ok(texts(shown.lines).includes("Agent nodes: real agents, which spend model tokens · ctrl-a mocks them"));
-    assert.ok(joined(shown.lines).includes(WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT));
+    assert.ok(joined(shown.lines).includes(WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT));
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_AGENTS);
     assert.equal(modalOf(h.store).agentMode, "mocked");
     assert.equal(statusOf(h.store), "Agent nodes: mocked. The parent answers for each agent node");
-    assert.ok(!joined(review(h.store).lines).includes(WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT));
+    assert.ok(!joined(review(h.store).lines).includes(WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT));
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_AGENTS);
 
     clear(h);
@@ -194,9 +194,9 @@ test("ctrl-a chooses real agents, with their notice; the confirm and the test na
     assert.equal(modalOf(h.store).field, "inputs", "Tab goes round the three fields");
 
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_START);
-    assert.equal(modalOf(h.store).message, `Start a test of draft revision 2 of watch-v2 1.0.0 with real `
-        + `agents, which spend model tokens; inputs {"repo":"x"}, initial variables {"n":1}, scenario 'happy path'? ${WORKFLOW_V2_TEST_NOTICE_TEXT} `
-        + `${WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT} The Workflow is not changed.`);
+    assert.equal(modalOf(h.store).message, `Start a test of draft revision 2 of watch-flow 1.0.0 with real `
+        + `agents, which spend model tokens; inputs {"repo":"x"}, initial variables {"n":1}, scenario 'happy path'? ${WORKFLOW_TEST_NOTICE_TEXT} `
+        + `${WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT} The Workflow is not changed.`);
     await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
     const [first] = h.sent();
     assert.deepEqual(without(first, "operation_id"), { operation: "test", expected_revision: 2, definition_hash: hashOf(2), inputs: { repo: "x" },
@@ -387,7 +387,7 @@ test("Esc closes the review back to the view; nothing is sent", async () => {
 });
 
 test("the test review's pin, its change and its confirm text", () => {
-    const tests = { state: "draft", name: "watch-v2", semver: "1.0.0", revision: 4, definitionHash: hashOf(4) };
+    const tests = { state: "draft", name: "watch-flow", semver: "1.0.0", revision: 4, definitionHash: hashOf(4) };
     assert.equal(workflowTestPin(null), null);
     const pin = workflowTestPin(tests);
     assert.deepEqual(pin, { state: "draft", revision: 4, definitionHash: hashOf(4) });
@@ -397,6 +397,6 @@ test("the test review's pin, its change and its confirm text", () => {
     assert.match(workflowTestChange(pin, { ...tests, revision: 5, definitionHash: hashOf(5) }), /^The Workflow now shows revision 5; /);
     const confirm = workflowTestConfirm(pin, tests, { inputs: {}, agentMode: "real", scenario: "s".repeat(100) });
     assert.ok(confirm.message.includes(`, scenario '${"s".repeat(59)}…'?`));
-    assert.ok(confirm.message.includes(WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT));
+    assert.ok(confirm.message.includes(WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT));
     assert.ok(confirm.message.endsWith(" The Workflow is not changed."));
 });

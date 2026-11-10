@@ -2,7 +2,7 @@
 // (release 1.0.83: the chat moves to the new version after its next turn).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { unsupportedResponderMessage, WORKFLOW_PREVIOUS_VERSION_RESPONDER_WORDS } from "../../dist/workflow/v2/runtime.js";
+import { unsupportedResponderMessage, WORKFLOW_PREVIOUS_VERSION_RESPONDER_WORDS } from "../../dist/workflow/runtime.js";
 
 const WORDS = "This chat still runs the previous version and moves to the new one after its next turn: "
     + "send it a message, then start the Workflow again.";

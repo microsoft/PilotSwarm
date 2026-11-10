@@ -15,15 +15,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { loadSkillsSync } from "../../dist/skills.js";
-import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
-import { evaluateBindingTemplate } from "../../dist/workflow/v2/bindings.js";
-import { WorkflowSchemaSet } from "../../dist/workflow/v2/schema.js";
-import { WORKFLOW_V2_SKILLS_DIR } from "../../dist/workflow/guidance.js";
+import { compileWorkflow } from "../../dist/workflow/compiler.js";
+import { evaluateBindingTemplate } from "../../dist/workflow/bindings.js";
+import { WorkflowSchemaSet } from "../../dist/workflow/schema.js";
+import { WORKFLOW_SKILLS_DIR } from "../../dist/workflow/guidance.js";
 
 const ALL = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true };
 const flat = text => text.replace(/\s+/g, " ");
 const skill = name => {
-    const found = loadSkillsSync(WORKFLOW_V2_SKILLS_DIR).find(item => item.name === name);
+    const found = loadSkillsSync(WORKFLOW_SKILLS_DIR).find(item => item.name === name);
     assert.ok(found, name);
     return found;
 };
@@ -78,7 +78,7 @@ test("the patterns skill has the polling loop and its index card says so", () =>
 
 test("the polling-loop example compiles with no diagnostics and runs its loop: the wait's input mapping passes check_ci's schema", async () => {
     const yaml = example(skill("workflow-patterns").prompt, "ci-poll");
-    const compiled = compileWorkflowV2(yaml, ALL);
+    const compiled = compileWorkflow(yaml, ALL);
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     assert.deepEqual(compiled.diagnostics, []);
     const { ir } = compiled;

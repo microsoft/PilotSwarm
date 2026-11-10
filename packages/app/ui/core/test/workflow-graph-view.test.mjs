@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { workflowV2Definition as checkedDefinition, layoutWorkflowGraph } from "../src/workflow-v2-view.js";
+import { workflowDefinition as checkedDefinition, layoutWorkflowGraph } from "../src/workflow-view.js";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 
 /** A graph's states as the runtime describes them: a script state lists its outcomes (the keys of its next). */

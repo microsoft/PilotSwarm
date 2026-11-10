@@ -7,16 +7,16 @@
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
-import { spawnWorkflowCompatFromTool } from "../../src/workflow/v2/definition-tool.ts";
-import { sha256Hex } from "../../src/workflow/v2/json.ts";
-import { openWorkflowStore } from "../helpers/workflow-v2-request-fixture.js";
+import { spawnWorkflowCompatFromTool } from "../../src/workflow/definition-tool.ts";
+import { sha256Hex } from "../../src/workflow/json.ts";
+import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
 const OWNER = { provider: "test", subject: "chat-pinned" };
 
 const YAML = (name, seconds) => `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: ${name}, version: "1.0.0" }
 initial: hold
@@ -72,7 +72,7 @@ describe("G2: an exact spawn_workflow repeat is answered from its save's receipt
 
             // The guard still applies to a first execution: a person's save the chat has not seen refuses a new key.
             await h.store.chat.save({ ownerSessionId: chat, name: "repeat-me", yaml: YAML("repeat-me", 30),
-                compiled: (await import("../../src/workflow/v2/compiler.ts")).compileWorkflowV2(YAML("repeat-me", 30)),
+                compiled: (await import("../../src/workflow/compiler.ts")).compileWorkflow(YAML("repeat-me", 30)),
                 expected: { definitionId: definition.definitionId, revision: 2 }, actor: { kind: "user", provider: "test", subject: "ada" },
                 operationId: "person-save", requestSha256: "person-save", seenByChat: false, noteBy: "Ada Lovelace" });
             expect(await spawn(YAML("repeat-me", 40), "k3")).toMatchObject({ ok: false, error: { code: "REVISION_STALE" } });

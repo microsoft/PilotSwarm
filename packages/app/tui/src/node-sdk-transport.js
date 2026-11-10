@@ -554,7 +554,7 @@ export class NodeSdkTransport {
             workspaceFiles: workspaceFilesConfigFromEnv(),
             // canvas-ws commands: off unless PORTAL_CANVAS_COMMANDS_RUNNER is set.
             canvasCommands: canvasCommandsConfigFromEnv(),
-            // Workflow v2: a person's workflow commands; unset, the management client's default (taken, on the full engine).
+            // Workflow: a person's workflow commands; unset, the management client's default (taken, on the full engine).
             ...(workflowCommands !== undefined ? { workflowCommands } : {}),
             // Stage 2.0: whether the workers run script nodes, when this process says (PILOTSWARM_WORKFLOW_SCRIPTS).
             ...workflowScriptsOptionFromEnv(),
@@ -1126,7 +1126,7 @@ export class NodeSdkTransport {
         return this.mgmt.getSessionWorkspace(sessionId);
     }
 
-    /** Workflow v2: the read-only view of a workflow session (readWorkflow). Authorization is the caller's (the portal gates session:read). */
+    /** Workflow: the read-only view of a workflow session (readWorkflow). Authorization is the caller's (the portal gates session:read). */
     async readWorkflow(sessionId, options = {}) {
         return this.mgmt.readWorkflow(sessionId, options);
     }
@@ -1219,7 +1219,7 @@ export class NodeSdkTransport {
     }
 
     /**
-     * Workflow v2: a person's command to a workflow session (updateWorkflow; taken unless this transport was created with
+     * Workflow: a person's command to a workflow session (updateWorkflow; taken unless this transport was created with
      * `workflowCommands: null`).
      * Authorization is the caller's (the portal gates session:manage);
      * `options.principal` is the signed-in caller, recorded as the actor. In

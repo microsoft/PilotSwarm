@@ -38,7 +38,7 @@
  */
 
 import { defineTool } from "@github/copilot-sdk";
-import { isWorkflowTestBench } from "./workflow/v2/test-bench.js";
+import { isWorkflowTestBench } from "./workflow/test-bench.js";
 import type { Tool } from "@github/copilot-sdk";
 import type { SessionCatalog, SessionEvent, SessionRow } from "./cms.js";
 import { computeSessionFootprint, FootprintCache } from "./footprint.js";

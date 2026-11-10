@@ -91,8 +91,8 @@ that mix code, waits, people and agents for hours or days.
 The GitHub facts come from public GitHub documentation, fetched on
 2026-11-08 (see [Sources](#sources)). The PilotSwarm facts come from this
 repository: [Durable workflows](./workflow-sessions.md), the Workflow skills
-in `packages/sdk/plugins/workflow-v2/skills/` and the source in
-`packages/sdk/src/workflow/v2/`. "Not stated" means the documentation read
+in `packages/sdk/plugins/workflow/skills/` and the source in
+`packages/sdk/src/workflow/`. "Not stated" means the documentation read
 does not say. It does not mean the feature is missing.
 
 | | PilotSwarm Workflow | GitHub Actions workflow | GitHub Agentic Workflow | Copilot dynamic workflow |
@@ -111,7 +111,7 @@ does not say. It does not mean the feature is missing.
 | Testing | `workflow_definition test` with fixtures and a virtual clock | Not stated | Not stated | Not stated |
 | Sharing | Agent packages, with interface cards | Repository files [S18] | Repository files [S3] | Copy the extension folder, or publish a plugin [S12, S13] |
 | Permissions | Scripts use the starting chat's permitted tools; agent steps are ordinary agents, optionally limited to listed tools | Environment gates; secrets after approval [S20] | Read-only by default; writes through safe outputs [S1] | Subagents inherit the session's grants; extension code runs outside the prompts [S12] |
-| Status | Available in PilotSwarm, which is itself experimental; `apiVersion: pilotswarm.dev/v2-draft` | Generally available | Generally available since 2026-10-28 [S11] | Public preview; the SDK API is experimental [S12, S15] |
+| Status | Available in PilotSwarm, which is itself experimental; `apiVersion: pilotswarm.dev/v1` | Generally available | Generally available since 2026-10-28 [S11] | Public preview; the SDK API is experimental [S12, S15] |
 
 ## When to use which
 
@@ -183,9 +183,9 @@ GitHub documentation, all fetched on 2026-11-08:
 PilotSwarm, in this repository:
 
 - [Durable workflows](./workflow-sessions.md): the guide.
-- `packages/sdk/plugins/workflow-v2/skills/`: what models read (fields,
+- `packages/sdk/plugins/workflow/skills/`: what models read (fields,
   run semantics, tools, patterns).
-- `packages/sdk/src/workflow/v2/compiler.ts`: state types and limits (100
+- `packages/sdk/src/workflow/compiler.ts`: state types and limits (100
   states, 64 parallel items, 16 at once, a 30-day run deadline).
-- `packages/sdk/src/workflow/v2/runtime.ts` and `store.ts`: the controller,
+- `packages/sdk/src/workflow/runtime.ts` and `store.ts`: the controller,
   durability and delivery.

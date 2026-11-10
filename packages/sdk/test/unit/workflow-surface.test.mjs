@@ -13,24 +13,24 @@ import { parseWorkflowCommand, workflowErrorMessage } from "../../dist/workflow/
 import { createScriptSessionTools } from "../../dist/workflow/session-tools.js";
 import { OPERATIONS } from "../../api/src/protocol.js";
 import {
-    registerWorkflowV2,
-    workflowV2Controller,
-    WORKFLOW_V2_CONTROLLER_NAME,
-    WORKFLOW_V2_CONTROLLER_VERSION,
-    WORKFLOW_V2_EFFECT_NAME,
-    WORKFLOW_V2_EFFECT_VERSION,
-    WORKFLOW_V2_NOTIFY_NAME,
-    WORKFLOW_V2_NOTIFY_VERSION,
-    WORKFLOW_V2_SEND_NAME,
-    WORKFLOW_V2_SEND_VERSION,
-    WORKFLOW_V2_REQUEST_NAME,
-    WORKFLOW_V2_REQUEST_VERSION,
-    WORKFLOW_V2_AGENT_NAME,
-    WORKFLOW_V2_AGENT_VERSION,
-    WORKFLOW_V2_CHAT_END_NAME,
-    WORKFLOW_V2_CHAT_END_VERSION,
-    WORKFLOW_V2_ACTIVITIES,
-} from "../../dist/workflow/v2/runtime.js";
+    registerWorkflow,
+    workflowController,
+    WORKFLOW_CONTROLLER_NAME,
+    WORKFLOW_CONTROLLER_VERSION,
+    WORKFLOW_EFFECT_NAME,
+    WORKFLOW_EFFECT_VERSION,
+    WORKFLOW_NOTIFY_NAME,
+    WORKFLOW_NOTIFY_VERSION,
+    WORKFLOW_SEND_NAME,
+    WORKFLOW_SEND_VERSION,
+    WORKFLOW_REQUEST_NAME,
+    WORKFLOW_REQUEST_VERSION,
+    WORKFLOW_AGENT_NAME,
+    WORKFLOW_AGENT_VERSION,
+    WORKFLOW_CHAT_END_NAME,
+    WORKFLOW_CHAT_END_VERSION,
+    WORKFLOW_ACTIVITIES,
+} from "../../dist/workflow/runtime.js";
 
 // Owner 2026-11-08T16:55Z, ruling 18:12Z: spawn_workflow is no longer declared (workflow_definition replaces it); its spec
 // stays for its turn handler, which still answers a stale call.
@@ -41,7 +41,7 @@ test("spawn_workflow is no longer declared; its handler's spec keeps the YAML co
     const tool = SPAWN_WORKFLOW_TOOL_SPEC;
     assert.deepEqual(tool.parameters.required, ["yaml"]);
     assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["agent_models", "inputs", "key", "notify_on_completion", "start", "state", "vars", "yaml"]);
-    for (const phrase of ["Kept for one release; prefer workflow_definition", "pilotswarm.dev/v2-draft", "state: published", "start: true", "key", "notify_on_completion"]) {
+    for (const phrase of ["Kept for one release; prefer workflow_definition", "pilotswarm.dev/v1", "state: published", "start: true", "key", "notify_on_completion"]) {
         assert.ok(tool.description.includes(phrase), `description should mention ${phrase}`);
     }
 });
@@ -93,27 +93,27 @@ test("send_workflow_input is declared beside the workflow tools, with the sender
     }
 });
 
-test("workflow v2 registers exactly one version of each orchestration, and each activity once under one name", () => {
+test("workflow registers exactly one version of each orchestration, and each activity once under one name", () => {
     const registered = [];
     const activities = [];
     const runtime = {
         registerActivity: (name) => activities.push(name),
         registerOrchestrationVersioned: (name, version, fn) => registered.push({ name, version, fn }),
     };
-    registerWorkflowV2(runtime, { store: {} });
+    registerWorkflow(runtime, { store: {} });
     assert.deepEqual(registered.map((entry) => [entry.name, entry.version]), [
-        [WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION],
-        [WORKFLOW_V2_EFFECT_NAME, WORKFLOW_V2_EFFECT_VERSION],
-        [WORKFLOW_V2_NOTIFY_NAME, WORKFLOW_V2_NOTIFY_VERSION],
-        [WORKFLOW_V2_SEND_NAME, WORKFLOW_V2_SEND_VERSION],
-        [WORKFLOW_V2_REQUEST_NAME, WORKFLOW_V2_REQUEST_VERSION],
-        [WORKFLOW_V2_AGENT_NAME, WORKFLOW_V2_AGENT_VERSION],
-        [WORKFLOW_V2_CHAT_END_NAME, WORKFLOW_V2_CHAT_END_VERSION],
+        [WORKFLOW_CONTROLLER_NAME, WORKFLOW_CONTROLLER_VERSION],
+        [WORKFLOW_EFFECT_NAME, WORKFLOW_EFFECT_VERSION],
+        [WORKFLOW_NOTIFY_NAME, WORKFLOW_NOTIFY_VERSION],
+        [WORKFLOW_SEND_NAME, WORKFLOW_SEND_VERSION],
+        [WORKFLOW_REQUEST_NAME, WORKFLOW_REQUEST_VERSION],
+        [WORKFLOW_AGENT_NAME, WORKFLOW_AGENT_VERSION],
+        [WORKFLOW_CHAT_END_NAME, WORKFLOW_CHAT_END_VERSION],
     ]);
     assert.ok(registered.every((entry) => entry.version === "1.0.0"), "every orchestration is at 1.0.0");
-    assert.equal(registered.find((entry) => entry.name === WORKFLOW_V2_CONTROLLER_NAME).fn, workflowV2Controller);
+    assert.equal(registered.find((entry) => entry.name === WORKFLOW_CONTROLLER_NAME).fn, workflowController);
     // Every activity is registered once, under its one name.
-    assert.deepEqual([...activities].sort(), [...new Set(Object.values(WORKFLOW_V2_ACTIVITIES))].sort());
+    assert.deepEqual([...activities].sort(), [...new Set(Object.values(WORKFLOW_ACTIVITIES))].sort());
     assert.ok(activities.every((name) => /^workflow\.v2\.[A-Za-z]+$/.test(name)), activities.join(", "));
 });
 
@@ -149,7 +149,7 @@ test("activity error wrappers are removed from the reason people read", () => {
 
 // ── spawn_workflow behind the control bridge ─────────────────────────
 
-const WORKFLOW_YAML = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: w, version: \"1.0.0\" }\ninitial: a\n"
+const WORKFLOW_YAML = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: w, version: \"1.0.0\" }\ninitial: a\n"
     + "states:\n  a: { type: wait, seconds: 1, transition: { next: { elapsed: b } } }\n  b: { type: terminal, outcome: succeeded }\n";
 
 function spawnDeps(overrides = {}) {
@@ -166,13 +166,13 @@ function spawnDeps(overrides = {}) {
 // takes, before the host, the owner or the tool binding is read.
 test("spawn_workflow refuses any other apiVersion, naming the one it takes, and touches nothing", async () => {
     const never = (name) => async () => { throw new Error(`${name} must not be called`); };
-    const deps = spawnDeps({ resolveOwner: never("resolveOwner"), captureToolBinding: never("captureToolBinding"), workflowV2Host: never("workflowV2Host") });
+    const deps = spawnDeps({ resolveOwner: never("resolveOwner"), captureToolBinding: never("captureToolBinding"), workflowHost: never("workflowHost") });
     const older = "apiVersion: pilotswarm.dev/v1alpha1\nkind: Workflow\nmetadata: { name: x, version: 1.0.0 }\ninitial: a\nstates: {}\n";
     for (const yaml of [older, "kind: Workflow\n", "not yaml: [", ""]) {
         const answer = JSON.parse(await spawnWorkflowFromTool({ yaml }, { toolCallId: "t" }, deps));
         assert.equal(answer.ok, false);
         assert.equal(answer.error.code, WORKFLOW_API_VERSION_REFUSED);
-        assert.match(answer.error.message, /^A Workflow's YAML must say apiVersion: pilotswarm\.dev\/v2-draft\. .*there is no converter/);
+        assert.match(answer.error.message, /^A Workflow's YAML must say apiVersion: pilotswarm\.dev\/v1\. .*there is no converter/);
     }
 });
 
@@ -181,7 +181,7 @@ test("a chat without a live tool context gets a coded refusal in plain words (of
     // A save and start: the scripts gate needs the host first (d52e5ed2); the binding is captured next, before the store is
     // read, so nothing is saved for a chat whose tools are not ready.
     const store = new Proxy({}, { get: (_target, name) => { throw new Error(`the store must not be read (${String(name)})`); } });
-    const deps = spawnDeps({ captureToolBinding: async () => { throw lost(); }, workflowV2Host: async () => ({ scripts: true, store }) });
+    const deps = spawnDeps({ captureToolBinding: async () => { throw lost(); }, workflowHost: async () => ({ scripts: true, store }) });
     const answer = JSON.parse(await spawnWorkflowFromTool({ yaml: WORKFLOW_YAML, state: "published", start: true }, { toolCallId: "p2" }, deps));
     assert.equal(answer.ok, false);
     assert.equal(answer.error.code, "WORKFLOW_PARENT_CONTEXT_UNAVAILABLE");
@@ -192,7 +192,7 @@ test("a chat without a live tool context gets a coded refusal in plain words (of
 // JSON, its secrets hidden.
 test("R2-SF-4: a spawn_workflow failure hides the error's secrets", async () => {
     const CANARY = "canary-r2sf4-spawn";
-    const deps = spawnDeps({ workflowV2Host: async () => { throw new Error(`pool to postgres://svc:${CANARY}@db.invalid/x failed; token=${CANARY}`); } });
+    const deps = spawnDeps({ workflowHost: async () => { throw new Error(`pool to postgres://svc:${CANARY}@db.invalid/x failed; token=${CANARY}`); } });
     const answer = await spawnWorkflowFromTool({ yaml: WORKFLOW_YAML }, { toolCallId: "s1" }, deps);
     assert.ok(!answer.includes(CANARY), answer);
     const parsed = JSON.parse(answer);

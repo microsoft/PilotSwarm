@@ -79,13 +79,13 @@ export { horizonConfigFromEnv } from "./horizon-env.js";
 // Workflow test mode, hidden unless PILOTSWARM_WORKFLOW_TEST_MODE=on (Workflow Simplified, spec 16).
 export {
     WORKFLOW_TEST_MODE_ENABLED, WORKFLOW_TEST_MODE_OPERATIONS, WORKFLOW_TEST_MODE_VARIABLE, workflowTestModeFromEnv, workflowTestModeNotice,
-} from "./workflow/v2/test-mode-switch.js";
+} from "./workflow/test-mode-switch.js";
 export {
     WORKFLOW_SCRIPTS_DISABLED, WORKFLOW_SCRIPTS_UNKNOWN_VALUE_WARNING, WORKFLOW_SCRIPTS_VARIABLE, resetWorkflowScriptsWarning,
-    workflowScriptsDisabledText, workflowScriptsEnabledFromEnv, workflowScriptsOptionFromEnv, workflowV2ScriptNodes,
-} from "./workflow/v2/scripts-gate.js";
-// Workflow v2: the view of a person who may read a workflow but not change it (adversarial review R2-SF-2).
-export { workflowV2ReaderView } from "./workflow/v2/tools.js";
+    workflowScriptsDisabledText, workflowScriptsEnabledFromEnv, workflowScriptsOptionFromEnv, workflowScriptNodes,
+} from "./workflow/scripts-gate.js";
+// Workflow: the view of a person who may read a workflow but not change it (adversarial review R2-SF-2).
+export { workflowReaderView } from "./workflow/tools.js";
 export type { HorizonEnvConfig } from "./horizon-env.js";
 export { resolveStorageConfig, DEFAULT_DUROXIDE_SCHEMA, DEFAULT_RUNTIME_STORAGE_PROVIDER, DEFAULT_DUROXIDE_STORAGE_PROVIDER } from "./storage-config.js";
 // The pg.Client config for LISTEN connections to the session catalog database.

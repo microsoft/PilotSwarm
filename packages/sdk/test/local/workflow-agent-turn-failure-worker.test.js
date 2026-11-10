@@ -2,7 +2,7 @@
  * PR 270 (owner decision; the TEST run whose two For each items waited 75 minutes): an agent step whose chat's turn fails
  * for good fails execution_failed at once and its failure route runs, instead of waiting for its deadline. A full
  * PilotSwarmWorker (PostgreSQL, Duroxide and the Copilot CLI) with the model scripted (scripted-model.mjs), as
- * workflow-v2-agent-worker.test.js runs one.
+ * workflow-agent-worker.test.js runs one.
  *
  * - The model fails every request of the step's chat (HTTP 400): each turn ends in an error, the session orchestration
  *   retries it (15 s, then 30 s), and when its retries are spent it reports the failed turn
@@ -19,8 +19,8 @@ import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
-import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
+import { createWorkflow } from "../../src/workflow/service.ts";
+import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 
 const TIMEOUT = 480_000;
 /** The step's own deadline: far beyond what the test waits for. */
@@ -33,7 +33,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /** One agent step with an inline prompt, a 30-minute deadline and a failure route. As a document (JSON is YAML). */
 const STEP_YAML = JSON.stringify({
-    apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "failing-step", version: "1.0.0" }, initial: "summarize",
+    apiVersion: "pilotswarm.dev/v1", kind: "Workflow", metadata: { name: "failing-step", version: "1.0.0" }, initial: "summarize",
     states: {
         summarize: {
             type: "agent", invoke: { prompt: "Summarize the change in one line." }, session: "new", outcomes: ["success"],
@@ -48,7 +48,7 @@ async function startStep(catalog, store, duroxide) {
     const parent = randomUUID();
     await catalog.createSession(parent, { owner: OWNER });
     const workflowSessionId = randomUUID();
-    const created = await createWorkflowV2({ catalog, store, duroxideClient: duroxide }, {
+    const created = await createWorkflow({ catalog, store, duroxideClient: duroxide }, {
         workflowSessionId, parentSessionId: parent, yaml: STEP_YAML, actor: ACTOR, operationId: "create", publish: true,
         start: { inputs: {} }, notifyParent: false,
     });

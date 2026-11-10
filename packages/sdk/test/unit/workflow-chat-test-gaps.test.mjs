@@ -1,7 +1,7 @@
 /**
  * An agent's test of a revision (chat-test.ts), its gaps G1-G5, without a database:
  * - G1: a receive fixture (operation receive) is parsed only for an agent's test; the test gives it to its receive state as a
- *   real message comes (sendWorkflowInputV2: the run's contract check and acceptInput), before its clock moves; without one,
+ *   real message comes (sendTypedWorkflowInput: the run's contract check and acceptInput), before its clock moves; without one,
  *   a receive with a deadline still has its clock moved and one without fails TEST_STUCK, naming the fixture to add; a message
  *   the receive refuses fails the test at once (TEST_ANSWER_REFUSED).
  * - G2: a fixture's `visit` answers only that visit (exact arguments and visit, then exact arguments, then visit, then any).
@@ -16,17 +16,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { matchTestFixture, parseTestFixtures, storedTestFixtures } from "../../dist/workflow/v2/test-mode.js";
-import { workflowDefinitionFromTool, workflowDefinitionToolSpec } from "../../dist/workflow/v2/definition-tool.js";
+import { matchTestFixture, parseTestFixtures, storedTestFixtures } from "../../dist/workflow/test-mode.js";
+import { workflowDefinitionFromTool, workflowDefinitionToolSpec } from "../../dist/workflow/definition-tool.js";
 import {
     chatTestBench, chatTestFixtureSkeleton, chatTestReport, parseChatTestExpect, waitChatWorkflowTest,
-} from "../../dist/workflow/v2/chat-test.js";
-import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
-import { canonicalJson } from "../../dist/workflow/v2/json.js";
-import { WORKFLOW_V2_TEST_EPOCH } from "../../dist/workflow/v2/store.js";
-import { WORKFLOW_TEST_BENCH_KIND } from "../../dist/workflow/v2/test-bench.js";
+} from "../../dist/workflow/chat-test.js";
+import { compileWorkflow } from "../../dist/workflow/compiler.js";
+import { canonicalJson } from "../../dist/workflow/json.js";
+import { WORKFLOW_TEST_EPOCH } from "../../dist/workflow/store.js";
+import { WORKFLOW_TEST_BENCH_KIND } from "../../dist/workflow/test-bench.js";
 import { WORKFLOW_TOOL_POLICY } from "../../dist/workflow/tool-policy.js";
-import { createWorkflowV2, previewWorkflowV2AgentVersions, sendWorkflowInputV2 } from "../../dist/workflow/v2/service.js";
+import { createWorkflow, previewWorkflowAgentVersions, sendTypedWorkflowInput } from "../../dist/workflow/service.js";
 import { workflowSessionGuidance, WORKFLOW_SESSION_GUIDANCE } from "../../dist/workflow/guidance.js";
 import fs from "node:fs";
 
@@ -103,7 +103,7 @@ test("G1: workflow_definition test parses receive fixtures (the start reads on);
 // ─── G1: the test gives a receive its message ───
 
 const RECEIVER = ({ wait = false, from = "{ parent: true }" } = {}) => `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: watch, version: "1.0.0" }
 initial: await_event
@@ -124,16 +124,16 @@ ${wait ? "    wait: { seconds: 300 }\n" : ""}    transition: { next: { received:
 
 /** One wait of a test whose run waits at receive await_event (visit `ordinal`), with these fixtures: what it did, and its report. */
 async function receiveTest(fixtures, { wait = false, ordinal = 1, from = null, lag = 0, graceMs = 600_000 } = {}) {
-    const compiled = compileWorkflowV2(RECEIVER({ wait }), ALL);
+    const compiled = compileWorkflow(RECEIVER({ wait }), ALL);
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     const runRow = (extra = {}) => ({ runId: "run-1", workflowSessionId: "bench-1", mode: "test", status: "running", revision: 1, irSha256: compiled.irSha256,
         controllerInstanceId: "ctl-1", terminalOutcome: null, terminalNodeId: null, terminalError: null, stop: null, finishedAt: null,
-        virtualNow: new Date(Date.parse(WORKFLOW_V2_TEST_EPOCH)), createdAt: new Date(), ...extra });
+        virtualNow: new Date(Date.parse(WORKFLOW_TEST_EPOCH)), createdAt: new Date(), ...extra });
     let current = runRow();
     const node = { nodeExecutionId: "nx-await", runId: "run-1", scopeId: "root", nodeId: "await_event", ordinal, nodeType: "messaging", state: "pending",
         predecessorId: null, arrivalRoute: null, input: null, inputSha256: sha("null"), outcome: null, resultKind: null, output: null, error: null, winner: null,
         receive: { contract: "BuildEvent@1", from: from ?? "chat", correlation: { buildId: 7 } },
-        deadlineAt: wait ? new Date(Date.parse(WORKFLOW_V2_TEST_EPOCH) + 300_000) : null };
+        deadlineAt: wait ? new Date(Date.parse(WORKFLOW_TEST_EPOCH) + 300_000) : null };
     const did = { accepted: [], advanced: [], cancelled: [], woken: [] };
     // `lag`: the reads of the open steps after the message is accepted before the run takes it (its receive stays open).
     let taking = null;
@@ -258,7 +258,7 @@ const visitRow = (nodeId, ordinal, extra = {}) => ({ nodeExecutionId: `nx-${node
     state: "completed", winner: "effect", output: null, error: null, outcome: null, resultKind: null, predecessorId: null, arrivalRoute: null,
     input: null, inputSha256: sha("null"), ...extra });
 const runOf = extra => ({ runId: "run-1", workflowSessionId: "bench-1", revision: 1, irSha256: "ir", status: "completed", terminalOutcome: "succeeded",
-    terminalNodeId: "done", terminalError: null, stop: null, virtualNow: new Date(Date.parse(WORKFLOW_V2_TEST_EPOCH)), createdAt: new Date(),
+    terminalNodeId: "done", terminalError: null, stop: null, virtualNow: new Date(Date.parse(WORKFLOW_TEST_EPOCH)), createdAt: new Date(),
     finishedAt: new Date(), ...extra });
 const BENCH = { testId: "bench-1", definitionId: "def-1", name: "watch", revision: 1 };
 const reportHost = (nodes, interceptions, extra = {}) => ({ store: { listNodeExecutions: async () => nodes, listInterceptions: async () => interceptions,
@@ -319,7 +319,7 @@ test("RLR-F5: a grant the report cannot read or check is said so (needsToolAtRun
 });
 
 const ENDS_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: ends, version: "1.0.0" }
 initial: check
@@ -336,7 +336,7 @@ states:
 `;
 
 test("G4: expect names a terminal state of the revision or an outcome; anything else is refused with what it may name", () => {
-    const { ir } = compileWorkflowV2(ENDS_YAML, ALL);
+    const { ir } = compileWorkflow(ENDS_YAML, ALL);
     assert.deepEqual(parseChatTestExpect("rejected", ir), { state: "rejected" });
     assert.deepEqual(parseChatTestExpect("failed", ir), { state: "failed" }, "a terminal state's id wins over the outcome of that name");
     assert.deepEqual(parseChatTestExpect("blocked", ir), { outcome: "blocked" });
@@ -397,7 +397,7 @@ test("RLR-F6: a test bench's expect (and revision) is part of its creation: a re
     const reached = [];
     const host = { requests: true, scripts: true,
         catalog: {
-            createWorkflowSessionV2: async (_id, options) => {
+            createWorkflowSession: async (_id, options) => {
                 if (claimed) return { created: false };
                 claimed = JSON.parse(JSON.stringify(options.creationConfig));
                 return { created: true };
@@ -408,7 +408,7 @@ test("RLR-F6: a test bench's expect (and revision) is part of its creation: a re
         store: { readDefinition: async () => null,
             createDefinition: async input => { reached.push(input.operationId); return { receipt: { run: null }, replayed: reached.length > 1 }; } },
     };
-    const create = (expect, revision = 1) => createWorkflowV2(host, { workflowSessionId: "bench-1", parentSessionId: "chat", yaml: ENDS_YAML,
+    const create = (expect, revision = 1) => createWorkflow(host, { workflowSessionId: "bench-1", parentSessionId: "chat", yaml: ENDS_YAML,
         actor: { kind: "agent", sessionId: "chat" }, operationId: "test-bench:op-1", publish: false, notifyParent: false,
         testBench: { definitionId: "def-1", revision, ...(expect ? { expect } : {}) } });
     await create({ state: "rejected" });
@@ -436,7 +436,7 @@ test("RLR-F6: a test bench's expect (and revision) is part of its creation: a re
 });
 
 const BRANCHES_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: views, version: "1.0.0" }
 initial: views
@@ -462,7 +462,7 @@ states:
 `;
 
 test("G5: each step says the step and route it came by, its branch (a named branch, or item N of a For each) and its input", async () => {
-    const compiled = compileWorkflowV2(BRANCHES_YAML, ALL);
+    const compiled = compileWorkflow(BRANCHES_YAML, ALL);
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     const fork = "nx-aa11", items = "nx-bb22";
     const nodes = [
@@ -491,7 +491,7 @@ test("G5: each step says the step and route it came by, its branch (a named bran
 });
 
 test("G5: an unanswered call's fixture skeleton is exact: parsed and matched, it answers that call (and that visit only)", async () => {
-    const compiled = compileWorkflowV2(BRANCHES_YAML, ALL);
+    const compiled = compileWorkflow(BRANCHES_YAML, ALL);
     const input = { round: 2, notes: ["x"] };
     const judge = visitRow("judge", 2, { nodeType: "agent", state: "pending", input, inputSha256: sha(canonicalJson(input)) });
     const waiting = [{ interceptionId: "i-1", nodeExecutionId: judge.nodeExecutionId, operation: "agent", tool: null, arguments: null, state: "awaiting_parent", response: null }];
@@ -515,7 +515,7 @@ test("G5: an unanswered call's fixture skeleton is exact: parsed and matched, it
 
 // ─── What the chat reads: the tool, the guidance, the skills, the service's words ───
 
-const skillText = name => fs.readFileSync(new URL(`../../plugins/workflow-v2/skills/${name}/SKILL.md`, import.meta.url), "utf8");
+const skillText = name => fs.readFileSync(new URL(`../../plugins/workflow/skills/${name}/SKILL.md`, import.meta.url), "utf8");
 const flat = text => text.replace(/\s+/g, " ");
 
 test("the test's fixtures declaration names the load_skill call; the guidance says expect and receive fixtures, within its budget", () => {
@@ -562,13 +562,13 @@ test("the skills teach receive and visit fixtures, expect, the report's fields a
 
 test("the service's refusals say Workflow, never v2", async () => {
     const none = { store: { readDefinition: async () => null }, catalog: untouchable("catalog"), duroxideClient: untouchable("duroxide") };
-    await assert.rejects(previewWorkflowV2AgentVersions(none, "wf-1"), error => error.code === "WORKFLOW_NOT_FOUND" && error.message === "No Workflow wf-1.");
-    await assert.rejects(sendWorkflowInputV2(none, { workflowSessionId: "wf-1", senderSessionId: "chat", contract: "X@1", payload: {}, operationId: "op-1" }),
+    await assert.rejects(previewWorkflowAgentVersions(none, "wf-1"), error => error.code === "WORKFLOW_NOT_FOUND" && error.message === "No Workflow wf-1.");
+    await assert.rejects(sendTypedWorkflowInput(none, { workflowSessionId: "wf-1", senderSessionId: "chat", contract: "X@1", payload: {}, operationId: "op-1" }),
         error => error.code === "WORKFLOW_NOT_FOUND" && error.message === "Session wf-1 is not a durable Workflow.");
-    const built = fs.readFileSync(new URL("../../dist/workflow/v2/service.js", import.meta.url), "utf8");
+    const built = fs.readFileSync(new URL("../../dist/workflow/service.js", import.meta.url), "utf8");
     assert.ok(built.includes("already exists and is not this parent's Workflow; nothing was changed."));
     assert.ok(built.includes('"This session catalog cannot create Workflows."'));
-    for (const old of ["parent's v2 workflow", "No v2 workflow", "is not a version 2 workflow", "cannot create v2 workflows"]) {
+    for (const old of ["parent's workflow", "No workflow", "is not a version 2 workflow", "cannot create workflows"]) {
         assert.ok(!built.includes(old), old);
     }
 });

@@ -5,14 +5,14 @@
  * Local target only: a worker in this process on its own test
  * schemas and the model catalog of PS_MODEL_PROVIDERS_PATH.
  *
- * It spends model tokens, so it runs only when asked: PS_WORKFLOW_V2_REAL_MODEL=run with PS_WORKFLOW_V2_REAL_MODEL_REF
+ * It spends model tokens, so it runs only when asked: PS_WORKFLOW_REAL_MODEL=run with PS_WORKFLOW_REAL_MODEL_REF
  * (the chat's provider:model). The branches' choices: PS_WORKFLOW_AGENT_MODEL_REF (quick) and PS_WORKFLOW_AGENT_MODEL_REF_2
  * (careful), two provider:model refs of the same catalog (default: the chat's model); PS_WORKFLOW_AGENT_MODEL_EFFORT (quick,
  * default low) and PS_WORKFLOW_AGENT_MODEL_EFFORT_2 (careful, default medium), so two choices of one model still differ.
- * Asked but unable to run, it fails as BLOCKED. One start, no retry. The receipt goes to PS_WORKFLOW_V2_REAL_MODEL_RECEIPT
+ * Asked but unable to run, it fails as BLOCKED. One start, no retry. The receipt goes to PS_WORKFLOW_REAL_MODEL_RECEIPT
  * when set; a bounded summary is printed.
  *
- *   PS_WORKFLOW_V2_REAL_MODEL=run PS_WORKFLOW_V2_REAL_MODEL_REF=<provider:model> PS_WORKFLOW_AGENT_MODEL_REF=<provider:model> \
+ *   PS_WORKFLOW_REAL_MODEL=run PS_WORKFLOW_REAL_MODEL_REF=<provider:model> PS_WORKFLOW_AGENT_MODEL_REF=<provider:model> \
  *     PS_WORKFLOW_AGENT_MODEL_REF_2=<provider:model> npx vitest run test/local/workflow-named-branches-real-model.test.js
  */
 import { describe, it, expect } from "vitest";
@@ -22,12 +22,12 @@ import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import { createTestEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
-import { childRecord, realModelPlan, servesModel } from "../helpers/workflow-v2-real-model.mjs";
+import { childRecord, realModelPlan, servesModel } from "../helpers/workflow-real-model.mjs";
 import { loadModelProviders } from "../../src/index.ts";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
-import { branchScopeId } from "../../src/workflow/v2/runtime.ts";
-import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
+import { createWorkflow } from "../../src/workflow/service.ts";
+import { branchScopeId } from "../../src/workflow/runtime.ts";
+import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 
 const OWNER = { provider: "test", subject: "workflow-named-branches-real-model", email: null, displayName: null };
 const ACTOR = { kind: "system", name: "workflow-named-branches-real-model-test" };
@@ -52,7 +52,7 @@ const lane = (name, number) => ({
     },
 });
 const YAML = JSON.stringify({
-    apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "named-branches-real", version: "1.0.0" },
+    apiVersion: "pilotswarm.dev/v1", kind: "Workflow", metadata: { name: "named-branches-real", version: "1.0.0" },
     initial: "views",
     states: {
         views: {
@@ -104,7 +104,7 @@ describe("named branches on a real model, two branches on two models (local targ
     }
     it(TITLE, { timeout: RUN_MS + CHILD_END_MS + 300_000 }, async () => {
         if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
-        if (plan.target !== "local") throw new Error("BLOCKED: this test runs on the local target only (PS_WORKFLOW_V2_REAL_MODEL_TARGET=local).");
+        if (plan.target !== "local") throw new Error("BLOCKED: this test runs on the local target only (PS_WORKFLOW_REAL_MODEL_TARGET=local).");
         const branches = {
             quick: choiceOf("PS_WORKFLOW_AGENT_MODEL_REF", "PS_WORKFLOW_AGENT_MODEL_EFFORT", "low"),
             careful: choiceOf("PS_WORKFLOW_AGENT_MODEL_REF_2", "PS_WORKFLOW_AGENT_MODEL_EFFORT_2", "medium"),
@@ -132,7 +132,7 @@ describe("named branches on a real model, two branches on two models (local targ
                     const parent = randomUUID();
                     await catalog.createSession(parent, { owner: OWNER, model: plan.model.ref, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });
                     const workflowSessionId = randomUUID();
-                    const created = await createWorkflowV2(host, {
+                    const created = await createWorkflow(host, {
                         workflowSessionId, parentSessionId: parent, yaml: YAML, actor: ACTOR, operationId: "create", publish: true, notifyParent: false,
                         start: { inputs: {}, agentModels: { quick_classify: branches.quick.choice, careful_classify: branches.careful.choice } },
                     });
@@ -195,7 +195,7 @@ describe("named branches on a real model, two branches on two models (local targ
         } finally {
             await env.cleanup();
             receipt.endedAt = new Date().toISOString();
-            const path = process.env.PS_WORKFLOW_V2_REAL_MODEL_RECEIPT;
+            const path = process.env.PS_WORKFLOW_REAL_MODEL_RECEIPT;
             if (path) {
                 mkdirSync(dirname(path), { recursive: true });
                 writeFileSync(path, `${JSON.stringify(receipt, null, 2)}\n`);

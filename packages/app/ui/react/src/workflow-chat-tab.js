@@ -1,9 +1,9 @@
 import React from "react";
 import { useControllerSelector } from "./use-controller-state.js";
 import {
-    workflowParentWorking, projectWorkflowV2,
-} from "../../core/src/workflow-v2-view.js";
-import { workflowV2DraftMarks, workflowV2RunInputs } from "../../core/src/workflow-v2-commands.js";
+    workflowParentWorking, projectWorkflow,
+} from "../../core/src/workflow-view.js";
+import { workflowDraftMarks, workflowRunInputs } from "../../core/src/workflow-commands.js";
 import {
     workflowChildModel, workflowElapsedText, workflowFailure, workflowRunTimes, workflowStateOf, workflowTabButtonTip,
     WORKFLOW_DEFINITION_PANELS, workflowPanelIsSide,
@@ -13,7 +13,7 @@ import {
     chatCopiedFromWords, chatDefinitionChangeControls, chatDefinitionChoice, chatDeleteWords, chatEditorAfterSave, chatLastTestWords, chatPackageDefinitionWords, chatRevisionCompare, chatRevisionOptionLabel, chatRevisionReadModel, chatShownRevision, chatStartControl,
     chatRevisionFace, chatRevisionInfoWords,
 } from "../../core/src/workflow-chat-definitions.js";
-import { CompareView, WorkflowV2Diagnostics, WorkflowV2NoGraph, WorkflowV2YamlBox } from "./workflow-v2-panels.js";
+import { CompareView, WorkflowDiagnostics, WorkflowNoGraph, WorkflowYamlBox } from "./workflow-panels.js";
 import { WorkflowGraph } from "./workflow-graph.js";
 import { workflowLifecycleAtOf } from "../../core/src/workflow-lifecycle.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
@@ -211,7 +211,7 @@ function ChatDefinitionView({ controller, ownerId, definition, revision, tab, se
     const value = read?.value ?? null;
     const model = React.useMemo(() => chatRevisionReadModel(definition, value), [definition.definitionId, definition.name, value]);
     const projection = React.useMemo(() => (model
-        ? projectWorkflowV2({ definition: null, readModel: null, workflowModel: model, selectedRunId: null, events: EMPTY_EVENTS }) : null), [model]);
+        ? projectWorkflow({ definition: null, readModel: null, workflowModel: model, selectedRunId: null, events: EMPTY_EVENTS }) : null), [model]);
     const graph = projection?.definition ?? null;
     const nodes = projection?.nodes ?? [];
     const [selectedId, setSelectedId] = React.useState(null);
@@ -302,8 +302,8 @@ function ChatDefinitionView({ controller, ownerId, definition, revision, tab, se
         h("div", { className: "ps-wf-main", hidden: mode !== "graph" || undefined },
             graph ? h(WorkflowGraph, { definition: graph, nodes, selected, select, scope: placesKey, viewport: graphView, onViewport: setGraphView,
                 places, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)) })
-                : projection && line ? h("div", { className: "ps-wf-errors" }, h(WorkflowV2Diagnostics, { diagnostics: projection.diagnostics }))
-                : projection ? h(WorkflowV2NoGraph, { projection })
+                : projection && line ? h("div", { className: "ps-wf-errors" }, h(WorkflowDiagnostics, { diagnostics: projection.diagnostics }))
+                : projection ? h(WorkflowNoGraph, { projection })
                 : h("p", { className: "ps-wf-muted" }, Number.isSafeInteger(revision) ? `Reading revision ${revision}…` : "No revisions yet.")),
         mode === "yaml" ? h("div", { className: "ps-wf-main ps-wf-yaml" },
             h(ChatYamlPanel, { controller, ownerId, definition, revision, read, access, changeAccess, tab, setTab, retry })) : null),
@@ -418,7 +418,7 @@ function ChatYamlPanel({ controller, ownerId, definition, revision, read, access
         h("p", { className: "ps-wf-muted", "data-field": "yaml-read-only" }, why, " ",
             editable ? h("button", { type: "button", className: "ps-link-button", "data-action": "edit-newest", onClick: () => setTab({ chatRevision: "newest" }) },
                 "Edit the newest revision") : null),
-        h(WorkflowV2YamlBox, { value: access.yaml, readOnly: true, marks: workflowV2DraftMarks(diagnostics), changed: false }));
+        h(WorkflowYamlBox, { value: access.yaml, readOnly: true, marks: workflowDraftMarks(diagnostics), changed: false }));
 }
 
 /**
@@ -468,7 +468,7 @@ function ChatYamlEditor({ controller, ownerId, definition, newest, newestYaml, d
     };
     if (draft.text === null) return h("p", { className: "ps-wf-muted" }, `Reading revision ${newest}…`);
     const behind = draft.dirty && draft.base !== newest;
-    const marks = draft.base === newest ? workflowV2DraftMarks(diagnostics) : { lines: [], unplaced: 0 };
+    const marks = draft.base === newest ? workflowDraftMarks(diagnostics) : { lines: [], unplaced: 0 };
     return h("div", { className: "ps-wf-chat-editor", "data-base-revision": draft.base },
         h("div", { className: "ps-wf-bar is-yaml" },
             h("span", { className: "ps-wf-bar-text" }, draft.dirty ? `Editing revision ${draft.base} · not saved` : `Revision ${draft.base}`),
@@ -485,7 +485,7 @@ function ChatYamlEditor({ controller, ownerId, definition, newest, newestYaml, d
             notice.stale ? h("button", { type: "button", className: "ps-mini-button", "data-action": "reload", onClick: reload }, "Reload")
                 : notice.unconfirmed ? h("button", { type: "button", className: "ps-mini-button", "data-action": "save-again", onClick: () => { save(); } }, "Try again")
                     : null) : null,
-        h(WorkflowV2YamlBox, { value: draft.text ?? "", marks, changed: draft.dirty,
+        h(WorkflowYamlBox, { value: draft.text ?? "", marks, changed: draft.dirty,
             onChange: text => setDraft(current => ({ ...current, text, dirty: true })) }));
 }
 
@@ -641,7 +641,7 @@ function ChatRunView({ controller, ownerId, definition, workflow, tab, setTab, m
     return h(React.Fragment, null,
         h(WorkflowRunView, { controller, definition, workflow, tab, setTab, mobile, phone, displayMode, onOpen, nodeStateId, chatRevision: revision, extraActions }),
         again ? h(StartDialog, { controller, sessionId: definition.definitionId, name: definition.name, number: nextNumber,
-            source: { number: workflow.number, inputs: workflowV2RunInputs(workflowChildModel(view)) },
+            source: { number: workflow.number, inputs: workflowRunInputs(workflowChildModel(view)) },
             // UX2D-F9: once its revision is read, its schema is the contract (none: it takes no inputs), as Start's is.
             publication: { inputsSchema: read?.value?.graph?.inputsSchema ?? null, inputsSchemaKnown: read?.phase === "ready" && Boolean(read?.value?.graph),
                 revision, publishedRevision: revision, state: "published", valid: true },

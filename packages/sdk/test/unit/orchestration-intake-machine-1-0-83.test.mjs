@@ -44,7 +44,7 @@ import {
 } from "../../dist/orchestration/intake-state.js";
 import {
     INTAKE_MAX_INVOCATION_ITEMS_BYTES, INTAKE_MAX_TEXT_BYTES, intakeBoundItem, intakeEnvelopeClientMessageId, intakeItemBytes, intakeItemsBytes,
-} from "../../dist/workflow/v2/intake.js";
+} from "../../dist/workflow/intake.js";
 
 // ─── Fixtures ────────────────────────────────────────────────
 

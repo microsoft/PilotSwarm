@@ -10,18 +10,18 @@ import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmManagementClient } from "../helpers/local-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
-import { canonicalJson } from "../../src/workflow/v2/json.ts";
-import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
-import { startChatWorkflowTest } from "../../src/workflow/v2/chat-test.ts";
-import { WORKFLOW_V2_CONTROLLER_VERSION, workflowAgentChildSessionId, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { compileWorkflow } from "../../src/workflow/compiler.ts";
+import { canonicalJson } from "../../src/workflow/json.ts";
+import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
+import { startChatWorkflowTest } from "../../src/workflow/chat-test.ts";
+import { WORKFLOW_CONTROLLER_VERSION, workflowAgentChildSessionId, workflowLiveControllerInstanceId } from "../../src/workflow/runtime.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
 const OWNER = { provider: "test", subject: `step-guard-${randomUUID()}` };
 const PERSON = { provider: OWNER.provider, subject: OWNER.subject, displayName: "Ada Lovelace" };
 const STEP_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: stepper, version: "1.0.0" }
 initial: talk
@@ -34,7 +34,7 @@ states:
   done: { type: terminal, outcome: succeeded }
 `;
 const SAVED_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: waiter, version: "1.0.0" }
 initial: hold
@@ -52,15 +52,15 @@ async function stepFixture(env) {
     await catalog.createSession(chat, { owner: OWNER });
     const workflowSessionId = randomUUID();
     const runId = randomUUID();
-    const compiled = compileWorkflowV2(STEP_YAML, { enableRequests: true, enableAgents: true });
+    const compiled = compileWorkflow(STEP_YAML, { enableRequests: true, enableAgents: true });
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
-    expect((await catalog.createWorkflowSessionV2(workflowSessionId, { parentSessionId: chat, owner: OWNER,
-        creationConfig: { workflowV2: { requestSha256: "step-guard" } } })).created).toBe(true);
+    expect((await catalog.createWorkflowSession(workflowSessionId, { parentSessionId: chat, owner: OWNER,
+        creationConfig: { workflow: { requestSha256: "step-guard" } } })).created).toBe(true);
     await store.createDefinition({
         workflowSessionId, parentSessionId: chat, notifyParent: false, yaml: STEP_YAML, compiled, actor: { kind: "system", name: "step-guard-test" },
         operationId: "create", requestSha256: "step-guard", publish: true, title: "Workflow: stepper",
         start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId), inputsText: "{}", kvText: "{}",
-            testAgentMode: null, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION },
+            testAgentMode: null, controllerVersion: WORKFLOW_CONTROLLER_VERSION },
     });
     const nodeExecutionId = nodeExecutionIdFor(runId, "root", "talk", 1);
     const step = workflowAgentChildSessionId(nodeExecutionId);

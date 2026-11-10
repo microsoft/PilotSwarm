@@ -2,10 +2,10 @@
  * The coordinator's read-only check of the wording at aa51346d (2026-11-07T21:15Z): lines broke the rules set at 18:45Z
  * and 19:10Z. Each says it now in the Workflow's words:
  * - the For each node's "Time limit" row reads "Limit" (its tooltip "Time limit"), its deadline "Limit ends" (in
- *   workflow-v2-join-limit.test.mjs);
+ *   workflow-join-limit.test.mjs);
  * - a node canceled when a stop's time to finish ended: the Workflow "was canceled after started nodes finished", never
  *   "was stopped";
- * - the graph checks say "node", never "step" (in workflow-v2-view.test.mjs);
+ * - the graph checks say "node", never "step" (in workflow-view.test.mjs);
  * - a stale save begins "Revision not saved:" (in workflow-chat-definitions.test.mjs), and the refusals of a save, delete,
  *   copy, update and start begin with what was not done ("Delete refused:", "Copy refused:", "Update refused:",
  *   "Start refused:").
@@ -14,11 +14,11 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { workflowV2VisitEnding } from "../src/workflow-v2-view.js";
+import { workflowVisitEnding } from "../src/workflow-view.js";
 import { workflowRefusalText } from "../src/workflow-words.js";
 
 test("a node canceled when a stop's time to finish ended: the Workflow was canceled after started nodes finished", () => {
-    const ending = workflowV2VisitEnding({ status: "completed", resultKind: "runtime_error", outcome: "cancelled", winner: "stop" });
+    const ending = workflowVisitEnding({ status: "completed", resultKind: "runtime_error", outcome: "cancelled", winner: "stop" });
     assert.equal(ending.why, "The Workflow was canceled after started nodes finished; this node had not finished when the time to finish ended");
     assert.doesNotMatch(ending.text, /stopped/i);
 });

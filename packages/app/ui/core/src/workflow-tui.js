@@ -2,20 +2,20 @@ import { workflowFailure, workflowNodeChatTitle } from "./workflow-owner.js";
 import { WORKFLOW_STATE_MARKS, workflowFailureDetail, workflowItemsFraction, workflowOutcomeWord, workflowRunStateWord, workflowRunsText,
     workflowSessionModel } from "./workflow-words.js";
 import {
-    layoutWorkflowGraph, workflowReadModelView, compactWorkflowV2Executions, formatSeconds, projectWorkflowV2, workflowV2AgentBindingRows,
-    workflowV2AgentChatMode, workflowV2AgentTools, workflowV2AgentTask, workflowV2ExecutionResult, workflowV2ExecutionValue,
-    workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2RunRows, workflowV2ShownExecution,
-    workflowV2Activity, workflowV2SessionSubtree, workflowV2VisitEnding, workflowV2WholeValue, workflowV2BranchNumber, workflowV2ItemList,
-    workflowV2JoinWords,
-} from "./workflow-v2-view.js";
-import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
+    layoutWorkflowGraph, workflowReadModelView, compactWorkflowExecutions, formatSeconds, projectWorkflow, workflowAgentBindingRows,
+    workflowAgentChatMode, workflowAgentTools, workflowAgentTask, workflowExecutionResult, workflowExecutionValue,
+    workflowKvApplied, workflowKvCompare, workflowKvSnapshot, workflowRouteKind, workflowRunRows, workflowShownExecution,
+    workflowActivity, workflowSessionSubtree, workflowVisitEnding, workflowWholeValue, workflowBranchNumber, workflowItemList,
+    workflowJoinWords,
+} from "./workflow-view.js";
+import { workflowRunPickerModel } from "./workflow-run-picker.js";
 import { workflowFirstSentence, workflowNodeNext, workflowNodeWhat } from "./workflow-node-summary.js";
 import {
-    WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks,
-    workflowV2PublicationEvidenceRows, workflowV2RestrictionText, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables, workflowV2TestControls,
-    workflowV2TestResponder, workflowV2TestRunsShown, workflowV2VariableBatchDraft, workflowV2VariableDraft, workflowV2VariableEditBehind, workflowV2VariableExactRetry,
-    workflowV2VariableRemoval, workflowV2RevisionCompare, workflowV2AnswerSourceText,
-} from "./workflow-v2-commands.js";
+    WORKFLOW_TEST_NOTICE_TEXT, WORKFLOW_TEST_NEEDS_DRAFT_TEXT, WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_VARIABLES_HELP_TEXT, workflowDefinitionControls, workflowDraftEdit, workflowDraftEditor, workflowDraftMarks,
+    workflowPublicationEvidenceRows, workflowRestrictionText, workflowRunCommandNotice, workflowRunControls, workflowRunVariables, workflowTestControls,
+    workflowTestResponder, workflowTestRunsShown, workflowVariableBatchDraft, workflowVariableDraft, workflowVariableEditBehind, workflowVariableExactRetry,
+    workflowVariableRemoval, workflowRevisionCompare, workflowAnswerSourceText,
+} from "./workflow-commands.js";
 
 /**
  * R2-UI-1: a variables form's edit that started at an older revision than the view shows (null otherwise, and while
@@ -24,7 +24,7 @@ import {
  */
 function variablesBehind(modal, variables, dirty, exactRetry) {
     if (!dirty || exactRetry) return null;
-    const behind = workflowV2VariableEditBehind(modal.baseRevision, variables?.revision);
+    const behind = workflowVariableEditBehind(modal.baseRevision, variables?.revision);
     return behind ? { ...behind, help: `${behind.text} ctrl-l loads the new values; ctrl-k keeps your edit to save it over them.` } : null;
 }
 
@@ -37,7 +37,7 @@ function variablesBehind(modal, variables, dirty, exactRetry) {
 function variableRetryOf(projection, modal, variables, payloads) {
     const revision = Number.isSafeInteger(modal.baseRevision) ? modal.baseRevision : variables?.revision;
     return payloads.find(payload => payload !== null
-        && workflowV2VariableExactRetry(projection.runCommand, modal.runId, { expectedKvRevision: revision, ...payload })) ?? null;
+        && workflowVariableExactRetry(projection.runCommand, modal.runId, { expectedKvRevision: revision, ...payload })) ?? null;
 }
 
 /**
@@ -50,36 +50,36 @@ function variableRetryOf(projection, modal, variables, payloads) {
  *
  * It reads only what the shared controller has loaded for the session
  * (ensureWorkflowDefinition, ensureWorkflowReadModel: the same reads the
- * portal makes), through the same projection (projectWorkflowV2), for the
+ * portal makes), through the same projection (projectWorkflow), for the
  * run the person chose (the portal's run picker
  * model: the live run, or any run in the workflow's run list).
  *
  * The only commands it sends are a person's run controls for the run it
  * shows (design 04, 07, mocks M04, M16; R17, R26; INACTIVE: only a deployment
  * that takes a person's workflow commands offers any): p pause, r resume,
- * s stop, c cancel, the portal's controls (workflowV2RunControls) sent as the
+ * s stop, c cancel, the portal's controls (workflowRunControls) sent as the
  * portal sends them (the controller's sendWorkflowRunCommand: stop and cancel
  * ask first, one command at a time, the same command again after an answer
  * that never came), and its variables (v opens a form: set a name to a JSON
  * value, or remove a name after the confirm dialog, each as one set_vars
  * update at the revision the view shows; V opens a form for several in one
  * set_vars update: a JSON object to set and a JSON list to remove, a
- * removal after the confirm dialog; the portal's workflowV2RunVariables
+ * removal after the confirm dialog; the portal's workflowRunVariables
  * and drafts), and a draft's YAML (e opens an editor: ctrl-o saves it as a
  * new revision after the one the edit started from, replace_definition, the
- * portal's workflowV2DraftEditor and workflowV2DraftEdit; a draft someone
+ * portal's workflowDraftEditor and workflowDraftEdit; a draft someone
  * else saved meanwhile is refused, never overwritten, and the edit is kept),
  * and the definition's publication (P opens a review of the exact revision
  * and definition hash shown: publish only, publish and start its live run,
  * or start a published definition's live run, with the run's inputs and
  * initial variables, each after the confirm dialog; the portal's
- * workflowV2DefinitionControls), and a test run of the exact current
+ * workflowDefinitionControls), and a test run of the exact current
  * revision (t opens its review: the test notice, mocked or real agents with
  * the real-agent notice, the run's inputs, initial variables and scenario
  * name, started after the confirm dialog; the portal's
- * workflowV2TestControls), and the shown test run's answers and clock (a
+ * workflowTestControls), and the shown test run's answers and clock (a
  * opens an answer form bound to the run and one held call that
- * waits; + opens its virtual clock; the portal's workflowV2TestResponder). A
+ * waits; + opens its virtual clock; the portal's workflowTestResponder). A
  * workflow in an agent state's subtree takes only pause, stop and cancel
  * from people. The server decides every command again, and keeps refusing
  * human input to an agent state's subtree.
@@ -138,7 +138,7 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
     if (safeView.definition || readModel || workflowModel) {
         // OF-S2-7: the model of the chat that owns the Workflow, which its agent nodes use unless their start chose one.
         const chatModel = workflowSessionModel(sessionsById?.[session?.parentSessionId] ?? null);
-        flow = projectWorkflowV2({ definition: safeView.definition, readModel, workflowModel, selectedRunId, events: list, readModelAfterSeq,
+        flow = projectWorkflow({ definition: safeView.definition, readModel, workflowModel, selectedRunId, events: list, readModelAfterSeq,
             olderHistory: safeView.olderHistory ?? null, sessionName, chatModel });
     }
     const definition = flow ? flow.definition : null;
@@ -149,37 +149,37 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
         || (["completed", "failed", "cancelled"].includes(session?.status) ? session.status : session?.status || "running"));
     // The runs a person can choose: the portal's run picker model, from the workflow's last read model. Test runs only
     // while the server's test mode is on (Workflow Simplified, spec 16).
-    const runPicker = flow ? workflowV2RunPickerModel({ workflowModel, selectedRunId, ownModelLoaded: readModel != null, error,
-        tests: workflowV2TestRunsShown(readModel ?? workflowModel) }) : null;
+    const runPicker = flow ? workflowRunPickerModel({ workflowModel, selectedRunId, ownModelLoaded: readModel != null, error,
+        tests: workflowTestRunsShown(readModel ?? workflowModel) }) : null;
     // A person's run controls for the shown run, and the notice about the last one: the portal's, from the selection's own
     // read model only (its run is the one shown), and only when it says which commands the workflow takes from people.
     const runCommand = safeView.runCommand ?? null;
-    const runControls = flow ? workflowV2RunControls(readModel, runCommand) : null;
-    const runNotice = flow ? workflowV2RunCommandNotice(runCommand) : null;
+    const runControls = flow ? workflowRunControls(readModel, runCommand) : null;
+    const runNotice = flow ? workflowRunCommandNotice(runCommand) : null;
     // The shown run's variables as the portal's panel lists them and a person changes them (set_vars), from the same model.
-    const runVariables = flow ? workflowV2RunVariables(readModel, runCommand) : null;
+    const runVariables = flow ? workflowRunVariables(readModel, runCommand) : null;
     // The draft's YAML as the portal's editor edits it (the definition is the workflow's, whichever run is shown), the
     // person's edit of it (kept in the view, so closing the editor loses nothing) and what that edit is: against the
     // revision it started from, which is one this person just saved when the read model does not show it yet.
-    const draftEditor = flow ? workflowV2DraftEditor(readModel ?? workflowModel, runCommand) : null;
+    const draftEditor = flow ? workflowDraftEditor(readModel ?? workflowModel, runCommand) : null;
     const draftBuffer = workflowDraftBuffer(safeView.draftEdit, draftEditor);
-    const draftEdit = draftBuffer ? workflowV2DraftEdit(draftBuffer.base, draftBuffer.text,
+    const draftEdit = draftBuffer ? workflowDraftEdit(draftBuffer.base, draftBuffer.text,
         draftBuffer.base.revision > draftEditor.revision ? { ...draftEditor, revision: draftBuffer.base.revision } : draftEditor) : null;
     // The definition's publication as the portal's publication panel offers it (publish, publish and start, start), and a
     // test of its current revision as the portal's test review offers it.
-    const publication = flow ? workflowV2DefinitionControls(readModel ?? workflowModel, runCommand) : null;
-    const testControls = flow ? workflowV2TestControls(readModel ?? workflowModel, runCommand) : null;
+    const publication = flow ? workflowDefinitionControls(readModel ?? workflowModel, runCommand) : null;
+    const testControls = flow ? workflowTestControls(readModel ?? workflowModel, runCommand) : null;
     // The shown test run's answers and clock, from that run's own read model only, as the portal's answer form and clock.
-    const testResponder = flow ? workflowV2TestResponder(readModel, runCommand) : null;
+    const testResponder = flow ? workflowTestResponder(readModel, runCommand) : null;
     return {
         definition, nodes, flow, status, runPicker, sessionName, runControls, runCommand: flow ? runCommand : null, runNotice, runVariables,
         runReadModel: flow ? readModel ?? null : null,
         draftEditor, draftBuffer, draftEdit, publication, testControls, testResponder, definitionModel: flow ? readModel ?? workflowModel ?? null : null,
         // The execution whose own result a person chose ({ runId, stateId, executionId }; it applies only to that run and state).
         selectedExecution: isPlainRecord(safeView.selectedExecution) ? safeView.selectedExecution : null,
-        // The whole values read (by run and execution; workflowV2ExecutionValue picks exactly one).
+        // The whole values read (by run and execution; workflowExecutionValue picks exactly one).
         executionValues: isPlainRecord(safeView.executionValues) ? safeView.executionValues : null,
-        // The KV revisions read and the comparison asked for (mock M15; workflowV2KvSnapshot, workflowV2KvCompare).
+        // The KV revisions read and the comparison asked for (mock M15; workflowKvSnapshot, workflowKvCompare).
         kvRevisions: isPlainRecord(safeView.kvRevisions) ? safeView.kvRevisions : null,
         kvCompare: isPlainRecord(safeView.kvCompare) ? safeView.kvCompare : null,
         // The draft's two versions compared (owner decision q4; TUI C) and the revisions read for it.
@@ -219,7 +219,7 @@ export function workflowGraphOrder(definition) {
  */
 function transitionsOf(node, layers) {
     const routes = Object.entries(node.next || {}).map(([label, target]) => ({
-        label, target, kind: workflowV2RouteKind(node, label),
+        label, target, kind: workflowRouteKind(node, label),
         // Layers collapse a cycle into one layer, so a route to the same or an earlier layer stays inside a loop.
         loop: layers.has(target) && layers.has(node.id) && layers.get(target) <= layers.get(node.id),
     }));
@@ -382,7 +382,7 @@ function runControlAbsentReason(model, controls, operation) {
 
 /**
  * Whether the open workflow view sends a person's run control `operation` for the run it shows, and why not:
- * `{ ok: true, operation, runId }` when the portal's run controls (workflowV2RunControls) offer it enabled, otherwise
+ * `{ ok: true, operation, runId }` when the portal's run controls (workflowRunControls) offer it enabled, otherwise
  * `{ ok: false, reason }`, a sentence for the status line. The server decides every command again. Pure.
  */
 export function workflowViewRunControlFor(selection, operation) {
@@ -454,7 +454,7 @@ function runVariableLines(projection) {
 
 /**
  * Whether the open workflow view can open the variables form for the run it shows, and why not: `{ ok: true, runId }`
- * when the portal's variables panel (workflowV2RunVariables) would let a person change them, otherwise `{ ok: false,
+ * when the portal's variables panel (workflowRunVariables) would let a person change them, otherwise `{ ok: false,
  * reason }`, a sentence for the status line. The server decides every update again. Pure.
  */
 export function workflowViewVariablesFor(selection) {
@@ -490,7 +490,7 @@ export function selectWorkflowVariableModal(state, maxWidth = 100, viewportHeigh
     const lines = [];
     const add = (text, color = "white", extra = {}) => lines.push({ text: clip(text, contentWidth), color, ...extra });
     const addWrapped = (text, color, indent = "") => { for (const piece of wrapped(text, contentWidth, indent)) add(piece, color); };
-    addWrapped(WORKFLOW_V2_VARIABLES_HELP_TEXT, "gray");
+    addWrapped(WORKFLOW_VARIABLES_HELP_TEXT, "gray");
     let pickLine = -1;
     if (!sameRun) {
         addWrapped("The view no longer shows the Workflow this form was opened for, so it sends nothing. Esc goes back.", "yellow");
@@ -508,8 +508,8 @@ export function selectWorkflowVariableModal(state, maxWidth = 100, viewportHeigh
     const notice = projection.runNotice?.operation === "set_vars" ? projection.runNotice : null;
     // R3-UI-2: what the form holds now is the update whose answer never came only when it is that exact update (Enter's
     // set, or ctrl-r's removal); anything else is a new update, behind when the view has moved past its revision.
-    const setDraft = workflowV2VariableDraft(modal.name, modal.value);
-    const removal = workflowV2VariableRemoval(modal.name);
+    const setDraft = workflowVariableDraft(modal.name, modal.value);
+    const removal = workflowVariableRemoval(modal.name);
     const retry = sameRun && notice?.retry ? variableRetryOf(projection, modal, variables,
         [setDraft.ok ? { set: setDraft.set } : null, removal.ok ? { delete: removal.delete } : null]) : null;
     const dirty = Boolean(String(modal.name ?? "") || String(modal.value ?? ""));
@@ -548,7 +548,7 @@ const BATCH_REVIEW_ROWS = 12;
 
 /**
  * The several-variables form (TUI modal "workflowVariableBatch"; design 02 open KV, set_vars as one batch): what one
- * update of the run it was opened for sends, from what is typed now (workflowV2VariableBatchDraft): each name under Set
+ * update of the run it was opened for sends, from what is typed now (workflowVariableBatchDraft): each name under Set
  * added, or replacing the value it has (whole), each name under Remove removed, at the revision the view shows; every
  * other variable stays as it is, and the server applies all of it or none. Before it: why the variables cannot be
  * changed, an update being sent, the last update's refusal or lost answer and the form's own check of what was typed;
@@ -579,7 +579,7 @@ export function selectWorkflowVariableBatchModal(state, maxWidth = 100, viewport
     }
     const notice = projection.runNotice?.operation === "set_vars" ? projection.runNotice : null;
     // R3-UI-2: only the exact update whose answer never came goes out again past a newer revision; an edited one is new.
-    const typed = setText.trim() || removeText.trim() ? workflowV2VariableBatchDraft(setText, removeText) : null;
+    const typed = setText.trim() || removeText.trim() ? workflowVariableBatchDraft(setText, removeText) : null;
     const retry = sameRun && notice?.retry && typed?.ok ? variableRetryOf(projection, modal, variables, [{ set: typed.set, delete: typed.delete }]) : null;
     const behind = sameRun ? variablesBehind(modal, variables, typed !== null, retry !== null) : null;
     if (notice) {
@@ -598,7 +598,7 @@ export function selectWorkflowVariableBatchModal(state, maxWidth = 100, viewport
             addWrapped("Set: a JSON object of names and values, for example {\"limit\": 5, \"mode\": \"fast\"}. Remove: a JSON list of "
                 + "names, for example [\"old\", \"stale key\"]. Either may be empty, not both.", "gray");
         } else {
-            const draft = workflowV2VariableBatchDraft(setText, removeText);
+            const draft = workflowVariableBatchDraft(setText, removeText);
             if (!draft.ok) {
                 addWrapped(`Nothing to send yet: ${draft.error}`, "gray");
             } else {
@@ -656,7 +656,7 @@ export function workflowDraftBuffer(edit, editor) {
 
 /**
  * Why the open workflow view has no draft editor, as a sentence; null when it has one (a draft whose YAML the read model
- * gives a person who may change it: the portal's workflowV2DraftEditor). Pure.
+ * gives a person who may change it: the portal's workflowDraftEditor). Pure.
  */
 export function workflowViewDraftRefusal(selection) {
     const projection = selection?.projection ?? null;
@@ -670,7 +670,7 @@ export function workflowViewDraftRefusal(selection) {
             // Review UI-F7: true also for a definition fixed by publication without a run: no claim that a Workflow started.
             : model.definition?.state === "published" ? "The definition no longer changes. A new version needs a new Workflow."
                 : model.definition?.state !== "draft" ? "The definition no longer changes."
-                    : !offered ? workflowV2RestrictionText(commands) ?? "This Workflow takes no YAML changes from people."
+                    : !offered ? workflowRestrictionText(commands) ?? "This Workflow takes no YAML changes from people."
                         : viewer?.allowed === false ? (typeof viewer.reason === "string" && viewer.reason ? viewer.reason : "You cannot command this Workflow.")
                             : "Its YAML is not given to you.";
     // Review 19:27Z (C): a refusal reads "<thing> not saved: <why>", as the save's own refusal does.
@@ -702,7 +702,7 @@ function revisionCompareLines(projection) {
     const open = projection.revisionCompare;
     const latest = projection.draftEditor?.revision;
     if (!open || open.to !== latest || !Number.isSafeInteger(open.from) || open.from < 1 || open.from >= latest) return [];
-    const compare = workflowV2RevisionCompare(projection.definitionRevisions, open.from, open.to);
+    const compare = workflowRevisionCompare(projection.definitionRevisions, open.from, open.to);
     const lines = [{ text: `Compare versions: ${compare.summary}`, color: compare.failed ? "red" : compare.ready ? "white" : "yellow", indent: "  " }];
     if (compare.failed) return [...lines, { text: "C closes; C once more reads it again", color: "gray", indent: "    " }];
     if (!compare.ready) return lines;
@@ -802,7 +802,7 @@ export function selectWorkflowDraftModal(state, maxWidth = 100, viewportHeight =
     // A revision this person just saved, which the read model does not show yet.
     const unread = buffer.base.revision > editor.revision;
     // The saved revision's errors on their lines (owner decision q5): the line number in red (a warning in yellow) with "!".
-    const marks = new Map(editor.current && !unread ? workflowV2DraftMarks(editor.diagnostics).lines.map(mark => [mark.line, mark]) : []);
+    const marks = new Map(editor.current && !unread ? workflowDraftMarks(editor.diagnostics).lines.map(mark => [mark.line, mark]) : []);
     const lines = textLines.map((line, index) => {
         const mark = marks.get(index + 1);
         return [{ text: `${String(index + 1).padStart(gutter - 1)}${mark ? "!" : " "}`, color: mark ? (mark.severity === "error" ? "red" : "yellow") : "gray" },
@@ -855,7 +855,7 @@ const PUBLICATION_OPERATIONS = new Set(Object.keys(WORKFLOW_PUBLICATION_KEYS));
 
 /**
  * What a publication review is of (its `pin`): a draft's current revision and that revision's definition hash, or a
- * published definition's revision and hash, from the portal's publication model (workflowV2DefinitionControls). Null
+ * published definition's revision and hash, from the portal's publication model (workflowDefinitionControls). Null
  * without one. Pure.
  */
 export function workflowPublicationPin(publication) {
@@ -983,7 +983,7 @@ export function selectWorkflowPublicationModal(state, maxWidth = 100, viewportHe
     add(`Effects: ${runs ? "Real, once it starts" : "None until it starts"}`);
     // What publication pins for each named agent, and the tests of exactly this revision (as the portal's review says them).
     const versionsNow = state.ui?.workflowViews?.[modal.sessionId]?.agentVersions ?? null;
-    if (!changed && publication) for (const [label, value] of workflowV2PublicationEvidenceRows(publication, versionsNow)) add(`${label.trim()}: ${value}`, "white", label.startsWith(" ") ? "  " : "");
+    if (!changed && publication) for (const [label, value] of workflowPublicationEvidenceRows(publication, versionsNow)) add(`${label.trim()}: ${value}`, "white", label.startsWith(" ") ? "  " : "");
     add(draft
         ? "Start runs this exact revision with real effects; the revision no longer changes after it starts."
         : "Start runs this revision with real effects.", "gray");
@@ -1021,7 +1021,7 @@ const CONFIRM_SCENARIO_LIMIT = 60;
 
 /**
  * What a test review is of (its `pin`): the definition's current revision (a draft's, or a published one's) and that
- * revision's definition hash, from the portal's test model (workflowV2TestControls). Null without one. Pure.
+ * revision's definition hash, from the portal's test model (workflowTestControls). Null without one. Pure.
  */
 export function workflowTestPin(tests) {
     if (!isPlainRecord(tests)) return null;
@@ -1057,7 +1057,7 @@ export function workflowTestConfirm(pin, tests, args = {}) {
     const given = `inputs ${jsonPreview(args?.inputs ?? {})}${args?.vars !== undefined ? `, initial variables ${jsonPreview(args.vars)}` : ""}${scenario}`;
     return { title: "Start Test Run", confirmLabel: "Start Test",
         message: `Start a test of ${what} with ${real ? "real agents, which spend model tokens" : "mocked agents: the parent answers for each agent node"}; `
-            + `${given}? ${WORKFLOW_V2_TEST_NOTICE_TEXT}${real ? ` ${WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT}` : ""} The Workflow is not changed.` };
+            + `${given}? ${WORKFLOW_TEST_NOTICE_TEXT}${real ? ` ${WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT}` : ""} The Workflow is not changed.` };
 }
 
 /**
@@ -1073,8 +1073,8 @@ export function workflowViewTestRefusal(selection) {
     const why = !isPlainRecord(model) ? "The Workflow is not loaded yet."
         : !commands ? "This deployment takes no Workflow commands from people."
             // of-06: only a draft is tested.
-            : model.definition?.state === "published" ? WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT
-                : !offered ? workflowV2RestrictionText(commands) ?? "This Workflow takes no test from people."
+            : model.definition?.state === "published" ? WORKFLOW_TEST_NEEDS_DRAFT_TEXT
+                : !offered ? workflowRestrictionText(commands) ?? "This Workflow takes no test from people."
                     : `The definition is ${typeof model.definition?.state === "string" && model.definition.state ? model.definition.state : "in no known state"}.`;
     // Review 19:27Z (C): a refusal reads "Test not started: <why>", as the test's own refusal does.
     return `Test not started: ${why}`;
@@ -1112,7 +1112,7 @@ export function selectWorkflowTestModal(state, maxWidth = 100, viewportHeight = 
     const contentWidth = width - 4;
     const lines = [];
     const add = (text, color = "white", indent = "") => { for (const piece of wrapped(text, contentWidth, indent)) lines.push({ text: piece, color }); };
-    add(WORKFLOW_V2_TEST_NOTICE_TEXT, "yellow");
+    add(WORKFLOW_TEST_NOTICE_TEXT, "yellow");
     add(`Definition: ${[tests?.name, tests?.semver].filter(Boolean).join(" ") || "Not named"}`);
     add(`${draft ? "Draft revision" : "Revision"}: ${pin?.revision ?? "Not known"}`);
     if (!changed && tests) {
@@ -1120,7 +1120,7 @@ export function selectWorkflowTestModal(state, maxWidth = 100, viewportHeight = 
     }
     add(real ? "Agent nodes: real agents, which spend model tokens · ctrl-a mocks them" : "Agent nodes: mocked; the parent answers for each · ctrl-a real agents",
         real ? "yellow" : "cyan");
-    if (real) add(WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, "yellow");
+    if (real) add(WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT, "yellow");
     if (changed) add(change, "yellow");
     else if (tests) {
         add(`ctrl-t ${tests.control.label}${tests.control.enabled || tests.control.pending ? "" : ` — not now: ${tests.control.title}`}`,
@@ -1179,7 +1179,7 @@ function testRunAbsentReason(projection, what) {
     if (!isPlainRecord(model.run)) return "Nothing is shown; ←→ chooses a test.";
     if (model.run.mode !== "test") return "The Workflow is shown, not a test; ←→ chooses a test.";
     if (!isPlainRecord(model.personCommands)) return "This deployment takes no Workflow commands from people.";
-    return workflowV2RestrictionText(model.personCommands) ?? "This Workflow takes no test answers or clock advances from people.";
+    return workflowRestrictionText(model.personCommands) ?? "This Workflow takes no test answers or clock advances from people.";
 }
 
 /** Why the open workflow view does not open the answer form for the test run it shows, as a sentence; null when it does. Pure. */
@@ -1212,9 +1212,9 @@ function testRunLines(projection) {
 
 /** The notices of the shown test run: a test, not a sandbox, and its agent states mocked or real (spending model tokens). */
 function testRunNoticeLines(test) {
-    const lines = [{ text: typeof test?.notice === "string" && test.notice ? test.notice : WORKFLOW_V2_TEST_NOTICE_TEXT, color: "yellow" }];
+    const lines = [{ text: typeof test?.notice === "string" && test.notice ? test.notice : WORKFLOW_TEST_NOTICE_TEXT, color: "yellow" }];
     lines.push(test?.agentMode === "real"
-        ? { text: typeof test.agentNotice === "string" && test.agentNotice ? test.agentNotice : WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, color: "yellow" }
+        ? { text: typeof test.agentNotice === "string" && test.agentNotice ? test.agentNotice : WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT, color: "yellow" }
         : { text: "Agent nodes are mocked: the parent answers for each agent node.", color: "gray" });
     return lines;
 }
@@ -1236,7 +1236,7 @@ export function selectWorkflowTestAnswerModal(state, maxWidth = 100, viewportHei
     const test = isPlainRecord(run?.test) ? run.test : null;
     const sameRun = Boolean(responder) && responder.runId === modal.runId;
     // The run's interceptions and node executions as one list each: its newest page and the open ones the page does not hold.
-    const rows = workflowV2RunRows(run);
+    const rows = workflowRunRows(run);
     const items = sameRun && test ? rows.interceptions : [];
     const item = items.find(entry => entry.interceptionId === modal.interceptionId) ?? null;
     const at = sameRun ? responder.waiting.findIndex(entry => entry.interceptionId === modal.interceptionId) : -1;
@@ -1254,7 +1254,7 @@ export function selectWorkflowTestAnswerModal(state, maxWidth = 100, viewportHei
         add(`Call: ${item.operation ?? "call"}${item.tool ? ` · ${item.tool}` : ""}${item.stateId ? ` in node ${item.stateId}` : ""}`, "cyan");
         if (isPlainRecord(item.response)) {
             const value = item.response.value === undefined || item.response.value === null ? "" : `: ${testValueText(item.response.value)}`;
-            add(`Answered: ${item.response.kind ?? "an answer"} · ${workflowV2AnswerSourceText(item.response.disposition)}${value}. Another answer is refused; the same answer again is the same answer.`);
+            add(`Answered: ${item.response.kind ?? "an answer"} · ${workflowAnswerSourceText(item.response.disposition)}${value}. Another answer is refused; the same answer again is the same answer.`);
         } else if (isPlainRecord(node) && node.state !== "pending") {
             add(`Its node already ended${typeof node.outcome === "string" && node.outcome ? ` · ${workflowOutcomeWord(node.outcome)}` : ""}; an answer is refused.`, "yellow");
         } else {
@@ -1453,12 +1453,12 @@ const WHOLE_VALUE_CHAR_LIMIT = 40_000;
 const withThousands = value => Number(value).toLocaleString("en-US");
 
 /**
- * The whole value of the visit shown, as f read it (workflowV2WholeValue): being read, its failure, that it had no value,
+ * The whole value of the visit shown, as f read it (workflowWholeValue): being read, its failure, that it had no value,
  * or the value itself line by line with its indentation, up to WHOLE_VALUE_CHAR_LIMIT characters (the rest is counted).
  * Entries { text, color, indent }; none until f reads it.
  */
 function wholeValueLines(entry) {
-    const whole = workflowV2WholeValue(entry);
+    const whole = workflowWholeValue(entry);
     if (!whole) return [];
     // Review 19:27Z (row 15, C): as the portal says it, with no parentheses.
     if (whole.kind === "loading") return [{ text: "Reading…", color: "yellow", indent: "  " }];
@@ -1491,7 +1491,7 @@ function wholeValueLines(entry) {
 function executionResultLines(node, projection) {
     const executions = Array.isArray(node.executions) ? node.executions : [];
     const runId = projection.flow?.runId ?? null;
-    const shown = workflowV2ShownExecution(node, runId, projection.selectedExecution);
+    const shown = workflowShownExecution(node, runId, projection.selectedExecution);
     if (!shown.chosen && !shown.execution) return [];
     // Review 19:27Z (rows 12 to 14, C): a visit, never a run; no id; no parentheses.
     const keys = executions.length > 1 ? " · [ older · ] newer" : "";
@@ -1504,7 +1504,7 @@ function executionResultLines(node, projection) {
     // of every item.
     const visit = `${Number.isSafeInteger(execution.ordinal) ? `visit ${execution.ordinal}` : "a visit"}${visitPlace(node, execution)}`;
     const lines = [{ text: `Result of ${visit} · ${shown.chosen ? "chosen" : "latest"}${keys}${keys && node.where ? " · all items" : ""}`, color: "cyan", indent: "" }];
-    const result = workflowV2ExecutionResult(execution);
+    const result = workflowExecutionResult(execution);
     const shownText = value => (typeof value === "string" ? value : valueText(value)).replace(/\s+/g, " ").trim();
     if (result.kind === "pending") lines.push({ text: "No result yet", color: "yellow", indent: "  " });
     else if (result.kind === "error") {
@@ -1513,7 +1513,7 @@ function executionResultLines(node, projection) {
             color: "red", indent: "  " });
     } else if (result.kind === "output") lines.push({ text: `Output: ${shownText(result.value)}`, color: "white", indent: "  " });
     else lines.push({ text: "No output", color: "gray", indent: "  " });
-    const whole = typeof execution.id === "string" ? workflowV2ExecutionValue(projection.executionValues, runId, execution.id) : null;
+    const whole = typeof execution.id === "string" ? workflowExecutionValue(projection.executionValues, runId, execution.id) : null;
     if (result.truncated && !whole) lines.push({ text: "Only the start is shown · f reads all", color: "gray", indent: "  " });
     return [...lines, ...wholeValueLines(whole), ...kvLines(execution, projection)];
 }
@@ -1532,18 +1532,18 @@ const ACTIVITY_ROWS = 6;
 function kvLines(execution, projection) {
     const run = projection.flow?.readModel?.run ?? null;
     const runId = projection.flow?.runId ?? null;
-    const kv = workflowV2KvApplied(execution, run);
+    const kv = workflowKvApplied(execution, run);
     if (!kv) return [];
     const lines = [{ text: `Variables applied: revision ${kv.applied}${kv.accepted === null ? "" : kv.same ? " · accepted" : ` · accepted now: revision ${kv.accepted}`} — i compares them`,
         color: "cyan", indent: "" }];
     const asked = projection.kvCompare;
     if (!asked || asked.runId !== runId || asked.from !== kv.applied || asked.to !== kv.accepted) return lines;
-    const before = workflowV2KvSnapshot(projection.kvRevisions, runId, kv.applied);
-    const after = workflowV2KvSnapshot(projection.kvRevisions, runId, kv.accepted);
+    const before = workflowKvSnapshot(projection.kvRevisions, runId, kv.applied);
+    const after = workflowKvSnapshot(projection.kvRevisions, runId, kv.accepted);
     const failed = [before, after].find(entry => entry?.phase === "failed");
     if (failed) return [...lines, { text: `The variables of revision ${failed.revision} could not be read: ${failed.error} · i reads them again`, color: "red", indent: "  " }];
     if (before?.phase !== "loaded" || after?.phase !== "loaded") return [...lines, { text: "Reading the variables…", color: "yellow", indent: "  " }];
-    const compared = workflowV2KvCompare(before, after);
+    const compared = workflowKvCompare(before, after);
     if (!compared) return lines;
     const { added, removed, changed, same } = compared.counts;
     lines.push({ text: `Revision ${compared.from} → ${compared.to}: ${added} added · ${removed} removed · ${changed} changed · ${same} unchanged`, color: "white", indent: "  " });
@@ -1571,7 +1571,7 @@ export function workflowViewExecutionStep(selection, delta) {
     const executions = Array.isArray(node.executions) ? node.executions : [];
     if (!executions.length) return { ok: false, selection: null, status: "No visit of this node is loaded" };
     const runId = selection.projection.flow?.runId ?? null;
-    const shown = workflowV2ShownExecution(node, runId, selection.projection.selectedExecution);
+    const shown = workflowShownExecution(node, runId, selection.projection.selectedExecution);
     const target = shown.index + (delta > 0 ? 1 : -1);
     if (delta < 0 && target < 0) {
         return shown.chosen ? { ok: true, selection: null, status: "Showing the latest result again" } : { ok: false, selection: null, status: "No newer visit" };
@@ -1586,7 +1586,7 @@ export function workflowViewExecutionStep(selection, delta) {
         status: `Showing visit ${Number.isSafeInteger(execution.ordinal) ? execution.ordinal : "—"}${visitPlace(node, execution)}` };
 }
 
-/** Re-check RC-7: " · item 2 · For each visit 1" for an item's visit (its place, workflowV2VisitPlaces), else "". */
+/** Re-check RC-7: " · item 2 · For each visit 1" for an item's visit (its place, workflowVisitPlaces), else "". */
 function visitPlace(node, execution) {
     const place = typeof execution?.id === "string" ? node?.where?.[execution.id] : null;
     return place && typeof place.label === "string" ? ` · ${place.label}` : "";
@@ -1594,10 +1594,10 @@ function visitPlace(node, execution) {
 
 /**
  * The selected state's executions in the loaded history, newest first, as the portal's History tab lists them: its
- * visits with neighbouring unchanged repeats combined (compactWorkflowV2Executions).
+ * visits with neighbouring unchanged repeats combined (compactWorkflowExecutions).
  */
 function historyLines(node) {
-    const rows = compactWorkflowV2Executions(Array.isArray(node.executions) ? node.executions : []);
+    const rows = compactWorkflowExecutions(Array.isArray(node.executions) ? node.executions : []);
     // An item's visit says its item and, with more than one, its For each visit (adversarial review R2-UI-5). Review
     // 19:27Z (row 17): visits, each result in the Workflow's words.
     const where = execution => (execution?.id && node.where?.[execution.id] ? `${node.where[execution.id].label} · ` : "");
@@ -1620,7 +1620,7 @@ function testEffectLines(projection, selectedId) {
     const lines = items.slice(0, EFFECT_LIMIT).map(item => {
         const effect = `${item.operation ?? "effect"}${item.tool ? ` · ${item.tool}` : ""}`;
         const answered = Boolean(item.response && typeof item.response === "object");
-        const answer = answered ? `${item.response.kind ?? "answered"} · ${workflowV2AnswerSourceText(item.response.disposition, "—")}` : "waiting for the parent";
+        const answer = answered ? `${item.response.kind ?? "answered"} · ${workflowAnswerSourceText(item.response.disposition, "—")}` : "waiting for the parent";
         // Review 19:27Z (row 27): a node, never a step.
         return { text: `  ${effect} · node ${item.stateId ?? "—"} · ${answer}${item.stateId && item.stateId === selectedId ? " ◂ this node" : ""}`,
             color: answered ? "white" : "yellow" };
@@ -1682,18 +1682,18 @@ function detailLines(selection, width) {
     add(`Visits: ${workflowRunsText(selected.runs, selected.partial)}`);
     add(`Outcome: ${node.outcome ? node.resultKind === "runtime_error" ? visitResultWords(node, node.kind) : workflowOutcomeWord(node.outcome) : "not recorded"}`);
     // Why the visit the details show ended (owner decision q14; mock M14 "Inspect cancellation").
-    const ending = workflowV2VisitEnding(workflowV2ShownExecution(node, projection.flow?.runId ?? null, projection.selectedExecution).execution);
+    const ending = workflowVisitEnding(workflowShownExecution(node, projection.flow?.runId ?? null, projection.selectedExecution).execution);
     if (ending) for (const text of wrapped(`Why it ended: ${ending.text}`, Math.max(20, width))) add(text);
     // An agent state's task, the workflow interface it names and what the shown run pins it to, as the portal says them.
     if (node.kind === "agent") {
-        add(`Agent: ${workflowV2AgentTask(node)}`);
-        add(`Chat: ${workflowV2AgentChatMode(node)}`);
-        if (workflowV2AgentTools(node)) add(`Tools: ${workflowV2AgentTools(node)}`);
+        add(`Agent: ${workflowAgentTask(node)}`);
+        add(`Chat: ${workflowAgentChatMode(node)}`);
+        if (workflowAgentTools(node)) add(`Tools: ${workflowAgentTools(node)}`);
         // OF-S2-7: the model it uses, chosen at start or from the chat.
         if (node.model) for (const text of wrapped(node.model.text, Math.max(20, width))) add(text);
         const told = node.invoke?.source === "agent" ? null : workflowFirstSentence(node.about?.prompt, Math.max(40, width - 8));
         if (told) add(`Prompt: ${told}`, "gray");
-        for (const [label, value] of workflowV2AgentBindingRows(node.binding)) add(`${label}: ${value}`);
+        for (const [label, value] of workflowAgentBindingRows(node.binding)) add(`${label}: ${value}`);
     }
     for (const line of node.description || []) add(line, "gray");
     // Each branch's result for a parallel step (owner decision q16; mocks M22 to M24).
@@ -1703,13 +1703,13 @@ function detailLines(selection, width) {
         // IR 11: a named-branch state counts branches, by name.
         add(`${evidence.names ? "Branches" : "Items"}: ${workflowItemsFraction(evidence.succeeded, evidence.total) ?? `${evidence.succeeded}/${evidence.total} ok`}${evidence.running ? ` · ${evidence.running} running` : ""}`, "cyan");
         if (evidence.blocked && evidence.blocking.length) {
-            add(`  Join blocked by ${workflowV2ItemList(evidence.blocking, evidence.names)}`, "yellow");
+            add(`  Join blocked by ${workflowItemList(evidence.blocking, evidence.names)}`, "yellow");
         }
         // Owner decision join-k-of-n (J1b): whether the limit ended it, or passed after enough items succeeded.
         if (evidence.timedOut) add("  Limit passed before the join.", "yellow");
         if (evidence.joinedAfterLimit) add(`  Limit passed after enough ${evidence.names ? "branches" : "items"} succeeded; the join used them.`, "gray");
         for (const row of evidence.rows.slice(0, EVIDENCE_ROWS)) {
-            add(`  ${row.name ?? `item ${workflowV2BranchNumber(row.index)}`} · ${itemStatusWords(row.status)}${row.step ? ` · at ${row.step}` : ""}`
+            add(`  ${row.name ?? `item ${workflowBranchNumber(row.index)}`} · ${itemStatusWords(row.status)}${row.step ? ` · at ${row.step}` : ""}`
                 + `${row.why ? ` · ${lowerFirst(row.why)}` : row.result ? ` · ${row.result}` : ""}`,
                 row.status === "failed" || row.status.startsWith("canceled") ? "yellow" : "gray");
         }
@@ -1723,7 +1723,7 @@ function detailLines(selection, width) {
     // limit (owner decision join-k-of-n).
     if (node.joinBar) {
         add(`${node.joinBar.label}${node.joinBar.stateText ? ` · ${node.joinBar.stateText}` : ""}`, "cyan");
-        for (const text of wrapped(workflowV2JoinWords(node), Math.max(20, width), "  ")) add(text, "gray");
+        for (const text of wrapped(workflowJoinWords(node), Math.max(20, width), "  ")) add(text, "gray");
         if (node.joinBar.limit) for (const text of wrapped(node.joinBar.limit.title, Math.max(20, width), "  ")) add(text, "gray");
     }
     if (selected.transitions.length) {
@@ -1755,7 +1755,7 @@ function detailLines(selection, width) {
         add("People can read these agent sessions; the server refuses their prompts, answers and instructions.", "gray");
         // The sessions the chosen chat started (owner decision q14; mock M14 "View owned subtree"), as loaded here.
         const under = selection.occurrence?.childSessionId
-            ? workflowV2SessionSubtree(selection.sessionsById, selection.occurrence.childSessionId).filter(entry => entry.depth > 0) : [];
+            ? workflowSessionSubtree(selection.sessionsById, selection.occurrence.childSessionId).filter(entry => entry.depth > 0) : [];
         if (under.length) {
             add(`${under.length === 1 ? "1 session" : `${under.length} sessions`} under this agent session:`, "cyan");
             for (const entry of under.slice(0, SUBTREE_ROWS)) add(`${"  ".repeat(entry.depth)}${entry.title ?? "untitled session"} · ${sessionStatusWord(entry.status)}`, "gray");
@@ -1777,9 +1777,9 @@ function detailLines(selection, width) {
     if (history.lines.length) for (const line of history.lines) add(line);
     else add("  No visits loaded.", "gray");
     // Who did what in the visit the details show, from the workflow's events (owner decision q14; mock M09 "Inspect audit").
-    const shownVisit = workflowV2ShownExecution(node, projection.flow?.runId ?? null, projection.selectedExecution).execution;
+    const shownVisit = workflowShownExecution(node, projection.flow?.runId ?? null, projection.selectedExecution).execution;
     const activity = shownVisit?.id && projection.flow?.bound
-        ? workflowV2Activity(projection.events, { runId: projection.flow.runId, nodeExecutionId: shownVisit.id, limit: ACTIVITY_ROWS }) : [];
+        ? workflowActivity(projection.events, { runId: projection.flow.runId, nodeExecutionId: shownVisit.id, limit: ACTIVITY_ROWS }) : [];
     if (activity.length) {
         add("Activity of this visit · newest first:", "cyan");
         for (const row of activity) {

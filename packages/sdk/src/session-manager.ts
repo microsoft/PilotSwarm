@@ -30,10 +30,10 @@ import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createScriptSessionTools } from "./workflow/session-tools.js";
 import { WORKFLOW_TOOL_POLICY, captureWorkflowTools, isWorkflowControlTool, workflowParentContextUnavailable, workflowToolPermission, type WorkflowToolBinding } from "./workflow/tool-policy.js";
 import { createWorkflowToolExecutor, type WorkflowToolExecutor } from "./workflow/tool-executor.js";
-import { WORKFLOW_CONTEXT_STUB, WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR, withWorkflowSkillsListed, workflowAwareSchedulingTool, workflowSessionGuidance, type WorkflowContextMode } from "./workflow/guidance.js";
-import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
-import { WORKFLOW_V2_AGENT_COMPLETION_TOOL } from "./workflow/v2/compiler.js";
-import { workflowDefinitionMcpPermission, workflowDefinitionMcpToolFilters } from "./workflow/v2/input-policy.js";
+import { WORKFLOW_CONTEXT_STUB, WORKFLOW_SKILLS_DIR, WORKFLOW_TEST_MODE_SKILLS_DIR, withWorkflowSkillsListed, workflowAwareSchedulingTool, workflowSessionGuidance, type WorkflowContextMode } from "./workflow/guidance.js";
+import { workflowTestModeFromEnv } from "./workflow/test-mode-switch.js";
+import { WORKFLOW_AGENT_COMPLETION_TOOL } from "./workflow/compiler.js";
+import { workflowDefinitionMcpPermission, workflowDefinitionMcpToolFilters } from "./workflow/input-policy.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
 import { holdsManagerBundle } from "./agent-manager-tools.js";
@@ -60,7 +60,7 @@ import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore, buildEnhan
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
-import { workflowTestPermission } from "./workflow/v2/test-agent-tools.js";
+import { workflowTestPermission } from "./workflow/test-agent-tools.js";
 import { createHash, randomUUID } from "node:crypto";
 import { readSnapshotMarker, supportsVersionedSnapshots, writeSnapshotMarker } from "./snapshot-protocol.js";
 import fs from "node:fs";
@@ -426,7 +426,7 @@ export interface WorkspaceFingerprintPart {
  */
 export function workflowAgentToolAllowlist(config: { workflowToolLimit?: string[]; workflowAgentChild?: boolean }): string[] | null {
     if (!Array.isArray(config.workflowToolLimit)) return null;
-    return [...new Set([...config.workflowToolLimit, ...(config.workflowAgentChild === true ? [WORKFLOW_V2_AGENT_COMPLETION_TOOL] : [])])].sort();
+    return [...new Set([...config.workflowToolLimit, ...(config.workflowAgentChild === true ? [WORKFLOW_AGENT_COMPLETION_TOOL] : [])])].sort();
 }
 
 /**
@@ -483,10 +483,10 @@ export function buildBindingFingerprintInput(parts: {
     };
 }
 
-/** One of the SDK's Workflow skill directories (WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR). */
+/** One of the SDK's Workflow skill directories (WORKFLOW_SKILLS_DIR, WORKFLOW_TEST_MODE_SKILLS_DIR). */
 export function isWorkflowSkillDirectory(dir: string): boolean {
     const resolved = path.resolve(dir);
-    return resolved === path.resolve(WORKFLOW_V2_SKILLS_DIR) || resolved === path.resolve(WORKFLOW_V2_TEST_MODE_SKILLS_DIR);
+    return resolved === path.resolve(WORKFLOW_SKILLS_DIR) || resolved === path.resolve(WORKFLOW_TEST_MODE_SKILLS_DIR);
 }
 
 /**
@@ -2597,7 +2597,7 @@ export class SessionManager {
             .map((tool: any) => (this.workflowScriptsEnabled && !isTunerSession
                 ? workflowAwareSchedulingTool(tool, config.workflowInsideWorkflow === true ? "none" : workflowContext) : tool));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
-        // Workflow v2: a 1.0.83 turn (a workflow request turn) is declared the milestone's workflow tools and
+        // Workflow: a 1.0.83 turn (a workflow request turn) is declared the milestone's workflow tools and
         // respond_session_request, and an agent state's own child complete_workflow_node, as the turn's handlers take them.
         // A session inside a Workflow is declared no definition tools (Workflow Simplified A1).
         const subAgentTools = ManagedSession.subAgentToolDefs({
@@ -3034,7 +3034,7 @@ export class SessionManager {
                     noteRequested: () => this.sessions.get(sessionId)?.noteWorkspaceChangeRequested(),
                 } : null,
             )),
-            // Workflow v2 real-agent test runs: a session whose turn ran
+            // Workflow real-agent test runs: a session whose turn ran
             // under such a test refuses MCP tools, which cannot be intercepted; its other requests go to its handler unchanged.
             // Every other session gets its handler as it is.
             // A session inside a Workflow is refused any MCP tool named as a definition tool, however it was offered (review SF-2).

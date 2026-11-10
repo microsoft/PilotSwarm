@@ -74,7 +74,7 @@
  * intake is on (off unless the deployment capability is on).
  */
 import { routeWorkflowRequestActivity } from "../activity-routing.js";
-import { IntakeShapeError, WORKFLOW_INTAKE_ACTIVITIES, WORKFLOW_INTAKE_NON_RETRYABLE, intakeObject, type IntakeTurnField } from "../workflow/v2/intake.js";
+import { IntakeShapeError, WORKFLOW_INTAKE_ACTIVITIES, WORKFLOW_INTAKE_NON_RETRYABLE, intakeObject, type IntakeTurnField } from "../workflow/intake.js";
 import {
     IntakeInvariantError,
     applyIntakeAttempt,

@@ -7,7 +7,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { completeWorkflowNodeFromTool } from "../../dist/workflow/v2/agent-node-service.js";
+import { completeWorkflowNodeFromTool } from "../../dist/workflow/agent-node-service.js";
 
 test("the turn visit reaches the store as given: a visit, null, or nothing", async () => {
     const calls = [];

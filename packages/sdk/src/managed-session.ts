@@ -25,16 +25,16 @@ import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer
 import { SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC, SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 import {
     readWorkflowToolSpec, SEND_WORKFLOW_INPUT_TOOL_SPEC, updateWorkflowToolSpec, workflowToolErrorPayload,
-} from "./workflow/v2/tools.js";
-import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
+} from "./workflow/tools.js";
+import { workflowTestModeFromEnv } from "./workflow/test-mode-switch.js";
 import { ENABLE_WORKFLOWS_TOOL, ENABLE_WORKFLOWS_TOOL_SPEC, type WorkflowContextMode } from "./workflow/guidance.js";
-import { WORKFLOW_DEFINITION_TOOL, workflowDefinitionToolSpec } from "./workflow/v2/definition-tool.js";
-import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC, workflowRespondFailure } from "./workflow/v2/request-service.js";
-import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC, workflowCompletionFailure } from "./workflow/v2/agent-node-service.js";
-import { sanitizeWorkflowErrorText } from "./workflow/v2/failure.js";
-import { answerAsksParent, turnAskedForAnswer, turnScheduleEffect, workflowAgentReminderText } from "./workflow/v2/agent-reminder.js";
-import { WORKFLOW_ASK_USER_REFUSAL, workflowDefinitionToolsRefusal } from "./workflow/v2/input-policy.js";
-import { interceptWorkflowTestTools } from "./workflow/v2/test-agent-tools.js";
+import { WORKFLOW_DEFINITION_TOOL, workflowDefinitionToolSpec } from "./workflow/definition-tool.js";
+import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC, workflowRespondFailure } from "./workflow/request-service.js";
+import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC, workflowCompletionFailure } from "./workflow/agent-node-service.js";
+import { sanitizeWorkflowErrorText } from "./workflow/failure.js";
+import { answerAsksParent, turnAskedForAnswer, turnScheduleEffect, workflowAgentReminderText } from "./workflow/agent-reminder.js";
+import { WORKFLOW_ASK_USER_REFUSAL, workflowDefinitionToolsRefusal } from "./workflow/input-policy.js";
+import { interceptWorkflowTestTools } from "./workflow/test-agent-tools.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -991,7 +991,7 @@ export class ManagedSession {
         else if (eventType === "tool.execution_complete") this.nativeTaskCallsInFlight.delete(id);
     }
     /**
-     * Workflow v2 real-agent test runs: set once a turn of this
+     * Workflow real-agent test runs: set once a turn of this
      * session ran under such a test (its bridge intercepts its framework
      * tools), and never cleared, since a session's lineage does not change.
      * While set, the session's permission handler refuses MCP tools
@@ -3318,7 +3318,7 @@ export class ManagedSession {
             },
         });
 
-        // update_workflow / read_workflow (workflow v2) also run inline through the bridge.
+        // update_workflow / read_workflow (workflow) also run inline through the bridge.
         const updateWorkflowTool = defineTool("update_workflow", {
             ...updateWorkflowToolSpec(workflowSpecs),
             handler: async (args: Record<string, unknown>) => {
@@ -3744,7 +3744,7 @@ export class ManagedSession {
             ...manageAgentSessionForTurn,
             ...workspaceToolsForTurn,
         ];
-        // Workflow v2 real-agent test runs: a session
+        // Workflow real-agent test runs: a session
         // in a test run's agent state subtree runs no framework tool; each call is intercepted for the test to answer.
         const workflowTestToolCall = controlBridge?.workflowTestToolCall;
         return workflowTestToolCall
@@ -4612,7 +4612,7 @@ export class ManagedSession {
                 } as any;
             }
 
-            // Owner decision Q2 (workflow/v2/agent-reminder.ts): a workflow agent state's own child whose turn would end
+            // Owner decision Q2 (workflow/agent-reminder.ts): a workflow agent state's own child whose turn would end
             // with nothing pending is reminded to finish its step once, in this turn, after the corrections above. Only
             // after a natural, quiet end of the run: no control tool ended the turn, the turn queued no schedule set, did
             // not call complete_workflow_node, asked no other session (or its parent, in its answer) a question, and had

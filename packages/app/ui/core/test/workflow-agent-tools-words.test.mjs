@@ -1,5 +1,5 @@
 // Workflow Simplified stage 2.1c, FU-17: an agent node's tool limit in words, the same in the portal and the TUI, from
-// the graph's `tools` (describeWorkflowV2State shows it only for a state that sets one): "None (it can only finish the
+// the graph's `tools` (describeWorkflowState shows it only for a state that sets one): "None (it can only finish the
 // step)" for `tools: none`, the names for a list, and nothing for a state without a limit.
 //
 // Run: node --test packages/app/ui/core/test/workflow-agent-tools-words.test.mjs
@@ -10,10 +10,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
     PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowViewModal,
 } from "../src/index.js";
-import { projectWorkflowV2, workflowV2AgentTools } from "../src/workflow-v2-view.js";
+import { projectWorkflow, workflowAgentTools } from "../src/workflow-view.js";
 import { workflowNodeSummary } from "../src/workflow-node-summary.js";
-import { WorkflowV2NodeContent } from "../../react/src/workflow-v2-panels.js";
-import { readModel } from "./workflow-v2-fixtures.mjs";
+import { WorkflowNodeContent } from "../../react/src/workflow-panels.js";
+import { readModel } from "./workflow-fixtures.mjs";
 
 process.env.TZ = "UTC";
 
@@ -25,17 +25,17 @@ const states = [
     { id: "done", type: "terminal", outcome: "succeeded" },
 ];
 const model = readModel({ graph: { revision: 1, initial: "sealed", states } });
-const nodeOf = id => projectWorkflowV2({ readModel: model }).nodes.find(node => node.id === id);
+const nodeOf = id => projectWorkflow({ readModel: model }).nodes.find(node => node.id === id);
 
 test("the tool limit in words, from the graph; the Node details say it only for a state that sets one", () => {
-    assert.equal(workflowV2AgentTools(nodeOf("sealed")), "None");
-    assert.equal(workflowV2AgentTools(nodeOf("listed")), "read_facts, web_fetch");
-    assert.equal(workflowV2AgentTools(nodeOf("open")), null);
-    assert.equal(workflowV2AgentTools(null), null);
+    assert.equal(workflowAgentTools(nodeOf("sealed")), "None");
+    assert.equal(workflowAgentTools(nodeOf("listed")), "read_facts, web_fetch");
+    assert.equal(workflowAgentTools(nodeOf("open")), null);
+    assert.equal(workflowAgentTools(null), null);
     assert.equal(workflowNodeSummary(nodeOf("listed")).agent.tools, "read_facts, web_fetch");
-    const projection = projectWorkflowV2({ readModel: model });
+    const projection = projectWorkflow({ readModel: model });
     for (const [id, words] of [["sealed", "None"], ["listed", "read_facts, web_fetch"], ["open", null]]) {
-        const html = renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, {
+        const html = renderToStaticMarkup(React.createElement(WorkflowNodeContent, {
             tab: "details", selected: projection.nodes.find(node => node.id === id), nodes: projection.nodes, select: () => {},
         }));
         if (words === null) assert.ok(!html.includes("Tools"), id);

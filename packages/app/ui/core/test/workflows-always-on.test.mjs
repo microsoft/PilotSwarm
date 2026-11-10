@@ -8,7 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as core from "../src/index.js";
-import { readModel } from "./workflow-v2-fixtures.mjs";
+import { readModel } from "./workflow-fixtures.mjs";
 
 const {
     PilotSwarmUiController, UI_COMMANDS, appReducer, createInitialState, createStore, selectHelpModal, selectSessionRows, shownSidePaneTab,

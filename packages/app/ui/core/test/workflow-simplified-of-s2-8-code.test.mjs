@@ -16,12 +16,12 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { workflowDefinitionState, workflowNodeCode, workflowResolvedSchema, workflowScriptSummary } from "../src/workflow-node-code.js";
-import { workflowV2SampleInputs, workflowV2SampleValue } from "../src/workflow-v2-commands.js";
+import { workflowSampleInputs, workflowSampleValue } from "../src/workflow-commands.js";
 import { codeRuns, loadCodeHighlighting, yamlDocumentValue } from "../../react/src/workflow-code-lang.js";
 import { CodeBlock, NodeCodeSections, loadCodeModule } from "../../react/src/workflow-code.js";
-import { WorkflowV2YamlBox } from "../../react/src/workflow-v2-panels.js";
+import { WorkflowYamlBox } from "../../react/src/workflow-panels.js";
 
-const YAML = `apiVersion: pilotswarm.dev/v2-draft
+const YAML = `apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: health-loop, version: "0.2.0" }
 schemas:
@@ -109,19 +109,19 @@ test("references to the definition's schemas are followed; a loop reads as any v
 });
 
 test("samples come from the schema, the same every time: example, default, const, first enum value, then by type", () => {
-    assert.deepEqual(workflowV2SampleValue({ type: "string", example: "from example" }), { value: "from example" });
-    assert.deepEqual(workflowV2SampleValue({ type: "string", examples: ["first"], default: "d" }), { value: "first" });
-    assert.deepEqual(workflowV2SampleValue({ type: "integer", default: 7 }), { value: 7 });
-    assert.deepEqual(workflowV2SampleValue({ const: "yes" }), { value: "yes" });
-    assert.deepEqual(workflowV2SampleValue({ enum: ["fast", "slow"] }), { value: "fast" });
-    assert.deepEqual(workflowV2SampleValue({ type: "integer", minimum: 2, maximum: 5 }), { value: 2 });
-    assert.deepEqual(workflowV2SampleValue({ type: "number", maximum: -3 }), { value: -3 });
-    assert.deepEqual(workflowV2SampleValue({ type: "array", items: { type: "boolean" }, minItems: 2 }), { value: [false, false] });
-    assert.deepEqual(workflowV2SampleValue({ type: "null" }), { value: null });
-    assert.deepEqual(workflowV2SampleValue(true), { value: {} });
-    assert.equal(workflowV2SampleValue({ type: "string", minLength: 2 ** 40 }), null, "over the budget: no sample");
-    assert.equal(workflowV2SampleValue(null), null);
-    assert.deepEqual(workflowV2SampleInputs({ type: "object", properties: { a: { type: "string", example: "x" } } }), { a: "x" }, "the Start form's sample reads `example` too");
+    assert.deepEqual(workflowSampleValue({ type: "string", example: "from example" }), { value: "from example" });
+    assert.deepEqual(workflowSampleValue({ type: "string", examples: ["first"], default: "d" }), { value: "first" });
+    assert.deepEqual(workflowSampleValue({ type: "integer", default: 7 }), { value: 7 });
+    assert.deepEqual(workflowSampleValue({ const: "yes" }), { value: "yes" });
+    assert.deepEqual(workflowSampleValue({ enum: ["fast", "slow"] }), { value: "fast" });
+    assert.deepEqual(workflowSampleValue({ type: "integer", minimum: 2, maximum: 5 }), { value: 2 });
+    assert.deepEqual(workflowSampleValue({ type: "number", maximum: -3 }), { value: -3 });
+    assert.deepEqual(workflowSampleValue({ type: "array", items: { type: "boolean" }, minItems: 2 }), { value: [false, false] });
+    assert.deepEqual(workflowSampleValue({ type: "null" }), { value: null });
+    assert.deepEqual(workflowSampleValue(true), { value: {} });
+    assert.equal(workflowSampleValue({ type: "string", minLength: 2 ** 40 }), null, "over the budget: no sample");
+    assert.equal(workflowSampleValue(null), null);
+    assert.deepEqual(workflowSampleInputs({ type: "object", properties: { a: { type: "string", example: "x" } } }), { a: "x" }, "the Start form's sample reads `example` too");
 });
 
 test("a node's code: the script, its language and lines; sample input and output from its schemas, labelled as samples", () => {
@@ -153,7 +153,7 @@ test("a node's code: the script, its language and lines; sample input and output
 test("before the parsers load a code box is the plain text in place; the YAML box is the plain textarea", () => {
     const plain = renderToStaticMarkup(React.createElement(CodeBlock, { text: "{\"a\": 1}", language: "json" }));
     assert.equal(plain, '<pre class="ps-wf-code" data-language="json"><code>{&quot;a&quot;: 1}</code></pre>');
-    const box = renderToStaticMarkup(React.createElement(WorkflowV2YamlBox, { value: "a: 1\n", readOnly: true, marks: { lines: [], unplaced: 0 }, changed: false }));
+    const box = renderToStaticMarkup(React.createElement(WorkflowYamlBox, { value: "a: 1\n", readOnly: true, marks: { lines: [], unplaced: 0 }, changed: false }));
     assert.ok(!box.includes("ps-workflow-yaml-paint"));
     assert.match(box, /<div class="ps-workflow-yaml-text"><textarea[^>]*aria-label="Workflow YAML"/);
     assert.ok(!box.includes("is-painted"));
@@ -176,7 +176,7 @@ test("highlighting: YAML keys, values and comments, a script's source as JavaScr
     assert.match(block, /^<pre class="ps-wf-code" data-language="json" data-highlighted="true"><code>{<span class="ps-code-property">&quot;a&quot;<\/span>/);
     const auto = renderToStaticMarkup(React.createElement(CodeBlock, { text: "plain words", language: "auto" }));
     assert.equal(auto, '<pre class="ps-wf-code"><code>plain words</code></pre>', "auto: only a text that reads as JSON");
-    const box = renderToStaticMarkup(React.createElement(WorkflowV2YamlBox, { value: "a: 1\n", readOnly: true, marks: { lines: [], unplaced: 0 }, changed: false }));
+    const box = renderToStaticMarkup(React.createElement(WorkflowYamlBox, { value: "a: 1\n", readOnly: true, marks: { lines: [], unplaced: 0 }, changed: false }));
     assert.match(box, /<pre class="ps-workflow-yaml-paint" aria-hidden="true"><code><span class="ps-code-property">a<\/span>: <span class="ps-code-number">1<\/span>\n<\/code>\n<\/pre><textarea[^>]*class="is-painted"/);
     // Every class has its theme colour.
     const css = fs.readFileSync(new URL("../../../web/src/index.css", import.meta.url), "utf8");
@@ -209,7 +209,7 @@ test("the Node panel's sections: Script, Sample input and Sample output, each cl
 test("the panels use them: the Definition view's Node panel, a Workflow's Node panel, and the JSON boxes", () => {
     const tab = fs.readFileSync(new URL("../../react/src/workflow-tab.js", import.meta.url), "utf8");
     const chat = fs.readFileSync(new URL("../../react/src/workflow-chat-tab.js", import.meta.url), "utf8");
-    const panels = fs.readFileSync(new URL("../../react/src/workflow-v2-panels.js", import.meta.url), "utf8");
+    const panels = fs.readFileSync(new URL("../../react/src/workflow-panels.js", import.meta.url), "utf8");
     assert.match(tab, /h\(NodeCodeSections, \{ node, yaml, pending, hidden \}\)/);
     assert.match(tab, /sections: h\(NodeCodeSections, \{ node: selected, yaml: code\.yaml, pending: code\.pending, hidden: code\.hidden \}\)/);
     assert.match(chat, /h\(NodeFacts, \{ node: selected, yaml: read\?\.phase === "ready" \? access\.yaml : null/);

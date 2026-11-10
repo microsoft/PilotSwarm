@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { killProcessGroup, killProcessTree } from "../process-tree.js";
-import { assertJsonValue, WorkflowJsonError } from "./v2/json.js";
+import { assertJsonValue, WorkflowJsonError } from "./json.js";
 
 /** The script runtimes the runner knows. A Workflow's script state runs on node (guarded). */
 export type ScriptRuntime = "node" | "python" | "powershell";
@@ -81,7 +81,7 @@ export interface RunScriptNodeRequest {
     /** The JSON the script reads as `context`; absent: the legacy context built from the fields above. */
     context?: Record<string, unknown>;
     /**
-     * Workflow v2: results and tool arguments must be plain JSON. setResult
+     * Workflow: results and tool arguments must be plain JSON. setResult
      * and callTool encode their value from one read of its own data
      * properties and refuse NaN, Infinity, undefined, functions, symbols,
      * accessors, holes, extra array properties and non-plain objects; no
@@ -92,7 +92,7 @@ export interface RunScriptNodeRequest {
      */
     strictJson?: boolean;
     /**
-     * Workflow v2 entry boundary. When set, the runner calls it with `start`,
+     * Workflow entry boundary. When set, the runner calls it with `start`,
      * which starts the script process with the given context (its stdin).
      * The caller calls `start` at most once, synchronously, while it holds
      * the locks that order this entry against a deletion or cancellation, and
@@ -140,7 +140,7 @@ async function setResult(outcome, output = null) { await __psPost("/result", { o
 `;
 
 /**
- * Workflow v2 prelude. setResult and callTool encode a value in one pass over
+ * Workflow prelude. setResult and callTool encode a value in one pass over
  * its own data properties, reading each property once, so the text sent is
  * exactly the value that was checked: no getter, Proxy trap or toJSON hook
  * can change it between the check and the encoding. The intrinsics are

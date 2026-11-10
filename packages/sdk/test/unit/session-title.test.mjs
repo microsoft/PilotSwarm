@@ -15,11 +15,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SESSION_TITLE_EVENT_MAX, sessionTitleChangedForRecord, startsWithRuntimeNote, stripLeadingRuntimeNotes }
     from "../../dist/session-title.js";
-import { workflowV2ParentNotification } from "../../dist/workflow/v2/runtime.js";
+import { workflowParentNotification } from "../../dist/workflow/runtime.js";
 
 const SAVE_NOTE = "[SYSTEM: Alice Anderson saved dc-short revision 1.]";
 // A Workflow's end kept as the chat's note (DS-2), as the chat's first turn reads it: "[SYSTEM: <the end notice>]".
-const NOTICE = workflowV2ParentNotification({ sessionId: "wf-ds3", runId: "run-ds3-0001", name: "dc-short", version: "1.0.0",
+const NOTICE = workflowParentNotification({ sessionId: "wf-ds3", runId: "run-ds3-0001", name: "dc-short", version: "1.0.0",
     status: "completed", outcome: "succeeded", stateId: "done", failure: null }, JSON.stringify({ output: { items: ["a", "b"] } }));
 const NOTES = `${SAVE_NOTE}\n[SYSTEM: ${NOTICE}]`;
 const FIRST = "Hello. Reply in one line: did anything happen in this chat before this message?";

@@ -18,7 +18,7 @@ import * as sdk from "../../dist/index.js";
 import { SessionManager } from "../../dist/session-manager.js";
 import { PilotSwarmManagementClient } from "../../dist/management-client.js";
 import { PilotSwarmClient } from "../../dist/client.js";
-import { workflowCapabilities } from "../../dist/workflow/v2/human-commands.js";
+import { workflowCapabilities } from "../../dist/workflow/human-commands.js";
 
 const SRC = new URL("../../src/", import.meta.url);
 const read = name => fs.readFileSync(new URL(name, SRC), "utf8");
@@ -126,7 +126,7 @@ test("agents: the base instructions always carry the Workflow guidance; with scr
 
 test("agents: no handler, bridge, lifecycle helper or spawn path reads a Workflows switch", () => {
     for (const name of ["managed-session.ts", "session-proxy.ts", "session-manager.ts", "management-client.ts", "client.ts", "worker.ts", "types.ts",
-        "child-budget.ts", "workflow/v2/human-commands.ts"]) {
+        "child-budget.ts", "workflow/human-commands.ts"]) {
         const text = read(name);
         assert.ok(!/workflowsEnabled|workflowsDisabled|workflowsOn\b|WORKFLOWS_DISABLED|workflows-switch/.test(text), name);
     }

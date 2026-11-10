@@ -8,13 +8,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { WorkflowV2Diagnostics } from "../../react/src/workflow-v2-panels.js";
+import { WorkflowDiagnostics } from "../../react/src/workflow-panels.js";
 import { WorkflowToolButton } from "../../react/src/workflow-tool-button.js";
 import { chatDefinitionFailure } from "../src/workflow-chat-definitions.js";
 import { workflowShortTime } from "../src/workflow-words.js";
 
 const css = fs.readFileSync(new URL("../../../web/src/index.css", import.meta.url), "utf8");
-const panels = fs.readFileSync(new URL("../../react/src/workflow-v2-panels.js", import.meta.url), "utf8");
+const panels = fs.readFileSync(new URL("../../react/src/workflow-panels.js", import.meta.url), "utf8");
 /** The rules of the media block that starts with `header` (to its matching brace). */
 function mediaBlock(header, after = 0) {
     const start = css.indexOf(header, after);
@@ -29,7 +29,7 @@ function mediaBlock(header, after = 0) {
 const PHONE = "/* Final review FUI-F1: the phone query, a phone held sideways included. */";
 
 test("UXFD-F6: the list under an invalid revision says the line and the message; the code and path stay in the tooltip", () => {
-    const html = renderToStaticMarkup(React.createElement(WorkflowV2Diagnostics, { diagnostics: [
+    const html = renderToStaticMarkup(React.createElement(WorkflowDiagnostics, { diagnostics: [
         { severity: "error", code: "WORKFLOW_YAML_INVALID", path: "$", line: 11, message: "Duplicate key \"required\" at line 11 (first at line 8)" },
         { severity: "warning", code: "WORKFLOW_INPUT_JSON_TEXT", path: "states.ask.input", message: "This input is JSON text in quotes." },
     ] }));

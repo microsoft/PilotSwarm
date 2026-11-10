@@ -7,11 +7,11 @@
  * a value on the page: the graph a read gives has neither scripts nor node schemas). Pure; no parser here: the caller
  * gives the YAML document's value.
  */
-import { workflowV2SampleValue } from "./workflow-v2-commands.js";
+import { workflowSampleValue } from "./workflow-commands.js";
 
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
 
-/** A script's language, by its runtime: workflow v2 scripts run as Node ES modules. */
+/** A script's language, by its runtime: workflow scripts run as Node ES modules. */
 export const WORKFLOW_SCRIPT_LANGUAGES = Object.freeze({ node: { name: "JavaScript", code: "javascript" } });
 
 /**
@@ -81,7 +81,7 @@ const json = value => JSON.stringify(value, null, 2);
 function sampleSection(kind, schema, schemas, from) {
     if (schema === undefined || schema === null || schema === false) return null;
     const resolved = workflowResolvedSchema(schema, schemas);
-    const sample = workflowV2SampleValue(resolved);
+    const sample = workflowSampleValue(resolved);
     return {
         kind,
         label: kind === "input" ? "Sample input" : "Sample output",

@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { workflowAgentNodeLog, workflowBaseInstructions, workflowPromptVisit, WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY } from "../src/workflow-agent-log.js";
-import { WorkflowV2AgentLog } from "../../react/src/workflow-v2-panels.js";
+import { WorkflowAgentLog } from "../../react/src/workflow-panels.js";
 
 process.env.TZ = "UTC";
 const dump = JSON.parse(readFileSync(new URL("./fixtures/agent-log-live-dump-20261106.json", import.meta.url), "utf8"));
@@ -71,12 +71,12 @@ test("the Log of the dump: each visit has its base instructions (shown once), it
 test("an echo recorded whole opens to its text for the owner, and to the owner-only line for anyone else; nothing is read", () => {
     const shown = log();
     const reads = [];
-    const owner = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log: shown, nodeId: "fact", openBodies: true,
+    const owner = renderToStaticMarkup(React.createElement(WorkflowAgentLog, { log: shown, nodeId: "fact", openBodies: true,
         readInstructions: ref => (ref?.sessionId ? { loading: true } : null), onInstructions: ref => reads.push(ref) }));
     assert.equal((owner.match(/data-base-instructions="inline"/g) || []).length, 1, "shown once");
     assert.ok(owner.includes(IDENTITY.trim()));
     assert.deepEqual(reads, []);
-    const share = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log: shown, nodeId: "fact", openBodies: true,
+    const share = renderToStaticMarkup(React.createElement(WorkflowAgentLog, { log: shown, nodeId: "fact", openBodies: true,
         readInstructions: () => ({ ownerOnly: true }) }));
     assert.ok(!share.includes("data-base-instructions=") && !share.includes("software engineering tasks. software"));
     assert.ok(share.includes(`data-owner-only="">${WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY.replace("'", "&#x27;")}`), share.slice(0, 400));

@@ -10,7 +10,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { WORKFLOW_LOG_LIMIT, workflowLogWindow, workflowV2Activity } from "../src/workflow-v2-view.js";
+import { WORKFLOW_LOG_LIMIT, workflowLogWindow, workflowActivity } from "../src/workflow-view.js";
 import { WorkflowLog } from "../../react/src/workflow-tab.js";
 
 process.env.TZ = "UTC";
@@ -28,7 +28,7 @@ const runs = [{ runId: "run-1", mode: "live", status: "completed" }];
 const visits = new Set(events.filter(event => event.eventType === "workflow.state_started").map(event => event.data.nodeExecutionId));
 
 test("the Log's lines: the newest, or the lines around a replayed visit older than those", () => {
-    const rows = workflowV2Activity(events, { limit: Infinity });
+    const rows = workflowActivity(events, { limit: Infinity });
     assert.equal(rows.length, 300);
     assert.equal(WORKFLOW_LOG_LIMIT, 200);
     const now = workflowLogWindow(rows, null);

@@ -11,7 +11,7 @@
  * @module
  */
 
-import { isWorkflowTestBench } from "./workflow/v2/test-bench.js";
+import { isWorkflowTestBench } from "./workflow/test-bench.js";
 import {
     RESPONSE_LATEST_KEY,
     commandResponseKey,
@@ -169,23 +169,23 @@ import {
     type SystemAgentSessionPlan,
 } from "./system-agents.js";
 import type { ArtifactStore } from "./session-store.js";
-import { readWorkflowV2, workflowV2ExclusiveRead } from "./workflow/v2/tools.js";
-import { WORKFLOW_READ_STATUS } from "./workflow/v2/read-pages.js";
-import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/v2/human-commands.js";
+import { readWorkflowModel, workflowExclusiveRead } from "./workflow/tools.js";
+import { WORKFLOW_READ_STATUS } from "./workflow/read-pages.js";
+import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/human-commands.js";
 import {
     attachChatPackageWorkflow, chatCompletionRefusal, copyChatPackageWorkflow, deleteChatWorkflowDefinition, findPackageWorkflow, listChatWorkflowDefinitions,
     packageWorkflowFacts,
     readChatWorkflowDefinition, requireChatDefinitionsWritable, saveChatWorkflowDefinition, startChatWorkflowDefinition, withPackageUpdates,
-} from "./workflow/v2/chat-definitions.js";
-import { createPackageWorkflowSource, type PackageViewer, type PackageWorkflowSource } from "./workflow/v2/chat-packages.js";
-import { coordinatingInstructions, workflowEffectFactsWords, workflowModelHintWords } from "./workflow/v2/package-card.js";
-import { resolveWorkflowTestMode } from "./workflow/v2/test-mode-switch.js";
-import { createRegistryWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
-import { assertWorkflowHumanInputAllowed, workflowInputCapabilities, type WorkflowInputCapabilities } from "./workflow/v2/input-policy.js";
-import { WorkflowStoreError, type WorkflowActor } from "./workflow/v2/store.js";
-import type { JsonValue } from "./workflow/v2/json.js";
-import { workflowAdapterFailure } from "./workflow/v2/failure.js";
-import { applyOperatorCommandToWorkflowV2, type WorkflowV2Host } from "./workflow/v2/service.js";
+} from "./workflow/chat-definitions.js";
+import { createPackageWorkflowSource, type PackageViewer, type PackageWorkflowSource } from "./workflow/chat-packages.js";
+import { coordinatingInstructions, workflowEffectFactsWords, workflowModelHintWords } from "./workflow/package-card.js";
+import { resolveWorkflowTestMode } from "./workflow/test-mode-switch.js";
+import { createRegistryWorkflowAgentResolver } from "./workflow/agent-resolver.js";
+import { assertWorkflowHumanInputAllowed, workflowInputCapabilities, type WorkflowInputCapabilities } from "./workflow/input-policy.js";
+import { WorkflowStoreError, type WorkflowActor } from "./workflow/store.js";
+import type { JsonValue } from "./workflow/json.js";
+import { workflowAdapterFailure } from "./workflow/failure.js";
+import { applyOperatorCommandToWorkflow, type WorkflowHost } from "./workflow/service.js";
 import {
     AgentPackageValidationError,
     deleteAgentPackageEverywhere,
@@ -1972,7 +1972,7 @@ export class PilotSwarmManagementClient {
     }
 
     /**
-     * Workflow v2: the read-only view of a workflow session (readWorkflow,
+     * Workflow: the read-only view of a workflow session (readWorkflow,
      * GET /api/v1/sessions/:sessionId/workflow, access session:read): its
      * definition state, current revision with its diagnostics, graph, runs,
      * and one run (runId, default the live run) with the newest page of its
@@ -1984,10 +1984,10 @@ export class PilotSwarmManagementClient {
      * instead, and `executionId` one node execution's whole output or error;
      * `limit` (1 to 200) sets the rows per page, and `kvRevision` (with an
      * optional `kvKey`) reads one revision of the run's variables
-     * (readWorkflowV2View; a revision it does not have is
+     * (readWorkflowView; a revision it does not have is
      * KV_REVISION_NOT_FOUND, 404). `agentVersions: true`, alone, reads the
      * agent versions publishing the current revision would lock now
-     * (readWorkflowV2AgentVersions; owner decision q1), resolved as this
+     * (readWorkflowAgentVersions; owner decision q1), resolved as this
      * client's publications resolve them; nothing is locked by reading.
      * Authorization is the caller's (the portal gates session:read, with its
      * not-found privacy, before this runs; the direct client is trusted). This
@@ -2037,7 +2037,7 @@ export class PilotSwarmManagementClient {
             // and a step's proposed inputs (q6) compiled as its saves compile them. The portal reads a definition revision's and a
             // step's YAML only for a person who may change the workflow; this client is trusted.
             // With test mode off, test runs are not shown or found (review SF-5): this client's own test mode, or else the flag.
-            view = await readWorkflowV2({ store, ...(typeof enabled?.testMode === "boolean" ? { testMode: enabled.testMode } : {}), ...(enabled
+            view = await readWorkflowModel({ store, ...(typeof enabled?.testMode === "boolean" ? { testMode: enabled.testMode } : {}), ...(enabled
                 ? { resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}) }, sessionId, request, "api");
         } catch (error) {
             const status = error instanceof WorkflowStoreError ? WORKFLOW_READ_STATUS[error.code] : undefined;
@@ -2048,7 +2048,7 @@ export class PilotSwarmManagementClient {
         // catalog), the view is exactly the tool's. A page, an execution's value or a read of its own is not the view: it has
         // no commands.
         const given = (value: unknown) => value !== undefined && value !== null;
-        if (!enabled || workflowV2ExclusiveRead(request) !== null || given(request.cursor) || given(request.executionId)
+        if (!enabled || workflowExclusiveRead(request) !== null || given(request.cursor) || given(request.executionId)
             || given(request.kvRevision) || given(request.kvKey)) return view;
         const run = view.run as { runId?: unknown } | null | undefined;
         const shown = run !== null && typeof run === "object" && typeof run.runId === "string" ? run.runId : null;
@@ -2061,7 +2061,7 @@ export class PilotSwarmManagementClient {
     }
 
     /**
-     * Workflow v2: a person's command to a workflow session (updateWorkflow;
+     * Workflow: a person's command to a workflow session (updateWorkflow;
      * design 04, R26). Taken by default; a client created with
      * `workflowCommands: null` refuses every command
      * WORKFLOW_COMMANDS_UNAVAILABLE, 501, and nothing changes. The command is
@@ -2109,7 +2109,7 @@ export class PilotSwarmManagementClient {
         const actor: WorkflowActor = provider && subject ? { kind: "user", provider, subject } : { kind: "system", name: "management-client" };
         // A publication pins its named agents as the workers' publications do (agent-resolver.ts); this client knows the agent
         // registry, not a worker's deployment agents, so it pins package agents only.
-        const host: WorkflowV2Host = {
+        const host: WorkflowHost = {
             catalog: this._catalog!, store, duroxideClient: this._duroxideClient,
             // Stage 2.0: script nodes refused at save and Start only when this client knows the workers run none.
             ...(typeof this.config.workflowScripts === "boolean" ? { scripts: this.config.workflowScripts } : {}),
@@ -2149,14 +2149,14 @@ export class PilotSwarmManagementClient {
     // ─── Stage 2.1: a chat's Workflow Definitions, for a person ───────────────────────────
 
     /** The chat row a person's definition call is for: a live session that is not a Workflow. */
-    private async _chatForDefinitions(chatSessionId: string): Promise<WorkflowV2Host> {
+    private async _chatForDefinitions(chatSessionId: string): Promise<WorkflowHost> {
         this._ensureStarted();
         const failure = (code: string, status: number, message: string): Error => Object.assign(new Error(message), { code, status, expose: true });
         const session = await this._catalog!.getSession(chatSessionId);
         if (!session || session.deletedAt) throw failure("NOT_FOUND", 404, "Session not found.");
         if (session.sessionKind === "workflow") throw failure("CHAT_NOT_FOUND", 404, "A Workflow does not own Workflow Definitions; its chat does.");
         const store = this._workflowStoreOrNull();
-        if (!store) throw failure("WORKFLOW_V2_UNAVAILABLE", 503, "This deployment cannot store Workflow Definitions.");
+        if (!store) throw failure("WORKFLOW_UNAVAILABLE", 503, "This deployment cannot store Workflow Definitions.");
         const enabled = this.config.workflowCommands;
         const packages = this._packageWorkflows();
         return {
@@ -3845,7 +3845,7 @@ export class PilotSwarmManagementClient {
     // runtime has already gated session read for door 1.
 
     /** The workflow store, when this catalog has one (the workflow human-input policy reads lineage from it). */
-    private _workflowStoreOrNull(): import("./workflow/v2/store.js").WorkflowStore | null {
+    private _workflowStoreOrNull(): import("./workflow/store.js").WorkflowStore | null {
         const catalog = this._catalog as any;
         return typeof catalog?.workflowStore === "function" ? catalog.workflowStore() : null;
     }
@@ -4845,8 +4845,8 @@ export class PilotSwarmManagementClient {
     }
 
     /**
-     * A cancel, done or delete for a session (S7-DX2 follow-up): a v2 workflow's is applied in its store first
-     * (applyOperatorCommandToWorkflowV2: delete deletes the workflow, cancel and done end its active run at once, so no
+     * A cancel, done or delete for a session (S7-DX2 follow-up): a workflow's is applied in its store first
+     * (applyOperatorCommandToWorkflow: delete deletes the workflow, cancel and done end its active run at once, so no
      * further step starts), and the command is queued for its controller only when that says so; any other session's
      * command is queued as before (sendCommand).
      */
@@ -4855,7 +4855,7 @@ export class PilotSwarmManagementClient {
         const store = this._workflowStoreOrNull();
         if (store) {
             const facts = this._factStore;
-            const applied = await applyOperatorCommandToWorkflowV2({
+            const applied = await applyOperatorCommandToWorkflow({
                 store, deleteSessionFacts: facts ? (id: string) => facts.deleteSessionFactsForSession(id) : null, duroxideClient: this._duroxideClient,
             }, { targetSessionId: sessionId, command: { type: "cmd", ...command } });
             // A workflow with no active run has nothing for the store to apply: the command goes as before.

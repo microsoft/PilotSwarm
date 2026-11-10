@@ -5,7 +5,7 @@ import { PilotSwarmWorker, horizonConfigFromEnv, loadExtensionModules, parseExte
 import { getPluginDirsFromEnv } from "./plugin-config.js";
 
 /**
- * Start `count` workers in this process. `testOptions` (test-only: the Workflow V2 test environment switch) is passed to
+ * Start `count` workers in this process. `testOptions` (test-only: the Workflow test environment switch) is passed to
  * each worker as it is; absent, each worker is created exactly as before.
  */
 export async function startEmbeddedWorkers({ count, store, testOptions }) {

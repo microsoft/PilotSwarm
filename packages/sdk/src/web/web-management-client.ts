@@ -8,7 +8,7 @@ import { createManagementOps, type ManagementOps } from "./generated-op-methods.
 import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "../feature-store.js";
 import type { MotdCreateInput, MotdViewer } from "../motd-store.js";
 import type { StopTurnOptions, StopTurnResult, SteerTurnOptions, SteerTurnResult, WorkflowReadOptions } from "../types.js";
-import type { WorkflowInputCapabilities } from "../workflow/v2/input-policy.js";
+import type { WorkflowInputCapabilities } from "../workflow/input-policy.js";
 
 const WAIT_SLICE_MS = 25_000;
 
@@ -339,7 +339,7 @@ export class WebPilotSwarmManagementClient {
     }
 
     /**
-     * Workflow v2: the read-only view of a workflow session (readWorkflow, session:read), a section's next page
+     * Workflow: the read-only view of a workflow session (readWorkflow, session:read), a section's next page
      * (`cursor`, a nextCursor a read returned) or one execution's whole value (`executionId`); `limit` sets the rows per
      * page. The options are the operation's declared parameters: the request builder leaves out an absent (or null) one,
      * and any other value is sent for the server to check. The session id is always the argument's.
@@ -393,7 +393,7 @@ export class WebPilotSwarmManagementClient {
     }
 
     /**
-     * Workflow v2: a person's command to a workflow session (updateWorkflow,
+     * Workflow: a person's command to a workflow session (updateWorkflow,
      * session:manage; taken by default: only a deployment whose management
      * client was created with `workflowCommands: null` answers 501
      * WORKFLOW_COMMANDS_UNAVAILABLE). The server stamps

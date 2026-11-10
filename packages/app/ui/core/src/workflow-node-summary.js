@@ -6,7 +6,7 @@
  * said twice. Pure: `now` only decides whether a time shows its date.
  */
 import { shortSessionId } from "./formatting.js";
-import { formatSeconds, workflowV2AgentChatMode, workflowV2AgentTask, workflowV2AgentTools, workflowV2AgentToolsTitle, workflowV2RouteKind } from "./workflow-v2-view.js";
+import { formatSeconds, workflowAgentChatMode, workflowAgentTask, workflowAgentTools, workflowAgentToolsTitle, workflowRouteKind } from "./workflow-view.js";
 import { workflowErrorParts, workflowErrorLeavesOut, workflowServerErrorWords } from "./workflow-error-words.js";
 import { workflowAskAnswerWords, workflowDuration, workflowErrorRouteWords, workflowFailureDetail, workflowOutcomeWord, workflowRunsText, workflowShortTime } from "./workflow-words.js";
 
@@ -48,7 +48,7 @@ export function workflowNodeWhat(node) {
     const kind = node?.kind ?? (node?.type === "messaging" ? node.mode : node?.type);
     switch (kind) {
         case "agent": {
-            if (node.invoke?.source === "agent") return `Asks agent ${workflowV2AgentTask(node)} to do its task with the node's input.`;
+            if (node.invoke?.source === "agent") return `Asks agent ${workflowAgentTask(node)} to do its task with the node's input.`;
             const first = workflowFirstSentence(node.about?.prompt);
             return first ? `Asks an agent: “${first}”` : "Asks an agent to do the task in its prompt.";
         }
@@ -213,7 +213,7 @@ function chatOf(node, execution) {
 export function workflowNodeNext(node) {
     if (!node || node.type === "terminal") return { lines: [], failure: null };
     const lines = Object.entries(isRecord(node.next) ? node.next : {}).map(([label, target]) => {
-        const kind = workflowV2RouteKind(node, label);
+        const kind = workflowRouteKind(node, label);
         const words = kind === "outcome" ? label : workflowErrorRouteWords(label);
         return { label, target, kind, text: `${words} → ${target}` };
     });
@@ -230,12 +230,12 @@ export function workflowNodeNext(node) {
 export function workflowNodeSummary(node, { execution = node?.current ?? null, ended = undefined, now = Date.now() } = {}) {
     if (!node) return null;
     const agent = node.kind === "agent" ? {
-        chatMode: workflowV2AgentChatMode(node),
-        tools: workflowV2AgentTools(node),
-        toolsTitle: workflowV2AgentToolsTitle(node),
+        chatMode: workflowAgentChatMode(node),
+        tools: workflowAgentTools(node),
+        toolsTitle: workflowAgentToolsTitle(node),
         told: node.invoke?.source === "agent" ? null : text(node.about?.prompt),
         toldWords: node.invoke?.source === "agent"
-            ? `Agent ${workflowV2AgentTask(node)} follows its own instructions, with the node's input.` : null,
+            ? `Agent ${workflowAgentTask(node)} follows its own instructions, with the node's input.` : null,
         chatSessionId: chatOf(node, execution),
         // OF-S2-7: the model it uses ("azure:gpt-5 · low reasoning · chosen at start", or "… · from the chat").
         model: node.model?.value ?? null,

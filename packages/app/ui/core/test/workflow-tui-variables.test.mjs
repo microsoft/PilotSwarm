@@ -2,7 +2,7 @@
 // deployment that takes a person's workflow commands offers them): the view lists them with their revision, and v opens
 // a form that sets a name to a JSON value (Enter) or removes a name (ctrl-r, after the confirm dialog), each as one
 // set_vars update of that run at the revision the view shows, as the portal's variables panel sends it (the shared
-// controller's sendWorkflowRunCommand; workflowV2RunVariables, workflowV2VariableDraft, workflowV2VariableRemoval). A
+// controller's sendWorkflowRunCommand; workflowRunVariables, workflowVariableDraft, workflowVariableRemoval). A
 // name is kept exactly as typed, and a value is typed JSON. What is typed is checked first. The form is not offered
 // where the workflow (an agent state's subtree), the run (ended, revision unknown), the viewer or the deployment does
 // not allow it, and the server decides every update anyway: its refusal stays in the form. A changed revision is
@@ -16,7 +16,7 @@ import {
     PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowVariableModal,
     selectWorkflowViewModal,
 } from "../src/index.js";
-import { RUN, SUBTREE_REASON as SUBTREE, readModel } from "./workflow-v2-fixtures.mjs";
+import { RUN, SUBTREE_REASON as SUBTREE, readModel } from "./workflow-fixtures.mjs";
 
 const states = [
     { id: "review", type: "agent", invoke: { source: "agent", name: "code-reviewer" }, timeoutSeconds: 600, outcomes: ["accepted"],

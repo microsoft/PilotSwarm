@@ -115,7 +115,7 @@ describe("Permission handler contracts", () => {
     });
 
     it("on a turn of a worker that runs workflow agent states, refuses MCP tools only while the session runs under a real-agent test", async () => {
-        // Workflow v2: a workflow request turn (1.0.83) gets this handler; every other turn keeps its handler as it is.
+        // Workflow: a workflow request turn (1.0.83) gets this handler; every other turn keeps its handler as it is.
         const harness = createManagerHarness();
         try {
             const managed = await harness.manager.getOrCreate("milestone-permission-session", {

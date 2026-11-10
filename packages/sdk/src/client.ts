@@ -1,4 +1,4 @@
-import { isWorkflowTestBench } from "./workflow/v2/test-bench.js";
+import { isWorkflowTestBench } from "./workflow/test-bench.js";
 import {
     RESPONSE_LATEST_KEY,
     sanitizePromptAttachmentRefs,
@@ -27,7 +27,7 @@ import { validateWorkspaceText } from "./workspace-check.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
-import { assertWorkflowHumanInputAllowed } from "./workflow/v2/input-policy.js";
+import { assertWorkflowHumanInputAllowed } from "./workflow/input-policy.js";
 import type { FactStore } from "./facts-store.js";
 import { resolveStorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
@@ -323,7 +323,7 @@ export class PilotSwarmClient {
             this._catalog.getSession(sessionId),
             this._catalog.getSessionCreationConfig ? this._catalog.getSessionCreationConfig(sessionId) : Promise.resolve(null),
         ]);
-        if (createdRow?.sessionKind === "workflow" || createdConfig?.workflowV2) {
+        if (createdRow?.sessionKind === "workflow" || createdConfig?.workflow) {
             throw Object.assign(new Error(`Session ${sessionId} already exists as a workflow session; no session was created.`),
                 { code: "SESSION_EXISTS", status: 409 });
         }
@@ -905,7 +905,7 @@ export class PilotSwarmClient {
                 : null;
             // A workflow session (live or deleted) owns session-<id> for its
             // workflow controller; a conversation turn never starts or enqueues there.
-            if (cmsRow?.sessionKind === "workflow" || stored?.workflowV2) {
+            if (cmsRow?.sessionKind === "workflow" || stored?.workflow) {
                 throw workflowNotConversationalError(sessionId);
             }
             const { bootstrapNestingLevel: storedDepth, ...storedSessionConfig } = stored ?? {};
@@ -1111,7 +1111,7 @@ export class PilotSwarmClient {
     }
 
     /** @internal The workflow store, when this catalog has one (the workflow human-input policy reads lineage from it). */
-    _workflowStoreOrNull(): import("./workflow/v2/store.js").WorkflowStore | null {
+    _workflowStoreOrNull(): import("./workflow/store.js").WorkflowStore | null {
         return typeof this._catalog?.workflowStore === "function" ? this._catalog.workflowStore() : null;
     }
 

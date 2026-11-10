@@ -95,7 +95,7 @@ export function registerTurnControlActivity(runtime: any, name: keyof typeof TUR
  * 8.2, workflow-durable-intake.md section 8): every activity of orchestration
  * 1.0.83's intake goes only to workers that declare this tag, so an older
  * worker never fetches work it cannot run. Every worker declares it
- * (WORKFLOW_MILESTONE_WORKER_TAGS, workflow/v2/milestone-worker.ts).
+ * (WORKFLOW_MILESTONE_WORKER_TAGS, workflow/milestone-worker.ts).
  */
 export const WORKFLOW_REQUEST_CAPABILITY = "pilotswarm.workflow-request.v1";
 

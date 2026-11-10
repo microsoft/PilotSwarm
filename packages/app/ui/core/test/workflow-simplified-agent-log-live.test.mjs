@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { workflowAgentNodeLog, workflowPromptVisit } from "../src/workflow-agent-log.js";
-import { WorkflowV2AgentLog } from "../../react/src/workflow-v2-panels.js";
+import { WorkflowAgentLog } from "../../react/src/workflow-panels.js";
 
 process.env.TZ = "UTC";
 const NOW = Date.parse("2026-11-06T16:45:00.000Z");
@@ -102,7 +102,7 @@ test("each visit has its own Prompt row, base instructions first and shown once;
     assert.ok(log.groups.every(group => !group.rows.some(row => row.label === "Note to the agent" && /WORKFLOW NODE INVOCATION/.test(row.more ?? row.text))));
     // Each visit keeps its own Workflow rows.
     assert.ok(first.rows.some(row => row.kind === "workflow") && second.rows.some(row => row.kind === "workflow"));
-    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "fact" }));
+    const html = renderToStaticMarkup(React.createElement(WorkflowAgentLog, { log, nodeId: "fact" }));
     assert.ok(!html.includes("data-earlier"), html);
     assert.equal((html.match(/<span class="ps-wf-alog-label">Prompt<\/span>/g) || []).length, 2);
 });
@@ -137,11 +137,11 @@ test("the Workflow's line about the agent chat: plain words, a clock, the chat l
         }
     }
     const opened = [];
-    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "fact", onOpenChat: id => opened.push(id) }));
+    const html = renderToStaticMarkup(React.createElement(WorkflowAgentLog, { log, nodeId: "fact", onOpenChat: id => opened.push(id) }));
     assert.ok(html.includes(`<button type="button" class="ps-link-button" data-action="open-agent-chat" data-session="${CHAT}">Agent session</button> started · limit 16:41:17`), html);
     assert.ok(html.includes(`Visit 2 · <button type="button" class="ps-link-button" data-action="open-agent-chat" data-session="${CHAT}">same agent session</button>`), html);
     // Without a way to open a chat, the words stay plain.
-    const plain = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "fact" }));
+    const plain = renderToStaticMarkup(React.createElement(WorkflowAgentLog, { log, nodeId: "fact" }));
     assert.ok(!plain.includes("open-agent-chat") && plain.includes("Agent session started · limit 16:41:17"));
     // A later visit whose chat had ended starts a new chat, linked, without the ended chat's raw id.
     const restarted = workflowAgentNodeLog({ node, events: [...events, wfEvent(36, "workflow.agent_chat_restarted", "16:39:52",

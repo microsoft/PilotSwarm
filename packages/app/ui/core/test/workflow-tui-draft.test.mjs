@@ -1,7 +1,7 @@
 // The draft's YAML in the TUI's workflow view (design 04 replace_definition; mocks M01, M02; R03, R17, R26; INACTIVE:
 // only a deployment that takes a person's workflow commands, and only a draft whose YAML the read model gives a person
-// who may change it): e opens an editor on the YAML the portal's editor edits (workflowV2DraftEditor,
-// workflowV2DraftEdit), and ctrl-o saves the edit as one replace_definition at the revision it started from (the shared
+// who may change it): e opens an editor on the YAML the portal's editor edits (workflowDraftEditor,
+// workflowDraftEdit), and ctrl-o saves the edit as one replace_definition at the revision it started from (the shared
 // controller's sendWorkflowRunCommand), so a draft someone else saved meanwhile is refused, never overwritten. What was
 // typed is kept across a revision with compile errors, a refusal, an answer that never came, a newer revision and
 // closing the editor; ctrl-r discards it (asking first) and ctrl-k keeps it on a newer revision. A just-saved revision
@@ -15,12 +15,12 @@ import {
     PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowDraftModal,
     selectWorkflowViewModal, workflowDraftBuffer,
 } from "../src/index.js";
-import { SUBTREE_REASON as SUBTREE, readModel, states } from "./workflow-v2-fixtures.mjs";
+import { SUBTREE_REASON as SUBTREE, readModel, states } from "./workflow-fixtures.mjs";
 
 /** Every command a 1.9.0 host takes from people (human-commands.ts), in its order. */
 const ALL = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "stop",
     "test", "test_respond", "test_advance"];
-const YAML = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: watch-v2, version: 1.0.0 }\ninitial: poll\nstates: {}\n";
+const YAML = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: watch-flow, version: 1.0.0 }\ninitial: poll\nstates: {}\n";
 const THEIRS = `${YAML}# someone else's line\n`;
 
 /**
@@ -70,7 +70,7 @@ function harness(initial, answers = []) {
     };
     const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
-    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-v2", status: "running", sessionKind: "workflow" }] });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-flow", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel([]) });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: initial, readModelRunId: null } });
@@ -126,10 +126,10 @@ test("the view names the draft's revision; e opens the editor on its YAML, and c
     let shown = editor(h.store);
     assert.equal(shown.title, "Definition · editing revision 1 · version 1.0.0, fixed · line 1, column 1");
     assert.equal(shown.lines.length, 6);
-    assert.equal(rowText(shown.lines[0]), "1 apiVersion: pilotswarm.dev/v2-draft");
+    assert.equal(rowText(shown.lines[0]), "1 apiVersion: pilotswarm.dev/v1");
     assert.deepEqual(shown.lines[0][1], { text: "", color: "white" });
     assert.deepEqual(shown.lines[0][2], { text: "a", color: "promptCursorForeground", backgroundColor: "promptCursorBackground" });
-    assert.equal(rowText(shown.lines[2]), "3 metadata: { name: watch-v2, version: 1.0.0 }");
+    assert.equal(rowText(shown.lines[2]), "3 metadata: { name: watch-flow, version: 1.0.0 }");
     assert.deepEqual(shown.statusLines.map(line => line.text), ["No unsaved edits."]);
     assert.equal(shown.hint, "ctrl-o save · ctrl-r discard edits (asks first) · Enter new line · Tab two spaces · Esc close (edits kept)");
     assert.deepEqual(shown.hintLines, [{ text: shown.hint, color: "gray" }]);

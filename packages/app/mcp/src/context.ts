@@ -86,7 +86,7 @@ interface ServerContextBase {
     /** Agent-package management tool tier ("off" | "read" | "full"). */
     agentMgmt: "off" | "read" | "full";
     /**
-     * Workflow v2: register update_workflow, a person's workflow command. True for every server; false only for one
+     * Workflow: register update_workflow, a person's workflow command. True for every server; false only for one
      * created with `workflowCommands: null` (a test).
      */
     workflowCommands?: boolean;
@@ -152,7 +152,7 @@ export interface CreateContextOptions {
      */
     agentMgmt?: "off" | "read" | "full";
     /**
-     * Workflow v2: a person's workflow commands. Unset (every deployment): update_workflow is registered, and in direct mode
+     * Workflow: a person's workflow commands. Unset (every deployment): update_workflow is registered, and in direct mode
      * the management client takes them on the full engine (its default); in web mode the deployment takes them. `null`: no
      * update_workflow, and in direct mode no person's commands (a test).
      */

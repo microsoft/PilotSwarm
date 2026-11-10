@@ -24,7 +24,7 @@ import {
     WORKFLOW_LAYOUT_PLACE_KEY_MAX,
 } from "../src/workflow-layouts.js";
 import { layoutWorkflowGraphTB, workflowPlaceKey } from "../src/workflow-graph-layout.js";
-import { workflowV2Definition } from "../src/workflow-v2-view.js";
+import { workflowDefinition } from "../src/workflow-view.js";
 
 const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 
@@ -79,7 +79,7 @@ test("a place key of 129 characters is kept and one of 130 is dropped", () => {
 // state id may have (64), that key is 129 characters, and it survives the profile's normalizer and a reload.
 test("a branch step's place with two 64-character ids survives the profile round trip", () => {
     const parallel = `p${"a".repeat(63)}`, step = `s${"b".repeat(63)}`, end = `e${"c".repeat(63)}`;
-    const layout = layoutWorkflowGraphTB(workflowV2Definition({ revision: 1, initial: parallel, states: [
+    const layout = layoutWorkflowGraphTB(workflowDefinition({ revision: 1, initial: parallel, states: [
         { id: parallel, type: "parallel", forEach: "${input.items}", concurrency: 1, join: "all_required", failFast: false,
             body: { initial: step, states: [step, end] }, outcomes: ["joined", "blocked"], next: { joined: "done", blocked: "done" } },
         { id: step, type: "script", runtime: "node", timeoutSeconds: 30, outcomes: ["ok"], next: { ok: end }, parallel },

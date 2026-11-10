@@ -8,17 +8,17 @@
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
-import { openWorkflowStore } from "../helpers/workflow-v2-request-fixture.js";
+import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 import {
     saveChatWorkflowDefinition, startChatWorkflowDefinition, WORKFLOW_START_MAX_RUNNING_CHILDREN,
-} from "../../src/workflow/v2/chat-definitions.ts";
+} from "../../src/workflow/chat-definitions.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
 const OWNER = { provider: "test", subject: "start-limits" };
 const ENGINE = { kind: "system", name: "start-limits-test" };
 const YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: waiter, version: "1.0.0" }
 initial: hold

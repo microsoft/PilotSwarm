@@ -131,7 +131,7 @@ const ALWAYS_TOOLS = [
     "set_session_visibility", "grant_session_share", "revoke_session_share",
     "list_session_shares", "list_known_users",
 ];
-// Workflow v2: the read is always there (Workflows are always on); a person's commands, update_workflow, only with the test-only option.
+// Workflow: the read is always there (Workflows are always on); a person's commands, update_workflow, only with the test-only option.
 const WORKFLOW_TOOLS = ["read_workflow"];
 
 function expectAll(names, tools, present, label) {

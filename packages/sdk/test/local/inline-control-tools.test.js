@@ -3,11 +3,11 @@ import { ModelProviderRegistry } from "../../src/model-providers.ts";
 import { ManagedSession, TURN_INACTIVITY_ERROR_MARKER } from "../../src/managed-session.ts";
 import { LiveTurnControl } from "../../src/turn-control.ts";
 import { collectContractViolations, isFailureToolCompletion, SYSTEM_ONLY_TURN_PROMPT } from "../../src/session-proxy.ts";
-import { WORKFLOW_ASK_USER_REFUSAL } from "../../src/workflow/v2/input-policy.ts";
+import { WORKFLOW_ASK_USER_REFUSAL } from "../../src/workflow/input-policy.ts";
 import { SPAWN_WORKFLOW_TOOL_SPEC } from "../../src/workflow/tool-spec.ts";
 import {
     answerAsksParent, publishedScheduleActive, turnAskedForAnswer, turnScheduleEffect, workflowAgentReminderText,
-} from "../../src/workflow/v2/agent-reminder.ts";
+} from "../../src/workflow/agent-reminder.ts";
 
 class FakeCopilotSession {
     registeredTools = [];
@@ -470,7 +470,7 @@ describe("inline control tool execution", () => {
     });
     it("spawn_workflow runs inline, keeps the turn going and passes the tool call id", async () => {
         const fakeSession = new FakeCopilotSession();
-        const yaml = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\n";
+        const yaml = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\n";
         fakeSession.scriptedToolCalls = [
             { name: "spawn_workflow", id: "call-wf", args: { yaml, inputs: { n: 1 } } },
             { name: "spawn_workflow", id: "call-empty", args: { yaml: "  " } },
@@ -515,7 +515,7 @@ describe("inline control tool execution", () => {
     });
 
     it("cron then spawn_workflow: the schedule is set and every wake-up can start a run", async () => {
-        const yaml = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\n";
+        const yaml = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\n";
         const controlToolBridge = {
             spawnAgent: vi.fn(),
             messageAgent: vi.fn(),
@@ -1146,7 +1146,7 @@ describe("inline control tool execution", () => {
     });
 
     it("intercepts every framework tool of a session under a real-agent workflow test, but complete_workflow_node and ask_user", async () => {
-        // Workflow v2 real-agent test runs (design 05 agent mode real; INACTIVE): the bridge's workflowTestToolCall answers the calls.
+        // Workflow real-agent test runs (design 05 agent mode real; INACTIVE): the bridge's workflowTestToolCall answers the calls.
         const fakeSession = new FakeCopilotSession();
         const regularToolHandler = vi.fn(async () => "live result");
         const calls = [];
@@ -1461,7 +1461,7 @@ describe("inline control tool execution", () => {
     });
 });
 
-// Owner decision Q2 (workflow/v2/agent-reminder.ts): a workflow agent state's own child whose turn would end with nothing
+// Owner decision Q2 (workflow/agent-reminder.ts): a workflow agent state's own child whose turn would end with nothing
 // pending is reminded once, inside the turn, through runCorrection, after the activity's gate (TurnOptions.stepReminder)
 // checked the step and recorded the reminder.
 describe("Q2: the step reminder inside an agent state's child turn", () => {

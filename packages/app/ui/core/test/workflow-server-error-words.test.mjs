@@ -9,8 +9,8 @@ import assert from "node:assert/strict";
 import { workflowServerErrorWords, workflowErrorWords } from "../src/workflow-error-words.js";
 import { workflowFailure } from "../src/workflow-owner.js";
 import { workflowNodeNow, workflowNodeResult } from "../src/workflow-node-summary.js";
-import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
-import { readModel } from "./workflow-v2-fixtures.mjs";
+import { projectWorkflow } from "../src/workflow-view.js";
+import { readModel } from "./workflow-fixtures.mjs";
 
 process.env.TZ = "UTC";
 
@@ -42,7 +42,7 @@ test("a failed run's headline and the Node panel's result say the server's words
     assert.equal(failure.headline, `poll failed: ${WORDS}`);
     assert.equal(failure.executionId, "nx-poll-1");
     const model = readModel({ graph: { revision: 1, initial: "poll", states }, runs: [{ runId: "run-1", mode: "live", status: "failed", revision: 1, outcome: null }], run });
-    const node = projectWorkflowV2({ readModel: model }).nodes.find(item => item.id === "poll");
+    const node = projectWorkflow({ readModel: model }).nodes.find(item => item.id === "poll");
     assert.equal(node.current?.errorWords ?? node.executions?.at(-1)?.errorWords, WORDS);
     // The words are said once, in the result; Now says the shortest reason and the time.
     assert.match(workflowNodeNow(node, node.current ?? node.executions.at(-1)), /^Failed · execution failed · \S/);
@@ -62,7 +62,7 @@ test("a step's failure event carries its words to the graph before its read", ()
         { seq: 3, eventType: "workflow.state_failed", createdAt: at, data: { runId: "run-1", nodeExecutionId: "nx-poll-1", stateId: "poll", step: 1,
             outcome: "execution_failed", resultKind: "runtime_error", error: CUT, errorWords: WORDS } },
     ];
-    const projection = projectWorkflowV2({ definition: { shape: "v2", initial: "poll", states }, events });
+    const projection = projectWorkflow({ definition: { shape: "v2", initial: "poll", states }, events });
     const node = projection.nodes.find(item => item.id === "poll");
     const execution = node.current ?? node.executions?.at(-1);
     assert.equal(execution?.errorWords, WORDS);

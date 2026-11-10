@@ -52,7 +52,7 @@ test("a Workflow's start and elapsed time come from its live run's own events; a
 test("each icon button of the Workflow tab has its explanation, for a tooltip that reads 'name — explanation'", () => {
     assert.equal(workflowTabButtonTip("pause"), "no new node starts; started nodes finish");
     assert.equal(workflowTabButtonTip("start", { number: 8 }), "start Workflow #8 from this definition");
-    assert.equal(workflowTabButtonTip("start-another", { name: "watch-v2", number: 3 }), "ask the chat to start watch-v2 #3 from this definition");
+    assert.equal(workflowTabButtonTip("start-another", { name: "watch-flow", number: 3 }), "ask the chat to start watch-flow #3 from this definition");
     assert.equal(workflowTabButtonTip("save", { revision: 4 }), "save as a new revision after revision 4");
     // Owner, 2026-11-06T19:40Z (F7): full screen's way out.
     assert.equal(workflowTabButtonTip("exit-full-screen"), "bring back the chat and the sessions");
@@ -65,7 +65,7 @@ test("each icon button of the Workflow tab has its explanation, for a tooltip th
     assert.equal(workflowTabButtonTip("nothing"), null);
 });
 
-// The Workflow tab as rendered: a session with two Workflows of watch-v2, #1 running (its person may pause and stop it)
+// The Workflow tab as rendered: a session with two Workflows of watch-flow, #1 running (its person may pause and stop it)
 // and #2 failed; the tab shows #1.
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -78,7 +78,7 @@ const STATES = [{ id: "poll", type: "script", runtime: "node", timeoutSeconds: 6
     { id: "done", type: "terminal", outcome: "succeeded" }];
 const modelOf = (workflowId, runId, status, extra = {}) => ({
     workflowId, definition: { state: "published", semver: "1.0.0", currentRevision: 1, publishedRevision: 1 },
-    revision: { revision: 1, definitionHash: "h1", valid: true, name: "watch-v2", diagnostics: [] },
+    revision: { revision: 1, definitionHash: "h1", valid: true, name: "watch-flow", diagnostics: [] },
     graph: { revision: 1, initial: "poll", states: STATES },
     runs: [{ runId, mode: "live", status, revision: 1, outcome: null }],
     run: { runId, mode: "live", status, outcome: null, nodeExecutions: [], inbox: [], outbox: [], kv: "{}", kvRevision: 1 },
@@ -89,8 +89,8 @@ function mountTab() {
     const at = Date.now();
     store.dispatch({ type: "sessions/loaded", sessions: [
         { sessionId: "owner", title: "Release triage agent", createdAt: at - 60_000, updatedAt: at },
-        { sessionId: "wf-1", sessionKind: "workflow", title: "Workflow: watch-v2", status: "running", parentSessionId: "owner", createdAt: at - 50_000, updatedAt: at },
-        { sessionId: "wf-2", sessionKind: "workflow", title: "Workflow: watch-v2", status: "failed", parentSessionId: "owner", createdAt: at - 40_000, updatedAt: at },
+        { sessionId: "wf-1", sessionKind: "workflow", title: "Workflow: watch-flow", status: "running", parentSessionId: "owner", createdAt: at - 50_000, updatedAt: at },
+        { sessionId: "wf-2", sessionKind: "workflow", title: "Workflow: watch-flow", status: "failed", parentSessionId: "owner", createdAt: at - 40_000, updatedAt: at },
     ] });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf-1", view: { readModel: modelOf("wf-1", "run-1", "running", {
         personCommands: { operations: ["pause", "resume", "stop", "cancel"], viewer: { allowed: true }, run: { runId: "run-1", stop: true } } }),
@@ -118,7 +118,7 @@ test("the Workflow tab's header and toolbar buttons are named icons with tooltip
         ["Stop…", "", "let started nodes finish, or cancel now"],
     ]);
     // The definition picker: the definition and its version (owner, 2026-11-07T00:03Z: each version its own option), no count.
-    assert.match(html, /<option value="watch-v2" selected="">watch-v2 · 1\.0\.0<\/option>/);
+    assert.match(html, /<option value="watch-flow" selected="">watch-flow · 1\.0\.0<\/option>/);
     // The Workflow picker: one group that says how many, newest first; closed, "#1 of 2". OF-S2-8: "Workflow" in words beside it.
     assert.match(html, /<label for="(wf-number-[^"]+)" class="ps-wf-picker-label">Workflow<\/label><span class="ps-wf-picker is-faced is-number"><span class="ps-workflow-input ps-wf-picker-face" aria-hidden="true"><span class="ps-wf-picker-face-text">#1 of 2<\/span><\/span><select id="\1"/);
     // Owner, 2026-11-07T00:03Z: each Workflow's version follows its number.

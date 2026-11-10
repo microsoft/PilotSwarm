@@ -17,7 +17,7 @@ import express from "express";
 import { ApiClient, HttpApiTransport } from "pilotswarm-sdk/api";
 
 import { PilotSwarmManagementClient } from "pilotswarm-sdk";
-import { WorkflowStoreError } from "../../../sdk/dist/workflow/v2/store.js";
+import { WorkflowStoreError } from "../../../sdk/dist/workflow/store.js";
 import { chatDefinitionFailure } from "../../ui/core/src/workflow-chat-definitions.js";
 
 import { createApiRouter } from "../api/router.js";
@@ -34,7 +34,7 @@ function readOf(sessionId) {
         revisions: [], workflows: [], current: null,
         revision: { definitionId: "def-hn", revision: 2, valid: false, semver: "1.0.0", yamlSha256: "y2", irSha256: null, basedOn: 1,
             actor: { kind: "chat", sessionId }, imported: false, createdAt: "2026-11-07T09:02:00.000Z", errorCount: 1,
-            yaml: `apiVersion: pilotswarm.dev/v2-draft\n# ${SENTINEL}\n`,
+            yaml: `apiVersion: pilotswarm.dev/v1\n# ${SENTINEL}\n`,
             diagnostics: [{ severity: "error", code: "WORKFLOW_SCHEMA_INVALID", path: `schemas.${SENTINEL}`, line: 2, message: `bad ${SENTINEL}` }] },
         graph: { revision: 2, initial: "calc", states: [], inputsSchema: { type: "object", description: SENTINEL, required: ["topic"],
             properties: { topic: { type: "string", default: SENTINEL, minLength: 2 } } } },

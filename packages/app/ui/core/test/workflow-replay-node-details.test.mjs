@@ -9,9 +9,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { projectWorkflowV2, workflowV2ReplayBranchIndex, workflowV2ReplayFrames } from "../src/workflow-v2-view.js";
+import { projectWorkflow, workflowReplayBranchIndex, workflowReplayFrames } from "../src/workflow-view.js";
 import { RunNodePanel } from "../../react/src/workflow-tab.js";
-import { done, readModel } from "./workflow-v2-fixtures.mjs";
+import { done, readModel } from "./workflow-fixtures.mjs";
 
 process.env.TZ = "UTC";
 const T = minutes => new Date(Date.parse("2026-11-07T15:00:00.000Z") + minutes * 60_000).toISOString();
@@ -47,22 +47,22 @@ const render = (projection, replayFrame) => {
 };
 
 test("a replayed branch visit's details are that visit's: its branch, and its own agent chat", () => {
-    const live = projectWorkflowV2({ readModel: model });
-    const frames = workflowV2ReplayFrames(live.allExecutions);
+    const live = projectWorkflow({ readModel: model });
+    const frames = workflowReplayFrames(live.allExecutions);
     const frame = frames.find(item => item.nodeExecutionId === "nx-work-b1");
     assert.equal(frame.branchIndex, 1);
-    const replayed = projectWorkflowV2({ readModel: model, asOf: frame.atMs });
+    const replayed = projectWorkflow({ readModel: model, asOf: frame.atMs });
     const work = replayed.nodes.find(node => node.id === "work");
     // Both branches run at 15:02; the step's default branch is the first one running (branch 1).
     assert.deepEqual(work.branches.choices.map(choice => [choice.index, choice.execution.status]), [[0, "pending"], [1, "pending"]]);
     assert.equal(work.branches.defaultIndex, 0);
-    assert.equal(workflowV2ReplayBranchIndex(work, frame), 1);
+    assert.equal(workflowReplayBranchIndex(work, frame), 1);
     // Another step, or no replay, has no replayed branch.
-    assert.equal(workflowV2ReplayBranchIndex(replayed.nodes.find(node => node.id === "fan"), frame), null);
-    assert.equal(workflowV2ReplayBranchIndex(work, null), null);
+    assert.equal(workflowReplayBranchIndex(replayed.nodes.find(node => node.id === "fan"), frame), null);
+    assert.equal(workflowReplayBranchIndex(work, null), null);
     // A visit no longer listed by id falls back to its branch number when listed.
-    assert.equal(workflowV2ReplayBranchIndex(work, { ...frame, nodeExecutionId: "nx-gone" }), 1);
-    assert.equal(workflowV2ReplayBranchIndex(work, { ...frame, nodeExecutionId: "nx-gone", branchIndex: 7 }), null);
+    assert.equal(workflowReplayBranchIndex(work, { ...frame, nodeExecutionId: "nx-gone" }), 1);
+    assert.equal(workflowReplayBranchIndex(work, { ...frame, nodeExecutionId: "nx-gone", branchIndex: 7 }), null);
 
     const html = render(replayed, frame);
     assert.match(html, /data-action="open-agent-chat"[^>]*data-session="chat-b"/, html);
@@ -72,5 +72,5 @@ test("a replayed branch visit's details are that visit's: its branch, and its ow
     assert.match(render(replayed, null), /data-session="chat-a"/);
     // Replaying branch 1's visit shows branch 1.
     const first = frames.find(item => item.nodeExecutionId === "nx-work-b0");
-    assert.match(render(projectWorkflowV2({ readModel: model, asOf: first.atMs }), first), /data-session="chat-a"/);
+    assert.match(render(projectWorkflow({ readModel: model, asOf: first.atMs }), first), /data-session="chat-a"/);
 });

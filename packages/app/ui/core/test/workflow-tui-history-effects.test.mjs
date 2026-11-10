@@ -17,7 +17,7 @@ import {
     selectWorkflowViewModal,
     workflowViewPanelWidth,
 } from "../src/index.js";
-import { readModel, row, done } from "./workflow-v2-fixtures.mjs";
+import { readModel, row, done } from "./workflow-fixtures.mjs";
 
 /** A review that loops through a fix until accepted. */
 const states = [

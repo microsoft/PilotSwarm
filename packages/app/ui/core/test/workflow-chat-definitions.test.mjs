@@ -14,7 +14,7 @@ import {
     chatDefinitionsLoaded, chatDefinitionsModel, chatDefinitionsStamp, chatNextWorkflowNumber, chatReadAccess, chatRevisionAuthorWords, chatRevisionCompare,
     chatDeleteWords, chatRevisionOptionLabel, chatRevisionReadModel, chatShownRevision, chatStartControl, chatLastTestWords, isWorkflowTestBench, WORKFLOW_TEST_BENCH_KIND,
 } from "../src/workflow-chat-definitions.js";
-import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
+import { projectWorkflow } from "../src/workflow-view.js";
 
 const OWNER = "chat-1";
 const T0 = "2026-11-07T09:00:00.000Z";
@@ -108,7 +108,7 @@ test("Start starts the revision shown: refused, with why, for one with errors (E
 test("a revision's read draws its graph as a Workflow's view does; a reader gets no YAML", () => {
     const hn = chatDefinitionsModel(LIST)[1];
     const value = {
-        ...HN, revision: { ...rev(2), yaml: "apiVersion: pilotswarm.dev/v2-draft\n", diagnostics: [] },
+        ...HN, revision: { ...rev(2), yaml: "apiVersion: pilotswarm.dev/v1\n", diagnostics: [] },
         graph: { revision: 2, initial: "poll", states: [{ id: "poll", type: "script", outcomes: ["done"], next: { done: "done" } }, { id: "done", type: "terminal", outcome: "succeeded" }],
             inputsSchema: { type: "object", properties: { topic: { type: "string" } } } },
         personCommands: true, viewer: { allowed: true, reason: null },
@@ -117,15 +117,15 @@ test("a revision's read draws its graph as a Workflow's view does; a reader gets
     assert.equal(model.workflowId, "def-hn");
     assert.equal(model.revision.revision, 2);
     assert.equal(model.revision.name, "hn-top-watch");
-    const projection = projectWorkflowV2({ definition: null, readModel: null, workflowModel: model, selectedRunId: null, events: [] });
+    const projection = projectWorkflow({ definition: null, readModel: null, workflowModel: model, selectedRunId: null, events: [] });
     assert.deepEqual(projection.nodes.map(node => node.id), ["poll", "done"]);
     assert.equal(projection.definition.initial, "poll");
-    assert.deepEqual(chatReadAccess(value), { allowed: true, reason: null, personCommands: true, yaml: "apiVersion: pilotswarm.dev/v2-draft\n" });
+    assert.deepEqual(chatReadAccess(value), { allowed: true, reason: null, personCommands: true, yaml: "apiVersion: pilotswarm.dev/v1\n" });
     const reader = { ...value, revision: { ...rev(2), diagnostics: [] }, viewer: { allowed: false, reason: "Only this workflow's owner or an admin can command it." } };
     assert.deepEqual(chatReadAccess(reader), { allowed: false, reason: "Only this workflow's owner or an admin can command it.", personCommands: true, yaml: null });
     // A revision with errors has no graph; its diagnostics stay.
     const broken = chatRevisionReadModel(hn, { ...value, revision: { ...rev(3, { valid: false }), yaml: "x", diagnostics: [{ severity: "error", code: "E", message: "bad", line: 2 }] }, graph: null });
-    const brokenProjection = projectWorkflowV2({ definition: null, readModel: null, workflowModel: broken, selectedRunId: null, events: [] });
+    const brokenProjection = projectWorkflow({ definition: null, readModel: null, workflowModel: broken, selectedRunId: null, events: [] });
     assert.equal(brokenProjection.definition, null);
     assert.equal(brokenProjection.diagnostics.length, 1);
     assert.equal(chatRevisionReadModel(hn, null), null);
@@ -298,7 +298,7 @@ test("Save sends the revision it was based on; a stale save is refused in words,
             return answer;
         },
     } });
-    const edit = { definitionId: "def-hn", name: "hn-top-watch", yaml: "apiVersion: pilotswarm.dev/v2-draft\n", expectedRevision: 3 };
+    const edit = { definitionId: "def-hn", name: "hn-top-watch", yaml: "apiVersion: pilotswarm.dev/v1\n", expectedRevision: 3 };
     answer = new Error("socket hang up");
     const lost = await controller.saveChatWorkflowDefinition(OWNER, edit);
     assert.equal(lost.ok, false);

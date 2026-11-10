@@ -7,8 +7,8 @@ import { createInspectTools } from "../../dist/inspect-tools.js";
 import { FEATURE_OPERATION_SPECS } from "../../dist/feature-tools.js";
 import { PROVIDER_TOOL_NAMES } from "../../dist/provider-tools.js";
 import { ManagedSession } from "../../dist/managed-session.js";
-import { COMPLETE_WORKFLOW_NODE_TOOL } from "../../dist/workflow/v2/agent-node-service.js";
-import { RESPOND_SESSION_REQUEST_TOOL } from "../../dist/workflow/v2/request-service.js";
+import { COMPLETE_WORKFLOW_NODE_TOOL } from "../../dist/workflow/agent-node-service.js";
+import { RESPOND_SESSION_REQUEST_TOOL } from "../../dist/workflow/request-service.js";
 
 test("Copilot-native and PilotSwarm control names are reserved", () => {
     assert.equal(findReservedPackageToolName(["domain_tool", "read_agent"], [], []), "read_agent");

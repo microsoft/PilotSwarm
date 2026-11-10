@@ -16,19 +16,19 @@ import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createManagementClient, PilotSwarmClient } from "../helpers/local-workers.js";
-import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
-import { WORKFLOW_HUMAN_INPUT_DENIED } from "../../src/workflow/v2/input-policy.ts";
-import { WORKFLOW_V2_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
-import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
-import { openWorkflowStore } from "../helpers/workflow-v2-request-fixture.js";
-import { intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-v2-intake-native-fixture.js";
+import { compileWorkflow } from "../../src/workflow/compiler.ts";
+import { WORKFLOW_HUMAN_INPUT_DENIED } from "../../src/workflow/input-policy.ts";
+import { WORKFLOW_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/runtime.ts";
+import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
+import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
+import { intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-intake-native-fixture.js";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
 const ACTOR = { kind: "system", name: "workflows-always-on-test" };
 
 const AGENT_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: reviewer, version: "1.0.0" }
 initial: review
@@ -47,17 +47,17 @@ states:
 
 /** A published workflow of `parent` whose agent state is admitted pending with its child `childSessionId`. */
 async function agentStateOf({ catalog, store }, parent, childSessionId, owner = null) {
-    const compiled = compileWorkflowV2(AGENT_YAML, { enableRequests: true, enableAgents: true });
+    const compiled = compileWorkflow(AGENT_YAML, { enableRequests: true, enableAgents: true });
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
     const workflowSessionId = randomUUID();
     const runId = randomUUID();
-    expect(await catalog.createWorkflowSessionV2(workflowSessionId, { parentSessionId: parent, owner,
-        creationConfig: { workflowV2: { requestSha256: "workflows-switch" } } })).toEqual({ created: true });
+    expect(await catalog.createWorkflowSession(workflowSessionId, { parentSessionId: parent, owner,
+        creationConfig: { workflow: { requestSha256: "workflows-switch" } } })).toEqual({ created: true });
     await store.createDefinition({
         workflowSessionId, parentSessionId: parent, notifyParent: false, yaml: AGENT_YAML, compiled, actor: ACTOR,
         operationId: "create", requestSha256: "workflows-switch", publish: true, title: "Workflow: reviewer",
         start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
-            inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION },
+            inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_CONTROLLER_VERSION },
     });
     const nodeExecutionId = nodeExecutionIdFor(runId, "root", "review", 1);
     expect(await store.enterNode({
@@ -106,8 +106,8 @@ describe("Workflows always on: the management client and the client", () => {
 });
 
 describe("Workflows always on: a real 1.0.83 turn (runTurnV5)", () => {
-    const V2_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+    const FIXTURE_YAML = `
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: switch-probe, version: "1.0.0" }
 initial: done
@@ -124,7 +124,7 @@ states:
                 const bridge = opts.controlToolBridge;
                 const entry = { switched: Object.hasOwn(bridge ?? {}, "workflowsDisabled") };
                 seen.push(entry);
-                entry.spawn = await answer(() => bridge.spawnWorkflow({ yaml: V2_YAML }, { toolCallId: "call-spawn" }));
+                entry.spawn = await answer(() => bridge.spawnWorkflow({ yaml: FIXTURE_YAML }, { toolCallId: "call-spawn" }));
                 entry.update = await answer(() => bridge.updateWorkflow({ workflow_id: randomUUID(), operation: "pause", operation_id: "op-1" }));
                 entry.read = await answer(() => bridge.readWorkflow({ workflow_id: randomUUID() }));
                 entry.send = await answer(() => bridge.sendWorkflowInput({ workflow_id: randomUUID(), input: {} }));
@@ -146,7 +146,7 @@ states:
 
 describe("Workflows always on, scripts off, on a real 1.0.83 turn", () => {
     const SCRIPT_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: scripted-probe, version: "1.0.0" }
 initial: poll
@@ -155,7 +155,7 @@ states:
   finish: { type: terminal, outcome: succeeded }
 `;
     const WAIT_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: waiting-probe, version: "1.0.0" }
 initial: hold

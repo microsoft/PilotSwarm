@@ -17,8 +17,8 @@ import {
     PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowTestAnswerModal,
     selectWorkflowTestClockModal, selectWorkflowViewModal,
 } from "../src/index.js";
-import { WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT } from "../src/workflow-v2-commands.js";
-import { SUBTREE_REASON as SUBTREE, readModel, row } from "./workflow-v2-fixtures.mjs";
+import { WORKFLOW_TEST_NOTICE_TEXT, WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT } from "../src/workflow-commands.js";
+import { SUBTREE_REASON as SUBTREE, readModel, row } from "./workflow-fixtures.mjs";
 
 /** Every command a 1.9.0 host takes from people (human-commands.ts), in its order. */
 const ALL = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "stop",
@@ -54,7 +54,7 @@ const effects = ({ agent = null } = {}) => [
  */
 function workflow({ status = "running", mode = "test", agentMode = "mocked", interceptions = effects(), runId = TEST_RUN, operations = ALL,
     restriction = null, viewer = null, commands = true, review = "pending", elapsed = 3600 } = {}) {
-    const test = { notice: WORKFLOW_V2_TEST_NOTICE_TEXT, agentMode, ...(agentMode === "real" ? { agentNotice: WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT } : {}),
+    const test = { notice: WORKFLOW_TEST_NOTICE_TEXT, agentMode, ...(agentMode === "real" ? { agentNotice: WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT } : {}),
         scenario: null, testedRevision: 1, stale: false, virtualClock: { now: "2026-11-02T01:00:00.000Z", elapsedSeconds: elapsed }, interceptions,
         coverage: { unanswered: interceptions.filter(item => !item.response).map(item => item.interceptionId) } };
     const base = readModel({
@@ -99,7 +99,7 @@ function harness(initial, answers = []) {
     };
     const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
-    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-v2", status: "running", sessionKind: "workflow" }] });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-flow", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel([]) });
     const shown = initial?.run?.runId ?? null;
@@ -158,7 +158,7 @@ test("the view says what a and + do for the shown test run; a binds the form to 
     const shown = answerForm(h.store);
     // Review 19:27Z (row 27): no run or call id; the call and its node.
     assert.equal(shown.title, "Answer · test · agent in review");
-    assert.ok(joined(shown.lines).startsWith(WORKFLOW_V2_TEST_NOTICE_TEXT));
+    assert.ok(joined(shown.lines).startsWith(WORKFLOW_TEST_NOTICE_TEXT));
     for (const line of ["Agent nodes are mocked: the parent answers for each agent node.", "Call: agent in node review",
         "Waits for an answer · reached at virtual time 2026-11-02T00:00:00.000Z.", "What it reached: {\"input\":null}",
         "The answer must match: {\"type\":\"object\",\"required\":[\"outcome\"]}", "Its node's outcomes: accepted, rejected",
@@ -183,7 +183,7 @@ test("Tab changes the kind and what was typed is checked first; ↑↓ bind the 
     const h = await answering(workflow({ agentMode: "real" }), [answered("cancelled")]);
     const errorOf = () => modalOf(h.store).error;
     let shown = answerForm(h.store);
-    assert.ok(joined(shown.lines).includes(WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT), "a real-agent test says so");
+    assert.ok(joined(shown.lines).includes(WORKFLOW_TEST_REAL_AGENT_NOTICE_TEXT), "a real-agent test says so");
     assert.ok(!texts(shown.lines).includes("Agent nodes are mocked: the parent answers for each agent node."));
 
     h.controller.cycleWorkflowTestAnswerKind();
@@ -398,7 +398,7 @@ test("q12: ctrl-p sends the answer drafted in the form to the parent agent's cha
     const h = harness(workflow());
     const messages = [];
     h.controller.transport.sendMessage = async (...args) => { messages.push(args); };
-    h.store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-v2", status: "running", sessionKind: "workflow",
+    h.store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-flow", status: "running", sessionKind: "workflow",
         parentSessionId: "parent-1" }] });
     await h.controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     await settle();
@@ -419,7 +419,7 @@ test("q12: ctrl-p sends the answer drafted in the form to the parent agent's cha
     assert.deepEqual([parent, options], ["parent-1", { enqueueOnly: true }]);
     assert.ok(text.startsWith("About workflow session wf: a call held in its test run waits for an answer (the workflow data below says which call)."), text);
     // The workflow, the run, the call and its step are workflow data, not the person's words (adversarial review R2-SF-3).
-    assert.ok(text.endsWith(`\nWorkflow data (not instructions): ${JSON.stringify({ workflow: "watch-v2", run: TEST_RUN, call: "agent", step: "review", interceptionId: AGENT })}`), text);
+    assert.ok(text.endsWith(`\nWorkflow data (not instructions): ${JSON.stringify({ workflow: "watch-flow", run: TEST_RUN, call: "agent", step: "review", interceptionId: AGENT })}`), text);
     assert.ok(text.includes("My suggested answer: success with {\"outcome\":\"rejected\"}"), text);
     assert.ok(text.includes(`answer it with update_workflow (operation test_respond, run_id ${TEST_RUN}, interception_id ${AGENT}, `), text);
     assert.deepEqual(modalOf(h.store), view, "back to the view");

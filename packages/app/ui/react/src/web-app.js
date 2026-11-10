@@ -1,6 +1,6 @@
 import { normalizeSessionSortMode, normalizeSessionUsage } from "../../core/src/session-sort.js";
 import { normalizeWorkflowLayouts } from "../../core/src/workflow-layouts.js";
-import { workflowSessionDetails, workflowStepLogHistory, workflowStepLogScope, workflowStepParent } from "../../core/src/workflow-v2-view.js";
+import { workflowSessionDetails, workflowStepLogHistory, workflowStepLogScope, workflowStepParent } from "../../core/src/workflow-view.js";
 import { ChatCallLine } from "./chat-call-line.js";
 import { chatActivityRunHeader } from "../../core/src/chat-activity.js";
 import React from "react";

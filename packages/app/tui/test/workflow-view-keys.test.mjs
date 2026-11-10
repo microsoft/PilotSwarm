@@ -25,7 +25,7 @@ import {
     WorkflowVariableModal, WorkflowViewModal,
 } from "../../ui/react/src/components.js";
 import { UiPlatformProvider } from "../../ui/react/src/platform.js";
-import { readModel, row } from "../../ui/core/test/workflow-v2-fixtures.mjs";
+import { readModel, row } from "../../ui/core/test/workflow-fixtures.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const APP = fs.readFileSync(path.join(here, "..", "src", "app.js"), "utf8");
@@ -263,7 +263,7 @@ test("the draft editor takes typed text, q included; ctrl-o, ctrl-r, ctrl-k, Ent
 });
 
 test("the shared Ink app draws the draft editor: the revision, the YAML with line numbers and the cursor, what the edit is and its keys", async () => {
-    const yaml = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\n";
+    const yaml = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\n";
     const withDraft = { ...readModel({ noRun: true, graph: { revision: 2, initial: "review", states },
         definition: { state: "draft", currentRevision: 2, publishedRevision: null, publishedDefinitionHash: null },
         revision: { revision: 2, definitionHash: "hash-2", name: "review-once" } }),
@@ -284,7 +284,7 @@ test("the shared Ink app draws the draft editor: the revision, the YAML with lin
     const html = renderToStaticMarkup(React.createElement(UiPlatformProvider, { platform },
         React.createElement(WorkflowDraftModal, { state: store.getState() })));
     assert.match(html, /data-title="Definition · editing revision 2 · version 1\.0\.0, fixed · line 2, column 3"/);
-    assert.match(html, /<p>1 apiVersion: pilotswarm\.dev\/v2-draft<\/p>/);
+    assert.match(html, /<p>1 apiVersion: pilotswarm\.dev\/v1<\/p>/);
     assert.match(html, /<p>2 # kind: Workflow<\/p>/);
     assert.match(html, /<p>3 <\/p>/, "the empty line after the last newline");
     assert.match(html, /data-title="Definition"><p>Unsaved edits\. ctrl-o saves them as a new revision after revision 2\.<\/p>/);

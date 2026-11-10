@@ -28,12 +28,12 @@ import * as guidance from "../../dist/workflow/guidance.js";
 import {
     READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC, READ_WORKFLOW_MILESTONE_TOOL_SPEC, READ_WORKFLOW_TOOL_SPEC, readWorkflowToolSpec,
     UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC, UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC, UPDATE_WORKFLOW_TOOL_SPEC, updateWorkflowFromTool,
-} from "../../dist/workflow/v2/tools.js";
-import { workflowDefinitionToolSpec } from "../../dist/workflow/v2/definition-tool.js";
+} from "../../dist/workflow/tools.js";
+import { workflowDefinitionToolSpec } from "../../dist/workflow/definition-tool.js";
 
 const {
-    SKILLS_INDEX_HEADING, WORKFLOW_INSIDE_GUIDANCE, WORKFLOW_PERSON_CONTROL_GUIDANCE, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_V2_SKILLS_DIR,
-    WORKFLOW_V2_TEST_MODE_SKILLS_DIR,
+    SKILLS_INDEX_HEADING, WORKFLOW_INSIDE_GUIDANCE, WORKFLOW_PERSON_CONTROL_GUIDANCE, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_SKILLS_DIR,
+    WORKFLOW_TEST_MODE_SKILLS_DIR,
     isWorkflowSkill, skillsIndexLine, skillsIndexSection, withWorkflowSkillsListed, workflowSessionGuidance,
 } = guidance;
 
@@ -193,8 +193,8 @@ test("G-6: the shared V1 index leaves the Workflow skills out; withWorkflowSkill
 
 test("G-6: a base without a skills index gets one with the Workflow skills; other directories are not Workflow skills", () => {
     const skills = [
-        { name: "workflow-tools", description: "Every argument.", dir: path.join(WORKFLOW_V2_SKILLS_DIR, "workflow-tools") },
-        { name: "workflow-testing", description: "Tests.", dir: path.join(WORKFLOW_V2_TEST_MODE_SKILLS_DIR, "workflow-testing") },
+        { name: "workflow-tools", description: "Every argument.", dir: path.join(WORKFLOW_SKILLS_DIR, "workflow-tools") },
+        { name: "workflow-testing", description: "Tests.", dir: path.join(WORKFLOW_TEST_MODE_SKILLS_DIR, "workflow-testing") },
         { name: "canvas-apps", description: "Canvas.", dir: path.join(os.tmpdir(), "skills", "canvas-apps") },
         { name: "no-dir", description: "None." },
     ];
@@ -254,7 +254,7 @@ test("G-9: update_workflow declares no operation or argument of a Workflow made 
 // ─── G-11: the workflow-tools skill ───
 
 test("G-11: the workflow-tools skill speaks of revisions and this chat's Workflows, not workflow children", () => {
-    const text = fs.readFileSync(path.join(WORKFLOW_V2_SKILLS_DIR, "workflow-tools", "SKILL.md"), "utf8");
+    const text = fs.readFileSync(path.join(WORKFLOW_SKILLS_DIR, "workflow-tools", "SKILL.md"), "utf8");
     const flat = text.replace(/\s+/g, " ");
     for (const old of ["workflow child", "creating agent", "Workflows made before definitions had revisions", "replace_definition",
         "publish_and_start", "PINNED_TO_CHAT_REVISION", "WORKFLOW_REVISION_LIMIT"]) {

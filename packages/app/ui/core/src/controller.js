@@ -1,5 +1,5 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
-import { workflowV2Definition, workflowReadModelView, workflowV2ExecutionValueKey, workflowV2KvApplied, workflowV2KvRevisionKey, workflowV2OlderStart, workflowV2RunHistory, workflowV2RunRows, workflowV2ShownExecution } from "./workflow-v2-view.js";
+import { workflowDefinition, workflowReadModelView, workflowExecutionValueKey, workflowKvApplied, workflowKvRevisionKey, workflowOlderStart, workflowRunHistory, workflowRunRows, workflowShownExecution } from "./workflow-view.js";
 import {
     normalizeWorkflowInputPolicy, selectWorkflowInputCheck, selectWorkflowInputNote, WORKFLOW_INPUT_CHECKING_TEXT, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
     workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
@@ -8,14 +8,14 @@ import {
     WORKFLOW_TEST_ANSWER_KINDS, workflowViewTestAnswerRefusal, workflowViewTestClockRefusal, workflowViewExecutionStep,
 } from "./workflow-tui.js";
 import {
-    workflowV2CommandNamesRun, workflowV2JsonObjectDraft, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm,
-    workflowV2RunCommandFailure, workflowV2RunCommandNotice, workflowV2RunCommandWire, workflowV2ScenarioDraft, workflowV2VariableBatchDraft,
-    workflowV2VariableDraft, workflowV2VariableRemoval, workflowV2VariableEditBehind, workflowV2VariableExactRetry, workflowV2VariableListed,
-    workflowV2VariableLoad, WORKFLOW_V2_VARIABLE_EARLIER_SAVED,
-    workflowV2AdvanceDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft,
-    workflowV2RevisionCompare, workflowV2AskParentSent, workflowV2HeldCallQuestion, workflowV2ParentSessionId, workflowV2StepInputKey, workflowV2StepQuestion,
-    workflowV2TestModeListed,
-} from "./workflow-v2-commands.js";
+    workflowCommandNamesRun, workflowJsonObjectDraft, workflowRunCommandAccepted, workflowRunCommandArgs, workflowRunCommandConfirm,
+    workflowRunCommandFailure, workflowRunCommandNotice, workflowRunCommandWire, workflowScenarioDraft, workflowVariableBatchDraft,
+    workflowVariableDraft, workflowVariableRemoval, workflowVariableEditBehind, workflowVariableExactRetry, workflowVariableListed,
+    workflowVariableLoad, WORKFLOW_VARIABLE_EARLIER_SAVED,
+    workflowAdvanceDraft, workflowTestAnswerTemplate, workflowTestResponseDraft,
+    workflowRevisionCompare, workflowAskParentSent, workflowHeldCallQuestion, workflowParentSessionId, workflowStepInputKey, workflowStepQuestion,
+    workflowTestModeListed,
+} from "./workflow-commands.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
@@ -6666,7 +6666,7 @@ export class PilotSwarmUiController {
         if (loaded) {
             try {
                 this.dispatch({ type: "ui/workflowView", sessionId,
-                    view: { definition: workflowV2Definition(loaded.data), loading: false, error: null } });
+                    view: { definition: workflowDefinition(loaded.data), loading: false, error: null } });
             } catch (error) {
                 this.dispatch({ type: "ui/workflowView", sessionId, view: { loading: false, error: error.message } });
             }
@@ -6687,7 +6687,7 @@ export class PilotSwarmUiController {
                 const start = rows.find(event => event.eventType === "workflow.started");
                 if (!start) throw new Error("The workflow definition is not available yet. Retry after the workflow starts.");
                 this.dispatch({ type: "ui/workflowView", sessionId,
-                    view: { definition: workflowV2Definition(start.data), loading: false, error: null } });
+                    view: { definition: workflowDefinition(start.data), loading: false, error: null } });
             } catch (error) {
                 this.dispatch({ type: "ui/workflowView", sessionId,
                     view: { loading: false, error: error?.message || String(error) } });
@@ -6698,7 +6698,7 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow v2: load the authorized read model (readWorkflow, GET
+     * Workflow: load the authorized read model (readWorkflow, GET
      * /sessions/:id/workflow, session:read) into the workflow view as
      * `readModel`, for the run selection it was asked for
      * (`readModelRunId`: `selectedRunId`, null for the live run), with
@@ -6808,7 +6808,7 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow v2: read the agent versions that publishing the current revision would lock now (readWorkflow
+     * Workflow: read the agent versions that publishing the current revision would lock now (readWorkflow
      * agentVersions; owner decision q1; mock M03) into the view's `agentVersions` ({ revision, phase, value, error }), for
      * the publication review: read when the review opens, and again when the revision it reviews changes or after a
      * failure. Reading locks nothing. Never throws.
@@ -6833,7 +6833,7 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow v2: one kept read of a workflow, as the definition revisions, a run's variables and an execution's whole
+     * Workflow: one kept read of a workflow, as the definition revisions, a run's variables and an execution's whole
      * value are read: `{ ...identity, phase, [field], error }` under `key` of the view's `slot` (the `cap` newest kept),
      * loading, then the value `accept` takes from the answer (it throws for an answer that is not the one asked for), or
      * the failure as `describe` words it. Returns { ok, entry } or { ok: false, reason: "failed", error, entry }. Reading
@@ -6860,7 +6860,7 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow v2: read one definition revision's YAML (readWorkflow definitionRevision; owner decision q4: comparing two
+     * Workflow: read one definition revision's YAML (readWorkflow definitionRevision; owner decision q4: comparing two
      * versions) into the view's `definitionRevisions`, by revision (at most 32, the newest). A revision is never
      * changed once saved, so one read is kept; a failure is read again. Reading changes nothing. Never throws.
      */
@@ -6879,7 +6879,7 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow v2: an agent step's inputs in the current draft (readWorkflow stepInput; owner decision q6) into the view's
+     * Workflow: an agent step's inputs in the current draft (readWorkflow stepInput; owner decision q6) into the view's
      * `stepInput` ({ state, phase, value, error }), and any earlier proposal for another step dropped. Reading changes
      * nothing. Never throws.
      */
@@ -6907,7 +6907,7 @@ export class PilotSwarmUiController {
         }
     }
 
-    /** Workflow v2 (UI-4): start a new load of a session's step inputs, or none; an answer for an earlier load is dropped. */
+    /** Workflow (UI-4): start a new load of a session's step inputs, or none; an answer for an earlier load is dropped. */
     _nextWorkflowStepInputLoad(sessionId) {
         if (!this.workflowStepInputLoads) this.workflowStepInputLoads = new Map();
         const load = (this.workflowStepInputLoads.get(sessionId) ?? 0) + 1;
@@ -6916,7 +6916,7 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow v2 (owner decision q6): start a new preparation of a change to a session's step inputs, or none. An answer
+     * Workflow (owner decision q6): start a new preparation of a change to a session's step inputs, or none. An answer
      * for an earlier one is then dropped, as the person changed the fields, chose another step or read the step again.
      */
     _nextWorkflowStepInputPreparation(sessionId) {
@@ -6927,17 +6927,17 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow v2: prepare a change to an agent step's inputs (owner decision q6): the draft's YAML with only that step's
+     * Workflow: prepare a change to an agent step's inputs (owner decision q6): the draft's YAML with only that step's
      * input mapping changed, as the server writes it (readWorkflow stepInput with `input`), into the view's
      * `stepInputPreview` ({ state, revision, key, phase, value: { yaml, changed, valid, diagnostics }, error }; `key` is
-     * the mapping it was prepared from, workflowV2StepInputKey). Only the latest preparation's answer is kept. Nothing is
+     * the mapping it was prepared from, workflowStepInputKey). Only the latest preparation's answer is kept. Nothing is
      * saved. Never throws.
      */
     async previewWorkflowStepInput(sessionId, state, input) {
         const loaded = this.getState().ui.workflowViews?.[sessionId]?.stepInput;
         if (!loaded || loaded.state !== state || loaded.phase !== "loaded" || typeof this.transport?.readWorkflow !== "function") return null;
         const revision = loaded.value?.revision ?? null;
-        const key = workflowV2StepInputKey(input);
+        const key = workflowStepInputKey(input);
         const preparation = this._nextWorkflowStepInputPreparation(sessionId);
         const write = entry => {
             if (this.workflowStepInputPreparations.get(sessionId) !== preparation
@@ -6957,7 +6957,7 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow v2: drop the prepared change to a step's inputs (owner decision q6), and any answer still on its way: the
+     * Workflow: drop the prepared change to a step's inputs (owner decision q6), and any answer still on its way: the
      * person changed or added a field, so it no longer says what is shown. Nothing is sent.
      */
     forgetWorkflowStepInputPreview(sessionId) {
@@ -6969,7 +6969,7 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow v2: save the prepared change to an agent step's inputs (owner decision q6) as a new draft revision: the
+     * Workflow: save the prepared change to an agent step's inputs (owner decision q6) as a new draft revision: the
      * same replace_definition as the draft editor, at the revision the change was prepared on, so a draft changed meanwhile
      * is refused, never overwritten. `shown` names the step and the mapping the editor shows now: only a change prepared
      * from exactly that is saved. Accepted: the editor reads the step again on the new revision. Never throws.
@@ -6978,7 +6978,7 @@ export class PilotSwarmUiController {
         const view = this.getState().ui.workflowViews?.[sessionId];
         const preview = view?.stepInputPreview;
         if (!preview || preview.phase !== "loaded" || preview.value?.changed !== true || !Number.isSafeInteger(preview.revision)
-            || preview.state !== shown?.state || preview.key === null || preview.key !== workflowV2StepInputKey(shown?.input)) {
+            || preview.state !== shown?.state || preview.key === null || preview.key !== workflowStepInputKey(shown?.input)) {
             return { ok: false, reason: "invalid" };
         }
         const result = await this.sendWorkflowRunCommand(sessionId, { operation: "replace_definition", expectedRevision: preview.revision,
@@ -6990,7 +6990,7 @@ export class PilotSwarmUiController {
         return result;
     }
 
-    /** Workflow v2: close the step-input editor (owner decision q6); nothing is sent. */
+    /** Workflow: close the step-input editor (owner decision q6); nothing is sent. */
     closeWorkflowStepInput(sessionId) {
         if (!sessionId || this.getState().sessions.byId[sessionId]?.sessionKind !== "workflow") return;
         this._nextWorkflowStepInputPreparation(sessionId);
@@ -7000,8 +7000,8 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow v2: read one kept revision of a run's variables (readWorkflow with its run and kvRevision: design 02 open
-     * KV; mock M15) into the view's `kvRevisions`, by run and revision (workflowV2KvRevisionKey; the six read last are
+     * Workflow: read one kept revision of a run's variables (readWorkflow with its run and kvRevision: design 02 open
+     * KV; mock M15) into the view's `kvRevisions`, by run and revision (workflowKvRevisionKey; the six read last are
      * kept), for exactly that run; an answer for another run or revision is refused. A failure is recorded with its error.
      * Reading changes nothing. Never throws.
      */
@@ -7011,7 +7011,7 @@ export class PilotSwarmUiController {
             return { ok: false, reason: "unsupported" };
         }
         if (typeof runId !== "string" || !runId || !Number.isSafeInteger(revision) || revision < 1) return { ok: false, reason: "invalid" };
-        const { entry, ...result } = await this._readWorkflowKept(sessionId, { slot: "kvRevisions", key: workflowV2KvRevisionKey(runId, revision), cap: 6,
+        const { entry, ...result } = await this._readWorkflowKept(sessionId, { slot: "kvRevisions", key: workflowKvRevisionKey(runId, revision), cap: 6,
             identity: { runId, revision }, field: "kv", options: { runId, kvRevision: revision }, describe: boundedWorkflowReadError,
             accept: read => {
                 if (read?.runId !== runId || read?.kv?.revision !== revision || !Array.isArray(read.kv.entries)) {
@@ -7023,7 +7023,7 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow v2: compare two revisions of a run's variables (mock M15 "Compare snapshots"): records the comparison in
+     * Workflow: compare two revisions of a run's variables (mock M15 "Compare snapshots"): records the comparison in
      * the view (`kvCompare`: { runId, from, to }) and reads both revisions (loadWorkflowKvRevision). Never throws.
      */
     async compareWorkflowKvRevisions(sessionId, { runId = null, from = null, to = null } = {}) {
@@ -7043,10 +7043,10 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow v2: read the next, older page of each section of the shown run's history (readWorkflow with the section's
+     * Workflow: read the next, older page of each section of the shown run's history (readWorkflow with the section's
      * cursor, for that run: design 04 read_workflow "Bounded history pagination"; R01 history) into the view's
      * `olderHistory` ({ runId, sections: { [section]: { items, nextCursor } }, loading, error }), which the projection
-     * joins to that run's own read model only (workflowV2RunRows). The first read keeps the read model's own pages as
+     * joins to that run's own read model only (workflowRunRows). The first read keeps the read model's own pages as
      * where the older pages continue from, so a newer read model never leaves a gap between them; later reads continue
      * from the last older page. A section whose oldest row is loaded is not read again. `restart` reads from the read
      * model's cursors again and discards what was loaded (after loaded rows changed: staleOlder). A read whose answer is
@@ -7072,13 +7072,13 @@ export class PilotSwarmUiController {
         // joins again).
         const plain = value => value !== null && typeof value === "object" && !Array.isArray(value);
         const continuing = continueOlder && previous && plain(previous.sections);
-        // The loaded older pages that still join the read model's page, else the page itself (workflowV2OlderStart): the next
+        // The loaded older pages that still join the read model's page, else the page itself (workflowOlderStart): the next
         // older page always follows rows already read, never leaving a gap after newer rows arrived.
-        const start = { runId: run.runId, sections: continuing ? previous.sections : workflowV2OlderStart(run, previous) };
+        const start = { runId: run.runId, sections: continuing ? previous.sections : workflowOlderStart(run, previous) };
         const history = continuing
             ? { paged: true, next: Object.fromEntries(Object.entries(previous.sections).flatMap(([section, loaded]) =>
                 (plain(loaded?.nextCursor) ? [[section, loaded.nextCursor]] : []))) }
-            : workflowV2RunHistory(run, start);
+            : workflowRunHistory(run, start);
         history.more = Object.keys(history.next).length > 0;
         if (!history.more) {
             // Review 19:10Z (D-W10): a status line names no run id.
@@ -7117,9 +7117,9 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow v2: read one execution's whole output or error (readWorkflow with its run and execution id: design 04
+     * Workflow: read one execution's whole output or error (readWorkflow with its run and execution id: design 04
      * read_workflow; mock M10 "Inspect typed output"; D07, at most 256 KiB) into the view's `executionValues`, by run
-     * and execution (workflowV2ExecutionValueKey; the four read last are kept). It is read for exactly that run, never
+     * and execution (workflowExecutionValueKey; the four read last are kept). It is read for exactly that run, never
      * the live run in its place, and an answer for another execution or run is refused. A failure is recorded with its
      * error; reading it again retries. Reading changes nothing. Never throws.
      */
@@ -7129,7 +7129,7 @@ export class PilotSwarmUiController {
             return { ok: false, reason: "unsupported" };
         }
         if (typeof runId !== "string" || !runId || typeof executionId !== "string" || !executionId) return { ok: false, reason: "invalid" };
-        const key = workflowV2ExecutionValueKey(runId, executionId);
+        const key = workflowExecutionValueKey(runId, executionId);
         if (state.ui.workflowViews?.[sessionId]?.executionValues?.[key]?.phase === "loading") return { ok: false, reason: "pending" };
         const { entry, ...result } = await this._readWorkflowKept(sessionId, { slot: "executionValues", key, cap: 4, identity: { runId, executionId },
             field: "result", options: { runId, executionId }, describe: boundedWorkflowReadError,
@@ -7144,7 +7144,7 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow v2 (INACTIVE unless the deployment takes a person's workflow
+     * Workflow (INACTIVE unless the deployment takes a person's workflow
      * commands): a person's workflow command, sent as an updateWorkflow
      * command through the transport (POST /sessions/:id/workflow/commands,
      * session:manage). A run command names run `runId`, the run the workflow
@@ -7172,8 +7172,8 @@ export class PilotSwarmUiController {
      * throws.
      */
     async sendWorkflowRunCommand(sessionId, { operation, runId, confirmed = false, ...input } = {}) {
-        const checked = workflowV2RunCommandArgs(operation, input);
-        const namesRun = workflowV2CommandNamesRun(operation);
+        const checked = workflowRunCommandArgs(operation, input);
+        const namesRun = workflowCommandNamesRun(operation);
         if (!checked.ok || (namesRun && (typeof runId !== "string" || !runId))) return { ok: false, reason: "invalid" };
         const args = checked.args;
         const run = namesRun ? runId : null;
@@ -7185,7 +7185,7 @@ export class PilotSwarmUiController {
         }
         const previous = state.ui.workflowViews?.[sessionId]?.runCommand || null;
         if (previous?.phase === "pending") return { ok: false, reason: "pending" };
-        const confirm = confirmed ? null : workflowV2RunCommandConfirm(operation, run, args);
+        const confirm = confirmed ? null : workflowRunCommandConfirm(operation, run, args);
         if (confirm) {
             const returnModal = ["workflowView", "workflowVariable", "workflowVariableBatch"].includes(state.ui.modal?.type) ? state.ui.modal : null;
             this.dispatch({ type: "ui/modal", modal: { type: "confirm", ...confirm, action: "workflowRunCommand",
@@ -7199,13 +7199,13 @@ export class PilotSwarmUiController {
         const record = { operation, runId: run, operationId, args };
         this.dispatch({ type: "ui/workflowView", sessionId, view: { runCommand: { ...record, phase: "pending", message: null, code: null } } });
         try {
-            const receipt = await this.transport.updateWorkflow(sessionId, workflowV2RunCommandWire(operation, run, operationId, args));
+            const receipt = await this.transport.updateWorkflow(sessionId, workflowRunCommandWire(operation, run, operationId, args));
             this.dispatch({ type: "ui/workflowView", sessionId, view: { runCommand: null } });
-            this.dispatch({ type: "ui/status", text: workflowV2RunCommandAccepted(operation, run, receipt, args) });
+            this.dispatch({ type: "ui/status", text: workflowRunCommandAccepted(operation, run, receipt, args) });
             this.ensureWorkflowReadModel(sessionId, { force: true }).catch(() => {});
             return { ok: true, receipt };
         } catch (error) {
-            const failure = workflowV2RunCommandFailure(error);
+            const failure = workflowRunCommandFailure(error);
             this.dispatch({ type: "ui/workflowView", sessionId, view: { runCommand: { ...record, ...failure } } });
             if (failure.phase === "failed" && Number(error?.status) === 409) this.ensureWorkflowReadModel(sessionId, { force: true }).catch(() => {});
             return { ok: false, reason: failure.phase, error };
@@ -7249,7 +7249,7 @@ export class PilotSwarmUiController {
         const sessionId = selection.modal.sessionId;
         const result = await this.sendWorkflowRunCommand(sessionId, { operation, runId: decided.runId });
         if (!result.ok && (result.reason === "failed" || result.reason === "unconfirmed")) {
-            const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[sessionId]?.runCommand);
+            const notice = workflowRunCommandNotice(this.getState().ui.workflowViews?.[sessionId]?.runCommand);
             if (notice) this.dispatch({ type: "ui/status", text: notice.text });
         }
         return result;
@@ -7320,7 +7320,7 @@ export class PilotSwarmUiController {
             const variables = workflowViewProjectionFor(this.getState(), modal.sessionId).runVariables;
             const base = Object.hasOwn(rebase, "baseRevision") ? rebase.baseRevision : modal.baseRevision;
             const sameRevision = variables?.runId === modal.runId && Number.isSafeInteger(base) && base === variables.revision;
-            patch.listed = sameRevision ? workflowV2VariableListed(variables, name) : null;
+            patch.listed = sameRevision ? workflowVariableListed(variables, name) : null;
         }
         return patch;
     }
@@ -7346,7 +7346,7 @@ export class PilotSwarmUiController {
     /**
      * R2-UI-1: a variables form (one or several) whose edit started at an older revision than the view shows now: `keep`
      * (ctrl-k) keeps the edit, to be saved over the new values at the new revision; `reload` (ctrl-l) loads the new values
-     * (the one-variable form: workflowV2VariableLoad, re-check RC-1: the named variable's value now; a removed one's old
+     * (the one-variable form: workflowVariableLoad, re-check RC-1: the named variable's value now; a removed one's old
      * value cleared; nothing loaded, and the edit still behind, when the list cannot be read whole; the several-variables
      * form: empty fields) at the new revision. Nothing is sent.
      */
@@ -7356,7 +7356,7 @@ export class PilotSwarmUiController {
         if (!modal || (modal.type !== "workflowVariable" && modal.type !== "workflowVariableBatch")) return;
         const variables = workflowViewProjectionFor(state, modal.sessionId).runVariables;
         if (!variables || variables.runId !== modal.runId) return;
-        const behind = workflowV2VariableEditBehind(modal.baseRevision, variables.revision);
+        const behind = workflowVariableEditBehind(modal.baseRevision, variables.revision);
         if (!behind) {
             this.dispatch({ type: "ui/status", text: "The form already edits the variables shown." });
             return;
@@ -7365,10 +7365,10 @@ export class PilotSwarmUiController {
         let patch = { baseRevision: variables.revision, error: null, generation: workflowFormGeneration(modal) };
         let status = choice !== "reload" ? `Your edit is kept; it is saved over revision ${variables.revision}.` : `Started over at revision ${variables.revision}.`;
         if (choice !== "reload" && modal.type === "workflowVariable") {
-            patch = { ...patch, listed: workflowV2VariableListed(variables, String(modal.name ?? "")), loadNotice: null };
+            patch = { ...patch, listed: workflowVariableListed(variables, String(modal.name ?? "")), loadNotice: null };
         } else if (choice === "reload" && modal.type === "workflowVariable") {
             // Re-check RC-1: Load takes only what it can read; it never keeps the old value while taking the new revision.
-            const loaded = workflowV2VariableLoad({ key: modal.name, value: modal.value, base: modal.baseRevision, listed: modal.listed }, variables);
+            const loaded = workflowVariableLoad({ key: modal.name, value: modal.value, base: modal.baseRevision, listed: modal.listed }, variables);
             patch = { ...patch, baseRevision: loaded.base, value: loaded.value, valueCursor: loaded.value.length, listed: loaded.listed, loadNotice: loaded.notice };
             status = loaded.notice ?? `Loaded the variables of revision ${variables.revision}.`;
         } else if (choice === "reload") {
@@ -7428,8 +7428,8 @@ export class PilotSwarmUiController {
      * The variables form: send what it names as one set_vars update of the
      * run it was opened for, as the portal's panel sends it
      * (sendWorkflowRunCommand), at the revision the view shows now: Enter
-     * sets the name to the JSON value (workflowV2VariableDraft), ctrl-r
-     * (`remove`) removes the name (workflowV2VariableRemoval) after the
+     * sets the name to the JSON value (workflowVariableDraft), ctrl-r
+     * (`remove`) removes the name (workflowVariableRemoval) after the
      * confirm dialog. What was typed is checked first and the form says what
      * is wrong; nothing is sent while another command is, for a run the view
      * no longer shows, or when the variables cannot be changed. Accepted: back
@@ -7451,7 +7451,7 @@ export class PilotSwarmUiController {
         }
         if (!variables.editable) return refuse(variables.reason);
         if (variables.busy) return refuse("Another command for this Workflow is being sent.");
-        const draft = remove ? workflowV2VariableRemoval(modal.name) : workflowV2VariableDraft(modal.name, modal.value);
+        const draft = remove ? workflowVariableRemoval(modal.name) : workflowVariableDraft(modal.name, modal.value);
         if (!draft.ok) return refuse(draft.error);
         const base = this.workflowVariableBase(modal, variables, remove ? { delete: draft.delete } : { set: draft.set });
         if (base.behind) return refuse(`${base.behind.text} Nothing was sent: ctrl-l loads the new values, or ctrl-k keeps your edit to save it over them.`);
@@ -7471,8 +7471,8 @@ export class PilotSwarmUiController {
     workflowVariableBase(modal, variables, payload = null) {
         const revision = Number.isSafeInteger(modal.baseRevision) ? modal.baseRevision : variables.revision;
         const command = this.getState().ui.workflowViews?.[modal.sessionId]?.runCommand ?? null;
-        const retrying = payload !== null && workflowV2VariableExactRetry(command, modal.runId, { expectedKvRevision: revision, ...payload });
-        return { revision, behind: retrying ? null : workflowV2VariableEditBehind(revision, variables.revision) };
+        const retrying = payload !== null && workflowVariableExactRetry(command, modal.runId, { expectedKvRevision: revision, ...payload });
+        return { revision, behind: retrying ? null : workflowVariableEditBehind(revision, variables.revision) };
     }
 
     /**
@@ -7500,15 +7500,15 @@ export class PilotSwarmUiController {
             if (same && (current.generation ?? 0) === (form.generation ?? 0) && typed(current) === typed(form)) {
                 this.dispatch({ type: "ui/modal", modal: current.returnModal ?? null });
             } else if (same) {
-                this.dispatch({ type: "ui/modal", modal: { ...current, saveNotice: WORKFLOW_V2_VARIABLE_EARLIER_SAVED } });
-                this.dispatch({ type: "ui/status", text: WORKFLOW_V2_VARIABLE_EARLIER_SAVED });
+                this.dispatch({ type: "ui/modal", modal: { ...current, saveNotice: WORKFLOW_VARIABLE_EARLIER_SAVED } });
+                this.dispatch({ type: "ui/status", text: WORKFLOW_VARIABLE_EARLIER_SAVED });
             } else {
                 this.dispatch({ type: "ui/status", text: "The earlier variables update was saved." });
             }
             return;
         }
         if (result?.reason === "failed" || result?.reason === "unconfirmed") {
-            const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[form.sessionId]?.runCommand);
+            const notice = workflowRunCommandNotice(this.getState().ui.workflowViews?.[form.sessionId]?.runCommand);
             if (notice) this.dispatch({ type: "ui/status", text: notice.text });
         }
     }
@@ -7562,7 +7562,7 @@ export class PilotSwarmUiController {
      * of the run it was opened for (the server applies all of it or none), as
      * the portal's panel sends an update (sendWorkflowRunCommand), at the
      * revision the view shows now: Set's names with their values and
-     * Remove's names (workflowV2VariableBatchDraft); an update that removes
+     * Remove's names (workflowVariableBatchDraft); an update that removes
      * any asks first in the confirm dialog, which returns to the form. What
      * was typed is checked first and the form says what is wrong; nothing is
      * sent while another command is, for a run the view no longer shows, or
@@ -7587,7 +7587,7 @@ export class PilotSwarmUiController {
         }
         if (!variables.editable) return refuse(variables.reason);
         if (variables.busy) return refuse("Another command for this Workflow is being sent.");
-        const draft = workflowV2VariableBatchDraft(modal.set, modal.remove);
+        const draft = workflowVariableBatchDraft(modal.set, modal.remove);
         if (!draft.ok) return refuse(draft.error);
         const base = this.workflowVariableBase(modal, variables, { set: draft.set, delete: draft.delete });
         if (base.behind) return refuse(`${base.behind.text} Nothing was sent: ctrl-l loads the new values, or ctrl-k keeps your edit to save it over them.`);
@@ -7602,7 +7602,7 @@ export class PilotSwarmUiController {
      * The TUI's workflow view: open the draft editor (e; design 04
      * replace_definition; mocks M01, M02; R03, R17, R26; INACTIVE: only a
      * draft whose YAML the read model gives a person who may change it, the
-     * portal's workflowV2DraftEditor) on the edit the view keeps, or on the
+     * portal's workflowDraftEditor) on the edit the view keeps, or on the
      * current revision; otherwise the status line says why. It returns to the
      * view. Nothing is sent.
      */
@@ -7668,7 +7668,7 @@ export class PilotSwarmUiController {
     /**
      * The draft editor: save the edit (ctrl-o) as one replace_definition at
      * the revision it started from, as the portal's editor saves it
-     * (sendWorkflowRunCommand), when workflowV2DraftEdit says it can be
+     * (sendWorkflowRunCommand), when workflowDraftEdit says it can be
      * saved; otherwise the status line says why (nothing changed, empty, too
      * large, a newer revision, a command being sent). Accepted: the edit now
      * starts from the new revision and the editor stays open (the workflow is
@@ -7696,7 +7696,7 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/workflowView", sessionId, view: { draftEdit: {
                 base: { revision: result.receipt.revision, yaml: buffer.text }, text, cursor } } });
         } else if (result.reason === "failed" || result.reason === "unconfirmed") {
-            const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[sessionId]?.runCommand);
+            const notice = workflowRunCommandNotice(this.getState().ui.workflowViews?.[sessionId]?.runCommand);
             if (notice) this.dispatch({ type: "ui/status", text: notice.text });
         }
         return result;
@@ -7752,7 +7752,7 @@ export class PilotSwarmUiController {
      * The TUI's workflow view: open the publication review (P; design 04
      * publish, publish_and_start, start; mocks M01, M03; R17, R18, R26, R28;
      * INACTIVE: only where the portal's publication panel offers a person a
-     * command, workflowV2DefinitionControls) of exactly the revision and
+     * command, workflowDefinitionControls) of exactly the revision and
      * definition hash the view shows now (its pin): a draft's current
      * revision, or a published definition without its live run. Otherwise the
      * status line says why. It returns to the view. Nothing is sent.
@@ -7862,15 +7862,15 @@ export class PilotSwarmUiController {
         if (!control.enabled) return refuse(`${label} is not available now. ${control.title}`);
         let run = {};
         if (operation !== "publish") {
-            const inputs = workflowV2JsonObjectDraft(modal.inputs, { label: "Inputs" });
-            const vars = workflowV2JsonObjectDraft(modal.vars, { label: "Initial variables", optional: true });
+            const inputs = workflowJsonObjectDraft(modal.inputs, { label: "Inputs" });
+            const vars = workflowJsonObjectDraft(modal.vars, { label: "Initial variables", optional: true });
             const refused = !inputs.ok ? inputs : !vars.ok ? vars : null;
             if (refused) return refuse(refused.error);
             run = { inputs: inputs.value, ...(vars.value !== undefined ? { vars: vars.value } : {}) };
         }
         const args = operation === "start" ? { definitionHash: pin.definitionHash, ...run }
             : { expectedRevision: pin.revision, definitionHash: pin.definitionHash, ...run };
-        if (!workflowV2RunCommandArgs(operation, args).ok) return refuse("The revision or its definition hash is not known; read the workflow again.");
+        if (!workflowRunCommandArgs(operation, args).ok) return refuse("The revision or its definition hash is not known; read the workflow again.");
         this.updateWorkflowPublicationReview({ error: null });
         this.dispatch({ type: "ui/modal", modal: { type: "confirm", ...workflowPublicationConfirm(operation, pin, publication, args),
             action: "workflowRunCommand", workflowRunCommand: { sessionId: modal.sessionId, operation, runId: null, ...args },
@@ -7911,7 +7911,7 @@ export class PilotSwarmUiController {
         }
         if (result?.reason === "failed" || result?.reason === "unconfirmed") {
             if (open && current.error) this.updateWorkflowPublicationReview({ error: null });
-            const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[review.sessionId]?.runCommand);
+            const notice = workflowRunCommandNotice(this.getState().ui.workflowViews?.[review.sessionId]?.runCommand);
             if (notice) this.dispatch({ type: "ui/status", text: notice.text });
         }
     }
@@ -7919,7 +7919,7 @@ export class PilotSwarmUiController {
     /**
      * The TUI's workflow view: open the test review (t; design 05 test; mocks
      * M18 to M20; R19, R20, R26, R28; INACTIVE: only where the portal's test
-     * review offers a person a test, workflowV2TestControls) of exactly the
+     * review offers a person a test, workflowTestControls) of exactly the
      * current revision and definition hash the view shows now (its pin), with
      * mocked agents to start with; otherwise the status line says why. It
      * returns to the view. Nothing is sent.
@@ -7929,7 +7929,7 @@ export class PilotSwarmUiController {
         const selection = selectWorkflowViewSelection(state);
         if (!selection) return;
         // Test mode hidden (spec 16): t does nothing unless the server lists a test operation for this workflow.
-        if (!workflowV2TestModeListed(selection.projection?.definitionModel)) return;
+        if (!workflowTestModeListed(selection.projection?.definitionModel)) return;
         const refusal = workflowViewTestRefusal(selection);
         if (refusal) {
             this.dispatch({ type: "ui/status", text: refusal });
@@ -7993,15 +7993,15 @@ export class PilotSwarmUiController {
         const change = workflowTestChange(modal.pin, tests);
         if (change) return refuse(change);
         if (!tests.control.enabled) return refuse(`Test not started: ${tests.control.title}`);
-        const inputs = workflowV2JsonObjectDraft(modal.inputs, { label: "Inputs" });
-        const vars = workflowV2JsonObjectDraft(modal.vars, { label: "Initial variables", optional: true });
-        const scenario = workflowV2ScenarioDraft(modal.scenario);
+        const inputs = workflowJsonObjectDraft(modal.inputs, { label: "Inputs" });
+        const vars = workflowJsonObjectDraft(modal.vars, { label: "Initial variables", optional: true });
+        const scenario = workflowScenarioDraft(modal.scenario);
         const refused = [inputs, vars, scenario].find(item => !item.ok);
         if (refused) return refuse(refused.error);
         const args = { expectedRevision: modal.pin.revision, definitionHash: modal.pin.definitionHash, inputs: inputs.value,
             agentMode: modal.agentMode === "real" ? "real" : "mocked",
             ...(vars.value !== undefined ? { vars: vars.value } : {}), ...(scenario.value !== undefined ? { scenario: scenario.value } : {}) };
-        if (!workflowV2RunCommandArgs("test", args).ok) return refuse("The revision or its definition hash is not known; read the workflow again.");
+        if (!workflowRunCommandArgs("test", args).ok) return refuse("The revision or its definition hash is not known; read the workflow again.");
         this.updateWorkflowTestReview({ error: null });
         this.dispatch({ type: "ui/modal", modal: { type: "confirm", ...workflowTestConfirm({ ...modal.pin, state: tests.state }, tests, args),
             action: "workflowRunCommand", workflowRunCommand: { sessionId: modal.sessionId, operation: "test", runId: null, ...args },
@@ -8049,7 +8049,7 @@ export class PilotSwarmUiController {
         }
         if (result?.reason === "failed" || result?.reason === "unconfirmed") {
             if (open && current.error) this.updateWorkflowTestReview({ error: null });
-            const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[review.sessionId]?.runCommand);
+            const notice = workflowRunCommandNotice(this.getState().ui.workflowViews?.[review.sessionId]?.runCommand);
             if (notice) this.dispatch({ type: "ui/status", text: notice.text });
         }
     }
@@ -8057,7 +8057,7 @@ export class PilotSwarmUiController {
     /**
      * The TUI's workflow view: open the answer form (a; design 05
      * test_respond; mock M18; R19, R20, R26; INACTIVE: only where the portal's
-     * answer form lets a person answer, workflowV2TestResponder) bound to the
+     * answer form lets a person answer, workflowTestResponder) bound to the
      * test run the view shows and one of its held calls that waits
      * for the parent: the selected state's, else the first. It starts from
      * the effect's own template (an agent state's first outcome, a request's
@@ -8069,7 +8069,7 @@ export class PilotSwarmUiController {
         const selection = selectWorkflowViewSelection(state);
         if (!selection) return;
         // Test mode hidden (spec 16): a does nothing unless the server lists a test operation for this workflow.
-        if (!workflowV2TestModeListed(selection.projection?.definitionModel)) return;
+        if (!workflowTestModeListed(selection.projection?.definitionModel)) return;
         const refusal = workflowViewTestAnswerRefusal(selection);
         if (refusal) {
             this.dispatch({ type: "ui/status", text: refusal });
@@ -8077,7 +8077,7 @@ export class PilotSwarmUiController {
         }
         const responder = selection.projection.testResponder;
         const waiting = responder.waiting.find(entry => entry.stateId && entry.stateId === selection.selected?.id) ?? responder.waiting[0];
-        const value = workflowV2TestAnswerTemplate(waiting);
+        const value = workflowTestAnswerTemplate(waiting);
         this.dispatch({ type: "ui/modal", modal: { type: "workflowTestAnswer", sessionId: selection.modal.sessionId, runId: responder.runId,
             interceptionId: waiting.interceptionId, kind: "success", value, valueCursor: value.length, error: null,
             returnModal: selection.modal, previousFocus: state.ui.focusRegion } });
@@ -8119,7 +8119,7 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: waiting.length === 1 ? "No other call waits for an answer" : "No more calls that wait in this direction" });
             return;
         }
-        const value = workflowV2TestAnswerTemplate(waiting[next]);
+        const value = workflowTestAnswerTemplate(waiting[next]);
         this.updateWorkflowModal("workflowTestAnswer", { interceptionId: waiting[next].interceptionId, kind: "success", value, valueCursor: value.length,
             error: null });
     }
@@ -8128,7 +8128,7 @@ export class PilotSwarmUiController {
      * The answer form: send its answer (Enter) as one test_respond for exactly
      * the test run and interception it is bound to, as the portal's form
      * sends it (sendWorkflowRunCommand). What was typed is checked first
-     * (workflowV2TestResponseDraft) and the form says what is wrong; nothing is
+     * (workflowTestResponseDraft) and the form says what is wrong; nothing is
      * sent for a run the view no longer shows, an interception that is not
      * one of the run's, a run that ended or a viewer the portal refuses, or
      * while a command is sent. The server decides the rest and the form keeps
@@ -8154,13 +8154,13 @@ export class PilotSwarmUiController {
         if (!responder || responder.runId !== modal.runId) {
             return refuse("The view no longer shows the test this form was opened for, so nothing was sent. Esc goes back.");
         }
-        const items = workflowV2RunRows(projection.runReadModel?.run ?? null).interceptions;
+        const items = workflowRunRows(projection.runReadModel?.run ?? null).interceptions;
         if (!items.some(item => item?.interceptionId === modal.interceptionId)) {
             return refuse(`Call ${modal.interceptionId} is not one of this test run's calls, so nothing was sent.`);
         }
         if (!responder.respond) return refuse(responder.reason ?? "This workflow takes no test answers from people.");
         if (responder.busy) return refuse(responder.pending === "test_respond" ? "The answer is being sent; wait for its reply." : "Another command for this Workflow is being sent.");
-        const draft = workflowV2TestResponseDraft(modal.kind, modal.value);
+        const draft = workflowTestResponseDraft(modal.kind, modal.value);
         if (!draft.ok) return refuse(draft.error);
         this.updateWorkflowModal("workflowTestAnswer", { error: null });
         const result = await this.sendWorkflowRunCommand(modal.sessionId, { operation: "test_respond", runId: modal.runId,
@@ -8170,8 +8170,8 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow v2: send a person's message to the workflow's parent agent (owner decisions q12, q16): an ordinary message
-     * in the parent's chat (`text`, built by workflowV2AskParentMessage), which the parent answers with its own tools.
+     * Workflow: send a person's message to the workflow's parent agent (owner decisions q12, q16): an ordinary message
+     * in the parent's chat (`text`, built by workflowAskParentMessage), which the parent answers with its own tools.
      * People still cannot write to a step's own chat. Refused before anything is sent for a session that is not a
      * workflow, a workflow with no parent, an empty message, or a parent whose input policy refuses a person; the server
      * decides again. Never throws.
@@ -8179,7 +8179,7 @@ export class PilotSwarmUiController {
     async askWorkflowParent(sessionId, text) {
         const state = this.getState();
         if (state.sessions.byId[sessionId]?.sessionKind !== "workflow") return { ok: false, reason: "not a workflow" };
-        const parentSessionId = workflowV2ParentSessionId(state.sessions.byId, sessionId);
+        const parentSessionId = workflowParentSessionId(state.sessions.byId, sessionId);
         const refuse = reason => {
             this.dispatch({ type: "ui/status", text: reason });
             return { ok: false, reason };
@@ -8195,7 +8195,7 @@ export class PilotSwarmUiController {
             return refuse(`The message to the parent agent was not sent: ${error?.message || String(error)}`);
         }
         this.syncSessionEvents(parentSessionId).catch(() => {});
-        this.dispatch({ type: "ui/status", text: workflowV2AskParentSent(parentSessionId) });
+        this.dispatch({ type: "ui/status", text: workflowAskParentSent(parentSessionId) });
         return { ok: true, parentSessionId };
     }
 
@@ -8412,10 +8412,10 @@ export class PilotSwarmUiController {
             return { ok: false, reason: "invalid" };
         };
         const projection = workflowViewProjectionFor(state, modal.sessionId);
-        const items = workflowV2RunRows(projection.runReadModel?.run ?? null).interceptions;
+        const items = workflowRunRows(projection.runReadModel?.run ?? null).interceptions;
         const call = items.find(item => item?.interceptionId === modal.interceptionId) ?? null;
         if (!call) return refuse(`Call ${modal.interceptionId} is not one of this test run's calls, so nothing was sent.`);
-        const draft = workflowV2TestResponseDraft(modal.kind, modal.value);
+        const draft = workflowTestResponseDraft(modal.kind, modal.value);
         if (!draft.ok) return refuse(draft.error);
         const result = await this.askParentAboutHeldCall(modal.sessionId, { runId: modal.runId, interceptionId: modal.interceptionId, response: draft.response });
         if (!result.ok) return refuse(result.reason);
@@ -8425,9 +8425,9 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow v2: ask the workflow's parent agent about one visit of a step of the run the view shows (owner decision
+     * Workflow: ask the workflow's parent agent about one visit of a step of the run the view shows (owner decision
      * q16; mocks M22 "Send findings", M23 "Request scoped rework", M24 "Ask parent for approval"): `kind` findings,
-     * rework or approval, with the person's note (workflowV2StepQuestion's message, sent by askWorkflowParent). The
+     * rework or approval, with the person's note (workflowStepQuestion's message, sent by askWorkflowParent). The
      * visit is `executionId`, else the step's latest. Never throws.
      */
     async askParentAboutStep(sessionId, { stateId = null, executionId = null, kind = null, note = "" } = {}) {
@@ -8440,35 +8440,35 @@ export class PilotSwarmUiController {
             return { ok: false, reason };
         };
         if (!execution) return refuse(`Step '${stateId}' has no visit in the shown run to ask about.`);
-        const text = workflowV2StepQuestion({ workflowName: projection.name, workflowSessionId: sessionId, runId: flow.runId, stateId, execution, kind, note });
+        const text = workflowStepQuestion({ workflowName: projection.name, workflowSessionId: sessionId, runId: flow.runId, stateId, execution, kind, note });
         if (!text) return refuse("Choose what to ask: findings, rework or approval.");
         return this.askWorkflowParent(sessionId, text);
     }
 
     /**
-     * Workflow v2: ask the workflow's parent agent about one held call of the test run the view shows (owner decision
-     * q12; mock M18), with the answer a person suggests (`response`, as workflowV2TestResponseDraft drafts it; null for
-     * none): workflowV2HeldCallQuestion's message, sent by askWorkflowParent. Only a held call of exactly that run, as
+     * Workflow: ask the workflow's parent agent about one held call of the test run the view shows (owner decision
+     * q12; mock M18), with the answer a person suggests (`response`, as workflowTestResponseDraft drafts it; null for
+     * none): workflowHeldCallQuestion's message, sent by askWorkflowParent. Only a held call of exactly that run, as
      * the view's read shows it. Never throws.
      */
     async askParentAboutHeldCall(sessionId, { runId = null, interceptionId = null, response = null, note = "" } = {}) {
         const projection = workflowViewProjectionFor(this.getState(), sessionId);
         const run = projection.runReadModel?.run ?? null;
         const call = run && run.runId === runId
-            ? workflowV2RunRows(run).interceptions.find(item => item?.interceptionId === interceptionId) ?? null : null;
+            ? workflowRunRows(run).interceptions.find(item => item?.interceptionId === interceptionId) ?? null : null;
         if (!call) {
             const reason = `Call ${interceptionId} is not one of the shown test run's calls, so nothing was sent.`;
             this.dispatch({ type: "ui/status", text: reason });
             return { ok: false, reason };
         }
-        return this.askWorkflowParent(sessionId, workflowV2HeldCallQuestion({ workflowName: projection.name, workflowSessionId: sessionId, runId,
+        return this.askWorkflowParent(sessionId, workflowHeldCallQuestion({ workflowName: projection.name, workflowSessionId: sessionId, runId,
             call, response, note }));
     }
 
     /**
      * The TUI's workflow view: open the virtual clock form (+; design 05
      * test_advance; mock M19; R08, R19, R26; INACTIVE: only where the portal's
-     * clock lets a person advance it, workflowV2TestResponder) bound to the
+     * clock lets a person advance it, workflowTestResponder) bound to the
      * test run the view shows; otherwise the status line says why. It returns
      * to the view. Nothing is sent.
      */
@@ -8477,7 +8477,7 @@ export class PilotSwarmUiController {
         const selection = selectWorkflowViewSelection(state);
         if (!selection) return;
         // Test mode hidden (spec 16): + does nothing unless the server lists a test operation for this workflow.
-        if (!workflowV2TestModeListed(selection.projection?.definitionModel)) return;
+        if (!workflowTestModeListed(selection.projection?.definitionModel)) return;
         const refusal = workflowViewTestClockRefusal(selection);
         if (refusal) {
             this.dispatch({ type: "ui/status", text: refusal });
@@ -8522,7 +8522,7 @@ export class PilotSwarmUiController {
         }
         if (!responder.advance) return refuse(responder.reason ?? "This workflow takes no clock advances from people.");
         if (responder.busy) return refuse(responder.pending === "test_advance" ? "The advance is being sent; wait for its reply." : "Another command for this Workflow is being sent.");
-        const draft = workflowV2AdvanceDraft(modal.seconds);
+        const draft = workflowAdvanceDraft(modal.seconds);
         if (!draft.ok) return refuse(draft.error);
         this.updateWorkflowModal("workflowTestClock", { error: null });
         const result = await this.sendWorkflowRunCommand(modal.sessionId, { operation: "test_advance", runId: modal.runId, seconds: draft.seconds });
@@ -8530,7 +8530,7 @@ export class PilotSwarmUiController {
             ? result.receipt.decided.filter(item => item && typeof item === "object" && typeof item.stateId === "string") : [];
         if (decided.length) {
             const shown = decided.slice(0, 3).map(item => `'${item.stateId}' ${typeof item.outcome === "string" ? item.outcome : "ended"}`);
-            this.dispatch({ type: "ui/status", text: `${workflowV2RunCommandAccepted("test_advance", modal.runId, result.receipt, { seconds: draft.seconds })} `
+            this.dispatch({ type: "ui/status", text: `${workflowRunCommandAccepted("test_advance", modal.runId, result.receipt, { seconds: draft.seconds })} `
                 + `Came due: ${shown.join(", ")}${decided.length > 3 ? ` and ${decided.length - 3} more` : ""}.` });
         }
         this.afterWorkflowTestCommand(modal, result);
@@ -8552,7 +8552,7 @@ export class PilotSwarmUiController {
         }
         if (result?.reason === "failed" || result?.reason === "unconfirmed") {
             if (open && current.error) this.updateWorkflowModal(form.type, { error: null });
-            const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[form.sessionId]?.runCommand);
+            const notice = workflowRunCommandNotice(this.getState().ui.workflowViews?.[form.sessionId]?.runCommand);
             if (notice) this.dispatch({ type: "ui/status", text: notice.text });
         }
     }
@@ -10415,7 +10415,7 @@ export class PilotSwarmUiController {
      * For a branch step it also keeps the parallel visit that was current
      * (`parallelExecutionId`) and the branch chosen in Details (`branchIndex`)
      * when it was chosen: a new parallel visit or another branch ends the
-     * choice (re-check RC-6, workflowV2ShownExecution). It applies only to
+     * choice (re-check RC-6, workflowShownExecution). It applies only to
      * that run and state; nothing is read or sent.
      */
     selectWorkflowExecution(sessionId, selection) {
@@ -10440,8 +10440,8 @@ export class PilotSwarmUiController {
         if (!selection) return;
         const node = selection.selected?.node ?? null;
         const runId = selection.projection.flow?.runId ?? null;
-        const shown = node ? workflowV2ShownExecution(node, runId, selection.projection.selectedExecution) : null;
-        const kv = workflowV2KvApplied(shown?.execution, selection.projection.flow?.readModel?.run);
+        const shown = node ? workflowShownExecution(node, runId, selection.projection.selectedExecution) : null;
+        const kv = workflowKvApplied(shown?.execution, selection.projection.flow?.readModel?.run);
         if (typeof runId !== "string" || !runId || !kv || kv.accepted === null) {
             this.dispatch({ type: "ui/status", text: "This visit names no variables revision to compare" });
             return;
@@ -10488,7 +10488,7 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/status", text: `Reading revisions ${from} and ${latest}…` });
         await Promise.all([this.loadWorkflowDefinitionRevision(sessionId, from), this.loadWorkflowDefinitionRevision(sessionId, latest)]);
         const reads = this.getState().ui.workflowViews?.[sessionId]?.definitionRevisions ?? null;
-        const compare = workflowV2RevisionCompare(reads, from, latest);
+        const compare = workflowRevisionCompare(reads, from, latest);
         this.dispatch({ type: "ui/status", text: compare.failed ? compare.summary : `${compare.summary} — in the details (PgUp/PgDn scroll)` });
     }
 
@@ -10521,7 +10521,7 @@ export class PilotSwarmUiController {
         if (!selection) return;
         const node = selection.selected?.node ?? null;
         const runId = selection.projection.flow?.runId ?? null;
-        const shown = node ? workflowV2ShownExecution(node, runId, selection.projection.selectedExecution) : null;
+        const shown = node ? workflowShownExecution(node, runId, selection.projection.selectedExecution) : null;
         const execution = shown?.execution ?? null;
         if (typeof runId !== "string" || !runId || typeof execution?.id !== "string" || !execution.id) {
             this.dispatch({ type: "ui/status", text: shown?.missing ? "The chosen visit is not loaded, so its value is not read"
@@ -12180,7 +12180,7 @@ export class PilotSwarmUiController {
                     // Review UI-F1: with or without a view to return to (a terminal row's Stop or Cancel has none), the status
                     // line says a refusal with its reason, or that the command may not have arrived (sending it again keeps
                     // its operation id).
-                    const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[sessionId]?.runCommand);
+                    const notice = workflowRunCommandNotice(this.getState().ui.workflowViews?.[sessionId]?.runCommand);
                     if (notice) this.dispatch({ type: "ui/status", text: notice.text });
                 }
             }

@@ -71,7 +71,7 @@ test("the words: the picker's option, the Definition view's line, the Workflows 
     assert.equal(workflowDefinitionOptionLabel({ name: NAME, version: "1.1.0", revision: 1, state: "draft", started: false }), `${NAME} · 1.1.0 · draft`);
     // Owner, 2026-11-07T00:03Z: a started version reads by its version alone; the Definition view's line says its revision.
     assert.equal(workflowDefinitionOptionLabel({ name: NAME, version: "1.0.0", revision: 1, state: "published", started: true }), `${NAME} · 1.0.0`);
-    assert.equal(workflowDefinitionOptionLabel({ name: "report-v2", version: "1.0.0", revision: 1, state: "published", started: false }), "report-v2 · 1.0.0 · not started");
+    assert.equal(workflowDefinitionOptionLabel({ name: "report-flow", version: "1.0.0", revision: 1, state: "published", started: false }), "report-flow · 1.0.0 · not started");
     assert.equal(workflowDefinitionOptionLabel({ name: NAME, started: false }), NAME, "not read yet: the name");
     assert.equal(workflowDefinitionHeaderText({ revision: 1, version: "1.1.0", state: "draft", started: false, made: "19:35:04 UTC" }),
         "Revision 1 · 1.1.0 · draft · not started · made 19:35:04 UTC");

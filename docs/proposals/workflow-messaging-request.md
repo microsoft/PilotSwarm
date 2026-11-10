@@ -1,11 +1,11 @@
 # Workflow messaging: request and reply (design, revision 3, amended)
 
-> **As built (2026-11-10, owner decision: Workflow V2 was deployed nowhere, so its versions and migrations were
-> collapsed).** Each Workflow orchestration has one version: `workflow-v2-controller` 1.0.0 is the controller this
-> document calls 1.9.0 (the request controller); `workflow-v2-effect`, `-notify` and `-send` 1.0.0 are its tagged
-> 1.1.0 orchestrations; `workflow-v2-request`, `-agent` and `-chat-end` stay 1.0.0. Controller 1.8.0, the pre-release
+> **As built (2026-11-10, owner decision: Workflow was deployed nowhere, so its versions and migrations were
+> collapsed).** Each Workflow orchestration has one version: `workflow-controller` 1.0.0 is the controller this
+> document calls 1.9.0 (the request controller); `workflow-effect`, `-notify` and `-send` 1.0.0 are its tagged
+> 1.1.0 orchestrations; `workflow-request`, `-agent` and `-chat-end` stay 1.0.0. Controller 1.8.0, the pre-release
 > controllers 1.0.0 to 1.7.0, the untagged orchestrations and activities, and the `workflowRequests` and
-> `WorkflowV2Host.requests` switches are gone: every activity is `workflow.v2.<name>` with the workflow-request tag.
+> `WorkflowHost.requests` switches are gone: every activity is `workflow.<name>` with the workflow-request tag.
 > The CMS migrations this document numbers 0088 to 0111 are one migration, 0088 (`migrations/workflow-0088.ts`), which
 > creates their final schema. Version and migration numbers below are the design's history.
 
@@ -187,7 +187,7 @@ the first winner stays.
 | Responder observation (controller, 4.4) | Session locks as a response, then node | `unavailable` or `forbidden`, winner `controller` | none | none |
 | Delivery failure (`failDelivery`, `beginDelivery`'s refusals, the collection of an ended delivery orchestration) | As a send's (`store.ts` 2277, 2399) | `unavailable`, `forbidden` or `delivery_failed` | none | none (the delivery orchestration's wake and collection) |
 | The run's end (`finishRun`: cancel, recover, a failed or completed run, a later stop) | Requester's session lock, run, nodes (`store.ts` 2440) | `cancelled`, winner `cancel` or `controller` | none | none |
-| Deletion of the requesting workflow (trigger, `migrations/workflow-v2-0091.ts` 58) | The soft delete's own transaction | `cancelled`, winner `delete` | none | none |
+| Deletion of the requesting workflow (trigger, `migrations/workflow-0091.ts` 58) | The soft delete's own transaction | `cancelled`, winner `delete` | none | none |
 | Admission refusal (`enterNode`) | At entry | an immediate result; the node is never pending | none | none |
 
 Because the status is derived, no producer writes a second status, and the
@@ -207,7 +207,7 @@ deletion trigger stays as it is.
   the rule refuses gets `REQUEST_NOT_FOUND`.
 - Deletion with the delivery child ended, with the request delivered but
   unanswered, and repeated deletion: the trigger acts on the first soft
-  delete only (`OLD.deleted_at IS NULL`, `migrations/workflow-v2-0091.ts`
+  delete only (`OLD.deleted_at IS NULL`, `migrations/workflow-0091.ts`
   47); the status is `cancelled` at once, with no later attempt needed.
 - Cancel, recover or stop after a response: the node is already decided;
   `finishRun` ends only pending nodes; the response and its receipt stay.
@@ -320,7 +320,7 @@ the result after the resume (T028).
   one row and tries at once (an optimization). Each worker of a
   request-capable build runs one pass loop within the worker's lifecycle,
   as its eviction timer does (`worker.ts` 1134-1145, 1161-1166): it starts
-  after `registerWorkflowV2`, runs every 2 s with one pass at a time and
+  after `registerWorkflow`, runs every 2 s with one pass at a time and
   leases at most 20 due rows a pass; `stop()` clears it and waits for the
   pass in flight before the runtime shuts down. The controller's backstop
   still collects the completed node: it is additional recovery, not the
@@ -454,7 +454,7 @@ a response and a decline never collide.
   operations, the winner's included, stay replayable at the limit. No
   aggregate counter stands for an operation.
 - Bounds: a response at most 16 KiB of canonical JSON (the send payload
-  bound, `WORKFLOW_V2_MAX_SEND_PAYLOAD_BYTES`); a decline reason a string
+  bound, `WORKFLOW_MAX_SEND_PAYLOAD_BYTES`); a decline reason a string
   of 1 to 2,000 characters; the decline schema is strict: `{type: object,
   additionalProperties: false, required: [reason], properties: {reason:
   {type: string, minLength: 1, maxLength: 2000}}}`. The request's prompt
@@ -511,7 +511,7 @@ a response and a decline never collide.
   distinct from the legacy one: the controller's own activities; the
   effect, notify and send orchestrations at new versions (1.1.0, same
   algorithms); and the new request delivery orchestration
-  `workflow-v2-request` 1.0.0 with its deliver and delivery-failed
+  `workflow-request` 1.0.0 with its deliver and delivery-failed
   activities. A request-capable build registers the legacy and the new
   names; older builds have only the legacy ones.
 - An older worker's filter excludes the tag, so its provider never
@@ -519,7 +519,7 @@ a response and a decline never collide.
   no attempt of the request's delivery budget is spent on it. With no
   capable worker the work waits in the queue (duroxide's behavior for a
   tag no worker serves).
-- `workflow-v2-send` 1.0.0 and its untagged activities are unchanged and
+- `workflow-send` 1.0.0 and its untagged activities are unchanged and
   keep serving the sends of 1.8.0 runs (IR 1 to 6), with the same input,
   output and receipt meaning.
 - An older build's outbox decoder refuses mode `request` (`store.ts`
@@ -529,7 +529,7 @@ a response and a decline never collide.
   writes nothing: the explicit failure of an incapable worker, never a
   decision.
 - duroxide 0.1.32 cannot route orchestration items by tag. An older
-  worker that fetches a 1.9.0, 1.1.0, `workflow-v2-request` or Vr item
+  worker that fetches a 1.9.0, 1.1.0, `workflow-request` or Vr item
   does not have it registered: duroxide abandons it with backoff (1 s
   doubling to 60 s) and poisons it after its maximum attempts (10 by
   default). An older worker can win every one of those fetches, so the
@@ -586,10 +586,10 @@ a response and a decline never collide.
 - **Inactive runtime phase (decision request-runtime-inactive-phase,
   2 November 2026).** Commits 3 and 4 of section 11 are implemented
   inactive: controller 1.9.0, the 1.1.0 effect, notify and send
-  orchestrations, `workflow-v2-request` 1.0.0, their tagged activities,
+  orchestrations, `workflow-request` 1.0.0, their tagged activities,
   `respond_session_request` (on a 1.0.83 turn only) and the wake
   dispatcher exist, but only test entry points register or start them
-  (`registerWorkflowV2`'s `workflowRequests`, `WorkflowV2Host.requests`,
+  (`registerWorkflow`'s `workflowRequests`, `WorkflowHost.requests`,
   the turn activities' `workflowRequests` test option). A worker's normal
   registration, its tags, the tool catalog, the latest controller version
   (1.8.0) and the publication and start refusals are unchanged, so nothing
@@ -599,7 +599,7 @@ a response and a decline never collide.
   (a) an enforced serving-set fence, under which every worker that
   fetches orchestration items from the store is request-capable before
   any admission and stays so for the lifetime of every 1.9.0, 1.1.0,
-  `workflow-v2-request` and Vr history; or (b) a supported, verified
+  `workflow-request` and Vr history; or (b) a supported, verified
   orchestration routing mechanism in the dependency. This design claims
   neither, adds no dependency feature, and treats an advertisement or a
   flag as no proof. duroxide's provider capability filter selects by the
@@ -713,12 +713,12 @@ status as ended.
    observation come with commit 3, where a controller calls them.
 3. Versions and routing (gated): 1.8.0 frozen with its literal target,
    1.9.0, the effect, notify and send orchestrations at 1.1.0,
-   `workflow-v2-request` 1.0.0, the worker tag, session version Vr with
+   `workflow-request` 1.0.0, the worker tag, session version Vr with
    tagged turns (replay and routing tests).
 4. Tool and dispatch (gated): `respond_session_request`, the wake lease
    and pass loop, abandonment, the capability checks (native tests with
    an agent test double that calls the tool).
-5. Formal model `WorkflowV2Request.tla`: the single compare-and-swap among
+5. Formal model `WorkflowRequest.tla`: the single compare-and-swap among
    response, deadline, observation, run end, deletion and delivery
    failure; late and duplicate calls; operation bindings; the wake lease
    with a stale holder; pause. Run under a formal grant.

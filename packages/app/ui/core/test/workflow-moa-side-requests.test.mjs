@@ -37,7 +37,7 @@ test("a Master of Agents panel opens the workflow in the workspace on that panel
         "type: \"canvas/flip\", sessionId, slot: 1"]) {
         assert.ok(body.includes(part), part);
     }
-    const panels = read("../../react/src/workflow-v2-panels.js");
+    const panels = read("../../react/src/workflow-panels.js");
     assert.match(panels, /controller\.workflowDraftBuffers\.set\(sessionId, \{ sessionId, base, text: textValue \}\)/);
 });
 
@@ -58,7 +58,7 @@ test("VR-6: the live buffer decides what edit is handed over; the saved one only
 });
 
 test("VR-6: Discard edits drops the saved edit from the view too", () => {
-    const panels = read("../../react/src/workflow-v2-panels.js");
+    const panels = read("../../react/src/workflow-panels.js");
     assert.match(panels, /setTextValue\(base\.yaml\);\s*controller\.dispatch\(\{ type: "ui\/workflowView", sessionId, view: \{ draftEdit: null, draftDirty: false \} \}\);/);
 });
 

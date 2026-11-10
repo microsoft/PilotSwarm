@@ -2,13 +2,13 @@ import type { SessionOwnerInfo } from "../types.js";
 import type { WorkflowToolBinding } from "./tool-policy.js";
 import { isWorkflowParentContextUnavailable, WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, WORKFLOW_PARENT_CONTEXT_UNAVAILABLE_MESSAGE } from "./tool-policy.js";
 import type { SpawnWorkflowToolArgs } from "./tool-spec.js";
-import { declaresWorkflowV2, WORKFLOW_V2_API_VERSION } from "./v2/compiler.js";
-import { sha256Hex } from "./v2/json.js";
-import { workflowDefinitionToolsRefusal } from "./v2/input-policy.js";
-import { workflowToolErrorPayload, type WorkflowToolHost } from "./v2/tools.js";
-import { spawnWorkflowCompatFromTool } from "./v2/definition-tool.js";
-import { WorkflowStoreError } from "./v2/store.js";
-import { requireWorkflowScriptsInYaml } from "./v2/scripts-gate.js";
+import { declaresWorkflow, WORKFLOW_API_VERSION } from "./compiler.js";
+import { sha256Hex } from "./json.js";
+import { workflowDefinitionToolsRefusal } from "./input-policy.js";
+import { workflowToolErrorPayload, type WorkflowToolHost } from "./tools.js";
+import { spawnWorkflowCompatFromTool } from "./definition-tool.js";
+import { WorkflowStoreError } from "./store.js";
+import { requireWorkflowScriptsInYaml } from "./scripts-gate.js";
 
 export interface SpawnWorkflowDeps {
     /** The agent session calling spawn_workflow; it becomes the workflow's parent. */
@@ -19,7 +19,7 @@ export interface SpawnWorkflowDeps {
     resolveOwner: () => Promise<SessionOwnerInfo | null>;
     captureToolBinding: () => Promise<WorkflowToolBinding>;
     /** Workflow persistence and dispatch (definitions, revisions, runs). Absent: every document is refused. */
-    workflowV2Host?: () => Promise<WorkflowToolHost>;
+    workflowHost?: () => Promise<WorkflowToolHost>;
     /**
      * A1 (Workflow Simplified, spec 14): whether the calling session is inside a Workflow (an agent node's chat or one
      * of its sub-agents), by its stored lineage; then every spawn_workflow is refused, in words. Absent: never refused.
@@ -29,7 +29,7 @@ export interface SpawnWorkflowDeps {
 
 /** The refusal of a document in any other format: its code, and the one apiVersion a Workflow takes. */
 export const WORKFLOW_API_VERSION_REFUSED = "WORKFLOW_API_VERSION";
-export const WORKFLOW_API_VERSION_REFUSAL_TEXT = `A Workflow's YAML must say apiVersion: ${WORKFLOW_V2_API_VERSION}. `
+export const WORKFLOW_API_VERSION_REFUSAL_TEXT = `A Workflow's YAML must say apiVersion: ${WORKFLOW_API_VERSION}. `
     + "No other format is taken, and there is no converter: write the Workflow in this format and call spawn_workflow again.";
 
 /**
@@ -44,13 +44,13 @@ export async function spawnWorkflowFromTool(
     try {
         // A1: inside a Workflow no definition tool works at all; it reads only the stored lineage.
         if (deps.definitionToolsRefused && await deps.definitionToolsRefused()) return workflowDefinitionToolsRefusal();
-        if (!declaresWorkflowV2(args.yaml)) {
+        if (!declaresWorkflow(args.yaml)) {
             return JSON.stringify({ ok: false, error: { code: WORKFLOW_API_VERSION_REFUSED, message: WORKFLOW_API_VERSION_REFUSAL_TEXT } });
         }
         // The scripts gate from the YAML alone, on this worker's setting (deps.enabled), before the host is made, the owner or
         // the tool binding is read, or anything else (e02ec6f8 run).
         requireWorkflowScriptsInYaml(deps.enabled(), args.yaml, args.start === true ? "start" : "save");
-        if (!deps.workflowV2Host) return JSON.stringify({ ok: false, error: { code: "WORKFLOW_V2_UNAVAILABLE", message: "This worker cannot store Workflows." } });
+        if (!deps.workflowHost) return JSON.stringify({ ok: false, error: { code: "WORKFLOW_UNAVAILABLE", message: "This worker cannot store Workflows." } });
         const slug = typeof args.key === "string" && args.key.trim() ? `key:${args.key.trim()}` : `call:${call?.toolCallId ?? ""}`;
         if (slug === "call:") return JSON.stringify({ ok: false, error: { code: "WORKFLOW_COMMAND_INVALID", message: "spawn_workflow needs a key or a tool call id." } });
         // Stage 2.1 (D2): spawn_workflow saves a revision of the chat's definition of this name and, with start, starts
@@ -72,7 +72,7 @@ export async function spawnWorkflowFromTool(
                     throw new WorkflowStoreError(WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, WORKFLOW_PARENT_CONTEXT_UNAVAILABLE_MESSAGE);
                 }
             },
-            host: await deps.workflowV2Host(),
+            host: await deps.workflowHost(),
         });
     } catch (error) {
         if (isWorkflowParentContextUnavailable(error)) {

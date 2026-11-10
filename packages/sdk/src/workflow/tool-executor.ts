@@ -29,7 +29,7 @@ export interface WorkflowToolExecutorOptions {
     maxCalls?: number;
     cleanupTimeoutMs?: number;
     /**
-     * Run one call when its turn comes on a session other handles share (workflow v2 RT-2, E1b): the call's checks,
+     * Run one call when its turn comes on a session other handles share (workflow RT-2, E1b): the call's checks,
      * authority and native execution all happen in its turn. Unset: the call runs at once.
      */
     serially?: <T>(run: () => Promise<T>) => Promise<T>;
@@ -74,7 +74,7 @@ export function workflowToolResult(result: ToolResult): unknown {
 /**
  * No prompt is sent: the native CLI pipeline executes an already-selected tool.
  *
- * On a shared session (`serially`, workflow v2 RT-2 and E1b), a call waits for its turn; when its turn comes it is
+ * On a shared session (`serially`, workflow RT-2 and E1b), a call waits for its turn; when its turn comes it is
  * refused if this handle was closed, its script ended or `check` refuses, then authority is checked, then the same
  * refusals are checked again after the authorization and just before it runs (E1b-R2). A close rejects a
  * call still waiting at once (its turn then runs nothing); a call whose turn has begun settles with its own outcome. A

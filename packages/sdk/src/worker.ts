@@ -1,8 +1,8 @@
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
-import { isWorkflowTestBench } from "./workflow/v2/test-bench.js";
-import { workflowScriptsEnabledFromEnv } from "./workflow/v2/scripts-gate.js";
-import { skillsIndexLine, skillsIndexSection, WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR } from "./workflow/guidance.js";
-import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
+import { isWorkflowTestBench } from "./workflow/test-bench.js";
+import { workflowScriptsEnabledFromEnv } from "./workflow/scripts-gate.js";
+import { skillsIndexLine, skillsIndexSection, WORKFLOW_SKILLS_DIR, WORKFLOW_TEST_MODE_SKILLS_DIR } from "./workflow/guidance.js";
+import { workflowTestModeFromEnv } from "./workflow/test-mode-switch.js";
 import { AGENT_HANDOFF_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
@@ -44,7 +44,7 @@ import { createBuiltInWorkspaceProvider } from "./workspace.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { installAgentPackageEntry, installAgentPackages, loadAgentPackageTools, type InstalledAgentPackage } from "./agent-package-installer.js";
 import { parsePinnedAgentPackageId } from "./agent-package-pins.js";
-import { registerWorkflowV2 } from "./workflow/v2/runtime.js";
+import { registerWorkflow } from "./workflow/runtime.js";
 import { workflowParentNotifier } from "./workflow/parent-delivery.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -928,7 +928,7 @@ export class PilotSwarmWorker {
 
         // The full Workflow engine (owner decision 2026-11-08T15:30Z): every worker serves orchestration 1.0.83's intake and
         // request turns, the Workflow controller and the agent host of agent states (milestone-worker.ts).
-        const milestone = await import("./workflow/v2/milestone-worker.js");
+        const milestone = await import("./workflow/milestone-worker.js");
 
         const runtimeOptions = {
             workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPABILITY, ...milestone.WORKFLOW_MILESTONE_WORKER_TAGS] },
@@ -1044,9 +1044,9 @@ export class PilotSwarmWorker {
         // A parent whose session orchestration has ended reads no queued message: none is queued, and the caller is told
         // (adversarial review WFO-3: the catalog row alone said the parent was there).
         const notifyWorkflowParent = workflowParentNotifier(workflowClient);
-        // Workflow v2: drafts, publication and durable runs (migration 0088).
+        // Workflow: drafts, publication and durable runs (migration 0088).
         if (this._catalog?.workflowStore) {
-            registerWorkflowV2(this.runtime, {
+            registerWorkflow(this.runtime, {
                 store: this._catalog.workflowStore(),
                 catalog: this._catalog,
                 enabled: () => workflowScriptSettings.enabled,
@@ -1849,8 +1849,8 @@ export class PilotSwarmWorker {
         this._loadPluginDir(systemDir, "system");
         // The Workflow authoring skills (workflow-authoring, workflow-reference, workflow-patterns), for every session: the
         // guidance and Agent Smith point to them. workflow-testing only where test mode is on (spec 16).
-        this._loadSdkSkillDir(WORKFLOW_V2_SKILLS_DIR, "PilotSwarm Workflow skills");
-        if (workflowTestModeFromEnv()) this._loadSdkSkillDir(WORKFLOW_V2_TEST_MODE_SKILLS_DIR, "PilotSwarm Workflow test-mode skills");
+        this._loadSdkSkillDir(WORKFLOW_SKILLS_DIR, "PilotSwarm Workflow skills");
+        if (workflowTestModeFromEnv()) this._loadSdkSkillDir(WORKFLOW_TEST_MODE_SKILLS_DIR, "PilotSwarm Workflow test-mode skills");
 
         // ── Tier 2: SDK management plugins (opt-out) ─────────────────
         if (!(this.config as any).disableManagementAgents) {

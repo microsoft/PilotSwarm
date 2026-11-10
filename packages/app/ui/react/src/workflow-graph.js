@@ -33,7 +33,7 @@ const NODE_GLYPHS = {
  * the full sentence are its title (its tooltip, and its description for screen readers). The node a Workflow starts at
  * carries the Start marker (F4); an end is a ring, filled once the Workflow reached it, in its outcome's colour; a node
  * the Workflow did not reach is dimmed (W7). Owner 2026-11-09 (the timeline): `litCount` and `litAge`, how often the last
- * four transitions entered it and how long ago (workflowV2LitTransitions), and `current`, the step of the visit shown; the
+ * four transitions entered it and how long ago (workflowLitTransitions), and `current`, the step of the visit shown; the
  * stylesheet draws them (data-lit, data-lit-age, data-current) apart from the selection.
  */
 export function WorkflowStepCard({ node, selected = false, onSelect, litCount = 0, litAge = null, current = false }) {
@@ -222,7 +222,7 @@ function loadFlow() {
  * `onPlaces` is told the new places at the end of each drag (null after Reset layout); the plain picture keeps the
  * automatic layout. `mode` is the display mode it is shown in ("normal", "zen", "full"): a change fits an untouched view
  * again (owner, 2026-11-06T19:40Z, F8). Owner 2026-11-09 (the timeline): `lit`, the last four transitions up to the visit
- * shown and its step (workflowV2LitTransitions), drawn the same by both renderers. `mobile`: the tab's mobile layout; with
+ * shown and its step (workflowLitTransitions), drawn the same by both renderers. `mobile`: the tab's mobile layout; with
  * the phone query (PHONE_MEDIA_QUERY, as the tab's own) the flow is fitted clear of its controls (UXP-TL-02).
  */
 export function WorkflowGraph({ definition, nodes, selected, select, scope = null, viewport = null, onViewport = null, places = null, onPlaces = null,

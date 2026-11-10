@@ -7,7 +7,7 @@
  *   of a continued chat binds ONLY by the node execution id it gives (none, or one that is not the chat's, is refused in
  *   words; a late one binds to its own decided visit and is refused there,
  *   the open visit unaffected); a reminder binds to the open visit and names it.
- * - The controller with a test-double host (as workflow-v2-agent-node.test.js): two visits go to ONE chat; the
+ * - The controller with a test-double host (as workflow-agent-node.test.js): two visits go to ONE chat; the
  *   second prompt says cycle 2 with the variables now, which changed and the previous result; a visit's time limit stops
  *   its turn (a turn control Stop, never the chat) and the next visit runs; the chat is ended once, when the Workflow
  *   ends; a cancel ends it; a graceful stop ends an idle chat at once; a chat that ended on its own between visits is
@@ -22,20 +22,20 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
-import { canonicalJson } from "../../src/workflow/v2/json.ts";
-import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
-import { completeWorkflowNodeFromTool } from "../../src/workflow/v2/agent-node-service.ts";
-import { readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
+import { compileWorkflow } from "../../src/workflow/compiler.ts";
+import { canonicalJson } from "../../src/workflow/json.ts";
+import { controlWorkflowRun, createWorkflow } from "../../src/workflow/service.ts";
+import { completeWorkflowNodeFromTool } from "../../src/workflow/agent-node-service.ts";
+import { readWorkflowView } from "../../src/workflow/tools.ts";
 import {
-    registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_CONTROLLER_VERSION, workflowAgentChatSessionId, workflowAgentChildSessionId,
+    registerWorkflow, sessionQueueTransport, WORKFLOW_CONTROLLER_VERSION, workflowAgentChatSessionId, workflowAgentChildSessionId,
     workflowLiveControllerInstanceId,
-} from "../../src/workflow/v2/runtime.ts";
-import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
-import { spawnNesting, WORKFLOW_V2_MAX_DESCENDANT_LEVEL } from "../../src/workflow/v2/input-policy.ts";
+} from "../../src/workflow/runtime.ts";
+import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
+import { spawnNesting, WORKFLOW_MAX_DESCENDANT_LEVEL } from "../../src/workflow/input-policy.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 import { PilotSwarmManagementClient, PilotSwarmClient } from "../helpers/local-workers.js";
-import { createWorkflowAgentNodeHost } from "../../src/workflow/v2/agent-host.ts";
+import { createWorkflowAgentNodeHost } from "../../src/workflow/agent-host.ts";
 import { recordSessionEndRequested } from "../../src/session-end-mark.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
@@ -61,7 +61,7 @@ async function until(check, label, timeoutMs = 60_000) {
  * (null: nothing, the default; owner 2026-11-09T05:38Z: continue outside a parallel body).
  */
 const CHAT_YAML = ({ limit = "3600", wait = 1, chat = "continue" } = {}) => `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: chatter, version: "1.0.0" }
 initialInput: { round: 1 }
@@ -184,20 +184,20 @@ describe("chat: continue in the store", () => {
 
             const store = catalog.workflowStore();
             const yaml = CHAT_YAML();
-            const compiled = compileWorkflowV2(yaml, { enableRequests: true, enableAgents: true });
+            const compiled = compileWorkflow(yaml, { enableRequests: true, enableAgents: true });
             expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
             expect(compiled.ir.nodes.talk.chat).toBe("continue");
             const parent = randomUUID();
             await catalog.createSession(parent, {});
             const workflowSessionId = randomUUID();
             const runId = randomUUID();
-            expect(await catalog.createWorkflowSessionV2(workflowSessionId, { parentSessionId: parent, owner: null,
-                creationConfig: { workflowV2: { requestSha256: "chat" } } })).toEqual({ created: true });
+            expect(await catalog.createWorkflowSession(workflowSessionId, { parentSessionId: parent, owner: null,
+                creationConfig: { workflow: { requestSha256: "chat" } } })).toEqual({ created: true });
             await store.createDefinition({
                 workflowSessionId, parentSessionId: parent, notifyParent: false, yaml, compiled, actor: ACTOR,
                 operationId: "create", requestSha256: "chat", publish: true, title: "Workflow: chatter",
                 start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
-                    inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION },
+                    inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_CONTROLLER_VERSION },
             });
             const chat = workflowAgentChatSessionId(runId, "talk");
             const admit = async (ordinal, predecessorId) => {
@@ -236,7 +236,7 @@ describe("chat: continue in the store", () => {
             expect(await store.readWorkflowLineage(chat)).toEqual({ sessionId: chat, level: 2, agentRoot: { ...root, distance: 0 }, deleted: false });
             expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 3, agentRoot: { ...root, distance: 1 }, deleted: false });
             expect(spawnNesting(1, 2, await store.readWorkflowLineage(chat)))
-                .toEqual({ childNestingLevel: 3, maxNestingLevel: WORKFLOW_V2_MAX_DESCENDANT_LEVEL });
+                .toEqual({ childNestingLevel: 3, maxNestingLevel: WORKFLOW_MAX_DESCENDANT_LEVEL });
             // A real-agent test's scope (workflowTestAgentScope) is the agent root's visit: the open one, not the first.
 
             // RT-5: the visits are counted in the store, with no cap. 1,001 older decided visits (copies of the first,
@@ -344,7 +344,7 @@ function* chatChild(ctx) {
 }
 
 /**
- * A worker-equivalent registration (as workflow-v2-agent-node.test.js's harness). The host double creates a chat once
+ * A worker-equivalent registration (as workflow-agent-node.test.js's harness). The host double creates a chat once
  * (its catalog row and its orchestration) and gives it each visit's prompt; the catalog's turn control is a spy that
  * records each Stop (the double runs no turns, so it answers no_turn).
  */
@@ -367,7 +367,7 @@ async function harness(env, { storeHooks = null, storeBefore = null, beforeCreat
     }) : store;
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
     const client = new Client(provider);
-    // duroxide's real default is 2 worker slots (see workflow-v2-join.test.js): a test that holds a spawn's send in a slot
+    // duroxide's real default is 2 worker slots (see workflow-join.test.js): a test that holds a spawn's send in a slot
     // must leave room for the controller's and the cleanup's activities.
     const runtime = new Runtime(provider, {
         dispatcherPollIntervalMs: 10, logLevel: "error", workerConcurrency: 8, workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
@@ -434,7 +434,7 @@ async function harness(env, { storeHooks = null, storeBefore = null, beforeCreat
             return typeof value === "function" ? value.bind(target) : value;
         },
     });
-    registerWorkflowV2({
+    registerWorkflow({
         // `activityClient(client)` (review DRR-1c): what an activity's getClient returns, in place of its durable client.
         registerActivity: (name, fn) => runtime.registerActivity(name, activityClient
             ? (actx, input) => fn(new Proxy(actx, { get(target, key) {
@@ -477,7 +477,7 @@ async function started(h, yaml, vars = undefined) {
     const parent = randomUUID();
     await h.catalog.createSession(parent, {});
     const workflowSessionId = randomUUID();
-    const created = await createWorkflowV2(h.host, {
+    const created = await createWorkflow(h.host, {
         workflowSessionId, parentSessionId: parent, yaml, actor: ACTOR, operationId: "start", start: { inputs: {}, ...(vars ? { vars } : {}) },
     });
     expect(created.receipt.valid, JSON.stringify(created.receipt.diagnostics)).toBe(true);
@@ -537,7 +537,7 @@ const eventsOf = async (h, workflowSessionId, type) => (await h.catalog.getSessi
 
 /** A For each over two items whose body's agent state sets no session (owner 2026-11-09T05:38Z: new, the only choice there). */
 const FOR_EACH_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: fan-talk, version: "1.0.0" }
 initialInput: { items: [a, b] }
@@ -583,7 +583,7 @@ describe("the default chat mode on the controller", () => {
             expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
             expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => [data.childSessionId, data.chat, data.cycle]))
                 .toEqual([[chat, "continue", 1], [chat, "continue", 2]]);
-            expect((await readWorkflowV2View(h.store, run.workflowSessionId)).graph.states.find(state => state.id === "talk")).toMatchObject({ chat: "continue" });
+            expect((await readWorkflowView(h.store, run.workflowSessionId)).graph.states.find(state => state.id === "talk")).toMatchObject({ chat: "continue" });
         } finally {
             await h.stop();
         }
@@ -603,7 +603,7 @@ describe("the default chat mode on the controller", () => {
             expect(await completeAs(h, second.childSessionId, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2" })).toMatchObject({ ok: true });
             expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
             expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => data.chat ?? null)).toEqual([null, null]);
-            expect((await readWorkflowV2View(h.store, run.workflowSessionId)).graph.states.find(state => state.id === "talk")).not.toHaveProperty("chat");
+            expect((await readWorkflowView(h.store, run.workflowSessionId)).graph.states.find(state => state.id === "talk")).not.toHaveProperty("chat");
         } finally {
             await h.stop();
         }
@@ -644,7 +644,7 @@ describe("chat: continue on the controller", () => {
             expect(await completeAs(h, chat, { outcome: "again", output: { fact: "one" }, operation_id: "op-0" }))
                 .toMatchObject({ ok: false, error: { code: "AGENT_NODE_NOT_FOUND", message: expect.stringContaining("give node_execution_id") } });
             // The variables change before the first visit's 3-second time limit passes: the next visit reads them.
-            await controlWorkflowV2Run(h.host, run.workflowSessionId,
+            await controlWorkflowRun(h.host, run.workflowSessionId,
                 { operation: "set_vars", runId: null, set: { limit: 3600, topic: "postgres" }, delete: [], expectedKvRevision: 1 },
                 { actor: ACTOR, operationId: "vars-1" });
 
@@ -691,7 +691,7 @@ describe("chat: continue on the controller", () => {
                 .toEqual([[chat, "continue", 1], [chat, "continue", 2]]);
 
             // Finding 7: the read view says what the agent is told and when each visit started and ended (the Node panel's lines).
-            const view = await readWorkflowV2View(h.store, run.workflowSessionId);
+            const view = await readWorkflowView(h.store, run.workflowSessionId);
             expect(view.graph.states.find(state => state.id === "talk")).toMatchObject({ type: "agent", chat: "continue", about: { prompt: TASK } });
             expect(view.graph.states.find(state => state.id === "pause")).not.toHaveProperty("about");
             for (const visit of view.run.nodeExecutions.filter(node => node.stateId === "talk")) {
@@ -721,7 +721,7 @@ describe("chat: continue on the controller", () => {
         try {
             const run = await started(h, CHAT_YAML({ limit: `"\${kv.limit}"` }), { limit: 3, keep: "x" });
             await spawnedVisit(h, 1);
-            await controlWorkflowV2Run(h.host, run.workflowSessionId,
+            await controlWorkflowRun(h.host, run.workflowSessionId,
                 { operation: "set_vars", runId: null, set: { limit: 3600, topic: "postgres" }, delete: [], expectedKvRevision: 1 },
                 { actor: ACTOR, operationId: "vars-1" });
             armed = true;
@@ -731,7 +731,7 @@ describe("chat: continue on the controller", () => {
                 cycle: 2, variables: { limit: 3600, topic: "postgres", keep: "x" }, changedVariables: ["limit", "topic"],
             });
             expect(h.spawns).toHaveLength(2);
-            await controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "done" }, { actor: ACTOR, operationId: "cancel-rt7" });
+            await controlWorkflowRun(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "done" }, { actor: ACTOR, operationId: "cancel-rt7" });
             expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
         } finally {
             await h.stop();
@@ -748,7 +748,7 @@ describe("chat: continue on the controller", () => {
             expect(await completeAs(h, idleChat, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
                 .toMatchObject({ ok: true });
             await until(async () => (await h.store.listNodeExecutions(idle.runId)).some(node => node.nodeId === "pause"), "the wait between visits");
-            await controlWorkflowV2Run(h.host, idle.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-1" });
+            await controlWorkflowRun(h.host, idle.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-1" });
             expect(await ended(h, idle.runId)).toMatchObject({ status: "cancelled" });
             expect(await chatEnd(h, idleChat)).toMatchObject({ cmd: "done", id: `workflow-agent-chat-end:${idleChat}` });
 
@@ -757,7 +757,7 @@ describe("chat: continue on the controller", () => {
             const busyChat = workflowAgentChatSessionId(busy.runId, "talk");
             const running = await spawnedVisit(h, 2);
             expect(running.childSessionId).toBe(busyChat);
-            await controlWorkflowV2Run(h.host, busy.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-2" });
+            await controlWorkflowRun(h.host, busy.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-2" });
             expect(await ended(h, busy.runId)).toMatchObject({ status: "cancelled" });
             expect(await chatEnd(h, busyChat)).toMatchObject({ cmd: "cancel", id: `workflow-agent-chat-end:${busyChat}` });
 
@@ -770,11 +770,11 @@ describe("chat: continue on the controller", () => {
                 .toMatchObject({ ok: true });
             await until(async () => (await h.store.listNodeExecutions(stopping.runId)).some(node => node.nodeId === "pause"), "the wait between visits");
             const asked = Date.now();
-            await controlWorkflowV2Run(h.host, stopping.workflowSessionId, { operation: "stop", runId: null, reason: "enough", graceSeconds: 300 },
+            await controlWorkflowRun(h.host, stopping.workflowSessionId, { operation: "stop", runId: null, reason: "enough", graceSeconds: 300 },
                 { actor: ACTOR, operationId: "stop-1" });
             expect(await chatEnd(h, stoppingChat)).toMatchObject({ cmd: "done", id: `workflow-agent-chat-end:${stoppingChat}` });
             expect(Date.now() - asked).toBeLessThan(60_000);
-            await controlWorkflowV2Run(h.host, stopping.workflowSessionId, { operation: "cancel", runId: null, reason: "done" }, { actor: ACTOR, operationId: "cancel-3" })
+            await controlWorkflowRun(h.host, stopping.workflowSessionId, { operation: "cancel", runId: null, reason: "done" }, { actor: ACTOR, operationId: "cancel-3" })
                 .catch(() => {});
             await ended(h, stopping.runId);
             await pause(1_000);
@@ -882,7 +882,7 @@ describe("chat: continue on the controller", () => {
             expect((await h.client.getStatus(`session-${chat}`)).status).toBe("Running");
             expect((await h.catalog.getSessionEvents(chat, 0, 100, ["session.end_requested"])).map(event => event.data))
                 .toEqual([expect.objectContaining({ cmd: "done" })]);
-            await controlWorkflowV2Run(h.host, run.workflowSessionId,
+            await controlWorkflowRun(h.host, run.workflowSessionId,
                 { operation: "set_vars", runId: null, set: { limit: 3600 }, delete: [], expectedKvRevision: 1 }, { actor: ACTOR, operationId: "vars-g1r" });
             // The first visit is decided by its time limit; the next visit goes to a new agent session.
             const second = await spawnedVisit(h, 2);
@@ -1193,7 +1193,7 @@ describe("chat: continue on the controller", () => {
                 expect(mark).toMatchObject({ cmd: "cancel", requestedBy: null });
                 // The asker's command never reached the session.
                 expect(await commandsOf(h, chat)).toEqual([]);
-                await controlWorkflowV2Run(h.host, run.workflowSessionId,
+                await controlWorkflowRun(h.host, run.workflowSessionId,
                     { operation: "set_vars", runId: null, set: { limit: 3600 }, delete: [], expectedKvRevision: 1 }, { actor: ACTOR, operationId: "vars-drr2" });
                 const second = await spawnedVisit(h, 2);
                 const replacement = workflowAgentChatSessionId(run.runId, "talk", 2);
@@ -1235,7 +1235,7 @@ describe("chat: continue on the controller", () => {
             const chat = workflowAgentChatSessionId(run.runId, "talk");
             firstVisit = (await visit(h, 1)).nodeExecutionId;
             // The first visit is decided by its 2-second time limit; the next one has an hour.
-            await controlWorkflowV2Run(h.host, run.workflowSessionId,
+            await controlWorkflowRun(h.host, run.workflowSessionId,
                 { operation: "set_vars", runId: null, set: { limit: 3600 }, delete: [], expectedKvRevision: 1 }, { actor: ACTOR, operationId: "vars-1" });
             const second = await spawnedVisit(h, 2);
             expect(second.childSessionId).toBe(chat);
@@ -1267,7 +1267,7 @@ describe("chat: continue on the controller", () => {
                 const run = await started(h, CHAT_YAML({ chat: session }));
                 const first = await spawnedVisit(h, 1);
                 const child = first.childSessionId;
-                await controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-g5" });
+                await controlWorkflowRun(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-g5" });
                 expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
                 const end = await until(async () => (await commandsOf(h, child))[0] ?? null, `the end of ${child}`, 30_000);
                 expect(end).toMatchObject({ type: "cmd", cmd: "cancel" });
@@ -1314,7 +1314,7 @@ describe("chat: continue on the controller", () => {
             expect(await h.store.readAgentInvocationByChild(chat)).toMatchObject({ nodeExecutionId: second.nodeExecutionId });
             expect((await h.store.readAgentVisitsBefore(run.runId, "talk", null))).toMatchObject({ count: 2, previous: { nodeExecutionId: second.nodeExecutionId } });
             // A graceful stop with visit 2 running: the chat is started work, so it is not ended.
-            await controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "stop", runId: null, reason: "enough", graceSeconds: 300 },
+            await controlWorkflowRun(h.host, run.workflowSessionId, { operation: "stop", runId: null, reason: "enough", graceSeconds: 300 },
                 { actor: ACTOR, operationId: "stop-prr3" });
             await pause(3_000);
             expect(await commandsOf(h, chat)).toEqual([]);
@@ -1339,7 +1339,7 @@ describe("chat: continue on the controller", () => {
             return "done";
         }],
         ["the run is canceled", async (h, run) => {
-            await controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-rt1" });
+            await controlWorkflowRun(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-rt1" });
             expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
             return "cancel";
         }],
@@ -1390,7 +1390,7 @@ describe("chat: continue on the controller", () => {
                     if (firstVisit === null || nodeExecutionId === firstVisit || secondVisit.length > 0) return;
                     secondVisit.push(nodeExecutionId);
                     const { workflowSessionId } = await h.store.readAgentInvocation(nodeExecutionId);
-                    await controlWorkflowV2Run(h.host, workflowSessionId, { operation: "cancel", runId: null, reason: "enough" },
+                    await controlWorkflowRun(h.host, workflowSessionId, { operation: "cancel", runId: null, reason: "enough" },
                         { actor: ACTOR, operationId: "cancel-t2" });
                 },
             },
@@ -1464,7 +1464,7 @@ describe("chat: continue on the controller", () => {
             const run = await started(h, CHAT_YAML());
             const chat = workflowAgentChatSessionId(run.runId, "talk");
             const first = await visit(h, 1);
-            await controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-t3a" });
+            await controlWorkflowRun(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-t3a" });
             expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
             await until(async () => (await h.store.readAgentInvocation(first.nodeExecutionId))?.endChildStatus === "NotFound", "the owed end");
             // The host creates the chat; it is not visible yet. The looks go on, and the spawn keeps retrying.
@@ -1499,7 +1499,7 @@ describe("chat: continue on the controller", () => {
             const run = await started(h, CHAT_YAML());
             const chat = workflowAgentChatSessionId(run.runId, "talk");
             const first = await visit(h, 1);
-            await controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-t3b" });
+            await controlWorkflowRun(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-t3b" });
             expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
             await until(async () => (await h.store.readAgentInvocation(first.nodeExecutionId))?.endChildStatus === "NotFound", "the owed end");
             release();
@@ -1529,7 +1529,7 @@ describe("chat: continue on the controller", () => {
             const first = await spawnedVisit(h, 1);
             // The send finished while the run was live (nothing owed then): the spawn is done.
             await until(async () => (await status(h, `wfa-${first.nodeExecutionId}`)) === "Completed" || null, "the spawn to end");
-            await controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-t3c" });
+            await controlWorkflowRun(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-t3c" });
             expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
             // The cleanup looked once and started its detached retry; the run's end did not wait for it.
             await until(async () => (await status(h, `wfc-${chat}`)) === "Running" || null, "the detached end retry");

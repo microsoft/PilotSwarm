@@ -11,12 +11,12 @@
  * the Workflow runs, which ends completed; no test is a Workflow of the definition or a session list row; the chat got no
  * test notice. The model's answers and tool calls are recorded, not judged.
  *
- * It spends model tokens, so it runs only when asked: PS_WORKFLOW_V2_REAL_MODEL=run with PS_WORKFLOW_V2_REAL_MODEL_REF
- * (provider:model) and optionally PS_WORKFLOW_V2_REAL_MODEL_EFFORT, on a local worker whose model catalog
- * (PS_MODEL_PROVIDERS_PATH) serves it (test/helpers/workflow-v2-real-model.mjs). Asked but unable to run, it fails as
- * BLOCKED. The receipt goes to PS_WORKFLOW_V2_REAL_MODEL_RECEIPT when set; a summary is printed. Two asked turns.
+ * It spends model tokens, so it runs only when asked: PS_WORKFLOW_REAL_MODEL=run with PS_WORKFLOW_REAL_MODEL_REF
+ * (provider:model) and optionally PS_WORKFLOW_REAL_MODEL_EFFORT, on a local worker whose model catalog
+ * (PS_MODEL_PROVIDERS_PATH) serves it (test/helpers/workflow-real-model.mjs). Asked but unable to run, it fails as
+ * BLOCKED. The receipt goes to PS_WORKFLOW_REAL_MODEL_RECEIPT when set; a summary is printed. Two asked turns.
  *
- *   PS_WORKFLOW_V2_REAL_MODEL=run PS_WORKFLOW_V2_REAL_MODEL_REF=<provider:model> \
+ *   PS_WORKFLOW_REAL_MODEL=run PS_WORKFLOW_REAL_MODEL_REF=<provider:model> \
  *     npx vitest run test/local/workflow-chat-test-real-model.test.js
  */
 import { describe, it, expect } from "vitest";
@@ -24,7 +24,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createTestEnv } from "../helpers/local-env.js";
 import { PilotSwarmManagementClient, withClient } from "../helpers/local-workers.js";
-import { realModelPlan } from "../helpers/workflow-v2-real-model.mjs";
+import { realModelPlan } from "../helpers/workflow-real-model.mjs";
 import { loadModelProviders } from "../../src/index.ts";
 
 const OWNER = { provider: "test", subject: "workflow-chat-test-real-model" };
@@ -66,7 +66,7 @@ describe("An agent's test of a revision, on request (stage 2.2), on a real model
     }
     it(TITLE, { timeout: TEST_TIMEOUT }, async () => {
         if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
-        if (plan.target !== "local") throw new Error("BLOCKED: this check runs on a local worker (PS_WORKFLOW_V2_REAL_MODEL_TARGET=local).");
+        if (plan.target !== "local") throw new Error("BLOCKED: this check runs on a local worker (PS_WORKFLOW_REAL_MODEL_TARGET=local).");
         const receipt = { test: "workflow-chat-test-real-model", startedAt: new Date().toISOString(),
             model: { ref: plan.model.ref, effort: plan.effort ?? "the model's default" }, steps: {}, verdict: null };
         const env = createTestEnv("workflow-chat-test-real-model");
@@ -141,7 +141,7 @@ describe("An agent's test of a revision, on request (stage 2.2), on a real model
         } finally {
             receipt.endedAt = new Date().toISOString();
             console.log(`[workflow-chat-test-real-model] ${JSON.stringify(receipt)}`);
-            const path = process.env.PS_WORKFLOW_V2_REAL_MODEL_RECEIPT;
+            const path = process.env.PS_WORKFLOW_REAL_MODEL_RECEIPT;
             if (path) {
                 mkdirSync(dirname(path), { recursive: true });
                 writeFileSync(path, `${JSON.stringify(receipt, null, 2)}\n`);

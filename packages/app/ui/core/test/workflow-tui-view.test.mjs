@@ -17,8 +17,8 @@ import {
     selectWorkflowViewSelection,
     workflowGraphOrder,
 } from "../src/index.js";
-import { workflowV2Definition } from "../src/workflow-v2-view.js";
-import { readModel, row, done } from "./workflow-v2-fixtures.mjs";
+import { workflowDefinition } from "../src/workflow-view.js";
+import { readModel, row, done } from "./workflow-fixtures.mjs";
 
 /** A review that loops through a fix until accepted, a parallel fan-out, and the terminals. */
 const states = [
@@ -78,7 +78,7 @@ const lineTexts = presentation => presentation.detailsLines.map(line => line.tex
 const WRITES = /^(updateWorkflow|sendMessage|sendWorkflowInput|steer|answer|createSession|cancel|delete|done|complete|setSession)/i;
 
 test("the states come in graph order: a loop is one layer, a parallel state's branch start and the later terminals below it", () => {
-    const order = workflowGraphOrder(workflowV2Definition(graph));
+    const order = workflowGraphOrder(workflowDefinition(graph));
     assert.deepEqual(order.map(item => item.id), ["review", "fix", "fan", "work", "done", "failed", "branch_done"]);
     assert.deepEqual(Object.fromEntries(order.map(item => [item.id, item.layer])),
         { review: 0, fix: 0, fan: 1, work: 2, done: 2, failed: 2, branch_done: 3 });

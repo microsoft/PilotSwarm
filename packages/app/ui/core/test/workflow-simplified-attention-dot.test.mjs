@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { appReducer, createInitialState, createStore, normalizeStoredCanvasPrefs } from "../src/index.js";
 import { workflowAttentionAt, workflowNeedsAttention } from "../src/workflow-owner.js";
 
-const row = (sessionId, status, updatedAt) => ({ sessionId, sessionKind: "workflow", title: "Workflow: watch-v2", status, parentSessionId: "owner",
+const row = (sessionId, status, updatedAt) => ({ sessionId, sessionKind: "workflow", title: "Workflow: watch-flow", status, parentSessionId: "owner",
     createdAt: updatedAt - 1_000, updatedAt });
 
 test("the dot follows what needs the person, newer than what the Workflow panel last showed", () => {

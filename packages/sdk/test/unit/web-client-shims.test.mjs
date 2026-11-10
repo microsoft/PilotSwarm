@@ -41,7 +41,7 @@ const USER = { provider: "entra", subject: "u1" };
  * them at request time, so the shape here is what the shim itself emits.
  */
 const SHIM_CASES = [
-    // — workflow v2: a person's command (the server stamps the actor; options are not sent) —
+    // — workflow: a person's command (the server stamps the actor; options are not sent) —
     { call: (c) => c.updateWorkflow("wf-1", { operation: "pause", operation_id: "p-1" }, { principal: USER }), op: "updateWorkflow",
         params: { sessionId: "wf-1", command: { operation: "pause", operation_id: "p-1" } } },
     // — the session the command comes from is passed on (review SF-2) —
@@ -79,7 +79,7 @@ const SHIM_CASES = [
     { call: (c) => c.listSessionShares("s1"), op: "listSessionShares", params: { sessionId: "s1" } },
     { call: (c) => c.listKnownUsers({ limit: 10 }), op: "listKnownUsers", params: { limit: 10 } },
     { call: (c) => c.listAuthzAudit({ limit: 5, sessionId: "s1" }), op: "listAuthzAudit", params: { limit: 5, sessionId: "s1" } },
-    // — workflow v2 read: its options are the operation's declared parameters, passed to the request builder, which leaves
+    // — workflow read: its options are the operation's declared parameters, passed to the request builder, which leaves
     //   out an absent or null one (review api-01); so these rows check the HTTP request it builds (WIRE_CHECKED). Only an
     //   absent run is left out; an empty one is sent for the server to refuse —
     { call: (c) => c.readWorkflow("s1"), op: "readWorkflow", params: { sessionId: "s1" } },

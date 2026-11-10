@@ -231,20 +231,20 @@ test("stage 2.4 (PR 235): a running Workflow session offers no Stop: it has no t
 });
 
 test("stage 2.4: a clock wait is labelled and described by its time", async () => {
-    const { workflowV2NodeLabel, workflowV2ClockWaitShort } = await import("../src/workflow-v2-view.js");
+    const { workflowNodeLabel, workflowClockWaitShort } = await import("../src/workflow-view.js");
     const { workflowNodeWhat } = await import("../src/workflow-node-summary.js");
     const node = { id: "hold", type: "wait", seconds: null, at: { minute: 0, hour: 9, tz: "America/Los_Angeles" },
         until: "the next 09:00 (America/Los_Angeles)", outcomes: ["elapsed"], next: { elapsed: "done" } };
-    assert.equal(workflowV2NodeLabel(node), "Wait · until 09:00");
+    assert.equal(workflowNodeLabel(node), "Wait · until 09:00");
     assert.equal(workflowNodeWhat({ ...node, kind: "wait" }), "Waits until the next 09:00 (America/Los_Angeles).");
-    assert.equal(workflowV2ClockWaitShort({ minute: 30, tz: "UTC" }), "until :30");
-    assert.equal(workflowV2ClockWaitShort({ minute: 5, hour: 6, dayOfWeek: 1, tz: "UTC" }), "until Mon 06:05");
-    assert.equal(workflowV2ClockWaitShort({ minute: 0, hour: 0, dayOfMonth: 1, tz: "UTC" }), "until day 1 00:00");
-    assert.equal(workflowV2NodeLabel({ ...node, at: undefined, until: undefined, seconds: 90 }), "Wait · 1 min 30 s");
+    assert.equal(workflowClockWaitShort({ minute: 30, tz: "UTC" }), "until :30");
+    assert.equal(workflowClockWaitShort({ minute: 5, hour: 6, dayOfWeek: 1, tz: "UTC" }), "until Mon 06:05");
+    assert.equal(workflowClockWaitShort({ minute: 0, hour: 0, dayOfMonth: 1, tz: "UTC" }), "until day 1 00:00");
+    assert.equal(workflowNodeLabel({ ...node, at: undefined, until: undefined, seconds: 90 }), "Wait · 1 min 30 s");
 });
 
 test("stage 2.4 (FU-25): a script's tool call window is in the Log in words", async () => {
-    const { workflowEventText } = await import("../src/workflow-v2-view.js");
+    const { workflowEventText } = await import("../src/workflow-view.js");
     const base = { runId: "r", nodeExecutionId: "nx", stateId: "poll", step: 1, call: 2, tool: "read_build" };
     assert.equal(workflowEventText("workflow.tool_call_started", { ...base, startedAt: "2026-11-07T09:00:00.000Z" }).text, "poll · tool 2 read_build started");
     assert.equal(workflowEventText("workflow.tool_call_ended", { ...base, ok: true, durationMs: 340 }).text, "poll · tool 2 read_build done · 340 ms");

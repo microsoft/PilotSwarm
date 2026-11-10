@@ -37,8 +37,8 @@ const STATES = [
 ];
 const INPUTS = { type: "object", required: ["topic"], properties: { topic: { type: "string" } } };
 const yamlOf = (revision) => revision === 3
-    ? "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: hn-top-watch, version: \"1.2.0\" }\ninitial: nowhere\nstates: {}\n"
-    : `apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: hn-top-watch, version: "1.${revision - 1}.0" }\ninitial: poll\n# wait ${revision * 10}\n`;
+    ? "apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: hn-top-watch, version: \"1.2.0\" }\ninitial: nowhere\nstates: {}\n"
+    : `apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: hn-top-watch, version: "1.${revision - 1}.0" }\ninitial: poll\n# wait ${revision * 10}\n`;
 const CHAT_ACTOR = { kind: "chat", sessionId: AGENT_ID };
 const PERSON_ACTOR = { kind: "user", provider: "dev", subject: "affan", display: "Affan Dar" };
 
@@ -599,7 +599,7 @@ const WATCH_CARD = {
     // Stage 2 review S2SF-F4: what the definition itself shows of its effects.
     checked: { scripts: [], agents: [], words: "Checked from the definition: it runs no scripts and has no agent steps." },
 };
-const WATCH_YAML = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: release-watch, version: \"1.2.0\" }\ninitial: poll\n";
+const WATCH_YAML = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: release-watch, version: \"1.2.0\" }\ninitial: poll\n";
 
 /**
  * The new-session picker's catalog (one agent and one package Workflow), the chat it makes for the Workflow, and that
@@ -1040,7 +1040,7 @@ test("OF-S2-8: at 390 px the row wraps to two lines, Definition with full screen
 // in a Schema row; the YAML (viewer and editor), the samples and the scripts are highlighted in the theme's code colours,
 // and the editor stays a plain textarea (typing, undo) under the colours.
 // Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "OF-S2-8" (from packages/app/web, after build).
-const SCRIPT_YAML = `apiVersion: pilotswarm.dev/v2-draft
+const SCRIPT_YAML = `apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: hn-top-watch, version: "1.1.0" }
 schemas:

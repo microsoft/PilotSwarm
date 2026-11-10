@@ -79,8 +79,8 @@ test("the failed Workflow's headline, reason and details, and the Node panel, us
 test("UI-D7: a summarized error keeps the whole error readable, in the Node panel and under the headline", async () => {
     const React = (await import("react")).default;
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const { WorkflowV2FailureDetails, WorkflowV2NodeSummary } = await import("../../react/src/workflow-v2-panels.js");
-    const { workflowV2ExecutionValueKey } = await import("../src/workflow-v2-view.js");
+    const { WorkflowFailureDetails, WorkflowNodeSummary } = await import("../../react/src/workflow-panels.js");
+    const { workflowExecutionValueKey } = await import("../src/workflow-view.js");
     const { workflowErrorLeavesOut } = await import("../src/workflow-error-words.js");
     assert.equal(workflowErrorLeavesOut(CUT), true, "a cut preview");
     assert.equal(workflowErrorLeavesOut(WHOLE), true, "a script's stderr and exit code");
@@ -89,7 +89,7 @@ test("UI-D7: a summarized error keeps the whole error readable, in the Node pane
     assert.equal(workflowErrorLeavesOut(JSON.stringify({ message: "x".repeat(300) })), true, "words shortened to 240 characters");
 
     // The Node panel: a handled error (the Workflow took its route and went on) and a failed run's visit alike.
-    const values = { [workflowV2ExecutionValueKey("run-1", "nx-poll-7")]: { runId: "run-1", executionId: "nx-poll-7", phase: "loaded",
+    const values = { [workflowExecutionValueKey("run-1", "nx-poll-7")]: { runId: "run-1", executionId: "nx-poll-7", phase: "loaded",
         result: { kind: "error", whole: true, bytes: WHOLE.length, value: JSON.parse(WHOLE) } } };
     for (const outcome of ["execution_failed", "handled"]) {
         const execution = { id: "nx-poll-7", status: "completed", resultKind: "runtime_error", outcome, errorPreview: CUT, ordinal: 7 };
@@ -97,7 +97,7 @@ test("UI-D7: a summarized error keeps the whole error readable, in the Node pane
         const result = workflowNodeResult(node, execution);
         assert.deepEqual({ truncated: result.truncated, summary: result.summary }, { truncated: true, summary: true }, outcome);
         const asked = [];
-        const render = executionValues => renderToStaticMarkup(React.createElement(WorkflowV2NodeSummary, { selected: node, nodes: [node], select: () => {},
+        const render = executionValues => renderToStaticMarkup(React.createElement(WorkflowNodeSummary, { selected: node, nodes: [node], select: () => {},
             runId: "run-1", executionValues, onReadWholeValue: id => asked.push(id) }));
         const before = render(null);
         assert.ok(before.includes(">Summary.<"), before);
@@ -118,14 +118,14 @@ test("UI-D7: a summarized error keeps the whole error readable, in the Node pane
     const failure = workflowFailure(run);
     assert.deepEqual({ leavesOut: failure.leavesOut, executionId: failure.executionId }, { leavesOut: true, executionId: "nx-poll-7" });
     const asked = [];
-    const details = executionValues => renderToStaticMarkup(React.createElement(WorkflowV2FailureDetails, { failure, runId: "run-1", executionValues,
+    const details = executionValues => renderToStaticMarkup(React.createElement(WorkflowFailureDetails, { failure, runId: "run-1", executionValues,
         onReadWholeValue: id => asked.push(id) }));
     const folded = details(null);
     assert.ok(folded.includes("<summary>Details</summary>") && /data-action="whole-error"[^>]*>Show all</.test(folded), folded);
     assert.ok(details(values).includes("Node.js v24.11.0"));
     // A failure whose words say it all, with nothing more recorded: no Details at all.
     const plain = workflowFailure({ status: "failed", terminalState: "poll", error: "plain words" });
-    assert.equal(renderToStaticMarkup(React.createElement(WorkflowV2FailureDetails, { failure: plain, runId: "run-1" })), "");
+    assert.equal(renderToStaticMarkup(React.createElement(WorkflowFailureDetails, { failure: plain, runId: "run-1" })), "");
 });
 
 // HN #2 on live data (5482bae3): a node's runtime error is stored as its envelope's JSON text, so the read's errorPreview

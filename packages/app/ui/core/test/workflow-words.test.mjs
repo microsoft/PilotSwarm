@@ -17,12 +17,12 @@ import {
 } from "../src/workflow-words.js";
 import { workflowElapsedText } from "../src/workflow-owner.js";
 import {
-    formatSeconds, projectWorkflowV2,
-} from "../src/workflow-v2-view.js";
+    formatSeconds, projectWorkflow,
+} from "../src/workflow-view.js";
 import { layoutWorkflowGraphTB, WORKFLOW_ERROR_EDGE_LABEL } from "../src/workflow-graph-layout.js";
 import { WorkflowEdgeShape, WorkflowStepCard } from "../../react/src/workflow-graph.js";
 import { listedState } from "../../react/src/workflow-chat-tab.js";
-import { done, readModel, row } from "./workflow-v2-fixtures.mjs";
+import { done, readModel, row } from "./workflow-fixtures.mjs";
 
 process.env.TZ = "UTC";
 
@@ -104,7 +104,7 @@ test("the cards: two rows, no type word, no 'Done by its agent', 'in the loaded 
         rows.push(done("send_joke", n, "sent", { enteredAt: `2026-11-07T08:0${n}:05Z`, endedAt: `2026-11-07T08:0${n}:06Z` }));
     }
     rows.push(done("pause", 1, "elapsed"), done("pause", 2, "elapsed"), row("pause", 3, "pending", { deadline: "2026-11-07T08:31:05Z" }));
-    const projection = projectWorkflowV2({ readModel: readModel({ graph: DAD, nodeExecutions: rows,
+    const projection = projectWorkflow({ readModel: readModel({ graph: DAD, nodeExecutions: rows,
         outbox: rows.filter(item => item.stateId === "send_joke").map((item, index) => ({ exchangeId: `ex-${index}`, nodeExecutionId: item.nodeExecutionId,
             state: "delivered", attempts: 1, recipientSessionId: "parent-1", recipientKind: "parent", contract: "DadJoke@1", deliveredAt: item.endedAt })) }) });
     const html = Object.fromEntries(projection.nodes.map(node => [node.id, renderToStaticMarkup(React.createElement(WorkflowStepCard, { node, onSelect() {} }))]));

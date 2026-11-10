@@ -23,17 +23,17 @@ import {
     coordinatingInstructions, parseWorkflowCard, parseWorkflowPackageRef, readWorkflowCard, workflowCardDigest, workflowCardInterface,
     workflowCardMismatches, workflowCardWords, workflowEffectFacts, workflowEffectFactsWords, workflowModelHintWords, workflowPackageRef, WORKFLOW_CARD_MAX_BYTES,
     WORKFLOW_OLD_MODEL_HINTS_NOTE,
-} from "../../dist/workflow/v2/package-card.js";
-import { manifestWorkflows } from "../../dist/workflow/v2/chat-packages.js";
+} from "../../dist/workflow/package-card.js";
+import { manifestWorkflows } from "../../dist/workflow/chat-packages.js";
 import { catalogModelNames, ModelProviderRegistry } from "../../dist/model-providers.js";
-import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
+import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { validateAgentPackageDir } from "../../dist/agent-package-format.js";
 import { loadAgentFiles, validateAgentDefinition } from "../../dist/agent-loader.js";
 
 const ALL = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true };
 
 export const RELEASE_WATCH_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: release-watch, version: "1.2.0" }
 inputs:
@@ -96,7 +96,7 @@ Start it with the train's name. When it asks, ask the person whether to post the
 `;
 
 const WAIT_YAML = name => `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: ${name}, version: "0.1.0" }
 initial: hold
@@ -115,7 +115,7 @@ effects: None; five seconds.
 `;
 
 const compiled = yaml => {
-    const result = compileWorkflowV2(yaml, ALL);
+    const result = compileWorkflow(yaml, ALL);
     assert.equal(result.valid, true, JSON.stringify(result.diagnostics));
     return result.ir;
 };
@@ -248,7 +248,7 @@ test("a package exports its Workflow Definitions with their cards, and its agent
     assert.equal(exported.version, "1.2.0");
     assert.equal(exported.description, "Watches a release train and reports blockers.");
     const ir = compiled(RELEASE_WATCH_YAML);
-    assert.equal(exported.yamlSha256, compileWorkflowV2(RELEASE_WATCH_YAML, ALL).yamlSha256);
+    assert.equal(exported.yamlSha256, compileWorkflow(RELEASE_WATCH_YAML, ALL).yamlSha256);
     assert.deepEqual(exported.interface, JSON.parse(JSON.stringify(workflowCardInterface(ir))));
     assert.equal(exported.cardDigest, workflowCardDigest(exported.card, exported.interface));
     assert.deepEqual(validation.manifest.agents[0].workflows, ["release-watch", "ops-kit/incident-digest"]);
@@ -298,7 +298,7 @@ test("an agent's workflows: a bare name must be one of its package's definitions
 
 test("A2 in the package: an agent step may not use one of the package's agents that names definitions", async t => {
     const stepYaml = (agentRef) => `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: delegate, version: "1.0.0" }
 initial: ask
@@ -361,7 +361,7 @@ test("the agent loader reads workflows as a list or an inline array, and leaves 
 // code that runs on a worker, and its agent steps) is said whatever the card says, and a card that says "no scripts" for a
 // definition with script steps is refused at publication.
 const SCRIPT_YAML = name => `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: ${name}, version: "1.0.0" }
 initial: poll
@@ -427,7 +427,7 @@ test("S2SF-F4: a card that says it runs no scripts is refused for a definition w
 // OF-S2-7: a card's model hints say what kind of model, reasoning or context an agent node needs, in words, never a model's
 // name; publication checks each names an agent node; a card without hints keeps the digest it had.
 const HINTED_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: triage, version: "1.0.0" }
 initial: classify

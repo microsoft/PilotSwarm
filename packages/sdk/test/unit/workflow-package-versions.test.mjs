@@ -11,8 +11,8 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { packageVersionIsNewer } from "../../dist/workflow/v2/chat-packages.js";
-import { attachChatPackageWorkflow, copyChatPackageWorkflow, readPackageWorkflowCard, saveChatWorkflowDefinition, withPackageUpdates } from "../../dist/workflow/v2/chat-definitions.js";
+import { packageVersionIsNewer } from "../../dist/workflow/chat-packages.js";
+import { attachChatPackageWorkflow, copyChatPackageWorkflow, readPackageWorkflowCard, saveChatWorkflowDefinition, withPackageUpdates } from "../../dist/workflow/chat-definitions.js";
 
 const PKG = "pkg-release";
 const at = (semver, packageId = PKG) => ({ packageId, packageName: "release-tools", semver, sha256: `sha-${packageId}-${semver}`, cardDigest: "c" });
@@ -74,7 +74,7 @@ test("L2: a retried attach is answered from its stored receipt, before the regis
 });
 
 test("L1: Make a copy saves the chat's own definition and names what it was copied from", async () => {
-    const yaml = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: release-watch, version: \"1.1.0\" }\ninitial: hold\n"
+    const yaml = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: release-watch, version: \"1.1.0\" }\ninitial: hold\n"
         + "states:\n  hold: { type: wait, seconds: 30, transition: { next: { elapsed: done } } }\n  done: { type: terminal, outcome: succeeded }\n";
     const saves = [];
     const host = { store: { readWorkflowLineage: async () => null, chat: {
@@ -103,7 +103,7 @@ test("DS-1: a save aimed at a locked definition is DEFINITION_LOCKED by its id o
         readDefinitionByName: async (owner, name) => (owner === "chat-1" && name === locked.name ? locked : null),
         save: async () => { throw new Error("the store's save was reached"); },
     } } };
-    const base = { ownerSessionId: "chat-1", yaml: "apiVersion: pilotswarm.dev/v2-draft\n", actor: { kind: "user", provider: "dev", subject: "ada" },
+    const base = { ownerSessionId: "chat-1", yaml: "apiVersion: pilotswarm.dev/v1\n", actor: { kind: "user", provider: "dev", subject: "ada" },
         operationId: "save-1", by: "person" };
     for (const [name, expected] of [["release-tools/release-watch", { definitionId: "def-pkg", revision: 1 }], ["release-watch", { definitionId: "def-pkg", revision: 1 }],
         ["", { definitionId: "def-pkg", revision: 1 }], ["release-tools/release-watch", null]]) {

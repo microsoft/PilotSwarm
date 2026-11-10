@@ -24,19 +24,19 @@ import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmManagementClient, createManagementClient } from "../helpers/local-workers.js";
-import { openWorkflowStore } from "../helpers/workflow-v2-request-fixture.js";
-import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
+import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
+import { controlWorkflowRun, createWorkflow } from "../../src/workflow/service.ts";
 import {
     chatCompletionRefusal, deleteChatWorkflowDefinition, listChatWorkflowDefinitions, readChatWorkflowDefinition, saveChatWorkflowDefinition,
     startChatWorkflowDefinition,
-} from "../../src/workflow/v2/chat-definitions.ts";
-import { spawnWorkflowCompatFromTool, workflowDefinitionFromTool } from "../../src/workflow/v2/definition-tool.ts";
-import { readStoredAgentModels, readWorkflowAgentModels } from "../../src/workflow/v2/agent-models.ts";
-import { createWorkflowAgentNodeHost } from "../../src/workflow/v2/agent-host.ts";
-import { readWorkflowV2 } from "../../src/workflow/v2/tools.ts";
-import { startChatWorkflowTest } from "../../src/workflow/v2/chat-test.ts";
-import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
-import { canonicalJson, sha256Hex } from "../../src/workflow/v2/json.ts";
+} from "../../src/workflow/chat-definitions.ts";
+import { spawnWorkflowCompatFromTool, workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
+import { readStoredAgentModels, readWorkflowAgentModels } from "../../src/workflow/agent-models.ts";
+import { createWorkflowAgentNodeHost } from "../../src/workflow/agent-host.ts";
+import { readWorkflowModel } from "../../src/workflow/tools.ts";
+import { startChatWorkflowTest } from "../../src/workflow/chat-test.ts";
+import { compileWorkflow } from "../../src/workflow/compiler.ts";
+import { canonicalJson, sha256Hex } from "../../src/workflow/json.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -45,7 +45,7 @@ const PERSON = { kind: "user", provider: "test", subject: "ada", display: "Ada L
 const ENGINE = { kind: "system", name: "chat-definitions-test" };
 
 const YAML = (seconds, name = "hn-top-watch", version = "1.0.0") => `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: ${name}, version: "${version}" }
 initial: hold
@@ -54,7 +54,7 @@ states:
   done: { type: terminal, outcome: succeeded }
 `;
 const WITH_INPUTS = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: hn-top-watch, version: "1.0.0" }
 inputs:
@@ -65,7 +65,7 @@ states:
   done: { type: terminal, outcome: succeeded }
 `;
 const BROKEN = (name = "hn-top-watch") => `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: ${name}, version: "1.0.0" }
 initial: nowhere
@@ -179,7 +179,7 @@ describe("a definition belongs to the chat (stage 2.1)", () => {
             const deleting = { ownerSessionId: chat, definitionId: id, actor: PERSON };
             const inUse = await refused(deleteChatWorkflowDefinition(host, { ...deleting, operationId: "delete-1" }), "DEFINITION_IN_USE");
             expect(inUse.details.workflowSessionIds).toEqual([started.workflowId]);
-            await controlWorkflowV2Run(host, started.workflowId, { operation: "cancel", runId: null, reason: "test" }, { actor: ENGINE, operationId: "cancel-1" });
+            await controlWorkflowRun(host, started.workflowId, { operation: "cancel", runId: null, reason: "test" }, { actor: ENGINE, operationId: "cancel-1" });
             expect((await deleteChatWorkflowDefinition(host, { ...deleting, operationId: "delete-2" })).receipt).toMatchObject({ definitionId: id, name: "hn-top-watch" });
             // Its Workflow keeps its copy; a save or a start of the deleted definition is refused.
             expect((await h.store.readRevision(started.workflowId, 1)).yaml).toBe(YAML(30));
@@ -354,7 +354,7 @@ describe("a definition belongs to the chat (stage 2.1)", () => {
     it("OF-S2-7: a start's agent node models are checked against the revision and the catalog, stored with the run, reused by Run again, and read at spawn", { timeout: TIMEOUT }, async () => {
         const { h, host, chat } = await harness();
         const AGENTS = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: triage, version: "1.0.0" }
 initial: classify
@@ -394,7 +394,7 @@ states:
             expect(checked.at(-1)).toEqual(["test:fast", OWNER.subject]);
             const live = (await h.store.listRuns(started.workflowId)).find(run => run.mode === "live");
             expect(readWorkflowAgentModels(live.agentModels)).toEqual(chosen);
-            const view = await readWorkflowV2(agentsHost, started.workflowId, {}, "tool");
+            const view = await readWorkflowModel(agentsHost, started.workflowId, {}, "tool");
             expect(view.run.agentModels).toEqual(chosen);
             // Run again reuses it; a start without one has none, and its read shows none.
             const again = await startWith(undefined, { runAgainOf: started.workflowId });
@@ -410,7 +410,7 @@ states:
             const plain = await startWith(undefined);
             expect(plain.agentModels).toBeUndefined();
             expect((await h.store.listRuns(plain.workflowId)).find(run => run.mode === "live").agentModels).toBe(null);
-            expect(Object.hasOwn((await readWorkflowV2(agentsHost, plain.workflowId, {}, "tool")).run, "agentModels")).toBe(false);
+            expect(Object.hasOwn((await readWorkflowModel(agentsHost, plain.workflowId, {}, "tool")).run, "agentModels")).toBe(false);
             // At spawn, over the real session rows: a node left out inherits the chat's model, effort AND context tier.
             const parent = randomUUID();
             await h.catalog.createSession(parent, { owner: OWNER, model: "test:chat-model", reasoningEffort: "medium", contextTier: "long_context" });
@@ -436,7 +436,7 @@ states:
         const { h, host, chat } = await harness();
         const env = getEnv();
         const AGENTS = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: triage, version: "1.0.0" }
 initial: classify
@@ -497,7 +497,7 @@ states:
 
             // A Workflow of the chat's that is not a chat revision's: a person's real-agent test, publish_and_start and start.
             const draft = randomUUID();
-            const made = await createWorkflowV2(agentsHost, { workflowSessionId: draft, parentSessionId: chat, yaml: AGENTS, actor: ENGINE,
+            const made = await createWorkflow(agentsHost, { workflowSessionId: draft, parentSessionId: chat, yaml: AGENTS, actor: ENGINE,
                 operationId: `draft-${randomUUID()}`, publish: false });
             const hash = made.receipt.yamlSha256;
             const command = (sessionId, args) => mgmt.updateWorkflow(sessionId, { operation_id: `cmd-${randomUUID()}`, ...args }, { principal: ADMIN });
@@ -517,7 +517,7 @@ states:
             await command(draft, { operation: "publish_and_start", expected_revision: 1, definition_hash: hash, inputs: {}, agent_models: chosen });
             expect(await liveModels(draft)).toEqual(chosen);
             const published = randomUUID();
-            await createWorkflowV2(agentsHost, { workflowSessionId: published, parentSessionId: chat, yaml: AGENTS, actor: ENGINE,
+            await createWorkflow(agentsHost, { workflowSessionId: published, parentSessionId: chat, yaml: AGENTS, actor: ENGINE,
                 operationId: `published-${randomUUID()}`, publish: true });
             await command(published, { operation: "start", definition_hash: hash, inputs: {}, agent_models: { classify: { model: "test:other" } } });
             expect(await liveModels(published)).toEqual({ classify: { model: "test:other" } });
@@ -538,7 +538,7 @@ states:
             // The same for update_workflow start and publish_and_start, and a real-agent test.
             mgmt._checkWorkflowAgentModel = pulled;
             const replayDraft = randomUUID();
-            const replayMade = await createWorkflowV2(agentsHost, { workflowSessionId: replayDraft, parentSessionId: chat, yaml: AGENTS, actor: ENGINE,
+            const replayMade = await createWorkflow(agentsHost, { workflowSessionId: replayDraft, parentSessionId: chat, yaml: AGENTS, actor: ENGINE,
                 operationId: `draft-${randomUUID()}`, publish: false });
             const testArgs = { operation: "test", operation_id: `test-${randomUUID()}`, expected_revision: 1, definition_hash: replayMade.receipt.yamlSha256,
                 inputs: {}, agent_mode: "real", agent_models: lost };
@@ -551,7 +551,7 @@ states:
             mgmt._checkWorkflowAgentModel = pulled;
             const firstPas = await mgmt.updateWorkflow(replayDraft, pasArgs, { principal: ADMIN });
             const replayPublished = randomUUID();
-            await createWorkflowV2(agentsHost, { workflowSessionId: replayPublished, parentSessionId: chat, yaml: AGENTS, actor: ENGINE,
+            await createWorkflow(agentsHost, { workflowSessionId: replayPublished, parentSessionId: chat, yaml: AGENTS, actor: ENGINE,
                 operationId: `published-${randomUUID()}`, publish: true });
             const startArgs = { operation: "start", operation_id: `ls-${randomUUID()}`, definition_hash: replayMade.receipt.yamlSha256, inputs: {},
                 agent_models: lost };
@@ -589,7 +589,7 @@ states:
     it("continue default: a revision saved before without session starts continued, and its graph says so; one saved with chat: is refused in words", { timeout: TIMEOUT }, async () => {
         const { h, host, chat } = await harness();
         const AGENTS = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: triage, version: "1.0.0" }
 initial: classify
@@ -606,10 +606,10 @@ states:
         const agentsHost = { ...host };
         const FLAGS = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true };
         const modeOf = graph => graph.states.find(state => state.id === "classify").chat ?? "new";
-        const workflowMode = async workflowId => modeOf((await readWorkflowV2(agentsHost, workflowId, {}, "tool")).graph);
+        const workflowMode = async workflowId => modeOf((await readWorkflowModel(agentsHost, workflowId, {}, "tool")).graph);
         /** `yaml` as a build before the default changed stored it: its IR with no session mode (a new session each visit). */
         const storedBefore = (yaml, compiledFrom = yaml) => {
-            const fresh = compileWorkflowV2(compiledFrom, FLAGS);
+            const fresh = compileWorkflow(compiledFrom, FLAGS);
             const ir = JSON.parse(JSON.stringify(fresh.ir));
             delete ir.nodes.classify.chat;
             return { ...fresh, ir, irSha256: sha256Hex(canonicalJson(ir)), yamlSha256: sha256Hex(yaml) };
@@ -629,7 +629,7 @@ states:
             // The same YAML saved again (revision 2) compiles to continue.
             const resaved = (await save(agentsHost, chat, AGENTS, { definitionId: old.definitionId, revision: 1 }, { name: "triage" })).receipt;
             expect(resaved).toMatchObject({ revision: 2, valid: true });
-            expect(resaved.irSha256).toBe(compileWorkflowV2(AGENTS, FLAGS).irSha256);
+            expect(resaved.irSha256).toBe(compileWorkflow(AGENTS, FLAGS).irSha256);
             expect(resaved.irSha256).not.toBe(before.irSha256);
             // A revision a build before the rename stored with `chat: new` does not start now: its words say what to write.
             const OLD_KEY = AGENTS.replace("    timeoutSeconds: 600", "    chat: new\n    timeoutSeconds: 600");

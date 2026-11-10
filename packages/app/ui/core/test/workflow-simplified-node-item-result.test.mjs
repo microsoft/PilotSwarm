@@ -9,10 +9,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
+import { projectWorkflow } from "../src/workflow-view.js";
 import { workflowNodeSummary } from "../src/workflow-node-summary.js";
-import { WorkflowV2NodeSummary } from "../../react/src/workflow-v2-panels.js";
-import { done, readModel, row } from "./workflow-v2-fixtures.mjs";
+import { WorkflowNodeSummary } from "../../react/src/workflow-panels.js";
+import { done, readModel, row } from "./workflow-fixtures.mjs";
 
 const states = [
     { id: "fan", type: "parallel", forEach: "${input.items}", concurrency: 2, join: "all_required", failFast: false,
@@ -24,8 +24,8 @@ const states = [
 ];
 const graph = { revision: 1, initial: "fan", states };
 const at = (fan, index) => ({ scopeId: `${fan}#${index}`, branch: { parallelNodeExecutionId: fan, index } });
-const nodeOf = rows => projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: rows }) }).nodes.find(node => node.id === "check");
-const render = (selected, branchIndex = null) => renderToStaticMarkup(React.createElement(WorkflowV2NodeSummary, {
+const nodeOf = rows => projectWorkflow({ readModel: readModel({ graph, nodeExecutions: rows }) }).nodes.find(node => node.id === "check");
+const render = (selected, branchIndex = null) => renderToStaticMarkup(React.createElement(WorkflowNodeSummary, {
     selected, nodes: [], select: () => {}, runId: "run-1", branchIndex, onBranch: () => {} }));
 
 // apple (item 1) ended with its result; cherry (item 2) is still running.
@@ -63,7 +63,7 @@ test("a step the For each's current visit has not reached shows no earlier visit
 });
 
 test("a step outside a For each still shows its latest result", () => {
-    const fan = projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [
+    const fan = projectWorkflow({ readModel: readModel({ graph, nodeExecutions: [
         done("fan", 1, "joined", { nodeExecutionId: "nx-fan-1", branches: 1, outputPreview: '"all checked"' }),
     ] }) }).nodes.find(node => node.id === "fan");
     assert.equal(workflowNodeSummary(fan).result?.text, "all checked");

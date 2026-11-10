@@ -42,7 +42,7 @@ import {
     intakeSha256,
     parseIntakeEnvelope,
     type IntakeEnvelope,
-} from "../workflow/v2/intake.js";
+} from "../workflow/intake.js";
 
 export { IntakeShapeError };
 

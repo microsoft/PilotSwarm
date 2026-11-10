@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { SessionManager } from "../../src/session-manager.ts";
 import { ModelProviderRegistry } from "../../src/model-providers.ts";
-import { WORKFLOW_V2_SKILLS_DIR } from "../../src/workflow/guidance.ts";
+import { WORKFLOW_SKILLS_DIR } from "../../src/workflow/guidance.ts";
 import { createNativeCopilotProvider } from "../helpers/native-copilot-provider.mjs";
 import { createFeaturePolicy } from "../helpers/feature-policy.mjs";
 
@@ -45,7 +45,7 @@ async function harness({ native }, run) {
     const otherSkills = join(home, "deployment-skills");
     mkdirSync(join(otherSkills, "notes-helper"), { recursive: true });
     writeFileSync(join(otherSkills, "notes-helper", "SKILL.md"), "---\nname: notes-helper\ndescription: Keeps notes.\n---\n\n# Notes helper\n\nKeep notes.\n");
-    const dirs = [WORKFLOW_V2_SKILLS_DIR, otherSkills];
+    const dirs = [WORKFLOW_SKILLS_DIR, otherSkills];
     const sessionId = randomUUID();
     let state = { revision: 0, selections: [] };
     const row = { sessionId, owner, isSystem: false, parentSessionId: null, rootSessionId: sessionId };

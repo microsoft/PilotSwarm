@@ -7,7 +7,7 @@
  *   Workflow (it controls none) and a chat with Workflows off do not carry it.
  * - L2: read_workflow's description names run.lastControl, and runControlView says who took the action: this session, another
  *   session (its id), a person (their portal name, never their sign-in identity) or system (its name).
- * The store's read and the tool are test/local/workflow-v2-last-control.test.js.
+ * The store's read and the tool are test/local/workflow-last-control.test.js.
  *
  * Run: node --test test/unit/workflow-person-control.test.mjs (after npm run build).
  */
@@ -17,7 +17,7 @@ import { SessionManager } from "../../dist/session-manager.js";
 import {
     WORKFLOW_CONTEXT_STUB, WORKFLOW_PERSON_CONTROL_GUIDANCE, WORKFLOW_SESSION_GUIDANCE, workflowSessionGuidance,
 } from "../../dist/workflow/guidance.js";
-import { READ_WORKFLOW_TOOL_SPEC, readWorkflowToolSpec, runControlView } from "../../dist/workflow/v2/tools.js";
+import { READ_WORKFLOW_TOOL_SPEC, readWorkflowToolSpec, runControlView } from "../../dist/workflow/tools.js";
 
 const SENTENCE = "A person can pause, resume, stop or cancel a run, or set its variables, from the portal or the API at any time; "
     + "their latest control action is their current instruction, so never reverse it, and if it conflicts with something they "

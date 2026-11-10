@@ -41,15 +41,15 @@
  * and its instance (session-<id>) starts with the first prompt (client.ts _ensureOrchestrationAndSend). Read before,
  * Duroxide's getInstanceInfo fails with "get_instance_info: Instance not found" (this file's earlier failure at ~2 s).
  *
- * It spends model tokens, so it runs only when asked: PS_WORKFLOW_V2_REAL_MODEL=run with PS_WORKFLOW_V2_REAL_MODEL_REF
- * (provider:model) and optionally PS_WORKFLOW_V2_REAL_MODEL_EFFORT, on a local worker whose model catalog
- * (PS_MODEL_PROVIDERS_PATH) serves it (test/helpers/workflow-v2-real-model.mjs). Asked but unable to run, it fails as
- * BLOCKED. The receipt goes to PS_WORKFLOW_V2_REAL_MODEL_RECEIPT when set (an on-demand case's to the same path with its
+ * It spends model tokens, so it runs only when asked: PS_WORKFLOW_REAL_MODEL=run with PS_WORKFLOW_REAL_MODEL_REF
+ * (provider:model) and optionally PS_WORKFLOW_REAL_MODEL_EFFORT, on a local worker whose model catalog
+ * (PS_MODEL_PROVIDERS_PATH) serves it (test/helpers/workflow-real-model.mjs). Asked but unable to run, it fails as
+ * BLOCKED. The receipt goes to PS_WORKFLOW_REAL_MODEL_RECEIPT when set (an on-demand case's to the same path with its
  * key before the extension: <name>.enable.json, <name>.stays-off.json, <name>.load-skill.json, <name>.script-state.json); a summary is printed. The
  * haiku case: one asked turn, the agent node's turn, and the turn the Workflow's ending notice starts; each on-demand case:
  * one or two turns (enable_workflows ends a turn and starts the next), and the simple Workflow's ending notice.
  *
- *   PS_WORKFLOW_V2_REAL_MODEL=run PS_WORKFLOW_V2_REAL_MODEL_REF=<provider:model> \
+ *   PS_WORKFLOW_REAL_MODEL=run PS_WORKFLOW_REAL_MODEL_REF=<provider:model> \
  *     npx vitest run test/local/workflow-default-worker-agent-real-model.test.js
  */
 import { describe, it, expect } from "vitest";
@@ -61,9 +61,9 @@ import { PilotSwarmManagementClient, withClient } from "../helpers/local-workers
 import { turnWorkflowsOn } from "../helpers/workflows-on.js";
 import { sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
-import { WORKFLOW_V2_MILESTONE_IR_VERSION } from "../../src/workflow/v2/compiler.ts";
-import { realModelPlan } from "../helpers/workflow-v2-real-model.mjs";
-import { realModelWorkflowEvidence } from "../helpers/workflow-v2-real-model-evidence.mjs";
+import { WORKFLOW_MILESTONE_IR_VERSION } from "../../src/workflow/compiler.ts";
+import { realModelPlan } from "../helpers/workflow-real-model.mjs";
+import { realModelWorkflowEvidence } from "../helpers/workflow-real-model-evidence.mjs";
 import { loadModelProviders } from "../../src/index.ts";
 
 const OWNER = { provider: "test", subject: "workflow-default-worker-agent-real-model" };
@@ -79,7 +79,7 @@ const ASK_PAUSE = workflowId => `Pause my Workflow ${workflowId} now.`;
 const ASK_STILL_DOING = "Is my Workflow still doing what I asked?";
 /** UXP-AD-01: a person's Workflow: a wait (time for the chat to pause it), a message to its chat, then a long wait. */
 const PERSON_CONTROL_NAME = "person-control-ping";
-const PERSON_CONTROL_YAML = `apiVersion: pilotswarm.dev/v2-draft
+const PERSON_CONTROL_YAML = `apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: ${PERSON_CONTROL_NAME}, version: "1.0.0", description: "Waits, tells its chat it is still going, then waits again." }
 contracts:
@@ -115,7 +115,7 @@ const WORKFLOW_TOOLS = ["workflow_definition", "update_workflow", "read_workflow
 const AUTHORING_SKILL = "workflow-authoring";
 /** load_skill's result for a capability reference (cap1.…) that is the authoring skill: the artifact's JSON, its name in it. */
 const AUTHORING_BY_REFERENCE = new RegExp(`"name":\\s*"${AUTHORING_SKILL}"`);
-/** The authoring skill's body: its first heading (plugins/workflow-v2/skills/workflow-authoring/SKILL.md). */
+/** The authoring skill's body: its first heading (plugins/workflow/skills/workflow-authoring/SKILL.md). */
 const AUTHORING_HEADING = /^# Workflow authoring$/m;
 const TURN_MS = 300_000;
 const RUN_MS = 300_000;
@@ -243,9 +243,9 @@ const TITLE_PERSON_CONTROL = "UXP-AD-01: a chat that paused its Workflow on requ
 /** Every case runs: none is held any more (owner 2026-11-09T06:40Z decided A, I1 and I2). */
 const caseOf = () => it;
 
-/** Where a case's receipt goes: PS_WORKFLOW_V2_REAL_MODEL_RECEIPT, with an on-demand case's key before its extension. */
+/** Where a case's receipt goes: PS_WORKFLOW_REAL_MODEL_RECEIPT, with an on-demand case's key before its extension. */
 function receiptPath(key) {
-    const path = process.env.PS_WORKFLOW_V2_REAL_MODEL_RECEIPT;
+    const path = process.env.PS_WORKFLOW_REAL_MODEL_RECEIPT;
     if (!path) return null;
     return key ? path.replace(/(\.json)?$/i, `.${key}$1`) : path;
 }
@@ -256,12 +256,12 @@ function receiptPath(key) {
  * chat's orchestration version (its instance exists from the first prompt on), then `check({ env, client, worker,
  * catalog, chat, receipt })`. Then, whatever the check found, the evidence of the chat's Workflows (receipt.evidence:
  * each saved revision's YAML and diagnostics, each run's status, outcome and error, each node execution's state, outcome
- * and error; test/helpers/workflow-v2-real-model-evidence.mjs), read before the environment is cleaned up. Prints the
+ * and error; test/helpers/workflow-real-model-evidence.mjs), read before the environment is cleaned up. Prints the
  * receipt and writes it (receiptPath), with the verdict, whatever the outcome.
  */
 async function realModelChat(key, ask, check, { workflowsOn = false, worker: workerOptions = WORKER, prepare = null } = {}) {
     if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
-    if (plan.target !== "local") throw new Error("BLOCKED: this check runs on a local worker (PS_WORKFLOW_V2_REAL_MODEL_TARGET=local).");
+    if (plan.target !== "local") throw new Error("BLOCKED: this check runs on a local worker (PS_WORKFLOW_REAL_MODEL_TARGET=local).");
     const test = key ? `workflow-default-worker-agent-real-model.${key}` : "workflow-default-worker-agent-real-model";
     const receipt = { test, startedAt: new Date().toISOString(),
         model: { ref: plan.model.ref, effort: plan.effort ?? "the model's default" }, ask, steps: {}, verdict: null };
@@ -336,7 +336,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             for (const definition of await chatStore.listDefinitions(chat.sessionId, { includeDeleted: true })) {
                 for (const summary of await chatStore.listRevisions(definition.definitionId)) {
                     if (!summary.valid) continue;
-                    const ir = await chatStore.readRevisionIr(definition.definitionId, summary.revision, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION });
+                    const ir = await chatStore.readRevisionIr(definition.definitionId, summary.revision, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION });
                     valid.push({ name: definition.name, revision: summary.revision, states: stateKinds(ir) });
                 }
             }
@@ -471,7 +471,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             for (const definition of await chatStore.listDefinitions(chat.sessionId, { includeDeleted: true })) {
                 for (const summary of await chatStore.listRevisions(definition.definitionId)) {
                     const ir = summary.valid
-                        ? await chatStore.readRevisionIr(definition.definitionId, summary.revision, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION })
+                        ? await chatStore.readRevisionIr(definition.definitionId, summary.revision, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION })
                         : null;
                     saved.push({ name: definition.name, revision: summary.revision, valid: summary.valid, createdAt: summary.createdAt,
                         states: ir ? stateKinds(ir) : [], errors: summary.errorCount });

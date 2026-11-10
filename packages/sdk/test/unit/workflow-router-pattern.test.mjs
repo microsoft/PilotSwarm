@@ -15,16 +15,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
-import { requireAgentModelsForRevision } from "../../dist/workflow/v2/agent-models.js";
+import { compileWorkflow } from "../../dist/workflow/compiler.js";
+import { requireAgentModelsForRevision } from "../../dist/workflow/agent-models.js";
 import { loadSkillsSync } from "../../dist/skills.js";
-import { WORKFLOW_SESSION_GUIDANCE, WORKFLOW_V2_SKILLS_DIR } from "../../dist/workflow/guidance.js";
+import { WORKFLOW_SESSION_GUIDANCE, WORKFLOW_SKILLS_DIR } from "../../dist/workflow/guidance.js";
 
 const ALL = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true };
 const read = relative => fs.readFileSync(new URL(relative, import.meta.url), "utf8");
-const AUTHORING = read("../../plugins/workflow-v2/skills/workflow-authoring/SKILL.md");
-const REFERENCE = read("../../plugins/workflow-v2/skills/workflow-reference/SKILL.md");
-const PATTERNS = read("../../plugins/workflow-v2/skills/workflow-patterns/SKILL.md");
+const AUTHORING = read("../../plugins/workflow/skills/workflow-authoring/SKILL.md");
+const REFERENCE = read("../../plugins/workflow/skills/workflow-reference/SKILL.md");
+const PATTERNS = read("../../plugins/workflow/skills/workflow-patterns/SKILL.md");
 
 /** One of the skill's examples: the fenced YAML block that starts with "# example: <name>". */
 function example(name = "two-lane-summary") {
@@ -35,7 +35,7 @@ function example(name = "two-lane-summary") {
 }
 
 test("the patterns skill's router example compiles: one parallel state over literal lanes, a router script, an agent node per lane", () => {
-    const compiled = compileWorkflowV2(example(), ALL);
+    const compiled = compileWorkflow(example(), ALL);
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     const lanes = compiled.ir.nodes.lanes;
     assert.equal(lanes.type, "parallel");
@@ -49,7 +49,7 @@ test("the patterns skill's router example compiles: one parallel state over lite
 });
 
 test("workflow-patterns is an on-demand skill of its own, at most 8 KiB, that the registry lists beside the authoring skills", () => {
-    const loaded = loadSkillsSync(WORKFLOW_V2_SKILLS_DIR);
+    const loaded = loadSkillsSync(WORKFLOW_SKILLS_DIR);
     const patterns = loaded.find(skill => skill.name === "workflow-patterns");
     assert.ok(patterns, "the registry lists workflow-patterns");
     assert.ok(Buffer.byteLength(patterns.prompt, "utf8") <= 8 * 1024, `${Buffer.byteLength(patterns.prompt, "utf8")} bytes`);
@@ -65,7 +65,7 @@ test("workflow-patterns is an on-demand skill of its own, at most 8 KiB, that th
 });
 
 test("the patterns skill's named-branches example compiles: two branches, each its own graph and agent node, bounded by a time limit", () => {
-    const compiled = compileWorkflowV2(example("two-views"), ALL);
+    const compiled = compileWorkflow(example("two-views"), ALL);
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     assert.deepEqual(compiled.diagnostics, [], "no warning: the parallel state has its own time limit");
     const views = compiled.ir.nodes.views;

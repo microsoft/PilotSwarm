@@ -35,7 +35,7 @@ import {
 import {
     INTAKE_MAX_INVOCATION_ITEMS_BYTES, INTAKE_MAX_TEXT_BYTES, intakeBoundItem, intakeItemBytes, intakeItemFitsAlone, intakeItemsBytes,
     intakeTextWithinCap,
-} from "../../dist/workflow/v2/intake.js";
+} from "../../dist/workflow/intake.js";
 import { createInitialState as createInitialState82, deriveOptions as deriveOptions82 } from "../../dist/orchestration_1_0_82/state.js";
 import { continueInput as continueInput82, versionedContinueAsNew as versionedContinueAsNew82 } from "../../dist/orchestration_1_0_82/lifecycle.js";
 
@@ -437,7 +437,7 @@ test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change 
     const frozen = new Set(tsFiles("orchestration_1_0_82").flatMap(name => importsOf(read(`orchestration_1_0_82/${name}`))));
     const added = new Set(tsFiles("orchestration").flatMap(name => importsOf(read(`orchestration/${name}`))).filter(s => !frozen.has(s)));
     assert.deepEqual([...added].sort(), [
-        "../activity-routing.js", "../workflow/v2/agent-ids.js", "../workflow/v2/intake.js", "./intake-machine.js", "./intake-state.js",
+        "../activity-routing.js", "../workflow/agent-ids.js", "../workflow/intake.js", "./intake-machine.js", "./intake-state.js",
         "./intake-wiring.js", "./workflow-turn-failure.js", "node:crypto",
     ]);
 });

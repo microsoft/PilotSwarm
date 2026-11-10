@@ -20,10 +20,10 @@ import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createManagementClient } from "../helpers/local-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { registerWorkflowV2, sessionQueueTransport } from "../../src/workflow/v2/runtime.ts";
-import { saveChatWorkflowDefinition, listChatWorkflowDefinitions } from "../../src/workflow/v2/chat-definitions.ts";
-import { workflowDefinitionFromTool } from "../../src/workflow/v2/definition-tool.ts";
-import { WORKFLOW_DEFINITION_TESTS_KEPT } from "../../src/workflow/v2/chat-test.ts";
+import { registerWorkflow, sessionQueueTransport } from "../../src/workflow/runtime.ts";
+import { saveChatWorkflowDefinition, listChatWorkflowDefinitions } from "../../src/workflow/chat-definitions.ts";
+import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
+import { WORKFLOW_DEFINITION_TESTS_KEPT } from "../../src/workflow/chat-test.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
@@ -34,7 +34,7 @@ const OWNER = { provider: "test", subject: "workflow-chat-test" };
 const yamlOf = doc => JSON.stringify(doc, null, 2);
 /** A script that reads a build, an agent step that summarizes it, an hour's wait, and the end. */
 const DOC = {
-    apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "build-watch", version: "1.0.0" },
+    apiVersion: "pilotswarm.dev/v1", kind: "Workflow", metadata: { name: "build-watch", version: "1.0.0" },
     initial: "poll",
     schemas: { Summary: { type: "object", required: ["lines"], properties: { lines: { type: "integer" } }, additionalProperties: false } },
     states: {
@@ -68,7 +68,7 @@ async function harness(env) {
         dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
     });
     const notices = [];
-    registerWorkflowV2({
+    registerWorkflow({
         registerActivity: (name, fn) => runtime.registerActivity(name, fn),
         registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
     }, {
@@ -170,7 +170,7 @@ describe("an agent's test of a revision, on request (stage 2.2)", () => {
         const h = await harness(getEnv());
         try {
             const doc = {
-                apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "security-check", version: "1.0.0" },
+                apiVersion: "pilotswarm.dev/v1", kind: "Workflow", metadata: { name: "security-check", version: "1.0.0" },
                 initial: "security_review",
                 schemas: {
                     Ask: { type: "object", required: ["q"], properties: { q: { type: "string" } }, additionalProperties: false },

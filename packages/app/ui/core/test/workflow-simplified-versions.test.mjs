@@ -20,14 +20,14 @@ import {
     workflowChosenVersion, workflowDefinitionVersions, workflowDefinitionsOf, workflowVersionFromOptionValue, workflowVersionOptionValue,
     workflowCompareVersions, workflowNewestVersionKey, workflowVersionDiscriminator,
 } from "../src/workflow-owner.js";
-import { workflowV2VersionCompare } from "../src/workflow-v2-commands.js";
+import { workflowVersionCompare } from "../src/workflow-commands.js";
 import { WorkflowTab } from "../../react/src/workflow-tab.js";
 
 process.env.TZ = "UTC";
 const NAME = "hn-top-watch";
 const STATES = [{ id: "poll", type: "script", runtime: "node", timeoutSeconds: 60, outcomes: ["changed"], next: { changed: "done" } },
     { id: "done", type: "terminal", outcome: "succeeded" }];
-const YAML = version => `apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: ${NAME}, version: "${version}" }\ninitial: poll\n`;
+const YAML = version => `apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: ${NAME}, version: "${version}" }\ninitial: poll\n`;
 const started = (workflowId, runId, semver, status, outcome) => ({
     workflowId, definition: { state: "published", semver, currentRevision: 1, publishedRevision: 1 },
     revision: { revision: 1, definitionHash: `h-${semver}`, valid: true, name: NAME, diagnostics: [] },
@@ -165,12 +165,12 @@ test("Compare compares two versions' YAML: from the version below the one shown,
     assert.match(render(h, { view: "definition", definitionPanel: "revisions", versionKey: KEY("1.0.0") }), /data-from="1\.1\.0" data-to="1\.0\.0"/);
 });
 
-test("workflowV2VersionCompare: reading, the same YAML, and a failed read", () => {
+test("workflowVersionCompare: reading, the same YAML, and a failed read", () => {
     const loaded = yaml => ({ phase: "loaded", value: { definitionRevision: { revision: 1, yaml, valid: true } } });
-    assert.equal(workflowV2VersionCompare({ version: "1.0.0", read: null }, { version: "1.1.0", read: null }).summary, "Reading versions 1.0.0 and 1.1.0…");
-    assert.equal(workflowV2VersionCompare({ version: "1.0.0", read: loaded("a") }, { version: "1.0.1", read: loaded("a") }).summary,
+    assert.equal(workflowVersionCompare({ version: "1.0.0", read: null }, { version: "1.1.0", read: null }).summary, "Reading versions 1.0.0 and 1.1.0…");
+    assert.equal(workflowVersionCompare({ version: "1.0.0", read: loaded("a") }, { version: "1.0.1", read: loaded("a") }).summary,
         "Versions 1.0.0 and 1.0.1 have the same YAML.");
-    const failed = workflowV2VersionCompare({ version: "1.0.0", read: { phase: "failed", error: "gone" } }, { version: "1.1.0", read: loaded("b") });
+    const failed = workflowVersionCompare({ version: "1.0.0", read: { phase: "failed", error: "gone" } }, { version: "1.1.0", read: loaded("b") });
     assert.equal(failed.summary, "Version 1.0.0 could not be read: gone");
     assert.equal(failed.ready, false);
 });

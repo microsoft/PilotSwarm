@@ -1,7 +1,7 @@
 /**
  * The Workflow guidance and the engine every session has (owner decision 2026-11-08T15:30Z, which supersedes the
  * always-on review's AOS-F1 fix): session orchestration 1.0.83 is the latest version and every worker runs the full
- * Workflow engine, so every session's host compiles agent, parallel and request states (compileWorkflowV2Definition),
+ * Workflow engine, so every session's host compiles agent, parallel and request states (compileWorkflowDefinition),
  * and every session is taught them.
  * a) a default worker (scripts off, no request-turn flag) carries the full text (trimmed, owner 2026-11-08T16:55Z): agent
  *    nodes, the request answer and the skills, and a scripts-off line that names agent and parallel nodes;
@@ -15,9 +15,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../../dist/session-manager.js";
-import { compileWorkflowV2Definition } from "../../dist/workflow/v2/service.js";
+import { compileWorkflowDefinition } from "../../dist/workflow/service.js";
 import * as guidance from "../../dist/workflow/guidance.js";
-import { workflowTestModeFromEnv } from "../../dist/workflow/v2/test-mode-switch.js";
+import { workflowTestModeFromEnv } from "../../dist/workflow/test-mode-switch.js";
 
 const { workflowSessionGuidance, WORKFLOW_SESSION_GUIDANCE } = guidance;
 
@@ -46,7 +46,7 @@ function workflowBlock(prompt) {
 }
 
 const definition = (states, extra = {}) => JSON.stringify({
-    apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "guidance-example", version: "1.0.0" },
+    apiVersion: "pilotswarm.dev/v1", kind: "Workflow", metadata: { name: "guidance-example", version: "1.0.0" },
     initial: Object.keys(states)[0], ...extra,
     states: { ...states, done: { type: "terminal", outcome: "succeeded" }, failed: { type: "terminal", outcome: "failed" } },
 }, null, 2);
@@ -105,14 +105,14 @@ function inlineExamples(text) {
                 if (target && target !== id) targets.add(target);
             }
         }
-        const yaml = ["apiVersion: pilotswarm.dev/v2-draft", "kind: Workflow", "metadata: { name: guidance-inline, version: \"1.0.0\" }",
+        const yaml = ["apiVersion: pilotswarm.dev/v1", "kind: Workflow", "metadata: { name: guidance-inline, version: \"1.0.0\" }",
             `initial: ${id}`, "states:", `  ${id}: ${body}`, ...[...targets].map(target => `  ${target}: { type: terminal, outcome: succeeded }`)].join("\n");
         examples.push({ example: match[0], yaml });
     }
     return examples;
 }
 
-const compileErrors = (yaml) => compileWorkflowV2Definition(yaml).diagnostics.filter(item => item.severity === "error");
+const compileErrors = (yaml) => compileWorkflowDefinition(yaml).diagnostics.filter(item => item.severity === "error");
 
 test("the canonical examples are real: each compiles on the host every session has", () => {
     for (const [type, { yaml }] of Object.entries(STATE_TYPES)) {

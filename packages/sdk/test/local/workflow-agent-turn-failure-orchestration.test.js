@@ -16,7 +16,7 @@
  * At 01caf109 no report is made at all, so every case here fails there.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { workflowAgentChatSessionId, workflowAgentChildSessionId } from "../../src/workflow/v2/agent-ids.ts";
+import { workflowAgentChatSessionId, workflowAgentChildSessionId } from "../../src/workflow/agent-ids.ts";
 
 let mockSession;
 let mockManager;

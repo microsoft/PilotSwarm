@@ -175,7 +175,7 @@ export function resolveWorkflowTool(
 
 /**
  * The grant a workflow script's call of `name` uses, judged by the grants alone, for a call that reaches no live tool
- * catalog (a workflow v2 test run's intercepted call): a workflow control tool is never admitted, and the name
+ * catalog (a workflow test run's intercepted call): a workflow control tool is never admitted, and the name
  * must match exactly one admitted grant, as resolveWorkflowTool decides before it reads the catalog.
  */
 export function admittedWorkflowToolGrant(name: string, grants: WorkflowToolGrant[], exclusions: readonly string[] = []): WorkflowToolGrant {

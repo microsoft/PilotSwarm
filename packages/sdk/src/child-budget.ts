@@ -30,7 +30,7 @@ export function childBudgetCountSql(s: string): string {
          OR (c.session_kind = 'workflow' AND (
               EXISTS (SELECT 1 FROM ${s}.workflow_runs r WHERE r.workflow_session_id = c.session_id AND r.mode = 'live'
                         AND r.status IN (${CHILD_BUDGET_RUN_STATUSES.map(status => `'${status}'`).join(", ")}))
-           OR (c.creation_config -> 'workflowV2' ? 'chatPin'
+           OR (c.creation_config -> 'workflow' ? 'chatPin'
                AND NOT EXISTS (SELECT 1 FROM ${s}.workflow_runs r WHERE r.workflow_session_id = c.session_id)))))`;
 }
 

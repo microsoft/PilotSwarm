@@ -1,6 +1,6 @@
 // The definition's Start in the TUI's workflow view (design 04 publish_and_start, start; spec draft 3: no publish-only
 // step on any surface, review UI-4; INACTIVE: only where the portal offers a person a command): S opens a Start form of
-// exactly the revision and definition hash the view shows (the portal's workflowV2DefinitionControls): ctrl-r starts it
+// exactly the revision and definition hash the view shows (the portal's workflowDefinitionControls): ctrl-r starts it
 // (a draft's revision is published and started in one step, a published one is started), with the run's inputs and
 // initial variables as JSON objects; publishing alone is refused in words. Each asks first in a confirm dialog that names the revision, the
 // hash and the inputs, and returns to the review; confirmed, the command is sent as the portal sends it (the shared
@@ -16,7 +16,7 @@ import {
     PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore, selectHelpModal, selectWorkflowPublicationModal,
     selectWorkflowViewModal, workflowPublicationChange, workflowPublicationConfirm, workflowPublicationPin,
 } from "../src/index.js";
-import { SUBTREE_REASON as SUBTREE, readModel, states } from "./workflow-v2-fixtures.mjs";
+import { SUBTREE_REASON as SUBTREE, readModel, states } from "./workflow-fixtures.mjs";
 
 /** Every command a 1.9.0 host takes from people (human-commands.ts), in its order. */
 const ALL = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "stop",
@@ -38,7 +38,7 @@ function workflow({ state = "draft", revision = 2, valid = true, diagnostics = [
         graph: valid ? { revision, initial: "poll", states } : null,
         definition: { state, semver: "1.0.0", currentRevision: revision, publishedRevision: published ? revision : null,
             publishedDefinitionHash: published ? hashOf(revision) : null },
-        revision: { revision, definitionHash: hashOf(revision), valid, diagnostics, name: "watch-v2" },
+        revision: { revision, definitionHash: hashOf(revision), valid, diagnostics, name: "watch-flow" },
     });
     if (!commands) return base;
     return { ...base, personCommands: { operations, restriction, run: null, ...(viewer ? { viewer } : {}) } };
@@ -72,7 +72,7 @@ function harness(initial, answers = []) {
     };
     const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
-    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-v2", status: "running", sessionKind: "workflow" }] });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-flow", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel([]) });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: initial, readModelRunId: null } });
@@ -127,7 +127,7 @@ test("the view says what S starts; the Start form shows exactly the revision and
     const shown = review(h.store);
     assert.equal(shown.title, "Start · revision 2");
     // Review 19:27Z (row 26): the revision, no hash.
-    assert.deepEqual(texts(shown.lines).slice(0, 4), ["Definition: watch-v2 1.0.0", "Revision: 2", "Validity: Valid",
+    assert.deepEqual(texts(shown.lines).slice(0, 4), ["Definition: watch-flow 1.0.0", "Revision: 2", "Validity: Valid",
         "Effects: Real, once it starts"]);
     assert.ok(!texts(shown.lines).some(line => line.startsWith("Definition hash")));
     // The evidence rows: no named agent here; no test row (test mode is hidden, and no test run is read).
@@ -160,7 +160,7 @@ test("ctrl-r publishes and starts the live run with the typed inputs and initial
     const confirm = modalOf(h.store);
     assert.equal(confirm.title, "Start Revision 2");
     assert.equal(confirm.confirmLabel, "Start");
-    assert.equal(confirm.message, `Start revision 2 of watch-v2 1.0.0 with inputs `
+    assert.equal(confirm.message, `Start revision 2 of watch-flow 1.0.0 with inputs `
         + '{"repo":"pilotswarm","limit":3} and initial variables {"note":"first"}? This revision no longer changes after it starts, and its effects are real.');
     await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
     const [first] = h.sent();
@@ -320,7 +320,7 @@ test("a draft published elsewhere while the review is open: nothing is sent for 
     assert.equal(statusOf(h.store), "Reviewing revision 2 as it is now");
     const shown = review(h.store);
     assert.equal(shown.title, "Start · revision 2");
-    assert.deepEqual(texts(shown.lines).slice(0, 3), ["Definition: watch-v2 1.0.0", "Revision: 2",
+    assert.deepEqual(texts(shown.lines).slice(0, 3), ["Definition: watch-flow 1.0.0", "Revision: 2",
         "Effects: Real, once it starts"]);
     assert.ok(joined(shown.lines).includes("Start runs this revision with real effects."));
     assert.ok(texts(shown.lines).includes("ctrl-r Start"));
@@ -331,7 +331,7 @@ test("a draft published elsewhere while the review is open: nothing is sent for 
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RUN);
     const confirm = modalOf(h.store);
     assert.deepEqual([confirm.title, confirm.confirmLabel], ["Start Revision 2", "Start"]);
-    assert.equal(confirm.message, `Start revision 2 of watch-v2 1.0.0 with inputs {}? Its effects are real.`);
+    assert.equal(confirm.message, `Start revision 2 of watch-flow 1.0.0 with inputs {}? Its effects are real.`);
     await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
     const [first] = h.sent();
     assert.match(first.operation_id, /^ui-start-./);
@@ -402,7 +402,7 @@ test("Esc closes the review back to the view; nothing is sent", async () => {
 });
 
 test("the review's pin, its change and its confirm text", () => {
-    const draftModel = { state: "draft", name: "watch-v2", semver: "1.0.0", revision: 4, definitionHash: hashOf(4), publishedRevision: null,
+    const draftModel = { state: "draft", name: "watch-flow", semver: "1.0.0", revision: 4, definitionHash: hashOf(4), publishedRevision: null,
         publishedDefinitionHash: null, controls: [] };
     const publishedModel = { ...draftModel, state: "published", publishedRevision: 4, publishedDefinitionHash: hashOf(4) };
     assert.equal(workflowPublicationPin(null), null);
@@ -442,11 +442,11 @@ test("UI-D11: canceling Start says 'Start was not sent'; the help has no draft o
 // Review UI-F6: the status after saving YAML, valid or not, says the definition was saved and, with errors, that it cannot
 // be started; no draft or publish words.
 test("UI-F6: a YAML save's status says 'Saved the definition', and an invalid one 'cannot be started'", async () => {
-    const { workflowV2RunCommandAccepted } = await import("../src/workflow-v2-commands.js");
-    const valid = workflowV2RunCommandAccepted("replace_definition", null, { revision: 4, valid: true, diagnostics: [] });
-    const invalid = workflowV2RunCommandAccepted("replace_definition", null, { revision: 5, valid: false,
+    const { workflowRunCommandAccepted } = await import("../src/workflow-commands.js");
+    const valid = workflowRunCommandAccepted("replace_definition", null, { revision: 4, valid: true, diagnostics: [] });
+    const invalid = workflowRunCommandAccepted("replace_definition", null, { revision: 5, valid: false,
         diagnostics: [{ severity: "error", message: "x" }, { severity: "warning", message: "y" }] });
-    const replayed = workflowV2RunCommandAccepted("replace_definition", null, { revision: 4, valid: true, replayed: true });
+    const replayed = workflowRunCommandAccepted("replace_definition", null, { revision: 4, valid: true, replayed: true });
     assert.equal(valid, "Saved the definition as revision 4.");
     assert.equal(invalid, "Saved the definition as revision 5. It has 1 error, so it cannot be started until they are fixed.");
     assert.equal(replayed, "Saved the definition as revision 4. It had already been accepted.");

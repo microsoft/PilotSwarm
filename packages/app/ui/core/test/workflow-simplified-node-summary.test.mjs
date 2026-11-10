@@ -8,13 +8,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
+import { projectWorkflow } from "../src/workflow-view.js";
 import {
     workflowFirstSentence, workflowNodeDuration, workflowNodeNext, workflowNodeNow, workflowNodeRuns, workflowNodeSummary, workflowNodeWhat,
     workflowReadableValue,
 } from "../src/workflow-node-summary.js";
-import { WorkflowV2NodeSummary } from "../../react/src/workflow-v2-panels.js";
-import { done, readModel, row, states as POLL_STATES } from "./workflow-v2-fixtures.mjs";
+import { WorkflowNodeSummary } from "../../react/src/workflow-panels.js";
+import { done, readModel, row, states as POLL_STATES } from "./workflow-fixtures.mjs";
 
 process.env.TZ = "UTC";
 const NOW = Date.parse("2026-11-06T17:45:00.000Z");
@@ -37,7 +37,7 @@ const model = readModel({ graph, nodeExecutions: [
         agent: agent("chat-1") }),
     row("fact", 3, "pending", { enteredAt: at("17:43:01"), deadline: at("17:44:34"), agent: agent("chat-1") }),
 ] });
-const nodeOf = (id, from = model) => projectWorkflowV2({ readModel: from }).nodes.find(node => node.id === id);
+const nodeOf = (id, from = model) => projectWorkflow({ readModel: from }).nodes.find(node => node.id === id);
 
 test("what it does, in one sentence: the description, else from the prompt or the node's kind", () => {
     assert.equal(workflowNodeWhat(nodeOf("fact")), "Asks an agent: “Tell one new fact about PostgreSQL.”");
@@ -47,7 +47,7 @@ test("what it does, in one sentence: the description, else from the prompt or th
     assert.equal(workflowNodeWhat(nodeOf("failed")), "Ends the Workflow: failed.");
     const named = { id: "review", kind: "agent", type: "agent", invoke: { source: "agent", name: "code-reviewer", package: "review-kit", version: "1.2.0" } };
     assert.equal(workflowNodeWhat(named), "Asks agent code-reviewer · review-kit 1.2.0 to do its task with the node's input.");
-    const poll = projectWorkflowV2({ readModel: readModel() }).nodes;
+    const poll = projectWorkflow({ readModel: readModel() }).nodes;
     assert.equal(workflowNodeWhat(poll.find(node => node.id === "poll")), "Runs the script poll, for at most 5 min.");
     assert.equal(workflowNodeWhat(poll.find(node => node.id === "await_ack")), "Waits for an Ack@1 message from the parent session, for at most 10 min.");
     assert.equal(workflowFirstSentence(`${"word ".repeat(60)}end.`, 40).length, 40);
@@ -111,9 +111,9 @@ test("Next says where each outcome goes in words, and what happens when it fails
 });
 
 test("the portal's Node panel: one view, in words, with the agent's prompt folded and its chat one click away", () => {
-    const projection = projectWorkflowV2({ readModel: model });
+    const projection = projectWorkflow({ readModel: model });
     const selected = projection.nodes.find(node => node.id === "fact");
-    const html = renderToStaticMarkup(React.createElement(WorkflowV2NodeSummary, { selected, nodes: projection.nodes, select: () => {},
+    const html = renderToStaticMarkup(React.createElement(WorkflowNodeSummary, { selected, nodes: projection.nodes, select: () => {},
         openSession: () => {}, runId: projection.runId }));
     for (const words of ["Asks an agent: “Tell one new fact about PostgreSQL.”", "Now", "Running · since ", "17:43:01", "Visits", "<strong>3</strong>",
         "Result", "VACUUM frees dead rows.", "Agent session", "Same each visit", "Prompt", "Open agent session",
@@ -126,8 +126,8 @@ test("the portal's Node panel: one view, in words, with the agent's prompt folde
     }
     assert.match(html, /<details class="ps-wf-told"><summary>Prompt<\/summary><pre>Tell one new fact/);
     // A script node with no run yet: what it does and where it goes; nothing about visits or results.
-    const fresh = projectWorkflowV2({ readModel: readModel({ graph: { revision: 1, initial: "poll", states: POLL_STATES } }) });
-    const poll = renderToStaticMarkup(React.createElement(WorkflowV2NodeSummary, { selected: fresh.nodes.find(node => node.id === "poll"),
+    const fresh = projectWorkflow({ readModel: readModel({ graph: { revision: 1, initial: "poll", states: POLL_STATES } }) });
+    const poll = renderToStaticMarkup(React.createElement(WorkflowNodeSummary, { selected: fresh.nodes.find(node => node.id === "poll"),
         nodes: fresh.nodes, select: () => {} }));
     assert.ok(poll.includes("Runs the script poll, for at most 5 min."));
     assert.ok(poll.includes("Not reached"));

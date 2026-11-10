@@ -21,22 +21,22 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { compileWorkflowV2, parseWorkflowIr, WORKFLOW_V2_MILESTONE_IR_VERSION } from "../../dist/workflow/v2/compiler.js";
+import { compileWorkflow, parseWorkflowIr, WORKFLOW_MILESTONE_IR_VERSION } from "../../dist/workflow/compiler.js";
 import {
-    describeWorkflowV2State, workflowAgentChatContinues, workflowAgentChatSessionId, workflowAgentChildSessionId, workflowAgentCyclePrompt,
+    describeWorkflowState, workflowAgentChatContinues, workflowAgentChatSessionId, workflowAgentChildSessionId, workflowAgentCyclePrompt,
     workflowAgentPrompt,
-} from "../../dist/workflow/v2/runtime.js";
-import { workflowAgentReminderText } from "../../dist/workflow/v2/agent-reminder.js";
-import { COMPLETE_WORKFLOW_NODE_TOOL_SPEC } from "../../dist/workflow/v2/agent-node-service.js";
-import { WORKFLOW_SESSION_GUIDANCE, WORKFLOW_V2_SKILLS_DIR } from "../../dist/workflow/guidance.js";
+} from "../../dist/workflow/runtime.js";
+import { workflowAgentReminderText } from "../../dist/workflow/agent-reminder.js";
+import { COMPLETE_WORKFLOW_NODE_TOOL_SPEC } from "../../dist/workflow/agent-node-service.js";
+import { WORKFLOW_SESSION_GUIDANCE, WORKFLOW_SKILLS_DIR } from "../../dist/workflow/guidance.js";
 
 const AGENTS = { enableRequests: true, enableAgents: true };
 const PARALLEL = { ...AGENTS, enableParallel: true };
-const READ = { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION };
+const READ = { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION };
 const errors = result => result.diagnostics.filter(item => item.severity === "error");
 
 const LOOP = chat => `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: chatter, version: "1.0.0" }
 initial: talk
@@ -52,7 +52,7 @@ ${chat === undefined ? "" : `    session: ${chat}\n`}    timeoutSeconds: 60
 `;
 
 const FOR_EACH = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: fan, version: "1.0.0" }
 initialInput: { items: [1, 2] }
@@ -78,7 +78,7 @@ states:
 `;
 
 const BRANCHES = chat => `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: lanes, version: "1.0.0" }
 initial: fan
@@ -118,9 +118,9 @@ ${chat === undefined ? "" : `            session: ${chat}\n`}            timeout
 `;
 
 test("the compiler: continue is the default where it is allowed and is carried; new leaves the IR without a mode; anything else is refused", () => {
-    const plain = compileWorkflowV2(LOOP(undefined), AGENTS);
-    const fresh = compileWorkflowV2(LOOP("new"), AGENTS);
-    const continued = compileWorkflowV2(LOOP("continue"), AGENTS);
+    const plain = compileWorkflow(LOOP(undefined), AGENTS);
+    const fresh = compileWorkflow(LOOP("new"), AGENTS);
+    const continued = compileWorkflow(LOOP("continue"), AGENTS);
     for (const result of [plain, fresh, continued]) assert.deepEqual(errors(result), [], JSON.stringify(result.diagnostics));
     // Owner 2026-11-09T05:38Z: a loop's agent state that sets no chat continues; its IR is the explicit continue's.
     assert.equal(plain.ir.nodes.talk.chat, "continue");
@@ -135,7 +135,7 @@ test("the compiler: continue is the default where it is allowed and is carried; 
     bad.nodes.talk.chat = "sometimes";
     assert.throws(() => parseWorkflowIr(bad, READ), /stored IR agent state talk is invalid/);
 
-    const wrong = compileWorkflowV2(LOOP("sometimes"), AGENTS);
+    const wrong = compileWorkflow(LOOP("sometimes"), AGENTS);
     assert.deepEqual(errors(wrong).map(item => [item.code, item.path]), [["WORKFLOW_FIELD_INVALID", "states.talk.session"]]);
     assert.match(errors(wrong)[0].message, /^session must be continue \(one agent session across the state's visits, the default\) or new /);
 });
@@ -143,7 +143,7 @@ test("the compiler: continue is the default where it is allowed and is carried; 
 // Owner 2026-11-09T06:30Z: "lets drop the "chat" in YAML as well and replace with "session"": `chat` is no field now, and no alias.
 test("the compiler refuses the old key chat, saying what to write", () => {
     for (const value of ["continue", "new"]) {
-        const old = compileWorkflowV2(LOOP(undefined).replace("    timeoutSeconds: 60", `    chat: ${value}\n    timeoutSeconds: 60`), AGENTS);
+        const old = compileWorkflow(LOOP(undefined).replace("    timeoutSeconds: 60", `    chat: ${value}\n    timeoutSeconds: 60`), AGENTS);
         assert.equal(old.valid, false);
         assert.deepEqual(errors(old).map(item => [item.code, item.path, item.message]),
             [["WORKFLOW_FIELD_INVALID", "states.talk.chat", "`chat` is now `session`: write `session: continue` or `session: new`."]]);
@@ -151,29 +151,29 @@ test("the compiler refuses the old key chat, saying what to write", () => {
 });
 
 test("the compiler: in a For each body or a named branch an agent state that sets no chat gets a new chat each visit", () => {
-    const forEach = compileWorkflowV2(FOR_EACH.replace("          session: continue\n", ""), PARALLEL);
+    const forEach = compileWorkflow(FOR_EACH.replace("          session: continue\n", ""), PARALLEL);
     assert.deepEqual(errors(forEach), [], JSON.stringify(forEach.diagnostics));
     assert.equal(Object.hasOwn(forEach.ir.nodes.talk, "chat"), false);
-    assert.equal(forEach.irSha256, compileWorkflowV2(FOR_EACH.replace("session: continue", "session: new"), PARALLEL).irSha256);
-    const branches = compileWorkflowV2(BRANCHES(undefined), PARALLEL);
+    assert.equal(forEach.irSha256, compileWorkflow(FOR_EACH.replace("session: continue", "session: new"), PARALLEL).irSha256);
+    const branches = compileWorkflow(BRANCHES(undefined), PARALLEL);
     assert.deepEqual(errors(branches), [], JSON.stringify(branches.diagnostics));
     for (const id of ["left_talk", "right_talk"]) assert.equal(Object.hasOwn(branches.ir.nodes[id], "chat"), false, id);
     // Outside the parallel state the same Workflow's agent state continues.
     assert.equal(branches.ir.nodes.sum_up.chat, "continue");
     // An explicit continue in a branch is still refused, in today's words; an explicit new is accepted.
-    const refused = errors(compileWorkflowV2(BRANCHES("continue"), PARALLEL)).filter(item => item.path === "states.fan.branches.left.states.left_talk.session");
+    const refused = errors(compileWorkflow(BRANCHES("continue"), PARALLEL)).filter(item => item.path === "states.fan.branches.left.states.left_talk.session");
     assert.equal(refused.length, 1);
     assert.equal(refused[0].message, "state 'left_talk' cannot continue its agent session: it runs inside branch 'left' of parallel state 'fan'. Use session: new.");
-    assert.deepEqual(errors(compileWorkflowV2(BRANCHES("new"), PARALLEL)), []);
+    assert.deepEqual(errors(compileWorkflow(BRANCHES("new"), PARALLEL)), []);
 });
 
 test("the compiler refuses session: continue inside a For each body, in words", () => {
-    const result = compileWorkflowV2(FOR_EACH, PARALLEL);
+    const result = compileWorkflow(FOR_EACH, PARALLEL);
     const refused = errors(result).filter(item => item.path === "states.fan.body.states.talk.session");
     assert.equal(refused.length, 1, JSON.stringify(result.diagnostics));
     assert.equal(refused[0].code, "WORKFLOW_FIELD_INVALID");
     assert.match(refused[0].message, /^state 'talk' cannot continue its agent session: it runs inside For each state 'fan', whose items run side by side and cannot share one agent session\. Use session: new\.$/);
-    const fresh = compileWorkflowV2(FOR_EACH.replace("session: continue", "session: new"), PARALLEL);
+    const fresh = compileWorkflow(FOR_EACH.replace("session: continue", "session: new"), PARALLEL);
     assert.deepEqual(errors(fresh), [], JSON.stringify(fresh.diagnostics));
 });
 
@@ -241,10 +241,10 @@ test("the prompts: a continued chat's first asks for node_execution_id; the cycl
 });
 
 test("the graph shows the mode only when the chat continues; the reminder names the cycle; the tool takes node_execution_id", () => {
-    const continued = compileWorkflowV2(LOOP("continue"), AGENTS);
-    const plain = compileWorkflowV2(LOOP("new"), AGENTS);
-    assert.equal(describeWorkflowV2State(continued.ir.nodes.talk).chat, "continue");
-    assert.equal(Object.hasOwn(describeWorkflowV2State(plain.ir.nodes.talk), "chat"), false);
+    const continued = compileWorkflow(LOOP("continue"), AGENTS);
+    const plain = compileWorkflow(LOOP("new"), AGENTS);
+    assert.equal(describeWorkflowState(continued.ir.nodes.talk).chat, "continue");
+    assert.equal(Object.hasOwn(describeWorkflowState(plain.ir.nodes.talk), "chat"), false);
     assert.equal(workflowAgentReminderText("talk", "nx-2"), "Reminder from the workflow: step 'talk' is still open. If you have finished, call "
         + "complete_workflow_node now with your outcome and output and node_execution_id nx-2 (this cycle's). If you are still working, continue.");
     assert.equal(workflowAgentReminderText("talk"), "Reminder from the workflow: step 'talk' is still open. If you have finished, call "
@@ -257,7 +257,7 @@ test("the graph shows the mode only when the chat continues; the reminder names 
 
 // Owner 2026-11-08T16:55Z: the base guidance is trimmed to its rules; the chat modes are taught in the skills it names.
 test("the skills every Workflow author reads explain both chat modes and when to choose each", () => {
-    const skill = name => fs.readFileSync(path.join(WORKFLOW_V2_SKILLS_DIR, name, "SKILL.md"), "utf8").replace(/\s+/g, " ");
+    const skill = name => fs.readFileSync(path.join(WORKFLOW_SKILLS_DIR, name, "SKILL.md"), "utf8").replace(/\s+/g, " ");
     assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("call `load_skill` with name `workflow-authoring`"));
     // Owner 2026-11-09T05:38Z: continue is the default; new only when the person asks; For each and branches use new.
     const authoring = skill("workflow-authoring");

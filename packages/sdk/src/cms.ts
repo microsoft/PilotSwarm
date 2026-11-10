@@ -20,7 +20,7 @@ import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummary
 import type { MessageSender } from "./message-sender.js";
 import { TurnControlUnavailableError } from "./turn-control-contract.js";
 import type { TurnControlListenClient } from "./turn-control.js";
-import { WorkflowStore, insertStopNotForTurn, workflowVisitOfStopRequestId } from "./workflow/v2/store.js";
+import { WorkflowStore, insertStopNotForTurn, workflowVisitOfStopRequestId } from "./workflow/store.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -1208,16 +1208,16 @@ export interface SessionCatalog {
      */
     getSessionCreationConfig?(sessionId: string): Promise<Record<string, unknown> | null>;
 
-    /** Workflow v2 persistence on the same database and schema (migration 0088). Optional for other stores. */
-    workflowStore?(): import("./workflow/v2/store.js").WorkflowStore;
+    /** Workflow persistence on the same database and schema (migration 0088). Optional for other stores. */
+    workflowStore?(): import("./workflow/store.js").WorkflowStore;
 
     /**
-     * Create a workflow v2 session row only if no row with this id exists
+     * Create a workflow session row only if no row with this id exists
      * (live, deleted, or being created concurrently). On `created: false`
      * nothing was changed. Kind, lineage, creation config and owner are
      * written in the same transaction as the claim (migration 0088).
      */
-    createWorkflowSessionV2?(sessionId: string, opts: {
+    createWorkflowSession?(sessionId: string, opts: {
         parentSessionId: string | null;
         owner: SessionOwnerInfo | null;
         creationConfig: Record<string, unknown>;
@@ -1839,7 +1839,7 @@ export class PgSessionCatalog implements SessionCatalog {
         }
     }
 
-    async createWorkflowSessionV2(sessionId: string, opts: {
+    async createWorkflowSession(sessionId: string, opts: {
         parentSessionId: string | null;
         owner: SessionOwnerInfo | null;
         creationConfig: Record<string, unknown>;
@@ -1853,7 +1853,7 @@ export class PgSessionCatalog implements SessionCatalog {
             // holder committed: that needs a new snapshot per statement, whatever the connection's default isolation.
             await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
             const { rows } = await client.query(
-                `SELECT "${this.sql.schema}".cms_create_workflow_session_v2($1, $2, $3::jsonb) AS created`,
+                `SELECT "${this.sql.schema}".cms_create_workflow_session($1, $2, $3::jsonb) AS created`,
                 [sessionId, opts.parentSessionId, JSON.stringify(opts.creationConfig)],
             );
             if (rows[0]?.created !== true) {
@@ -1993,7 +1993,7 @@ export class PgSessionCatalog implements SessionCatalog {
                     `SELECT creation_config FROM "${this.sql.schema}".sessions WHERE session_id = $1 FOR UPDATE`,
                     [sessionId],
                 );
-                if (rows[0]?.creation_config?.workflowV2) {
+                if (rows[0]?.creation_config?.workflow) {
                     await client.query("ROLLBACK");
                     return;
                 }

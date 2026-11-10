@@ -19,23 +19,23 @@ import assert from "node:assert/strict";
 import {
     agentModelsDigestPart, parseWorkflowAgentModels, readWorkflowAgentModels, requireAgentModelsForRevision, requireUsableAgentModels,
     workflowAgentModelsText, workflowAgentModelWords, workflowChosenModelsWords, readStoredAgentModels,
-} from "../../dist/workflow/v2/agent-models.js";
+} from "../../dist/workflow/agent-models.js";
 import { ModelProviderRegistry } from "../../dist/model-providers.js";
 import { resolveRuntimeModelSelection } from "../../dist/provider-catalog.js";
-import { parseRunCommandArgs, parseUpdateWorkflowArgs, updateWorkflowFromTool } from "../../dist/workflow/v2/tools.js";
+import { parseRunCommandArgs, parseUpdateWorkflowArgs, updateWorkflowFromTool } from "../../dist/workflow/tools.js";
 import { PilotSwarmClient } from "../../dist/client.js";
 import { PilotSwarmManagementClient } from "../../dist/management-client.js";
-import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
-import { createWorkflowAgentNodeHost } from "../../dist/workflow/v2/agent-host.js";
-import { startAgentModelsOf } from "../../dist/workflow/v2/chat-definitions.js";
-import { workflowDefinitionFromTool } from "../../dist/workflow/v2/definition-tool.js";
+import { compileWorkflow } from "../../dist/workflow/compiler.js";
+import { createWorkflowAgentNodeHost } from "../../dist/workflow/agent-host.js";
+import { startAgentModelsOf } from "../../dist/workflow/chat-definitions.js";
+import { workflowDefinitionFromTool } from "../../dist/workflow/definition-tool.js";
 import { spawnWorkflowFromTool } from "../../dist/workflow/spawn.js";
-import { workflowCommandStatus } from "../../dist/workflow/v2/human-commands.js";
+import { workflowCommandStatus } from "../../dist/workflow/human-commands.js";
 
 const ALL = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true };
 
 const YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: models, version: "1.0.0" }
 initialInput: { items: [1, 2] }
@@ -100,7 +100,7 @@ test("the map's shape: node ids to { model, reasoningEffort?, contextTier? }, th
 });
 
 test("checked against exactly the revision started: an unknown id or a node that is not an agent node is refused; a For each body's agent is one key", () => {
-    const compiled = compileWorkflowV2(YAML, ALL);
+    const compiled = compileWorkflow(YAML, ALL);
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     const ir = compiled.ir;
     requireAgentModelsForRevision(null, ir, "revision 1 of models");
@@ -111,7 +111,7 @@ test("checked against exactly the revision started: an unknown id or a node that
     assert.throws(() => requireAgentModelsForRevision({ pause: { model: "a:b" } }, ir, "revision 1 of models"),
         error => error.code === "AGENT_MODELS_INVALID" && error.message === "agentModels names pause, a wait node of revision 1 of models; only agent nodes take a model.");
     // A definition still never names a model: a model key on a node is an unknown field.
-    const named = compileWorkflowV2(YAML.replace("invoke: { prompt: \"Classify it.\" }", "invoke: { prompt: \"Classify it.\" }\n    model: azure:gpt-5"), ALL);
+    const named = compileWorkflow(YAML.replace("invoke: { prompt: \"Classify it.\" }", "invoke: { prompt: \"Classify it.\" }\n    model: azure:gpt-5"), ALL);
     assert.equal(named.valid, false);
     assert.ok(named.diagnostics.some(item => item.code === "WORKFLOW_FIELD_UNKNOWN"), JSON.stringify(named.diagnostics));
 });
@@ -270,7 +270,7 @@ test("the definition tool and spawn_workflow refuse a malformed or misplaced map
     assert.match(started.error.message, /classify\.model must be an exact provider:model/);
     const spawn = async args => JSON.parse(await spawnWorkflowFromTool({ yaml: YAML, key: "models", ...args }, { toolCallId: "call-1" }, {
         parentSessionId: "chat", enabled: () => true, resolveOwner: async () => { throw new Error("owner read"); },
-        captureToolBinding: async () => { throw new Error("binding read"); }, workflowV2Host: async () => host,
+        captureToolBinding: async () => { throw new Error("binding read"); }, workflowHost: async () => host,
     }));
     const saveOnly = await spawn({ state: "published", agent_models: { classify: { model: "a:b" } } });
     assert.equal(saveOnly.error.code, "AGENT_MODELS_INVALID");
@@ -280,7 +280,7 @@ test("the definition tool and spawn_workflow refuse a malformed or misplaced map
     assert.equal(unknown.error.message, "agentModels names pause, a wait node of models; only agent nodes take a model.");
     const other = JSON.parse(await spawnWorkflowFromTool({ yaml: "kind: Workflow\n", agent_models: {} }, { toolCallId: "call-1" }, {
         parentSessionId: "chat", enabled: () => true, resolveOwner: async () => null,
-        captureToolBinding: async () => ({}), workflowV2Host: async () => host,
+        captureToolBinding: async () => ({}), workflowHost: async () => host,
     }));
     assert.equal(other.error.code, "WORKFLOW_API_VERSION");
 });

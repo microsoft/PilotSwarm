@@ -2,8 +2,8 @@
  * Workflow Simplified A1, O3 and nesting words (spec 14; E4, O3):
  * - a session inside a Workflow (an agent state's subtree, by its stored lineage) gets no definition tools: they are
  *   not declared, and the handlers refuse them in words (the server's lineage check is in
- *   test/local/workflow-v2-a1-refusal.test.js);
- * - the nesting limit stays (WORKFLOW_V2_MAX_DESCENDANT_LEVEL = 3) and each refusal says it in words;
+ *   test/local/workflow-a1-refusal.test.js);
+ * - the nesting limit stays (WORKFLOW_MAX_DESCENDANT_LEVEL = 3) and each refusal says it in words;
  * - the runtime base guidance tells every session to hand prescriptive work to a Workflow (O3).
  *
  * Run: node --test test/unit/workflow-simplified-a1.test.mjs
@@ -12,9 +12,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
     spawnNesting, spawnNestingRefusal, WORKFLOW_DEFINITION_TOOLS, WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT, WORKFLOW_DEFINITION_TOOLS_REFUSED,
-    WORKFLOW_V2_MAX_DESCENDANT_LEVEL, workflowDefinitionToolsRefusal, workflowDefinitionToolsRefused,
-} from "../../dist/workflow/v2/input-policy.js";
-import { createWorkflowAgentNodeHost } from "../../dist/workflow/v2/agent-host.js";
+    WORKFLOW_MAX_DESCENDANT_LEVEL, workflowDefinitionToolsRefusal, workflowDefinitionToolsRefused,
+} from "../../dist/workflow/input-policy.js";
+import { createWorkflowAgentNodeHost } from "../../dist/workflow/agent-host.js";
 import { WORKFLOW_SESSION_GUIDANCE } from "../../dist/workflow/guidance.js";
 import { ManagedSession } from "../../dist/managed-session.js";
 import { spawnWorkflowFromTool } from "../../dist/workflow/spawn.js";
@@ -41,10 +41,10 @@ test("spawn_workflow refuses before anything else when its caller is inside a Wo
         parentSessionId: "C", enabled: () => true, definitionToolsRefused: async () => refused,
         resolveOwner: async () => { throw new Error("not reached"); },
         captureToolBinding: async () => { throw new Error("not reached"); },
-        workflowV2Host: async () => { throw new Error("not reached"); },
+        workflowHost: async () => { throw new Error("not reached"); },
     });
     const older = "apiVersion: pilotswarm.dev/v1alpha1\nkind: Workflow\nmetadata: { name: x, version: 1.0.0 }\n";
-    const yaml = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: x, version: \"1.0.0\" }\ninitial: done\nstates:\n  done: { type: terminal, outcome: succeeded }\n";
+    const yaml = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: x, version: \"1.0.0\" }\ninitial: done\nstates:\n  done: { type: terminal, outcome: succeeded }\n";
     // Inside a Workflow every document gets the same refusal, whatever its apiVersion.
     assert.equal(await spawnWorkflowFromTool({ yaml: older }, { toolCallId: "t" }, deps(true)), workflowDefinitionToolsRefusal());
     assert.equal(await spawnWorkflowFromTool({ yaml }, { toolCallId: "t" }, deps(true)), workflowDefinitionToolsRefusal());
@@ -72,7 +72,7 @@ test("the model is declared no definition tools inside a Workflow, and keeps eve
 });
 
 test("nesting refusals keep the limit and say it in words; ordinary sessions keep their refusal as it was", () => {
-    assert.equal(WORKFLOW_V2_MAX_DESCENDANT_LEVEL, 3);
+    assert.equal(WORKFLOW_MAX_DESCENDANT_LEVEL, 3);
     assert.equal(spawnNestingRefusal(2, 2, false),
         "[SYSTEM: spawn_agent failed — you are already at nesting level 2 (max 2). Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]");
     const inside = spawnNestingRefusal(3, 3, true);

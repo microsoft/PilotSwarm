@@ -2,7 +2,7 @@
  * Workflows are always on (owner 2026-11-08T08:03Z); PILOTSWARM_WORKFLOW_SCRIPTS decides only whether script nodes run. A host whose workers run no scripts
  * (`scripts: false`) refuses a definition with a script node at save and at Start, in words naming the setting, before
  * anything is written; a host that does not know (`scripts` absent) does not refuse. A definition without script nodes is
- * not affected. The database side is test/local/workflow-v2-scripts-gate.test.js.
+ * not affected. The database side is test/local/workflow-scripts-gate.test.js.
  *
  * Run: node --test test/unit/workflow-scripts-gate.test.mjs
  */
@@ -10,17 +10,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
     WORKFLOW_SCRIPTS_DISABLED, requireWorkflowScripts, requireWorkflowScriptsInYaml, workflowScriptsDisabledText, workflowScriptsOptionFromEnv,
-    workflowV2ScriptNodes,
-} from "../../dist/workflow/v2/scripts-gate.js";
-import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
-import { createWorkflowV2, updateWorkflowV2 } from "../../dist/workflow/v2/service.js";
+    workflowScriptNodes,
+} from "../../dist/workflow/scripts-gate.js";
+import { compileWorkflow } from "../../dist/workflow/compiler.js";
+import { createWorkflow, applyWorkflowUpdate } from "../../dist/workflow/service.js";
 import { spawnWorkflowFromTool } from "../../dist/workflow/spawn.js";
-import { workflowDefinitionFromTool } from "../../dist/workflow/v2/definition-tool.js";
-import { startChatWorkflowDefinition } from "../../dist/workflow/v2/chat-definitions.js";
+import { workflowDefinitionFromTool } from "../../dist/workflow/definition-tool.js";
+import { startChatWorkflowDefinition } from "../../dist/workflow/chat-definitions.js";
 import * as sdk from "../../dist/index.js";
 
 const SCRIPT_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: poller, version: "1.0.0" }
 initial: poll
@@ -29,7 +29,7 @@ states:
   finish: { type: terminal, outcome: succeeded }
 `;
 const WAIT_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: waiter, version: "1.0.0" }
 initial: hold
@@ -50,7 +50,7 @@ const claimReadsOnly = () => new Proxy({ getSessionCreationConfig: async () => n
 
 /** A store that has one revision of `yaml` (draft, or published) and fails on anything that would write. */
 function storeOf(yaml, { published = false } = {}) {
-    const compiled = compileWorkflowV2(yaml);
+    const compiled = compileWorkflow(yaml);
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     return {
         readRevision: async () => ({ revision: 1, valid: true, irSha256: compiled.irSha256, yamlSha256: compiled.yamlSha256 }),
@@ -71,36 +71,36 @@ async function refusal(promise) {
 }
 
 test("the script nodes of a definition, the refusal's words, and the code", () => {
-    assert.deepEqual(workflowV2ScriptNodes(compileWorkflowV2(SCRIPT_YAML).ir), ["poll"]);
-    assert.deepEqual(workflowV2ScriptNodes(compileWorkflowV2(WAIT_YAML).ir), []);
-    assert.deepEqual(workflowV2ScriptNodes(null), []);
+    assert.deepEqual(workflowScriptNodes(compileWorkflow(SCRIPT_YAML).ir), ["poll"]);
+    assert.deepEqual(workflowScriptNodes(compileWorkflow(WAIT_YAML).ir), []);
+    assert.deepEqual(workflowScriptNodes(null), []);
     assert.equal(WORKFLOW_SCRIPTS_DISABLED, "WORKFLOW_SCRIPTS_DISABLED");
     assert.equal(sdk.WORKFLOW_SCRIPTS_DISABLED, WORKFLOW_SCRIPTS_DISABLED);
     assert.equal(workflowScriptsDisabledText(["poll"], "save"),
         "This workflow has script node (poll), and script nodes are turned off on this server: an operator turned them off with "
         + "PILOTSWARM_WORKFLOW_SCRIPTS=0. Nothing was saved.");
     assert.match(workflowScriptsDisabledText(["a", "b", "c", "d", "e", "f", "g"], "start"), /script nodes \(a, b, c, d, e, and 2 more\).*Nothing was started\.$/);
-    const ir = compileWorkflowV2(SCRIPT_YAML).ir;
+    const ir = compileWorkflow(SCRIPT_YAML).ir;
     assert.doesNotThrow(() => requireWorkflowScripts({}, ir, "save"), "not known: no refusal");
     assert.doesNotThrow(() => requireWorkflowScripts({ scripts: true }, ir, "save"));
     assert.throws(() => requireWorkflowScripts({ scripts: false }, ir, "start"),
         error => error.code === WORKFLOW_SCRIPTS_DISABLED && error.details.setting === "PILOTSWARM_WORKFLOW_SCRIPTS" && /Nothing was started\.$/.test(error.message));
-    assert.doesNotThrow(() => requireWorkflowScripts({ scripts: false }, compileWorkflowV2(WAIT_YAML).ir, "start"));
+    assert.doesNotThrow(() => requireWorkflowScripts({ scripts: false }, compileWorkflow(WAIT_YAML).ir, "start"));
 });
 
 test("save: creating or replacing a definition with a script node is refused before anything is read or written", async () => {
     const host = { catalog: untouchable("catalog"), store: untouchable("store"), duroxideClient: untouchable("duroxide"), scripts: false };
     for (const [publish, start, when] of [[false, null, "saved"], [true, null, "saved"], [true, { inputs: {} }, "started"]]) {
-        const error = await refusal(createWorkflowV2(host, { workflowSessionId: "w1", parentSessionId: "p", yaml: SCRIPT_YAML, actor: ACTOR,
+        const error = await refusal(createWorkflow(host, { workflowSessionId: "w1", parentSessionId: "p", yaml: SCRIPT_YAML, actor: ACTOR,
             operationId: "op-1", publish, ...(start ? { start } : {}) }));
         assert.equal(error?.code, WORKFLOW_SCRIPTS_DISABLED, error?.message);
         assert.match(error.message, new RegExp(`Nothing was ${when}\\.$`));
     }
-    const replaced = await refusal(updateWorkflowV2(host, "w1", { operation: "replace_definition", yaml: SCRIPT_YAML, expectedRevision: 1 },
+    const replaced = await refusal(applyWorkflowUpdate(host, "w1", { operation: "replace_definition", yaml: SCRIPT_YAML, expectedRevision: 1 },
         { actor: ACTOR, operationId: "op-2" }));
     assert.equal(replaced?.code, WORKFLOW_SCRIPTS_DISABLED);
     // Without script nodes the request goes on (it reaches the store, here a stand-in that throws its own error).
-    const waits = await refusal(createWorkflowV2(host, { workflowSessionId: "w1", parentSessionId: "p", yaml: WAIT_YAML, actor: ACTOR, operationId: "op-3" }));
+    const waits = await refusal(createWorkflow(host, { workflowSessionId: "w1", parentSessionId: "p", yaml: WAIT_YAML, actor: ACTOR, operationId: "op-3" }));
     assert.match(String(waits?.message), /was used$/);
 });
 
@@ -113,7 +113,7 @@ test("Start: publishing and starting, or starting, a stored definition with a sc
         [at(false), { operation: "publish", expectedRevision: 1, definitionHash }, "saved"],
         [at(true), { operation: "start", definitionHash, inputs: {} }, "started"],
     ]) {
-        const error = await refusal(updateWorkflowV2(host, "w1", command, context));
+        const error = await refusal(applyWorkflowUpdate(host, "w1", command, context));
         assert.equal(error?.code, WORKFLOW_SCRIPTS_DISABLED, `${command.operation}: ${error?.message}`);
         assert.match(error.message, new RegExp(`Nothing was ${when}\\.$`));
     }
@@ -121,7 +121,7 @@ test("Start: publishing and starting, or starting, a stored definition with a sc
     for (const scripts of [true, undefined]) {
         const host = { ...at(true), ...(scripts === undefined ? {} : { scripts }) };
         if (scripts === undefined) delete host.scripts;
-        const error = await refusal(updateWorkflowV2(host, "w1", { operation: "start", definitionHash, inputs: {} }, context));
+        const error = await refusal(applyWorkflowUpdate(host, "w1", { operation: "start", definitionHash, inputs: {} }, context));
         assert.equal(error?.message, "startLive was reached", String(scripts));
     }
 });
@@ -158,7 +158,7 @@ test("d52e5ed2: the scripts gate decides before the chat's tool binding, its own
     const never = what => async () => { throw new Error(`${what} must not be reached`); };
     const host = { catalog: untouchable("catalog"), store: untouchable("store"), duroxideClient: untouchable("duroxide"), scripts: false };
     const deps = { parentSessionId: "chat", enabled: () => false, resolveOwner: never("resolveOwner"),
-        captureToolBinding: never("captureToolBinding"), workflowV2Host: async () => host };
+        captureToolBinding: never("captureToolBinding"), workflowHost: async () => host };
     for (const [args, when] of [[{ yaml: SCRIPT_YAML, key: "a" }, "saved"], [{ yaml: SCRIPT_YAML, key: "b", state: "published", start: true, inputs: {} }, "started"]]) {
         const answer = JSON.parse(await spawnWorkflowFromTool(args, { toolCallId: "call-1" }, deps));
         assert.equal(answer.error?.code, WORKFLOW_SCRIPTS_DISABLED, JSON.stringify(answer));
@@ -175,7 +175,7 @@ test("d52e5ed2: the scripts gate decides before the chat's tool binding, its own
 });
 
 test("d52e5ed2: a chat definition's Start gates the revision it would start before the binding is captured or anything is written", async () => {
-    const compiled = compileWorkflowV2(SCRIPT_YAML);
+    const compiled = compileWorkflow(SCRIPT_YAML);
     const chat = {
         readDefinition: async () => ({ definitionId: "def-1", ownerSessionId: "chat", name: "poller", currentRevision: 1, deletedAt: null }),
         readRevision: async () => ({ definitionId: "def-1", revision: 1, valid: true, irSha256: compiled.irSha256, yaml: SCRIPT_YAML }),
@@ -208,7 +208,7 @@ test("d52e5ed2: a chat definition's Start gates the revision it would start befo
 // anything is made: a chat at the deepest level starts no Workflow, and a chat with 50 running children (sub-agents and
 // active Workflows) starts no more. A repeat of a start that made its Workflow is not refused by it.
 test("stage 2.4: Start keeps spawn_agent's depth limit and its budget of 50 running children", async () => {
-    const compiled = compileWorkflowV2(WAIT_YAML);
+    const compiled = compileWorkflow(WAIT_YAML);
     let running = 0;
     let made = null;
     const chat = {
@@ -271,7 +271,7 @@ test("e02ec6f8: the scripts gate decides from the YAML alone, before the host is
     const never = what => async () => { throw new Error(`${what} must not be reached`); };
     const deps = { parentSessionId: "chat", enabled: () => false, resolveOwner: never("resolveOwner"),
         captureToolBinding: never("captureToolBinding"),
-        workflowV2Host: async () => { throw new Error("No storeUrl — cannot create PilotSwarmClient"); } };
+        workflowHost: async () => { throw new Error("No storeUrl — cannot create PilotSwarmClient"); } };
     for (const [args, when] of [[{ yaml: SCRIPT_YAML, key: "scripted-draft" }, "saved"],
         [{ yaml: SCRIPT_YAML, key: "scripted-start", state: "published", start: true, inputs: {} }, "started"]]) {
         const text = await spawnWorkflowFromTool(args, { toolCallId: "call-1" }, deps);

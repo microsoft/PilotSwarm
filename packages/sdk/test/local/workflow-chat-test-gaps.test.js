@@ -22,9 +22,9 @@ import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { registerWorkflowV2, sessionQueueTransport } from "../../src/workflow/v2/runtime.ts";
-import { saveChatWorkflowDefinition } from "../../src/workflow/v2/chat-definitions.ts";
-import { workflowDefinitionFromTool } from "../../src/workflow/v2/definition-tool.ts";
+import { registerWorkflow, sessionQueueTransport } from "../../src/workflow/runtime.ts";
+import { saveChatWorkflowDefinition } from "../../src/workflow/chat-definitions.ts";
+import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 import { readWorkflowToolBinding, WORKFLOW_TOOL_POLICY } from "../../src/workflow/tool-policy.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
@@ -36,7 +36,7 @@ const OWNER = { provider: "test", subject: "workflow-chat-test-gaps" };
 
 const yamlOf = doc => JSON.stringify(doc, null, 2);
 const LOOP = {
-    apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "loop-watch", version: "1.0.0" },
+    apiVersion: "pilotswarm.dev/v1", kind: "Workflow", metadata: { name: "loop-watch", version: "1.0.0" },
     initial: "await_event",
     schemas: { BuildEvent: { type: "object", additionalProperties: false, required: ["buildId", "state"],
         properties: { buildId: { type: "integer" }, state: { type: "string" } } } },
@@ -55,7 +55,7 @@ const LOOP = {
     },
 };
 const CONTROL = {
-    apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "control-call", version: "1.0.0" }, initial: "spawn",
+    apiVersion: "pilotswarm.dev/v1", kind: "Workflow", metadata: { name: "control-call", version: "1.0.0" }, initial: "spawn",
     states: {
         spawn: { type: "script", outcomes: ["ok"], source: "await callTool(\"spawn_agent\", { task: \"x\" });\nawait setResult(\"ok\", null);\n",
             transition: { next: { ok: "done", failure: "failed" } } },
@@ -87,7 +87,7 @@ async function harness(env) {
     const runtime = new Runtime(provider, {
         dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
     });
-    registerWorkflowV2({
+    registerWorkflow({
         registerActivity: (name, fn) => runtime.registerActivity(name, fn),
         registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
     }, {

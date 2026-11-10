@@ -9,7 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { isQuietWorkflowNoticeTurn, isQuietSystemOnlyTurn, SYSTEM_ONLY_TURN_PROMPT } from "../../dist/session-proxy.js";
-import { workflowRuntimeSender } from "../../dist/workflow/v2/parent-messages.js";
+import { workflowRuntimeSender } from "../../dist/workflow/parent-messages.js";
 import { appendSystemContextBlock } from "../../dist/prompt-system-context.js";
 
 const notice = (type, fields = "") => `[WORKFLOW_UPDATE from=1dca4137-aaaa workflow=hacker-news-top-change-monitor@1.0.0 run=run-1 type=${type}${fields}]\n`

@@ -1,5 +1,5 @@
 /**
- * Workflow v2 updateWorkflow (POST /api/v1/sessions/:sessionId/workflow/commands;
+ * Workflow updateWorkflow (POST /api/v1/sessions/:sessionId/workflow/commands;
  * design 04, R26, D11; INACTIVE unless the deployment enables it): one
  * protocol row, access session:manage. The portal runtime's session gate
  * decides first, with not-found privacy, and it is enforced even while the
@@ -188,7 +188,7 @@ for (const enforce of [true, false]) {
         assert.match(shared.personCommands.viewer.reason, /^Only the session owner \(Alice\)/);
         assert.deepEqual(shared.personCommands.operations, ["pause", "resume", "cancel"], "what the workflow takes is the server's, unchanged");
         // A draft's YAML is for those who may change it: the owner and an admin get it, a reader does not.
-        const draft = { revision: 2, definitionHash: "h2", yaml: "apiVersion: pilotswarm.dev/v2-draft\n" };
+        const draft = { revision: 2, definitionHash: "h2", yaml: "apiVersion: pilotswarm.dev/v1\n" };
         personCommands = { operations: ["replace_definition", "publish"], restriction: null, run: null, draft };
         assert.deepEqual((await runtime.call("readWorkflow", { sessionId: "s1" }, as("alice"))).personCommands.draft, draft);
         assert.deepEqual((await runtime.call("readWorkflow", { sessionId: "s1" }, as("ada", "admin"))).personCommands.draft, draft);

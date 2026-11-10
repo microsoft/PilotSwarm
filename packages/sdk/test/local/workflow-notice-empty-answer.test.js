@@ -9,7 +9,7 @@
  *
  * - The runTurn activity asks for the quiet answer (and names it) only for such a turn (isQuietWorkflowNoticeTurn;
  *   its cases in test/unit/workflow-notice-empty-answer.test.mjs).
- * - A full worker (PostgreSQL, duroxide and the Copilot CLI) with the model scripted, configured as the Workflow V2 test
+ * - A full worker (PostgreSQL, duroxide and the Copilot CLI) with the model scripted, configured as the Workflow test
  *   environment switch configures it, and a chat started at 1.0.83: the runtime's own message notice answered with
  *   nothing is one completed turn, no session.error, the session idle, no retry; the run's end answered with nothing is
  *   still an error.
@@ -21,7 +21,7 @@ import { describe, it, expect } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
-import { workflowRuntimeSender } from "../../src/workflow/v2/parent-messages.ts";
+import { workflowRuntimeSender } from "../../src/workflow/parent-messages.ts";
 import { appendSystemContextBlock } from "../../src/prompt-system-context.ts";
 
 const TIMEOUT = 240_000;

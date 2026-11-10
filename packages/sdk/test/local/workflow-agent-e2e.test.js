@@ -25,7 +25,7 @@ const SETUP_PROMPT = "Every 15 seconds, run the counter workflow and tell me wha
 const isWorkflowResult = (text) => text.includes("type=ended") && text.includes('"counter"');
 
 const WORKFLOW_YAML = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: counter, version: "1.0.0" }
 inputs:
@@ -85,7 +85,7 @@ describe("agent-driven script workflows", () => {
         let polls = 0, modelRef;
         const quietWakeCounts = [];
         const watcher = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: query-watch, version: "1.0.0" }
 initial: poll
@@ -170,7 +170,7 @@ states:
         const file = path.join(folder, "input.txt");
         await writeFile(file, "parent-file-marker");
         const yaml = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: native-parity, version: "1.0.0" }
 inputs:

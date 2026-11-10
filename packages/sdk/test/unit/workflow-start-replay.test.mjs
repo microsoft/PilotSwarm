@@ -8,10 +8,10 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { startChatWorkflowDefinition, storedStartPin, WORKFLOW_START_MAX_RUNNING_CHILDREN } from "../../dist/workflow/v2/chat-definitions.js";
+import { startChatWorkflowDefinition, storedStartPin, WORKFLOW_START_MAX_RUNNING_CHILDREN } from "../../dist/workflow/chat-definitions.js";
 
 const ACTOR = { kind: "agent", sessionId: "chat" };
-const YAML = (seconds) => `apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: waiter, version: "1.0.0" }\ninitial: hold\n`
+const YAML = (seconds) => `apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: waiter, version: "1.0.0" }\ninitial: hold\n`
     + `states:\n  hold: { type: wait, seconds: ${seconds}, transition: { next: { elapsed: done } } }\n  done: { type: terminal, outcome: succeeded }\n`;
 
 /**
@@ -34,7 +34,7 @@ function hostWith(pinnedBy, { yaml = null, running = 0, requests = false } = {})
         ? { workflowSessionId: "w", parentSessionId: "chat", state: "published", chatDefinitionId: "def-1", chatRevision: 1 } : null) },
     { get: (target, name) => { if (name in target) return target[name]; throw new Error(`store.${String(name)} was used`); } });
     const catalog = new Proxy({ getSessionCreationConfig: async () => (pinnedBy === "claim"
-        ? { workflowV2: { fingerprint: 1, requestSha256: "x", operationId: "start:op", chatPin: { definitionId: "def-1", revision: 1 } } } : null) },
+        ? { workflow: { fingerprint: 1, requestSha256: "x", operationId: "start:op", chatPin: { definitionId: "def-1", revision: 1 } } } : null) },
     { get: (target, name) => { if (name in target) return target[name]; throw new Error(`catalog.${String(name)} was used`); } });
     return { host: { catalog, store, duroxideClient: {}, scripts: true, ...(requests ? { requests: true } : {}) }, reads };
 }
@@ -80,7 +80,7 @@ test("a Start that has not run resolves the newest valid revision and counts the
 });
 
 // Review PRA-F2: a Start interrupted after its claim, before its Workflow was stored, is checked again as a first Start is.
-const CHAT_KEY_YAML = `apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: waiter, version: "1.0.0" }\ninitial: ask\n`
+const CHAT_KEY_YAML = `apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: waiter, version: "1.0.0" }\ninitial: ask\n`
     + `states:\n  ask:\n    type: agent\n    invoke: { prompt: "Say one thing." }\n    chat: new\n    timeoutSeconds: 600\n`
     + `    transition: { next: { said: done, failure: done } }\n  done: { type: terminal, outcome: succeeded }\n`;
 

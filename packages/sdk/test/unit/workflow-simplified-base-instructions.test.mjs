@@ -13,7 +13,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
     keepWorkflowBaseInstructions, SDK_SYSTEM_PROMPT_PREFIX, sdkSystemPromptEchoContent,
     workflowBaseInstructionsArtifact, workflowBaseInstructionsRef, workflowBaseInstructionsText,
-} from "../../dist/workflow/v2/base-instructions.js";
+} from "../../dist/workflow/base-instructions.js";
 import { summarizeSdkSystemPromptEchoEvent } from "../../dist/session-proxy.js";
 
 const TEXT = `${SDK_SYSTEM_PROMPT_PREFIX}\n\nYou are an interactive agent. Use your tools.`;

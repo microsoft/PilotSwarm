@@ -17,7 +17,7 @@ const OWNER = "owner-1";
 const WF = "wf-1";
 const T1 = Date.parse("2026-11-06T17:00:00.000Z");
 const T2 = T1 + 60_000;
-const row = (status, updatedAt) => ({ sessionId: WF, sessionKind: "workflow", title: "Workflow: watch-v2", status, parentSessionId: OWNER,
+const row = (status, updatedAt) => ({ sessionId: WF, sessionKind: "workflow", title: "Workflow: watch-flow", status, parentSessionId: OWNER,
     createdAt: T1 - 1_000, updatedAt });
 const STATES = [{ id: "poll", type: "script" }, { id: "ask", type: "request" }, { id: "done", type: "terminal" }];
 const model = (status, open = []) => ({

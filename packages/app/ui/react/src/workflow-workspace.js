@@ -2,19 +2,19 @@ import React from "react";
 import { useControllerSelector } from "./use-controller-state.js";
 import { workflowModelFromKey, workflowSessionModelKey } from "../../core/src/workflow-words.js";
 import {
-    selectWorkflowViewSnapshot, workflowReadModelView, workflowViewSnapshotEqual, projectWorkflowV2, workflowV2Activity,
-    workflowV2BranchPickKey, workflowV2DraftInProgress, workflowV2NoticeBadge, workflowV2OpenCalls, workflowV2ShownNotices,
-    workflowV2SelectionAfterBranchChange,
-} from "../../core/src/workflow-v2-view.js";
+    selectWorkflowViewSnapshot, workflowReadModelView, workflowViewSnapshotEqual, projectWorkflow, workflowActivity,
+    workflowBranchPickKey, workflowDraftInProgress, workflowNoticeBadge, workflowOpenCalls, workflowShownNotices,
+    workflowSelectionAfterBranchChange,
+} from "../../core/src/workflow-view.js";
 import {
-    workflowV2DefinitionControls, workflowV2DraftEditor, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables,
-    workflowV2TestControls, workflowV2TestResponder, workflowV2TestRunsShown,
-} from "../../core/src/workflow-v2-commands.js";
+    workflowDefinitionControls, workflowDraftEditor, workflowRunCommandNotice, workflowRunControls, workflowRunVariables,
+    workflowTestControls, workflowTestResponder, workflowTestRunsShown,
+} from "../../core/src/workflow-commands.js";
 import {
-    WorkflowV2Banners, WorkflowV2DefinitionPanel, WorkflowV2DraftEditor, WorkflowV2DraftTools, WorkflowV2NoGraph, WorkflowV2NodeContent,
-    WorkflowV2RunActivity, WorkflowV2RunCommandNotice, WorkflowV2RunControls, WorkflowV2RunPicker, WorkflowV2TestAnswer, WorkflowV2TestClock,
-    WorkflowV2TestInterceptions, WorkflowV2TestPanel, WorkflowV2Variables, WorkflowV2YamlView,
-} from "./workflow-v2-panels.js";
+    WorkflowBanners, WorkflowDefinitionPanel, WorkflowDraftEditor, WorkflowDraftTools, WorkflowNoGraph, WorkflowNodeContent,
+    WorkflowRunActivity, WorkflowRunCommandNotice, WorkflowRunControls, WorkflowRunPicker, WorkflowTestAnswer, WorkflowTestClock,
+    WorkflowTestInterceptions, WorkflowTestPanel, WorkflowVariables, WorkflowYamlView,
+} from "./workflow-panels.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 import { WorkflowGraph } from "./workflow-graph.js";
 
@@ -41,7 +41,7 @@ function useWorkflowView(controller) {
     React.useEffect(() => {
         controller.ensureWorkflowDefinition(sessionId);
     }, [controller, sessionId, events, selectedRunId, sessionUpdatedAt]);
-    // `view.readModel` is the object readWorkflowV2View returns, fetched by the controller (ensureWorkflowReadModel)
+    // `view.readModel` is the object readWorkflowView returns, fetched by the controller (ensureWorkflowReadModel)
     // for the run selection it records. Only a model read for this selection is overlaid; a model read for another one
     // still says what graph the workflow has (or that it has none) while this selection's own model loads or fails,
     // and its run is never shown. Its watermark (`readModelAfterSeq`) is the highest event sequence the controller had
@@ -57,7 +57,7 @@ function useWorkflowView(controller) {
         if (!view.definition && !readModel && !workflowModel) return null;
         // A definition is never redrawn once the read model says there is no graph (invalid or unavailable); the no-graph
         // panel explains why.
-        return projectWorkflowV2({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq, olderHistory, chatModel });
+        return projectWorkflow({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq, olderHistory, chatModel });
     }, [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory, chatModel]);
     const definition = flow ? flow.definition : null;
     const nodes = flow ? flow.nodes : EMPTY_EVENTS;
@@ -85,31 +85,31 @@ function useWorkflowView(controller) {
     // A person's run controls: only the selection's own read model can offer them, for the run it shows, and only
     // when it says which commands the workflow takes from people.
     const runCommand = view.runCommand ?? null;
-    const runControls = React.useMemo(() => flow ? workflowV2RunControls(readModel, runCommand) : null, [flow, readModel, runCommand]);
-    const variables = React.useMemo(() => flow ? workflowV2RunVariables(readModel, runCommand) : null, [flow, readModel, runCommand]);
+    const runControls = React.useMemo(() => flow ? workflowRunControls(readModel, runCommand) : null, [flow, readModel, runCommand]);
+    const variables = React.useMemo(() => flow ? workflowRunVariables(readModel, runCommand) : null, [flow, readModel, runCommand]);
     // The definition is the workflow's, whichever run is selected: the last read model of any selection says it.
-    const publication = React.useMemo(() => flow ? workflowV2DefinitionControls(readModel ?? workflowModel, runCommand) : null,
+    const publication = React.useMemo(() => flow ? workflowDefinitionControls(readModel ?? workflowModel, runCommand) : null,
         [flow, readModel, workflowModel, runCommand]);
     // The draft editor's model names the session it was read for (UI-1), so the YAML editor never takes another's.
     const draftEditor = React.useMemo(() => {
-        const editor = flow ? workflowV2DraftEditor(readModel ?? workflowModel, runCommand) : null;
+        const editor = flow ? workflowDraftEditor(readModel ?? workflowModel, runCommand) : null;
         return editor ? { ...editor, sessionId } : null;
     }, [flow, readModel, workflowModel, runCommand, sessionId]);
-    const testControls = React.useMemo(() => flow ? workflowV2TestControls(readModel ?? workflowModel, runCommand) : null,
+    const testControls = React.useMemo(() => flow ? workflowTestControls(readModel ?? workflowModel, runCommand) : null,
         [flow, readModel, workflowModel, runCommand]);
     // The shown test run's answers and clock: only the selection's own read model says which run that is.
-    const testResponder = React.useMemo(() => flow ? workflowV2TestResponder(readModel, runCommand) : null, [flow, readModel, runCommand]);
-    const runNotice = workflowV2RunCommandNotice(runCommand);
+    const testResponder = React.useMemo(() => flow ? workflowTestResponder(readModel, runCommand) : null, [flow, readModel, runCommand]);
+    const runNotice = workflowRunCommandNotice(runCommand);
     // The definition's read model, whichever run is shown (the YAML tab reads its revision).
     const definitionModel = flow ? readModel ?? workflowModel ?? null : null;
     // What the side pane offers now (r-3): the run's activity once it has some, the notices (and a failed read), a test
     // run's calls, and the panels the commands above offer.
-    const activity = flow?.bound && flow.runId && (flow.ending || workflowV2Activity(events, { runId: flow.runId }).length) ? flow.runId : null;
+    const activity = flow?.bound && flow.runId && (flow.ending || workflowActivity(events, { runId: flow.runId }).length) ? flow.runId : null;
     // Owner batch 7 (H1): while the parent agent is still writing the latest revision, its errors are said calmly and not counted.
-    const drafting = flow ? workflowV2DraftInProgress(flow, parentWorking) : null;
-    const notices = workflowV2ShownNotices(flow?.banners, { draftInProgress: drafting });
+    const drafting = flow ? workflowDraftInProgress(flow, parentWorking) : null;
+    const notices = workflowShownNotices(flow?.banners, { draftInProgress: drafting });
     // A test run's calls only while the server's test mode is on (Workflow Simplified, spec 16).
-    const test = workflowV2TestRunsShown(flow?.readModel) ? flow?.readModel?.run?.test ?? null : null;
+    const test = workflowTestRunsShown(flow?.readModel) ? flow?.readModel?.run?.test ?? null : null;
     const offered = { definition: Boolean(publication?.controls.length), test: Boolean(testControls), calls: Boolean(test),
         variables: Boolean(variables), draft: Boolean(draftEditor), activity: Boolean(activity), notices: Boolean(notices.length || readError), log: true };
     const sidePanel = typeof view.sidePanel === "string" && offered[view.sidePanel] === true ? view.sidePanel : null;
@@ -204,8 +204,8 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
     const onGraphView = React.useCallback(graphView => controller.dispatch({ type: "ui/workflowView", sessionId, view: { graphView } }),
         [controller, sessionId]);
     // UI7-2: shown for any notice or a failed read; quiet notices alone have no count and no tint.
-    const noticeBadge = workflowV2NoticeBadge(notices, Boolean(readError));
-    const openCalls = workflowV2OpenCalls(test);
+    const noticeBadge = workflowNoticeBadge(notices, Boolean(readError));
+    const openCalls = workflowOpenCalls(test);
     const title = definition?.name || session?.title || "Workflow";
     return h("section", { className: "ps-workflow-main", "aria-label": "Workflow session", "data-tab": mainTab },
         // One compact header (of-02): the name on one line (ellipsis; the whole name on hover and to screen readers), the
@@ -219,8 +219,8 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
                 MAIN_TABS.map(([id, label]) => h("button", { key: id, id: `${tabsId}-${id}`, type: "button", role: "tab", "aria-selected": mainTab === id,
                     "aria-controls": `${tabsId}-${id}-panel`, tabIndex: mainTab === id ? 0 : -1, onClick: () => setTab(id) }, label))) : null,
             h("div", { className: "ps-workflow-main-tools" },
-                flow ? h(WorkflowV2RunPicker, { controller, sessionId, workflowModel, selectedRunId, ownModelLoaded, error: readError }) : null,
-                runControls ? h(WorkflowV2RunControls, { controller, sessionId, model: runControls }) : null,
+                flow ? h(WorkflowRunPicker, { controller, sessionId, workflowModel, selectedRunId, ownModelLoaded, error: readError }) : null,
+                runControls ? h(WorkflowRunControls, { controller, sessionId, model: runControls }) : null,
                 variables ? panelButton("variables", { label: "Variables", glyph: "variables" }) : null,
                 // "Publish…" for a draft, "Start…" for a published workflow without its live run.
                 publication?.controls.length ? panelButton("definition", { label: publication.state === "draft" ? "Publish…" : "Start…",
@@ -240,7 +240,7 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
             definition
                 ? h(WorkflowGraph, { definition, nodes, selected, select: selectNode, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView,
                     places, onPlaces })
-                : flow ? h(WorkflowV2NoGraph, { projection: flow, drafting })
+                : flow ? h(WorkflowNoGraph, { projection: flow, drafting })
                 : h("div", { className: "ps-workflow-empty", role: view.error ? "alert" : "status" },
                     view.error || "Loading workflow graph…",
                     view.error ? h("button", { type: "button", className: "ps-mini-button",
@@ -248,11 +248,11 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
         // r-2: a draft this person may change is edited here at full height; any other revision is shown read-only.
         mainTab === "yaml" ? h("div", { id: `${tabsId}-yaml-panel`, className: "ps-workflow-yaml-tab", role: "tabpanel", "aria-labelledby": `${tabsId}-yaml` },
             draftEditor
-                ? h(WorkflowV2DraftEditor, { key: sessionId, controller, sessionId, model: draftEditor, savedEdit: view.draftEdit ?? null,
-                    notice: noticeInYaml ? h(WorkflowV2RunCommandNotice, { controller, sessionId, notice: runNotice }) : null,
+                ? h(WorkflowDraftEditor, { key: sessionId, controller, sessionId, model: draftEditor, savedEdit: view.draftEdit ?? null,
+                    notice: noticeInYaml ? h(WorkflowRunCommandNotice, { controller, sessionId, notice: runNotice }) : null,
                     tools: panelButton("draft", { label: "YAML tools", glyph: "tools",
                         title: "Compare saved versions, and change an agent step's inputs without writing YAML." }) })
-                : h(WorkflowV2YamlView, { key: sessionId, controller, sessionId, model: definitionModel, reads: view.definitionRevisions ?? null })) : null);
+                : h(WorkflowYamlView, { key: sessionId, controller, sessionId, model: definitionModel, reads: view.definitionRevisions ?? null })) : null);
 }
 
 /** One side-pane panel (r-3): its title and a way back to Step details, the answer to the last command, then the panel. */
@@ -262,26 +262,26 @@ function WorkflowSidePanel({ controller, workflow, log, notice }) {
     const title = panel === "definition" ? (publication.state === "draft" ? "Publish review" : "Start the live run")
         : panel === "variables" && Number.isSafeInteger(variables.revision) ? `Variables · revision ${variables.revision}`
             : WORKFLOW_SIDE_PANEL_TITLES[panel];
-    const body = panel === "definition" ? h(WorkflowV2DefinitionPanel, { controller, sessionId, model: publication, versionsNow: view.agentVersions ?? null })
-        : panel === "test" ? h(WorkflowV2TestPanel, { controller, sessionId, model: testControls })
+    const body = panel === "definition" ? h(WorkflowDefinitionPanel, { controller, sessionId, model: publication, versionsNow: view.agentVersions ?? null })
+        : panel === "test" ? h(WorkflowTestPanel, { controller, sessionId, model: testControls })
         // A test run's held calls, its virtual clock and the answer form for the call being answered.
         : panel === "calls" ? h("div", { className: "ps-workflow-test-calls" },
-            h(WorkflowV2TestInterceptions, { test, controller, sessionId,
+            h(WorkflowTestInterceptions, { test, controller, sessionId,
                 responder: testResponder, answering: view.answeringInterceptionId ?? null, history: flow.readModel.run.history ?? null,
                 onLoadOlder: restart => controller.loadOlderWorkflowHistory(sessionId, { restart }), parentSessionId: session?.parentSessionId ?? null }),
-            testResponder?.advance ? h(WorkflowV2TestClock, { controller, sessionId, responder: testResponder }) : null,
+            testResponder?.advance ? h(WorkflowTestClock, { controller, sessionId, responder: testResponder }) : null,
             testResponder?.respond && view.answeringInterceptionId
-                ? h(WorkflowV2TestAnswer, { controller, sessionId, responder: testResponder, interceptionId: view.answeringInterceptionId,
+                ? h(WorkflowTestAnswer, { controller, sessionId, responder: testResponder, interceptionId: view.answeringInterceptionId,
                     parentSessionId: session?.parentSessionId ?? null }) : null)
-        : panel === "variables" ? h(WorkflowV2Variables, { controller, sessionId, model: variables })
+        : panel === "variables" ? h(WorkflowVariables, { controller, sessionId, model: variables })
         // The agent steps whose inputs the step-input editor changes (owner decision q6), and what it has read.
-        : panel === "draft" ? h(WorkflowV2DraftTools, { controller, sessionId, model: draftEditor, revisionReads: view.definitionRevisions ?? null,
+        : panel === "draft" ? h(WorkflowDraftTools, { controller, sessionId, model: draftEditor, revisionReads: view.definitionRevisions ?? null,
             agentSteps: (definition?.states || []).filter(state => state?.type === "agent").map(state => state.id),
             stepInput: view.stepInput ?? null, stepInputPreview: view.stepInputPreview ?? null, unsaved: Boolean(view.draftDirty) })
         // Why the shown run ended, and who did what in it (owner decision q14; mocks M09, M14).
-        : panel === "activity" ? h(WorkflowV2RunActivity, { ending: flow.ending, events, runId: activity })
+        : panel === "activity" ? h(WorkflowRunActivity, { ending: flow.ending, events, runId: activity })
         : panel === "notices" ? h("div", { className: "ps-workflow-notices" },
-            h(WorkflowReadError, { controller, sessionId, message: readError }), h(WorkflowV2Banners, { banners: notices }))
+            h(WorkflowReadError, { controller, sessionId, message: readError }), h(WorkflowBanners, { banners: notices }))
         : log ? h("div", { className: "ps-workflow-log" }, log)
         : h("p", { className: "ps-workflow-empty" }, "The step log is not available here.");
     return h("div", { className: `ps-workflow-side-panel is-${panel}`, "data-panel": panel },
@@ -305,13 +305,13 @@ export function WorkflowNodePane({ controller, log = null }) {
     const sessionsById = useControllerSelector(controller, state => state.sessions.byId);
     const [tab, setTab] = React.useState("details");
     // The branch a branch step's details show (owner batch 7, H2): kept for that workflow, run, parallel visit and step only
-    // (workflowV2BranchPickKey); its default otherwise.
+    // (workflowBranchPickKey); its default otherwise.
     const [branchPick, setBranchPick] = React.useState(null);
     const tabId = React.useId();
-    const notice = runNotice && !noticeInYaml ? h(WorkflowV2RunCommandNotice, { controller, sessionId, notice: runNotice }) : null;
+    const notice = runNotice && !noticeInYaml ? h(WorkflowRunCommandNotice, { controller, sessionId, notice: runNotice }) : null;
     if (sidePanel) return h(WorkflowSidePanel, { controller, workflow, log, notice });
     const details = () => {
-        if (!selected && flow) return React.createElement(WorkflowV2NoGraph, { projection: flow, drafting });
+        if (!selected && flow) return React.createElement(WorkflowNoGraph, { projection: flow, drafting });
         if (!selected) return React.createElement("div", { className: "ps-workflow-empty" },
             view.error || "Select a workflow step to see its details.");
         return React.createElement("section", { className: "ps-workflow-node-details", "aria-label": "Workflow step details" },
@@ -324,7 +324,7 @@ export function WorkflowNodePane({ controller, log = null }) {
                     React.createElement("button", { key: id, id: `${tabId}-${id}`, role: "tab", type: "button",
                         "aria-selected": tab === id, onClick: () => setTab(id) }, title))),
             React.createElement("div", { className: "ps-workflow-detail-content", role: "tabpanel", "aria-labelledby": `${tabId}-${tab}` },
-                React.createElement(WorkflowV2NodeContent, {
+                React.createElement(WorkflowNodeContent, {
                     tab, selected, nodes, select, openSession: sessionId => { controller.loadSession(sessionId).catch(() => {}); },
                     runOutput: flow?.status.terminalState === selected.id ? flow.output : null,
                     runError: flow?.status.terminalState === selected.id ? flow.error : null,
@@ -343,11 +343,11 @@ export function WorkflowNodePane({ controller, log = null }) {
                     history: flow?.bound ? flow?.readModel?.run?.history ?? null : null,
                     onLoadOlder: restart => { controller.loadOlderWorkflowHistory(sessionId, { restart }).catch(() => {}); },
                     // A branch step's details show the branch chosen by its picker (owner batch 7, H2).
-                    branchIndex: branchPick?.key === workflowV2BranchPickKey(sessionId, flow?.runId ?? null, selected) ? branchPick.index : null,
+                    branchIndex: branchPick?.key === workflowBranchPickKey(sessionId, flow?.runId ?? null, selected) ? branchPick.index : null,
                     // Re-check UI-RC2-3: another branch ends a result chosen in History for this step, so coming back does not revive it.
                     onBranch: index => {
-                        setBranchPick({ key: workflowV2BranchPickKey(sessionId, flow?.runId ?? null, selected), index });
-                        if (workflowV2SelectionAfterBranchChange(view.selectedExecution ?? null, selected.id) === null && view.selectedExecution) {
+                        setBranchPick({ key: workflowBranchPickKey(sessionId, flow?.runId ?? null, selected), index });
+                        if (workflowSelectionAfterBranchChange(view.selectedExecution ?? null, selected.id) === null && view.selectedExecution) {
                             controller.selectWorkflowExecution(sessionId, null);
                         }
                     },

@@ -7,7 +7,7 @@ import type { ManagementOps } from "./web/generated-op-methods.js";
 
 type ReadWorkflowParams = Parameters<ManagementOps["readWorkflow"]>[0];
 /**
- * Workflow v2 readWorkflow's options: the operation's declared parameters (protocol.js, through the generated
+ * Workflow readWorkflow's options: the operation's declared parameters (protocol.js, through the generated
  * surface) other than the session id, which is the call's own argument. An absent or null option is left out; any
  * other value reaches the server's checks as it is.
  */
@@ -270,7 +270,7 @@ export interface TurnOptions {
     /** Require a real execution event for this tool; correct once, then fail the turn if still absent. */
     requiredTool?: string;
     /**
-     * Owner decision Q2 (workflow/v2/agent-reminder.ts): the turn of a workflow agent state's own child. When the turn's
+     * Owner decision Q2 (workflow/agent-reminder.ts): the turn of a workflow agent state's own child. When the turn's
      * run settles naturally with nothing pending (after the tool-call-as-text and required-tool corrections: no control
      * tool ended the turn, no queued schedule set, complete_workflow_node not called, no question to another session or
      * the parent, no error, no Stop, interrupt or expired guard, and no steer in flight, unconfirmed or held),
@@ -324,34 +324,34 @@ export interface TurnOptions {
             args: import("./workflow/tool-spec.js").SpawnWorkflowToolArgs,
             call?: { toolCallId?: string },
         ): Promise<string>;
-        /** Workflow v2: change a draft/published child workflow this session created. Returns JSON. */
+        /** Workflow: change a draft/published child workflow this session created. Returns JSON. */
         updateWorkflow?(args: Record<string, unknown>): Promise<string>;
-        /** Workflow v2: read a child workflow this session created. Returns JSON. */
+        /** Workflow: read a child workflow this session created. Returns JSON. */
         readWorkflow?(args: Record<string, unknown>): Promise<string>;
-        /** Workflow v2: give a workflow run one typed input as this session. Returns JSON. */
+        /** Workflow: give a workflow run one typed input as this session. Returns JSON. */
         sendWorkflowInput?(args: Record<string, unknown>): Promise<string>;
         /**
-         * Workflow v2 request states: answer a workflow's request as this
+         * Workflow request states: answer a workflow's request as this
          * session (respond_session_request). Present only on a 1.0.83 turn of
          * a worker that runs request states. Returns JSON.
          */
         respondSessionRequest?(args: Record<string, unknown>): Promise<string>;
         /**
-         * Workflow v2 agent states: finish the workflow state this session
+         * Workflow agent states: finish the workflow state this session
          * runs with a typed result (complete_workflow_node). Present only for
          * an agent state's child on a turn of a worker that runs agent states
          *. Returns JSON.
          */
         completeWorkflowNode?(args: Record<string, unknown>): Promise<string>;
         /**
-         * Workflow v2 agent states: this session is in an agent state's
+         * Workflow agent states: this session is in an agent state's
          * subtree (its stored lineage), so ask_user is refused with guidance
          * instead of asking a person (R14). Set only on a turn of a worker
          * that runs agent states.
          */
         workflowAgentSubtree?: boolean;
         /**
-         * Workflow v2 real-agent test runs (design 05 agent mode real): this
+         * Workflow real-agent test runs (design 05 agent mode real): this
          * session is in the subtree of a test run's agent state, so each of
          * its framework tool calls (all but complete_workflow_node and
          * ask_user) is intercepted through this function instead of running,
@@ -361,7 +361,7 @@ export interface TurnOptions {
          */
         workflowTestToolCall?(tool: string, args: Record<string, unknown>): Promise<unknown>;
         /**
-         * Workflow v2: this turn is a workflow request turn (session
+         * Workflow: this turn is a workflow request turn (session
          * orchestration 1.0.83). Its workflow tools take request,
          * agent and parallel states and the stop and test operations, and
          * their descriptions say so; every other turn's are unchanged.
@@ -853,7 +853,7 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
      */
     workspaceCleared?: boolean;
     /**
-     * Workflow v2:
+     * Workflow:
      * this turn is a workflow request turn (session orchestration 1.0.83), so a session
      * created or resumed for it gets the permission handler that refuses MCP
      * tools while the session runs under a real-agent test
@@ -862,7 +862,7 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
      */
     workflowMilestoneTurn?: boolean;
     /**
-     * Workflow v2: this
+     * Workflow: this
      * turn's session is an agent state's own child (its stored lineage), so it
      * is declared complete_workflow_node, whose handler the turn's bridge
      * gives. With workflowMilestoneTurn, the session is also declared the
@@ -1514,7 +1514,7 @@ export interface PilotSwarmWorkerOptions {
     };
     /**
      * @internal Test-only tuning. Every worker serves the full Workflow engine (the Workflow controller and session orchestration
-     * 1.0.83's intake and request turns; workflow/v2/milestone-worker.ts), so nothing here turns it on or off.
+     * 1.0.83's intake and request turns; workflow/milestone-worker.ts), so nothing here turns it on or off.
      * `intakeAdmissionRetryDelaysMs` replaces the in-place waits of the intake admission's transient retries
      * (intake-admission.ts).
      */

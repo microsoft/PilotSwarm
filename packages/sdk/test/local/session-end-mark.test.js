@@ -10,14 +10,14 @@ import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmManagementClient } from "../helpers/local-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
+import { createWorkflow } from "../../src/workflow/service.ts";
 
 const { Runtime, Client, PostgresProvider } = (await import("node:module")).createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
 const OWNER = { provider: "test", subject: `end-mark-${randomUUID()}` };
 const HOLD = `
-apiVersion: pilotswarm.dev/v2-draft
+apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: hold, version: "1.0.0" }
 initial: hold
@@ -66,7 +66,7 @@ describe("an end's mark is recorded only when its command is sent (G1 residual)"
             await catalog.createSession(chat, { owner: OWNER });
             const host = { catalog, store: catalog.workflowStore(), duroxideClient: { startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "Running" }),
                 enqueueEvent: async () => {} } };
-            const created = await createWorkflowV2(host, { workflowSessionId: randomUUID(), parentSessionId: chat, owner: OWNER, yaml: HOLD,
+            const created = await createWorkflow(host, { workflowSessionId: randomUUID(), parentSessionId: chat, owner: OWNER, yaml: HOLD,
                 actor: { kind: "system", name: "end-mark-test" }, operationId: "start", start: { inputs: {} } });
             expect(created.receipt.valid).toBe(true);
             await expect(mgmt.completeSession(chat, "no", { wait: false })).rejects.toMatchObject({ status: 409 });

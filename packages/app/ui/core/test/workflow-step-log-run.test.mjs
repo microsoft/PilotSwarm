@@ -7,7 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildHistoryModel } from "../src/history.js";
-import { workflowV2Definition, workflowStepLogHistory, workflowStepLogNotice, workflowStepLogRunId, workflowStepLogScope } from "../src/workflow-v2-view.js";
+import { workflowDefinition, workflowStepLogHistory, workflowStepLogNotice, workflowStepLogRunId, workflowStepLogScope } from "../src/workflow-view.js";
 import { workflowStepLogLines, WORKFLOW_STEP_LOG_EMPTY_TEXT } from "../src/workflow-sessions.js";
 
 const SID = "wf-log";
@@ -91,7 +91,7 @@ test("R2-UI-3: switching to the live run never shows another run's entries: load
 // run's from that moment, so it shows no test run's entries under the live run while it waits.
 test("RC-2: a first open with a known definition and its first read on its way shows no run's entries", () => {
     const history = buildHistoryModel([...runEvents("test-a", "{\"v\":\"a\"}"), event("workflow.recovered", { action: "none" })]);
-    const definition = workflowV2Definition({ irSha256: "f".repeat(64), name: "w", version: "1.0.0", initial: "work",
+    const definition = workflowDefinition({ irSha256: "f".repeat(64), name: "w", version: "1.0.0", initial: "work",
         states: [{ id: "work", type: "script", runtime: "node", outcomes: ["ok"], next: { ok: "done" } }, { id: "done", type: "terminal", outcome: "succeeded" }] });
     // As the controller sets it at the first open: the definition, nothing read yet, no run chosen.
     const first = { definition, loading: false, error: null };

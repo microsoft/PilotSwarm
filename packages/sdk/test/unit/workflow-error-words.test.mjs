@@ -2,13 +2,13 @@
  * Workflow Simplified stage 2.1c, FU-19: a failed step's error in short plain words, made on the server from the whole
  * stored error (error-words.ts), as the portal says them (packages/app/ui/core/src/workflow-error-words.js), so a long
  * error cut in its 500-character preview (HN #2: keys in sorted order, the script's stderr cut before its error line)
- * still reads in words. The database side (the failure events and the read) is test/local/workflow-v2-error-words.test.js.
+ * still reads in words. The database side (the failure events and the read) is test/local/workflow-error-words.test.js.
  *
  * Run: node --test test/unit/workflow-error-words.test.mjs
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { WORKFLOW_ERROR_WORDS_MAX, workflowErrorWords, workflowScriptErrorLine } from "../../dist/workflow/v2/error-words.js";
+import { WORKFLOW_ERROR_WORDS_MAX, workflowErrorWords, workflowScriptErrorLine } from "../../dist/workflow/error-words.js";
 
 const NOISE = Array.from({ length: 40 }, (_, index) => `    at frame${index} (file:///work/script.mjs:${index}:1)`).join("\n");
 

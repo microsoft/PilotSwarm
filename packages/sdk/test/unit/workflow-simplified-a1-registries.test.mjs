@@ -17,8 +17,8 @@ import { join } from "node:path";
 import { SessionManager } from "../../dist/session-manager.js";
 import {
     WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT, WORKFLOW_DEFINITION_TOOLS_REFUSED, workflowDefinitionMcpPermission, workflowDefinitionMcpToolFilters,
-} from "../../dist/workflow/v2/input-policy.js";
-import { refuseDefinitionFromInsideWorkflow, updateWorkflowForPerson, workflowCommandStatus } from "../../dist/workflow/v2/human-commands.js";
+} from "../../dist/workflow/input-policy.js";
+import { refuseDefinitionFromInsideWorkflow, updateWorkflowForPerson, workflowCommandStatus } from "../../dist/workflow/human-commands.js";
 
 const ROOT = { childSessionId: "node-chat", nodeExecutionId: "nx-1", workflowSessionId: "W", controllingSessionId: "P", distance: 0 };
 
