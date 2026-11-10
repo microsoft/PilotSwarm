@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { TEST_RUNTIME_PROVIDER, useSuiteEnv } from "../helpers/local-env.js";
+import { useSuiteEnv } from "../helpers/local-env.js";
 import {
     requestFixture, REQUEST_ACTOR, REQUEST_TIMEOUT, checkpoint, reachedDuring, holdSession, observeBlocked, requestClock, requestLockSnapshot,
     requestWaitState,
@@ -8,15 +8,6 @@ import { canonicalJson, jsonSha256 } from "../../src/workflow/v2/json.ts";
 import { WORKFLOW_V2_MAX_REQUEST_OPERATIONS } from "../../src/workflow/v2/store.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
-
-// CI run 114 (HorizonDB): a probe that hits its lock_timeout (55P03) cannot be rolled back there; the server answers its
-// ROLLBACK with an internal error. The two cases that expire a request behind such a probe are skipped on HorizonDB only
-// (reported to HorizonDB); on PostgreSQL they run as before.
-const HORIZONDB_PROBE_ROLLBACK = "HorizonDB answers the ROLLBACK after a lock_timeout (55P03) with "
-    + "\"error: ResourceOwnerEnlarge called after release started\" (CI run 114)";
-const itUnlessHorizonDb = (title, options, fn) => (TEST_RUNTIME_PROVIDER === "horizondb"
-    ? it.skip(`${title} — skipped on HorizonDB: ${HORIZONDB_PROBE_ROLLBACK}`, () => {})
-    : it(title, options, fn));
 const YES = { response: { approved: true } };
 const NO = { response: { approved: false } };
 const DECLINE = { decline: { reason: "not now" } };
@@ -132,7 +123,13 @@ async function expireWhileLocked(h, run, exchangeId) {
         await expect(probe.query(`SELECT session_id FROM "${h.schema}".sessions WHERE session_id = $1 FOR UPDATE`,
             [run.workflowSessionId])).rejects.toMatchObject({ code: "55P03" });
     } finally {
-        try { await probe.query("ROLLBACK"); } finally { probe.release(); }
+        // CI run 114 (HorizonDB): after the lock_timeout, HorizonDB answers this ROLLBACK with a server error ("error:
+        // ResourceOwnerEnlarge called after release started"; reported to HorizonDB). The probe connection is then closed
+        // (release with the error, as the migrator does since 35830c5f), which ends its transaction; the pool never hands
+        // it out again. The case goes on: the probe only had to wait past the deadline.
+        let rollbackFailed = null;
+        await probe.query("ROLLBACK").catch(error => { rollbackFailed = error; });
+        probe.release(rollbackFailed ?? undefined);
     }
     const [clock] = await h.q(`WITH reading AS (SELECT clock_timestamp() AS at)
         SELECT at::text AS at, at > req.deadline_at AS past FROM reading
@@ -268,7 +265,7 @@ describe("workflow v2 requests: real-store races, deadlines and rollback", () =>
         } finally { await h.stop(); }
     });
 
-    itUnlessHorizonDb("expires after a real session-lock wait crosses its deadline, not from the transaction's early start", { timeout: REQUEST_TIMEOUT }, async () => {
+    it("expires after a real session-lock wait crosses its deadline, not from the transaction's early start", { timeout: REQUEST_TIMEOUT }, async () => {
         const h = await requestFixture(getEnv());
         let holder;
         let settled;
@@ -323,7 +320,7 @@ describe("workflow v2 requests: real-store races, deadlines and rollback", () =>
         }
     });
 
-    itUnlessHorizonDb("keeps a before-deadline decision held before COMMIT when the commit is after the deadline", { timeout: REQUEST_TIMEOUT }, async () => {
+    it("keeps a before-deadline decision held before COMMIT when the commit is after the deadline", { timeout: REQUEST_TIMEOUT }, async () => {
         const h = await requestFixture(getEnv());
         const atCommit = checkpoint();
         let settled;
