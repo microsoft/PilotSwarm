@@ -3267,41 +3267,25 @@ export class WorkflowStore {
     /**
      * A workflow's controller orchestration failed while its run had not ended (re-check R2-RT2-RC1 and its re-check
      * R2-RC2-RT2-1): its session row says failed. Decided under the session lock from the row as it is now, never from a
-     * status read's older snapshot; a deleted session, or a row that already says the run ended, is left alone.
-     * - A v2 workflow (its creation names workflowV2, or it has a v2 definition): only while its live run has not ended
-     *   (its end, or recover's repair, owns the row); without a live run (a draft, or only test runs) nothing is written.
-     *   The row says failed with `message`, or that the controller failed before the run ended.
-     * - A legacy (version 1) workflow, identified by its stored admission (workflowAdmission) and no v2 identity at all:
-     *   its row is its run's, so it says failed, with `message` when there is one (else its last error stays), as a status
-     *   read wrote it before RC1. A missing live run alone never makes a workflow legacy.
-     * Returns whether the row changed, and which kind of workflow it was.
+     * status read's older snapshot; a deleted session, or a row that already says the run ended, is left alone. Only while
+     * its live run has not ended (its end, or recover's repair, owns the row); without a live run (only a saved definition,
+     * or only test runs) nothing is written. The row says failed with `message`, or that the controller failed before the
+     * run ended. Returns whether the row changed.
      */
-    async recordControllerFailed(input: { workflowSessionId: string; message: string | null }): Promise<{ written: boolean; kind?: "v2" | "legacy" }> {
+    async recordControllerFailed(input: { workflowSessionId: string; message: string | null }): Promise<{ written: boolean }> {
         return this.transaction(async client => {
             if (!await this.lockLiveSession(client, input.workflowSessionId)) return { written: false };
-            const { rows: session } = await client.query(
-                `SELECT state, session_kind, COALESCE(creation_config ? 'workflowAdmission', false) AS admitted,
-                        COALESCE(creation_config ? 'workflowV2', false) AS v2
-                   FROM ${this.t.sessions} WHERE session_id = $1`, [input.workflowSessionId]);
+            const { rows: session } = await client.query(`SELECT state, session_kind FROM ${this.t.sessions} WHERE session_id = $1`, [input.workflowSessionId]);
             const row = session[0];
             if (!row || row.session_kind !== "workflow") return { written: false };
             const state = row.state;
             if (state === "failed" || state === "completed" || state === "cancelled") return { written: false };
-            const { rows: definition } = await client.query(`SELECT 1 FROM ${this.t.definitions} WHERE workflow_session_id = $1`, [input.workflowSessionId]);
-            const v2 = row.v2 === true || definition.length > 0;
-            if (!v2) {
-                if (row.admitted !== true) return { written: false };
-                const updates: Record<string, string | null> = { state: "failed", waitReason: null, lastActiveAt: new Date().toISOString() };
-                if (input.message) updates.lastError = jsonbSafeText(redactWorkflowSecrets(input.message), 4_000);
-                await client.query(`SELECT ${this.t.updateSession}($1, $2)`, [input.workflowSessionId, JSON.stringify(updates)]);
-                return { written: true, kind: "legacy" as const };
-            }
             const { rows: live } = await client.query(
                 `SELECT status FROM ${this.t.runs} WHERE workflow_session_id = $1 AND mode = 'live' ORDER BY created_at DESC LIMIT 1`, [input.workflowSessionId]);
-            if (!live[0] || !ACTIVE_RUN_STATUSES.includes(str(live[0], "status") as WorkflowRunStatus)) return { written: false, kind: "v2" as const };
+            if (!live[0] || !ACTIVE_RUN_STATUSES.includes(str(live[0], "status") as WorkflowRunStatus)) return { written: false };
             await this.project(client, { sessionId: input.workflowSessionId, update: {
                 state: "failed", lastError: input.message ?? "The workflow controller failed before the run ended.", touch: true } });
-            return { written: true, kind: "v2" as const };
+            return { written: true };
         });
     }
 

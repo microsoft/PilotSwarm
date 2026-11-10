@@ -269,9 +269,8 @@ test("the definition tool and spawn_workflow refuse a malformed or misplaced map
     assert.equal(started.error.code, "AGENT_MODELS_INVALID");
     assert.match(started.error.message, /classify\.model must be an exact provider:model/);
     const spawn = async args => JSON.parse(await spawnWorkflowFromTool({ yaml: YAML, key: "models", ...args }, { toolCallId: "call-1" }, {
-        parentSessionId: "chat", enabled: () => true, getSession: async () => null, resolveOwner: async () => { throw new Error("owner read"); },
-        captureToolBinding: async () => { throw new Error("binding read"); }, createWorkflowSession: async () => { throw new Error("v1"); },
-        workflowV2Host: async () => host,
+        parentSessionId: "chat", enabled: () => true, resolveOwner: async () => { throw new Error("owner read"); },
+        captureToolBinding: async () => { throw new Error("binding read"); }, workflowV2Host: async () => host,
     }));
     const saveOnly = await spawn({ state: "published", agent_models: { classify: { model: "a:b" } } });
     assert.equal(saveOnly.error.code, "AGENT_MODELS_INVALID");
@@ -279,11 +278,11 @@ test("the definition tool and spawn_workflow refuse a malformed or misplaced map
     const unknown = await spawn({ state: "published", start: true, agent_models: { pause: { model: "a:b" } } });
     assert.equal(unknown.error.code, "AGENT_MODELS_INVALID");
     assert.equal(unknown.error.message, "agentModels names pause, a wait node of models; only agent nodes take a model.");
-    const v1 = await spawnWorkflowFromTool({ yaml: "kind: Workflow\n", agent_models: {} }, { toolCallId: "call-1" }, {
-        parentSessionId: "chat", enabled: () => true, getSession: async () => null, resolveOwner: async () => null,
-        captureToolBinding: async () => ({}), createWorkflowSession: async () => { throw new Error("v1"); }, workflowV2Host: async () => host,
-    });
-    assert.match(v1, /state, start, vars and agent_models apply to apiVersion pilotswarm\.dev\/v2-draft workflows only/);
+    const other = JSON.parse(await spawnWorkflowFromTool({ yaml: "kind: Workflow\n", agent_models: {} }, { toolCallId: "call-1" }, {
+        parentSessionId: "chat", enabled: () => true, resolveOwner: async () => null,
+        captureToolBinding: async () => ({}), workflowV2Host: async () => host,
+    }));
+    assert.equal(other.error.code, "WORKFLOW_API_VERSION");
 });
 
 test("a person's start refused for its models answers 400 (not agent nodes of that revision, or not shaped as a map) or 422 (a model they cannot use)", () => {

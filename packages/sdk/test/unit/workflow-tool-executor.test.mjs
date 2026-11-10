@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { admittedWorkflowToolGrant, captureWorkflowTools, isWorkflowControlTool, resolveWorkflowTool, validateWorkflowToolArguments, workflowToolGrant,
     workflowToolPermission } from "../../dist/workflow/tool-policy.js";
 import { createWorkflowToolExecutor, workflowToolResult } from "../../dist/workflow/tool-executor.js";
-import { compileWorkflow, validateNodeWorkflowAdmission } from "../../dist/workflow/compiler.js";
 
 const metadata = [
     { name: "bash", description: "shell", input_schema: { type: "object" } },
@@ -214,28 +213,6 @@ test("a hung abort has a bounded close and does not skip disposal", async () => 
     await assert.rejects(executor.close(), /cleanup timed out/);
     assert.deepEqual(await outcome, { value: "stopped" });
 });
-test("new admission is Node-only without invalidating old compiled documents", () => {
-    for (const runtime of ["node", "python", "powershell"]) {
-        const workflow = compileWorkflow(`
-apiVersion: pilotswarm.dev/v1alpha1
-kind: Workflow
-metadata: { name: example, version: 1.0.0 }
-initial: run
-states:
-  run:
-    type: script
-    runtime: ${runtime}
-    source: "legacy source retained"
-    completion: { outcomes: [done] }
-    transition: { next: { done: end } }
-  end: { type: terminal, outcome: succeeded }
-`);
-        assert.equal(workflow.states.run.runtime, runtime);
-        if (runtime === "node") assert.doesNotThrow(() => validateNodeWorkflowAdmission(workflow));
-        else assert.throws(() => validateNodeWorkflowAdmission(workflow), { code: "WORKFLOW_RUNTIME_UNSUPPORTED" });
-    }
-});
-
 // E1b (verification of RT-2) and G1b: on a shared session a call is checked when its turn comes. A close rejects a call
 // that has not begun its turn at once ("closed"); a call whose turn has begun settles with its own outcome: the close
 // aborts it, waits for it, and only then disposes the handle.
@@ -371,52 +348,16 @@ test("FU-25: the observer is told when the call's turn begins; a call that never
     await other.close();
 });
 
-// Stage 2.5 (PR 235 90bacab1): a version 1 workflow's worker redraws canvas slot 1 after every step, so its scripts may
-// not write there; reads, other slots and other sessions' canvases go through. A version 2 Workflow draws no canvas.
-test("a version 1 workflow script may not write its own live canvas slot; everything else on a canvas goes through", () => {
-    const live = { liveCanvasSessionId: "wf-1" };
-    const refused = [
-        ["draw_canvas", { html: "<p>x</p>" }],
-        ["draw_canvas", { html: "<p>x</p>", slot: 1 }],
-        ["draw_canvas", { html: "<p>x</p>", slot: "1", session_id: "wf-1" }],
-        ["update_canvas", { patch: { a: 1 }, session_id: "session-wf-1" }],
-        ["canvas_kv", { op: "put", key: "app/x", value: 1 }],
-        ["canvas_kv", { op: "delete", key: "app/x", slot: 1 }],
-    ];
-    for (const [name, args] of refused) {
-        assert.throws(() => validateWorkflowToolArguments(name, args, live),
-            /Canvas slot 1 shows this workflow's live diagram; use slots 2-5, or the parent's canvas with session_id\./,
-            `${name} ${JSON.stringify(args)}`);
+// A Workflow draws no canvas of its own: a script's canvas calls are checked like any other tool's and go through.
+test("a workflow script's canvas writes go through, on any slot", async () => {
+    for (const [name, args] of [["draw_canvas", { html: "<p>x</p>" }], ["update_canvas", { patch: { a: 1 }, slot: 1 }],
+        ["canvas_kv", { op: "put", key: "app/x", value: 1 }]]) {
+        assert.doesNotThrow(() => validateWorkflowToolArguments(name, args), `${name} ${JSON.stringify(args)}`);
     }
-    const allowed = [
-        ["draw_canvas", { html: "<p>x</p>", slot: 2 }],
-        ["update_canvas", { patch: { a: 1 }, slot: 5 }],
-        ["draw_canvas", { html: "<p>x</p>", session_id: "parent-chat" }],
-        ["canvas_kv", { op: "get", key: "app/x" }],
-        ["canvas_kv", { op: "list", prefix: "app/" }],
-        ["canvas_kv", { op: "put", key: "app/x", value: 1, slot: 3 }],
-        ["read_canvas", {}],
-        ["show_canvas", { slot: 1 }],
-    ];
-    for (const [name, args] of allowed) {
-        assert.doesNotThrow(() => validateWorkflowToolArguments(name, args, live), `${name} ${JSON.stringify(args)}`);
-    }
-    for (const [name, args] of refused) {
-        assert.doesNotThrow(() => validateWorkflowToolArguments(name, args), `no live canvas (version 2): ${name}`);
-    }
-});
-test("an executor given a live canvas session refuses its slot 1 writes before they run", async () => {
     const canvasMetadata = [...metadata, { name: "draw_canvas", description: "canvas", input_schema: { type: "object" } }];
-    const f = fixture({ liveCanvasSessionId: "wf-1" });
+    const f = fixture();
     f.options.grants = captureWorkflowTools(canvasMetadata);
     f.setMetadata(canvasMetadata);
-    const executor = await createWorkflowToolExecutor(f.options);
-    await assert.rejects(executor.call("draw_canvas", { html: "<p>x</p>" }), /live diagram/);
-    assert.equal(f.calls.length, 0);
-    assert.equal(await executor.call("draw_canvas", { html: "<p>x</p>", slot: 2 }), "native output");
+    assert.equal(await (await createWorkflowToolExecutor(f.options)).call("draw_canvas", { html: "<p>x</p>" }), "native output");
     assert.deepEqual(f.calls.map(call => call.name), ["draw_canvas"]);
-    const v2 = fixture();
-    v2.options.grants = captureWorkflowTools(canvasMetadata);
-    v2.setMetadata(canvasMetadata);
-    assert.equal(await (await createWorkflowToolExecutor(v2.options)).call("draw_canvas", { html: "<p>x</p>" }), "native output");
 });

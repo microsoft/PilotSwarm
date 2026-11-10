@@ -1,4 +1,4 @@
-import { WORKFLOW_COMMAND_QUEUE } from "../orchestration.js";
+import { WORKFLOW_COMMAND_QUEUE } from "../commands.js";
 import { workflowStoreFailure } from "./failure.js";
 import { jsonbSafeText, type JsonValue } from "./json.js";
 import { ACTIVE_RUN_STATUSES, type WorkflowStore } from "./store.js";

@@ -59,8 +59,7 @@ import {
 import { canonicalJson, sha256Hex } from "../../src/workflow/v2/json.ts";
 import { createWorkflowV2, sendWorkflowInputV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
-import { WORKFLOW_SCRIPTS_DISABLED } from "../../src/workflow/v2/scripts-gate.ts";
-import { WORKFLOW_SCRIPTS_DISABLED_MESSAGE } from "../../src/workflow/activities.ts";
+import { WORKFLOW_SCRIPTS_DISABLED, WORKFLOW_SCRIPTS_DISABLED_MESSAGE } from "../../src/workflow/v2/scripts-gate.ts";
 import {
     promptSafeJson, registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_FINALIZE_DELAYS_MS, WORKFLOW_V2_MAX_SEND_PAYLOAD_BYTES,
     workflowSendClientMessageId, workflowSendInstanceId, workflowSendPrompt,

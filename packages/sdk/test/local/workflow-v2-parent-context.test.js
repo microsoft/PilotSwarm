@@ -19,7 +19,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "../../src/session-manager.ts";
 import { capabilityRef } from "../../src/capability-catalog.ts";
-import { workflowChildSessionId } from "../../src/workflow/spawn.ts";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { FIXTURE_PROVIDER, withScriptedModel } from "../helpers/scripted-workers.js";
 import { turnWorkflowsOn } from "../helpers/workflows-on.js";

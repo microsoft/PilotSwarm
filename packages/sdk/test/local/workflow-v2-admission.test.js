@@ -1,12 +1,12 @@
 /**
  * Workflow v2 admission at the session-row creation boundary, on real
  * PostgreSQL through the production entry points: createWorkflowV2, the
- * catalog's createSession call that legacy workflows and agent sessions use,
- * and the ordinary PilotSwarmClient (createSession and its session handle).
+ * catalog's createSession call that agent sessions use, and the ordinary
+ * PilotSwarmClient (createSession and its session handle).
  *
  * A v2 creation claims the session row exclusively. It never changes a row
- * another creator made (legacy workflow, agent session, a different v2
- * request), whether that row existed first or was inserted concurrently.
+ * another creator made (an agent session, a different v2 request), whether
+ * that row existed first or was inserted concurrently.
  * No other creator can take a workflow's id: the catalog leaves the row
  * unchanged (as it always has), the ordinary client reads it back and returns
  * no handle, and a send on a workflow session starts and enqueues nothing at
@@ -60,17 +60,9 @@ async function harness(env) {
     return { catalog, store, parentId, host: { catalog, store, duroxideClient: NO_DISPATCH } };
 }
 
-/** The exact catalog call the legacy createWorkflowSession makes for a new admission. */
-function legacyCreate(h, id) {
-    return h.catalog.createSession(id, {
-        sessionKind: "workflow",
-        parentSessionId: h.parentId,
-        owner: OWNER,
-        creationConfig: {
-            workflowToolBinding: { policy: "node-parent-tools-v1", parentSessionId: h.parentId },
-            workflowAdmission: { policy: "node-parent-tools-v1", workflowName: "legacy", input: { sessionId: id } },
-        },
-    });
+/** The catalog call that creates an agent session (a sub-agent of the parent). */
+function agentCreate(h, id) {
+    return h.catalog.createSession(id, { parentSessionId: h.parentId, owner: OWNER, creationConfig: { systemMessage: "agent" } });
 }
 
 function v2Create(h, id, name = "v2", operationId = "create") {
@@ -93,18 +85,11 @@ async function snapshot(h, id) {
 }
 
 describe("workflow v2 admission at the session creation boundary", () => {
-    it("refuses an existing legacy workflow or agent session and leaves it unchanged", { timeout: TIMEOUT }, async () => {
+    it("refuses an existing agent session and leaves it unchanged", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const legacyId = randomUUID();
-            await legacyCreate(h, legacyId);
-            const legacyBefore = await snapshot(h, legacyId);
-            await expect(v2Create(h, legacyId)).rejects.toMatchObject({ code: "SESSION_EXISTS" });
-            expect(await snapshot(h, legacyId)).toEqual(legacyBefore);
-            expect(legacyBefore.definition).toBeNull();
-
             const agentId = randomUUID();
-            await h.catalog.createSession(agentId, { parentSessionId: h.parentId, owner: OWNER, creationConfig: { systemMessage: "agent" } });
+            await agentCreate(h, agentId);
             const agentBefore = await snapshot(h, agentId);
             await expect(v2Create(h, agentId)).rejects.toMatchObject({ code: "SESSION_EXISTS" });
             const agentAfter = await snapshot(h, agentId);
@@ -125,78 +110,68 @@ describe("workflow v2 admission at the session creation boundary", () => {
                 .rejects.toMatchObject({ code: "WORKFLOW_EXISTS" });
             expect(await snapshot(h, foreignId)).toEqual(foreignBefore);
 
-            const legacyAfterV2 = randomUUID();
-            await v2Create(h, legacyAfterV2);
-            const v2Before = await snapshot(h, legacyAfterV2);
-            await legacyCreate(h, legacyAfterV2);
-            await h.catalog.createSession(legacyAfterV2, { owner: OWNER, creationConfig: { replace: true } });
-            expect(await snapshot(h, legacyAfterV2)).toEqual(v2Before);
-            expect(v2Before.creation.workflowAdmission).toBeUndefined();
+            // An ordinary catalog creator leaves a v2 workflow's row as it was.
+            const agentAfterV2 = randomUUID();
+            await v2Create(h, agentAfterV2);
+            const v2Before = await snapshot(h, agentAfterV2);
+            await agentCreate(h, agentAfterV2);
+            await h.catalog.createSession(agentAfterV2, { owner: OWNER, creationConfig: { replace: true } });
+            expect(await snapshot(h, agentAfterV2)).toEqual(v2Before);
             expect(v2Before.owner).toEqual(OWNER);
             expect(v2Before.root).toBe(h.parentId);
-
-            // A legacy workflow's retry and an ordinary catalog creator both leave a legacy workflow row as it was.
-            const legacyAgain = randomUUID();
-            await legacyCreate(h, legacyAgain);
-            const legacyRow = await snapshot(h, legacyAgain);
-            await legacyCreate(h, legacyAgain);
-            await h.catalog.createSession(legacyAgain, { owner: OWNER, creationConfig: { replace: true } });
-            expect(await snapshot(h, legacyAgain)).toEqual(legacyRow);
         } finally { await h.catalog.close(); }
     });
 
     it("keeps the first creator's row in both orders, whichever kind comes first", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const legacyFirst = randomUUID();
-            await legacyCreate(h, legacyFirst);
-            const legacyState = await snapshot(h, legacyFirst);
-            await expect(v2Create(h, legacyFirst)).rejects.toMatchObject({ code: "SESSION_EXISTS" });
-            expect(await snapshot(h, legacyFirst)).toEqual(legacyState);
-            expect(legacyState).toMatchObject({ kind: "workflow", owner: OWNER, root: h.parentId, definition: null });
+            const agentFirst = randomUUID();
+            await agentCreate(h, agentFirst);
+            const agentState = await snapshot(h, agentFirst);
+            await expect(v2Create(h, agentFirst)).rejects.toMatchObject({ code: "SESSION_EXISTS" });
+            expect(await snapshot(h, agentFirst)).toEqual(agentState);
+            expect(agentState).toMatchObject({ kind: "agent", owner: OWNER, root: h.parentId, definition: null });
 
             const v2First = randomUUID();
             await v2Create(h, v2First);
             const v2State = await snapshot(h, v2First);
-            await legacyCreate(h, v2First);
+            await agentCreate(h, v2First);
             expect(await snapshot(h, v2First)).toEqual(v2State);
             expect(v2State).toMatchObject({ kind: "workflow", owner: OWNER, root: h.parentId, definition: { state: "draft", revision: 1 } });
         } finally { await h.catalog.close(); }
     });
 
-    it("lets exactly one of concurrent legacy and v2 creators own each id, with no mixed state", { timeout: TIMEOUT }, async () => {
+    it("lets exactly one of concurrent agent and v2 creators own each id, with no mixed state", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const outcomes = { legacy: 0, v2: 0 };
+            const outcomes = { agent: 0, v2: 0 };
             for (let round = 0; round < 16; round += 1) {
                 const id = randomUUID();
                 // Alternate which creator starts first; both run concurrently.
-                let legacyCall, v2Call;
-                if (round % 2 === 0) { legacyCall = legacyCreate(h, id); v2Call = v2Create(h, id); }
-                else { v2Call = v2Create(h, id); legacyCall = legacyCreate(h, id); }
-                const [legacy, v2] = await Promise.allSettled([legacyCall, v2Call]);
+                let agentCall, v2Call;
+                if (round % 2 === 0) { agentCall = agentCreate(h, id); v2Call = v2Create(h, id); }
+                else { v2Call = v2Create(h, id); agentCall = agentCreate(h, id); }
+                const [agent, v2] = await Promise.allSettled([agentCall, v2Call]);
                 const state = await snapshot(h, id);
-                expect(state.kind).toBe("workflow");
-                const isV2 = Boolean(state.creation.workflowV2);
-                const isLegacy = Boolean(state.creation.workflowAdmission);
-                expect(isV2 !== isLegacy, JSON.stringify(state)).toBe(true);
+                const isV2 = state.kind === "workflow" && Boolean(state.creation.workflowV2);
+                const isAgent = state.kind === "agent" && state.creation?.systemMessage === "agent" && !state.creation.workflowV2;
+                expect(isV2 !== isAgent, JSON.stringify(state)).toBe(true);
                 expect(state).toMatchObject({ owner: OWNER, root: h.parentId });
-                // The catalog's legacy create never fails on an existing row; it leaves the row unchanged.
-                expect(legacy.status, String(legacy.reason)).toBe("fulfilled");
+                // The catalog's create never fails on an existing row; it leaves the row unchanged.
+                expect(agent.status, String(agent.reason)).toBe("fulfilled");
                 if (isV2) {
                     outcomes.v2 += 1;
                     expect(v2.status).toBe("fulfilled");
                     expect(state.definition).toEqual({ state: "draft", revision: 1 });
                     expect(state.title).toBe("Workflow: v2");
                 } else {
-                    outcomes.legacy += 1;
+                    outcomes.agent += 1;
                     expect(v2.status).toBe("rejected");
                     expect(v2.reason.code).toBe("SESSION_EXISTS");
                     expect(state.definition).toBeNull();
-                    expect(state.creation.workflowToolBinding.parentSessionId).toBe(h.parentId);
                 }
             }
-            expect(outcomes.legacy + outcomes.v2).toBe(16);
+            expect(outcomes.agent + outcomes.v2).toBe(16);
         } finally { await h.catalog.close(); }
     });
 

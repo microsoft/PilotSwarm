@@ -1993,7 +1993,7 @@ export class PgSessionCatalog implements SessionCatalog {
                     `SELECT creation_config FROM "${this.sql.schema}".sessions WHERE session_id = $1 FOR UPDATE`,
                     [sessionId],
                 );
-                if (rows[0]?.creation_config?.workflowAdmission || rows[0]?.creation_config?.workflowV2) {
+                if (rows[0]?.creation_config?.workflowV2) {
                     await client.query("ROLLBACK");
                     return;
                 }

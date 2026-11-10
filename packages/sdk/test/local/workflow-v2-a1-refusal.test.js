@@ -5,8 +5,8 @@
  * - The stored lineage decides (sessionInsideWorkflow, which the turn's bridge reads whatever its worker runs): an agent
  *   state's own child and that child's sub-agent are inside the Workflow; the chat that started the Workflow, the
  *   Workflow session itself and an ordinary sub-agent of that chat are not (O3: ordinary sub-agents keep the tools).
- * - spawn_workflow refuses inside a Workflow in words, for a version 2 document (the tools' JSON refusal with its code)
- *   and a version 1 one (its [SYSTEM: ...] line), before anything is made; outside it reaches its own checks.
+ * - spawn_workflow refuses inside a Workflow in words (the tools' JSON refusal with its code), for any document, before
+ *   anything is made; outside it reaches its own checks.
  * - The model is not declared update_workflow or workflow_definition inside a Workflow (spawn_workflow nowhere); every other
  *   tool stays (A5).
  *
@@ -58,7 +58,8 @@ states:
   done: { type: terminal, outcome: succeeded }
 `;
 
-const V1_INVALID = "apiVersion: pilotswarm.dev/v1alpha1\nkind: Workflow\nmetadata: { name: x, version: 1.0.0 }\n";
+/** A document in another format: refused for its apiVersion outside a Workflow. */
+const OTHER_FORMAT = "apiVersion: pilotswarm.dev/v1alpha1\nkind: Workflow\nmetadata: { name: x, version: 1.0.0 }\n";
 
 /** The chat P, its Workflow W with agent state `review` admitted for child C, C's sub-agent G, and P's ordinary sub-agent S. */
 async function lineageOf(catalog) {
@@ -93,19 +94,18 @@ async function lineageOf(catalog) {
     return { store, parent, workflowSessionId, child, grandchild, ordinary };
 }
 
-/** spawn_workflow as the turn's bridge runs it for `caller`, its A1 check read from the store; nothing is ever created. */
+/** spawn_workflow as the turn's bridge runs it for `caller`, its A1 check read from the store; nothing is ever saved. */
 function spawnAs(store, caller) {
-    const created = [];
+    const reached = [];
     const deps = {
         parentSessionId: caller,
         enabled: () => true,
         definitionToolsRefused: () => sessionInsideWorkflow(store, caller),
-        getSession: async () => null,
         resolveOwner: async () => null,
         captureToolBinding: async () => { throw new Error("not reached in this test"); },
-        createWorkflowSession: async (config) => { created.push(config); return { sessionId: config.sessionId, workflowName: "x" }; },
+        workflowV2Host: async () => { reached.push("host"); throw new Error("not reached in this test"); },
     };
-    return { created, call: (yaml) => spawnWorkflowFromTool({ yaml }, { toolCallId: "call-1" }, deps) };
+    return { reached, call: (yaml) => spawnWorkflowFromTool({ yaml }, { toolCallId: "call-1" }, deps) };
 }
 
 describe("Workflow Simplified A1: no definition tools inside a Workflow", () => {
@@ -123,21 +123,21 @@ describe("Workflow Simplified A1: no definition tools inside a Workflow", () => 
             expect(await sessionInsideWorkflow(store, randomUUID())).toBe(false);
 
             for (const caller of [child, grandchild]) {
-                const { created, call } = spawnAs(store, caller);
-                const v2 = JSON.parse(await call(V2_DRAFT));
-                expect(v2).toEqual({ ok: false, error: { code: WORKFLOW_DEFINITION_TOOLS_REFUSED, message: WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT } });
-                expect(v2.error.message).toMatch(/^Sessions inside a Workflow cannot create or change workflow definitions\./);
-                expect(await call(V1_INVALID)).toBe(`[SYSTEM: spawn_workflow refused — ${WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT}]`);
-                expect(created).toEqual([]);
+                const { reached, call } = spawnAs(store, caller);
+                const refused = JSON.parse(await call(V2_DRAFT));
+                expect(refused).toEqual({ ok: false, error: { code: WORKFLOW_DEFINITION_TOOLS_REFUSED, message: WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT } });
+                expect(refused.error.message).toMatch(/^Sessions inside a Workflow cannot create or change workflow definitions\./);
+                expect(JSON.parse(await call(OTHER_FORMAT))).toEqual(refused);
+                expect(reached).toEqual([]);
             }
-            // Outside a Workflow the call reaches spawn_workflow's own checks (here: a version 1 document that is not valid).
+            // Outside a Workflow the call reaches spawn_workflow's own checks (here: a document in another format).
             for (const caller of [parent, ordinary]) {
-                const { created, call } = spawnAs(store, caller);
-                expect(await call(V1_INVALID)).toMatch(/^\[SYSTEM: spawn_workflow refused — the workflow is not valid: /);
-                expect(created).toEqual([]);
+                const { reached, call } = spawnAs(store, caller);
+                expect(JSON.parse(await call(OTHER_FORMAT)).error.code).toBe("WORKFLOW_API_VERSION");
+                expect(reached).toEqual([]);
             }
             // update_workflow's refusal, as the bridge answers it inside a Workflow.
-            expect(JSON.parse(workflowDefinitionToolsRefusal("update_workflow")))
+            expect(JSON.parse(workflowDefinitionToolsRefusal()))
                 .toEqual({ ok: false, error: { code: WORKFLOW_DEFINITION_TOOLS_REFUSED, message: WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT } });
         } finally {
             await catalog.close();

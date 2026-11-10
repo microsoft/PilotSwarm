@@ -76,8 +76,8 @@ export function shouldSyncFailedStatus(input: TerminalSessionLike): boolean {
 /**
  * Whether a status read should ask the workflow store to record a workflow's failed controller (re-check R2-RT2-RC1): its
  * controller orchestration failed and the row it read does not say the run ended. The store decides again under the
- * session lock, from the row (and a v2 workflow's live run) as they are then; a legacy version 1 workflow, known by its
- * stored admission, is recorded too (WorkflowStore.recordControllerFailed; R2-RC2-RT2-1).
+ * session lock, from the row and the workflow's live run as they are then (WorkflowStore.recordControllerFailed;
+ * R2-RC2-RT2-1).
  */
 export function shouldRecordWorkflowControllerFailed(input: TerminalSessionLike): boolean {
     return input.sessionKind === "workflow" && input.orchestrationStatus === "Failed" && !workflowOwnsTerminalRow(input);

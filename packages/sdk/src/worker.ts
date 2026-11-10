@@ -45,13 +45,7 @@ import { createBuiltInWorkspaceProvider } from "./workspace.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { installAgentPackageEntry, installAgentPackages, loadAgentPackageTools, type InstalledAgentPackage } from "./agent-package-installer.js";
 import { parsePinnedAgentPackageId } from "./agent-package-pins.js";
-import {
-    createWorkflowCanvasPublisher,
-    registerWorkflowActivities,
-    WORKFLOW_SESSION_ORCHESTRATION_NAME,
-    WORKFLOW_SESSION_ORCHESTRATION_REGISTRY,
-    registerWorkflowV2,
-} from "./workflow/index.js";
+import { registerWorkflowV2 } from "./workflow/v2/runtime.js";
 import { workflowParentNotifier } from "./workflow/parent-delivery.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -1020,9 +1014,8 @@ export class PilotSwarmWorker {
         // Orchestration 1.0.83's intake activities (claim and settle).
         milestone.registerWorkflowMilestoneSessions(this.runtime, { store: this._catalog?.workflowStore?.() ?? null });
 
-        // Workflow sessions: a sibling controller orchestration. It is
-        // registered on every worker so that a workflow started where scripts
-        // are off fails with a clear message instead of waiting.
+        // Workflows: the controller and its orchestrations, registered on every worker with a workflow store, so a workflow
+        // whose script nodes this worker does not run is refused with a clear message instead of waiting.
         const workflowScriptSettings = resolveWorkflowScriptSettings(this.config.workflowScripts);
         this.sessionManager.workflowScriptsEnabled = workflowScriptSettings.enabled;
         // Workflows are always on (owner 2026-11-08T08:03Z): a deployment that still sets PILOTSWARM_WORKFLOWS is warned once.
@@ -1033,10 +1026,6 @@ export class PilotSwarmWorker {
             const config = await this._catalog.getSessionCreationConfig(sessionId);
             const { readWorkflowToolBinding } = await import("./workflow/tool-policy.js");
             return readWorkflowToolBinding(config?.workflowToolBinding);
-        };
-        const deleteWorkflowSession = async (sessionId: string) => {
-            await this._catalog?.softDeleteSession(sessionId);
-            await this.factStore?.deleteSessionFactsForSession(sessionId).catch(() => undefined);
         };
         const authorizeWorkflowParentNotification = async (sessionId: string, parentSessionId: string) => {
             if (!this._catalog) throw new Error("Workflow parent catalog is unavailable.");
@@ -1058,31 +1047,6 @@ export class PilotSwarmWorker {
         // A parent whose session orchestration has ended reads no queued message: none is queued, and the caller is told
         // (adversarial review WFO-3: the catalog row alone said the parent was there).
         const notifyWorkflowParent = workflowParentNotifier(workflowClient);
-        registerWorkflowActivities(this.runtime, {
-            catalog: this._catalog,
-            enabled: () => workflowScriptSettings.enabled,
-            canvas: createWorkflowCanvasPublisher({
-                catalog: this._catalog,
-                artifactStore: this.artifactStore,
-                ...(this.config.workerNodeId ? { workerNodeId: this.config.workerNodeId } : {}),
-            }),
-            resolveTools: (sessionId) => this.sessionManager.resolveScriptTools(sessionId),
-            resolveToolBinding: resolveWorkflowToolBinding,
-            // A version 1 workflow's worker redraws canvas slot 1 after every step; its scripts may not write there.
-            openToolExecutor: (sessionId, binding, step) => this.sessionManager.openWorkflowToolExecutor(sessionId, binding, step, { liveCanvas: true }),
-            resolveMcpServers: () => this.sessionManager.scriptMcpServers(),
-            deleteSession: deleteWorkflowSession,
-            authorizeParentNotification: authorizeWorkflowParentNotification,
-            notifyParent: notifyWorkflowParent,
-            runnerOptions: { executables: workflowScriptSettings.executables },
-        });
-        for (const registration of WORKFLOW_SESSION_ORCHESTRATION_REGISTRY) {
-            this.runtime.registerOrchestrationVersioned(
-                WORKFLOW_SESSION_ORCHESTRATION_NAME,
-                registration.version,
-                registration.handler,
-            );
-        }
         // Workflow v2: drafts, publication and durable runs (migration 0088).
         if (this._catalog?.workflowStore) {
             registerWorkflowV2(this.runtime, {

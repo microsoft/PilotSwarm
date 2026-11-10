@@ -12,6 +12,11 @@ import { WorkflowStoreError } from "./store.js";
 
 export const WORKFLOW_SCRIPTS_DISABLED = "WORKFLOW_SCRIPTS_DISABLED";
 
+/** Why a script state fails on a worker whose scripts are off. */
+export const WORKFLOW_SCRIPTS_DISABLED_MESSAGE =
+    "Workflow scripts are turned off on this worker: an operator turned them off with PILOTSWARM_WORKFLOW_SCRIPTS=0 "
+    + "(or the worker option workflowScripts.enabled: false).";
+
 /** The setting that turns script nodes off (an opt-out since 2026-11-08T15:45Z). */
 export const WORKFLOW_SCRIPTS_VARIABLE = "PILOTSWARM_WORKFLOW_SCRIPTS";
 const SCRIPTS_OFF_VALUES = new Set(["0", "false", "no", "off"]);

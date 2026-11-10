@@ -1,24 +1,16 @@
 /**
  * Workflow surfaces: the spawn_workflow tool, the tools a script may
- * call, the worker switch, the Web API operation and the compiler limits.
+ * call, the worker switch and the Web API operations.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ManagedSession } from "../../dist/managed-session.js";
-import { SessionManager } from "../../dist/session-manager.js";
 import { findReservedPackageToolName } from "../../dist/reserved-tool-names.js";
 import { resolveWorkflowScriptSettings } from "../../dist/worker.js";
-import {
-    buildParentNotification,
-    compileWorkflow,
-    WorkflowCompileError,
-    SPAWN_WORKFLOW_TOOL_SPEC,
-    WORKFLOW_MAX_YAML_BYTES,
-    workflowErrorMessage,
-    workflowStatusForOutcome,
-    spawnWorkflowFromTool,
-    workflowChildSessionId,
-} from "../../dist/workflow/index.js";
+import { SPAWN_WORKFLOW_TOOL_SPEC } from "../../dist/workflow/tool-spec.js";
+import { spawnWorkflowFromTool, WORKFLOW_API_VERSION_REFUSED } from "../../dist/workflow/spawn.js";
+import { parseWorkflowCommand, workflowErrorMessage } from "../../dist/workflow/commands.js";
+import { createScriptSessionTools } from "../../dist/workflow/session-tools.js";
 import { OPERATIONS } from "../../api/src/protocol.js";
 import {
     registerWorkflowV2,
@@ -40,21 +32,6 @@ import {
     WORKFLOW_V2_ACTIVITIES,
 } from "../../dist/workflow/v2/runtime.js";
 
-const yaml = (stateExtra = "", stateId = "only") => `
-apiVersion: pilotswarm.dev/v1alpha1
-kind: Workflow
-metadata: { name: limits, version: 1.0.0 }
-initial: ${stateId}
-states:
-  ${stateId}:
-    type: script
-    runtime: node
-    source: console.log(1)
-${stateExtra}    completion: { outcomes: [success] }
-    transition: { next: { success: done } }
-  done: { type: terminal, outcome: succeeded }
-`;
-
 // Owner 2026-11-08T16:55Z, ruling 18:12Z: spawn_workflow is no longer declared (workflow_definition replaces it); its spec
 // stays for its turn handler, which still answers a stale call.
 test("spawn_workflow is no longer declared; its handler's spec keeps the YAML contract", () => {
@@ -64,7 +41,7 @@ test("spawn_workflow is no longer declared; its handler's spec keeps the YAML co
     const tool = SPAWN_WORKFLOW_TOOL_SPEC;
     assert.deepEqual(tool.parameters.required, ["yaml"]);
     assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["agent_models", "inputs", "key", "notify_on_completion", "start", "state", "vars", "yaml"]);
-    for (const phrase of ["Kept for one release; prefer workflow_definition", "pilotswarm.dev/v2-draft", "pilotswarm.dev/v1alpha1", "state: published", "start: true", "key", "notify_on_completion"]) {
+    for (const phrase of ["Kept for one release; prefer workflow_definition", "pilotswarm.dev/v2-draft", "state: published", "start: true", "key", "notify_on_completion"]) {
         assert.ok(tool.description.includes(phrase), `description should mention ${phrase}`);
     }
 });
@@ -140,61 +117,6 @@ test("workflow v2 registers exactly one version of each orchestration, and each 
     assert.ok(activities.every((name) => /^workflow\.v2\.[A-Za-z]+$/.test(name)), activities.join(", "));
 });
 
-test("script tools are the generic agent's data-plane tools, bound to the workflow session", async () => {
-    const seen = [];
-    const workerTool = (name) => ({
-        name,
-        description: name,
-        parameters: { type: "object", properties: {} },
-        handler: async (args, invocation) => {
-            seen.push({ name, args, sessionId: invocation.durableSessionId, hasFacts: Boolean(invocation.facts) });
-            return { ok: name };
-        },
-    });
-    const stored = [];
-    const factStore = {
-        capabilities: {},
-        async storeFact(inputs) {
-            const list = Array.isArray(inputs) ? inputs : [inputs];
-            stored.push(...list);
-            const facts = list.map((input) => ({ key: input.key, shared: Boolean(input.shared), stored: true }));
-            return Array.isArray(inputs) ? { stored: facts.length, facts } : facts[0];
-        },
-        async readFacts() { return { count: 0, facts: [] }; },
-        async deleteFact() { return { deleted: true }; },
-    };
-    const manager = new SessionManager(undefined, null, {
-        frameworkBaseToolNames: ["echo_default"],
-        appDefaultToolNames: ["package_only"],
-    });
-    manager.setToolRegistry(
-        new Map([["echo_default", workerTool("echo_default")], ["not_default", workerTool("not_default")], ["package_only", workerTool("package_only")]]),
-        {
-            staticNames: new Set(["echo_default", "not_default"]),
-            byPackage: new Map([["pkg-1", new Map([["package_only", workerTool("package_only")]])]]),
-        },
-    );
-    manager.setFactStore(factStore);
-
-    const tools = await manager.resolveScriptTools("wf-session");
-    const names = [...tools.keys()];
-    assert.ok(names.includes("echo_default"));
-    assert.ok(names.includes("store_fact") && names.includes("read_facts"));
-    assert.ok(!names.includes("not_default"), "only the default agent's worker tools");
-    assert.ok(!names.includes("package_only"), "package tools belong to a bound named agent");
-    for (const control of ["wait", "cron", "cron_at", "ask_user", "spawn_agent", "spawn_workflow", "draw_canvas"]) {
-        assert.ok(!names.includes(control), `${control} is a turn-control tool and must not reach scripts`);
-    }
-
-    assert.deepEqual(await tools.get("echo_default")({ x: 1 }), { ok: "echo_default" });
-    assert.deepEqual(seen, [{ name: "echo_default", args: { x: 1 }, sessionId: "wf-session", hasFacts: true }]);
-
-    await tools.get("store_fact")({ key: "results/run", value: { n: 1 } });
-    assert.equal(stored.length, 1);
-    assert.equal(stored[0].key, "results/run");
-    assert.equal(stored[0].sessionId, "wf-session");
-});
-
 // Owner 2026-11-08T15:45Z (pse/decision/scripts-default-on): PILOTSWARM_WORKFLOW_SCRIPTS is an opt-out.
 test("workflow scripts are on unless an operator turns them off", () => {
     assert.equal(resolveWorkflowScriptSettings(undefined, {}).enabled, true, "unset: on");
@@ -217,28 +139,6 @@ test("the Web API has no workflow-create route (stage 2.5, PR 235 8055fcd8): a W
     assert.equal(OPERATIONS.find((entry) => entry.method === "POST" && entry.path === "/sessions/workflow"), undefined);
 });
 
-test("the parent hears the terminal state and outcome, or the reason the run stopped", () => {
-    assert.equal(
-        buildParentNotification({ sessionId: "s1", workflowName: "nightly", status: "completed", outcome: "succeeded", summary: "Done.", stateId: "done", output: { n: 2 }, steps: 3, notifyParent: true }),
-        '[SYSTEM: Workflow session s1 "nightly" ended at state \'done\' with outcome succeeded after 3 step(s). Done. Output: {"n":2}]',
-    );
-    assert.equal(
-        buildParentNotification({ sessionId: "s1", workflowName: null, status: "failed", error: "boom", steps: 0, notifyParent: true }),
-        "[SYSTEM: Workflow session s1 (unnamed) failed after 0 step(s). Error: boom]",
-    );
-    assert.equal(
-        buildParentNotification({ sessionId: "s1", workflowName: "n", status: "cancelled", reason: "no longer needed", steps: 1, notifyParent: true }),
-        '[SYSTEM: Workflow session s1 "n" cancelled after 1 step(s). Reason: no longer needed]',
-    );
-});
-
-test("a terminal outcome sets the session status", () => {
-    assert.equal(workflowStatusForOutcome("succeeded"), "completed");
-    assert.equal(workflowStatusForOutcome("blocked"), "completed");
-    assert.equal(workflowStatusForOutcome("failed"), "failed");
-    assert.equal(workflowStatusForOutcome("cancelled"), "cancelled");
-});
-
 test("activity error wrappers are removed from the reason people read", () => {
     assert.equal(
         workflowErrorMessage(new Error("Activity 'scriptWorkflow.runNode' JS execution failed: GenericFailure, Error: Script node 'x' timed out")),
@@ -249,147 +149,58 @@ test("activity error wrappers are removed from the reason people read", () => {
 
 // ── spawn_workflow behind the control bridge ─────────────────────────
 
-
+const WORKFLOW_YAML = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: w, version: \"1.0.0\" }\ninitial: a\n"
+    + "states:\n  a: { type: wait, seconds: 1, transition: { next: { elapsed: b } } }\n  b: { type: terminal, outcome: succeeded }\n";
 
 function spawnDeps(overrides = {}) {
-    const created = [];
-    const sessions = new Map();
     return {
-        created,
-        sessions,
-        deps: {
-            parentSessionId: "parent-agent",
-            enabled: () => true,
-            getSession: async (id) => sessions.get(id) ?? null,
-            resolveOwner: async () => ({ provider: "dev", subject: "alice" }),
-            captureToolBinding: async () => ({ policy: "node-parent-tools-v1", parentSessionId: "parent-agent" }),
-            createWorkflowSession: async (config) => {
-                if (!sessions.has(config.sessionId)) {
-                    created.push(config);
-                    sessions.set(config.sessionId, { title: "Workflow: limits", state: "running" });
-                }
-                return { sessionId: config.sessionId, workflowName: "limits" };
-            },
-            ...overrides,
-        },
+        parentSessionId: "parent-agent",
+        enabled: () => true,
+        resolveOwner: async () => ({ provider: "dev", subject: "alice" }),
+        captureToolBinding: async () => ({ policy: "node-parent-tools-v1", parentSessionId: "parent-agent" }),
+        ...overrides,
     };
 }
 
-test("spawn_workflow starts a child workflow owned like its parent and says how the result comes back", async () => {
-    const { created, deps } = spawnDeps();
-    const text = await spawnWorkflowFromTool({ yaml: yaml(), inputs: { day: "mon" } }, { toolCallId: "call-1" }, deps);
-    const expectedId = workflowChildSessionId("parent-agent", undefined, "call-1");
-    assert.match(text, new RegExp(`started workflow session ${expectedId} running "limits"`));
-    assert.match(text, /receive its result as a system message/);
-    assert.deepEqual(created, [{
-        sessionId: expectedId,
-        yaml: yaml(),
-        inputs: { day: "mon" },
-        parentSessionId: "parent-agent",
-        owner: { provider: "dev", subject: "alice" },
-        notifyParent: true,
-    }]);
+// Owner 2026-11-10T02:47Z: there is one Workflow format. Any other apiVersion is refused, in words that name the one it
+// takes, before the host, the owner or the tool binding is read.
+test("spawn_workflow refuses any other apiVersion, naming the one it takes, and touches nothing", async () => {
+    const never = (name) => async () => { throw new Error(`${name} must not be called`); };
+    const deps = spawnDeps({ resolveOwner: never("resolveOwner"), captureToolBinding: never("captureToolBinding"), workflowV2Host: never("workflowV2Host") });
+    const older = "apiVersion: pilotswarm.dev/v1alpha1\nkind: Workflow\nmetadata: { name: x, version: 1.0.0 }\ninitial: a\nstates: {}\n";
+    for (const yaml of [older, "kind: Workflow\n", "not yaml: [", ""]) {
+        const answer = JSON.parse(await spawnWorkflowFromTool({ yaml }, { toolCallId: "t" }, deps));
+        assert.equal(answer.ok, false);
+        assert.equal(answer.error.code, WORKFLOW_API_VERSION_REFUSED);
+        assert.match(answer.error.message, /^A Workflow's YAML must say apiVersion: pilotswarm\.dev\/v2-draft\. .*there is no converter/);
+    }
 });
 
-test("spawn_workflow is idempotent per key, and per tool call without one", async () => {
-    assert.equal(workflowChildSessionId("p", "nightly", "a"), workflowChildSessionId("p", "nightly", "b"));
-    assert.notEqual(workflowChildSessionId("p", undefined, "a"), workflowChildSessionId("p", undefined, "b"));
-    assert.equal(workflowChildSessionId("p", undefined, "a"), workflowChildSessionId("p", undefined, "a"));
-    assert.notEqual(workflowChildSessionId("p", "nightly"), workflowChildSessionId("q", "nightly"));
-
-    const { created, deps } = spawnDeps();
-    await spawnWorkflowFromTool({ yaml: yaml(), key: "nightly" }, { toolCallId: "c1" }, deps);
-    const again = await spawnWorkflowFromTool({ yaml: yaml(), key: "nightly" }, { toolCallId: "c2" }, deps);
-    assert.equal(created.length, 1);
-    assert.match(again, /found the existing workflow session .* state running\)\. Nothing new was started/);
-});
-
-test("spawn_workflow refuses when Workflow scripts are off or the YAML is wrong, without creating anything", async () => {
-    const off = spawnDeps({ enabled: () => false });
-    assert.match(await spawnWorkflowFromTool({ yaml: yaml() }, {}, off.deps),
-        /refused — Workflow scripts are turned off on this worker: an operator turned them off with PILOTSWARM_WORKFLOW_SCRIPTS=0/);
-    assert.equal(off.created.length, 0);
-
-    const bad = spawnDeps();
-    const text = await spawnWorkflowFromTool({ yaml: yaml().replace("type: script", "type: agent") }, {}, bad.deps);
-    assert.match(text, /the workflow is not valid: .*type 'agent' is not supported yet.*Fix it/);
-    const missingInput = spawnDeps();
-    const typed = yaml().replace("initial: only", "inputs: { day: { type: string, required: true } }\ninitial: only");
-    assert.match(await spawnWorkflowFromTool({ yaml: typed }, {}, missingInput.deps), /Input 'day' is required/);
-    assert.equal(missingInput.created.length, 0);
-    assert.equal(bad.created.length, 0);
-});
-
-test("spawn_workflow can run without waking the parent, and reports a failed create plainly", async () => {
-    const quiet = spawnDeps();
-    const text = await spawnWorkflowFromTool({ yaml: yaml(), notify_on_completion: false }, { toolCallId: "q" }, quiet.deps);
-    assert.equal(quiet.created[0].notifyParent, false);
-    assert.match(text, /will not be told when it ends/);
-
-    const broken = spawnDeps({ createWorkflowSession: async () => { throw new Error("catalog unavailable"); } });
-    assert.equal(
-        await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "x" }, broken.deps),
-        "[SYSTEM: spawn_workflow failed — catalog unavailable]",
-    );
-});
-
-test("a chat without a live tool context gets a coded refusal in plain words, v1 and v2 alike (of-01)", async () => {
+test("a chat without a live tool context gets a coded refusal in plain words (of-01)", async () => {
     const lost = () => Object.assign(new Error("ignored"), { code: "WORKFLOW_PARENT_CONTEXT_UNAVAILABLE" });
-    const v1 = spawnDeps({ captureToolBinding: async () => { throw lost(); } });
-    const text = await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "p1" }, v1.deps);
-    assert.match(text, /^\[SYSTEM: spawn_workflow refused \(WORKFLOW_PARENT_CONTEXT_UNAVAILABLE\) — The workflow was not created: /);
-    assert.match(text, /Call spawn_workflow again; if it is refused again, tell the user\.\]$/);
-    assert.equal(v1.created.length, 0);
-    // A v2 save and start: the scripts gate needs the host first (d52e5ed2); the binding is captured next, before the store is
+    // A save and start: the scripts gate needs the host first (d52e5ed2); the binding is captured next, before the store is
     // read, so nothing is saved for a chat whose tools are not ready.
     const store = new Proxy({}, { get: (_target, name) => { throw new Error(`the store must not be read (${String(name)})`); } });
-    const v2 = spawnDeps({ captureToolBinding: async () => { throw lost(); }, workflowV2Host: async () => ({ scripts: true, store }) });
-    const v2Yaml = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: w, version: \"1.0.0\" }\ninitial: a\n"
-        + "states:\n  a: { type: wait, seconds: 1, transition: { next: { elapsed: b } } }\n  b: { type: terminal, outcome: succeeded }\n";
-    const answer = JSON.parse(await spawnWorkflowFromTool({ yaml: v2Yaml, state: "published", start: true }, { toolCallId: "p2" }, v2.deps));
+    const deps = spawnDeps({ captureToolBinding: async () => { throw lost(); }, workflowV2Host: async () => ({ scripts: true, store }) });
+    const answer = JSON.parse(await spawnWorkflowFromTool({ yaml: WORKFLOW_YAML, state: "published", start: true }, { toolCallId: "p2" }, deps));
     assert.equal(answer.ok, false);
     assert.equal(answer.error.code, "WORKFLOW_PARENT_CONTEXT_UNAVAILABLE");
     assert.match(answer.error.message, /^The workflow was not created: this chat's tools were not ready/);
-    // Any other capture failure keeps its own words.
-    const other = spawnDeps({ captureToolBinding: async () => { throw new Error("Workflow tool delegation requires an owned, non-system parent."); } });
-    assert.equal(await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "p3" }, other.deps),
-        "[SYSTEM: spawn_workflow failed — Workflow tool delegation requires an owned, non-system parent.]");
 });
 
-// Adversarial review R2-SF-4: spawn_workflow's failure never carries the error's own text. A v2 document's is the v2 tools'
-// coded JSON; a v1 one keeps its sentence, with its message sanitized.
-test("R2-SF-4: a spawn_workflow failure hides the error's secrets: v2 coded, v1 sanitized", async () => {
+// Adversarial review R2-SF-4: spawn_workflow's failure never carries the error's own text: it is the workflow tools' coded
+// JSON, its secrets hidden.
+test("R2-SF-4: a spawn_workflow failure hides the error's secrets", async () => {
     const CANARY = "canary-r2sf4-spawn";
-    const v2Yaml = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: w, version: \"1.0.0\" }\ninitial: a\n"
-        + "states:\n  a: { type: wait, seconds: 1, transition: { next: { elapsed: b } } }\n  b: { type: terminal, outcome: succeeded }\n";
-    const v2 = spawnDeps({ workflowV2Host: async () => { throw new Error(`pool to postgres://svc:${CANARY}@db.invalid/x failed; token=${CANARY}`); } });
-    const answer = await spawnWorkflowFromTool({ yaml: v2Yaml }, { toolCallId: "s1" }, v2.deps);
+    const deps = spawnDeps({ workflowV2Host: async () => { throw new Error(`pool to postgres://svc:${CANARY}@db.invalid/x failed; token=${CANARY}`); } });
+    const answer = await spawnWorkflowFromTool({ yaml: WORKFLOW_YAML }, { toolCallId: "s1" }, deps);
     assert.ok(!answer.includes(CANARY), answer);
     const parsed = JSON.parse(answer);
     assert.equal(parsed.ok, false);
     assert.deepEqual(Object.keys(parsed.error).sort(), ["code", "message"]);
-    const v1 = spawnDeps({ createWorkflowSession: async () => { throw new Error(`catalog at postgres://svc:${CANARY}@db.invalid/x unavailable`); } });
-    assert.equal(await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "s2" }, v1.deps), "[SYSTEM: spawn_workflow failed — catalog at <url> unavailable]");
-    // Re-check S-SF-F4: a v1 definition's own refusal is sanitized too; nothing is created.
-    const refused = spawnDeps();
-    const bad = await spawnWorkflowFromTool({ yaml: yaml().replace("type: script", `type: "postgres://svc:${CANARY}@db.invalid/x"`) }, { toolCallId: "s3" }, refused.deps);
-    assert.match(bad, /^\[SYSTEM: spawn_workflow refused — the workflow is not valid: .*Fix it and call spawn_workflow again\.\]$/);
-    assert.ok(!bad.includes(CANARY), bad);
-    assert.equal(refused.created.length, 0);
 });
 
-// ── Live view, cancellation commands, MCP and session tools ─────────
-
-import {
-    buildWorkflowCanvasHtml,
-    fitWorkflowCanvasState,
-    foldWorkflowCanvasState,
-    mcpConfigAllowsTool,
-    parseScriptMcpToolName,
-    parseWorkflowCommand,
-    scriptMcpResult,
-} from "../../dist/workflow/index.js";
-import { createScriptSessionTools } from "../../dist/workflow/session-tools.js";
+// ── Commands and session tools ─────────────────────────────────────────
 
 test("lifecycle commands are recognised; everything else is not a command", () => {
     assert.deepEqual(parseWorkflowCommand(JSON.stringify({ type: "cmd", cmd: "cancel", args: { reason: " stop " }, requestedBy: "p" })),
@@ -398,81 +209,6 @@ test("lifecycle commands are recognised; everything else is not a command", () =
     assert.equal(parseWorkflowCommand({ type: "cmd", cmd: "set_model" }), null);
     assert.equal(parseWorkflowCommand({ prompt: "hi" }), null);
     assert.equal(parseWorkflowCommand("not json"), null);
-});
-
-test("the canvas page carries the definition as data, never as markup", () => {
-    const workflow = compileWorkflow(`
-apiVersion: pilotswarm.dev/v1alpha1
-kind: Workflow
-metadata: { name: "</script><img src=x onerror=alert(1)>", version: "1" }
-initial: a
-states:
-  a:
-    type: script
-    runtime: node
-    source: x
-    completion: { outcomes: ["</script><b>"] }
-    transition: { next: { "</script><b>": done } }
-  done: { type: terminal, outcome: succeeded }
-`);
-    const html = buildWorkflowCanvasHtml(workflow, foldWorkflowCanvasState([], workflow));
-    assert.equal((html.match(/<\/script>/g) || []).length, 3, "only the page's own script elements close");
-    assert.ok(!html.includes("<img src=x"));
-    assert.ok(html.includes("\\u003c/script\\u003e\\u003cimg"));
-    assert.match(html, /textContent/);
-    assert.ok(!/innerHTML/.test(html));
-});
-
-test("the canvas state is folded from the workflow log and fits a data tick", () => {
-    const events = [
-        { eventType: "workflow.started", data: { name: "loop", states: [{ id: "a" }, { id: "b" }] } },
-        { eventType: "workflow.state_started", data: { stateId: "a", step: 1 } },
-        { eventType: "workflow.state_completed", data: { stateId: "a", step: 1, outcome: "again", resultSource: "reported", durationMs: 5, toolCalls: [{ ok: true }, { ok: false }] } },
-        { eventType: "workflow.state_started", data: { stateId: "a", step: 2 } },
-        { eventType: "workflow.state_completed", data: { stateId: "a", step: 2, outcome: "next", exitCode: 1, resultSource: "exit" } },
-        { eventType: "workflow.state_started", data: { stateId: "b", step: 3 } },
-        { eventType: "workflow.failed", data: { steps: 3, error: "boom" } },
-    ];
-    const state = foldWorkflowCanvasState(events);
-    assert.equal(state.status, "failed");
-    assert.equal(state.error, "boom");
-    assert.deepEqual(state.nodes.a, { state: "failed", runs: 2, lastOutcome: "next", lastDurationMs: undefined });
-    assert.equal(state.nodes.b.state, "cancelled", "a node still running when the run ended was stopped");
-    assert.deepEqual(state.taken, { "a\u0001again": 1, "a\u0001next": 1 });
-    assert.deepEqual(state.steps.map((s) => [s.step, s.state, s.tools ?? 0, s.failedTools ?? 0]), [[1, "done", 2, 1], [2, "failed", 0, 0], [3, "cancelled", 0, 0]]);
-
-    const big = { ...state, steps: Array.from({ length: 400 }, (_, i) => ({ step: i, node: "a".repeat(60), outcome: "x".repeat(80), state: "done" })) };
-    const fitted = fitWorkflowCanvasState(big);
-    assert.ok(Buffer.byteLength(JSON.stringify(fitted)) <= 32_768);
-    assert.equal(fitted.steps.at(-1).step, 399, "the newest steps are kept");
-});
-
-test("a run that reaches a terminal state marks it and the edge into it", () => {
-    const state = foldWorkflowCanvasState([
-        { eventType: "workflow.started", data: { name: "w", states: [{ id: "a", type: "script" }, { id: "done", type: "terminal", outcome: "succeeded" }] } },
-        { eventType: "workflow.state_started", data: { stateId: "a", step: 1 } },
-        { eventType: "workflow.state_completed", data: { stateId: "a", step: 1, outcome: "ok", resultSource: "reported" } },
-        { eventType: "workflow.completed", data: { steps: 1, stateId: "done", outcome: "succeeded", summary: "All good.", outputPreview: "{}" } },
-    ]);
-    assert.equal(state.status, "completed");
-    assert.equal(state.nodes.done.state, "done");
-    assert.equal(state.current, "done");
-    assert.equal(state.summary, "All good.");
-    assert.deepEqual(state.taken, { "a\u0001ok": 1 });
-});
-
-test("MCP tool names, tool lists and results", () => {
-    assert.deepEqual(parseScriptMcpToolName("github/search_issues"), { server: "github", tool: "search_issues" });
-    assert.deepEqual(parseScriptMcpToolName("a/b/c"), { server: "a", tool: "b/c" });
-    assert.equal(parseScriptMcpToolName("store_fact"), null);
-    assert.equal(parseScriptMcpToolName("/x"), null);
-    assert.equal(mcpConfigAllowsTool({ tools: ["*"] }, "any"), true);
-    assert.equal(mcpConfigAllowsTool({ tools: ["a"] }, "b"), false);
-    assert.equal(mcpConfigAllowsTool({}, "any"), true);
-    assert.equal(scriptMcpResult({ content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] }), "a\nb");
-    assert.deepEqual(scriptMcpResult({ content: [{ type: "text", text: "{}" }], structuredContent: { n: 1 } }), { n: 1 });
-    assert.deepEqual(scriptMcpResult({ content: [{ type: "image", data: "x", mimeType: "image/png" }] }), [{ type: "image", data: "x", mimeType: "image/png" }]);
-    assert.throws(() => scriptMcpResult({ isError: true, content: [{ type: "text", text: "nope" }] }), /nope/);
 });
 
 function sessionCatalog(rows) {
@@ -524,16 +260,4 @@ test("send_session_message from a script is one-way, and workflow sessions accep
     assert.match(enqueued[0].data.prompt, /\[SESSION_MESSAGE request_id=\S+ from=wf subject=Report reason=handoff\]/);
     await assert.rejects(() => tools.get("send_session_message")({ session_id: "wf2", subject: "s", body: "b" }), /workflow session; .*takes no session messages/);
     await assert.rejects(() => tools.get("reply_session_message")({ request_id: "r", session_id: "wf2", body: "b" }), /workflow session; .*takes no session replies/);
-});
-
-test("scripts get the session and inspect tools, without context_health", async () => {
-    const manager = new SessionManager(undefined, null, {});
-    manager.setSessionCatalog({ async listSessions() { return []; }, async getSession() { return null; } });
-    const names = [...(await manager.resolveScriptTools("wf-session")).keys()];
-    for (const name of ["list_sessions", "send_session_message", "reply_session_message", "read_agent_events"]) {
-        assert.ok(names.includes(name), `${name} should be available to scripts`);
-    }
-    assert.ok(!names.includes("context_health"));
-    const servers = new SessionManager(undefined, null, { baseMcpServers: { github: { type: "http", url: "https://example.invalid/mcp", tools: ["*"] } } }).scriptMcpServers();
-    assert.deepEqual(Object.keys(servers), ["github"]);
 });

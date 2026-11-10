@@ -34,7 +34,7 @@ import type { PackageWorkflowSource } from "./chat-packages.js";
 import { agentModelsDigestPart, parseWorkflowAgentModels, requireAgentModelsForRevision, requireUsableAgentModels, workflowAgentModelsText,
     type WorkflowAgentModelCheck, type WorkflowAgentModels } from "./agent-models.js";
 import { requireBenchLiveLocked } from "./chat-definition-store.js";
-import { WORKFLOW_COMMAND_QUEUE } from "../orchestration.js";
+import { WORKFLOW_COMMAND_QUEUE } from "../commands.js";
 import {
     ACTIVE_RUN_STATUSES,
     commandEndOf,
@@ -1169,8 +1169,8 @@ function parseSessionLifecycleCommand(raw: unknown): { cmd: "cancel" | "done" | 
  *   queued, ends that run if it is still active), and applies an accepted
  *   delete whose child is still live, then the facts cleanup; another request
  *   with that id fails.
- * Every other target (an ordinary agent session, a legacy workflow) returns
- * "enqueue": the caller queues the command as before.
+ * Every other target (an ordinary agent session) returns "enqueue": the
+ * caller queues the command as before.
  */
 export async function applySessionCommandToWorkflowV2(
     host: WorkflowLifecycleCommandHost,
@@ -1188,7 +1188,7 @@ export const OPERATOR_COMMAND_OPERATION_PREFIX = "operator-command:";
  * v2 workflow it is applied in the store as a parent's is (applySessionCommandToWorkflowV2: delete deletes the workflow,
  * cancel and done end an active run), once per command id (OPERATOR_COMMAND_OPERATION_PREFIX), with no requester (the
  * parent is told of the end); the caller then queues the command only when the result says "enqueue". Any other session
- * (an agent, a legacy workflow) returns "enqueue": the caller queues the command as before.
+ * (an agent) returns "enqueue": the caller queues the command as before.
  */
 export async function applyOperatorCommandToWorkflowV2(
     host: WorkflowLifecycleCommandHost,

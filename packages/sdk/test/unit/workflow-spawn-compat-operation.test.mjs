@@ -38,9 +38,8 @@ async function saveOperation(args, toolCallId = "call-1") {
         } },
     };
     const answer = await spawnWorkflowFromTool(args, { toolCallId }, {
-        parentSessionId: "chat-1", enabled: () => true, getSession: async () => null, resolveOwner: async () => null,
-        captureToolBinding: async () => ({}), createWorkflowSession: async () => { throw new Error("not a version 1 workflow"); },
-        workflowV2Host: async () => host,
+        parentSessionId: "chat-1", enabled: () => true, resolveOwner: async () => null,
+        captureToolBinding: async () => ({}), workflowV2Host: async () => host,
     });
     assert.equal(seen.length, 1, answer);
     return seen[0];

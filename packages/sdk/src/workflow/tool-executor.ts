@@ -26,8 +26,6 @@ export interface WorkflowToolExecutorOptions {
      */
     dispose: (outcome: { settled: boolean }) => Promise<void>;
     invocationPrefix: string;
-    /** A version 1 workflow session whose live canvas slot this handle's calls may not write (validateWorkflowToolArguments). */
-    liveCanvasSessionId?: string;
     maxCalls?: number;
     cleanupTimeoutMs?: number;
     /**
@@ -138,8 +136,7 @@ export async function createWorkflowToolExecutor(options: WorkflowToolExecutorOp
                     const current = await options.session.rpc.tools.getCurrentMetadata();
                     if (!current.tools) throw new Error("The Copilot tool catalog is unavailable.");
                     const tool = resolveWorkflowTool(name, options.grants, current.tools, options.excludedTools);
-                    validateWorkflowToolArguments(tool.name, args,
-                        options.liveCanvasSessionId ? { liveCanvasSessionId: options.liveCanvasSessionId } : {});
+                    validateWorkflowToolArguments(tool.name, args);
                     refuse();
                     return workflowToolResult(await options.session.rpc.tools.execute({
                         name: tool.name,

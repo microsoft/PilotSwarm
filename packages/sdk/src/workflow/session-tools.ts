@@ -7,7 +7,9 @@
 import type { SessionCatalog } from "../cms.js";
 import { replyInternalSessionMessage, sendInternalSessionMessage, type SessionMessageReason, type SessionMessageVerdict } from "../session-messages.js";
 import { formatSessionOwnerLabel, matchesSessionOwnerFilters } from "../session-owner-utils.js";
-import type { ScriptToolHandler } from "./activities.js";
+
+/** One session tool as a workflow script calls it: its arguments in, its JSON-ready result out. */
+export type ScriptToolHandler = (args: Record<string, unknown>) => Promise<unknown>;
 
 const MESSAGE_REASONS = new Set(["help", "guidance", "fact-request", "status-request", "handoff"]);
 const REPLY_VERDICTS = new Set(["answered", "declined", "blocked", "stale"]);

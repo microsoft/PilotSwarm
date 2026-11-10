@@ -96,14 +96,9 @@ export function workflowDefinitionMcpPermission<A extends unknown[], R>(base: (r
         : base(request, ...rest));
 }
 
-/**
- * The A1 refusal as the tool answers it: a version 1 spawn_workflow's `[SYSTEM: ...]` line, otherwise the workflow
- * tools' JSON refusal with its code.
- */
-export function workflowDefinitionToolsRefusal(tool: string, options: { line?: boolean } = {}): string {
-    return options.line === true
-        ? `[SYSTEM: ${tool} refused — ${WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT}]`
-        : JSON.stringify({ ok: false, error: { code: WORKFLOW_DEFINITION_TOOLS_REFUSED, message: WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT } });
+/** The A1 refusal as the tool answers it: the workflow tools' JSON refusal with its code. */
+export function workflowDefinitionToolsRefusal(): string {
+    return JSON.stringify({ ok: false, error: { code: WORKFLOW_DEFINITION_TOOLS_REFUSED, message: WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT } });
 }
 
 /**

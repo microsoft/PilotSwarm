@@ -6,9 +6,36 @@ import os from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { killProcessGroup, killProcessTree } from "../process-tree.js";
-import type { ScriptRuntime, WorkflowScriptState } from "./compiler.js";
-import { WorkflowExecutionError, type ScriptToolCall } from "./executor.js";
 import { assertJsonValue, WorkflowJsonError } from "./v2/json.js";
+
+/** The script runtimes the runner knows. A Workflow's script state runs on node (guarded). */
+export type ScriptRuntime = "node" | "python" | "powershell";
+
+/** The script state the runner runs: its id, runtime, source, timeout and the outcomes it may report. */
+export interface WorkflowScriptState {
+    id: string;
+    type: "script";
+    runtime: ScriptRuntime;
+    source: string;
+    timeoutSeconds: number;
+    /** The outcomes this state may return, in declaration order. */
+    outcomes: string[];
+    /** Outcome -> next state id. */
+    next: Record<string, string>;
+}
+
+/** A tool call a script makes. */
+export interface ScriptToolCall {
+    name: string;
+    arguments: Record<string, unknown>;
+}
+
+export class WorkflowExecutionError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "WorkflowExecutionError";
+    }
+}
 
 /** Largest JSON a node may hand to the next node (it is stored in durable history). */
 export const SCRIPT_NODE_MAX_OUTPUT_BYTES = 256 * 1024;

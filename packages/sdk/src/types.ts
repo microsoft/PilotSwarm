@@ -1006,17 +1006,6 @@ export interface SessionOwnerInfo {
     displayName?: string | null;
 }
 
-/** Immutable, inline source for the conservative script-only workflow runtime. */
-export interface WorkflowSessionConfig {
-    yaml: string;
-    inputs?: Record<string, unknown>;
-    sessionId?: string;
-    parentSessionId?: string;
-    owner?: SessionOwnerInfo | null;
-    groupId?: string | null;
-    visibility?: "private" | "shared_read" | "shared_write" | null;
-}
-
 export interface SessionSummaryState {
     schemaVersion: number;
     updatedAt: string;

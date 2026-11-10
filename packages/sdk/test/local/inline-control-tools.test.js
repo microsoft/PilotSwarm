@@ -470,7 +470,7 @@ describe("inline control tool execution", () => {
     });
     it("spawn_workflow runs inline, keeps the turn going and passes the tool call id", async () => {
         const fakeSession = new FakeCopilotSession();
-        const yaml = "apiVersion: pilotswarm.dev/v1alpha1\nkind: Workflow\n";
+        const yaml = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\n";
         fakeSession.scriptedToolCalls = [
             { name: "spawn_workflow", id: "call-wf", args: { yaml, inputs: { n: 1 } } },
             { name: "spawn_workflow", id: "call-empty", args: { yaml: "  " } },
@@ -515,7 +515,7 @@ describe("inline control tool execution", () => {
     });
 
     it("cron then spawn_workflow: the schedule is set and every wake-up can start a run", async () => {
-        const yaml = "apiVersion: pilotswarm.dev/v1alpha1\nkind: Workflow\n";
+        const yaml = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\n";
         const controlToolBridge = {
             spawnAgent: vi.fn(),
             messageAgent: vi.fn(),

@@ -15,7 +15,7 @@
  *   pool of its own.
  * - Verification of WFO-1 (D-T2): the notice waits for a delivery to the parent still in flight at most its wait, and not
  *   for one begun over 60 s ago; and of WFO-3 (D-T6): the worker's own delivery to a running, an ended and an ending
- *   parent session orchestration, and the v1 child-workflow caller that does not read its answer.
+ *   parent session orchestration.
  */
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
@@ -26,8 +26,6 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import { registerWorkflowV2, WORKFLOW_V2_NOTICE_KEPT_AS_NOTE } from "../../src/workflow/v2/runtime.ts";
-import { registerWorkflowActivities } from "../../src/workflow/activities.ts";
-import { WORKFLOW_CHILD_ACTIVITIES } from "../../src/workflow/orchestration.ts";
 import { workflowParentNotifier } from "../../src/workflow/parent-delivery.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
@@ -532,7 +530,7 @@ describe("workflow v2: telling the parent when a live run ends", () => {
 
     // Verification of WFO-3 (D-T6) with the worker's own delivery (workflowParentNotifier) over the real runtime, to a
     // parent session orchestration (a double that records its queue): it runs, it ended before the notice, or it ends
-    // between the delivery's status read and its queueing. The v1 child-workflow caller does not read the answer.
+    // between the delivery's status read and its queueing.
     it("D-T6 (WFO-3): the worker's delivery tells a running parent once, records an ended one as not told, and records one that ends mid-delivery as told though it never reads it (the documented limit)", { timeout: TIMEOUT }, async () => {
         const PARENT = "test-parent-session";
         function* parentSession(ctx) {
@@ -608,21 +606,6 @@ describe("workflow v2: telling the parent when a live run ends", () => {
             expect((await h.client.getStatus(race.instanceId)).status).toBe("Failed");
             expect(await received(racing.parentId)).toEqual([]);
 
-            // The v1 child-workflow caller does not read the delivery's answer: for the ended parent, nothing is queued, and
-            // it records the parent as told.
-            const activities = new Map();
-            registerWorkflowActivities({ registerActivity: (name, fn) => activities.set(name, fn) }, {
-                catalog: h.host.catalog, enabled: () => false, resolveTools: async () => new Map(),
-                authorizeParentNotification: async () => true, notifyParent: workflowParentNotifier(h.client),
-            });
-            const legacy = randomUUID();
-            await h.host.catalog.createSession(legacy, { parentSessionId: gone.parentId });
-            await activities.get(WORKFLOW_CHILD_ACTIVITIES.notify)(null, {
-                sessionId: legacy, parentSessionId: gone.parentId, notifyParent: true, workflowName: "legacy", status: "completed", steps: 1,
-            });
-            expect((await h.host.catalog.getSessionEvents(legacy, 0, 10, ["workflow.parent_notified", "workflow.parent_notification_skipped"]))
-                .map(event => event.eventType)).toEqual(["workflow.parent_notified"]);
-            expect(await received(gone.parentId)).toEqual([]);
         } finally {
             await h.stop();
         }

@@ -4117,22 +4117,9 @@ export class SessionManager {
     }
 
     /**
-     * The tools a script in a workflow session may call, by name, bound to
-     * that session.
-     *
-     * The set is the data-plane tools a generic agent session has: the
-     * deployment's default worker tools (base and app default agents), the
-     * fact tools, the graph tools when a graph store is configured, the
-     * session tools (list_sessions, send_session_message,
-     * reply_session_message) and the generic inspect tools
-     * (read_agent_events and the usage reads). MCP servers are separate:
-     * see scriptMcpServers.
-     * Every handler sees the workflow session as its caller, exactly as it
-     * sees an agent session, so fact visibility, artifacts and provenance
-     * follow the workflow session and its spawn tree. Turn-control tools
-     * (wait, cron, spawn_agent, ask_user, canvas and the like) are not part
-     * of it: a script has no conversation turn for them to act on. Package
-     * tools are left out because they belong to a bound named agent.
+     * What a Workflow this parent session starts inherits: the parent's native tool catalog (less its excluded tools),
+     * its capability selections and their source revisions, its owner and its bound agent's fingerprint. Script and agent
+     * nodes use only these tools, rechecked against the parent before every call (authorizeWorkflowTools).
      */
     async captureWorkflowToolBinding(parentSessionId: string): Promise<WorkflowToolBinding> {
         const managed = this.sessions.get(parentSessionId);
@@ -4233,7 +4220,7 @@ export class SessionManager {
      *   releases the folders or raises the barrier (E1b-R1).
      */
     async openWorkflowToolExecutor(sessionId: string, binding: WorkflowToolBinding, step: number,
-        options: { signal?: AbortSignal; liveCanvas?: boolean } = {})
+        options: { signal?: AbortSignal } = {})
         : Promise<WorkflowToolExecutor> {
         const generation = this.workflowToolGeneration;
         const deadline = this.workflowToolSetupDeadlineMs;
@@ -4360,7 +4347,6 @@ export class SessionManager {
                 authorize: () => authorize("The script ended; its workflow tool call did not run."), check: refuseIfShut, dispose, serially,
                 ...(options.signal ? { signal: options.signal } : {}),
                 invocationPrefix: `${sessionId}/${step}/${randomUUID()}`,
-                ...(options.liveCanvas ? { liveCanvasSessionId: sessionId } : {}),
             }), "workflow tool catalog check", deadline, late => this.lateWorkflowWork(sessionId, owned.lease,
                 "A workflow tool catalog check did not finish in time.", late.then(() => undefined, () => undefined)));
             // E1-R3: made after the script ended or the worker began to shut down: it is never handed out.
@@ -4542,70 +4528,7 @@ export class SessionManager {
         }
     }
 
-    async resolveScriptTools(sessionId: string): Promise<Map<string, (args: Record<string, unknown>) => Promise<unknown>>> {
-        const toolNames = [...new Set([
-            ...(this.workerDefaults.frameworkBaseToolNames ?? []),
-            ...(this.workerDefaults.appDefaultToolNames ?? []),
-        ])];
-        const registryTools = this._resolveTools(undefined, { toolNames, detachedPackageToolPolicy: "drop" } as SerializableSessionConfig);
-        // The inspect tools a generic agent gets (read_agent_events and the
-        // lineage usage reads), acting as the workflow session's owner.
-        // context_health reports on an LLM context, which a workflow has none of.
-        const inspectTools = this.sessionCatalog
-            ? createInspectTools({
-                catalog: this.sessionCatalog,
-                duroxideClient: this._duroxideClient ?? undefined,
-                factStore: this.factStore ?? undefined,
-                resolveViewer: () => this._resolveInspectViewer(sessionId),
-                artifactStore: this.artifactStore ?? null,
-                sessionId,
-            }).filter((tool: any) => tool.name !== "context_health")
-            : [];
-        const tools = [
-            ...registryTools,
-            ...this._createSessionFactTools({ isCrawler: false }),
-            ...this._createSessionGraphTools({ isCrawler: false }),
-            ...inspectTools,
-        ];
-        const row = this.sessionCatalog ? await this.sessionCatalog.getSession(sessionId).catch(() => null) : null;
-        const facts = this.factStore
-            ? createToolFactsAccessor({
-                factStore: this.factStore,
-                durableSessionId: sessionId,
-                rootSessionId: row?.rootSessionId ?? null,
-                agentId: null,
-            })
-            : undefined;
-        const handlers = new Map<string, (args: Record<string, unknown>) => Promise<unknown>>();
-        if (this.sessionCatalog) {
-            for (const [name, handler] of createScriptSessionTools({
-                sessionId,
-                catalog: this.sessionCatalog,
-                duroxideClient: this._duroxideClient ?? null,
-            })) handlers.set(name, handler);
-        }
-        for (const tool of tools) {
-            const name = String((tool as any)?.name || "");
-            const handler = (tool as any)?.handler;
-            if (!name || typeof handler !== "function" || handlers.has(name)) continue;
-            handlers.set(name, async (args) => handler(args ?? {}, {
-                sessionId,
-                durableSessionId: sessionId,
-                toolCallId: `workflow-${randomUUID()}`,
-                toolName: name,
-                arguments: args ?? {},
-                ...(facts ? { facts } : {}),
-            }));
-        }
-        return handlers;
-    }
-
-    /** The MCP servers workflow scripts may call: the default set a generic agent session gets. */
-    scriptMcpServers(): Record<string, any> {
-        return { ...(this.workerDefaults.baseMcpServers ?? {}) };
-    }
-
-    /** The fact tools a session gets. Shared by agent sessions and workflow sessions. */
+    /** The fact tools a session gets. */
     private _createSessionFactTools(opts: { agentIdentity?: string; isCrawler: boolean }): Tool<any>[] {
         const factStore = this.factStore;
         if (!factStore) return [];

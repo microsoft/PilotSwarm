@@ -1,4 +1,4 @@
-import { WORKFLOW_COMMAND_QUEUE } from "../orchestration.js";
+import { WORKFLOW_COMMAND_QUEUE } from "../commands.js";
 import { AGENT_REPORTED_ERROR_CODES, WORKFLOW_V2_AGENT_COMPLETION_TOOL } from "./compiler.js";
 import { workflowStoreFailure } from "./failure.js";
 import { jsonbSafeText, type JsonValue } from "./json.js";

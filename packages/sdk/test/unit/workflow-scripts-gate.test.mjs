@@ -157,8 +157,8 @@ test("an unknown PILOTSWARM_WORKFLOW_SCRIPTS value keeps scripts on, with one wa
 test("d52e5ed2: the scripts gate decides before the chat's tool binding, its owner or its store on spawn_workflow and workflow_definition", async () => {
     const never = what => async () => { throw new Error(`${what} must not be reached`); };
     const host = { catalog: untouchable("catalog"), store: untouchable("store"), duroxideClient: untouchable("duroxide"), scripts: false };
-    const deps = { parentSessionId: "chat", enabled: () => false, getSession: never("getSession"), resolveOwner: never("resolveOwner"),
-        captureToolBinding: never("captureToolBinding"), createWorkflowSession: never("createWorkflowSession"), workflowV2Host: async () => host };
+    const deps = { parentSessionId: "chat", enabled: () => false, resolveOwner: never("resolveOwner"),
+        captureToolBinding: never("captureToolBinding"), workflowV2Host: async () => host };
     for (const [args, when] of [[{ yaml: SCRIPT_YAML, key: "a" }, "saved"], [{ yaml: SCRIPT_YAML, key: "b", state: "published", start: true, inputs: {} }, "started"]]) {
         const answer = JSON.parse(await spawnWorkflowFromTool(args, { toolCallId: "call-1" }, deps));
         assert.equal(answer.error?.code, WORKFLOW_SCRIPTS_DISABLED, JSON.stringify(answer));
@@ -269,8 +269,8 @@ test("e02ec6f8: the scripts gate decides from the YAML alone, before the host is
     assert.throws(() => requireWorkflowScriptsInYaml(false, withAgent, "save"), error => error.code === WORKFLOW_SCRIPTS_DISABLED);
 
     const never = what => async () => { throw new Error(`${what} must not be reached`); };
-    const deps = { parentSessionId: "chat", enabled: () => false, getSession: never("getSession"), resolveOwner: never("resolveOwner"),
-        captureToolBinding: never("captureToolBinding"), createWorkflowSession: never("createWorkflowSession"),
+    const deps = { parentSessionId: "chat", enabled: () => false, resolveOwner: never("resolveOwner"),
+        captureToolBinding: never("captureToolBinding"),
         workflowV2Host: async () => { throw new Error("No storeUrl — cannot create PilotSwarmClient"); } };
     for (const [args, when] of [[{ yaml: SCRIPT_YAML, key: "scripted-draft" }, "saved"],
         [{ yaml: SCRIPT_YAML, key: "scripted-start", state: "published", start: true, inputs: {} }, "started"]]) {

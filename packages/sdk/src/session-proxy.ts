@@ -3133,21 +3133,19 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             },
 
             /**
-             * spawn_workflow: start a workflow session as a CHILD of
-             * this session. Runs inline in the runTurn activity and does not
-             * end the turn. See workflow/spawn.ts for the id rule.
+             * spawn_workflow: save (and, with start, start) a Workflow as a
+             * CHILD of this session. Runs inline in the runTurn activity and
+             * does not end the turn. See workflow/spawn.ts.
              */
             spawnWorkflow: async (args: SpawnWorkflowToolArgs, call?: { toolCallId?: string }) => spawnWorkflowFromTool(args, call, {
                 parentSessionId: input.sessionId,
                 nestingLevel: input.nestingLevel ?? 0,
                 enabled: () => sessionManager.workflowScriptsEnabled,
                 definitionToolsRefused,
-                getSession: async (id) => catalog ? catalog.getSession(id) : null,
                 resolveOwner: async () => catalog
                     ? resolveEffectiveSpawnOwner((id) => catalog!.getSession(id), input.sessionId)
                     : null,
                 captureToolBinding: () => sessionManager.captureWorkflowToolBinding(input.sessionId),
-                createWorkflowSession: async (config, binding) => (await getInlineClient()).createWorkflowSession(config, binding),
                 workflowV2Host,
             }),
 
@@ -3158,7 +3156,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
              */
             updateWorkflow: async (args: Record<string, unknown>) => {
                 // A1: refused inside a Workflow, before anything else is read.
-                try { if (await definitionToolsRefused()) return workflowDefinitionToolsRefusal("update_workflow"); } catch (error) { return workflowToolErrorPayload(error); }
+                try { if (await definitionToolsRefused()) return workflowDefinitionToolsRefusal(); } catch (error) { return workflowToolErrorPayload(error); }
                 let host: WorkflowToolHost;
                 try { host = await workflowV2Host(); } catch (error) { return workflowToolErrorPayload(error); }
                 return updateWorkflowFromTool(args, { callerSessionId: input.sessionId, host });
@@ -3168,7 +3166,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
              * refused inside a Workflow (A1, by the stored lineage).
              */
             workflowDefinition: async (args: Record<string, unknown>, call?: { toolCallId?: string }) => {
-                try { if (await definitionToolsRefused()) return workflowDefinitionToolsRefusal("workflow_definition"); } catch (error) { return workflowToolErrorPayload(error); }
+                try { if (await definitionToolsRefused()) return workflowDefinitionToolsRefusal(); } catch (error) { return workflowToolErrorPayload(error); }
                 // A save's scripts gate from its YAML alone, before the host is made (e02ec6f8 run); a start's is decided on the
                 // stored revision it starts, before its binding is captured (chat-definitions.ts).
                 if (args.operation === "save") {

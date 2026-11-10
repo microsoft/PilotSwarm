@@ -29,31 +29,31 @@ test("inside a Workflow is decided by the stored lineage: an agent state's child
     assert.equal(workflowDefinitionToolsRefused(undefined), false);
 });
 
-test("the refusal in words: the tools' JSON refusal with its code, or a version 1 spawn_workflow's line", () => {
+test("the refusal in words: the tools' JSON refusal with its code", () => {
     assert.equal(WORKFLOW_DEFINITION_TOOLS_REFUSED, "WORKFLOW_DEFINITION_TOOLS_REFUSED");
     assert.match(WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT, /^Sessions inside a Workflow cannot create or change workflow definitions\. /);
-    assert.deepEqual(JSON.parse(workflowDefinitionToolsRefusal("update_workflow")),
+    assert.deepEqual(JSON.parse(workflowDefinitionToolsRefusal()),
         { ok: false, error: { code: WORKFLOW_DEFINITION_TOOLS_REFUSED, message: WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT } });
-    assert.equal(workflowDefinitionToolsRefusal("spawn_workflow", { line: true }), `[SYSTEM: spawn_workflow refused — ${WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT}]`);
 });
 
 test("spawn_workflow refuses before anything else when its caller is inside a Workflow; elsewhere it runs as before", async () => {
-    let created = 0;
     const deps = (refused) => ({
         parentSessionId: "C", enabled: () => true, definitionToolsRefused: async () => refused,
-        getSession: async () => null, resolveOwner: async () => null,
+        resolveOwner: async () => { throw new Error("not reached"); },
         captureToolBinding: async () => { throw new Error("not reached"); },
-        createWorkflowSession: async () => { created += 1; return { sessionId: "x", workflowName: "x" }; },
+        workflowV2Host: async () => { throw new Error("not reached"); },
     });
-    const v1 = "apiVersion: pilotswarm.dev/v1alpha1\nkind: Workflow\nmetadata: { name: x, version: 1.0.0 }\n";
-    const v2 = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: x, version: \"1.0.0\" }\ninitial: done\nstates:\n  done: { type: terminal, outcome: succeeded }\n";
-    assert.equal(await spawnWorkflowFromTool({ yaml: v1 }, { toolCallId: "t" }, deps(true)), workflowDefinitionToolsRefusal("spawn_workflow", { line: true }));
-    assert.equal(await spawnWorkflowFromTool({ yaml: v2 }, { toolCallId: "t" }, deps(true)), workflowDefinitionToolsRefusal("spawn_workflow"));
-    assert.match(await spawnWorkflowFromTool({ yaml: v1 }, { toolCallId: "t" }, deps(false)), /^\[SYSTEM: spawn_workflow refused — the workflow is not valid: /);
-    // A lineage that cannot be read refuses the call (fail closed), with its sanitized reason.
+    const older = "apiVersion: pilotswarm.dev/v1alpha1\nkind: Workflow\nmetadata: { name: x, version: 1.0.0 }\n";
+    const yaml = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: x, version: \"1.0.0\" }\ninitial: done\nstates:\n  done: { type: terminal, outcome: succeeded }\n";
+    // Inside a Workflow every document gets the same refusal, whatever its apiVersion.
+    assert.equal(await spawnWorkflowFromTool({ yaml: older }, { toolCallId: "t" }, deps(true)), workflowDefinitionToolsRefusal());
+    assert.equal(await spawnWorkflowFromTool({ yaml }, { toolCallId: "t" }, deps(true)), workflowDefinitionToolsRefusal());
+    assert.equal(JSON.parse(await spawnWorkflowFromTool({ yaml: older }, { toolCallId: "t" }, deps(false))).error.code, "WORKFLOW_API_VERSION");
+    // A lineage that cannot be read refuses the call (fail closed), coded, with its sanitized reason.
     const failing = { ...deps(false), definitionToolsRefused: async () => { throw new Error("connection refused"); } };
-    assert.match(await spawnWorkflowFromTool({ yaml: v1 }, { toolCallId: "t" }, failing), /^\[SYSTEM: spawn_workflow failed — /);
-    assert.equal(created, 0);
+    const answer = JSON.parse(await spawnWorkflowFromTool({ yaml }, { toolCallId: "t" }, failing));
+    assert.equal(answer.ok, false);
+    assert.equal(typeof answer.error.code, "string");
 });
 
 test("the model is declared no definition tools inside a Workflow, and keeps every other tool (A5)", () => {

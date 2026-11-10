@@ -1,9 +1,7 @@
 import type { ActivityContext, OrchestrationContext, ScheduledTask } from "duroxide";
 import type { SessionCatalog } from "../../cms.js";
-import type { ScriptToolCall } from "../executor.js";
-import { runScriptNode, type RunScriptNodeResult, type ScriptRunnerOptions } from "../runner.js";
-import { WORKFLOW_COMMAND_QUEUE, parseWorkflowCommand, workflowErrorMessage } from "../orchestration.js";
-import { WORKFLOW_SCRIPTS_DISABLED_MESSAGE } from "../activities.js";
+import { runScriptNode, type RunScriptNodeResult, type ScriptRunnerOptions, type ScriptToolCall } from "../runner.js";
+import { WORKFLOW_COMMAND_QUEUE, parseWorkflowCommand, workflowErrorMessage } from "../commands.js";
 import { SESSION_END_REQUESTED_EVENT } from "../../session-end-mark.js";
 import { admittedWorkflowToolGrant, isWorkflowControlTool, validateWorkflowToolArguments, type WorkflowToolBinding } from "../tool-policy.js";
 import type { WorkflowToolExecutor } from "../tool-executor.js";
@@ -11,6 +9,7 @@ import { bindingWithDefaultShown, evaluateBindingTemplate, WorkflowBindingError,
 import { redactErrorThenClip, redactThenClip, redactWorkflowSecrets, workflowOutputTail } from "./redact.js";
 import { workflowErrorWords } from "./error-words.js";
 import { isWorkflowTestBench } from "./test-bench.js";
+import { WORKFLOW_SCRIPTS_DISABLED_MESSAGE } from "./scripts-gate.js";
 import { TYPED_INPUT_REFUSALS } from "./authority.js";
 import {
     FAILURE_ROUTE,

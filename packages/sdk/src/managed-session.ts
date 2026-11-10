@@ -3308,7 +3308,7 @@ export class ManagedSession {
             ...(workflowMilestone ? SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC : SPAWN_WORKFLOW_TOOL_SPEC),
             handler: async (args: SpawnWorkflowToolArgs, invocation?: { toolCallId?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_workflow");
-                if (insideWorkflow) return workflowDefinitionToolsRefusal("spawn_workflow");
+                if (insideWorkflow) return workflowDefinitionToolsRefusal();
                 if (typeof args?.yaml !== "string" || !args.yaml.trim()) return "Error: yaml is required.";
                 if (args.inputs !== undefined && (args.inputs === null || typeof args.inputs !== "object" || Array.isArray(args.inputs))) {
                     return "Error: inputs must be a JSON object.";
@@ -3323,7 +3323,7 @@ export class ManagedSession {
             ...updateWorkflowToolSpec(workflowSpecs),
             handler: async (args: Record<string, unknown>) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("update_workflow");
-                if (insideWorkflow) return workflowDefinitionToolsRefusal("update_workflow");
+                if (insideWorkflow) return workflowDefinitionToolsRefusal();
                 if (!controlBridge?.updateWorkflow) return "Error: update_workflow is not available in this session.";
                 // A failure the bridge did not answer is still answered with its code and reason (batch 7, n-3).
                 try { return await controlBridge.updateWorkflow(args ?? {}); } catch (error) { return workflowToolErrorPayload(error); }
@@ -3345,7 +3345,7 @@ export class ManagedSession {
             ...workflowDefinitionToolSpec(),
             handler: async (args: Record<string, unknown>, invocation?: { toolCallId?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(WORKFLOW_DEFINITION_TOOL);
-                if (insideWorkflow) return workflowDefinitionToolsRefusal(WORKFLOW_DEFINITION_TOOL);
+                if (insideWorkflow) return workflowDefinitionToolsRefusal();
                 if (!controlBridge?.workflowDefinition) return "Error: workflow_definition is not available in this session.";
                 try { return await controlBridge.workflowDefinition(args ?? {}, { toolCallId: invocation?.toolCallId }); } catch (error) { return workflowToolErrorPayload(error); }
             },

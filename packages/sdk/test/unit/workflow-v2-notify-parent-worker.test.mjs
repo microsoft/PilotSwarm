@@ -41,8 +41,8 @@ test("the parent delivery queues the prompt, sender and client message id for a 
     assert.deepEqual(fake.calls[1][3], { prompt: "ended", sender: { kind: "system", display: "w" } }, "no id: none is sent");
 });
 
-test("the worker delivers through it, for v1 child workflows and v2 run ends alike", () => {
+test("the worker delivers a run's end through it", () => {
     const worker = readFileSync(fileURLToPath(new URL("../../src/worker.ts", import.meta.url)), "utf8");
     assert.match(worker, /const notifyWorkflowParent = workflowParentNotifier\(workflowClient\);/);
-    assert.equal(worker.match(/notifyParent: notifyWorkflowParent,/g)?.length, 2);
+    assert.equal(worker.match(/notifyParent: notifyWorkflowParent,/g)?.length, 1);
 });
