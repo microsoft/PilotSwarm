@@ -1,10 +1,10 @@
 /**
- * Stage 2 review S2RT-F2, on PostgreSQL: the chat-ended trigger (migration 0109) takes its locks in the runtime's order.
+ * Stage 2 review S2RT-F2, on PostgreSQL: the chat-ended trigger (migration 0088) takes its locks in the runtime's order.
  * A runtime transaction (a person's pause of a Workflow's run: its session row, then its definition, then its run) is held
  * at a barrier right after it locked the Workflow's session row. The chat is canceled from another connection meanwhile:
  * its trigger now waits for the Workflow's session row before it touches the run, so the pause goes on, both commit, and
- * nothing deadlocks. 0107's trigger locked the run first and waited for the session row, a cycle PostgreSQL broke by
- * aborting one of them. After the accepted end, nothing of the run is admitted: it is canceled.
+ * nothing deadlocks. A trigger that locked the run first and then waited for the session row would make a cycle, which
+ * PostgreSQL breaks by aborting one of them. After the accepted end, nothing of the run is admitted: it is canceled.
  *
  * Run: npx vitest run test/local/workflow-chat-end-lock-order.test.js
  */
@@ -30,7 +30,7 @@ states:
   done: { type: terminal, outcome: succeeded }
 `;
 
-describe("the chat-ended trigger and the runtime take their locks in one order (0109)", () => {
+describe("the chat-ended trigger and the runtime take their locks in one order (0088)", () => {
     it("S2RT-F2: a chat canceled while a run's pause holds its Workflow's session row: both commit, no deadlock, the run ends canceled", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const h = await openWorkflowStore(env);
@@ -85,8 +85,8 @@ describe("the chat-ended trigger and the runtime take their locks in one order (
             await h.stop();
         }
     });
-    // The executor's run at ea596f23: a chat that ends while its Workflow's run is paused. 0107's function, and 0109 as first
-    // written, cancelled the run but left paused_from, which the 0091 check refuses: the chat's own update failed.
+    // The executor's run at ea596f23: a chat that ends while its Workflow's run is paused. A trigger that cancels the run but
+    // leaves paused_from is refused by the runs' paused check, and the chat's own update fails.
     it("a chat that ends while its Workflow's run is paused: the chat ends, the run is canceled with no paused_from", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const h = await openWorkflowStore(env);
