@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
@@ -60,6 +61,12 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
         const temp = await mkdtemp(path.join(os.tmpdir(), "pilotswarm-sdk-consumer-"));
         const store = process.env.PILOTSWARM_SMOKE_DATABASE_URL;
         assert.ok(store, "the smoke database URL is required");
+        const schemaSuffix = randomUUID().replaceAll("-", "");
+        const storage = {
+            duroxideSchema: "ps_smoke_d_" + schemaSuffix,
+            cmsSchema: "ps_smoke_c_" + schemaSuffix,
+            factsSchema: "ps_smoke_f_" + schemaSuffix,
+        };
         const model = await new Promise(resolve => {
             const server = http.createServer((request, response) => {
                 const chunks = [];
@@ -95,7 +102,7 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
         let worker;
         let client;
         try {
-            management = new PilotSwarmManagementClient({ store, modelProvidersPath, disableManagementAgents: true });
+            management = new PilotSwarmManagementClient({ store, modelProvidersPath, disableManagementAgents: true, ...storage });
             await management.start();
             await management.createProvider(admin, {
                 name: "scripted", type: "scripted", credentials: { apiKey: "not-a-secret" },
@@ -108,10 +115,10 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
 
             worker = new PilotSwarmWorker({
                 store, modelProvidersPath, disableManagementAgents: true,
-                sessionStateDir: path.join(temp, "sessions"), workerNodeId: "consumer-worker",
+                sessionStateDir: path.join(temp, "sessions"), workerNodeId: "consumer-worker", ...storage,
             });
             await worker.start();
-            client = new PilotSwarmClient({ store, modelProvidersPath });
+            client = new PilotSwarmClient({ store, modelProvidersPath, ...storage });
             await client.start();
             const session = await client.createSession();
             assert.equal(await session.sendAndWait("emit a deterministic turn", 60_000), "scripted response");
