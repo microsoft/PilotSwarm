@@ -12,7 +12,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
     WORKFLOW_NODE_STATE_WORDS, WORKFLOW_RUN_STATE_WORDS, WORKFLOW_STATE_MARKS, workflowAskAnswerWords, workflowContractName, workflowDuration, workflowErrorRouteWords,
-    workflowFailureDetail, workflowFailureReason, workflowItemsFraction, workflowNodeCardWords, workflowOutcomeWord, workflowRunsText, workflowV1NodeCard,
+    workflowFailureDetail, workflowFailureReason, workflowItemsFraction, workflowNodeCardWords, workflowOutcomeWord, workflowRunsText,
     workflowShortTime, workflowStateMark, workflowTime, workflowTimeTitle, workflowVisitBadge,
 } from "../src/workflow-words.js";
 import { workflowElapsedText } from "../src/workflow-owner.js";
@@ -209,27 +209,6 @@ test("review 18:45Z: an Ask's answer in its own words: Waiting · answer, then �
     assert.equal(workflowAskAnswerWords(null, true), "Waiting · answer");
     assert.deepEqual(["responded", "declined", "timed_out"].map(outcome => workflowAskAnswerWords(outcome)), ["✓ answered", "✕ declined", "✕ limit"]);
     assert.equal(workflowAskAnswerWords("other"), null);
-});
-
-test("review 18:45Z: a version 1 node has the crisp card too: a mark and its outcome, a visit badge, and its words as the title", () => {
-    const again = workflowV1NodeCard({ id: "summarize", type: "script", state: "running", outcome: "again", runs: 2, partial: false });
-    assert.deepEqual([again.mark?.glyph, again.fact, again.badge?.text, again.badge?.title, again.row2], ["●", "running", "↻ 2", "Ran 2 times", true]);
-    assert.equal(again.title, "summarize · Script · Running · Ran 2 times");
-    const done = workflowV1NodeCard({ id: "poll", type: "script", state: "done", outcome: "changed", runs: 3, partial: true });
-    assert.deepEqual([done.mark?.glyph, done.fact, done.badge?.text], ["✓", "changed", "↻ 3+"]);
-    assert.equal(done.title, "poll · Script · Done · changed · Ran 3 times · older visits not loaded");
-    const failed = workflowV1NodeCard({ id: "poll", type: "script", state: "failed", outcome: "timed_out", runs: 1 });
-    assert.deepEqual([failed.mark?.glyph, failed.fact, failed.badge], ["✕", "limit", null]);
-    // An end: its outcome once reached; not reached, no row 2 (its outcome is its title).
-    const end = workflowV1NodeCard({ id: "published", type: "terminal", state: "done", outcome: "succeeded", runs: 1 });
-    assert.deepEqual([end.mark?.glyph, end.fact, end.title], ["✓", "succeeded", "published · End · succeeded · Done"]);
-    const ahead = workflowV1NodeCard({ id: "stopped", type: "terminal", state: "idle", outcome: "cancelled", runs: 0 });
-    assert.deepEqual([ahead.mark, ahead.fact, ahead.row2, ahead.title], [null, null, false, "stopped · End · canceled · Not reached"]);
-    // The graph draws it with the version 2 card's rows, never the old "Script · again" line.
-    const html = renderToStaticMarkup(React.createElement(WorkflowStepCard, { node: { id: "summarize", type: "script", state: "running", outcome: "again",
-        runs: 2, partial: false }, onSelect() {} }));
-    assert.ok(html.includes('class="ps-workflow-node-visits" title="Ran 2 times"') && html.includes(">↻ 2<"), html);
-    assert.ok(html.includes('title="summarize · Script · Running · Ran 2 times"') && !html.includes("Script · again"), html);
 });
 
 test("review 19:10Z: a listed Workflow's stored status always reads in words; a stop either way is Canceled, the tooltip says which", () => {

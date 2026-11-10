@@ -10,7 +10,7 @@ import { workflowDefinition, workflowReadModelView } from "../src/workflow-view.
 import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
 import { selectWorkflowV2Run, workflowV2RunPickerModel } from "../../react/src/workflow-v2-panels.js";
 import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
-import { startedData, legacyStartedData, ev, row, done, readModel } from "./workflow-v2-fixtures.mjs";
+import { startedData, ev, row, done, readModel } from "./workflow-v2-fixtures.mjs";
 
 const SID = "wf-picker";
 const run = (runId, mode = "live", status = "running", extra = {}) => ({ runId, mode, status, revision: 1, outcome: null, ...extra });
@@ -98,7 +98,7 @@ test("a malformed run list is counted and left out; an unrecognized model gives 
     assert.doesNotThrow(() => pane(seed({ view: { definition: def(), readModel: junk, readModelRunId: null } }).controller));
 });
 
-test("no runs, a legacy workflow and a model that is not v2 show no picker or an honest empty one", () => {
+test("no runs and a model of an unknown format show no picker or an honest empty one", () => {
     const empty = workflowV2RunPickerModel({ workflowModel: readModel({ noRun: true }), ownModelLoaded: true });
     assert.deepEqual(empty.options.map(option => option.value), [""]);
     // The model still says it (the terminal shows it); the portal shows no picker until a run exists, and says
@@ -111,12 +111,8 @@ test("no runs, a legacy workflow and a model that is not v2 show no picker or an
     // A run selected by its id is shown even before the run list has it.
     assert.match(pane(seed({ view: { definition: def(), readModel: readModel({ noRun: true }), readModelRunId: null, selectedRunId: "run-x" } }).controller),
         /<select aria-label="Workflow run"/);
-    const legacy = pane(seed({ view: { definition: workflowDefinition(legacyStartedData) } }).controller);
-    assert.ok(!legacy.includes("Workflow run"));
-    // Words (Workflow Simplified 03, 10): the node's type in a word.
-    assert.ok(legacy.includes(' · Script · Not reached"'), "the legacy graph is unchanged");
-    const legacyJunk = pane(seed({ view: { definition: workflowDefinition(legacyStartedData), readModel: { nope: true }, readModelRunId: null } }).controller);
-    assert.ok(!legacyJunk.includes("Workflow run"));
+    const junk = pane(seed({ view: { definition: def(), readModel: { nope: true }, readModelRunId: null } }).controller);
+    assert.ok(!junk.includes("Workflow run"));
     assert.ok(!pane(seed({ view: {} }).controller).includes("Workflow run"), "no definition and no model: nothing to pick from");
 });
 

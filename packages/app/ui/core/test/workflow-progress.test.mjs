@@ -18,8 +18,8 @@ function fixture() {
     ] });
     const start = step => event("workflow.state_started", { stateId: "poll", step, runtime: "node" });
     const complete = (step, overrides = {}) => event("workflow.state_completed", {
-        stateId: "poll", step, outcome: "unchanged", durationMs: 120, exitCode: 0,
-        resultSource: "reported", outputPreview: '{"unchanged":true}', toolCalls: [{ name: "query", ok: true }],
+        stateId: "poll", step, outcome: "unchanged", resultKind: "business", durationMs: 120,
+        outputPreview: '{"unchanged":true}', toolCalls: [{ name: "query", ok: true }],
         ...overrides,
     });
     return { event, definition, start, complete };
@@ -72,7 +72,7 @@ test("a meaningful outcome remains separate and ends the polling summary", () =>
 
 for (const [label, overrides] of [
     ["tool error", { toolCalls: [{ name: "query", ok: false }] }],
-    ["process error", { exitCode: 1, resultSource: "exit" }],
+    ["runtime error", { resultKind: "runtime_error" }],
     ["stderr", { stderrTail: "read was incomplete" }],
 ]) {
     test(`${label} is never swallowed by unchanged-poll aggregation`, () => {

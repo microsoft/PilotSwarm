@@ -1,6 +1,6 @@
 /**
  * Adversarial review UI-1: switching from workflow A to workflow B must never start B's YAML editor with A's text, or
- * save A's text into B. The workflow screen reads the active session's id, row, history, canvas, view and step places
+ * save A's text into B. The workflow screen reads the active session's id, row, history, view and step places
  * in one selector from one state, and the YAML editor's buffer is bound to its session: a model or a kept edit of
  * another session is not taken, and nothing of another session is saved.
  *
@@ -24,7 +24,6 @@ function stateWith(active) {
     return {
         sessions: { activeSessionId: active, byId: sessions },
         history: { bySessionId: new Map([[A, { events: ["a"] }], [B, { events: ["b"] }]]) },
-        canvas: { bySessionId: { [A]: { dataPayload: "a" }, [B]: { dataPayload: "b" } } },
         ui: {
             workflowViews: { [A]: { mainTab: "yaml", readModel: { yaml: YAML_A } }, [B]: { mainTab: "yaml", readModel: { yaml: YAML_B } } },
             workflowLayouts: { [`session:${A}`]: { at: 1, steps: { s: [1, 1] } }, [`session:${B}`]: { at: 2, steps: { s: [2, 2] } } },
@@ -39,7 +38,6 @@ test("one snapshot: every part is the active session's, from the same state", ()
         assert.equal(snapshot.sessionId, active);
         assert.equal(snapshot.session, state.sessions.byId[active]);
         assert.equal(snapshot.history, state.history.bySessionId.get(active));
-        assert.equal(snapshot.canvas, state.canvas.bySessionId[active]);
         assert.equal(snapshot.view, state.ui.workflowViews[active]);
         assert.equal(snapshot.places, state.ui.workflowLayouts[`session:${active}`].steps);
         assert.notEqual(snapshot.view, state.ui.workflowViews[other]);

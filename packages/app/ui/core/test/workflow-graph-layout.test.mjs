@@ -8,9 +8,14 @@ import {
     layoutWorkflowGraphTB, workflowEdgeCurve, workflowEdgeLabelText, workflowGraphBodies, workflowGraphPlaces, workflowPlaceKey,
     WORKFLOW_GRAPH_GROUP_HEADER, WORKFLOW_GRAPH_NODE_WIDTH, WORKFLOW_GRAPH_NODE_HEIGHT,
 } from "../src/workflow-graph-layout.js";
-import { workflowDefinition } from "../src/workflow-view.js";
+import { workflowDefinition as checkedDefinition } from "../src/workflow-view.js";
 import { workflowV2Definition } from "../src/workflow-v2-view.js";
 import { startedData } from "./workflow-v2-fixtures.mjs";
+
+/** A graph's states as the runtime describes them: a script state lists its outcomes (the keys of its next). */
+const described = list => list.map(node => (node && typeof node === "object" && node.type !== "terminal"
+    ? { type: "script", runtime: "node", timeoutSeconds: 300, outcomes: Object.keys(node.next ?? {}), ...node } : node));
+const workflowDefinition = data => checkedDefinition(data && Array.isArray(data.states) ? { ...data, states: described(data.states) } : data);
 
 const edgeOf = (layout, from, to) => layout.edges.find(edge => edge.from === from && edge.to === to);
 const top = (layout, id) => layout.positions.get(id).y;
@@ -315,7 +320,7 @@ test("an empty graph, a single step, disconnected steps and object-key ids lay o
     const special = layoutWorkflowGraphTB(workflowDefinition({ initial: "__proto__", states: [
         { id: "__proto__", type: "script", next: { next: "constructor" } },
         { id: "constructor", type: "script", next: { again: "__proto__" } },
-        { id: "isolated", type: "terminal" },
+        { id: "isolated", type: "terminal", outcome: "succeeded" },
     ] }));
     assert.equal(special.positions.size, 3);
     assert.equal(special.edges.length, 2);

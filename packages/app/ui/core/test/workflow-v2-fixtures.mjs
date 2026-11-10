@@ -42,12 +42,6 @@ export const startedData = {
     name: "watch-v2", version: "1.0.0", initial: "poll", states,
 };
 
-/** The legacy workflow.started payload (packages/sdk/src/workflow/canvas.ts 174): no outcomes, no run id. */
-export const legacyStartedData = { name: "watch", initial: "poll", states: [
-    { id: "poll", type: "script", runtime: "node", next: { unchanged: "poll", changed: "end" } },
-    { id: "end", type: "terminal", outcome: "succeeded" },
-] };
-
 export const ev = (eventType, data) => ({ eventType, data });
 const nx = (stateId, step) => `nx-${stateId}-${step}`;
 

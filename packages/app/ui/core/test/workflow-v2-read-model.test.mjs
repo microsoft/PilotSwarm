@@ -19,7 +19,7 @@
  *     stay, so an earlier definition is not drawn again
  *   - WORKFLOW_NOT_FOUND (also a version 2 session whose definition has not
  *     committed yet) shows no error and is asked again, once, on new events
- *     or a changed session row; a legacy definition is never asked for
+ *     or a changed session row
  *   - any other failure keeps the model shown and is reported, bounded, for
  *     its selection, with a Retry in the side pane's Notices (rendered here on the
  *     server; the click is the controller's forced request)
@@ -35,7 +35,7 @@ import { PilotSwarmUiController, appReducer, createInitialState, createStore, fo
 import { workflowDefinition, workflowReadModelView } from "../src/workflow-view.js";
 import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
 import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
-import { RUN, startedData, legacyStartedData, ev, started, completed, row, done, readModel as fixtureReadModel } from "./workflow-v2-fixtures.mjs";
+import { RUN, startedData, ev, started, completed, row, done, readModel as fixtureReadModel } from "./workflow-v2-fixtures.mjs";
 
 const SID = "wf-read-model";
 
@@ -228,7 +228,7 @@ test("discards a superseded answer (then asks again), records an older one witho
     assert.equal(h.calls.length, 5);
 });
 
-test("READ-WIRE-03: WORKFLOW_NOT_FOUND is asked again once on a changed session row or new events, never in a loop, never for a legacy definition", async () => {
+test("READ-WIRE-03: WORKFLOW_NOT_FOUND is asked again once on a changed session row or new events, never in a loop", async () => {
     const notYet = () => { throw Object.assign(new Error("This session is not a durable Workflow."), { code: "WORKFLOW_NOT_FOUND", status: 404 }); };
     // The creation window: the session row committed, its definition not yet.
     const h = seeded({ lastSeq: 0, updatedAt: 1 });
@@ -256,16 +256,6 @@ test("READ-WIRE-03: WORKFLOW_NOT_FOUND is asked again once on a changed session 
     await started.controller.ensureWorkflowReadModel(SID);
     assert.equal(started.calls.length, 2);
     assert.equal(started.view().readModel.marker, "started");
-
-    // A legacy definition, from the session's own workflow.started event, has no read model: never asked, even with new
-    // events or a forced retry.
-    const legacy = seeded({ lastSeq: 3 });
-    legacy.store.dispatch({ type: "ui/workflowView", sessionId: SID, view: { definition: workflowDefinition(legacyStartedData) } });
-    legacy.setLastSeq(9);
-    await legacy.controller.ensureWorkflowReadModel(SID);
-    await legacy.controller.ensureWorkflowReadModel(SID, { force: true });
-    await legacy.controller.ensureWorkflowDefinition(SID, { retry: true });
-    assert.equal(legacy.calls.length, 0);
 
     // A transport without the operation keeps the event-only view; an agent session is never asked.
     const unsupported = seeded();
@@ -346,10 +336,6 @@ test("READ-WIRE-02: the side pane shows the selected run's read failure, with a 
     assert.ok(other.includes("Wait · 30 s"), "the workflow's graph");
     // No failure, no alert.
     assert.ok(!render({ ...failed, readModelError: null }).includes("could not be read"));
-    // A legacy definition has no read model: a failure recorded before it loaded is not shown.
-    const legacy = render({ ...failed, definition: workflowDefinition(legacyStartedData), readModel: null });
-    assert.ok(!legacy.includes("could not be read"));
-    assert.ok(legacy.includes("node · idle"), "the legacy graph");
 });
 
 /** Run A's durable events (the live run, run-1): its start, poll ended `changed`, then pause waiting. */
@@ -500,7 +486,7 @@ test("READ-WIRE-01: without its own model, the live selection never stands for a
     assert.equal(projectWorkflowV2({ ...workflowReadModelView(view), events: [...runAEvents, ...testRun.slice(1)] }).runId, RUN);
 });
 
-test("the execution log names v2 wait and messaging states by their kind", () => {
+test("the execution log names wait and messaging states by their kind", () => {
     const started = formatWorkflowEventText({ eventType: "workflow.started", seq: 1, data: {
         name: "v2", version: "1.0.0", initial: "pause",
         states: [
@@ -514,9 +500,9 @@ test("the execution log names v2 wait and messaging states by their kind", () =>
     assert.match(started, /\| tell \| Send · Note@1 \| sent → listen \|/);
     assert.match(started, /\| listen \| Receive · Reply@1 \| received → done \|/);
     assert.match(started, /\| done \| End \| End · succeeded \|/);
-    assert.equal(formatWorkflowEventText({ eventType: "workflow.state_started", seq: 2, data: { stateId: "pause", type: "wait", step: 1 } }),
-        "● `pause` · #1 started.");
     // Review 19:27Z (row 28): the node and its visit; the kind is in the definition table, not each line.
-    assert.equal(formatWorkflowEventText({ eventType: "workflow.state_started", seq: 3, data: { stateId: "collect", runtime: "python", step: 1 } }),
-        "● `collect` · #1 started.");
+    assert.equal(formatWorkflowEventText({ eventType: "workflow.state_started", seq: 2, data: { runId: RUN, nodeExecutionId: "n1", stateId: "pause", type: "wait", step: 1 } }),
+        "● `pause` started.");
+    assert.equal(formatWorkflowEventText({ eventType: "workflow.state_started", seq: 3, data: { runId: RUN, nodeExecutionId: "n2", stateId: "pause", type: "wait", step: 2 } }),
+        "● `pause` · visit 2 started.");
 });

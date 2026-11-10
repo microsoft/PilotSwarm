@@ -28,25 +28,28 @@ function event(eventType, data) {
     return { sessionId: "wf", seq, eventType, data, createdAt: new Date(Date.UTC(2026, 9, 29, 12, 0, seq)) };
 }
 
+// Payload shapes are the ones the runtime writes (packages/sdk/src/workflow/v2/runtime.ts).
+const RUN = "run-1";
 const STARTED = event("workflow.started", {
+    runId: RUN, mode: "live", revision: 1, definitionHash: "h1", irSha256: "i1",
     name: "nightly-report",
     version: "1.0.0",
     initial: "collect",
     states: [
-        { id: "collect", type: "script", runtime: "python", next: { success: "report", failure: "failed" } },
-        { id: "report", type: "script", runtime: "node", next: { done: "published" } },
+        { id: "collect", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["success", "failure"], next: { success: "report", failure: "failed" } },
+        { id: "report", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["done"], next: { done: "published" } },
         { id: "published", type: "terminal", outcome: "succeeded" },
         { id: "failed", type: "terminal", outcome: "failed" },
     ],
 });
-const NODE_STARTED = event("workflow.state_started", { stateId: "collect", runtime: "python", step: 1 });
+const NODE_STARTED = event("workflow.state_started", { runId: RUN, nodeExecutionId: "nx-1", stateId: "collect", scopeId: "root", ordinal: 1, type: "script", step: 1 });
 const NODE_COMPLETED = event("workflow.state_completed", {
-    stateId: "collect", step: 1, outcome: "success", durationMs: 1250, exitCode: 0,
+    runId: RUN, nodeExecutionId: "nx-1", stateId: "collect", step: 1, outcome: "success", resultKind: "business", durationMs: 1250,
     toolCalls: [{ name: "read_facts", ok: true }, { name: "store_fact", ok: false }],
     outputPreview: "{\"count\":3}",
 });
-const COMPLETED = event("workflow.completed", { name: "nightly-report", steps: 2, stateId: "published", outcome: "succeeded", summary: "Report published.", outputPreview: "{\"rows\":3}" });
-const FAILED = event("workflow.failed", { name: "nightly-report", steps: 1, stateId: "collect", error: "Script state 'collect' returned undeclared outcome 'odd'" });
+const COMPLETED = event("workflow.completed", { runId: RUN, name: "nightly-report", stateId: "published", outcome: "succeeded", summary: "Report published.", outputPreview: "{\"rows\":3}" });
+const FAILED = event("workflow.failed", { runId: RUN, name: "nightly-report", stateId: "collect", error: "Script state 'collect' returned undeclared outcome 'odd'" });
 
 test("each workflow event reads as one line of an execution log", () => {
     const started = formatWorkflowEventText(STARTED);
@@ -57,15 +60,15 @@ test("each workflow event reads as one line of an execution log", () => {
     assert.match(started, /\| report \| Script \| done → published \|/);
     assert.match(started, /\| published \| End \| End · succeeded \|/);
 
-    assert.equal(formatWorkflowEventText(NODE_STARTED), "● `collect` · #1 started.");
+    assert.equal(formatWorkflowEventText(NODE_STARTED), "● `collect` started.");
     const completed = formatWorkflowEventText(NODE_COMPLETED);
-    assert.match(completed, /✓ `collect` · #1 → \*\*success\*\* in 1 s · 2 tool calls · read_facts, store_fact · 1 failed\./);
+    assert.match(completed, /✓ `collect` → \*\*success\*\* in 1 s · 2 tool calls · read_facts, store_fact · 1 failed\./);
     assert.match(completed, /Output: `\{"count":3\}`/);
 
-    assert.match(formatWorkflowEventText(COMPLETED), /^✓ Workflow \*\*nightly-report\*\* reached `published` after 2 visits: outcome \*\*succeeded\*\*\. Report published\./);
-    assert.match(formatWorkflowEventText(FAILED), /^✕ Workflow \*\*nightly-report\*\* failed after 1 visit at `collect`: Script state 'collect' returned undeclared outcome 'odd'/);
-    const authoredFailure = event("workflow.failed", { name: "nightly-report", steps: 1, stateId: "failed", outcome: "failed", summary: "Could not read facts." });
-    assert.match(formatWorkflowEventText(authoredFailure), /^✕ Workflow \*\*nightly-report\*\* reached `failed` after 1 visit: outcome \*\*failed\*\*\. Could not read facts\./);
+    assert.match(formatWorkflowEventText(COMPLETED), /^✓ Workflow \*\*nightly-report\*\* reached `published`: outcome \*\*succeeded\*\*\. Report published\./);
+    assert.match(formatWorkflowEventText(FAILED), /^✕ Workflow \*\*nightly-report\*\* failed at `collect`: Script state 'collect' returned undeclared outcome 'odd'/);
+    const authoredFailure = event("workflow.failed", { runId: RUN, name: "nightly-report", stateId: "failed", outcome: "failed", summary: "Could not read facts." });
+    assert.match(formatWorkflowEventText(authoredFailure), /^✕ Workflow \*\*nightly-report\*\* reached `failed`: outcome \*\*failed\*\*\. Could not read facts\./);
     assert.equal(formatWorkflowEventText({ eventType: "assistant.message", data: {} }), null);
 });
 
@@ -76,7 +79,7 @@ test("the definition is expandable, the result a card, and step errors remain vi
     );
     const step = describeWorkflowEvent(NODE_COMPLETED);
     assert.equal(step.kind, "notice");
-    assert.equal(step.title, `${WORKFLOW_SESSION_GLYPH} Node · #1`);
+    assert.equal(step.title, `${WORKFLOW_SESSION_GLYPH} Node`);
     assert.equal(step.summary, "collect → success in 1 s · 2 tool calls · read_facts, store_fact · 1 failed");
     assert.doesNotMatch(step.summary, /[*`]/, "a one-line summary is plain text");
     assert.match(step.text, /Output:/);
@@ -97,12 +100,11 @@ test("the transcript of a workflow session is its execution log, in order, and s
 
     const appended = appendEventToHistory(buildHistoryModel([STARTED]), FAILED);
     assert.equal(appended.chat.at(-1).workflowEvent, "workflow.failed");
-    assert.match(appended.chat.at(-1).text, /failed after 1 visit /);
+    assert.match(appended.chat.at(-1).text, /failed at `collect`/);
 });
 
 function makeController(transportOverrides = {}) {
     const sessions = [];
-    const calls = { createWorkflowSession: [] };
     const transport = {
         listSessions: async () => sessions,
         getSession: async (sessionId) => sessions.find((session) => session.sessionId === sessionId) || null,
@@ -110,17 +112,11 @@ function makeController(transportOverrides = {}) {
         createSession: async () => ({ sessionId: "generic-1", status: "idle" }),
         listCreatableAgents: async () => [{ name: "alpha", title: "Alpha" }],
         getSessionCreationPolicy: () => ({ creation: { allowGeneric: true } }),
-        createWorkflowSession: async (options) => {
-            calls.createWorkflowSession.push(options);
-            const session = { sessionId: "wf-1", sessionKind: "workflow", title: "Workflow: example-workflow", status: "running" };
-            sessions.push(session);
-            return { sessionId: "wf-1", sessionKind: "workflow", workflowName: "example-workflow" };
-        },
         ...transportOverrides,
     };
     const store = createStore(appReducer, createInitialState());
     const controller = new PilotSwarmUiController({ store, transport });
-    return { controller, store, calls, transport };
+    return { controller, store, transport };
 }
 
 test("the session list marks workflow sessions apart from agent sessions", () => {
@@ -143,7 +139,7 @@ test("the session list marks workflow sessions apart from agent sessions", () =>
 });
 
 test("the new-session chooser offers no workflow start: an agent starts workflows (flow-05)", async () => {
-    const { controller, store, calls } = makeController();
+    const { controller, store } = makeController();
     await controller.openSessionAgentPicker();
     const modal = store.getState().ui.modal;
     assert.equal(modal.type, "sessionAgentPicker");
@@ -154,7 +150,6 @@ test("the new-session chooser offers no workflow start: an agent starts workflow
     // The dead-end editor and its refusal are gone.
     assert.equal(typeof controller.openWorkflowCreateModal, "undefined");
     assert.equal(typeof controller.createWorkflowSession, "undefined");
-    assert.deepEqual(calls.createWorkflowSession, []);
 });
 
 test("a workflow session takes no steering and no regeneration", async () => {
@@ -168,18 +163,19 @@ test("a workflow session takes no steering and no regeneration", async () => {
 
 // Review 19:27Z (row 30): a stop reads Canceled, with ⊘; a node's executions are visits.
 test("a stopped run reads as canceled, in the log and as cards", () => {
-    const stoppedNode = event("workflow.state_cancelled", { stateId: "collect", step: 1, durationMs: 2500 });
-    const stopped = event("workflow.cancelled", { name: "nightly-report", steps: 1, stateId: "collect", reason: "no longer needed" });
-    assert.equal(formatWorkflowEventText(stoppedNode), "⊘ `collect` · #1 canceled after 3 s.");
+    const stoppedNode = event("workflow.state_cancelled", { runId: RUN, nodeExecutionId: "nx-2", stateId: "collect", step: 2, durationMs: 2500 });
+    const stopped = event("workflow.cancelled", { runId: RUN, name: "nightly-report", stateId: "collect", reason: "no longer needed" });
+    assert.equal(formatWorkflowEventText(stoppedNode), "⊘ `collect` · visit 2 canceled after 3 s.");
     assert.equal(describeWorkflowEvent(stoppedNode).summary, "collect canceled after 3 s");
-    assert.equal(formatWorkflowEventText(stopped), "⊘ Workflow **nightly-report** canceled after 1 visit at `collect`: no longer needed");
-    assert.equal(formatWorkflowEventText(event("workflow.cancelled", { name: "x", steps: 2, reason: "cancelled" })), "⊘ Workflow **x** canceled after 2 visits.",
+    assert.equal(formatWorkflowEventText(stopped), "⊘ Workflow **nightly-report** canceled at `collect`: no longer needed");
+    assert.equal(formatWorkflowEventText(event("workflow.cancelled", { runId: RUN, name: "x", reason: "cancelled" })), "⊘ Workflow **x** canceled.",
         "a reason that is only the state word is left out");
     assert.deepEqual([describeWorkflowEvent(stopped).kind, describeWorkflowEvent(stopped).title], ["card", "Workflow canceled"]);
     assert.ok(CHAT_HISTORY_EVENT_TYPES.includes("workflow.cancelled"));
 });
 
-test("opening a workflow session shows its canvas; an agent session's canvas stays where the person left it", async () => {
+// A Workflow draws no canvas of its own: opening any session leaves the canvas pane where the person left it.
+test("opening a workflow session or an agent session leaves the canvas pane where the person left it", async () => {
     const canvasEvent = { seq: 1, eventType: "session.canvas_updated", data: { rev: 1, slot: 1, name: "Workflow" } };
     const { controller, store } = makeController({
         getSessionEventsBefore: async (_id, _before, _limit, types) => (types.includes("session.canvas_updated") ? [canvasEvent] : []),
@@ -195,6 +191,5 @@ test("opening a workflow session shows its canvas; an agent session's canvas sta
 
     store.dispatch({ type: "sessions/selected", sessionId: "wf-1" });
     await controller.ensureCanvasSnapshot("wf-1");
-    assert.equal(store.getState().ui.rightPaneMode, "canvas");
-    assert.equal(store.getState().ui.canvasOpen, true);
+    assert.notEqual(store.getState().ui.rightPaneMode, "canvas");
 });

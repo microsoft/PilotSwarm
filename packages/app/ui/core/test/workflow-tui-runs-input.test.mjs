@@ -32,7 +32,7 @@ import {
 } from "../src/index.js";
 import { workflowV2RunPickerModel as coreRunPicker } from "../src/workflow-v2-run-picker.js";
 import { workflowV2RunPickerModel as portalRunPicker } from "../../react/src/workflow-v2-panels.js";
-import { legacyStartedData, readModel, row, done } from "./workflow-v2-fixtures.mjs";
+import { readModel, row, done } from "./workflow-v2-fixtures.mjs";
 
 const states = [
     { id: "review", type: "agent", invoke: { source: "agent", name: "code-reviewer" }, timeoutSeconds: 600,
@@ -60,25 +60,24 @@ function modelFor(runId) {
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const WRITES = /^(updateWorkflow|sendMessage|sendWorkflowInput|steer|answer|createSession|cancel|delete|done|complete|setSession)/i;
 
-/** A workflow session wf with the live run's model loaded; a legacy one has no read model (its transport cannot read one). */
-function viewHarness({ legacy = false } = {}) {
+/** A workflow session wf with the live run's model loaded. */
+function viewHarness() {
     const calls = [];
-    const methods = legacy ? { getSessionEventsBefore: async () => [] } : {
+    const methods = {
         readWorkflow: async (sessionId, options = {}) => { calls.push(["readWorkflow", sessionId, options]); return modelFor(options.runId ?? null); },
         getSessionEventsBefore: async () => [],
     };
-    // Every other call is recorded, so a test can say that nothing changed anything. A legacy transport has only its own.
-    const transport = legacy ? methods : new Proxy(methods, { get: (target, name) => (name in target ? target[name] : typeof name === "string"
+    // Every other call is recorded, so a test can say that nothing changed anything.
+    const transport = new Proxy(methods, { get: (target, name) => (name in target ? target[name] : typeof name === "string"
         ? async (...args) => { calls.push([name, ...args]); return null; } : undefined) });
     const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: review-once", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
-    const started = legacy ? legacyStartedData
-        : { runId: "run-1", mode: "live", revision: 1, definitionHash: "hash-1", irSha256: "ir-1", name: "review-once", initial: "review", states };
+    const started = { runId: "run-1", mode: "live", revision: 1, definitionHash: "hash-1", irSha256: "ir-1", name: "review-once", initial: "review", states };
     store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel([{ sessionId: "wf", seq: 1, eventType: "workflow.started",
         data: started, createdAt: new Date(Date.UTC(2026, 10, 2)) }]) });
-    if (!legacy) store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: modelFor(null), readModelRunId: null } });
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: modelFor(null), readModelRunId: null } });
     return { controller, store, calls };
 }
 
@@ -118,7 +117,7 @@ test("← → show the workflow's other runs, as the portal's picker lists them,
     assert.deepEqual(calls.filter(call => WRITES.test(call[0])), []);
 });
 
-test("a run whose model is still loading or could not be read says so beside it; a legacy workflow has no runs to choose", async () => {
+test("a run whose model is still loading or could not be read says so beside it", async () => {
     const { controller, store } = viewHarness();
     await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: "run-t2" } });
@@ -128,12 +127,6 @@ test("a run whose model is still loading or could not be read says so beside it;
         readModelAttempt: { runId: "run-t2", afterSeq: 1, sessionUpdatedAt: null }, readModelError: "Gateway timeout" } });
     lines = selectWorkflowViewModal(store.getState(), 110).detailsLines.map(line => line.text);
     assert.ok(lines.includes("  This one could not be read. Your choice is kept."), lines.join("\n"));
-
-    const legacy = viewHarness({ legacy: true });
-    await legacy.controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
-    await legacy.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_NEXT_RUN);
-    assert.equal(legacy.store.getState().ui.statusText, "This Workflow has nothing to choose");
-    assert.ok(!selectWorkflowViewModal(legacy.store.getState(), 110).detailsLines.some(line => line.text.startsWith("Run:")));
 });
 
 // ── The composer of a session in a workflow agent state's subtree ──────────────────────────────────────────────────

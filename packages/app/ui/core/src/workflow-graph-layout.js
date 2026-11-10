@@ -384,8 +384,8 @@ function layoutLanes(parallel, members, byId, edges, laneEdges) {
 }
 
 /**
- * The layout of a workflow definition (`{ initial, states }`, version 1 or 2): `positions` (step id -> its box's top-left
- * x, y, width and height), `edges` (from, to, outcome, outcomes, branch, kind for version 2, points, path, labelX and
+ * The layout of a workflow definition (`{ initial, states }`): `positions` (step id -> its box's top-left
+ * x, y, width and height), `edges` (from, to, outcome, outcomes, branch, kind, points, path, labelX and
  * labelY at the label's centre, labelText, labelWidth, and back when the edge goes up or loops), and the drawing's width
  * and height, every box, point and label inside it. H2: `groups` (parallel id -> its branch box: id, parallel, x, y,
  * width, height, the `stack` drawn behind it to its right and below, and its `members`) and `joins` (parallel id -> its
@@ -396,9 +396,9 @@ export function layoutWorkflowGraphTB(definition) {
     const states = Array.isArray(definition?.states) ? definition.states.filter(node => node && typeof node.id === "string") : [];
     const parts = workflowGraphBodies(states);
     const edges = graphEdges(states, parts);
-    // OF-S2-2: a version 2 graph's runtime-error routes are one label, "✕ error" (the title lists them): the kinds are
-    // known before the labels' widths are reserved.
-    if (definition?.shape === "v2") annotateWorkflowV2Edges(definition, { edges });
+    // OF-S2-2: a graph's runtime-error routes are one label, "✕ error" (the title lists them): the kinds are known before
+    // the labels' widths are reserved.
+    if (Array.isArray(definition?.states)) annotateWorkflowV2Edges(definition, { edges });
     for (const edge of edges) {
         // The edge into a branch box has no label (H2); every other edge's label is drawn.
         edge.labelText ??= workflowEdgeLabelTextOf(edge, states);
@@ -578,5 +578,5 @@ export function workflowPlaceKey(layout, id) {
 }
 
 function finish(definition, layout) {
-    return definition?.shape === "v2" ? annotateWorkflowV2Edges(definition, layout) : layout;
+    return Array.isArray(definition?.states) ? annotateWorkflowV2Edges(definition, layout) : layout;
 }

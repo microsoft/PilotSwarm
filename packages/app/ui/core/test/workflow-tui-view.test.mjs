@@ -18,7 +18,7 @@ import {
     workflowGraphOrder,
 } from "../src/index.js";
 import { workflowV2Definition } from "../src/workflow-v2-view.js";
-import { legacyStartedData, readModel, row, done } from "./workflow-v2-fixtures.mjs";
+import { readModel, row, done } from "./workflow-v2-fixtures.mjs";
 
 /** A review that loops through a fix until accepted, a parallel fan-out, and the terminals. */
 const states = [
@@ -256,15 +256,3 @@ test("an agent state whose child is not listed yet says so; a read failure and a
     assert.ok(view.detailsLines.length >= 1);
 });
 
-test("a legacy workflow lists its states too, with its self-loop marked", async () => {
-    const legacy = event("workflow.started", legacyStartedData);
-    const { controller, store } = harness({ events: [legacy, event("workflow.state_started", { stateId: "poll", runtime: "node", step: 1 })],
-        model: null, transport: { readWorkflow: undefined } });
-    await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
-    await settle();
-    const view = selectWorkflowViewModal(store.getState(), 110);
-    assert.match(view.title, /^Workflow: watch · /);
-    assert.deepEqual(view.rows.map(rowText).map(text => text.trim().split(/\s+/).slice(0, 3).join(" ")), ["▶ ● poll", "○ end End"]);
-    assert.ok(lineTexts(view).includes("  unchanged → poll · ↺ in a loop"));
-    assert.ok(lineTexts(view).includes("  changed → end"));
-});

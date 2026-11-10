@@ -1,7 +1,6 @@
 import React from "react";
 import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
 import { layoutWorkflowGraphTB, workflowGraphEdgeKey, WORKFLOW_GRAPH_LABEL_HEIGHT } from "../../core/src/workflow-graph-layout.js";
-import { workflowV1NodeCard } from "../../core/src/workflow-words.js";
 
 const h = React.createElement;
 
@@ -28,8 +27,8 @@ const NODE_GLYPHS = {
 };
 
 /**
- * One node: a button named "Inspect <id>" that selects it. Owner, 2026-11-07T17:47Z (OF-S2-2: crisp): a version 2 node
- * has two rows: its type's icon and its name, with how often it ran as a badge ("↻ 126", "↻ 126+" when older visits are
+ * One node: a button named "Inspect <id>" that selects it. Owner, 2026-11-07T17:47Z (OF-S2-2: crisp): a node has two
+ * rows: its type's icon and its name, with how often it ran as a badge ("↻ 126", "↻ 126+" when older visits are
  * not loaded); then its state as a mark (✓ ● ✕ ⊘) and its one key fact (node.card, workflowNodeCardWords). Its type and
  * the full sentence are its title (its tooltip, and its description for screen readers). The node a Workflow starts at
  * carries the Start marker (F4); an end is a ring, filled once the Workflow reached it, in its outcome's colour; a node
@@ -38,14 +37,12 @@ const NODE_GLYPHS = {
  * stylesheet draws them (data-lit, data-lit-age, data-current) apart from the selection.
  */
 export function WorkflowStepCard({ node, selected = false, onSelect, litCount = 0, litAge = null, current = false }) {
-    const v2 = node.shape === "v2";
     const terminal = node.type === "terminal";
-    const kind = v2 ? node.kind : terminal ? "terminal" : "script";
+    const kind = node.kind;
     const Glyph = NODE_GLYPHS[kind] ?? null;
     const reached = terminal && (node.state === "done" || node.state === "failed" || node.state === "cancelled");
-    const notReached = v2 && node.hasRun && node.phase === "not-reached";
-    // Review 18:45Z: a version 1 node has the same crisp card (workflowV1NodeCard).
-    const card = v2 ? node.card ?? null : workflowV1NodeCard(node);
+    const notReached = node.hasRun && node.phase === "not-reached";
+    const card = node.card ?? null;
     const text = h("span", { className: "ps-workflow-node-text" },
         h("span", { className: "ps-workflow-node-row" },
             h("span", { className: "ps-workflow-node-name" }, node.id),
@@ -172,7 +169,7 @@ export function WorkflowJoinBar({ join, node = null, selected = false, onSelect 
 export function workflowGraphKey(definition) {
     const states = Array.isArray(definition?.states) ? definition.states : [];
     // A parallel step's body steps decide its branch box (owner batch 7, H2); every other step's entry is as before.
-    return JSON.stringify([definition?.shape ?? "v1", definition?.revision ?? null, definition?.initial ?? null,
+    return JSON.stringify([definition?.revision ?? null, definition?.initial ?? null,
         states.map(node => [node?.id, node?.type, node?.next ?? null, node?.outcomes ?? null,
             node?.type === "parallel" && Array.isArray(node.body?.states) ? [node.body.initial ?? null, node.body.states] : node?.body?.initial ?? null])]);
 }

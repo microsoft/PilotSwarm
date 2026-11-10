@@ -1,22 +1,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { workflowDefinition, workflowNodeViews, layoutWorkflowGraph, workflowLogBounds } from "../src/workflow-view.js";
+import { workflowDefinition as checkedDefinition, layoutWorkflowGraph } from "../src/workflow-view.js";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 
-const start = { eventType: "workflow.started", data: { name: "watch", initial: "poll", states: [
-    { id: "poll", type: "script", runtime: "node", next: { unchanged: "poll", changed: "end", limit: "limit" } },
+/** A graph's states as the runtime describes them: a script state lists its outcomes (the keys of its next). */
+const described = list => list.map(node => (node && typeof node === "object" && node.type !== "terminal"
+    ? { type: "script", runtime: "node", timeoutSeconds: 300, outcomes: Object.keys(node.next ?? {}), ...node } : node));
+const workflowDefinition = data => checkedDefinition(data && Array.isArray(data.states) ? { ...data, states: described(data.states) } : data);
+
+const start = { eventType: "workflow.started", data: { name: "watch", initial: "poll", definitionHash: "h1", states: described([
+    { id: "poll", type: "script", next: { unchanged: "poll", changed: "end", limit: "limit" } },
     { id: "end", type: "terminal", outcome: "succeeded" },
     { id: "limit", type: "terminal", outcome: "blocked" },
-] } };
+]) } };
 const definition = workflowDefinition(start.data);
-const event = (eventType, data) => ({ eventType, data });
 
 test("definition projection preserves transitions without executing source or accepting empty definitions", () => {
     assert.deepEqual(definition.states, start.data.states);
-    assert.throws(() => workflowDefinition(null), /no steps/);
-    assert.throws(() => workflowDefinition({ states: [null, 3] }), /invalid or unsupported step/);
-    assert.throws(() => workflowDefinition({ states: [start.data.states[0], start.data.states[0]] }), /repeats step/);
-    assert.throws(() => workflowDefinition({ states: [start.data.states[0]] }), /step that is not defined/);
+    assert.throws(() => checkedDefinition(null), /no nodes/);
+    assert.throws(() => checkedDefinition({ states: [null, 3] }), /invalid or unsupported node/);
+    assert.throws(() => checkedDefinition({ states: [start.data.states[0], start.data.states[0]] }), /repeats node/);
+    assert.throws(() => checkedDefinition({ states: [start.data.states[0]] }), /node that is not defined/);
 });
 
 test("phone graphs retain sibling branches instead of folding them into a false sequence", () => {
@@ -106,86 +110,15 @@ test("return edges have separate arrival tracks rather than merging into mislead
     }
 });
 
-test("the log's rendered size and accessibility value use the same viewport clamp", () => {
-    assert.deepEqual(workflowLogBounds(335, 210), { min: 100, max: 173, height: 173 });
-    assert.equal(workflowLogBounds(335, 150).height, 150);
-    assert.equal(workflowLogBounds(335, 500).height, 173);
-    assert.equal(workflowLogBounds(600, 210).height, 210);
-});
-
 test("layout terminates for cycles, disconnected states and special object-key IDs", () => {
     const graph = workflowDefinition({ initial: "__proto__", states: [
         { id: "__proto__", type: "script", next: { next: "constructor" } },
         { id: "constructor", type: "script", next: { again: "__proto__" } },
-        { id: "isolated", type: "terminal" },
+        { id: "isolated", type: "terminal", outcome: "succeeded" },
     ] });
     const layout = layoutWorkflowGraph(graph);
     assert.equal(layout.positions.size, 3);
     assert.equal(layout.edges.length, 2);
-});
-
-test("node details use full-run counters when available and label loaded-only counts", () => {
-    const events = [
-        event("workflow.state_started", { stateId: "poll", step: 29 }),
-        event("workflow.state_completed", { stateId: "poll", step: 29, outcome: "unchanged", resultSource: "reported", outputPreview: "<script>unsafe()</script>", toolCalls: [{ name: "read", ok: true }] }),
-    ];
-    const live = { step: 29, nodes: { poll: { state: "done", runs: 29, lastOutcome: "unchanged" } } };
-    const node = workflowNodeViews(definition, events, live)[0];
-    assert.equal(node.runs, 29);
-    assert.equal(node.partial, false);
-    assert.equal(node.result.outputPreview, "<script>unsafe()</script>");
-    assert.equal(node.history.length, 1);
-    const loaded = workflowNodeViews(definition, events)[0];
-    assert.equal(loaded.runs, 1);
-    assert.equal(loaded.partial, true);
-    assert.equal(loaded.state, "done");
-});
-
-test("node details keep failures and terminal summaries separate and bound recent history", () => {
-    const events = Array.from({ length: 60 }, (_, i) =>
-        event("workflow.state_completed", { stateId: "poll", step: i + 1, outcome: "unchanged" }));
-    events.push(event("workflow.state_failed", { stateId: "poll", step: 61, error: "Tool failed" }));
-    const node = workflowNodeViews(definition, events)[0];
-    assert.equal(node.state, "failed");
-    assert.equal(node.result.error, "Tool failed");
-    assert.equal(node.history.length, 40);
-    const terminal = workflowNodeViews(definition, [event("workflow.completed", { stateId: "end", outcome: "succeeded", summary: "Changed" })])[1];
-    assert.equal(terminal.result.summary, "Changed");
-});
-
-test("new durable events override a delayed canvas tick without double-counting attempts", () => {
-    const live = { step: 28, nodes: { poll: { state: "done", runs: 28, lastOutcome: "unchanged" } } };
-    const events = [
-        event("workflow.state_started", { stateId: "poll", step: 29 }),
-        event("workflow.state_completed", { stateId: "poll", step: 29, outcome: "changed", resultSource: "reported" }),
-    ];
-    const node = workflowNodeViews(definition, events, live)[0];
-    assert.equal(node.runs, 29);
-    assert.equal(node.outcome, "changed");
-    const running = { step: 29, nodes: { poll: { state: "running", runs: 29 } } };
-    const completed = workflowNodeViews(definition, events, running)[0];
-    assert.equal(completed.runs, 29);
-    assert.equal(completed.state, "done");
-});
-
-test("timeouts and failed process exits stay failed with or without a canvas snapshot", () => {
-    for (const data of [
-        { outcome: "timeout", resultSource: "timeout", exitCode: null },
-        { outcome: "failure", resultSource: "exit", exitCode: 1 },
-    ]) {
-        const events = [event("workflow.state_completed", { stateId: "poll", step: 1, ...data })];
-        for (const live of [null, { step: 1, nodes: { poll: { state: "failed", runs: 1 } } }]) {
-            assert.equal(workflowNodeViews(definition, events, live)[0].state, "failed");
-        }
-    }
-    for (const data of [{ exitCode: 0 }, { resultSource: "reported" }, { resultSource: "stdout" }]) {
-        assert.equal(workflowNodeViews(definition, [event("workflow.state_completed", { stateId: "poll", step: 1, ...data })])[0].state, "done");
-    }
-});
-
-test("a terminal event stops a running node even without a node-specific cancellation", () => {
-    const events = [event("workflow.state_started", { stateId: "poll", step: 1 }), event("workflow.cancelled", { steps: 1 })];
-    assert.equal(workflowNodeViews(definition, events)[0].state, "cancelled");
 });
 
 test("parallel transitions share a labelled edge rather than drawing overlapping labels", () => {
@@ -249,17 +182,4 @@ test("node selection and log height belong only to their workflow session", () =
     assert.deepEqual(store.getState().ui.workflowViews.wf, { selectedNodeId: "poll", logHeight: 160 });
     assert.deepEqual(store.getState().ui.workflowViews.other, { selectedNodeId: "end" });
     assert.equal(store.getState().ui.workflowViews.agent, undefined);
-});
-
-test("phone and cold-start unknown devices keep the graph in Main until explicit selection", () => {
-    for (const device of [null, "mobile"]) {
-        const { controller, store } = harness();
-        if (device) store.dispatch({ type: "ui/sessionViewDevice", device });
-        controller.revealWorkflowCanvas("wf", true);
-        assert.equal(store.getState().ui.canvasOpen, false);
-        controller.applyCanvasUpdate("wf", { data: { rev: 1, slot: 1 } });
-        assert.equal(store.getState().ui.canvasOpen, false);
-        store.dispatch({ type: "canvas/flip", sessionId: "wf", slot: 1 });
-        assert.equal(store.getState().ui.canvasOpen, true);
-    }
 });

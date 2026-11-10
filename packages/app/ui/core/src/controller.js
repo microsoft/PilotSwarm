@@ -6511,9 +6511,6 @@ export class PilotSwarmUiController {
 
         const state = this.getState();
         if (sessionId !== state.sessions.activeSessionId) return true;
-        // A workflow's graph is already in Main. Do not cover it with the
-        // phone's node-details layer until the viewer selects a node.
-        if (state.sessions.byId[sessionId]?.sessionKind === "workflow" && state.ui.sessionViewDevice !== "desktop") return true;
         // The opt-out is PER SLOT: leaving one canvas by hand must not
         // silence a different canvas's first draw.
         if (state.canvas.prefs[canvasPrefKey(sessionId, slot)]?.optedOut) return true;
@@ -6580,17 +6577,6 @@ export class PilotSwarmUiController {
                 return { ok: true, action: verdict.action };
             })
             .catch((error) => ({ ok: false, reason: error?.message || String(error) }));
-    }
-
-    revealWorkflowCanvas(sessionId, drawn) {
-        if (!drawn) return;
-        const state = this.getState();
-        if (state.sessions.activeSessionId !== sessionId) return;
-        if (state.sessions.byId[sessionId]?.sessionKind !== "workflow") return;
-        if (state.ui.sessionViewDevice !== "desktop") return;
-        if (state.canvas.prefs[canvasPrefKey(sessionId, 1)]?.optedOut) return;
-        if (state.ui.rightPaneMode === "canvas" && state.ui.canvasOpen && (state.ui.canvasSlot || 1) === 1) return;
-        this.dispatch({ type: "canvas/flip", sessionId, slot: 1 });
     }
 
     /**
@@ -6718,8 +6704,7 @@ export class PilotSwarmUiController {
      * `readModelAttempt`, and a request for the same identity is not made
      * again unless forced (Retry): nothing retries on its own, and new events,
      * a session row change or another selection ask again, at most once
-     * each. A legacy (version 1) definition, known from the session's own
-     * workflow.started event, has no read model and is never asked for.
+     * each.
      *
      * One request runs per session; a call while it runs makes one follow-up
      * after it. A response is the result of its own request only: when a
@@ -6762,8 +6747,6 @@ export class PilotSwarmUiController {
         const state = this.getState();
         const session = state.sessions.byId[sessionId];
         if (session?.sessionKind !== "workflow") return;
-        const view = state.ui.workflowViews?.[sessionId] || {};
-        if (view.definition && view.definition.shape !== "v2") return;
         if (!this.workflowReadModels) this.workflowReadModels = new Map();
         const entry = this.workflowReadModels.get(sessionId) || { generation: 0, inFlight: null, again: false, forceAgain: false };
         this.workflowReadModels.set(sessionId, entry);
@@ -8646,9 +8629,6 @@ export class PilotSwarmUiController {
                     });
                 }
             }
-            // Desktop node details accompany the graph in Main. On phones,
-            // node selection opens that layer instead of covering the graph.
-            this.revealWorkflowCanvas(sessionId, anyDrawn);
         } catch {
             // Leave snapshotLoaded unset — the next selection retries.
         }
@@ -10396,7 +10376,6 @@ export class PilotSwarmUiController {
      * without wrapping. Only the selection changes (selectedRunId, as the
      * portal's picker sets it, null for the live run); the controller then
      * reads that run's read model, and the view shows only its own run.
-     * A legacy workflow has no runs to choose.
      */
     moveWorkflowViewRun(delta) {
         const selection = selectWorkflowViewSelection(this.getState());
@@ -10450,7 +10429,7 @@ export class PilotSwarmUiController {
         if (!selection) return;
         const node = selection.selected?.node ?? null;
         const runId = selection.projection.v2?.runId ?? null;
-        const shown = node?.shape === "v2" ? workflowV2ShownExecution(node, runId, selection.projection.selectedExecution) : null;
+        const shown = node ? workflowV2ShownExecution(node, runId, selection.projection.selectedExecution) : null;
         const kv = workflowV2KvApplied(shown?.execution, selection.projection.v2?.readModel?.run);
         if (typeof runId !== "string" || !runId || !kv || kv.accepted === null) {
             this.dispatch({ type: "ui/status", text: "This visit names no variables revision to compare" });
@@ -10531,7 +10510,7 @@ export class PilotSwarmUiController {
         if (!selection) return;
         const node = selection.selected?.node ?? null;
         const runId = selection.projection.v2?.runId ?? null;
-        const shown = node?.shape === "v2" ? workflowV2ShownExecution(node, runId, selection.projection.selectedExecution) : null;
+        const shown = node ? workflowV2ShownExecution(node, runId, selection.projection.selectedExecution) : null;
         const execution = shown?.execution ?? null;
         if (typeof runId !== "string" || !runId || typeof execution?.id !== "string" || !execution.id) {
             this.dispatch({ type: "ui/status", text: shown?.missing ? "The chosen visit is not loaded, so its value is not read"

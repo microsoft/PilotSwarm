@@ -135,7 +135,7 @@ export function workflowOwnerId(session) {
  */
 export function workflowChildModel(view) {
     if (!isRecord(view) || !isRecord(view.readModel)) return null;
-    return view.definition && view.definition.shape !== "v2" ? null : view.readModel;
+    return view.readModel;
 }
 
 /** The read model of a workflow child's live run, when the last read was for it (the default read). */

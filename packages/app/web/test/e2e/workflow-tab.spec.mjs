@@ -21,7 +21,6 @@ import path from "node:path";
 import { startStubServer } from "./stub-server.mjs";
 import { collectPageErrors } from "./page-errors.mjs";
 import { listThemes } from "../../../ui/core/src/themes/index.js";
-import { buildWorkflowCanvasHtml, compileWorkflow, foldWorkflowCanvasState } from "../../../../sdk/dist/workflow/index.js";
 
 const AGENT_ID = "11111110-2222-3333-4444-555555555550";
 const WORKFLOW_ID = "77777777-2222-3333-4444-555555555555";
@@ -39,30 +38,36 @@ const SESSIONS = [
 
 let seq = 0;
 const ev = (eventType, data, offsetMs) => ({ seq: ++seq, sessionId: WORKFLOW_ID, eventType, data, timestamp: now - 30_000 + offsetMs });
+// A run's events as the runtime writes them (packages/sdk/src/workflow/v2/runtime.ts): its run, each visit's execution id
+// and result kind.
+const NIGHTLY_RUN = "run-nightly-1";
+const visit = (stateId, step) => ({ runId: NIGHTLY_RUN, nodeExecutionId: `nx-${stateId}-${step}`, stateId, step });
 const WORKFLOW_EVENTS = [
     ev("workflow.started", {
+        runId: NIGHTLY_RUN, mode: "live", revision: 1, definitionHash: "hash-nightly-1", irSha256: "ir-nightly-1",
         name: "nightly-report",
         version: "1.0.0",
         initial: "collect",
         states: [
-            { id: "collect", type: "script", runtime: "python", timeoutSeconds: 300, next: { found: "report", empty: "nothing", failure: "failed" } },
-            { id: "report", type: "script", runtime: "node", timeoutSeconds: 300, next: { done: "published" } },
+            { id: "collect", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["found", "empty", "failure"],
+                next: { found: "report", empty: "nothing", failure: "failed" } },
+            { id: "report", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["done"], next: { done: "published" } },
             { id: "published", type: "terminal", outcome: "succeeded" },
             { id: "nothing", type: "terminal", outcome: "blocked" },
             { id: "failed", type: "terminal", outcome: "failed" },
         ],
     }, 0),
-    ev("workflow.state_started", { stateId: "collect", runtime: "python", step: 1 }, 100),
+    ev("workflow.state_started", { ...visit("collect", 1), scopeId: "root", ordinal: 1, type: "script" }, 100),
     ev("workflow.state_completed", {
-        stateId: "collect", step: 1, outcome: "found", resultSource: "reported", exitCode: 0, durationMs: 1840,
+        ...visit("collect", 1), outcome: "found", resultKind: "business", durationMs: 1840,
         toolCalls: [{ name: "read_facts", ok: true, durationMs: 40 }], outputPreview: "{\"count\":3}",
     }, 2000),
-    ev("workflow.state_started", { stateId: "report", runtime: "node", step: 2 }, 2100),
+    ev("workflow.state_started", { ...visit("report", 2), scopeId: "root", ordinal: 1, type: "script" }, 2100),
     ev("workflow.state_completed", {
-        stateId: "report", step: 2, outcome: "done", resultSource: "reported", exitCode: 0, durationMs: 420,
+        ...visit("report", 2), outcome: "done", resultKind: "business", durationMs: 420,
         toolCalls: [{ name: "store_fact", ok: true, durationMs: 30 }], outputPreview: "{\"count\":3}",
     }, 2600),
-    ev("workflow.completed", { name: "nightly-report", steps: 2, stateId: "published", outcome: "succeeded", summary: "Report published.", outputPreview: "{\"count\":3}" }, 2700),
+    ev("workflow.completed", { runId: NIGHTLY_RUN, name: "nightly-report", stateId: "published", outcome: "succeeded", summary: "Report published.", outputPreview: "{\"count\":3}" }, 2700),
 ];
 
 let stub;
@@ -110,7 +115,7 @@ async function routeApi(page, { onCreate, workflowEvents = WORKFLOW_EVENTS, onSo
         const pathname = new URL(req.url()).pathname;
         const answer = (result) => route.fulfill({ json: { ok: true, result } });
         const sessions = SESSIONS.map(session => session.sessionId === WORKFLOW_ID ? { ...session, ...workflowState } : session);
-        // readWorkflow: a test that needs a v2 read model answers it; otherwise the stub answers as for a version 1 workflow.
+        // readWorkflow: a test that needs a read model answers it; otherwise the stub has none to give.
         if (onReadWorkflow && pathname.endsWith(`/sessions/${WORKFLOW_ID}/workflow`) && req.method() === "GET") return onReadWorkflow(route);
         if (pathname.endsWith("/models")) return answer([{ providerId: "test", modelName: "test-model", qualifiedName: "test:test-model" }]);
         if (pathname.endsWith("/providers")) return answer({ providers: [{ name: "test", typeId: "test", class: "shared", hasCredential: true, usableByMe: true }] });
@@ -156,15 +161,15 @@ test("the new-session dialog offers no workflow start: an agent starts workflows
     expect(errors).toEqual([]);
 });
 
-test("failed process results remain failed and node output is rendered as text", async ({ page }) => {
+test("a node's runtime error stays failed and its error is rendered as text", async ({ page }) => {
     // A desktop's layout: one click opens a node's details (a phone's first tap only selects; its own test covers that).
     await page.setViewportSize({ width: 1440, height: 900 });
     const events = [
         WORKFLOW_EVENTS[0],
-        { sessionId: WORKFLOW_ID, seq: 2, eventType: "workflow.state_started", data: { stateId: "collect", step: 1 } },
-        { sessionId: WORKFLOW_ID, seq: 3, eventType: "workflow.state_completed", data: {
-            stateId: "collect", step: 1, outcome: "timeout", resultSource: "timeout", exitCode: null,
-            outputPreview: "<img src=x onerror=alert(1)>", stderrTail: "connection timed out",
+        { sessionId: WORKFLOW_ID, seq: 2, eventType: "workflow.state_started", data: { ...visit("collect", 1), scopeId: "root", ordinal: 1, type: "script" } },
+        { sessionId: WORKFLOW_ID, seq: 3, eventType: "workflow.state_failed", data: {
+            ...visit("collect", 1), outcome: "timed_out", resultKind: "runtime_error",
+            error: "<img src=x onerror=alert(1)> connection timed out",
         } },
     ];
     await routeApi(page, { workflowEvents: events, workflowState: { status: "running" } });
@@ -175,29 +180,34 @@ test("failed process results remain failed and node output is rendered as text",
     await expect(node).toHaveClass(/is-failed/);
     await node.click();
     const details = nodeDetails(page);
-    await details.getByRole("tab", { name: "Output", exact: true }).click();
-    await expect(details).toContainText("<img src=x onerror=alert(1)>");
-    await expect(details).toContainText("connection timed out");
+    const result = details.locator('[data-fact="result"]');
+    await expect(result).toContainText("<img src=x onerror=alert(1)>");
+    await expect(result).toContainText("connection timed out");
     await expect(details.locator("img")).toHaveCount(0);
 });
 
+const QUALITY_RUN = "run-quality-1";
+const qualityVisit = (stateId, step) => ({ runId: QUALITY_RUN, nodeExecutionId: `nx-${stateId}-${step}`, stateId, step });
 const QUALITY_EVENTS = [
     { eventType: "workflow.started", data: {
+        runId: QUALITY_RUN, mode: "live", revision: 1, definitionHash: "hash-quality-1", irSha256: "ir-quality-1",
         name: "branching-workflow-test", version: "1.0.0", initial: "collect_metrics", states: [
-            { id: "collect_metrics", type: "script", runtime: "node", next: { success: "evaluate_quality", failure: "failed" } },
-            { id: "evaluate_quality", type: "script", runtime: "node", next: { approved: "approved", blocked: "blocked", failure: "failed" } },
+            { id: "collect_metrics", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["success", "failure"],
+                next: { success: "evaluate_quality", failure: "failed" } },
+            { id: "evaluate_quality", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["approved", "blocked", "failure"],
+                next: { approved: "approved", blocked: "blocked", failure: "failed" } },
             { id: "approved", type: "terminal", outcome: "succeeded" },
             { id: "blocked", type: "terminal", outcome: "blocked" },
             { id: "failed", type: "terminal", outcome: "failed" },
         ],
     } },
-    { eventType: "workflow.state_started", data: { stateId: "collect_metrics", step: 1 } },
-    { eventType: "workflow.state_completed", data: { stateId: "collect_metrics", step: 1, outcome: "success",
-        resultSource: "reported", exitCode: 0, outputPreview: '{"coverage":84,"criticalFindings":0}' } },
-    { eventType: "workflow.state_started", data: { stateId: "evaluate_quality", step: 2 } },
-    { eventType: "workflow.state_completed", data: { stateId: "evaluate_quality", step: 2, outcome: "failure",
-        resultSource: "exit", exitCode: 1, stderrTail: "ReferenceError: input is not defined" } },
-    { eventType: "workflow.failed", data: { stateId: "failed", steps: 2, outcome: "failed" } },
+    { eventType: "workflow.state_started", data: { ...qualityVisit("collect_metrics", 1), scopeId: "root", ordinal: 1, type: "script" } },
+    { eventType: "workflow.state_completed", data: { ...qualityVisit("collect_metrics", 1), outcome: "success", resultKind: "business",
+        outputPreview: '{"coverage":84,"criticalFindings":0}' } },
+    { eventType: "workflow.state_started", data: { ...qualityVisit("evaluate_quality", 2), scopeId: "root", ordinal: 1, type: "script" } },
+    { eventType: "workflow.state_failed", data: { ...qualityVisit("evaluate_quality", 2), outcome: "execution_failed", resultKind: "runtime_error",
+        error: "ReferenceError: input is not defined" } },
+    { eventType: "workflow.failed", data: { runId: QUALITY_RUN, name: "branching-workflow-test", stateId: "failed", outcome: "failed" } },
 ].map((event, index) => ({ ...event, sessionId: WORKFLOW_ID, seq: index + 1, createdAt: new Date().toISOString() }));
 
 // Batch 5 T8: React Flow draws the graph. These read what it shows: the view's translation and scale, the edges it draws
@@ -511,128 +521,11 @@ test("mobile: the Workflow pane maximizes and restores as the canvas does, has n
     await main.getByRole("button", { name: "Inspect evaluate_quality", exact: true }).click();
     await main.getByRole("button", { name: "Inspect evaluate_quality", exact: true }).click();
     await expect(details.locator(NODE_NAME)).toHaveText("evaluate_quality");
-    await details.getByRole("tab", { name: "Output", exact: true }).click();
-    await expect(details).toContainText("ReferenceError: input is not defined");
+    await expect(details.locator('[data-fact="result"]')).toContainText("ReferenceError: input is not defined");
     // The Workflow button takes the phone back to the session's chat.
     await main.locator(".ps-wf-panel.is-sheet").getByRole("button", { name: "← Graph", exact: true }).click();
     await hideWorkflowPane(page);
     await expect(page.locator(".ps-prompt-input").filter({ visible: true })).toBeVisible();
-    expect(errors).toEqual([]);
-});
-
-// ── The live canvas ────────────────────────────────────────────────
-
-const LIVE_ID = "66666666-2222-3333-4444-555555555555";
-const LIVE_YAML = `
-apiVersion: pilotswarm.dev/v1alpha1
-kind: Workflow
-metadata: { name: nightly-report, version: 1.0.0 }
-initial: collect
-states:
-  collect: { type: script, runtime: python, source: x, completion: { outcomes: [found, empty] }, transition: { next: { found: summarize, empty: nothing } } }
-  summarize: { type: script, runtime: node, source: x, completion: { outcomes: [again, done, failure] }, transition: { next: { again: summarize, done: publish, failure: failed } } }
-  publish: { type: script, runtime: powershell, source: x, completion: { outcomes: [success] }, transition: { next: { success: published } } }
-  published: { type: terminal, outcome: succeeded, summary: Report published. }
-  nothing: { type: terminal, outcome: blocked }
-  failed: { type: terminal, outcome: failed }
-`;
-
-test("the main workflow graph follows live ticks and selection drives canvas node details", async ({ page }) => {
-    // A desktop's layout: one click opens a node's details (a phone's first tap only selects; its own test covers that).
-    await page.setViewportSize({ width: 1440, height: 900 });
-    const errors = [];
-    page.on("pageerror", collectPageErrors(errors));
-    const graph = compileWorkflow(LIVE_YAML);
-    const html = buildWorkflowCanvasHtml(graph, foldWorkflowCanvasState([], graph));
-    const log = [
-        { eventType: "workflow.started", data: { name: "nightly-report", initial: graph.initial,
-            states: Object.values(graph.states).map(n => ({ id: n.id, type: n.type, runtime: n.runtime, next: n.next, outcome: n.outcome })) } },
-        { eventType: "workflow.state_started", data: { stateId: "collect", step: 1 } },
-        { eventType: "workflow.state_completed", data: { stateId: "collect", step: 1, outcome: "found", resultSource: "reported", durationMs: 1840, toolCalls: [{ name: "read_facts", ok: true }] } },
-        { eventType: "workflow.state_started", data: { stateId: "summarize", step: 2 } },
-        { eventType: "workflow.state_completed", data: { stateId: "summarize", step: 2, outcome: "again", resultSource: "reported", durationMs: 920, toolCalls: [] } },
-        { eventType: "workflow.state_started", data: { stateId: "summarize", step: 3 } },
-    ];
-    const running = foldWorkflowCanvasState(log);
-    const sockets = [];
-    let subscribed = false;
-    const session = { sessionId: LIVE_ID, title: "Workflow: nightly-report", status: "running", sessionKind: "workflow", createdAt: now - 10_000, updatedAt: now };
-    await page.routeWebSocket("**/api/v1/ws", (socket) => {
-        sockets.push(socket);
-        socket.onMessage((raw) => { if (JSON.parse(raw).type === "subscribeSession") subscribed = true; });
-    });
-    await page.route("**/api/v1/**", async (route) => {
-        const url = new URL(route.request().url());
-        const answer = (result) => route.fulfill({ json: { ok: true, result } });
-        if (url.pathname.endsWith("/events-before") && url.search.includes("workflow.started")) return answer([log[0]]);
-        if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_updated")) {
-            return answer([{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 1, sizeBytes: html.length, name: "Workflow" } }]);
-        }
-        if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_data")) {
-            return answer([{ seq: 2, eventType: "session.canvas_data", data: { slot: 1, dataRev: 1, payload: running } }]);
-        }
-        if (url.pathname.includes("/artifacts/") && url.pathname.includes("canvas.html")) {
-            return route.fulfill({ contentType: "text/html", body: html });
-        }
-        if (url.pathname.endsWith("/management/sessions")) return answer({ sessions: [session], hasMore: false, nextCursor: null });
-        if (url.pathname.endsWith("/sessions") && route.request().method() === "GET") return answer({ sessions: [session], hasMore: false });
-        if (url.pathname.endsWith(`/sessions/${LIVE_ID}`)) return answer({ ...session, events: [], messages: [] });
-        if (url.pathname.endsWith("/events")) return answer([]);
-        return route.fallback();
-    });
-    await page.goto(`http://127.0.0.1:${stub.port}/?session=${LIVE_ID}`);
-
-    const main = workflowTab(page);
-    const graphView = main.locator(".ps-workflow-graph");
-    // A Workflow whose session is not loaded shows its Workflow tab in the middle, with its state in words (05).
-    await expect(main.locator(".ps-wf-bar .ps-wf-state")).toHaveText("Running");
-    await expect(graphView.locator(".ps-workflow-node.is-done")).toHaveCount(1);
-    await expect(graphView.locator(".ps-workflow-node.is-running")).toHaveCount(1);
-    await expect(graphView.locator(".ps-workflow-node.is-running")).toContainText("summarize");
-    // OF-S2-2: a count is a badge, "↻ 2", with its words in its tooltip ("Ran 2 times"), never "×2". Review 18:45Z: a version 1
-    // card (this fixture) is the same crisp card as a version 2 card.
-    await expect(graphView.locator(".ps-workflow-node.is-running .ps-workflow-node-visits")).toHaveText("↻ 2");
-    await expect(graphView.locator(".ps-workflow-node.is-running .ps-workflow-node-visits")).toHaveAttribute("title", "Ran 2 times");
-    await expect(graphView.locator(".ps-workflow-node.is-running .ps-workflow-node-meta.is-state")).toHaveText("●running");
-    await expect(graphView).not.toContainText("Script · ");
-    // Batch 5 T8: every edge is drawn once React Flow has measured the steps, after a step is selected and after a tick.
-    await flowReady(graphView);
-    const liveEdges = edgeCount(log[0].data.states);
-    await expectEdgesDrawn(graphView, liveEdges);
-    await graphView.getByRole("button", { name: "Inspect summarize", exact: true }).click();
-    const details = nodeDetails(page);
-    await expect(details.locator(NODE_NAME)).toHaveText("summarize");
-    await expect(details).toContainText("again → summarize");
-    await expect(page.locator(".ps-canvas-pane iframe")).toHaveCount(0);
-    await expectEdgesDrawn(graphView, liveEdges);
-    await shot(page, "6-live-workflow-main-running");
-
-    // A live tick: the run finishes.
-    await expect.poll(() => subscribed).toBe(true);
-    const done = foldWorkflowCanvasState([
-        ...log,
-        { eventType: "workflow.state_completed", data: { stateId: "summarize", step: 3, outcome: "done", resultSource: "reported", durationMs: 610, toolCalls: [] } },
-        { eventType: "workflow.state_started", data: { stateId: "publish", step: 4 } },
-        { eventType: "workflow.state_completed", data: { stateId: "publish", step: 4, outcome: "success", resultSource: "reported", durationMs: 300, toolCalls: [{ name: "write_artifact", ok: true }] } },
-        { eventType: "workflow.completed", data: { name: "nightly-report", steps: 4, stateId: "published", outcome: "succeeded", summary: "Report published.", outputPreview: "{\"rows\":3}" } },
-    ]);
-    for (const socket of sockets) {
-        socket.send(JSON.stringify({ type: "sessionEvent", sessionId: LIVE_ID, event: {
-            sessionId: LIVE_ID, seq: 3, eventType: "session.canvas_data", createdAt: new Date().toISOString(),
-            data: { slot: 1, dataRev: 2, payload: done },
-        } }));
-    }
-    await expect(graphView.locator(".ps-workflow-node.is-done")).toHaveCount(4);
-    await expect(graphView.locator(".ps-workflow-node.is-running")).toHaveCount(0);
-    await expectEdgesDrawn(graphView, liveEdges);
-    await expect(details.locator(NODE_NAME)).toHaveText("summarize");
-    // The graph was fitted once, before the Node panel took its share of the column (workflow-flow.js, f-06): the last step
-    // can sit under the panel (WebKit at 1440 px), so the test fits the graph again, as a person would, before choosing it.
-    await graphView.getByRole("group", { name: "Graph view", exact: true }).getByRole("button", { name: "Fit to screen", exact: true }).click();
-    await graphView.getByRole("button", { name: "Inspect published", exact: true }).click();
-    await expect(details.locator(NODE_NAME)).toHaveText("published");
-    await expect(details).toContainText("succeeded");
-    await shot(page, "7-live-workflow-main-completed");
     expect(errors).toEqual([]);
 });
 
@@ -668,11 +561,9 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         }
         const details = nodeDetails(page);
         await expect(details.locator(NODE_NAME)).toHaveText("collect");
-        // One panel at a time: the Node panel took the Log's place.
+        // One panel at a time: the Node panel took the Log's place. Its last result is read as words ("count: 3").
         await expect(bottomPanel(main, "log")).toHaveCount(0);
-        await expect(details).toContainText("read_facts");
-        await details.getByRole("tab", { name: "Output", exact: true }).click();
-        await expect(details.locator("pre")).toHaveText('{"count":3}');
+        await expect(details.locator('[data-fact="result"]')).toContainText("count: 3");
         await shot(page, `node-details-${viewport.width}`);
         await page.reload();
         await expect(main.locator(".ps-workflow-graph")).toBeVisible();

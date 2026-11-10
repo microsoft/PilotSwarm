@@ -1,88 +1,14 @@
-import { annotateWorkflowV2Edges, projectWorkflowV2, workflowShape, workflowV2Definition } from "./workflow-v2-view.js";
+import { annotateWorkflowV2Edges, workflowV2Definition } from "./workflow-v2-view.js";
 import { workflowOutcomeWord, workflowRunStateWord } from "./workflow-words.js";
 
 export * from "./workflow-v2-view.js";
 
 /**
- * Read-only workflow view data. Execution and its durable events are unchanged.
- * A workflow v2 payload returns `{ shape: "v2", ... }`; a legacy payload keeps
- * its original result, which has no `shape`.
+ * Read-only workflow view data: the definition a `workflow.started` payload (or a read model's graph) names, checked.
+ * Execution and its durable events are unchanged.
  */
 export function workflowDefinition(data) {
-    if (workflowShape(data) === "v2") return workflowV2Definition(data);
-    if (!Array.isArray(data?.states)) throw new Error("The workflow definition has no steps.");
-    const states = data.states;
-    if (!states.length) throw new Error("The workflow definition has no steps.");
-    const ids = new Set();
-    for (const node of states) {
-        if (!node || typeof node.id !== "string" || !node.id
-            || (node.type !== "script" && node.type !== "terminal")) {
-            throw new Error("The workflow definition contains an invalid or unsupported step.");
-        }
-        if (ids.has(node.id)) throw new Error(`The workflow definition repeats step '${node.id}'.`);
-        ids.add(node.id);
-    }
-    const initial = data.initial || states[0].id;
-    if (!ids.has(initial)) throw new Error("The workflow's first step is not defined.");
-    for (const node of states) {
-        if (node.next != null && (typeof node.next !== "object" || Array.isArray(node.next))) {
-            throw new Error(`Step '${node.id}' has invalid next steps.`);
-        }
-        for (const target of Object.values(node.next || {})) {
-            if (!ids.has(target)) throw new Error(`Step '${node.id}' leads to a step that is not defined.`);
-        }
-    }
-    return { name: data.name, version: data.version, initial, states };
-}
-
-/**
- * Node views for the graph. `options.readModel` is the object that
- * `readWorkflowV2View` returns; only a v2 definition reads it.
- */
-export function workflowNodeViews(definition, events = [], live = null, options = {}) {
-    if (!definition) return [];
-    if (definition.shape === "v2") return projectWorkflowV2({ definition, events, readModel: options?.readModel ?? null }).nodes;
-    const terminal = events.findLast(event => ["workflow.completed", "workflow.failed", "workflow.cancelled"].includes(event?.eventType));
-    return definition.states.map(node => {
-        const history = events.filter(event => event?.data?.stateId === node.id
-            && String(event.eventType).startsWith("workflow."));
-        const latest = history.at(-1);
-        const result = history.findLast(event => event.eventType !== "workflow.state_started");
-        const snapshot = live?.nodes?.[node.id];
-        const attempts = new Set(history.filter(event => Number.isSafeInteger(event.data.step))
-            .map(event => event.data.step)).size || (node.type === "terminal" && latest ? 1 : 0);
-        const eventState = latest?.eventType === "workflow.state_started" ? "running"
-            : latest?.eventType === "workflow.state_completed"
-                ? (latest.data.exitCode === 0 || ["reported", "stdout"].includes(latest.data.resultSource) ? "done" : "failed")
-            : latest?.eventType?.endsWith("failed") ? "failed"
-                : latest?.eventType?.endsWith("cancelled") ? "cancelled"
-                    : latest ? "done" : "idle";
-        // Canvas ticks are best-effort. A newer durable event must not leave
-        // the graph displaying an older running state or result.
-        const eventIsNewer = latest && (!snapshot
-            || Number(latest.data.step ?? latest.data.steps) >= Number(live?.step || 0));
-        const newAttempts = snapshot ? new Set(history.filter(event =>
-            Number.isSafeInteger(event.data.step) && event.data.step > Number(live.step || 0))
-            .map(event => event.data.step)).size : 0;
-        let state = eventIsNewer ? eventState : snapshot?.state || eventState;
-        if (state === "running" && terminal) state = terminal.eventType === "workflow.completed" ? "done" : "cancelled";
-        const outcome = eventIsNewer
-            ? result?.data?.outcome ?? snapshot?.lastOutcome
-            : snapshot?.lastOutcome ?? result?.data?.outcome;
-        const durationMs = eventIsNewer
-            ? result?.data?.durationMs ?? snapshot?.lastDurationMs
-            : snapshot?.lastDurationMs ?? result?.data?.durationMs;
-        return {
-            ...node,
-            state,
-            runs: node.type === "terminal" && latest ? 1 : snapshot ? snapshot.runs + newAttempts : attempts,
-            partial: !snapshot,
-            outcome: outcome ?? (node.type === "terminal" ? node.outcome : undefined),
-            durationMs,
-            result: result?.data || null,
-            history: history.filter(event => event.eventType !== "workflow.state_started").slice(-40).reverse(),
-        };
-    });
+    return workflowV2Definition(data);
 }
 
 /** Keep graph topology independent of the viewport; narrow views pan or zoom. */
@@ -191,13 +117,7 @@ export function layoutWorkflowGraph(definition, availableWidth = 640) {
         edge.labelY = track - 5;
     }
     const layout = { width, height: Math.max(150, y), positions, edges };
-    return definition?.shape === "v2" ? annotateWorkflowV2Edges(definition, layout) : layout;
-}
-
-export function workflowLogBounds(availableHeight, requested = 210) {
-    const min = 100;
-    const max = Math.max(min, Math.floor(availableHeight) - 162);
-    return { min, max, height: Math.max(min, Math.min(max, requested)) };
+    return Array.isArray(definition?.states) ? annotateWorkflowV2Edges(definition, layout) : layout;
 }
 
 /**
@@ -209,20 +129,18 @@ export function workflowLogBounds(availableHeight, requested = 210) {
  * workflow-wide parts (the graph or that there is none, the definition, the
  * revision, the runs) stay authoritative while the selection's own model is
  * loading or failed; and the failure of that selection's last request, if
- * any. A legacy (version 1) definition has no read model, so no failure is
- * shown for it.
+ * any.
  */
 export function workflowReadModelView(view = {}) {
     const selection = view.selectedRunId ?? null;
     const own = view.readModel != null && (view.readModelRunId ?? null) === selection;
-    const legacy = view.definition != null && view.definition.shape !== "v2";
     const attempted = view.readModelAttempt != null && (view.readModelAttempt.runId ?? null) === selection;
     return {
         selectedRunId: selection,
         readModel: own ? view.readModel : null,
         readModelAfterSeq: own && Number.isSafeInteger(view.readModelAfterSeq) ? view.readModelAfterSeq : null,
-        workflowModel: !legacy && view.readModel != null ? view.readModel : null,
-        error: !legacy && attempted && typeof view.readModelError === "string" && view.readModelError ? view.readModelError : null,
+        workflowModel: view.readModel != null ? view.readModel : null,
+        error: attempted && typeof view.readModelError === "string" && view.readModelError ? view.readModelError : null,
     };
 }
 
@@ -299,7 +217,7 @@ export function workflowParentWorking(parent) {
 
 /**
  * Everything the workflow screen shows for the active session, read from one state in one selector (adversarial review
- * UI-1): the session's id and its row, history, canvas, workflow view and saved step places, and whether its parent
+ * UI-1): the session's id and its row, history, workflow view and saved step places, and whether its parent
  * agent is working (H1). Each part is derived from the same id, so a render never pairs one session's id with another's
  * view (separate selectors, each closing over the id of the last render, did: a newly selected workflow's YAML editor
  * could start with the previous one's YAML). Pure.
@@ -320,7 +238,6 @@ export function selectWorkflowViewSnapshotFor(state, workflowSessionId) {
         sessionId,
         session,
         history: sessionId ? state.history?.bySessionId?.get?.(sessionId) : undefined,
-        canvas: sessionId ? state.canvas?.bySessionId?.[sessionId] : undefined,
         view: (sessionId ? state.ui?.workflowViews?.[sessionId] : null) || EMPTY_WORKFLOW_VIEW,
         places: (sessionId ? state.ui?.workflowLayouts?.[`session:${sessionId}`]?.steps : null) ?? null,
         parentWorking: parentId ? workflowParentWorking(state.sessions.byId?.[parentId]) : false,
@@ -330,7 +247,7 @@ export function selectWorkflowViewSnapshotFor(state, workflowSessionId) {
 /** Whether two snapshots (selectWorkflowViewSnapshot) hold the same parts. */
 export function workflowViewSnapshotEqual(a, b) {
     return a === b || (Boolean(a) && Boolean(b) && a.sessionId === b.sessionId && a.session === b.session && a.history === b.history
-        && a.canvas === b.canvas && a.view === b.view && a.places === b.places && a.parentWorking === b.parentWorking);
+        && a.view === b.view && a.places === b.places && a.parentWorking === b.parentWorking);
 }
 
 /**
@@ -341,18 +258,16 @@ export function workflowViewSnapshotEqual(a, b) {
  * - `none`: the read came back, and there is no live run, but test runs exist (a draft with only test runs);
  * - `empty`: the read came back, and the workflow has no run at all (its runs list is empty): there is no run to choose;
  * - `failed`: the read failed (`error`);
- * - `all`: a version 1 workflow (its definition is known and is not v2), or nothing at all known yet about the workflow
- *   (its log is not filtered).
- * A known v2 definition makes the log a v2 one from the first open (re-check RC-2): before its first read comes back it
- * is `loading`, never `all`. In `loading`, `none`, `empty` and `failed` the log shows only the session's own notices,
+ * - `all`: nothing at all known yet about the workflow (its log is not filtered).
+ * A known definition makes the log a run's from the first open (re-check RC-2): before its first read comes back it is
+ * `loading`, never `all`. In `loading`, `none`, `empty` and `failed` the log shows only the session's own notices,
  * never any run's entries; `empty` adds no line of its own, so a log with no notices says "No step output yet." (g-06). Pure.
  */
 export function workflowStepLogScope(view) {
     if (!view || typeof view !== "object") return { kind: "all" };
-    if (view.definition != null && view.definition.shape !== "v2") return { kind: "all" };
     if (typeof view.selectedRunId === "string" && view.selectedRunId) return { kind: "run", runId: view.selectedRunId };
-    const v2 = view.definition?.shape === "v2" || view.readModel != null || view.readModelAttempt != null || Object.hasOwn(view, "selectedRunId");
-    if (!v2) return { kind: "all" };
+    const known = view.definition != null || view.readModel != null || view.readModelAttempt != null || Object.hasOwn(view, "selectedRunId");
+    if (!known) return { kind: "all" };
     const read = workflowReadModelView(view);
     if (read.readModel) {
         const runId = read.readModel.run?.runId;

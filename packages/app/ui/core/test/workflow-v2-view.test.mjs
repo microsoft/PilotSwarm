@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    workflowDefinition, workflowNodeViews, layoutWorkflowGraph, workflowShape, workflowV2Definition,
+    workflowDefinition, layoutWorkflowGraph, workflowV2Definition,
     projectWorkflowV2, projectWorkflowV2ReadModel, compactWorkflowV2Executions, formatWorkflowValue, workflowV2RouteKind,
     workflowV2WaitingReplies, workflowV2WaitingRepliesLabel, workflowV2WaitingRepliesNotice,
 } from "../src/workflow-view.js";
 import {
-    RUN, states, requestStates, startedData, legacyStartedData, ev, started, completed, runtimeError, ended, row, done, readModel,
+    RUN, states, requestStates, startedData, ev, started, completed, runtimeError, ended, row, done, readModel,
 } from "./workflow-v2-fixtures.mjs";
 
 // Times are shown in the reader's own time zone (owner decision local-time-20261104): this file fixes it to UTC, so no
@@ -16,14 +16,7 @@ process.env.TZ = "UTC";
 const definition = workflowDefinition(startedData);
 const byId = (projection, id) => projection.nodes.find(node => node.id === id);
 
-test("shape discrimination keeps legacy payloads legacy and refuses mixed or unsupported v2 payloads", () => {
-    assert.equal(workflowShape(startedData), "v2");
-    assert.equal(workflowShape(legacyStartedData), "legacy");
-    assert.equal(workflowShape(null), "unknown");
-    const legacy = workflowDefinition(legacyStartedData);
-    assert.equal(legacy.shape, undefined);
-    assert.deepEqual(legacy.states, legacyStartedData.states);
-    assert.equal(definition.shape, "v2");
+test("a definition is checked: unsupported or mixed payloads are refused with a reason", () => {
     assert.deepEqual(definition.states, states);
     assert.equal(definition.name, "watch-v2");
     assert.throws(() => workflowDefinition({ ...startedData, states: [...states, { id: "x", type: "teleport", next: {} }] }), /invalid or unsupported node/);
@@ -31,14 +24,9 @@ test("shape discrimination keeps legacy payloads legacy and refuses mixed or uns
     assert.throws(() => workflowDefinition({ ...startedData, states: [{ ...states[0], next: { changed: "nowhere" } }] }), /node that is not defined/);
     assert.throws(() => workflowDefinition({ ...startedData, states: [states[2], states[4], states[5]], initial: "elsewhere" }), /start node/);
     assert.throws(() => workflowV2Definition({ states: [{ id: "m", type: "messaging", mode: "teleport", contract: "A@1", outcomes: [], next: {} }] }), /messaging mode/);
-});
-
-test("legacy node views keep their old meaning with and without the new optional argument", () => {
-    const legacy = workflowDefinition(legacyStartedData);
-    const events = [ev("workflow.state_completed", { stateId: "poll", step: 1, outcome: "changed", exitCode: 1 })];
-    assert.equal(workflowNodeViews(legacy, events)[0].state, "failed");
-    assert.equal(workflowNodeViews(legacy, events, null, { readModel: readModel() })[0].state, "failed");
-    assert.equal(workflowNodeViews(legacy, [ev("workflow.state_completed", { stateId: "poll", step: 1, exitCode: 0 })])[0].state, "done");
+    // A payload that names no outcomes for its script state (the first engine's shape) is not a Workflow's.
+    assert.throws(() => workflowDefinition({ name: "watch", initial: "poll", states: [
+        { id: "poll", type: "script", runtime: "node", next: { changed: "end" } }, { id: "end", type: "terminal", outcome: "succeeded" }] }), /lists no outcomes/);
 });
 
 test("a v2 business result is done, not failed, and a runtime error is told apart from a business outcome", () => {
@@ -52,7 +40,6 @@ test("a v2 business result is done, not failed, and a runtime error is told apar
     assert.equal(byId(error, "poll").state, "failed");
     assert.equal(byId(error, "poll").stateLabel, "Failed · limit");
     assert.equal(byId(error, "poll").result.errorPreview, "Script timed out");
-    assert.equal(workflowNodeViews(definition, [completed("poll", 1, "changed")])[0].state, "done");
 });
 
 test("run status separates a workflow's own terminal outcome from a runtime or controller failure", () => {
@@ -201,10 +188,8 @@ test("q15 (mock M16): replies that arrived before the run was ready show beside 
     assert.equal(workflowV2WaitingRepliesNotice({ status: "paused" }, 0), null);
 });
 
-test("durable events outrank a stale canvas tick, and a stale read model never reverts a completed execution", () => {
-    const stale = { step: 99, current: "poll", status: "running", nodes: { poll: { state: "running", runs: 5 } } };
+test("a stale read model never reverts a completed execution", () => {
     const events = [started("poll", 1), completed("poll", 1, "changed")];
-    assert.equal(workflowNodeViews(definition, events, stale)[0].state, "done");
     const eventsNewer = projectWorkflowV2({ readModel: readModel({ nodeExecutions: [row("poll", 1, "pending")] }), events });
     assert.equal(byId(eventsNewer, "poll").stateLabel, "Done · changed");
     const readNewer = projectWorkflowV2({ readModel: readModel({ nodeExecutions: [done("poll", 1, "changed")] }), events: [started("poll", 1)] });
@@ -237,7 +222,7 @@ test("draft, invalid and no-run read models say so instead of drawing or inventi
 });
 
 test("payloads of the wrong shape are refused with a reason, never read as another version", () => {
-    for (const junk of [startedData, legacyStartedData, { workflowId: "w" }, "text"]) {
+    for (const junk of [startedData, { workflowId: "w" }, "text"]) {
         const model = projectWorkflowV2ReadModel(junk);
         assert.equal(model.ok, false);
         assert.equal(model.status, "unrecognized");
@@ -245,11 +230,10 @@ test("payloads of the wrong shape are refused with a reason, never read as anoth
     }
     const badGraph = projectWorkflowV2ReadModel(readModel({ graph: { revision: 1, initial: "x", states: [{ id: "x", type: "teleport" }] } }));
     assert.equal(badGraph.status, "invalid-graph");
-    const bad = projectWorkflowV2({ definition: workflowDefinition(legacyStartedData), readModel: { nope: true } });
-    assert.equal(bad.definition, null, "a legacy definition is never shown as v2");
-    const legacyEvents = projectWorkflowV2({ definition, events: [ev("workflow.state_completed", { stateId: "poll", step: 1, outcome: "changed", exitCode: 0 })] });
-    assert.equal(byId(legacyEvents, "poll").state, "idle");
-    assert.equal(legacyEvents.banners[0].text, "1 workflow event had an unknown format and was ignored.");
+    // An event that names no run is not drawn: it is counted and said.
+    const runless = projectWorkflowV2({ definition, events: [ev("workflow.state_completed", { stateId: "poll", step: 1, outcome: "changed" })] });
+    assert.equal(byId(runless, "poll").state, "idle");
+    assert.equal(runless.banners[0].text, "1 workflow event had an unknown format and was ignored.");
     const rows = projectWorkflowV2({ readModel: readModel({ nodeExecutions: [{ nodeExecutionId: "x", stateId: "poll", state: "mystery" }] }) });
     assert.equal(rows.banners.at(-1).text, "1 visit had an unknown format and was ignored.");
 });
@@ -320,8 +304,6 @@ test("v2 graphs keep real branches, loops and reconvergence, mark runtime-error 
         assert.ok(edge("pause", "poll"), "the loop back to poll is an edge");
         for (const box of layout.positions.values()) assert.ok(box.x >= 0 && box.x + box.width <= layout.width);
     }
-    const legacy = layoutWorkflowGraph(workflowDefinition(legacyStartedData), 390);
-    assert.ok(legacy.edges.every(edge => edge.kind === undefined));
 });
 
 test("no overlay of any kind is painted unless the run is bound to the graph's revision", () => {

@@ -95,7 +95,7 @@ test("a status in its one word, never raw; a server reason that is only a state 
     for (const reason of ["Stopped", "stopped.", "cancelled", "Canceled"]) assert.equal(workflowReasonShown(reason), null, reason);
     assert.equal(workflowReasonShown(" release freeze "), "release freeze");
     // The step log's Workflow end: "⊘ … canceled", the reason only when it says more.
-    assert.equal(formatWorkflowEventText({ eventType: "workflow.cancelled", data: { name: "x", steps: 1, reason: "Stopped" } }), "⊘ Workflow **x** canceled after 1 visit.");
+    assert.equal(formatWorkflowEventText({ eventType: "workflow.cancelled", data: { runId: RUN, name: "x", reason: "Stopped" } }), "⊘ Workflow **x** canceled.");
     assert.equal(formatWorkflowEventText({ eventType: "workflow.stopped", data: { reason: "Stopped" } }), "⊘ Workflow canceled after started nodes finished.");
 });
 

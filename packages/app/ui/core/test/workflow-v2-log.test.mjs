@@ -1,5 +1,5 @@
-// The workflow execution log for version 2 runs: repeated polls compact into one updating row, the eight v2 control
-// events are logged, and a notice colour follows the result kind. Payload shapes are the ones the runtime writes
+// The workflow execution log: repeated polls compact into one updating row, the control events are logged, and a
+// notice colour follows the result kind. Payload shapes are the ones the runtime writes
 // (packages/sdk/src/workflow/v2 runtime.ts, service.ts, store.ts); nothing here is invented.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -127,30 +127,22 @@ test("poll counts never merge across runs or revisions", () => {
     assert.match(again.chat.at(-1).text, /`poll` → \*\*unchanged\*\*/);
 });
 
-test("legacy steps keep their rules and an unclassified step is never a quiet repeat", () => {
-    const legacy = (next = { unchanged: "poll", failed: "end" }) => event("workflow.started", { name: "legacy", initial: "poll", states: [
-        { id: "poll", type: "script", runtime: "node", next }, { id: "end", type: "terminal", outcome: "succeeded" }] });
-    const lstart = step => event("workflow.state_started", { stateId: "poll", step, runtime: "node" });
-    const ldone = (step, extra = {}) => event("workflow.state_completed", { stateId: "poll", step, outcome: "unchanged", exitCode: 0, resultSource: "reported", ...extra });
-    assert.deepEqual(counts(buildHistoryModel([legacy(), lstart(1), ldone(1), lstart(2), ldone(2), lstart(3), ldone(3)])), [3]);
-    const failedExit = buildHistoryModel([legacy(), lstart(1), ldone(1), lstart(2), ldone(2, { exitCode: 1, resultSource: "exit" })]);
-    assert.deepEqual(counts(failedExit), [1]);
-    assert.equal(failedExit.chat.at(-1).workflowProgress, undefined);
-    const bare = buildHistoryModel([legacy(), lstart(1), ldone(1), lstart(2), event("workflow.state_completed", { stateId: "poll", step: 2, outcome: "unchanged" })]);
-    assert.deepEqual(counts(bare), [1], "no exit code, result source or v2 result kind: not a quiet repeat");
+test("an unclassified step is never a quiet repeat", () => {
+    const bare = buildHistoryModel([started(), begin(1), done(1), begin(2), done(2, "unchanged", "run-a", { resultKind: undefined })]);
+    assert.deepEqual(counts(bare), [1], "no result kind: not a quiet repeat");
     const odd = buildHistoryModel([started(), begin(1), done(1), begin(2), done(2, "unchanged", "run-a", { resultKind: "unexpected" })]);
     assert.deepEqual(counts(odd), [1], "an unknown result kind is not trusted");
-    // An explicit unknown kind is not rescued by legacy fields, and an empty kind is explicit too.
+    // An explicit unknown kind is never trusted, and an empty kind is explicit too.
     for (const resultKind of ["unexpected", "", "Business"]) {
-        const rescued = buildHistoryModel([started(), begin(1), done(1), begin(2),
-            done(2, "unchanged", "run-a", { resultKind, exitCode: 0, resultSource: "reported" })]);
+        const rescued = buildHistoryModel([started(), begin(1), done(1), begin(2), done(2, "unchanged", "run-a", { resultKind })]);
         assert.deepEqual(counts(rescued), [1], JSON.stringify(resultKind));
         assert.equal(rescued.chat.length, 3);
         assert.equal(rescued.chat.at(-1).workflowNotice.color, "yellow", JSON.stringify(resultKind));
     }
-    // A null kind is absent: the legacy rule still applies.
-    const nullKind = buildHistoryModel([legacy(), lstart(1), ldone(1, { resultKind: null }), lstart(2), ldone(2, { resultKind: null })]);
-    assert.deepEqual(counts(nullKind), [2]);
+    // A null kind is no kind: neither step is a quiet repeat.
+    const nullKind = buildHistoryModel([started(), begin(1), done(1, "unchanged", "run-a", { resultKind: null }), begin(2),
+        done(2, "unchanged", "run-a", { resultKind: null })]);
+    assert.deepEqual(counts(nullKind), []);
 });
 
 test("the nine control events are workflow events, in the history paging types, and each is logged from its real payload", () => {
@@ -325,30 +317,26 @@ test("untrusted text is an inline code span: no markup, no line break, bounded",
     assert.equal((failed.match(/`/g) || []).length, 6, "the node, an outcome that is not a known reason, and the error are each one code span");
 });
 
-test("the step notice colour follows the result kind, and legacy colours do not change", () => {
+test("the step notice colour follows the result kind", () => {
     const colour = row => describeWorkflowEvent(row).color;
-    assert.equal(colour(done(1)), "green", "a v2 business result has no exit code and is a normal completion");
+    assert.equal(colour(done(1)), "green", "a business result is a normal completion");
     assert.equal(colour(done(1, "changed")), "yellow");
     assert.equal(colour(done(1, "failure")), "yellow");
     assert.equal(colour(done(1, "unchanged", "run-a", { resultKind: "runtime_error" })), "red");
-    for (const resultKind of ["unexpected", ""]) {
-        assert.equal(colour(done(1, "unchanged", "run-a", { resultKind, exitCode: 0, resultSource: "reported" })), "yellow", JSON.stringify(resultKind));
+    for (const resultKind of ["unexpected", "", null, undefined]) {
+        assert.equal(colour(done(1, "unchanged", "run-a", { resultKind })), "yellow", JSON.stringify(resultKind));
     }
-    assert.equal(colour(event("workflow.state_completed", { stateId: "poll", step: 1, outcome: "unchanged", resultKind: null, exitCode: 0 })), "green", "a null kind is absent");
     assert.equal(colour(runtimeError(1)), "red");
-    const legacy = extra => event("workflow.state_completed", { stateId: "poll", step: 1, outcome: "unchanged", ...extra });
-    assert.equal(colour(legacy({ exitCode: 0 })), "green");
-    assert.equal(colour(legacy({ resultSource: "reported" })), "green");
-    assert.equal(colour(legacy({ exitCode: 1, resultSource: "exit" })), "yellow");
-    assert.equal(colour(legacy({})), "yellow");
-    assert.equal(describeWorkflowEvent(event("workflow.state_failed", { stateId: "poll", step: 1, error: "boom" })).summary, "poll could not run: boom");
-    assert.equal(formatWorkflowEventText(event("workflow.state_failed", { stateId: "poll", step: 1, error: "boom" })), "✕ `poll` · #1 could not run: boom");
+    // A step that could not run (the runtime records no result kind for it) says so.
+    const couldNot = event("workflow.state_failed", { runId: "run-a", nodeExecutionId: "nx-run-a-1", stateId: "poll", step: 1, error: "boom" });
+    assert.equal(describeWorkflowEvent(couldNot).summary, "poll could not run: boom");
+    assert.equal(formatWorkflowEventText(couldNot), "✕ `poll` could not run: boom");
 });
 
 test("an explicit runtime error recorded as a completion reads as a runtime error, not a success", () => {
     const contradictory = done(2, "invalid_output", "run-a", { resultKind: "runtime_error", outputPreview: '{"detail":"x"}' });
     const text = formatWorkflowEventText(contradictory);
-    // A version 2 step is named by its step, with its visit after the first; a legacy one keeps its run's step number.
+    // A step is named by its state, with its visit after the first.
     assert.equal(text, "✕ `poll` · visit 2 · invalid output · recorded as a completion: `{\"detail\":\"x\"}`");
     assert.ok(!text.includes("✓") && !text.includes("→ **"));
     const view = describeWorkflowEvent(contradictory);
@@ -356,15 +344,14 @@ test("an explicit runtime error recorded as a completion reads as a runtime erro
     assert.equal(describeWorkflowEvent(done(1)).title, "◇ Node");
     assert.equal(formatWorkflowEventText(done(2, "x", "run-a", { resultKind: "runtime_error", outputPreview: undefined })), "✕ `poll` · visit 2 · `x` · recorded as a completion");
     assert.match(formatWorkflowEventText(done(2, "x", "run-a", { resultKind: "runtime_error", error: "`bad`\nline" })), /: `'bad' line`$/);
-    // Business results, including a business "failure", and legacy completions keep their text.
+    // Business results, including a business "failure", keep their text.
     assert.equal(formatWorkflowEventText(done(3, "failure")), "✓ `poll` · visit 3 → **failure**.\nOutput: `{\"n\":1}`");
-    assert.match(formatWorkflowEventText(event("workflow.state_completed", { stateId: "poll", step: 1, outcome: "unchanged", exitCode: 1 })), /^✓ `poll` · #1 → \*\*unchanged\*\*\.$/);
     const history = buildHistoryModel([started(), begin(1), done(1), begin(2), contradictory]);
     assert.equal(history.chat.at(-1).workflowNotice.color, "red");
     assert.match(history.chat.at(-1).text, /^✕ `poll` · visit 2 · invalid output · recorded as a completion/);
 });
 
-test("a v2 step is named by its type and its step; a v2 run's end says no step count it does not have (flow-06)", () => {
+test("a step is named by its type and its step; a run's end says no step count it does not have (flow-06)", () => {
     // Each step's own type: a wait, an agent and a terminal step do not claim to be scripts.
     for (const type of ["wait", "agent", "terminal", "script"]) {
         const begun = event("workflow.state_started", { runId: "r", nodeExecutionId: `nx-${type}`, stateId: type, ordinal: 1, type, step: 1 });
@@ -373,16 +360,13 @@ test("a v2 step is named by its type and its step; a v2 run's end says no step c
     }
     const ended = event("workflow.completed", { runId: "r", name: "ux-check", outcome: "succeeded", stateId: "done" });
     assert.equal(formatWorkflowEventText(ended), "✓ Workflow **ux-check** reached `done`: outcome **succeeded**.");
-    // A legacy run's end keeps its step count, as before.
-    assert.match(formatWorkflowEventText(event("workflow.completed", { name: "legacy", outcome: "succeeded", stateId: "done", steps: 0 })),
-        /reached `done` after 0 visits: outcome/);
 });
 
-test("a v2 runtime error with no error text names the effect or says nothing was recorded", () => {
+test("a runtime error with no error text names the effect or says nothing was recorded", () => {
     const effect = event("workflow.state_failed", { runId: "r", nodeExecutionId: "n", stateId: "poll", step: 2, effectStatus: "Failed", resultKind: "runtime_error" });
     assert.equal(formatWorkflowEventText(effect), "✕ `poll` · visit 2 · error: `the action Failed`");
     assert.equal(describeWorkflowEvent(effect).summary, "poll · error");
-    const none = event("workflow.state_failed", { runId: "r", stateId: "poll", step: 2, outcome: "execution_failed", resultKind: "runtime_error" });
-    assert.equal(formatWorkflowEventText(none), "✕ `poll` · #2 · `execution failed`: `no error text`");
+    const none = event("workflow.state_failed", { runId: "r", nodeExecutionId: "m", stateId: "poll", step: 2, outcome: "execution_failed", resultKind: "runtime_error" });
+    assert.equal(formatWorkflowEventText(none), "✕ `poll` · visit 2 · `execution failed`: `no error text`");
     assert.equal(describeWorkflowEvent(none).summary, "poll · execution failed");
 });

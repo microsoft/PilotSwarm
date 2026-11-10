@@ -81,9 +81,7 @@ export const WORKFLOW_CAPABILITIES_SCHEMA = 1;
  *   controller version the runs they start run at, and the operations they
  *   take (a workflow in a workflow agent state's subtree takes fewer; its read
  *   model's personCommands names them).
- * - Stage 2.5 (PR 235 8055fcd8): there is no legacy create. POST
- *   /sessions/workflow (createWorkflowSession), refused for every caller since a
- *   Workflow needs a parent agent, is gone, and with it `legacyCreate`.
+ * - There is no create for people: a Workflow needs a parent agent.
  * - The test operations are listed only while workflow test mode is on
  *   (`commands.testMode`, or else the deployment flag; spec 16): off, a client
  *   offers no test control and shows no test run. `v2.testMode: true` says it

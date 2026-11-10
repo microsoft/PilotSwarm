@@ -51,7 +51,7 @@ test("with no zone named, the reader's own (here America/Los_Angeles): event tim
     ] })];
     for (let step = 1; step <= 2; step += 1) {
         rows.push(event("workflow.state_started", { stateId: "poll", step, runtime: "node" }),
-            event("workflow.state_completed", { stateId: "poll", step, outcome: "unchanged", durationMs: 120, exitCode: 0 }));
+            event("workflow.state_completed", { stateId: "poll", step, outcome: "unchanged", resultKind: "business", durationMs: 120 }));
     }
     const summary = buildHistoryModel(rows).chat.find(item => item.workflowProgress)?.workflowNotice.summary ?? "";
     assert.match(summary, /last checked 2026-11-04 12:30:05 · /);

@@ -13,7 +13,7 @@ const runIdOf = (data) => typeof data?.runId === "string" && data.runId !== "" ?
 /** A branch's scope ("<parallel visit>#<index>"): its visit numbers count on their own, and it runs beside other branches. */
 const branchScope = scopeId => typeof scopeId === "string" && scopeId.includes("#");
 const isStepRow = (row, sessionId) => Boolean(row?.workflowEvent) && row.sessionId === sessionId && !controlEvents.has(row.workflowEvent);
-/** Where a row's step ran: its summary's run, scope and visit, or what a plain step row was marked with (null: version 1). */
+/** Where a row's step ran: its summary's run, scope and visit, or what a plain step row was marked with (null: none). */
 function laneOf(row) {
     const progress = row?.workflowProgress;
     if (progress) return { runId: progress.runId ?? null, scopeId: progress.scopeId ?? null, nodeExecutionId: progress.nodeExecutionId ?? null };
@@ -24,7 +24,7 @@ function laneOf(row) {
  * The scope of a step's event (adversarial review R2-UI-4 and its re-check RC-4): the root scope or one branch of one
  * parallel visit, whose visit numbers count on their own. A start names its scope; a completion that does not is the one
  * of the row its visit (its node execution) started in, else its own visit only, so it never joins another branch's
- * group. A version 1 event names neither: null, as before.
+ * group. An event that names neither: null.
  */
 function scopeOf(chat, sessionId, data) {
     if (typeof data?.scopeId === "string" && data.scopeId) return data.scopeId;
@@ -41,7 +41,7 @@ function scopeOf(chat, sessionId, data) {
  * The step row an event continues (re-check RC-4 and UI-RC2-1): the latest row of the same run (runs run at the same time:
  * test runs beside each other and the live run), and in it of the same branch, so another run's or another branch's start
  * or end never finishes or splits its summary; outside the branches, the latest row of the run outside every branch (the
- * root, a version 1 run, whose rows name no run, or a visit whose start is not loaded). -1 when there is none.
+ * root, rows that name no run, or a visit whose start is not loaded). -1 when there is none.
  */
 function laneIndex(chat, sessionId, runId, scopeId) {
     for (let i = chat.length - 1; i >= 0; i--) {
@@ -174,13 +174,9 @@ export function appendWorkflowProgress(chat, event, message) {
     const sameState = prior?.stateId === data.stateId && (prior.runId ?? null) === runId && (prior.scopeId ?? null) === scopeId;
     const selfLoop = definition && Object.values(definition.next ?? {}).includes(data.stateId);
     const eligible = definition ? (started ? selfLoop : definition.next?.[data.outcome] === data.stateId) : Boolean(sameState);
-    // A v2 business result completed normally and carries no exit code; a v2 runtime error or an unknown result kind is never a quiet repeat. A business
-    // outcome the author named as significant (failure, blocked, ...) stays its own row, as it does for legacy steps.
-    // The old exit-code rule applies only when there is no result kind at all; an explicit kind this build does not know never groups.
-    const hasKind = data.resultKind !== undefined && data.resultKind !== null;
-    const completedCleanly = data.resultKind === "business" ? true
-        : hasKind ? false
-            : data.exitCode === 0 || data.resultSource === "reported" || data.resultSource === "stdout";
+    // A business result completed normally; a runtime error, an unknown result kind or none is never a quiet repeat. A
+    // business outcome the author named as significant (failure, blocked, ...) stays its own row.
+    const completedCleanly = data.resultKind === "business";
     const healthy = started || (!significantOutcomes.has(String(data.outcome ?? "").toLowerCase())
         && completedCleanly
         && !(Array.isArray(data.toolCalls) ? data.toolCalls : []).some(call => call?.ok === false)

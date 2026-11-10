@@ -47,12 +47,6 @@ restarts, timers, joins and stops), `workflow-tools` and `workflow-patterns`.
 How Workflows compare with GitHub Actions, GitHub Agentic Workflows and
 Copilot dynamic workflows: [Workflows and GitHub Copilot](./workflows-and-github-copilot.md).
 
-Version 1 documents (`apiVersion: pilotswarm.dev/v1alpha1`, with only script
-and terminal states) were never released. Models are no longer offered
-`spawn_workflow`, the tool that started them. Where a section below
-describes version 1 documents, or the workflow session that runs underneath a
-Workflow, it says so.
-
 ## Sessions own their Workflows (stage 1)
 
 A session (a chat) owns its **Workflow Definitions** and its **Workflows**.
@@ -751,9 +745,7 @@ JSON that matches its `outputSchema`; if not, the state fails
 and a script past its `timeoutSeconds` fails `timed_out`. Route those codes
 in `next`, or `failure` for all, to handle them.
 
-Workflows run Node only. Version 1 documents admitted before the parent-tool
-policy could also run Python (`call_tool`, `set_result`) or PowerShell 7
-(`Invoke-PilotSwarmTool`, `Set-PilotSwarmResult`).
+Workflows run Node only.
 
 ## Tools a script can call
 
@@ -791,15 +783,9 @@ removal or a changed source binding can stop later calls, but newly added
 parent tools do not enlarge an admitted run.
 
 MCP sampling is refused: an MCP tool cannot request an extra model turn.
-Native shell `detach: true` is also refused. A version 1 workflow's worker
-redraws the workflow session's canvas slot 1 after every step, so its scripts
-may not write there: `draw_canvas`, `update_canvas`, and `canvas_kv` put or
-delete aimed at that slot (no `session_id`, or the workflow's own id; no
-`slot` means slot 1) are refused with "Canvas slot 1 shows this workflow's
-live diagram; use slots 2-5, or the parent's canvas with session_id." Reads,
-other slots and the parent's canvas are unchanged. A version 2 Workflow draws
-no canvas (the Workflow tab shows it), so its scripts may use slot 1. The
-captured workspace stays
+Native shell `detach: true` is also refused. A Workflow draws no canvas of
+its own (the Workflow tab shows it), so its scripts may use any canvas slot.
+The captured workspace stays
 fixed if the parent navigates to another folder. A terminal or deleted parent,
 revoked capability, changed tool schema or changed package binding stops later
 tool calls. A named parent's agent identity supplies the same authorization
@@ -815,8 +801,8 @@ A stdio MCP server is started with a small default environment (`PATH`,
 `HOME`, ...) plus the `env` of its configuration, not the worker's full
 environment; pass what a server needs through its configuration.
 
-A failed tool call is raised in the script (a Python `RuntimeError`, a
-JavaScript `Error`, a PowerShell error), so the script can catch it.
+A failed tool call is raised in the script as a JavaScript `Error`, so the
+script can catch it.
 
 ## Starting a workflow
 
@@ -833,14 +819,14 @@ JavaScript `Error`, a PowerShell error), so the script can catch it.
   Workflow).
 - **There is no top-level creation:** ask an agent to start the child. The
   Web API has no create route (stage 2.5 removed `POST /sessions/workflow`,
-  which refused every call), and an SDK client's start without a parent fails
-  with `WORKFLOW_PARENT_REQUIRED`; no generic tool set is substituted for a
-  missing parent. Already-admitted workflows retain their execution behavior.
-- **Internal creation:** the inline bridge calls `createWorkflowSession`
-  with its host-captured parent grant. An invalid
-  document or inputs that do not match its `inputs` schema are refused with
-  status 400 and a code such as `WORKFLOW_INVALID`,
-  `WORKFLOW_STATE_TYPE_UNSUPPORTED` or `WORKFLOW_INPUT_INVALID`.
+  which refused every call), and no generic tool set is substituted for a
+  missing parent.
+- **`spawn_workflow`:** kept one release and no longer declared to models; a
+  stale call saves the YAML as the next revision of the chat's definition
+  and, with `state: published` and `start: true`, starts it, as
+  `workflow_definition` does. Its YAML must say
+  `apiVersion: pilotswarm.dev/v2-draft`; any other document is refused with
+  `WORKFLOW_API_VERSION`, and there is no converter.
 
 A workflow session does not accept chat messages, answers, steers or session
 messages (refused with `WORKFLOW_SESSION_NOT_CONVERSATIONAL` or a clear
@@ -1122,14 +1108,6 @@ process it started, even one that left its process tree, does not outlive the
 step, and one that keeps the script's output open no longer holds the step
 until its timeout.
 
-Version 1 documents only: upgrade workers before admitting new child
-workflows. New runs use controller `workflow-session@1.1.0` and `workflow.child.*` activities; workers that only
-know the old controller cannot execute them. Do not admit new runs into a
-mixed-version worker fleet. Existing runs keep controller `1.0.0`, its activity
-names and its version at continue-as-new, including historical runtimes.
-The new delay completes before continue-as-new; irrelevant messages do not
-restart a completed poll or reset its deadline.
-
 **Named branches** (IR 11; owner decision 2026-11-08, option A; not on TEST
 until the formal design model passes). A parallel state may give `branches`
 instead of `forEach` and `body`:
@@ -1296,8 +1274,8 @@ duroxide limits shape it:
   continue-as-new gets the current behavior. Version 2 workflows were added
   after PilotSwarm moved to duroxide 0.1.32 (duroxide-node 0.2.4), so no
   version 2 execution started with the older behavior. Executions of other
-  orchestrations, such as version 1 workflows and agent sessions, that an
-  older duroxide started keep the older behavior.
+  orchestrations, such as agent sessions, that an older duroxide started keep
+  the older behavior.
 
 Isolation, in this version:
 
@@ -1328,10 +1306,6 @@ Isolation, in this version:
   own captured permission and workspace policies. Granting a shell tool still
   grants its authorized effects. The script's Node flags do not restrict a
   brokered shell process.
-- The persisted policy marker selects this behavior. Unmarked, already-admitted
-  workflows keep the legacy runtime; a deployment must not change their
-  Python/PowerShell history into Node implicitly. Old workers must be drained
-  before admitting the new policy, because they do not enforce it.
 
 ## Durability
 
@@ -1362,8 +1336,3 @@ deadlines.
 
 The `workflow-reference` skill's Semantics section tells models the same, with
 what pause, stop, cancel, deadlines and joins do.
-
-Version 1 documents ran on another orchestration (`workflow-session`, version
-`1.0.0`). It recorded the compiled graph and every state's result in its
-history, ran the state that was running again from its start after a restart,
-and continued as new every 20 script states.

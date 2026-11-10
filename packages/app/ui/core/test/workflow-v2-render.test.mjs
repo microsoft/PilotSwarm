@@ -11,7 +11,7 @@ import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-wor
 import { workflowGraphKey } from "../../react/src/workflow-graph.js";
 import { WorkflowV2NodeContent } from "../../react/src/workflow-v2-panels.js";
 import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
-import { startedData, legacyStartedData, started, completed, runtimeError, row, done, readModel } from "./workflow-v2-fixtures.mjs";
+import { startedData, started, completed, runtimeError, row, done, readModel } from "./workflow-v2-fixtures.mjs";
 
 function mount({ view = {}, events = [] } = {}) {
     const store = createStore(appReducer, createInitialState({ mode: "api" }));
@@ -24,19 +24,6 @@ function mount({ view = {}, events = [] } = {}) {
 
 const main = controller => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, icon: null }));
 const node = controller => renderToStaticMarkup(React.createElement(WorkflowNodePane, { controller }));
-
-test("the legacy graph renders as before, without v2 marks", () => {
-    const html = main(mount({ view: { definition: workflowDefinition(legacyStartedData) } }));
-    // Words (Workflow Simplified 03, 10): a node's type in a word, never the Node.js runtime as "node". Review 18:45Z: its card
-    // is crisp, as a version 2 card is: a node not reached has no row 2, and its words are its title.
-    assert.ok(html.includes(' · Script · Not reached"'), html);
-    assert.ok(!html.includes("Script · idle"));
-    // No v2 route marks on its edges. Its nodes carry their type for their icon (Workflow Simplified 10).
-    assert.ok(!/<g class="ps-workflow-edge"[^>]*data-kind=/.test(html), html);
-    assert.ok(html.includes('data-kind="script"') && html.includes('data-kind="terminal"'));
-    assert.ok(!html.includes("data-phase=\"waiting\""));
-    assert.equal(html.split(">Workflow session<").length - 1, 0, "no static composer bar (flow-09)");
-});
 
 test("a v2 graph shows typed state labels, runtime-error routes and run status from the read model", () => {
     const model = readModel({ nodeExecutions: [row("pause", 1, "pending", { deadline: "2026-11-01T12:00:30.000Z" }), done("poll", 1, "changed")] });
@@ -63,8 +50,8 @@ test("a v2 graph is drawn from durable events alone, and an unrecognized read mo
     const refused = main(mount({ view: { readModel: { nope: true } } }));
     assert.ok(refused.includes("No graph to show"));
     assert.ok(refused.includes("Workflow&#x27;s data has an unknown format"));
-    const legacyKept = main(mount({ view: { definition: workflowDefinition(legacyStartedData), readModel: { nope: true } } }));
-    assert.ok(legacyKept.includes(' · Script · Not reached"'), "a bad read model never hides a legacy definition");
+    const kept = main(mount({ view: { definition: workflowDefinition(startedData), readModel: { nope: true } } }));
+    assert.ok(kept.includes("Wait · 30 s"), "a bad read model never hides the definition from the workflow's own start");
 });
 
 test("an invalid draft shows its diagnostics as text, and a draft with a graph says it is a draft", () => {

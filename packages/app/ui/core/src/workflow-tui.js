@@ -1,7 +1,7 @@
 import { workflowFailure, workflowNodeChatTitle } from "./workflow-owner.js";
-import { WORKFLOW_STATE_MARKS, workflowDuration, workflowFailureDetail, workflowItemsFraction, workflowOutcomeWord, workflowRunStateWord, workflowRunsText,
-    workflowSessionModel, workflowV1NodeWords } from "./workflow-words.js";
-import { layoutWorkflowGraph, workflowNodeViews, workflowReadModelView } from "./workflow-view.js";
+import { WORKFLOW_STATE_MARKS, workflowFailureDetail, workflowItemsFraction, workflowOutcomeWord, workflowRunStateWord, workflowRunsText,
+    workflowSessionModel } from "./workflow-words.js";
+import { layoutWorkflowGraph, workflowReadModelView } from "./workflow-view.js";
 import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
 import { workflowFirstSentence, workflowNodeNext, workflowNodeWhat } from "./workflow-node-summary.js";
 import {
@@ -50,8 +50,8 @@ function variableRetryOf(projection, modal, variables, payloads) {
  *
  * It reads only what the shared controller has loaded for the session
  * (ensureWorkflowDefinition, ensureWorkflowReadModel: the same reads the
- * portal makes), through the same projection (projectWorkflowV2, or the
- * legacy node views), for the run the person chose (the portal's run picker
+ * portal makes), through the same projection (projectWorkflowV2), for the
+ * run the person chose (the portal's run picker
  * model: the live run, or any run in the workflow's run list).
  *
  * The only commands it sends are a person's run controls for the run it
@@ -126,32 +126,27 @@ function valueText(value) {
 
 /**
  * What the portal's workflow pane shows for one session, from the state the controller loaded: its definition, node
- * views (v2 projection or legacy), status and read problems. Pure; never throws.
+ * views (the projection), status and read problems. Pure; never throws.
  */
-export function workflowSessionProjection({ session = null, events = EMPTY_EVENTS, view = {}, live = null, sessionsById = null } = {}) {
+export function workflowSessionProjection({ session = null, events = EMPTY_EVENTS, view = {}, sessionsById = null } = {}) {
     const safeView = view && typeof view === "object" ? view : {};
     const list = Array.isArray(events) ? events : EMPTY_EVENTS;
     const { readModel, readModelAfterSeq, workflowModel, error, selectedRunId } = workflowReadModelView(safeView);
     // Review 19:27Z: the TUI has no tooltips, so a session is named by its title (as loaded here), never by its id.
     const sessionName = id => sessionTitle(sessionsById, id);
     let v2 = null;
-    if (safeView.definition?.shape === "v2" || readModel || workflowModel) {
+    if (safeView.definition || readModel || workflowModel) {
         // OF-S2-7: the model of the chat that owns the Workflow, which its agent nodes use unless their start chose one.
         const chatModel = workflowSessionModel(sessionsById?.[session?.parentSessionId] ?? null);
-        const projected = projectWorkflowV2({ definition: safeView.definition, readModel, workflowModel, selectedRunId, events: list, readModelAfterSeq,
+        v2 = projectWorkflowV2({ definition: safeView.definition, readModel, workflowModel, selectedRunId, events: list, readModelAfterSeq,
             olderHistory: safeView.olderHistory ?? null, sessionName, chatModel });
-        v2 = !projected.definition && safeView.definition && safeView.definition.shape !== "v2" ? null : projected;
     }
-    const definition = v2 ? v2.definition : safeView.definition ?? null;
-    let nodes = [];
-    if (v2) nodes = v2.nodes;
-    else if (definition) {
-        try { nodes = workflowNodeViews(definition, list, live); } catch { nodes = []; }
-    }
+    const definition = v2 ? v2.definition : null;
+    const nodes = v2 ? v2.nodes : [];
     const terminal = list.findLast(event => ["workflow.completed", "workflow.failed", "workflow.cancelled"].includes(event?.eventType));
-    // Review 19:27Z (D-W13): a version 1 Workflow's status in its one word too, never a raw status ("cancelled").
+    // Review 19:27Z (D-W13): before anything is read, the Workflow's status in its one word too, never a raw status ("cancelled").
     const status = v2 ? v2.status.label : workflowRunStateWord(terminal?.eventType.slice("workflow.".length)
-        || (["completed", "failed", "cancelled"].includes(session?.status) ? session.status : live?.status || session?.status || "running"));
+        || (["completed", "failed", "cancelled"].includes(session?.status) ? session.status : session?.status || "running"));
     // The runs a person can choose (v2): the portal's run picker model, from the workflow's last read model. Test runs only
     // while the server's test mode is on (Workflow Simplified, spec 16).
     const runPicker = v2 ? workflowV2RunPickerModel({ workflowModel, selectedRunId, ownModelLoaded: readModel != null, error,
@@ -177,7 +172,7 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
     // The shown test run's answers and clock, from that run's own read model only, as the portal's answer form and clock.
     const testResponder = v2 ? workflowV2TestResponder(readModel, runCommand) : null;
     return {
-        definition, nodes, v2, status, live, runPicker, sessionName, runControls, runCommand: v2 ? runCommand : null, runNotice, runVariables,
+        definition, nodes, v2, status, runPicker, sessionName, runControls, runCommand: v2 ? runCommand : null, runNotice, runVariables,
         runReadModel: v2 ? readModel ?? null : null,
         draftEditor, draftBuffer, draftEdit, publication, testControls, testResponder, definitionModel: v2 ? readModel ?? workflowModel ?? null : null,
         // The execution whose own result a person chose ({ runId, stateId, executionId }; it applies only to that run and state).
@@ -224,7 +219,7 @@ export function workflowGraphOrder(definition) {
  */
 function transitionsOf(node, layers) {
     const routes = Object.entries(node.next || {}).map(([label, target]) => ({
-        label, target, kind: node.shape === "v2" ? workflowV2RouteKind(node, label) : "outcome",
+        label, target, kind: workflowV2RouteKind(node, label),
         // Layers collapse a cycle into one layer, so a route to the same or an earlier layer stays inside a loop.
         loop: layers.has(target) && layers.has(node.id) && layers.get(target) <= layers.get(node.id),
     }));
@@ -240,7 +235,7 @@ function transitionsOf(node, layers) {
 
 /** An agent state's occurrences that have a child session, newest first (the node's own execution order). */
 function occurrencesOf(node) {
-    if (node.shape !== "v2" || node.kind !== "agent" || !Array.isArray(node.executions)) return [];
+    if (node.kind !== "agent" || !Array.isArray(node.executions)) return [];
     return node.executions
         .filter(execution => typeof execution?.agent?.childSessionId === "string" && execution.agent.childSessionId)
         .map(execution => ({
@@ -295,13 +290,11 @@ export function workflowViewNodes(projection) {
     for (const { id, layer } of order) {
         const node = byId.get(id);
         if (!node) continue;
-        const v2 = node.shape === "v2";
         nodes.push({
             id, layer, node,
             initial: id === projection.definition?.initial,
-            // Review 19:27Z (row 4): a version 1 node in the Workflow's words, as its card says it.
-            label: v2 ? node.label : workflowV1NodeWords(node).label,
-            stateLabel: v2 ? node.stateLabel : workflowV1NodeWords(node).state,
+            label: node.label,
+            stateLabel: node.stateLabel,
             state: STATE_GLYPHS[node.state] ? node.state : "idle",
             runs: Number(node.runs) || 0,
             partial: Boolean(node.partial),
@@ -312,14 +305,14 @@ export function workflowViewNodes(projection) {
     return groupedOrder(nodes);
 }
 
-/** The state shown first: the modal's selection, else the pending state (v2) or the live current state, the initial state, the first. */
+/** The state shown first: the modal's selection, else the pending state, the initial state, the first. */
 export function workflowViewDefaultNode(projection, nodes) {
     const ids = new Set(nodes.map(entry => entry.id));
-    const pending = projection?.v2 ? nodes.find(entry => entry.node.pending) : nodes.find(entry => entry.id === projection?.live?.current);
+    const pending = nodes.find(entry => entry.node.pending);
     return (pending && pending.id) || (ids.has(projection?.definition?.initial) ? projection.definition.initial : nodes[0]?.id ?? null);
 }
 
-/** The session's projection from the state the controller loaded (its events, workflow view and canvas data). */
+/** The session's projection from the state the controller loaded (its events and workflow view). */
 export function workflowViewProjectionFor(state, sessionId) {
     const session = sessionId ? state?.sessions?.byId?.[sessionId] || null : null;
     const history = sessionId ? state?.history?.bySessionId?.get?.(sessionId) || null : null;
@@ -327,7 +320,6 @@ export function workflowViewProjectionFor(state, sessionId) {
         session,
         events: history?.events || EMPTY_EVENTS,
         view: state?.ui?.workflowViews?.[sessionId] || {},
-        live: state?.canvas?.bySessionId?.[sessionId]?.dataPayload ?? null,
         sessionsById: state?.sessions?.byId ?? null,
     });
 }
@@ -1438,8 +1430,6 @@ function visitResultWords(execution, kind) {
     return "outcome not recorded";
 }
 
-const durationText = ms => workflowDuration(ms) ?? "not recorded";
-
 /**
  * An item's state in an item row (review 19:27Z row 9): the marks of the words module where it ended canceled or failed,
  * or runs ("⊘ canceled · limit", "✕ failed", "● running"); "ok", "waiting", "not loaded" as they are.
@@ -1577,7 +1567,7 @@ function kvLines(execution, projection) {
 export function workflowViewExecutionStep(selection, delta) {
     const node = selection?.selected?.node ?? null;
     // Review 19:27Z (row 16): a node's executions are visits; no ids.
-    if (!node || node.shape !== "v2") return { ok: false, selection: null, status: "This node's visits have no results of their own here" };
+    if (!node) return { ok: false, selection: null, status: "This node's visits have no results of their own here" };
     const executions = Array.isArray(node.executions) ? node.executions : [];
     if (!executions.length) return { ok: false, selection: null, status: "No visit of this node is loaded" };
     const runId = selection.projection.v2?.runId ?? null;
@@ -1603,28 +1593,18 @@ function visitPlace(node, execution) {
 }
 
 /**
- * The selected state's executions in the loaded history, newest first, as the portal's History tab lists them: a v2
- * state's visits with neighbouring unchanged repeats combined (compactWorkflowV2Executions), a legacy state's steps.
+ * The selected state's executions in the loaded history, newest first, as the portal's History tab lists them: its
+ * visits with neighbouring unchanged repeats combined (compactWorkflowV2Executions).
  */
 function historyLines(node) {
-    if (node.shape === "v2") {
-        const rows = compactWorkflowV2Executions(Array.isArray(node.executions) ? node.executions : []);
-        // An item's visit says its item and, with more than one, its For each visit (adversarial review R2-UI-5). Review
-        // 19:27Z (row 17): visits, each result in the Workflow's words.
-        const where = execution => (execution?.id && node.where?.[execution.id] ? `${node.where[execution.id].label} · ` : "");
-        const lines = rows.slice(0, HISTORY_ROW_LIMIT).map(({ execution, count, from, to }) =>
-            `  ${where(execution)}${count > 1 ? `visits ${from}–${to} ×${count}` : `visit ${execution.ordinal ?? "—"}`} · ${visitResultWords(execution, node.kind)}`);
-        if (rows.length > HISTORY_ROW_LIMIT) lines.push(`  … ${rows.length - HISTORY_ROW_LIMIT} more loaded`);
-        return { title: "Visits · newest first · repeats combined:", lines };
-    }
-    const history = Array.isArray(node.history) ? node.history : [];
-    const lines = history.slice(0, HISTORY_ROW_LIMIT).map(event => {
-        const data = event?.data && typeof event.data === "object" ? event.data : {};
-        const ended = data.outcome ? workflowOutcomeWord(data.outcome) : workflowOutcomeWord(String(event?.eventType || "").split(".").at(-1).replace(/^state_/, ""));
-        return `  #${data.step ?? data.steps ?? "—"} · ${ended} · ${durationText(data.durationMs)}`;
-    });
-    if (history.length > HISTORY_ROW_LIMIT) lines.push(`  … ${history.length - HISTORY_ROW_LIMIT} more loaded`);
-    return { title: "Visits · newest first:", lines };
+    const rows = compactWorkflowV2Executions(Array.isArray(node.executions) ? node.executions : []);
+    // An item's visit says its item and, with more than one, its For each visit (adversarial review R2-UI-5). Review
+    // 19:27Z (row 17): visits, each result in the Workflow's words.
+    const where = execution => (execution?.id && node.where?.[execution.id] ? `${node.where[execution.id].label} · ` : "");
+    const lines = rows.slice(0, HISTORY_ROW_LIMIT).map(({ execution, count, from, to }) =>
+        `  ${where(execution)}${count > 1 ? `visits ${from}–${to} ×${count}` : `visit ${execution.ordinal ?? "—"}`} · ${visitResultWords(execution, node.kind)}`);
+    if (rows.length > HISTORY_ROW_LIMIT) lines.push(`  … ${rows.length - HISTORY_ROW_LIMIT} more loaded`);
+    return { title: "Visits · newest first · repeats combined:", lines };
 }
 
 /**
@@ -1695,64 +1675,60 @@ function detailLines(selection, width) {
     const node = selected.node;
     add(`${selected.id} · ${selected.label}${selected.initial ? " · start" : ""}`, "cyan", { bold: true });
     // What it does, in one sentence (finding 7), as the portal's Node panel says it.
-    const what = node.shape === "v2" ? workflowNodeWhat(node) : null;
+    const what = workflowNodeWhat(node);
     if (what) for (const text of wrapped(what, Math.max(20, width))) add(text);
     add(`Status: ${selected.stateLabel}`);
     // Review 19:27Z (rows 6, 7): "Visits: 3+" (older visits not loaded); "Outcome: ✕ limit", in the Workflow's words.
     add(`Visits: ${workflowRunsText(selected.runs, selected.partial)}`);
-    if (node.shape === "v2") {
-        add(`Outcome: ${node.outcome ? node.resultKind === "runtime_error" ? visitResultWords(node, node.kind) : workflowOutcomeWord(node.outcome) : "not recorded"}`);
-        // Why the visit the details show ended (owner decision q14; mock M14 "Inspect cancellation").
-        const ending = workflowV2VisitEnding(workflowV2ShownExecution(node, projection.v2?.runId ?? null, projection.selectedExecution).execution);
-        if (ending) for (const text of wrapped(`Why it ended: ${ending.text}`, Math.max(20, width))) add(text);
-        // An agent state's task, the workflow interface it names and what the shown run pins it to, as the portal says them.
-        if (node.kind === "agent") {
-            add(`Agent: ${workflowV2AgentTask(node)}`);
-            add(`Chat: ${workflowV2AgentChatMode(node)}`);
-            if (workflowV2AgentTools(node)) add(`Tools: ${workflowV2AgentTools(node)}`);
-            // OF-S2-7: the model it uses, chosen at start or from the chat.
-            if (node.model) for (const text of wrapped(node.model.text, Math.max(20, width))) add(text);
-            const told = node.invoke?.source === "agent" ? null : workflowFirstSentence(node.about?.prompt, Math.max(40, width - 8));
-            if (told) add(`Prompt: ${told}`, "gray");
-            for (const [label, value] of workflowV2AgentBindingRows(node.binding)) add(`${label}: ${value}`);
+    add(`Outcome: ${node.outcome ? node.resultKind === "runtime_error" ? visitResultWords(node, node.kind) : workflowOutcomeWord(node.outcome) : "not recorded"}`);
+    // Why the visit the details show ended (owner decision q14; mock M14 "Inspect cancellation").
+    const ending = workflowV2VisitEnding(workflowV2ShownExecution(node, projection.v2?.runId ?? null, projection.selectedExecution).execution);
+    if (ending) for (const text of wrapped(`Why it ended: ${ending.text}`, Math.max(20, width))) add(text);
+    // An agent state's task, the workflow interface it names and what the shown run pins it to, as the portal says them.
+    if (node.kind === "agent") {
+        add(`Agent: ${workflowV2AgentTask(node)}`);
+        add(`Chat: ${workflowV2AgentChatMode(node)}`);
+        if (workflowV2AgentTools(node)) add(`Tools: ${workflowV2AgentTools(node)}`);
+        // OF-S2-7: the model it uses, chosen at start or from the chat.
+        if (node.model) for (const text of wrapped(node.model.text, Math.max(20, width))) add(text);
+        const told = node.invoke?.source === "agent" ? null : workflowFirstSentence(node.about?.prompt, Math.max(40, width - 8));
+        if (told) add(`Prompt: ${told}`, "gray");
+        for (const [label, value] of workflowV2AgentBindingRows(node.binding)) add(`${label}: ${value}`);
+    }
+    for (const line of node.description || []) add(line, "gray");
+    // Each branch's result for a parallel step (owner decision q16; mocks M22 to M24).
+    if (node.evidence) {
+        const evidence = node.evidence;
+        // Review 19:27Z (rows 8, 9; C): items, "k/n ok", the marks of the words module, no quotes or parentheses.
+        // IR 11: a named-branch state counts branches, by name.
+        add(`${evidence.names ? "Branches" : "Items"}: ${workflowItemsFraction(evidence.succeeded, evidence.total) ?? `${evidence.succeeded}/${evidence.total} ok`}${evidence.running ? ` · ${evidence.running} running` : ""}`, "cyan");
+        if (evidence.blocked && evidence.blocking.length) {
+            add(`  Join blocked by ${workflowV2ItemList(evidence.blocking, evidence.names)}`, "yellow");
         }
-        for (const line of node.description || []) add(line, "gray");
-        // Each branch's result for a parallel step (owner decision q16; mocks M22 to M24).
-        if (node.evidence) {
-            const evidence = node.evidence;
-            // Review 19:27Z (rows 8, 9; C): items, "k/n ok", the marks of the words module, no quotes or parentheses.
-            // IR 11: a named-branch state counts branches, by name.
-            add(`${evidence.names ? "Branches" : "Items"}: ${workflowItemsFraction(evidence.succeeded, evidence.total) ?? `${evidence.succeeded}/${evidence.total} ok`}${evidence.running ? ` · ${evidence.running} running` : ""}`, "cyan");
-            if (evidence.blocked && evidence.blocking.length) {
-                add(`  Join blocked by ${workflowV2ItemList(evidence.blocking, evidence.names)}`, "yellow");
-            }
-            // Owner decision join-k-of-n (J1b): whether the limit ended it, or passed after enough items succeeded.
-            if (evidence.timedOut) add("  Limit passed before the join.", "yellow");
-            if (evidence.joinedAfterLimit) add(`  Limit passed after enough ${evidence.names ? "branches" : "items"} succeeded; the join used them.`, "gray");
-            for (const row of evidence.rows.slice(0, EVIDENCE_ROWS)) {
-                add(`  ${row.name ?? `item ${workflowV2BranchNumber(row.index)}`} · ${itemStatusWords(row.status)}${row.step ? ` · at ${row.step}` : ""}`
-                    + `${row.why ? ` · ${lowerFirst(row.why)}` : row.result ? ` · ${row.result}` : ""}`,
-                    row.status === "failed" || row.status.startsWith("canceled") ? "yellow" : "gray");
-            }
-            if (evidence.rows.length > EVIDENCE_ROWS) {
-                // IR 11: a named fork's rows are branches.
-                const more = evidence.rows.length - EVIDENCE_ROWS;
-                add(`  … ${more} more ${evidence.names ? (more === 1 ? "branch" : "branches") : "items"} · the portal lists them all`, "gray");
-            }
+        // Owner decision join-k-of-n (J1b): whether the limit ended it, or passed after enough items succeeded.
+        if (evidence.timedOut) add("  Limit passed before the join.", "yellow");
+        if (evidence.joinedAfterLimit) add(`  Limit passed after enough ${evidence.names ? "branches" : "items"} succeeded; the join used them.`, "gray");
+        for (const row of evidence.rows.slice(0, EVIDENCE_ROWS)) {
+            add(`  ${row.name ?? `item ${workflowV2BranchNumber(row.index)}`} · ${itemStatusWords(row.status)}${row.step ? ` · at ${row.step}` : ""}`
+                + `${row.why ? ` · ${lowerFirst(row.why)}` : row.result ? ` · ${row.result}` : ""}`,
+                row.status === "failed" || row.status.startsWith("canceled") ? "yellow" : "gray");
         }
-        // A parallel step's join (owner batch 7, H2), as the portal's join bar says it, the rule in words and its own time
-        // limit (owner decision join-k-of-n).
-        if (node.joinBar) {
-            add(`${node.joinBar.label}${node.joinBar.stateText ? ` · ${node.joinBar.stateText}` : ""}`, "cyan");
-            for (const text of wrapped(workflowV2JoinWords(node), Math.max(20, width), "  ")) add(text, "gray");
-            if (node.joinBar.limit) for (const text of wrapped(node.joinBar.limit.title, Math.max(20, width), "  ")) add(text, "gray");
+        if (evidence.rows.length > EVIDENCE_ROWS) {
+            // IR 11: a named fork's rows are branches.
+            const more = evidence.rows.length - EVIDENCE_ROWS;
+            add(`  … ${more} more ${evidence.names ? (more === 1 ? "branch" : "branches") : "items"} · the portal lists them all`, "gray");
         }
-    } else if (node.outcome) {
-        add(`Outcome: ${workflowOutcomeWord(node.outcome)}`);
+    }
+    // A parallel step's join (owner batch 7, H2), as the portal's join bar says it, the rule in words and its own time
+    // limit (owner decision join-k-of-n).
+    if (node.joinBar) {
+        add(`${node.joinBar.label}${node.joinBar.stateText ? ` · ${node.joinBar.stateText}` : ""}`, "cyan");
+        for (const text of wrapped(workflowV2JoinWords(node), Math.max(20, width), "  ")) add(text, "gray");
+        if (node.joinBar.limit) for (const text of wrapped(node.joinBar.limit.title, Math.max(20, width), "  ")) add(text, "gray");
     }
     if (selected.transitions.length) {
         // Where each outcome goes, in the portal's words (finding 7): an error route says when it is taken, never "runtime error route".
-        const next = node.shape === "v2" ? workflowNodeNext(node) : { lines: [], failure: null };
+        const next = workflowNodeNext(node);
         const words = new Map(next.lines.map(line => [line.label, line.text]));
         add("Next:", "cyan");
         for (const route of selected.transitions) {
@@ -1785,18 +1761,12 @@ function detailLines(selection, width) {
             for (const entry of under.slice(0, SUBTREE_ROWS)) add(`${"  ".repeat(entry.depth)}${entry.title ?? "untitled session"} · ${sessionStatusWord(entry.status)}`, "gray");
             if (under.length > SUBTREE_ROWS) add(`  … ${under.length - SUBTREE_ROWS} more · the portal lists them all`, "gray");
         }
-    } else if (node.shape === "v2" && node.kind === "agent") {
+    } else if (node.kind === "agent") {
         add("No child session is listed for it yet.", "gray");
     }
-    const result = node.result;
-    if (node.shape === "v2") {
-        // One visit's own result: the visit chosen with [ ] for exactly this run and state, else the latest.
-        for (const line of executionResultLines(node, projection)) {
-            for (const text of wrapped(line.text, Math.max(20, width), line.indent)) add(text, line.color);
-        }
-    } else if (result) {
-        const text = result.error || result.reason || result.outputPreview || result.summary;
-        if (text) add(`Output: ${bounded(valueText(text), VALUE_LIMIT)}`);
+    // One visit's own result: the visit chosen with [ ] for exactly this run and state, else the latest.
+    for (const line of executionResultLines(node, projection)) {
+        for (const text of wrapped(line.text, Math.max(20, width), line.indent)) add(text, line.color);
     }
     if (node.type === "terminal" && projection.v2?.status?.terminalState === selected.id) {
         const runValue = projection.v2.error ?? projection.v2.output;
@@ -1807,7 +1777,7 @@ function detailLines(selection, width) {
     if (history.lines.length) for (const line of history.lines) add(line);
     else add("  No visits loaded.", "gray");
     // Who did what in the visit the details show, from the workflow's events (owner decision q14; mock M09 "Inspect audit").
-    const shownVisit = node.shape === "v2" ? workflowV2ShownExecution(node, projection.v2?.runId ?? null, projection.selectedExecution).execution : null;
+    const shownVisit = workflowV2ShownExecution(node, projection.v2?.runId ?? null, projection.selectedExecution).execution;
     const activity = shownVisit?.id && projection.v2?.bound
         ? workflowV2Activity(projection.events, { runId: projection.v2.runId, nodeExecutionId: shownVisit.id, limit: ACTIVITY_ROWS }) : [];
     if (activity.length) {
@@ -1817,7 +1787,7 @@ function detailLines(selection, width) {
         }
     }
     // The shown run's older history: o reads its next, older page (the read model holds its newest rows and open ones).
-    const runHistory = node.shape === "v2" ? projection.v2?.readModel?.run?.history ?? null : null;
+    const runHistory = projection.v2?.readModel?.run?.history ?? null;
     if (runHistory?.loading) add("  Reading older visits…", "yellow");
     else if (runHistory?.more) add("  Older visits not loaded · o loads older visits", "gray");
     const effects = testEffectLines(projection, selected.id);

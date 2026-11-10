@@ -5148,8 +5148,7 @@ button.ps-session-detail-value.ps-session-detail-link:focus-visible { outline: 2
   margin-left: auto;
 }
 
-/* of-04: the workflow toolbar's icon buttons, in the top bar's icon style; their tooltip is .ps-icon-tooltip. Not
-   .ps-workflow-tool: that is a step's tool-call row in the step details. */
+/* of-04: the workflow toolbar's icon buttons, in the top bar's icon style; their tooltip is .ps-icon-tooltip. */
 .ps-workflow-tool-wrap { display: inline-flex; }
 .ps-mini-button.ps-workflow-tool-button {
   display: inline-flex;
@@ -5622,7 +5621,6 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 .ps-workflow-property span { color: var(--ps-muted); }
 .ps-workflow-property strong { font-weight: 500; text-align: right; overflow-wrap: anywhere; }
 .ps-workflow-transition { display: block; width: 100%; text-align: left; padding: 8px 0; border: 0; background: transparent; color: var(--ps-accent); font: inherit; font-size: 0.85rem; cursor: pointer; overflow-wrap: anywhere; }
-.ps-workflow-tool { padding: 8px; background: var(--ps-chrome); margin-bottom: 6px; border-radius: 4px; font-size: 0.8rem; overflow-wrap: anywhere; }
 .ps-workflow-detail-content pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--ps-chrome); font-size: 0.85rem; }
 .ps-workflow-detail-content table { border-collapse: collapse; width: 100%; font-size: 0.8rem; }
 .ps-workflow-detail-content th, .ps-workflow-detail-content td { text-align: left; padding: 8px 4px; border-bottom: 1px solid var(--ps-border); }
@@ -13063,8 +13061,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
   overflow: hidden;
 }
 .ps-wf-switch:not(.is-icons) button,
-.ps-wf-panel-tabs button,
-.ps-wf-node-tabs button {
+.ps-wf-panel-tabs button {
   appearance: none;
   border: 0;
   background: transparent;
@@ -13077,8 +13074,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
    foreground (6.3:1 or more in every theme). The selection colour with the page's foreground on it read 1.65:1 in
    Workspace Dark and 3.04:1 in GitHub Light ("Node"). */
 .ps-wf-switch button.is-on,
-.ps-wf-panel-tabs button.is-on,
-.ps-wf-node-tabs button.is-on {
+.ps-wf-panel-tabs button.is-on {
   background: var(--ps-modal-selected-background);
   color: var(--ps-modal-selected-foreground);
 }
@@ -13339,7 +13335,6 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-fact > strong { font-weight: 500; overflow-wrap: anywhere; }
 .ps-wf-node { display: grid; gap: 6px; }
 .ps-wf-node-head { margin: 0; overflow-wrap: anywhere; }
-.ps-wf-node-tabs { display: inline-flex; gap: 2px; }
 /* The Node panel's summary (finding 7): what it does, Now, Runs, the last result, the agent, Next. */
 .ps-wf-summary, .ps-wf-def-node { display: grid; gap: 8px; }
 .ps-wf-what { margin: 0; font-size: 0.95em; overflow-wrap: anywhere; }

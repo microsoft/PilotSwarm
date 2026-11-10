@@ -8,9 +8,8 @@
  *    (packages/sdk/src/workflow/v2/tools.ts). The caller supplies it; this module
  *    has no endpoint of its own.
  *
- * A payload that does not have the V2 shape is refused with a reason. It is
- * never read as a legacy workflow, and a legacy payload is never read as V2.
- * Canvas ticks are not read at all: V2 does not draw a workflow canvas.
+ * A payload that does not have this shape is refused with a reason. Canvas
+ * ticks are not read at all: a Workflow does not draw a workflow canvas.
  */
 import { formatLocalTime } from "./formatting.js";
 import { WORKFLOW_RUN_STATE_WORDS, workflowAgentModel, workflowSpawnedModels, workflowErrorRouteWords, workflowAskAnswerWords, workflowReasonShown,
@@ -38,15 +37,6 @@ const ROW_KEYS = { executions: "nodeExecutionId", inbox: "messageId", outbox: "e
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const definedOnly = object => Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined));
 const text = value => typeof value === "string" && value ? value : undefined;
-
-/** "v2" or "legacy" for a `workflow.started` payload, "unknown" when it has no state list. */
-export function workflowShape(data) {
-    if (!isRecord(data) || !Array.isArray(data.states)) return "unknown";
-    if (typeof data.irSha256 === "string" || typeof data.definitionHash === "string") return "v2";
-    const v2State = data.states.some(state => isRecord(state)
-        && (state.type === "wait" || state.type === "messaging" || (state.type === "script" && Array.isArray(state.outcomes))));
-    return v2State ? "v2" : "legacy";
-}
 
 /** The state's kind: script, wait, receive, send, request or terminal. */
 export function workflowV2Kind(node) {
@@ -110,7 +100,7 @@ export function workflowV2Definition(data, meta = {}) {
             initial: typeof item.initial === "string" ? item.initial : null, states: Array.isArray(item.states) ? item.states.filter(id => typeof id === "string") : [] })) }))(node)
         : node));
     return {
-        shape: "v2", name: data.name ?? meta.name ?? undefined, version: data.version ?? meta.version ?? undefined, initial, states,
+        name: data.name ?? meta.name ?? undefined, version: data.version ?? meta.version ?? undefined, initial, states,
         ...definedOnly({ revision: data.revision ?? meta.revision, definitionHash: data.definitionHash ?? meta.definitionHash,
             irSha256: data.irSha256 ?? meta.irSha256 }),
     };
@@ -1247,7 +1237,7 @@ function nodeView(node, executions, context) {
         typeof shownVisit?.id === "string" ? context.spawnedModels?.get(shownVisit.id) ?? null : null,
         { unreadable: context.agentModelsUnreadable === true }) : null;
     const view = {
-        ...node, shape: "v2", kind, label: workflowV2NodeLabel(node), state, phase, stateLabel, runs,
+        ...node, kind, label: workflowV2NodeLabel(node), state, phase, stateLabel, runs,
         // Workflow Simplified (10, W7): whether the shown graph has a run (a node it did not reach is dimmed), and the
         // node's items when several reached it (W5).
         hasRun: Boolean(context.hasRun), ...(itemCounts ? { itemCounts } : {}),
@@ -1314,7 +1304,7 @@ export function projectWorkflowV2({ definition = null, readModel = null, workflo
     const banners = model ? [...model.banners] : shared ? [...shared.workflowBanners] : [];
     const modelOk = Boolean(model?.ok);
     // A read model that says there is no graph is not overridden by an older run's definition, whichever run it was read for.
-    const active = shared?.ok ? shared.definition : definition?.shape === "v2" ? definition : null;
+    const active = shared?.ok ? shared.definition : definition ?? null;
     // With a read model, only the run it names, and only when that run used the graph's revision, may be overlaid.
     // Events that belong to no selected run, to another run than the one selected, or to another revision, are never
     // painted onto the graph.
@@ -1400,7 +1390,7 @@ export function projectWorkflowV2({ definition = null, readModel = null, workflo
     // Workflow Simplified (F4): the node a Workflow starts at carries the Start marker.
     const nodes = (active?.states || []).map(node => ({ ...nodeView(node, executions, context), initial: node.id === active.initial }));
     return {
-        shape: "v2", status, definition: active, nodes, banners, readModel: model, runId, bound,
+        status, definition: active, nodes, banners, readModel: model, runId, bound,
         // Stage 2.4: every visit loaded (the replay's frames), and the replay's moment when one is shown.
         allExecutions: collected.executions, asOf: replaying ? asOf : null,
         historyComplete: Boolean(run && bound && run.history.complete), historyStale: Boolean(run && bound && run.history.staleOlder),
@@ -2053,7 +2043,7 @@ function stoppedTitle(data) {
  * One sentence table for the workflow's events (ui-05). `short` is the event's line in the activity list
  * ({ text, level }); `long` is its line in the session's step log ({ text, summary, color }, Markdown) for the run's
  * control events. An event without a form is not shown on that screen. Add an event once, here. The log's step, start
- * and end lines, which also write version 1 runs and the definition table, stay in workflow-sessions.js.
+ * and end lines, which also write the definition table, stay in workflow-sessions.js.
  */
 const WORKFLOW_EVENT_TEXT = {
     "workflow.started": { short: data => ({ text: `● ${data.mode === "test" ? "Test started" : "Started"}${Number.isSafeInteger(data.revision) ? ` · revision ${data.revision}` : ""}` }) },

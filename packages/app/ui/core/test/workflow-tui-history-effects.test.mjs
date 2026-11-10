@@ -1,6 +1,6 @@
 // The TUI workflow view's read-only history and test effects (design 02 "Portal/TUI: observed state"; design 05 test
 // mode, T115, T119 in the TUI): the selected state's executions newest first, as the portal's History tab lists them
-// (unchanged repeats of a loop combined; a legacy state's steps), the shown test run's held calls as the
+// (unchanged repeats of a loop combined), the shown test run's held calls as the
 // portal's table lists them (read-only; answered by the run's parent agent, a fixture or a person in the portal), and
 // the details scrolled with PgUp/PgDn within what the panel shows.
 //
@@ -17,7 +17,7 @@ import {
     selectWorkflowViewModal,
     workflowViewPanelWidth,
 } from "../src/index.js";
-import { legacyStartedData, readModel, row, done } from "./workflow-v2-fixtures.mjs";
+import { readModel, row, done } from "./workflow-v2-fixtures.mjs";
 
 /** A review that loops through a fix until accepted. */
 const states = [
@@ -93,24 +93,6 @@ test("a state's history lists its visits newest first, a loop's unchanged repeat
     assert.ok(lines.includes("  No visits loaded."));
     // A live run shows no held calls.
     assert.ok(!lines.some(line => line.startsWith("Calls of this test")));
-});
-
-test("a legacy state's history lists its steps newest first with their outcome and duration", async () => {
-    let seq = 0;
-    const event = (eventType, data) => ({ sessionId: "wf", seq: ++seq, eventType, data, createdAt: new Date(Date.UTC(2026, 10, 2, 9, 0, seq)) });
-    const { controller, store } = harness({ events: [
-        event("workflow.started", legacyStartedData),
-        event("workflow.state_started", { stateId: "poll", runtime: "node", step: 1 }),
-        event("workflow.state_completed", { stateId: "poll", step: 1, outcome: "unchanged", durationMs: 420, exitCode: 0 }),
-        event("workflow.state_started", { stateId: "poll", runtime: "node", step: 2 }),
-        event("workflow.state_completed", { stateId: "poll", step: 2, outcome: "changed", durationMs: 1250, exitCode: 0 }),
-    ] });
-    await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
-    const lines = texts(selectWorkflowViewModal(store.getState(), 110));
-    const at = lines.indexOf("Visits · newest first:");
-    assert.ok(at > 0, lines.join("\n"));
-    // Review 19:27Z (row 17): a version 1 visit by its run's number; the one duration form.
-    assert.deepEqual(lines.slice(at + 1, at + 3), ["  #2 · changed · 1 s", "  #1 · unchanged · 420 ms"]);
 });
 
 test("a test run's held calls are listed with their state and answer, read-only, from that run's own model", async () => {

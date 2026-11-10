@@ -1,7 +1,7 @@
 import React from "react";
 import { createPortal } from "react-dom";
 import { useControllerSelector } from "./use-controller-state.js";
-import { selectWorkflowViewSnapshotFor, workflowNodeViews, workflowParentWorking, workflowReadModelView, workflowViewSnapshotEqual } from "../../core/src/workflow-view.js";
+import { selectWorkflowViewSnapshotFor, workflowParentWorking, workflowReadModelView, workflowViewSnapshotEqual } from "../../core/src/workflow-view.js";
 import {
     formatSeconds, projectWorkflowV2, workflowLogEvents, workflowLogWindow, workflowV2Activity, workflowV2BranchPickKey, workflowV2ExecutionOfRow, workflowV2ReplayBranchIndex, workflowV2ReplayFrames,
     workflowV2ReplayLabel, workflowV2SelectionAfterBranchChange,
@@ -11,8 +11,8 @@ import {
     workflowV2RunControls, workflowV2RunVariables, workflowV2SampleInputs, workflowV2TestControls, workflowV2TestModeListed, workflowV2TestResponder,
     workflowV2DrawableInput, workflowV2InputsShape, workflowV2RunInputs, workflowV2StartAnotherShape,
 } from "../../core/src/workflow-v2-commands.js";
-import { workflowModelFromKey, workflowRefusalText, workflowRunsText, workflowSessionModelKey, workflowShortTime, workflowTimeTitle,
-    workflowV1NodeWords } from "../../core/src/workflow-words.js";
+import { workflowModelFromKey, workflowRefusalText, workflowSessionModelKey, workflowShortTime, workflowTimeTitle,
+} from "../../core/src/workflow-words.js";
 import { AUTO_HISTORY_EVENT_SOFT_CAP, SESSION_NAV_SETTLE_MS } from "../../core/src/controller.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
 import { WORKFLOW_LIT_TRANSITIONS, workflowV2LitTransitions, workflowV2Transitions } from "../../core/src/workflow-v2-transitions.js";
@@ -46,6 +46,7 @@ import { chatDefinitionsLoaded, chatDefinitionsModel, chatDefinitionsStamp, chat
 const h = React.createElement;
 const EMPTY = Object.freeze({});
 const EMPTY_EVENTS = Object.freeze([]);
+const EMPTY_NODES = Object.freeze([]);
 export const LIST_READ_LIMIT = 10;
 /** Stage 2.4 (FU-26): how long the timeline shows each visit while it plays. */
 export const REPLAY_STEP_MS = 800;
@@ -68,7 +69,7 @@ export const TIMELINE_PLAY_LIVE_TITLE = "Play — step back first; live view alr
 function useWorkflowChild(controller, sessionId) {
     const selected = useControllerSelector(controller, state => selectWorkflowViewSnapshotFor(state, sessionId), workflowViewSnapshotEqual);
     const snapshot = selected.sessionId === (sessionId ?? null) ? selected : selectWorkflowViewSnapshotFor(controller.getState(), sessionId);
-    const { session, history, canvas, view, places } = snapshot;
+    const { session, history, view, places } = snapshot;
     const events = history?.events || EMPTY_EVENTS;
     const selectedRunId = view.selectedRunId ?? null;
     const sessionUpdatedAt = session?.updatedAt ?? null;
@@ -78,29 +79,26 @@ function useWorkflowChild(controller, sessionId) {
     }, [controller, sessionId, events, selectedRunId, sessionUpdatedAt]);
     const { readModel, readModelAfterSeq, workflowModel, error } = workflowReadModelView(view);
     const olderHistory = view.olderHistory ?? null;
-    const live = canvas?.dataPayload;
     // OF-S2-7: the model of the chat that owns the Workflow (its agent nodes use it unless their start chose one).
     const chatModelKey = useControllerSelector(controller, state => workflowSessionModelKey(state.sessions.byId,
         state.sessions.byId?.[sessionId]?.parentSessionId ?? null));
     const chatModel = React.useMemo(() => workflowModelFromKey(chatModelKey), [chatModelKey]);
     const projection = React.useMemo(() => {
-        if (view.definition?.shape !== "v2" && !readModel && !workflowModel) return null;
-        const projected = projectWorkflowV2({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq, olderHistory, chatModel });
-        return !projected.definition && view.definition && view.definition.shape !== "v2" ? null : projected;
+        if (!view.definition && !readModel && !workflowModel) return null;
+        return projectWorkflowV2({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq, olderHistory, chatModel });
     }, [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory, chatModel]);
-    const legacyNodes = React.useMemo(() => projection ? [] : workflowNodeViews(view.definition, events, live), [projection, view.definition, events, live]);
     // Stage 2.4 (FU-26, the replay): the same projection as it stood at a moment (epoch milliseconds).
     const projectAt = React.useCallback(asOf => projectWorkflowV2({ definition: view.definition, readModel, workflowModel, selectedRunId, events,
         readModelAfterSeq, olderHistory, asOf, chatModel }), [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory, chatModel]);
-    return { sessionId, session, view, places, events, olderEvents: history?.hasOlderEvents === true, projection, projectAt, readModel, workflowModel, readError: error, legacyNodes,
-        definition: projection ? projection.definition : view.definition, nodes: projection ? projection.nodes : legacyNodes };
+    return { sessionId, session, view, places, events, olderEvents: history?.hasOlderEvents === true, projection, projectAt, readModel, workflowModel, readError: error,
+        definition: projection ? projection.definition : null, nodes: projection ? projection.nodes : EMPTY_NODES };
 }
 
 /** The definition's graph with no run on it (07): the same read model, without overlaying any run. */
 function useDefinitionProjection(child) {
     const { view, workflowModel } = child;
     return React.useMemo(() => {
-        if (view.definition?.shape !== "v2" && !workflowModel) return null;
+        if (!view.definition && !workflowModel) return null;
         return projectWorkflowV2({ definition: view.definition, readModel: null, workflowModel, selectedRunId: null, events: EMPTY_EVENTS });
     }, [view.definition, workflowModel]);
 }
@@ -623,8 +621,8 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
     const child = useWorkflowChild(controller, definition.newestId);
     const { sessionId, session, view, workflowModel, places } = child;
     const projection = useDefinitionProjection(child);
-    const graph = projection ? projection.definition : view.definition;
-    const nodes = projection ? projection.nodes : child.legacyNodes;
+    const graph = projection ? projection.definition : null;
+    const nodes = projection ? projection.nodes : EMPTY_NODES;
     const selected = nodes.find(node => node.id === view.selectedNodeId) || nodes.find(node => node.id === graph?.initial) || nodes[0] || null;
     const runCommand = view.runCommand ?? null;
     const publication = React.useMemo(() => workflowV2DefinitionControls(workflowModel, runCommand), [workflowModel, runCommand]);
@@ -678,7 +676,7 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
         made: session?.createdAt != null ? shownTime(session.createdAt) : null });
     const older = Boolean(newestId) && newestId !== sessionId;
     // OF-S2-8: the node's script and samples, from this definition's YAML (read when its panel shows a node).
-    const nodeYaml = useWorkflowRevisionYaml(controller, sessionId, view, workflowModel, panel === "node" && selected?.shape === "v2");
+    const nodeYaml = useWorkflowRevisionYaml(controller, sessionId, view, workflowModel, panel === "node" && Boolean(selected));
     const nodeCode = { yaml: nodeYaml.yaml, pending: nodeYaml.pending, hidden: nodeYaml.hidden };
     return h("div", { className: "ps-wf-body" },
         h("div", { className: "ps-wf-bar" },
@@ -1264,7 +1262,7 @@ export function useWorkflowRevisionYaml(controller, sessionId, view, model, want
 export function RunNodePanel({ controller, child, selected, onLog = null, replayFrame = null }) {
     const { sessionId, view, projection } = child;
     // OF-S2-8: the script and samples come from the YAML of the revision this Workflow runs, read once, when allowed.
-    const code = useWorkflowRevisionYaml(controller, sessionId, view, child.workflowModel ?? child.readModel ?? null, selected?.shape === "v2");
+    const code = useWorkflowRevisionYaml(controller, sessionId, view, child.workflowModel ?? child.readModel ?? null, Boolean(selected));
     const [branchPick, setBranchPick] = React.useState(null);
     // Review S2UI-F5: while a visit is replayed, its step's details show that visit's branch. A branch chosen then holds
     // until the replay moves; the branch chosen for the Workflow as it is now is kept apart.
@@ -1272,7 +1270,6 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
     const replayVisit = replayFrame?.nodeExecutionId ?? null;
     React.useEffect(() => { setReplayPick(null); }, [replayVisit]);
     if (!selected) return h("p", { className: "ps-wf-muted" }, "Select a node to see it.");
-    if (selected.shape !== "v2") return h(LegacyNodePanel, { selected });
     const runId = projection?.runId ?? null;
     const pickKey = workflowV2BranchPickKey(sessionId, runId, selected);
     const replayKey = replayFrame ? JSON.stringify([replayFrame.nodeExecutionId, pickKey]) : null;
@@ -1302,42 +1299,11 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
 }
 
 /**
- * The Node panel of a version 1 Workflow (its nodes come from its events): what the old step details showed, in the
- * Workflow tab's words. Every value is text, never markup.
- */
-function LegacyNodePanel({ selected }) {
-    const [detailTab, setDetailTab] = React.useState("details");
-    const result = selected.result ?? null;
-    const row = (label, value) => h("div", { className: "ps-wf-fact", key: label }, h("span", null, label), h("strong", null, String(value)));
-    const tabs = [["details", "Details"], ["output", "Output"]];
-    return h("section", { className: "ps-wf-node", "aria-label": "Node details", "data-shape": "v1" },
-        // Review 21:15Z: its state in the Workflow's words ("Canceled", "Done · changed", "Not reached"), never the raw one.
-        h("p", { className: "ps-wf-node-head" }, h("strong", null, selected.id),
-            ` · ${selected.type === "terminal" ? "End" : "Script"} · ${workflowV1NodeWords(selected).state}`),
-        h("div", { className: "ps-wf-node-tabs", role: "tablist", "aria-label": "Node detail views" },
-            tabs.map(([id, title]) => h("button", { key: id, type: "button", role: "tab", "aria-selected": detailTab === id,
-                className: detailTab === id ? "is-on" : "", onClick: () => setDetailTab(id) }, title))),
-        detailTab === "details"
-            ? h("div", { className: "ps-wf-facts" },
-                row("Visits", workflowRunsText(selected.runs ?? 0, Boolean(selected.partial))),
-                row("Outcome", selected.outcome || "Not recorded"),
-                Object.keys(selected.next || {}).length
-                    ? row("Next", Object.entries(selected.next).map(([outcome, target]) => `${outcome} → ${target}`).join(" · ")) : null,
-                Array.isArray(result?.toolCalls) && result.toolCalls.length
-                    ? row("Tools", result.toolCalls.map(tool => `${tool?.name || "Tool"}${tool?.ok === false ? " ✕" : ""}`).join(" · ")) : null)
-            : h("div", { className: "ps-wf-node-output" },
-                h("pre", null, result
-                    ? String(result.error || result.reason || result.outputPreview || result.summary || "No output")
-                    : "No result yet"),
-                result?.stderrTail ? h(React.Fragment, null, h("h3", null, "Standard error"), h("pre", null, String(result.stderrTail))) : null));
-}
-
-/**
  * The Log panel (W10; finding 8). For an agent node: its own Log with its chat (AgentNodeLog), or, switched, the whole
  * Workflow's. For any other node: the whole Workflow's, as before.
  */
 function RunLogPanel({ controller, workflowSessionId = null, events, runId, runs = null, selected, scope, onScope, instructionsReadable = true, replay = null }) {
-    if (!(selected?.shape === "v2" && selected.kind === "agent")) return h(WorkflowLog, { events, runId, runs, replay });
+    if (selected?.kind !== "agent") return h(WorkflowLog, { events, runId, runs, replay });
     return h("div", { className: "ps-wf-log-panel" },
         h("div", { className: "ps-wf-switch is-log", role: "group", "aria-label": "Log of" },
             [["node", `Node ${selected.id}`], ["all", "Whole Workflow"]].map(([id, label]) => h("button", { key: id, type: "button",

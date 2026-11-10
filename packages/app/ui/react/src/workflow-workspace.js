@@ -1,7 +1,7 @@
 import React from "react";
 import { useControllerSelector } from "./use-controller-state.js";
 import { workflowModelFromKey, workflowSessionModelKey } from "../../core/src/workflow-words.js";
-import { selectWorkflowViewSnapshot, workflowNodeViews, workflowReadModelView, workflowViewSnapshotEqual } from "../../core/src/workflow-view.js";
+import { selectWorkflowViewSnapshot, workflowReadModelView, workflowViewSnapshotEqual } from "../../core/src/workflow-view.js";
 import {
     projectWorkflowV2, workflowV2Activity, workflowV2BranchPickKey, workflowV2DraftInProgress, workflowV2NoticeBadge, workflowV2OpenCalls, workflowV2ShownNotices,
     workflowV2SelectionAfterBranchChange,
@@ -33,9 +33,8 @@ export const WORKFLOW_SIDE_PANEL_TITLES = Object.freeze({
 
 function useWorkflowView(controller) {
     // UI-1: one selector for every part, all derived from the same state's active session.
-    const { sessionId, session, history, canvas, view, places, parentWorking } = useControllerSelector(controller, selectWorkflowViewSnapshot, workflowViewSnapshotEqual);
+    const { sessionId, session, history, view, places, parentWorking } = useControllerSelector(controller, selectWorkflowViewSnapshot, workflowViewSnapshotEqual);
     const events = history?.events || EMPTY_EVENTS;
-    const live = canvas?.dataPayload;
     const selectedRunId = view.selectedRunId ?? null;
     const sessionUpdatedAt = session?.updatedAt ?? null;
     // New events, another run selection or a changed session row (a draft's new revision) ask for the read model again.
@@ -55,22 +54,20 @@ function useWorkflowView(controller) {
         state.sessions.byId?.[sessionId]?.parentSessionId ?? null));
     const chatModel = React.useMemo(() => workflowModelFromKey(chatModelKey), [chatModelKey]);
     const v2 = React.useMemo(() => {
-        if (view.definition?.shape !== "v2" && !readModel && !workflowModel) return null;
-        const projected = projectWorkflowV2({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq, olderHistory, chatModel });
-        // Only a legacy definition falls back to the legacy view. A v2 definition is never redrawn once the
-        // read model says there is no graph (invalid or unavailable); the no-graph panel explains why.
-        return !projected.definition && view.definition && view.definition.shape !== "v2" ? null : projected;
+        if (!view.definition && !readModel && !workflowModel) return null;
+        // A definition is never redrawn once the read model says there is no graph (invalid or unavailable); the no-graph
+        // panel explains why.
+        return projectWorkflowV2({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq, olderHistory, chatModel });
     }, [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory, chatModel]);
-    const definition = v2 ? v2.definition : view.definition;
-    const legacyNodes = React.useMemo(() => v2 ? [] : workflowNodeViews(view.definition, events, live), [v2, view.definition, events, live]);
-    const nodes = v2 ? v2.nodes : legacyNodes;
+    const definition = v2 ? v2.definition : null;
+    const nodes = v2 ? v2.nodes : EMPTY_EVENTS;
     const selected = nodes.find(node => node.id === view.selectedNodeId)
-        || (v2 ? nodes.find(node => node.pending) : nodes.find(node => node.id === live?.current))
+        || nodes.find(node => node.pending)
         || nodes.find(node => node.id === definition?.initial)
         || nodes[0];
     const terminal = events.findLast(event => ["workflow.completed", "workflow.failed", "workflow.cancelled"].includes(event?.eventType));
     const status = v2 ? v2.status.label : terminal?.eventType.slice("workflow.".length)
-        || (["completed", "failed", "cancelled"].includes(session?.status) ? session.status : live?.status || session?.status || "Starting");
+        || (["completed", "failed", "cancelled"].includes(session?.status) ? session.status : session?.status || "Starting");
     // Brings the side pane up on its canvas side (on a phone, the details layer), showing what the view says it shows.
     const openSide = () => {
         controller.dispatch({ type: "ui/sidePaneTab", tab: "canvas" });
@@ -116,11 +113,11 @@ function useWorkflowView(controller) {
     const offered = { definition: Boolean(publication?.controls.length), test: Boolean(testControls), calls: Boolean(test),
         variables: Boolean(variables), draft: Boolean(draftEditor), activity: Boolean(activity), notices: Boolean(notices.length || readError), log: true };
     const sidePanel = typeof view.sidePanel === "string" && offered[view.sidePanel] === true ? view.sidePanel : null;
-    // r-1: the main pane shows the graph or the YAML (a v2 workflow; a legacy one has the graph alone). Graph by default.
+    // r-1: the main pane shows the graph or the YAML. Graph by default.
     const mainTab = v2 && view.mainTab === "yaml" ? "yaml" : "graph";
     // The answer to a save from the YAML tab shows in that tab; every other command's answer shows in the side pane.
     const noticeInYaml = Boolean(runNotice?.operation === "replace_definition" && mainTab === "yaml" && sidePanel !== "draft");
-    return { sessionId, session, view, places, nodes, selected, select, openSide, showSide, live, status, v2, definition, readError,
+    return { sessionId, session, view, places, nodes, selected, select, openSide, showSide, status, v2, definition, readError,
         workflowModel, selectedRunId, ownModelLoaded: readModel != null, runControls, variables, publication, draftEditor, testControls, testResponder,
         runNotice, events, definitionModel, activity, notices, drafting, test, sidePanel, mainTab, noticeInYaml };
 }
@@ -134,12 +131,6 @@ function WorkflowReadError({ controller, sessionId, message }) {
     React.createElement("span", { style: { flex: 1, minWidth: 0 } }, `The workflow's current status could not be read: ${message}`),
     React.createElement("button", { type: "button", className: "ps-mini-button",
         onClick: () => controller.ensureWorkflowReadModel(sessionId, { force: true }) }, "Retry"));
-}
-
-function Duration({ ms }) {
-    return typeof ms === "number" && Number.isFinite(ms)
-        ? (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`)
-        : "Not recorded";
 }
 
 const MAIN_TABS = [["graph", "Graph"], ["yaml", "YAML"]];
@@ -323,21 +314,17 @@ export function WorkflowNodePane({ controller, log = null }) {
         if (!selected && v2) return React.createElement(WorkflowV2NoGraph, { projection: v2, drafting });
         if (!selected) return React.createElement("div", { className: "ps-workflow-empty" },
             view.error || "Select a workflow step to see its details.");
-        const property = (label, value) => React.createElement("div", { className: "ps-workflow-property", key: label },
-            React.createElement("span", null, label), React.createElement("strong", null, value));
-        const result = selected.result;
         return React.createElement("section", { className: "ps-workflow-node-details", "aria-label": "Workflow step details" },
             React.createElement("header", null,
                 React.createElement("small", null, "SELECTED STEP"),
                 React.createElement("h2", null, selected.id),
-                React.createElement("p", null, selected.shape === "v2" ? `${selected.label} · ${selected.stateLabel}`
-                    : selected.type === "script" ? `${selected.runtime || "Script"} · ${selected.state}` : `Terminal · ${selected.state}`)),
+                React.createElement("p", null, `${selected.label} · ${selected.stateLabel}`)),
             React.createElement("div", { className: "ps-workflow-detail-tabs", role: "tablist", "aria-label": "Step detail views" },
                 [["details", "Details"], ["output", "Output"], ["history", "History"]].map(([id, title]) =>
                     React.createElement("button", { key: id, id: `${tabId}-${id}`, role: "tab", type: "button",
                         "aria-selected": tab === id, onClick: () => setTab(id) }, title))),
             React.createElement("div", { className: "ps-workflow-detail-content", role: "tabpanel", "aria-labelledby": `${tabId}-${tab}` },
-                selected.shape === "v2" ? React.createElement(WorkflowV2NodeContent, {
+                React.createElement(WorkflowV2NodeContent, {
                     tab, selected, nodes, select, openSession: sessionId => { controller.loadSession(sessionId).catch(() => {}); },
                     runOutput: v2?.status.terminalState === selected.id ? v2.output : null,
                     runError: v2?.status.terminalState === selected.id ? v2.error : null,
@@ -369,42 +356,7 @@ export function WorkflowNodePane({ controller, log = null }) {
                         accepted: v2.readModel?.run?.kvRevision ?? null, snapshots: view.kvRevisions ?? null, compare: view.kvCompare ?? null,
                         onCompare: (from, to) => { controller.compareWorkflowKvRevisions(sessionId, { runId: v2.runId, from, to }).catch(() => {}); },
                     } : null,
-                }) :
-                tab === "details" ? React.createElement(React.Fragment, null,
-                    property("Visits", `${selected.runs}${selected.partial ? " in loaded history" : ""}`),
-                    property("Last outcome", selected.outcome || "Not recorded"),
-                    property("Duration", React.createElement(Duration, { ms: selected.durationMs })),
-                    selected.timeoutSeconds ? property("Timeout", `${selected.timeoutSeconds}s`) : null,
-                    React.createElement("h3", null, "Next steps"),
-                    Object.entries(selected.next || {}).map(([outcome, target]) =>
-                        React.createElement("button", { key: outcome, type: "button", className: "ps-workflow-transition",
-                            disabled: !nodes.some(node => node.id === target), onClick: () => select(target) },
-                        outcome, " → ", target)),
-                    selected.type === "terminal" ? React.createElement("p", null, String(result?.summary || "The workflow ends at this step.")) : null,
-                    React.createElement("h3", null, "Latest tools"),
-                    Array.isArray(result?.toolCalls) && result.toolCalls.length
-                        ? result.toolCalls.map((tool, i) => React.createElement("div", { className: "ps-workflow-tool", key: i },
-                            `${tool?.name || "Tool"} · ${tool?.ok === false ? "failed" : "completed"}`))
-                        : React.createElement("p", null, "No tool details in the loaded history."))
-                    : tab === "output"
-                        ? React.createElement(React.Fragment, null,
-                            React.createElement("p", null, "Latest result in the loaded history for this step."),
-                            React.createElement("pre", null, result
-                                ? String(result.error || result.reason || result.outputPreview || result.summary || "No output was recorded.")
-                                : "This step has no result in the loaded history."),
-                            result?.stderrTail ? React.createElement(React.Fragment, null,
-                                React.createElement("h3", null, "Standard error"),
-                                React.createElement("pre", null, String(result.stderrTail))) : null)
-                        : React.createElement(React.Fragment, null,
-                            React.createElement("p", null, "Most recent visits in the loaded history."),
-                            selected.history.length ? React.createElement("table", null,
-                                React.createElement("thead", null, React.createElement("tr", null,
-                                    ["Step", "Outcome", "Duration"].map(label => React.createElement("th", { key: label }, label)))),
-                                React.createElement("tbody", null, selected.history.map((event, i) => React.createElement("tr", { key: event.seq || i },
-                                    React.createElement("td", null, event.data.step ?? event.data.steps ?? "—"),
-                                    React.createElement("td", null, event.data.outcome || event.eventType.split(".").at(-1)),
-                                    React.createElement("td", null, React.createElement(Duration, { ms: event.data.durationMs }))))))
-                                : React.createElement("p", null, "No visits in the loaded history."))));
+                })));
     }
 
     return notice ? h("div", { className: "ps-workflow-side" }, notice, details()) : details();

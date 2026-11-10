@@ -42,7 +42,7 @@ export const WORKFLOW_EVENT_TYPES = [
     ...WORKFLOW_CONTROL_EVENT_TYPES,
 ];
 
-/** Outcomes that stay visible in a log of repeated steps, as business results and for legacy steps alike. */
+/** Outcomes that stay visible in a log of repeated steps, as business results. */
 export const WORKFLOW_ATTENTION_OUTCOMES = new Set(["changed", "change", "failure", "failed", "error", "timeout", "cancelled", "canceled", "blocked"]);
 
 const WORKFLOW_EVENT_TYPE_SET = new Set(WORKFLOW_EVENT_TYPES);
@@ -128,31 +128,21 @@ function formatToolCalls(toolCalls) {
 }
 
 /**
- * " after N visits" for a Workflow's end: a version 1 run counts its node visits; a version 2 run (its events name the
- * run) records no count, so nothing is said rather than "after 0 visits". Review 19:27Z: a node's execution is a visit.
- */
-function afterVisits(data) {
-    if (data.steps === undefined && nonEmpty(data.runId)) return "";
-    return ` after ${data.steps ?? 0} visit${data.steps === 1 ? "" : "s"}`;
-}
-
-/**
- * How a node event names its node (review 19:27Z row 28): "`poll` · #3" for a version 1 node (its run's step number),
- * "`poll`" for a version 2 node (its events name the visit, `nodeExecutionId`), with " · visit N" after the first visit.
+ * How a node event names its node (review 19:27Z row 28): "`poll`", with " · visit N" after the first visit (its events
+ * name the visit, `nodeExecutionId`).
  */
 function stepName(data) {
-    if (!nonEmpty(data.nodeExecutionId)) return `${code(data.stateId)} · #${data.step ?? "?"}`;
     return `${code(data.stateId)}${visitText(data)}`;
 }
 
-/** " · visit N" for a version 2 node's second and later visits; "" otherwise. */
+/** " · visit N" for a node's second and later visits; "" otherwise. */
 function visitText(data) {
     const visit = Number(data.step);
     return nonEmpty(data.nodeExecutionId) && Number.isSafeInteger(visit) && visit > 1 ? ` · visit ${visit}` : "";
 }
 
 function endedAtTerminal(data, mark) {
-    return `${mark} Workflow **${data.name ?? "workflow"}** reached ${code(data.stateId)}${afterVisits(data)}: `
+    return `${mark} Workflow **${data.name ?? "workflow"}** reached ${code(data.stateId)}: `
         + `outcome **${data.outcome === undefined || data.outcome === null ? "?" : workflowOutcomeWord(data.outcome)}**${data.summary ? `. ${data.summary}` : "."}`;
 }
 
@@ -216,7 +206,7 @@ export function formatWorkflowEventText(event, options = {}) {
         }
         case "workflow.failed":
             if (data.outcome !== undefined) return endedAtTerminal(data, FAILED);
-            return `${FAILED} Workflow **${data.name ?? "workflow"}** failed${afterVisits(data)}`
+            return `${FAILED} Workflow **${data.name ?? "workflow"}** failed`
                 + `${data.stateId ? ` at ${code(data.stateId)}` : ""}: ${data.error ?? "unknown error"}`;
         case "workflow.state_cancelled": {
             const duration = formatDuration(data.durationMs);
@@ -224,7 +214,7 @@ export function formatWorkflowEventText(event, options = {}) {
         }
         case "workflow.cancelled":
             if (data.outcome !== undefined) return endedAtTerminal(data, CANCELED);
-            return `${CANCELED} Workflow **${data.name ?? "workflow"}** canceled${afterVisits(data)}`
+            return `${CANCELED} Workflow **${data.name ?? "workflow"}** canceled`
                 + `${data.stateId ? ` at ${code(data.stateId)}` : ""}${reasonText(data.reason)}${reasonText(data.reason) ? "" : "."}`;
         default:
             return controlEventView(event, options)?.text ?? null;
@@ -240,8 +230,8 @@ export function describeWorkflowEvent(event, options = {}) {
     const text = formatWorkflowEventText(event, options);
     if (!text) return null;
     const data = event?.data && typeof event.data === "object" ? event.data : {};
-    // A version 1 node by its run's step number; a version 2 node's notice names it in its summary, with its visit after the first.
-    const stepTitle = nonEmpty(data.nodeExecutionId) ? `${WORKFLOW_SESSION_GLYPH} Node${visitText(data)}` : `${WORKFLOW_SESSION_GLYPH} Node · #${data.step ?? "?"}`;
+    // A node's notice names it in its summary, with its visit after the first.
+    const stepTitle = `${WORKFLOW_SESSION_GLYPH} Node${visitText(data)}`;
     const states = Array.isArray(data.states) ? data.states.length : 0;
     switch (event.eventType) {
         case "workflow.started":
@@ -265,14 +255,11 @@ export function describeWorkflowEvent(event, options = {}) {
             const runtimeError = data.resultKind === "runtime_error";
             const summary = runtimeError ? `${data.stateId ?? "?"} · ${workflowFailureDetail(data.outcome)}`
                 : `${data.stateId ?? "?"} → ${data.outcome === undefined || data.outcome === null ? "?" : workflowOutcomeWord(data.outcome)}${duration ? ` in ${duration}` : ""}${tools ? ` · ${tools}` : ""}`;
-            // A v2 business result is a normal completion; its outcome only draws attention when the workflow's author named it so.
-            // An explicit result kind this build does not know is never green. Legacy rules apply only when there is no kind.
-            const hasKind = data.resultKind !== undefined && data.resultKind !== null;
+            // A business result is a normal completion; its outcome only draws attention when the workflow's author named it so.
+            // A result kind this build does not know (or none) is never green.
             const color = data.resultKind === "business"
                 ? (WORKFLOW_ATTENTION_OUTCOMES.has(String(data.outcome ?? "").toLowerCase()) ? "yellow" : "green")
-                : runtimeError ? "red"
-                    : hasKind ? "yellow"
-                        : data.exitCode === 0 || data.resultSource === "reported" ? "green" : "yellow";
+                : runtimeError ? "red" : "yellow";
             return { kind: "notice", title: stepTitle, color, summary, text };
         }
         case "workflow.state_failed":

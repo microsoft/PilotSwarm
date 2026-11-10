@@ -97,33 +97,6 @@ export const WORKFLOW_STATE_MARKS = Object.freeze({
     cancelled: Object.freeze({ glyph: "⊘", word: "canceled" }),
 });
 
-/**
- * A version 1 node's card (review 18:45Z: version 1 cards are crisp too, for one consistent look): the same two rows as a
- * version 2 card (workflowNodeCardWords), from the node a version 1 graph has (`workflowNodeViews`: type, state, outcome,
- * runs, partial). Its title is the full sentence: "poll · Script · Done · changed · Ran 3 times".
- */
-export function workflowV1NodeCard(node) {
-    const terminal = node?.type === "terminal";
-    const reached = terminal && (node.state === "done" || node.state === "failed" || node.state === "cancelled");
-    const words = workflowNodeCardWords({ kind: terminal ? "terminal" : "script", state: node?.state, outcome: node?.outcome,
-        terminalOutcome: reached ? node.outcome : null, runs: node?.runs, partial: Boolean(node?.partial) });
-    const { label, state } = workflowV1NodeWords(node);
-    return { ...words, title: [node?.id, label, state, words.badge ? words.badge.title : null].filter(Boolean).join(" · ") };
-}
-
-/**
- * A version 1 node's label and state in the Workflow's words (review 19:27Z row 4): "End · succeeded" or "Script"; "Done ·
- * changed", "Running", "Failed · error", "Canceled" or "Not reached", never the raw state or outcome.
- */
-export function workflowV1NodeWords(node) {
-    const terminal = node?.type === "terminal";
-    const label = terminal ? `End · ${workflowOutcomeWord(node?.outcome || "end")}` : "Script";
-    const state = Object.hasOwn(V1_STATE_WORDS, node?.state) ? V1_STATE_WORDS[node.state] : "Not reached";
-    return { label, state: !terminal && node?.state !== "running" && node?.outcome ? `${state} · ${workflowOutcomeWord(node.outcome)}` : state };
-}
-
-const V1_STATE_WORDS = Object.freeze({ done: "Done", running: "Running", failed: "Failed", cancelled: "Canceled" });
-
 /** A node's mark for its `state` and `phase` (as nodeView says them); null when it was not reached (or there is no run). */
 export function workflowStateMark(state, phase = null) {
     if (Object.hasOwn(WORKFLOW_STATE_MARKS, state)) return WORKFLOW_STATE_MARKS[state];
