@@ -21,6 +21,53 @@ Minimal usage:
 import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "pilotswarm-sdk";
 ```
 
+## Opt-in worker telemetry
+
+The SDK can export its internal worker counters through OTLP/HTTP. It is off
+unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set, and it installs metrics only by
+default. The telemetry bootstrap is a separate public subpath so importing the
+SDK does not load telemetry providers.
+
+Preload it before the SDK or application imports acquire meters or tracers:
+
+```bash
+node --import pilotswarm-sdk/telemetry app.mjs
+```
+
+Set a unique instance identifier explicitly with
+`OTEL_RESOURCE_ATTRIBUTES=service.instance.id=worker-1`, or set `POD_NAME` for
+the fallback. A minimal metrics-only configuration is:
+
+```dotenv
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+OTEL_METRICS_EXPORTER=otlp
+OTEL_TRACES_EXPORTER=none
+OTEL_LOGS_EXPORTER=none
+OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative
+```
+
+The standard temporality preference accepts `cumulative` or `delta`; select the
+one the receiver supports. Leave the endpoint unset, or set
+`OTEL_SDK_DISABLED=true`, to disable providers. No automatic HTTP, database,
+model-client, filesystem, or resource collectors are installed.
+
+The application owns signal handling. After its worker drains, call the
+idempotent shutdown function before setting a nonzero exit code or exiting:
+
+```ts
+import { shutdownTelemetry } from "pilotswarm-sdk/telemetry";
+
+await worker.gracefulShutdown();
+await shutdownTelemetry();
+```
+
+Handle `SIGINT` and `SIGTERM` once in the application and share its drain
+promise. Do not add signal handlers in a library bootstrap. Static ESM imports
+do not guarantee that a telemetry provider is registered before another module
+gets a meter; use `--import` as shown, or dynamically import the application
+only after importing `pilotswarm-sdk/telemetry`. The internal metric hook is
+not a consumer API.
+
 Client apps connect to a deployment's Web API (web mode):
 
 ```ts

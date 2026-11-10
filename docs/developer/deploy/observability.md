@@ -22,6 +22,7 @@ is enabled. The portal does not preload worker telemetry.
 | `OTEL_METRIC_EXPORT_INTERVAL` | `30000` | Positive integer milliseconds, at most `2147483647`. |
 | `OTEL_METRIC_EXPORT_TIMEOUT` | `5000` | Collection/export budget in milliseconds; must not exceed the interval. |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | `5000` | Bounded HTTP export timeout in milliseconds. |
+| `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` | SDK default | Standard OTLP Sum temporality preference. Use `cumulative` or `delta` only when the receiver supports it. |
 | `PILOTSWARM_OTEL_HISTOGRAMS` | `false` | `true` or `false`. Enables duration histograms only when explicitly requested. |
 
 This bootstrap uses a shared OTLP HTTP base URL and headers for the selected
@@ -88,8 +89,8 @@ Build the existing worker image from the intended commit:
 docker build -f deploy/Dockerfile.worker -t pilotswarm-worker:metrics .
 ```
 
-The worker image copies `scripts/otel` and the production dependencies after
-pruning. Its entrypoint preloads the bootstrap. The starter image and
+The SDK package owns the telemetry bootstrap and its production dependencies.
+The worker image preloads `pilotswarm-sdk/telemetry`. The starter image and
 `deploy/bin/start-worker.sh` use the same bootstrap; portal startup does not.
 
 Example worker environment (replace the illustrative collector address with

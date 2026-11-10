@@ -4,17 +4,16 @@ import { readFileSync } from "node:fs";
 import { WORKER_ENV_DEFAULTS, workerTelemetryOmittedKeys } from "../lib/worker-env.mjs";
 const read = path => readFileSync(new URL(`../../../${path}`, import.meta.url), "utf8");
 
-test("worker and starter images ship bootstrap and runtime dependencies", () => {
+test("worker and starter images ship the SDK telemetry bootstrap and dependencies", () => {
     for (const name of ["worker", "starter"]) {
         const dockerfile = read(`deploy/Dockerfile.${name}`);
-        assert.match(dockerfile, /COPY scripts\/otel\/ \.\/scripts\/otel\//);
         assert.match(dockerfile, /COPY package\.json package-lock\.json/);
         assert.match(dockerfile, /npm ci --force/);
     }
     const worker = read("deploy/Dockerfile.worker");
     assert.match(worker, /npm prune --omit=dev/);
     assert.match(worker, /COPY --from=build \/app\/node_modules\/ \.\/node_modules\//);
-    const pkg = JSON.parse(read("package.json"));
+    const pkg = JSON.parse(read("packages/sdk/package.json"));
     for (const dependency of [
         "@opentelemetry/api", "@opentelemetry/sdk-node", "@opentelemetry/resources",
         "@opentelemetry/exporter-metrics-otlp-http", "@opentelemetry/exporter-trace-otlp-http",
@@ -22,12 +21,12 @@ test("worker and starter images ship bootstrap and runtime dependencies", () => 
 });
 
 test("every production worker launch preloads bootstrap; portal launch does not", () => {
-    assert.match(read("deploy/Dockerfile.worker"), /ENTRYPOINT \["node", "--import", "\.\/scripts\/otel\/register\.mjs", "packages\/sdk\/examples\/worker\.js"\]/);
-    assert.match(read("deploy/bin/start-worker.sh"), /exec node --import \.\/scripts\/otel\/register\.mjs packages\/sdk\/examples\/worker\.js/);
-    assert.match(JSON.parse(read("package.json")).scripts.worker, /--import \.\/scripts\/otel\/register\.mjs/);
+    assert.match(read("deploy/Dockerfile.worker"), /ENTRYPOINT \["node", "--import", "pilotswarm-sdk\/telemetry", "packages\/sdk\/examples\/worker\.js"\]/);
+    assert.match(read("deploy/bin/start-worker.sh"), /exec node --import pilotswarm-sdk\/telemetry packages\/sdk\/examples\/worker\.js/);
+    assert.match(JSON.parse(read("package.json")).scripts.worker, /--import pilotswarm-sdk\/telemetry/);
     assert.ok(read("packages/sdk/examples/worker.js").indexOf('import { shutdownTelemetry }') <
         read("packages/sdk/examples/worker.js").indexOf('from "pilotswarm-sdk"'));
-    assert.doesNotMatch(read("deploy/bin/start-portal.sh"), /otel\/register|NODE_OPTIONS.*--import/);
+    assert.doesNotMatch(read("deploy/bin/start-portal.sh"), /telemetry|NODE_OPTIONS.*--import/);
 });
 
 test("shutdown drains before flush and flushes before exit", () => {

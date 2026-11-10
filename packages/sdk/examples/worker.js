@@ -31,11 +31,11 @@
  *                                     before start (for example a session workspace provider)
  *
  * Usage:
- *   node --env-file=.env.remote --import ./scripts/otel/register.mjs packages/sdk/examples/worker.js
+ *   node --env-file=.env.remote --import pilotswarm-sdk/telemetry packages/sdk/examples/worker.js
  *   # Production containers preload the same bootstrap before application imports.
  */
 
-import { shutdownTelemetry } from "../../../scripts/otel/register.mjs";
+import { shutdownTelemetry } from "pilotswarm-sdk/telemetry";
 import os from "node:os";
 import fs from "node:fs";
 import { PilotSwarmWorker, horizonConfigFromEnv, loadExtensionModules, parseExtensionModules } from "pilotswarm-sdk";
