@@ -72,6 +72,7 @@ import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCurso
 import { readTurnCommitFile, supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 import { LiveTurnControl } from "./turn-control.js";
 import { workflowVisitOfStopRequestId, type WorkflowTurnVisit } from "./workflow/v2/store.js";
+import { WORKFLOW_AGENT_TURN_FAILURE_ACTIVITY } from "./workflow/v2/agent-turn-failure.js";
 import { CARRIED_STEERS_WAKE_PROMPT } from "./turn-control-contract.js";
 import { parentControlRequestId, steerChildTurn, stopChildTurn, type MessageAgentDelivery } from "./parent-turn-control.js";
 import { faultPoint, faultPointAsync } from "./fault-injection.js";
@@ -1291,6 +1292,14 @@ export function createSessionManagerProxy(
             // replay unchanged.
             if (opts?.closeControls === true) payload.closeControls = true;
             return ctx.scheduleActivity("updateCmsState", payload);
+        },
+        /**
+         * 1.0.83 (PR 270): report a Workflow agent chat's turn that failed for good, so the visits it worked on that are
+         * still pending fail execution_failed and their Workflow is woken (workflow/v2/agent-turn-failure.ts). Routed with
+         * the workflow-request tag, which every worker that runs 1.0.83 declares.
+         */
+        reportWorkflowAgentTurnFailure(input: { sessionId: string; clientMessageIds: string[]; cause: string }) {
+            return routeWorkflowRequestActivity(ctx.scheduleActivity(WORKFLOW_AGENT_TURN_FAILURE_ACTIVITY, input));
         },
         /** Persist this session's model metadata in CMS. */
         updateSessionModel(sessionId: string, model: string, reasoningEffort?: string | null, contextTier?: string | null, source?: string | null) {

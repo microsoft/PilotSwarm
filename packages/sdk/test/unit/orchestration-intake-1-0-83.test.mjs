@@ -238,6 +238,28 @@ const TURN_CHANGED_82 = [
     "    if (prompt && state.runtimeModelNotice) {",
     // FU-9 follow-on (F-FU9 item 3b): the budget stash drops a merged provider wake's own paragraph (TURN_FU9_ADDED).
     "    const prompt = bare.trim();",
+    // PR 270 (TURN_FAILURE_ADDED): a terminal failure's projection gets the turn's prompt ids for the failed-turn report.
+    "            yield* projectAuthFailure(runtime, errorMsg);",
+    "                yield* projectAuthFailure(runtime, result.message);",
+    "                yield* projectNonRetryableTurnFailure(runtime, result.message);",
+];
+/**
+ * PR 270 (owner decision, changed in place): a Workflow agent chat's turn that fails for good owes a report
+ * (workflow-turn-failure.ts), made at each terminal failure, made again before the next turn while owed, and dropped by a
+ * turn that succeeds.
+ */
+const TURN_FAILURE_ADDED = [
+    'import { dropWorkflowTurnFailure, oweWorkflowTurnFailure, settleWorkflowTurnFailure } from "./workflow-turn-failure.js";',
+    "    clientMessageIds?: string[],",
+    "    yield* oweWorkflowTurnFailure(runtime, rc.clientMessageIds, giveUpMessage);",
+    "    yield* oweWorkflowTurnFailure(runtime, clientMessageIds, blockedDetail);",
+    "    yield* oweWorkflowTurnFailure(runtime, clientMessageIds, errorMessage);",
+    "        yield* oweWorkflowTurnFailure(runtime, rc.clientMessageIds, `Failed after ${MAX_RETRIES} attempts: ${errorMessage}`);",
+    "    yield* settleWorkflowTurnFailure(runtime);",
+    '    if (!budgetRefusal && result.type !== "error" && result.type !== "stopped" && result.type !== "cancelled") dropWorkflowTurnFailure(runtime);',
+    "            yield* projectAuthFailure(runtime, errorMsg, clientMessageIds);",
+    "                yield* projectAuthFailure(runtime, result.message, clientMessageIds);",
+    "                yield* projectNonRetryableTurnFailure(runtime, result.message, clientMessageIds);",
 ];
 /** FU-9 follow-on (F-FU9 item 3b): a provider wake merged with another non-person prompt is not stashed; that prompt is. */
 const TURN_FU9_ADDED = [
@@ -365,7 +387,8 @@ function assertIntakeOnlyAdditions(name, added, generic = []) {
 }
 
 test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change are the frozen ones", () => {
-    assert.deepEqual(tsFiles("orchestration"), [...tsFiles("orchestration_1_0_82"), "intake-machine.ts", "intake-state.ts", "intake-wiring.ts"].sort());
+    assert.deepEqual(tsFiles("orchestration"), [...tsFiles("orchestration_1_0_82"), "intake-machine.ts", "intake-state.ts", "intake-wiring.ts",
+        "workflow-turn-failure.ts"].sort());
     for (const name of ["agents.ts", "utils.ts"]) {
         assert.equal(read(`orchestration/${name}`), read(`orchestration_1_0_82/${name}`), name);
     }
@@ -381,7 +404,14 @@ test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change 
         .replace('export const CURRENT_ORCHESTRATION_VERSION = "1.0.82";', 'export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;')
         .replaceAll('"turn-control-v1"', '"workflow-intake-v1"')
         .replace('import { decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "./queue.js";\n',
-            'import { decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "./queue.js";\nimport { intakeDueAtMs } from "./intake-machine.js";\n')
+            'import { decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "./queue.js";\nimport { intakeDueAtMs } from "./intake-machine.js";\n'
+            + 'import { settleWorkflowTurnFailure } from "./workflow-turn-failure.js";\n')
+        // PR 270: a failed-turn report a continue-as-new carried is made again at each execution's start.
+        .replace("    while (true) {\n        state.loopIteration++;\n",
+            "    // PR 270: a Workflow agent chat's failed-turn report that a continue-as-new carried (its activity failed) is made\n"
+            + "    // again at the start of each execution (no yield when none is owed).\n"
+            + "    yield* settleWorkflowTurnFailure(runtime);\n\n"
+            + "    while (true) {\n        state.loopIteration++;\n")
         .replace("        if (state.activeTimer) continue;        // drain will race the timer next iteration\n",
             "        if (state.activeTimer) continue;        // drain will race the timer next iteration\n"
             + "        if (intakeDueAtMs(state.intake) !== null) continue; // 1.0.83: drain will race the intake's due write\n"));
@@ -402,12 +432,13 @@ test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change 
     const turn82 = read("orchestration_1_0_82/turn.ts");
     const turn83 = read("orchestration/turn.ts");
     assert.deepEqual(linesOnly(turn82, turn83).sort(), [...TURN_CHANGED_82].sort());
-    assertIntakeOnlyAdditions("turn.ts", linesOnly(turn83, turn82), TURN_FU9_ADDED);
+    assertIntakeOnlyAdditions("turn.ts", linesOnly(turn83, turn82), [...TURN_FU9_ADDED, ...TURN_FAILURE_ADDED]);
     // Its new imports are the intake modules and the capability routing only (and node:crypto for the text hash).
     const frozen = new Set(tsFiles("orchestration_1_0_82").flatMap(name => importsOf(read(`orchestration_1_0_82/${name}`))));
     const added = new Set(tsFiles("orchestration").flatMap(name => importsOf(read(`orchestration/${name}`))).filter(s => !frozen.has(s)));
     assert.deepEqual([...added].sort(), [
-        "../activity-routing.js", "../workflow/v2/intake.js", "./intake-machine.js", "./intake-state.js", "./intake-wiring.js", "node:crypto",
+        "../activity-routing.js", "../workflow/v2/agent-ids.js", "../workflow/v2/intake.js", "./intake-machine.js", "./intake-state.js",
+        "./intake-wiring.js", "./workflow-turn-failure.js", "node:crypto",
     ]);
 });
 

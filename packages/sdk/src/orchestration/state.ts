@@ -18,6 +18,7 @@ import {
 } from "./intake-state.js";
 import type { IntakeAttemptDispatch, IntakeStimulus } from "./intake-machine.js";
 import { IntakeShapeError, intakeId, intakeObject } from "../workflow/v2/intake.js";
+import { restoreWorkflowTurnFailure, type WorkflowTurnFailureReport } from "./workflow-turn-failure.js";
 
 export interface ActiveTimer {
     deadlineMs: number;
@@ -283,6 +284,11 @@ export interface DurableSessionState {
      * every continue-as-new.
      */
     intakeArrivalPending: boolean;
+    /**
+     * 1.0.83 (PR 270, in place): the report owed for a Workflow agent chat's turn that failed for good
+     * (workflow-turn-failure.ts): null when none is owed. Carried by every continue-as-new while owed.
+     */
+    workflowTurnFailure: WorkflowTurnFailureReport | null;
 }
 
 /**
@@ -802,6 +808,7 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         intakeRetryInvocationId,
         ownedRetry,
         intakeArrivalPending: restoreIntakeArrivalPending((input as IntakeCarryingInput).intakeArrivalPending),
+        workflowTurnFailure: restoreWorkflowTurnFailure((input as { workflowTurnFailure?: unknown }).workflowTurnFailure),
     };
 }
 

@@ -70,6 +70,7 @@ import {
     updateContextUsageFromEvents,
 } from "./utils.js";
 import { intakeBeforeAttempt, intakeResultEvent, intakeReusesThrownTurnKey, noteIntakeAttempt, noteIntakeResult, noteIntakeThrew } from "./intake-wiring.js";
+import { dropWorkflowTurnFailure, oweWorkflowTurnFailure, settleWorkflowTurnFailure } from "./workflow-turn-failure.js";
 
 // ─── runTurn error / retry handling ─────────────────────────
 
@@ -209,6 +210,8 @@ function* handleConnectionClosedRetry(
     state.carriedSteers = [];
     state.thrownTurnKey = null;
     state.retryCount = 0;
+    // PR 270: a Workflow agent chat's turn that failed for good reports it, before the session idles.
+    yield* oweWorkflowTurnFailure(runtime, rc.clientMessageIds, giveUpMessage);
 }
 
 /** 1.0.81: the retried prompt keeps its client message ids, sender and images. */
@@ -258,6 +261,7 @@ function retryContinueOverrides(state: DurableSessionRuntime["state"], rc: Retry
 export function* projectAuthFailure(
     runtime: DurableSessionRuntime,
     errorMessage: string,
+    clientMessageIds?: string[],
 ): Generator<any, void, any> {
     yield* noteIntakeAttempt(runtime, { kind: "failed", cause: "credential" });
     const blockedDetail = `${errorMessage} — ${AUTH_FAILURE_USER_HINT}`;
@@ -276,11 +280,14 @@ export function* projectAuthFailure(
     yield* dropConvertedMessages(runtime, closed?.replacedClientMessageIds);
     runtime.state.carriedSteers = [];
     runtime.state.retryCount = 0;
+    // PR 270: a Workflow agent chat's turn that failed for good reports it, before the session idles.
+    yield* oweWorkflowTurnFailure(runtime, clientMessageIds, blockedDetail);
 }
 
 function* projectNonRetryableTurnFailure(
     runtime: DurableSessionRuntime,
     errorMessage: string,
+    clientMessageIds?: string[],
 ): Generator<any, void, any> {
     yield* noteIntakeAttempt(runtime, { kind: "failed", cause: "non_retryable" });
     runtime.state.blockedError = { message: errorMessage };
@@ -309,6 +316,8 @@ function* projectNonRetryableTurnFailure(
         }
     }
     runtime.state.retryCount = 0;
+    // PR 270: a Workflow agent chat's turn that failed for good reports it, before the session idles.
+    yield* oweWorkflowTurnFailure(runtime, clientMessageIds, errorMessage);
 }
 
 function* handleGenericRetry(
@@ -340,6 +349,8 @@ function* handleGenericRetry(
         state.carriedSteers = [];
         state.thrownTurnKey = null;
         state.retryCount = 0;
+        // PR 270: a Workflow agent chat's turn that failed for good reports it, before the session idles. A retry owes none.
+        yield* oweWorkflowTurnFailure(runtime, rc.clientMessageIds, `Failed after ${MAX_RETRIES} attempts: ${errorMessage}`);
         return;
     }
 
@@ -377,6 +388,8 @@ export function* processPrompt(
     attachments?: PromptAttachmentRef[],
 ): Generator<any, void, any> {
     const { ctx, state } = runtime;
+    // PR 270: a failed turn's report still owed is made before the next turn (no yield when none is owed).
+    yield* settleWorkflowTurnFailure(runtime);
     // 1.0.82 (issue 192): count every turn attempt, whatever its outcome, so
     // settleQueuedWorkAfterDecide never re-arms a timer behind an attempt the
     // turn path already handled (a gate refusal, an error, a thrown failure).
@@ -662,7 +675,7 @@ export function* processPrompt(
         if (isAuthFailureError(errorMsg)) {
             state.thrownTurnKey = null;
             ctx.traceInfo(`[orch] runTurn FAILED with auth error; not retrying: ${errorMsg}`);
-            yield* projectAuthFailure(runtime, errorMsg);
+            yield* projectAuthFailure(runtime, errorMsg, clientMessageIds);
             return;
         }
 
@@ -1320,6 +1333,8 @@ export function* handleTurnResult(
     const budgetRefusal = gate !== undefined;
     // 1.0.83 (design 5.5): the transition table for the attempt that carried the invocation (an error result's row is noted where it is handled).
     yield* noteIntakeAttempt(runtime, intakeResultEvent(result.type, budgetRefusal));
+    // PR 270: a turn that ran and succeeded drops a failed turn's report still owed (no report after a success).
+    if (!budgetRefusal && result.type !== "error" && result.type !== "stopped" && result.type !== "cancelled") dropWorkflowTurnFailure(runtime);
     // "I'm here. Resuming the timer." is for a turn that RAN and said
     // nothing. A gate refusal is a turn that never ran — fabricating an
     // assistant reply for it put words in the transcript that answered a
@@ -1648,13 +1663,13 @@ export function* handleTurnResult(
             // generic retry loop instead. Same failure, same answer.
             if (isAuthFailureError(result.message)) {
                 ctx.traceInfo(`[orch] turn returned auth error; not retrying: ${result.message}`);
-                yield* projectAuthFailure(runtime, result.message);
+                yield* projectAuthFailure(runtime, result.message, clientMessageIds);
                 return;
             }
 
             if (result.retryable === false) {
                 ctx.traceInfo(`[orch] turn returned non-retryable error: ${result.message}`);
-                yield* projectNonRetryableTurnFailure(runtime, result.message);
+                yield* projectNonRetryableTurnFailure(runtime, result.message, clientMessageIds);
                 return;
             }
 

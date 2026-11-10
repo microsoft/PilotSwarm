@@ -748,6 +748,14 @@ export function* versionedContinueAsNew(
     }
     if (state.intakeArrivalPending) (canInput as IntakeCarryingInput).intakeArrivalPending = true;
     else delete (canInput as IntakeCarryingInput).intakeArrivalPending;
+    // PR 270 (in place): an owed report of a Workflow agent chat's failed turn rides every continue-as-new while owed.
+    if (state.workflowTurnFailure) {
+        (canInput as { workflowTurnFailure?: unknown }).workflowTurnFailure = {
+            clientMessageIds: [...state.workflowTurnFailure.clientMessageIds], cause: state.workflowTurnFailure.cause,
+        };
+    } else {
+        delete (canInput as { workflowTurnFailure?: unknown }).workflowTurnFailure;
+    }
     if (state.activeTimer) {
         const now: number = yield runtime.ctx.utcNow();
         const remainingMs = Math.max(0, state.activeTimer.deadlineMs - now);

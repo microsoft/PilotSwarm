@@ -10,6 +10,7 @@ import { advanceRegenPipeline,
 } from "./lifecycle.js";
 import { decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "./queue.js";
 import { intakeDueAtMs } from "./intake-machine.js";
+import { settleWorkflowTurnFailure } from "./workflow-turn-failure.js";
 import {
     HISTORY_SIZE_CHECK_INTERVAL_ITERATIONS,
     MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES,
@@ -241,6 +242,10 @@ export function* runLoop(runtime: DurableSessionRuntime): Generator<any, string,
             throw new Error(`epoch boundary commit failed: ${err?.message ?? err}`);
         }
     }
+
+    // PR 270: a Workflow agent chat's failed-turn report that a continue-as-new carried (its activity failed) is made
+    // again at the start of each execution (no yield when none is owed).
+    yield* settleWorkflowTurnFailure(runtime);
 
     while (true) {
         state.loopIteration++;
