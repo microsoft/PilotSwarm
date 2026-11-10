@@ -17,6 +17,7 @@ import { WORKFLOW_MILESTONE_WORKER_TAGS, registerWorkflowMilestoneSessions } fro
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../dist/activity-routing.js";
 import { DURABLE_SESSION_LATEST_VERSION, DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration-registry.js";
 import { WORKFLOW_INTAKE_ACTIVITIES } from "../../dist/workflow/v2/intake.js";
+import { WORKFLOW_AGENT_TURN_FAILURE_ACTIVITY } from "../../dist/workflow/v2/agent-turn-failure.js";
 import { PilotSwarmClient } from "../../dist/client.js";
 import { isReasoningEffort } from "../../dist/model-providers.js";
 
@@ -30,7 +31,7 @@ test("every worker declares the workflow-request tag and serves the full engine,
     assert.doesNotMatch(WORKER, /workflowRequests/);
 });
 
-test("it registers 1.0.83's intake activities and no orchestration; the registry's latest version is 1.0.83", () => {
+test("it registers 1.0.83's intake activities, its failed-turn report and no orchestration; the registry's latest version is 1.0.83", () => {
     const orchestrations = [];
     const activities = [];
     registerWorkflowMilestoneSessions({
@@ -38,7 +39,7 @@ test("it registers 1.0.83's intake activities and no orchestration; the registry
         registerActivity: name => activities.push(name),
     }, { store: null });
     assert.deepEqual(orchestrations, []);
-    assert.deepEqual(activities, [WORKFLOW_INTAKE_ACTIVITIES.claim, WORKFLOW_INTAKE_ACTIVITIES.settle]);
+    assert.deepEqual(activities, [WORKFLOW_INTAKE_ACTIVITIES.claim, WORKFLOW_INTAKE_ACTIVITIES.settle, WORKFLOW_AGENT_TURN_FAILURE_ACTIVITY]);
     assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.83");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, DURABLE_SESSION_LATEST_VERSION);
 });

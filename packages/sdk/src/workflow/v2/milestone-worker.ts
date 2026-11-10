@@ -6,6 +6,7 @@ import { isReasoningEffort } from "../../model-providers.js";
 import type { PilotSwarmClientOptions } from "../../types.js";
 import { clientWorkflowAgentChildCreator, createWorkflowAgentNodeHost, type WorkflowAgentSessionClient } from "./agent-host.js";
 import { createWorkflowAgentResolver, type WorkflowHostAgents } from "./agent-resolver.js";
+import { registerWorkflowAgentTurnFailureActivity } from "./agent-turn-failure.js";
 import { registerWorkflowIntakeActivities } from "./intake-activities.js";
 import type { WorkflowAgentNodeHost } from "./runtime.js";
 import type { WorkflowStore } from "./store.js";
@@ -19,6 +20,7 @@ import type { WorkflowStore } from "./store.js";
  *   1.0.83 are routed with it, so a worker of an older image (which does not declare the tag) never fetches them.
  * - The intake activities (claim and settle) of orchestration 1.0.83, which the registry registers as the latest version.
  *   Its turn activities are registered by registerActivities (session-proxy.ts).
+ * - The report of a Workflow agent chat's failed turn (agent-turn-failure.ts), which orchestration 1.0.83 schedules.
  * - The agent host of agent states (agent-host.ts): the child's definition from the registry-backed resolver over the
  *   agent registry and this worker's own agents (agent-resolver.ts), as the worker's publications pin them; the child
  *   created through a PilotSwarm client of the worker's own store, at the latest version (1.0.83), so that its turns can
@@ -32,11 +34,12 @@ import type { WorkflowStore } from "./store.js";
 /** The activity tags every worker adds to its defaults. */
 export const WORKFLOW_MILESTONE_WORKER_TAGS: readonly string[] = [WORKFLOW_REQUEST_CAPABILITY];
 
-/** Register orchestration 1.0.83's intake activities (the orchestration itself is in the registry). */
+/** Register orchestration 1.0.83's intake activities and its failed-turn report (the orchestration itself is in the registry). */
 export function registerWorkflowMilestoneSessions(runtime: {
     registerActivity(name: string, handler: (ctx: any, input: any) => Promise<unknown>): void;
 }, deps: { store: WorkflowStore | null }): void {
     registerWorkflowIntakeActivities(runtime, { store: deps.store });
+    registerWorkflowAgentTurnFailureActivity(runtime, { store: deps.store });
 }
 
 /**

@@ -36,6 +36,15 @@ export function workflowAgentChatSessionId(runId: string, stateId: string, visit
     return `${id.slice(0, 24)}${CHAT_MARK}${id.slice(24 + CHAT_MARK.length)}`;
 }
 
+/**
+ * Whether `sessionId` has the shape of an agent state's chat (a version 8 UUID, which only uuidOf above makes): a visit's
+ * own child or a continued chat. A cheap necessary mark, not proof: the store decides whether the session is one.
+ * Pure. The session orchestration reports a failed turn only for such a session (agent-turn-failure.ts).
+ */
+export function isWorkflowAgentSessionIdShape(sessionId: unknown): boolean {
+    return typeof sessionId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(sessionId);
+}
+
 /** The first characters of the last group of a continued chat's id (hex, so the id stays a UUID). */
 const CHAT_MARK = "c0a7";
 const CHAT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-c0a7[0-9a-f]{8}$/;
