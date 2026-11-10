@@ -1,8 +1,8 @@
 /**
  * The Workflow guidance and the engine every session has (owner decision 2026-11-08T15:30Z, which supersedes the
- * always-on review's AOS-F1 fix): session orchestration 1.0.83 is the latest version and every worker runs controller
- * 1.9.0, so every session's host compiles agent, parallel and request states (compileWorkflowV2ForHost with requests:
- * true), and every session is taught them.
+ * always-on review's AOS-F1 fix): session orchestration 1.0.83 is the latest version and every worker runs the full
+ * Workflow engine, so every session's host compiles agent, parallel and request states (compileWorkflowV2Definition),
+ * and every session is taught them.
  * a) a default worker (scripts off, no request-turn flag) carries the full text (trimmed, owner 2026-11-08T16:55Z): agent
  *    nodes, the request answer and the skills, and a scripts-off line that names agent and parallel nodes;
  * b) every state type and inline example that prompt teaches compiles, with the real compiler, on the host every session
@@ -15,13 +15,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../../dist/session-manager.js";
-import { compileWorkflowV2ForHost } from "../../dist/workflow/v2/service.js";
+import { compileWorkflowV2Definition } from "../../dist/workflow/v2/service.js";
 import * as guidance from "../../dist/workflow/guidance.js";
 import { workflowTestModeFromEnv } from "../../dist/workflow/v2/test-mode-switch.js";
 
 const { workflowSessionGuidance, WORKFLOW_SESSION_GUIDANCE } = guidance;
-
-const FULL_HOST = { requests: true };
 
 /** The whole system prompt a session manager builds for one session, as text. */
 function systemPrompt({ scripts, requestTurn }) {
@@ -114,11 +112,11 @@ function inlineExamples(text) {
     return examples;
 }
 
-const compileErrors = (host, yaml) => compileWorkflowV2ForHost(host, yaml).diagnostics.filter(item => item.severity === "error");
+const compileErrors = (yaml) => compileWorkflowV2Definition(yaml).diagnostics.filter(item => item.severity === "error");
 
 test("the canonical examples are real: each compiles on the host every session has", () => {
     for (const [type, { yaml }] of Object.entries(STATE_TYPES)) {
-        assert.deepEqual(compileErrors(FULL_HOST, yaml), [], type);
+        assert.deepEqual(compileErrors(yaml), [], type);
     }
 });
 
@@ -138,9 +136,9 @@ test("(b) every state type and inline example the default worker's prompt teache
         const block = workflowBlock(systemPrompt({ scripts, requestTurn: false }));
         const taught = Object.entries(STATE_TYPES).filter(([, { named }]) => named.test(block));
         for (const type of ["wait", "agent"]) assert.ok(taught.some(([name]) => name === type), `scripts ${scripts}: it teaches ${type}`);
-        for (const [type, { yaml }] of taught) assert.deepEqual(compileErrors(FULL_HOST, yaml), [], `scripts ${scripts}: ${type}`);
+        for (const [type, { yaml }] of taught) assert.deepEqual(compileErrors(yaml), [], `scripts ${scripts}: ${type}`);
         // The trimmed guidance shows no inline state; any it shows must compile.
-        for (const { example, yaml } of inlineExamples(block)) assert.deepEqual(compileErrors(FULL_HOST, yaml), [], `scripts ${scripts}: ${example}`);
+        for (const { example, yaml } of inlineExamples(block)) assert.deepEqual(compileErrors(yaml), [], `scripts ${scripts}: ${example}`);
     }
 });
 
@@ -154,7 +152,7 @@ test("(c) a 1.0.83 turn has the same text, with clock waits and revision tests",
         assert.ok(block.includes("`request`: answer it once with `respond_session_request` before its deadline, never in chat."));
         assert.match(block, /A wait state can wait until a clock time: `at: \{/);
         for (const [type, { named, yaml }] of Object.entries(STATE_TYPES)) {
-            if (named.test(block)) assert.deepEqual(compileErrors(FULL_HOST, yaml), [], `scripts ${scripts}: ${type}`);
+            if (named.test(block)) assert.deepEqual(compileErrors(yaml), [], `scripts ${scripts}: ${type}`);
         }
     }
     assert.equal(workflowSessionGuidance(false), WORKFLOW_SESSION_GUIDANCE);

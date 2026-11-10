@@ -354,8 +354,8 @@ export interface TurnOptions {
          */
         workflowTestToolCall?(tool: string, args: Record<string, unknown>): Promise<unknown>;
         /**
-         * Workflow v2: this turn runs on a worker that runs controller 1.9.0
-         *. Its workflow tools take request,
+         * Workflow v2: this turn is a workflow request turn (session
+         * orchestration 1.0.83). Its workflow tools take request,
          * agent and parallel states and the stop and test operations, and
          * their descriptions say so; every other turn's are unchanged.
          */
@@ -847,7 +847,7 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
     workspaceCleared?: boolean;
     /**
      * Workflow v2:
-     * this turn runs on a worker that runs controller 1.9.0, so a session
+     * this turn is a workflow request turn (session orchestration 1.0.83), so a session
      * created or resumed for it gets the permission handler that refuses MCP
      * tools while the session runs under a real-agent test
      * (workflowTestPermission). Every other session's handler is the one it
@@ -1517,7 +1517,7 @@ export interface PilotSwarmWorkerOptions {
         executables?: Partial<Record<"node" | "python" | "powershell", string>>;
     };
     /**
-     * @internal Test-only tuning. Every worker serves the full Workflow engine (controller 1.9.0 and session orchestration
+     * @internal Test-only tuning. Every worker serves the full Workflow engine (the Workflow controller and session orchestration
      * 1.0.83's intake and request turns; workflow/v2/milestone-worker.ts), so nothing here turns it on or off.
      * `intakeAdmissionRetryDelaysMs` replaces the in-place waits of the intake admission's transient retries
      * (intake-admission.ts).

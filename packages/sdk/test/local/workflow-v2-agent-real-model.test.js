@@ -10,11 +10,11 @@
  * credential, endpoint or connection string is in the repository, and none is printed or recorded.
  *
  * Targets (PS_WORKFLOW_V2_REAL_MODEL_TARGET):
- * - local (the default): a worker in this process with the test-only option (testOptions.workflowRequests) on its own
+ * - local (the default): a worker in this process on its own
  *   test schemas, its model catalog from PS_MODEL_PROVIDERS_PATH (the test catalog unless the environment names
  *   another, such as a TEST-pool catalog) and that catalog's credentials from the environment. The packaged reviewer
  *   is a synthetic package the test publishes into its own registry. Everything is dropped afterwards.
- * - deployed: an existing isolated test environment whose workers run controller 1.9.0 (every worker of this release
+ * - deployed: an existing isolated test environment whose workers run the Workflow controller (every worker of this release
  *   does) and serve the named model from their own
  *   catalog and credentials. The test runs no worker: as a client of the environment's database it creates one parent
  *   session row (the controlling agent, whose model and effort the agent states' children take) and one workflow, then
@@ -54,7 +54,7 @@ import { CMS_MIGRATIONS } from "../../src/cms-migrations.ts";
 import { FACTS_MIGRATIONS } from "../../src/facts-migrations.ts";
 import { createWorkflowAgentResolver } from "../../src/workflow/v2/agent-resolver.ts";
 import { createWorkflowV2, updateWorkflowV2 } from "../../src/workflow/v2/service.ts";
-import { WORKFLOW_V2_REQUEST_CONTROLLER_VERSION } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_V2_CONTROLLER_VERSION } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 
 const OWNER = { provider: "test", subject: "workflow-v2-real-model", email: null, displayName: null };
@@ -62,7 +62,7 @@ const ACTOR = { kind: "system", name: "workflow-v2-real-model-test" };
 const ENDED = ["completed", "failed", "cancelled", "stopped"];
 /** An agent state's outer deadline (its timed_out route). */
 const STATE_TIMEOUT_SECONDS = 300;
-/** How long the first state may take to be entered: past it, no worker there serves controller 1.9.0. */
+/** How long the first state may take to be entered: past it, no worker there serves the Workflow controller. */
 const ENTER_MS = 120_000;
 /** One sample's wait for its run to end: both states' deadlines and a margin. */
 const SAMPLE_MS = (2 * STATE_TIMEOUT_SECONDS + 120) * 1_000;
@@ -214,7 +214,7 @@ async function sample(ctx, host, plan, workflow, index, receipt) {
     const first = nodeExecutionIdFor(runId, "root", "inline_review", 1);
     if (!(await poll(() => ctx.store.readNodeExecution(first), ENTER_MS))) {
         fail(`no worker entered the first state within ${ENTER_MS / 1_000} s: does every worker there serve controller `
-            + `${WORKFLOW_V2_REQUEST_CONTROLLER_VERSION} (the test-environment switch)?`);
+            + `${WORKFLOW_V2_CONTROLLER_VERSION} (the test-environment switch)?`);
         record.durationMs = Date.now() - startedAt;
         return record;
     }
@@ -228,7 +228,7 @@ async function sample(ctx, host, plan, workflow, index, receipt) {
         record.status = run.status;
         record.controllerVersion = run.controllerVersion;
         if (run.status !== "completed") fail(`the run ended ${run.status} at ${run.terminalNodeId}: ${bounded(run.terminalError ?? run.terminalOutput)}`);
-        if (run.controllerVersion !== WORKFLOW_V2_REQUEST_CONTROLLER_VERSION) fail(`the run was admitted for controller ${run.controllerVersion}`);
+        if (run.controllerVersion !== WORKFLOW_V2_CONTROLLER_VERSION) fail(`the run was admitted for controller ${run.controllerVersion}`);
     }
     for (const stateId of ["inline_review", "packaged_review"]) record.states.push(await stateRecord(ctx, plan, runId, stateId, fail));
     const verdicts = record.states.map(state => state.output?.verdict ?? null);
@@ -238,11 +238,11 @@ async function sample(ctx, host, plan, workflow, index, receipt) {
 
 /**
  * The scenario on a target (`ctx`: its catalog, workflow store, Duroxide client, packaged reviewer and owner): a parent
- * session on the plan's model, the workflow published as a 1.9.0 host publishes it (the packaged reviewer pinned at its
+ * session on the plan's model, the workflow published as a host publishes it (the packaged reviewer pinned at its
  * registry revision), then the samples.
  */
 async function scenario(ctx, plan, receipt) {
-    const host = { catalog: ctx.catalog, store: ctx.store, duroxideClient: ctx.duroxide, requests: true,
+    const host = { catalog: ctx.catalog, store: ctx.store, duroxideClient: ctx.duroxide,
         resolveAgent: createWorkflowAgentResolver({ catalog: ctx.catalog }) };
     const parent = randomUUID();
     await ctx.catalog.createSession(parent, { owner: ctx.owner, model: plan.model.ref, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });
@@ -360,7 +360,7 @@ describe("workflow v2 agent states on a real model (layer M; test-only option, i
             model: { ref: plan.model.ref, provider: plan.model.provider, name: plan.model.name, type: plan.model.type,
                 effort: plan.effort ?? "the model's default" },
             budget: { samples: plan.samples, maxSamples: REAL_MODEL_MAX_SAMPLES, retries: 0 },
-            controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, samples: [], failures: [],
+            controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION, samples: [], failures: [],
         };
         try {
             if (plan.target === "local") await runLocal(plan, receipt);

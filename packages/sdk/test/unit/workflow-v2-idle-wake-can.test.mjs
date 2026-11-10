@@ -1,7 +1,6 @@
 /**
- * Workflow v2 controllers 1.8.0 and 1.9.0: a wake that brings no command is an idle wait in the running loop too (V-2
- * diagnosis, 2026-11-08; decision v2-diagnosis-and-idle-wake-gap-20261108T0436; both changed in place, Workflow V2 is not
- * on main).
+ * Workflow v2 controller: a wake that brings no command is an idle wait in the running loop too (V-2 diagnosis,
+ * 2026-11-08; decision v2-diagnosis-and-idle-wake-gap-20261108T0436).
  *
  * Before, the running loop counted only a backstop timer that fired: a run whose every cursor waits (here a ten-hour wait
  * state), under a steady stream of wakes that bring nothing, never continued as new, and one execution's history grew
@@ -12,7 +11,7 @@
  * - a wake for a completion counts too, and the completion is never skipped: the next execution's first collection finds
  *   it in the store, routes it, and the run ends normally.
  *
- * Drives the real controller generators against a fake orchestration context: store activities answer from a script,
+ * Drives the real controller generator against a fake orchestration context: store activities answer from a script,
  * the clock stays still, and the command queue's race is won by the next queued message, else by the timer. No database.
  *
  * Run: node --test test/unit/workflow-v2-idle-wake-can.test.mjs (after npm run build)
@@ -20,8 +19,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    workflowV2Controller, workflowV2RequestController, WORKFLOW_V2_COMMAND_POLL_MS, WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION,
-    WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
+    workflowV2Controller, WORKFLOW_V2_COMMAND_POLL_MS, WORKFLOW_V2_CONTROLLER_VERSION, WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION,
 } from "../../dist/workflow/v2/runtime.js";
 
 const NOW = 1_794_000_000_000;
@@ -38,8 +36,7 @@ const wake = n => JSON.stringify({ type: "workflow-wake", runId: RUN, reason: `t
 const CANCEL = JSON.stringify({ type: "cmd", cmd: "cancel", id: "cancel-1", args: { reason: "stop it" } });
 
 const CONTROLLERS = [
-    { version: "1.8.0", controller: workflowV2Controller, collected: list => list },
-    { version: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, controller: workflowV2RequestController, collected: list => ({ collected: list }) },
+    { version: WORKFLOW_V2_CONTROLLER_VERSION, controller: workflowV2Controller, collected: list => ({ collected: list }) },
 ];
 
 /**

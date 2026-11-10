@@ -1,5 +1,5 @@
 /**
- * Workflow v2 request states, the inactive request runtime (design
+ * Workflow v2 request states, the request runtime (design
  * docs/proposals/workflow-messaging-request.md sections 4, 5 and 8; decisions
  * request-runtime-inactive-phase and request-durable-expiry-semantics):
  *
@@ -7,14 +7,12 @@
  *   responder's observation, its delivery and its response wakes (lease,
  *   token-guarded settlement, backoff, abandonment with one event), on real
  *   PostgreSQL;
- * - controller 1.9.0 on a native duroxide runtime registered with the
- *   test-only option workflowRequests and a worker tag filter that declares
- *   the workflow-request capability: a request to the parent answered,
+ * - the controller on a native duroxide runtime with a worker tag filter
+ *   that declares the workflow-request capability: a request to the parent answered,
  *   declined or left to time out, and a responder without the response
  *   capability. The responder is a test double (an inbox orchestration);
  *   the test answers through the real respond_session_request tool function
- *   and wake dispatcher. No model runs;
- * - the registrations with and without the option.
+ *   and wake dispatcher. No model runs.
  *
  * Not an activation, a routing proof against an older worker, or a model
  * qualification.
@@ -28,8 +26,11 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { canonicalJson } from "../../src/workflow/v2/json.ts";
 import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import {
-    registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_REQUEST_ACTIVITIES,
-    WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, WORKFLOW_V2_REQUEST_NAME, workflowLiveControllerInstanceId, workflowRequestClientMessageId,
+    registerWorkflowV2,
+    sessionQueueTransport,
+    WORKFLOW_V2_CONTROLLER_VERSION,
+    workflowLiveControllerInstanceId,
+    workflowRequestClientMessageId,
 } from "../../src/workflow/v2/runtime.ts";
 import { RESPOND_SESSION_REQUEST_TOOL, respondSessionRequestFromTool, WorkflowResponseWakeDispatcher } from "../../src/workflow/v2/request-service.ts";
 import { WORKFLOW_V2_WAKE_MAX_ATTEMPTS } from "../../src/workflow/v2/store.ts";
@@ -266,7 +267,7 @@ describe("workflow v2 request runtime: the store", () => {
     });
 });
 
-// ─── Controller 1.9.0 on a native runtime ────────────────────
+// ─── The controller on a native runtime ──────────────────────
 
 const REQUEST_YAML = ({ timeoutSeconds = 3600 } = {}) => `
 apiVersion: pilotswarm.dev/v2-draft
@@ -308,7 +309,7 @@ function* requestInbox(ctx, input) {
 }
 
 /**
- * A worker-equivalent registration with workflowRequests, the request tag declared, and a responder observed at `version`.
+ * A worker-equivalent registration with the request tag declared, and a responder observed at `version`.
  * `enabled` is the worker's scripts setting (PILOTSWARM_WORKFLOW_SCRIPTS), which only script states read (PRR-1).
  */
 async function harness(env, { version = "1.0.83", enabled = () => true } = {}) {
@@ -334,13 +335,12 @@ async function harness(env, { version = "1.0.83", enabled = () => true } = {}) {
         notifyParent: async () => { throw new Error("These workflows notify no parent."); },
         deleteSession: async sessionId => catalog.softDeleteSession(sessionId),
         wakeBackstopMs: 500,
-        workflowRequests: true,
         sessionQueue: { ...transport, version: async () => version },
     });
     await runtime.start();
     const dispatcher = new WorkflowResponseWakeDispatcher(store, client);
     return {
-        catalog, store, client, dispatcher, host: { catalog, store, duroxideClient: client, requests: true },
+        catalog, store, client, dispatcher, host: { catalog, store, duroxideClient: client },
         async q(text, params = []) {
             return (await direct.query(text.replaceAll("SCHEMA.", `"${env.cmsSchema}".`), params)).rows;
         },
@@ -382,7 +382,7 @@ async function finished(store, runId, timeoutMs = 60_000) {
 const answer = (h, parent, args) => respondSessionRequestFromTool(args, { callerSessionId: parent, store: h.store, dispatcher: h.dispatcher })
     .then(text => JSON.parse(text));
 
-describe("workflow v2 request runtime: controller 1.9.0 (inactive, test-only registration)", () => {
+describe("workflow v2 request runtime: the controller", () => {
     it("delivers a request to the parent as a prompt, takes its answer from the response tool, wakes the controller and routes responded", { timeout: REQUEST_TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
@@ -425,9 +425,9 @@ describe("workflow v2 request runtime: controller 1.9.0 (inactive, test-only reg
             // The wake was dispatched (or found moot when the backstop had already ended the run).
             const [wake] = await h.q("SELECT state FROM SCHEMA.workflow_response_wakes WHERE exchange_id = $1", [request.requestId]);
             expect(["dispatched", "moot"]).toContain(wake.state);
-            // The run's controller is 1.9.0, and the request's delivery ran as its own orchestration.
+            // The run's controller is the Workflow controller, and the request's delivery ran as its own orchestration.
             expect((await h.client.getInstanceInfo(workflowLiveControllerInstanceId(workflowSessionId))).orchestrationVersion)
-                .toBe(WORKFLOW_V2_REQUEST_CONTROLLER_VERSION);
+                .toBe(WORKFLOW_V2_CONTROLLER_VERSION);
             expect((await h.client.getStatus(`wfr-${request.requestId}`)).status).toBe("Completed");
             const nodes = await h.store.listNodeExecutions(runId);
             expect(nodes.find(node => node.nodeId === "ask")).toMatchObject({ outcome: "responded", resultKind: "business", winner: "response" });
@@ -492,45 +492,5 @@ describe("workflow v2 request runtime: controller 1.9.0 (inactive, test-only reg
         } finally {
             await h.stop();
         }
-    });
-});
-
-describe("workflow v2 request runtime: registration", () => {
-    const registered = workflowRequests => {
-        const activities = [];
-        const orchestrations = [];
-        registerWorkflowV2({
-            registerActivity: name => activities.push(name),
-            registerOrchestrationVersioned: (name, version) => orchestrations.push(`${name}@${version}`),
-        }, {
-            store: {}, catalog: {}, enabled: () => true, resolveToolBinding: async () => null, openToolExecutor: async () => null,
-            authorizeParentNotification: async () => false, notifyParent: async () => {}, deleteSession: async () => {},
-            ...(workflowRequests === undefined ? {} : { workflowRequests }),
-        });
-        return { activities, orchestrations };
-    };
-
-    /** The orchestration versions only a worker with request states registers. */
-    const requestOnly = orchestrations => orchestrations.filter(entry => entry === `${WORKFLOW_V2_CONTROLLER_NAME}@1.9.0`
-        || /^workflow-v2-(effect|notify|send)@1\.1\.0$/.test(entry) || entry.startsWith(`${WORKFLOW_V2_REQUEST_NAME}@`));
-
-    it("registers no tagged activity, no controller 1.9.0 and no request delivery without the test option", () => {
-        for (const option of [undefined, false]) {
-            const { activities, orchestrations } = registered(option);
-            expect([...activities].sort()).toEqual(Object.values(WORKFLOW_V2_ACTIVITIES).sort());
-            expect(requestOnly(orchestrations)).toEqual([]);
-        }
-    });
-
-    it("with it, registers the tagged activities and the new versions, each orchestration's versions in ascending order", () => {
-        const { activities, orchestrations } = registered(true);
-        expect([...activities].sort()).toEqual([...Object.values(WORKFLOW_V2_ACTIVITIES), ...Object.values(WORKFLOW_V2_REQUEST_ACTIVITIES)].sort());
-        const controller = orchestrations.filter(entry => entry.startsWith(`${WORKFLOW_V2_CONTROLLER_NAME}@`));
-        expect(controller.slice(-2)).toEqual([`${WORKFLOW_V2_CONTROLLER_NAME}@1.8.0`, `${WORKFLOW_V2_CONTROLLER_NAME}@1.9.0`]);
-        for (const name of ["workflow-v2-effect", "workflow-v2-notify", "workflow-v2-send"]) {
-            expect(orchestrations.filter(entry => entry.startsWith(`${name}@`))).toEqual([`${name}@1.0.0`, `${name}@1.1.0`]);
-        }
-        expect(orchestrations).toContain(`${WORKFLOW_V2_REQUEST_NAME}@1.0.0`);
-        expect(requestOnly(orchestrations)).toHaveLength(5);
     });
 });

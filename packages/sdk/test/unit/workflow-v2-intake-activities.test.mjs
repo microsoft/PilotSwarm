@@ -9,7 +9,7 @@
  *   loads); no other production
  *   source imports their module or registers them, their names are written
  *   once in the shared intake definition, and only that module declares the
- *   workflow-request capability for a worker (controller 1.9.0 routes its own
+ *   workflow-request capability for a worker (the Workflow controller routes its own
  *   activities with it).
  * - The claim renders with the sender's own renderer; every settlement goes
  *   to its one store write with exactly the fields given.
@@ -128,7 +128,7 @@ test("only a test or the full-engine worker module registers the intake activiti
         assert.equal(code.includes("registerWorkflowIntakeActivities"), path === MILESTONE, `${path} registers the intake activities`);
         // Their names are written once, in the shared intake definition; the inactive 1.0.83 tree schedules them by that constant.
         if (/["'`](?:claimWorkflowIntake|settleWorkflowIntake)["'`]/.test(code)) namedIn.push(path);
-        // The capability that routes them is defined once. Controller 1.9.0 routes its own activities with it
+        // The capability that routes them is defined once. The Workflow controller routes its own activities with it
         // (workflow/v2/runtime.ts), and only the milestone worker module declares it for a worker; the inactive 1.0.83 tree,
         // and the session proxy for the turns of its workflow-intake contract, route with routeWorkflowRequestActivity.
         if (!["activity-routing.ts", "workflow/v2/runtime.ts", MILESTONE].includes(path)) {

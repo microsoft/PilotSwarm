@@ -33,6 +33,7 @@ import { compileWorkflowV2, parseWorkflowIr, WORKFLOW_V2_IR_VERSION, WORKFLOW_V2
 import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import { registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, workflowEffectInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
@@ -90,16 +91,16 @@ async function baseOf(env) {
 async function harness(env, { base: shared, runtimeOptions, wakeBackstopMs = 500, beforeElapse, wrapStore } = {}) {
     const base = shared ?? await baseOf(env);
     const { catalog, store, provider, client } = base;
-    const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", ...runtimeOptions });
+    const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] }, ...runtimeOptions });
     const refusals = [];
     const elapses = [];
     const withheld = [];
     const wrap = (name, fn) => {
-        // Review R2-RT-1: a collection that gave controller 1.8.0 no result while results of the work it asked about were stored.
+        // Review R2-RT-1: a collection that reported the run paused while results of the work it asked about were stored.
         if (name === WORKFLOW_V2_ACTIVITIES.collect) {
             return async (ctx, input) => {
                 const collected = await fn(ctx, input);
-                if (Array.isArray(collected) && collected.length === 0 && input.nodeExecutionIds.length > 0
+                if (collected?.paused === true && input.nodeExecutionIds.length > 0
                     && (await store.readCompletedNodes(input.runId, input.nodeExecutionIds)).length > 0) withheld.push(input.runId);
                 return collected;
             };
@@ -326,7 +327,7 @@ describe("workflow v2 wait states", () => {
         }
     });
 
-    it("elapses while paused, looks again only once per backstop period while paused, and admits its successor only after resume", { timeout: TIMEOUT }, async () => {
+    it("elapses while paused, does not look again at the decided wait while paused, and admits its successor only after resume", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             const parent = await parentOf(h);
@@ -343,15 +344,10 @@ describe("workflow v2 wait states", () => {
             expect(h.refusals).not.toContain(runId);
             expect((await h.store.listNodeExecutions(runId)).map(item => item.nodeId)).toEqual(["nap"]);
             expect((await parent.read(id)).run).toMatchObject({ status: "paused", pauseSettled: true });
-            // Re-check R2-RT1-RC1: a sustained pause. The decided wait's deadline has passed, but the controller looks again
-            // only once per backstop period (500 ms here), not on a 1 ms timer: over 3 seconds a handful of looks.
+            // A sustained pause: the decided wait has no deadline left, so the controller does not elapse it again.
             const before = h.elapses.length;
             await new Promise(resolve => setTimeout(resolve, 3_000));
-            const looks = h.elapses.slice(before);
-            expect(looks.length).toBeGreaterThanOrEqual(2);
-            expect(looks.length).toBeLessThanOrEqual(10);
-            expect(looks.every(answer => answer.notDue.some(wait => wait.nodeExecutionId === node.nodeExecutionId && wait.remainingMs === 500)), JSON.stringify(looks))
-                .toBe(true);
+            expect(h.elapses.slice(before)).toEqual([]);
             expect((await h.store.readRun(runId)).status).toBe("paused");
             expect(await parent.update(id, { operation: "resume", operation_id: "resume" })).toMatchObject({ ok: true, status: "running" });
             const run = await finished(h.store, runId);

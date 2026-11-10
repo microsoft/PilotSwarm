@@ -26,7 +26,7 @@ import { PilotSwarmClient } from "../../src/client.ts";
 import { PilotSwarmManagementClient } from "../../src/management-client.ts";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson } from "../../src/workflow/v2/json.ts";
-import { WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_V2_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -89,7 +89,7 @@ async function fixture(env) {
             await store.startTest({
                 workflowSessionId, expectedRevision: 1, definitionHash: compiled.yamlSha256, operationId, requestSha256: operationId,
                 start: { runId, mode: "test", controllerInstanceId: workflowTestControllerInstanceId(runId), inputsText: "{}", kvText: "{}",
-                    testAgentMode: "mocked", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION },
+                    testAgentMode: "mocked", controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION },
             });
         },
         /** Publish the draft and admit its first live run in one request. */

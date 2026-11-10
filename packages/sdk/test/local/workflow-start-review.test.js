@@ -209,7 +209,7 @@ describe("stage 2 review: a Start is receipt-first, and the budget of running ch
         const { h, host, chat } = await harness();
         const env = getEnv();
         const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
-            factsSchema: env.factsSchema, workflowCommands: { requests: true } });
+            factsSchema: env.factsSchema, workflowCommands: {} });
         await mgmt.start();
         try {
             const child = randomUUID();

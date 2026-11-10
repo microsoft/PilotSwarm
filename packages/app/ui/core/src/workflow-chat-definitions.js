@@ -247,8 +247,8 @@ export function chatPackageDefinitionWords(definition, revision = null) {
 /**
  * Which Workflow tab a chat gets: "chat" (its own definitions) or "stage1" (its Workflows grouped by name, as stage 1 shows
  * them). Stage 1 when the definitions are not read (or this connection has none), when the Workflow shown is in no
- * definition, and (review S2UI-F4) when the chat has no definitions but has Workflow children (retained stage 1 Workflows
- * 0107 did not import): they stay reachable. A chat with neither gets its own (empty) tab. `byId`: the session rows. Pure.
+ * definition, and (review S2UI-F4) when the chat has no definitions but has Workflow children (stage 1 Workflows that
+ * belong to no definition): they stay reachable. A chat with neither gets its own (empty) tab. `byId`: the session rows. Pure.
  */
 export function chatWorkflowTabKind(definitions, { ownerId = null, workflowId = null, byId = null } = {}) {
     if (!definitions) return "stage1";

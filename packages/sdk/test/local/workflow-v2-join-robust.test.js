@@ -1,7 +1,7 @@
 /**
  * J3, part 1: robust tests of joins of the first k and the parallel time limit (test design join-k-of-n: JK-04, JK-05,
  * JK-06, JK-09, JK-10, JK-12 and JK-13, with the shared oracle O1 to O8 and hooks HG-1, HG-3 and HG-10; the review
- * gaps J1-T1, J1-T2, J1b-T1 to T3 that these cases close). Against the real store on PostgreSQL and controller 1.9.0
+ * gaps J1-T1, J1-T2, J1b-T1 to T3 that these cases close). Against the real store on PostgreSQL and the Workflow controller
  * on a native duroxide runtime (test-only registration; workflow-v2-join-harness.js).
  *
  * - JK-04: the first k are the store's commit order, not the order results are delivered or branches admitted; a
@@ -99,12 +99,11 @@ import { readWorkflowFromTool, readWorkflowV2View } from "../../src/workflow/v2/
 import { createManagementClient } from "../helpers/local-workers.js";
 import { formatSeconds, projectWorkflowV2, workflowV2BranchNumber } from "../../../app/ui/core/src/workflow-v2-view.js";
 import {
-    BRANCH_ROUTE, branchScopeId, registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_REQUEST_ACTIVITIES, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
-    WORKFLOW_V2_STOP_CONTROLLER_VERSIONS, workflowEffectInstanceId, workflowLiveControllerInstanceId,
+    BRANCH_ROUTE, branchScopeId, registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_CONTROLLER_VERSION, workflowEffectInstanceId, workflowLiveControllerInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 
-const R = WORKFLOW_V2_REQUEST_ACTIVITIES;
+const R = WORKFLOW_V2_ACTIVITIES;
 const getEnv = useSuiteEnv(import.meta.url);
 // CI run 114 (HorizonDB, about ten times slower): the test's own bounds grow with the database (test/helpers/time-scale.js;
 // the harness's until() and within() scale theirs). Time limits that must leave room for branches to start are scaled too.
@@ -135,7 +134,7 @@ async function storedRun(h, doc) {
         workflowSessionId, parentSessionId: parent, notifyParent: false, yaml, compiled, actor: JOIN_ACTOR,
         operationId: "create", requestSha256: "join-robust", publish: true, title: "Workflow: join robust",
         start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
-            inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION },
+            inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION },
     });
     const fan = nodeExecutionIdFor(runId, "root", "fan", 1);
     const run = { workflowSessionId, runId, fan };
@@ -312,9 +311,9 @@ describe("J3 robust joins: the store's commit order and its clock (no controller
     });
 });
 
-// ─── Controller 1.9.0 on a native runtime ────────────────────
+// ─── The controller on a native runtime ──────────────────────
 
-describe("J3 robust joins: commit order, repeats and lost acknowledgements (controller 1.9.0, test-only)", () => {
+describe("J3 robust joins: commit order, repeats and lost acknowledgements", () => {
     it("JK-04 (J1-T2): the first 2 of 4 are the commit order [3, 1], not the delivery, cursor or id order; equal outputs stay apart; a restart keeps the bytes", { timeout: TIMEOUT }, async () => {
         const base = await joinBaseOf(getEnv());
         const held = { on: false, gate: gate(), order: null };
@@ -851,7 +850,7 @@ describe("J3 robust joins, part 2: the store (no controller)", () => {
     });
 
     // Parent review Q1 of fff25ffc: a branch terminal admitted and not yet decided survives the controller's cut (the store
-    // never cancels a terminal). Controller 1.9.0 decides it with its branch's end in the same pass; were it ever left (an
+    // never cancels a terminal). The controller decides it with its branch's end in the same pass; were it ever left (an
     // orchestration ended outside its failure path), every end of the run decides it: the run's end, and a stop at its grace.
     it("Q1 (fff25ffc): a pending branch terminal left after a cut is decided by the run's end, and a stop waits for it only until its grace ends", { timeout: TIMEOUT }, async () => {
         const h = await openWorkflowStore(getEnv());
@@ -881,7 +880,7 @@ describe("J3 robust joins, part 2: the store (no controller)", () => {
             // A stop: before its grace ends it waits (the terminal is pending work); at the grace's end it ends the run and cancels it.
             const stopped = await leftPending();
             await h.store.requestRunStop({ workflowSessionId: stopped.workflowSessionId, runId: stopped.runId, operationId: "stop-1", requestSha256: "stop-1",
-                actor: JOIN_ACTOR, reason: null, graceSeconds: 1, stoppableVersions: WORKFLOW_V2_STOP_CONTROLLER_VERSIONS });
+                actor: JOIN_ACTOR, reason: null, graceSeconds: 1 });
             const projection = () => ({ sessionId: stopped.workflowSessionId, update: { state: "cancelled", touch: true } });
             const early = await h.store.finishStoppedRun({ runId: stopped.runId, projection });
             expect(early.result, "precondition: asked before the grace ended").toBe("not_due");
@@ -966,7 +965,7 @@ describe("J3 robust joins, part 2: the store (no controller)", () => {
                 authorizeParentNotification: async () => false,
                 notifyParent: async () => { throw new Error("These workflows notify no parent."); },
                 deleteSession: async sessionId => base.catalog.softDeleteSession(sessionId),
-                wakeBackstopMs: 500, workflowRequests: true,
+                wakeBackstopMs: 500, 
                 sessionQueue: { ...sessionQueueTransport(base.client), version: async () => "1.0.83" },
             });
             const ctx = { getClient: () => base.client, traceWarn: () => {}, traceInfo: () => {} };
@@ -1041,7 +1040,7 @@ describe("J3 robust joins, part 2: the store (no controller)", () => {
     });
 });
 
-describe("J3 robust joins, part 2: controller 1.9.0 (test-only)", () => {
+describe("J3 robust joins, part 2: the Workflow controller (test-only)", () => {
     it("JK-11: the time limit decides while paused: the active script is cut, nothing routes or starts until the resume; a late success loses; a repeated resume replays", { timeout: TIMEOUT }, async () => {
         const base = await joinBaseOf(getEnv());
         const held = { runId: null, gate: gate() };
@@ -1401,7 +1400,7 @@ describe("J3 robust joins, part 4: reports and payload sizes in the store", () =
     });
 });
 
-describe("J3 robust joins, part 4: schemas and success on a native runtime (controller 1.9.0, test-only)", () => {
+describe("J3 robust joins, part 4: schemas and success on a native runtime", () => {
     it("JK-14: fewer items than k block at once with nothing run; an empty join of every branch joins []; k = n joins in commit order with the wrapper, a join of every branch in item order", { timeout: TIMEOUT }, async () => {
         const base = await joinBaseOf(getEnv());
         const workers = [];
@@ -1696,7 +1695,7 @@ function withCancel(ctx, cancel) {
         : typeof target[key] === "function" ? target[key].bind(target) : target[key] });
 }
 
-describe("J3 robust joins, part 3: cleanup of cut branches (controller 1.9.0, test-only)", () => {
+describe("J3 robust joins, part 3: cleanup of cut branches", () => {
     it("JK-15 (HG-5): a losing script's process ends after the join and after the time limit; no late effect; a queued branch never starts", { timeout: TIMEOUT }, async () => {
         const base = await joinBaseOf(getEnv());
         const probe = await probeServer();
@@ -1895,7 +1894,7 @@ describe("J3 robust joins, part 6: the decision's transaction (no controller)", 
 
 // ─── Part 7: a worker process killed after a store write (JK-07) ───
 
-describe("J3 robust joins, part 7: a worker process killed between a store write and its acknowledgement (controller 1.9.0, built code)", () => {
+describe("J3 robust joins, part 7: a worker process killed between a store write and its acknowledgement (built code)", () => {
     it("JK-07 (HG-2): killed after the join, a branch's end or the time limit was stored: another worker process takes over; one decision, one route, the cut made", { timeout: testTime.ms(240_000) }, async () => {
         const env = getEnv();
         const base = await joinBaseOf(env);
@@ -1972,7 +1971,7 @@ describe("J3 robust joins, part 7: a worker process killed between a store write
 
 // ─── Part 8: reads and the views of real results (JK-29) ────
 
-describe("J3 robust joins, part 8: reads and the portal's projection of real results (controller 1.9.0, test-only)", () => {
+describe("J3 robust joins, part 8: reads and the portal's projection of real results", () => {
     it("JK-29: decided parallel states read the same through every adapter, whole and in pages, and the portal's projection shows their ends and causes", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const base = await joinBaseOf(env);

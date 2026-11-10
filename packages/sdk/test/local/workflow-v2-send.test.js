@@ -65,6 +65,7 @@ import {
     promptSafeJson, registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_FINALIZE_DELAYS_MS, WORKFLOW_V2_MAX_SEND_PAYLOAD_BYTES,
     workflowSendClientMessageId, workflowSendInstanceId, workflowSendPrompt,
 } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
@@ -259,7 +260,7 @@ async function harness(env, { queue = null, wrapStore = null, wakeBackstopMs = 5
     const store = catalog.workflowStore();
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
     const client = new Client(provider);
-    const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
+    const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] } });
     const direct = new pg.Pool({ connectionString: env.store, max: 2 });
     runtime.registerOrchestrationVersioned(SESSION_INBOX, "1.0.0", sessionInbox);
     registerWorkflowV2({

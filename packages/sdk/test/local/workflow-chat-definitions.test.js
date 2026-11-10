@@ -200,7 +200,7 @@ describe("a definition belongs to the chat (stage 2.1)", () => {
         const { h, host, chat } = await harness();
         const env = getEnv();
         const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
-            factsSchema: env.factsSchema, workflowCommands: { requests: true } });
+            factsSchema: env.factsSchema, workflowCommands: {} });
         await mgmt.start();
         try {
             const id = (await save(host, chat, WITH_INPUTS, null)).receipt.definitionId;
@@ -369,7 +369,7 @@ states:
   failed: { type: terminal, outcome: failed }
 `;
         const checked = [];
-        const agentsHost = { ...host, requests: true,
+        const agentsHost = { ...host,
             checkAgentModel: async (choice, owner) => { checked.push([choice.model, owner?.subject ?? null]); return choice.model === "test:gone" ? "it is not in your catalog." : null; } };
         try {
             const saved = (await saveChatWorkflowDefinition(agentsHost, { ownerSessionId: chat, name: "triage", yaml: AGENTS, expected: null,
@@ -453,7 +453,7 @@ states:
         const ADMIN = { provider: "test", subject: "an-admin" };
         const CAROL = { provider: "test", subject: "carol" };
         const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
-            factsSchema: env.factsSchema, workflowCommands: { requests: true, testMode: true } });
+            factsSchema: env.factsSchema, workflowCommands: { testMode: true } });
         await mgmt.start();
         // The catalog check, recorded: who it is asked for, and test:gone is not in the catalog.
         const checked = [];
@@ -468,7 +468,7 @@ states:
             return read.models;
         };
         try {
-            const agentsHost = { ...host, requests: true, checkAgentModel: async () => null };
+            const agentsHost = { ...host, checkAgentModel: async () => null };
             const saved = (await saveChatWorkflowDefinition(agentsHost, { ownerSessionId: chat, name: "triage", yaml: AGENTS, expected: null,
                 actor: { kind: "chat", sessionId: chat }, operationId: `save-${randomUUID()}`, by: "chat" })).receipt;
             expect(saved.valid, JSON.stringify(saved.diagnostics)).toBe(true);
@@ -572,7 +572,7 @@ states:
             expect((await mgmtStart({ runAgainOf: damaged.workflowId, agentModels: {} }, CAROL)).agentModels).toBeUndefined();
 
             // Fail closed: a host that cannot check models refuses any map (and starts as before without one).
-            const unchecked = { ...host, requests: true };
+            const unchecked = { ...host };
             const closed = await refused(startChatWorkflowDefinition(unchecked, { ownerSessionId: chat, definition: { definitionId: saved.definitionId },
                 revision: null, inputs: {}, actor: ENGINE, operationId: `start-${randomUUID()}`, agentModels: chosen }), "AGENT_MODEL_UNAVAILABLE");
             expect(closed.message).toMatch(/^This host cannot check models against the owning chat's catalog/);
@@ -603,7 +603,7 @@ states:
   done: { type: terminal, outcome: succeeded }
   failed: { type: terminal, outcome: failed }
 `;
-        const agentsHost = { ...host, requests: true };
+        const agentsHost = { ...host };
         const FLAGS = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true };
         const modeOf = graph => graph.states.find(state => state.id === "classify").chat ?? "new";
         const workflowMode = async workflowId => modeOf((await readWorkflowV2(agentsHost, workflowId, {}, "tool")).graph);

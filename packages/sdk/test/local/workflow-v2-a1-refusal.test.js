@@ -22,7 +22,7 @@ import {
     sessionInsideWorkflow, WORKFLOW_DEFINITION_TOOLS, WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT, WORKFLOW_DEFINITION_TOOLS_REFUSED,
     workflowDefinitionToolsRefusal,
 } from "../../src/workflow/v2/input-policy.ts";
-import { WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_V2_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 import { spawnWorkflowFromTool } from "../../src/workflow/spawn.ts";
 
@@ -75,7 +75,7 @@ async function lineageOf(catalog) {
         workflowSessionId, parentSessionId: parent, notifyParent: false, yaml: AGENT_YAML, compiled, actor: ACTOR, operationId: "create",
         requestSha256: "a1-refusal", publish: true, title: `Workflow: ${compiled.name}`,
         start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId), inputsText: "{}", kvText: "{}",
-            testAgentMode: null, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION },
+            testAgentMode: null, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION },
     });
     const child = randomUUID();
     const nodeExecutionId = nodeExecutionIdFor(runId, "root", "review", 1);

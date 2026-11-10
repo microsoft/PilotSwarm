@@ -14,11 +14,11 @@ import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC } from 
 import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC } from "../../dist/workflow/v2/agent-node-service.js";
 
 // Workflow test mode is hidden unless PILOTSWARM_WORKFLOW_TEST_MODE=on (Workflow Simplified, spec 16). These tests describe
-// the 1.9.0 tools with it on; workflow-test-mode-switch.test.mjs covers it off. Read when a declaration or command is made.
+// the 1.0.83 tools with it on; workflow-test-mode-switch.test.mjs covers it off. Read when a declaration or command is made.
 process.env.PILOTSWARM_WORKFLOW_TEST_MODE = "on";
 
 /**
- * The workflow tools on a turn of a worker that runs controller 1.9.0 (R26,
+ * The workflow tools on a turn of a worker that runs the Workflow controller (R26,
  * T125; INACTIVE: only tests register one): their descriptions and
  * parameters name what their host takes, the handler takes exactly those
  * operations behind the same gate, and every other turn's tools are as
@@ -44,7 +44,7 @@ test("a frozen 1.0.82 turn's declarations name its operations only", () => {
     }
 });
 
-test("on a 1.9.0 turn the declarations add the milestone operations and fields", () => {
+test("on a 1.0.83 turn the declarations add the milestone operations and fields", () => {
     assert.deepEqual([...UPDATE_WORKFLOW_MILESTONE_OPERATIONS], MILESTONE_OPERATIONS);
     const update = UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC;
     assert.deepEqual([...update.parameters.properties.operation.enum], [...DECLARED_OPERATIONS, ...MILESTONE_OPERATIONS]);
@@ -79,7 +79,7 @@ test("on a 1.9.0 turn the declarations add the milestone operations and fields",
 const names = defs => defs.map(def => def.name);
 const named = (defs, name) => defs.find(def => def.name === name);
 
-test("the model is declared what a 1.9.0 turn's handlers take; every other session's declarations are unchanged", () => {
+test("the model is declared what a 1.0.83 turn's handlers take; every other session's declarations are unchanged", () => {
     // What the Copilot CLI shows the model comes only from these declarations (session-manager, at create or resume); a turn's
     // handlers alone are invisible to it.
     const production = ManagedSession.subAgentToolDefs();
@@ -149,7 +149,7 @@ test("a session's CLI handle is declared the tools of its turn's flags: set by t
     for (const name of [RESPOND_SESSION_REQUEST_TOOL, COMPLETE_WORKFLOW_NODE_TOOL]) assert.ok(!names(declared()).includes(name), name);
     assert.equal(named(declared(), "update_workflow").description, UPDATE_WORKFLOW_TOOL_SPEC.description);
 
-    // An agent state's own child on a 1.9.0 turn: the milestone descriptions, both tools, pinned like every PilotSwarm tool.
+    // An agent state's own child on a 1.0.83 turn: the milestone descriptions, both tools, pinned like every PilotSwarm tool.
     await manager.getOrCreate("child", { toolNames: [], workflowMilestoneTurn: true, workflowAgentChild: true }, { turnIndex: 0 });
     assert.equal(calls.at(-1).kind, "create");
     assert.equal(named(declared(), "update_workflow").description, UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC.description);
@@ -166,34 +166,26 @@ test("a session's CLI handle is declared the tools of its turn's flags: set by t
     for (const name of [RESPOND_SESSION_REQUEST_TOOL, COMPLETE_WORKFLOW_NODE_TOOL]) assert.ok(!names(declared()).includes(name), name);
     assert.equal(named(declared(), "update_workflow").description, UPDATE_WORKFLOW_TOOL_SPEC.description);
 
-    // A 1.9.0 turn of a session outside every agent state: respond_session_request only.
+    // A 1.0.83 turn of a session outside every agent state: respond_session_request only.
     await manager.getOrCreate("parent", { toolNames: [], workflowMilestoneTurn: true }, { turnIndex: 0 });
     assert.ok(names(declared()).includes(RESPOND_SESSION_REQUEST_TOOL));
     assert.ok(!names(declared()).includes(COMPLETE_WORKFLOW_NODE_TOOL));
 });
 
 /** A host whose workflow child "wf" belongs to the caller "parent"; nothing past authorization is reached. */
-function hostOf(requests) {
+function hostOf() {
     return {
         catalog: { getSession: async id => (id === "wf" ? { sessionKind: "workflow", parentSessionId: "parent", deletedAt: null } : null) },
         store: { readDefinition: async id => (id === "wf" ? { parentSessionId: "parent" } : null) },
         duroxideClient: {},
-        ...(requests ? { requests: true } : {}),
     };
 }
 
-const call = async (requests, args) => JSON.parse(await updateWorkflowFromTool({ workflow_id: "wf", operation_id: "op-1", ...args },
-    { callerSessionId: "parent", host: hostOf(requests) }));
+const call = async (args) => JSON.parse(await updateWorkflowFromTool({ workflow_id: "wf", operation_id: "op-1", ...args },
+    { callerSessionId: "parent", host: hostOf() }));
 
-test("the handler takes the milestone operations behind the same gate as the description, and reads each added argument", async () => {
-    // Elsewhere: refused as unknown operations, and the refusal names the production operations only.
-    for (const operation of MILESTONE_OPERATIONS) {
-        const refused = await call(false, { operation });
-        assert.equal(refused.ok, false, operation);
-        assert.equal(refused.error.code, "WORKFLOW_COMMAND_INVALID", operation);
-        assert.match(refused.error.message, /^operation must be replace_definition, .* or recover\.$/, operation);
-    }
-    // On a 1.9.0 host each one is taken: its own arguments are read and checked.
+test("the handler takes the milestone operations and reads each added argument", async () => {
+    // Each one is taken: its own arguments are read and checked.
     const cases = [
         [{ operation: "stop", grace_seconds: -1 }, /^grace_seconds must be an integer from 0 to 3600\.$/],
         [{ operation: "test", agent_mode: "live" }, /^agent_mode must be mocked or real\.$/],
@@ -203,22 +195,22 @@ test("the handler takes the milestone operations behind the same gate as the des
         [{ operation: "test_advance", run_id: "run-1", seconds: 0 }, /^seconds must be an integer from 1 to 2592000\.$/],
     ];
     for (const [args, message] of cases) {
-        const refused = await call(true, args);
+        const refused = await call(args);
         assert.equal(refused.ok, false, JSON.stringify(args));
         assert.equal(refused.error.code, "WORKFLOW_COMMAND_INVALID", JSON.stringify(args));
         assert.match(refused.error.message, message, JSON.stringify(args));
     }
-    const response = await call(true, { operation: "test_respond", run_id: "run-1", interception_id: "nx-1/agent", response: { kind: "maybe" } });
+    const response = await call({ operation: "test_respond", run_id: "run-1", interception_id: "nx-1/agent", response: { kind: "maybe" } });
     assert.equal(response.error.code, "TEST_RESPONSE_INVALID");
     // An unknown operation's refusal names every operation this host takes.
-    const unknown = await call(true, { operation: "teleport" });
+    const unknown = await call({ operation: "teleport" });
     assert.equal(unknown.error.code, "WORKFLOW_COMMAND_INVALID");
     for (const operation of [...PRODUCTION_OPERATIONS, ...MILESTONE_OPERATIONS]) assert.ok(unknown.error.message.includes(operation), operation);
 });
 
 test("the milestone operations keep the production authorization: only the agent that created the workflow uses them", async () => {
     const as = async (callerSessionId, workflowId, args) => JSON.parse(await updateWorkflowFromTool({ workflow_id: workflowId, operation_id: "op-1", ...args },
-        { callerSessionId, host: hostOf(true) }));
+        { callerSessionId, host: hostOf() }));
     // Each with arguments that parse, so only authorization can refuse it; pause is a production operation, for comparison.
     const valid = {
         pause: { operation: "pause" },
@@ -236,7 +228,7 @@ test("the milestone operations keep the production authorization: only the agent
     }
 });
 
-test("the workflow-tools skill's update_workflow table names exactly the operations a 1.9.0 host takes with test mode hidden (spec 16)", () => {
+test("the workflow-tools skill's update_workflow table names exactly the operations the host takes with test mode hidden (spec 16)", () => {
     const text = fs.readFileSync(new URL("../../plugins/workflow-v2/skills/workflow-tools/SKILL.md", import.meta.url), "utf8");
     const table = text.slice(text.indexOf("| Operation | Arguments | Effect |"), text.indexOf("## read_workflow"));
     const named = table.split("\n").slice(2).filter(line => line.startsWith("| `"))

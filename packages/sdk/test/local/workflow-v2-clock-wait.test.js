@@ -1,5 +1,5 @@
 /**
- * Stage 2.4 (PR 235 955856f9): clock waits on controller 1.9.0, on PostgreSQL and the durable runtime. A wait state's
+ * Stage 2.4 (PR 235 955856f9): clock waits on the Workflow controller, on PostgreSQL and the durable runtime. A wait state's
  * `at` (the cron_at fields: minute; hour; day_of_week or day_of_month; tz) waits until the next time it names, decided
  * once when the state is entered, from the store's clock (a test run's virtual clock), DST-safe (cron-at.ts):
  * - a test run's clock wait gets the next 09:00 in its zone after the virtual epoch as its deadline; an advance to one
@@ -67,12 +67,12 @@ async function harness(env) {
         authorizeParentNotification: async () => false,
         notifyParent: async () => {},
         deleteSession: async sessionId => catalog.softDeleteSession(sessionId),
-        wakeBackstopMs: 500, testPollMs: 50, workflowRequests: true,
+        wakeBackstopMs: 500, testPollMs: 50, 
         sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
     });
     await runtime.start();
     return {
-        catalog, store, client, host: { catalog, store, duroxideClient: client, requests: true },
+        catalog, store, client, host: { catalog, store, duroxideClient: client },
         async stop() { await runtime.shutdown(100); await catalog.close(); },
     };
 }
@@ -101,7 +101,7 @@ const pendingNode = (h, nodeExecutionId) => until(async () => {
     return node?.state === "pending" ? node : null;
 }, `node ${nodeExecutionId} to wait`);
 
-describe("clock waits (stage 2.4; controller 1.9.0)", () => {
+describe("clock waits (stage 2.4)", () => {
     it("a test run waits on its virtual clock until the next time named, in its zone, DST-safe, and elapses there", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {

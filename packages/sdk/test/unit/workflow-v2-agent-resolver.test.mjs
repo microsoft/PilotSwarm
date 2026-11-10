@@ -1,7 +1,7 @@
 /**
  * Workflow v2 named agents as a host resolves them (workflow/v2/agent-resolver.ts;
  * design 03 package agents, 02 publication; R09, R18), inactive: only a host
- * that runs controller 1.9.0 resolves them. Over a fake catalog: session rows
+ * that runs the Workflow controller resolves them. Over a fake catalog: session rows
  * (the lineage's owner) and the agent registry's install manifest (enabled
  * packages at their active versions, in the registry's order).
  *

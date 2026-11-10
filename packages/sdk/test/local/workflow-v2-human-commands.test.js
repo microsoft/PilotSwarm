@@ -2,7 +2,7 @@
  * Durable workflows: a person's workflow command in direct mode (design 04
  * updateWorkflow; R13, R26, D11), on real PostgreSQL. Every management client
  * takes one, on the full engine (owner 2026-11-08T15:30Z; review RLR-F1: any
- * `workflowCommands` object starts runs at controller 1.9.0); only
+ * `workflowCommands` object); only
  * `workflowCommands: null` (a test) turns them off.
  *
  * - With them off the command is refused (501
@@ -35,7 +35,7 @@ import { PilotSwarmManagementClient } from "../helpers/local-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { WORKFLOW_HUMAN_INPUT_DENIED } from "../../src/workflow/v2/input-policy.ts";
-import { WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_V2_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
@@ -114,9 +114,9 @@ describe("workflow v2: a person's workflow command (direct management client, in
         const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
         await catalog.initialize();
         const plain = await commandsClient(env, null);
-        // RLR-F1: an explicit `requests: false` still takes commands on the full engine.
-        const mgmt = await commandsClient(env, { requests: false });
-        expect(mgmt.config.workflowCommands.requests).toBe(true);
+        // RLR-F1: an explicit object takes commands on the full engine.
+        const mgmt = await commandsClient(env, {});
+        expect(mgmt.config.workflowCommands).toEqual({});
         try {
             const store = catalog.workflowStore();
             const parent = randomUUID();
@@ -149,8 +149,8 @@ describe("workflow v2: a person's workflow command (direct management client, in
                 definition_hash: replaced.definitionHash, inputs: {} }, { principal: PERSON });
             expect(started).toMatchObject({ operation: "start", run: { mode: "live", revision: 2 } });
             const runId = started.run.runId;
-            // The shown run: started at controller 1.9.0 on this host; a published definition has no draft to edit.
-            expect((await store.readRun(runId)).controllerVersion).toBe("1.9.0");
+            // The shown run: started at the controller version; a published definition has no draft to edit.
+            expect((await store.readRun(runId)).controllerVersion).toBe(WORKFLOW_V2_CONTROLLER_VERSION);
             const publishedCommands = (await mgmt.readWorkflow(draft.workflowSessionId)).personCommands;
             expect(publishedCommands.run).toMatchObject({ runId });
             expect(Object.hasOwn(publishedCommands, "draft")).toBe(false);
@@ -200,7 +200,7 @@ describe("workflow v2: a person's workflow command (direct management client, in
         const env = getEnv();
         const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
         await catalog.initialize();
-        const mgmt = await commandsClient(env, { requests: false });
+        const mgmt = await commandsClient(env, {});
         try {
             const parent = randomUUID();
             await catalog.createSession(parent, { owner: PERSON });
@@ -232,14 +232,14 @@ describe("workflow v2: a person's workflow command (direct management client, in
         const env = getEnv();
         const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
         await catalog.initialize();
-        const mgmt = await commandsClient(env, { requests: true });
+        const mgmt = await commandsClient(env, {});
         try {
             const store = catalog.workflowStore();
             const parent = randomUUID();
             await catalog.createSession(parent, { owner: PERSON });
             // The container: a workflow of the person's agent whose agent state was admitted with its child C.
             const container = await workflowOf(catalog, parent, AGENT_YAML, { start: true, compile: { enableRequests: true, enableAgents: true },
-                controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION });
+                controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION });
             const child = randomUUID();
             const nodeExecutionId = nodeExecutionIdFor(container.runId, "root", "review", 1);
             expect(await store.enterNode({
@@ -250,7 +250,7 @@ describe("workflow v2: a person's workflow command (direct management client, in
             })).toMatchObject({ admitted: true, inserted: true });
             await catalog.createSession(child, { parentSessionId: container.workflowSessionId });
             // The agent's own workflow, in the agent state's subtree.
-            const nested = await workflowOf(catalog, child, YAML("nested"), { start: true, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION });
+            const nested = await workflowOf(catalog, child, YAML("nested"), { start: true, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION });
 
             // What it takes from a person, as its read model says: the brakes, with the reason and its controlling agent.
             expect((await mgmt.readWorkflow(nested.workflowSessionId)).personCommands).toEqual({
@@ -277,7 +277,7 @@ describe("workflow v2: a person's workflow command (direct management client, in
             expect(await mgmt.updateWorkflow(nested.workflowSessionId, { operation: "stop", operation_id: "s-1", grace_seconds: 0 }, { principal: PERSON }))
                 .toMatchObject({ operation: "stop", runId: nested.runId });
 
-            // The container is not in an agent state's subtree: the person commands it, every operation of a 1.9.0 host except a new
+            // The container is not in an agent state's subtree: the person commands it, every operation except a new
             // test, since it is published (of-06; answers to a test run begun as a draft stay offered).
             expect((await mgmt.readWorkflow(container.workflowSessionId)).personCommands).toEqual({
                 operations: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel",

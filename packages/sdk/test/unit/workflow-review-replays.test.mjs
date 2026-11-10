@@ -2,8 +2,6 @@
  * Stage 2 review fixes, without a database (fake stores record what they are asked):
  * - S2RT-F7: a repeat of the definition tool's first save (same tool call id) is answered from its receipt, before the name
  *   it saved is found and asked for a guard (REVISION_REQUIRED);
- * - S2RT-F9: a test read again by its id is refused where tests cannot run, before the test is looked up, its clock
- *   advanced or it is ended;
  * - S2RT-F10: a repeat of Make a copy is answered from its receipt before the source's newest revision is chosen again;
  *   another source or revision under the same operation is refused.
  *
@@ -37,15 +35,6 @@ test("S2RT-F7: the same first save again is answered from its receipt, not refus
     // Another call for the same name still needs the guard.
     const other = await call("call-2");
     assert.equal(other.error?.code, "REVISION_REQUIRED");
-});
-
-test("S2RT-F9: reading a test again by its id is refused where tests cannot run, before anything of the test is read", async () => {
-    for (const requests of [false, undefined]) {
-        const host = { catalog: untouchable("catalog"), store: untouchable("store"), requests };
-        const answer = JSON.parse(await workflowDefinitionFromTool({ operation: "test", test_id: "bench-1" },
-            { callerSessionId: "chat", host, toolCallId: "call-9", owner: null, binding: async () => null }));
-        assert.equal(answer.error?.code, "WORKFLOW_TEST_UNAVAILABLE", JSON.stringify(answer));
-    }
 });
 
 test("S2RT-F10: a repeated Make a copy answers its receipt (the copy names its source); another source or revision is refused", async () => {

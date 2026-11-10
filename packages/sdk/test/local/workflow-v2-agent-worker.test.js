@@ -1,10 +1,9 @@
 /**
- * Workflow v2 agent states on a real worker (INACTIVE: the test-only worker
- * option testOptions.workflowRequests; workflow/v2/milestone-worker.ts). A
+ * Workflow v2 agent states on a real worker (workflow/v2/milestone-worker.ts). A
  * full PilotSwarmWorker (PostgreSQL, Duroxide and the Copilot CLI) with the
  * model scripted (scripted-model.mjs), as the scripted-harness tests run.
  *
- * - The worker runs controller 1.9.0: a published workflow whose agent state
+ * - The worker runs the Workflow controller: a published workflow whose agent state
  *   names the worker's own deployment agent starts a live run, and the
  *   worker's agent host resolves that agent (the registry-backed resolver
  *   over the agent registry and the worker's agents) and creates the child
@@ -17,7 +16,7 @@
  *   the controller ends the child (done, sent while it ran: it had continued
  *   as new at 1.0.83), which then completes.
  * - A publication's exact package revision (R18, T070): a workflow whose
- *   agent state names a registry package agent is published as a 1.9.0 host
+ *   agent state names a registry package agent is published as a host
  *   publishes it, pinning the package's revision (its content hash); the
  *   package is then republished, and the worker's active version is the new
  *   one. A live run of the publication binds its child to the pinned
@@ -34,7 +33,7 @@
  *   04 package-agent I/O export, 09 `interface: name@version`): the package
  *   agent declares interface review_change@1 (package format v5, schemas
  *   read from inside the package); a workflow whose agent state names it,
- *   with exactly its outcomes and output schema, is published as a 1.9.0
+ *   with exactly its outcomes and output schema, is published as a
  *   host publishes it, and the pin holds the interface's name, version and
  *   digest with the exact package revision. The package is republished with
  *   review_change@2 (an input schema, another output schema, another
@@ -54,7 +53,7 @@
  * Test double: the model (scripted). Not an activation: one worker serves
  * everything here, and nothing in a deployment sets the option; duroxide
  * cannot route orchestration items by version, so a deployment would need
- * every worker to serve 1.9.0 and 1.0.83.
+ * every worker to serve the Workflow controller and 1.0.83.
  *
  * Diagnostics: each case waits boundary by boundary (the state entered, the
  * child spawned, its turn at the model, the state decided, the run ended, the
@@ -82,7 +81,7 @@ import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.
 import { pickAgentCopyByPackageIdForOwner, pickAgentCopyForOwner } from "../../src/session-manager.ts";
 import { createWorkflowAgentResolver } from "../../src/workflow/v2/agent-resolver.ts";
 import { createWorkflowV2, updateWorkflowV2 } from "../../src/workflow/v2/service.ts";
-import { WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowAgentInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_V2_CONTROLLER_VERSION, workflowAgentInstanceId } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 
 const TIMEOUT = 480_000;
@@ -313,12 +312,12 @@ const proseWorkflow = (timeoutSeconds) => JSON.stringify({
 /** The start of the in-turn reminder the step's child gets (Q2, agent-reminder.ts). */
 const REMINDER = "Reminder from the workflow: step 'summarize' is still open.";
 
-/** Start a published prose-step workflow's live run under a new parent chat, as a 1.9.0 host's tools would. */
+/** Start a published prose-step workflow's live run under a new parent chat, as a host's tools would. */
 async function startProseStep(catalog, store, duroxide, timeoutSeconds) {
     const parent = randomUUID();
     await catalog.createSession(parent, { owner: OWNER });
     const workflowSessionId = randomUUID();
-    const created = await createWorkflowV2({ catalog, store, duroxideClient: duroxide, requests: true }, {
+    const created = await createWorkflowV2({ catalog, store, duroxideClient: duroxide }, {
         workflowSessionId, parentSessionId: parent, yaml: proseWorkflow(timeoutSeconds), actor: ACTOR, operationId: "create", publish: true,
         start: { inputs: {} }, notifyParent: false,
     });
@@ -404,7 +403,7 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                     const row = await store.readRun(runId);
                     return row && ENDED.includes(row.status) ? row : null;
                 }, 150_000);
-                expect(run).toMatchObject({ status: "failed", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION });
+                expect(run).toMatchObject({ status: "failed", controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION });
                 expect(await store.readNodeExecution(nodeExecutionId)).toMatchObject({ outcome: "timed_out", winner: "controller" });
                 const invocation = await boundary("the child's end is sent", async () => {
                     const row = await store.readAgentInvocation(nodeExecutionId);
@@ -551,8 +550,8 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                 const parent = randomUUID();
                 await catalog.createSession(parent, { owner: OWNER });
                 const workflowSessionId = randomUUID();
-                // Published and started as a 1.9.0 host's tools would (the worker's controller runs it).
-                const created = await createWorkflowV2({ catalog, store, duroxideClient: duroxide, requests: true }, {
+                // Published and started as a host's tools would (the worker's controller runs it).
+                const created = await createWorkflowV2({ catalog, store, duroxideClient: duroxide }, {
                     workflowSessionId, parentSessionId: parent, yaml: WORKFLOW, actor: ACTOR, operationId: "create", publish: true,
                     start: { inputs: {} }, notifyParent: false,
                 });
@@ -572,7 +571,7 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                     const row = await store.readRun(runId);
                     return row && ENDED.includes(row.status) ? row : null;
                 });
-                expect(run).toMatchObject({ status: "completed", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, terminalOutput: { verdict: "approved" } });
+                expect(run).toMatchObject({ status: "completed", controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION, terminalOutput: { verdict: "approved" } });
                 expect(await store.readNodeExecution(nodeExecutionId)).toMatchObject({ outcome: "accepted", winner: "agent", output: { verdict: "approved" } });
                 const invocation = await store.readAgentInvocation(nodeExecutionId);
                 expect(invocation).toMatchObject({ workflowSessionId, controllingSessionId: parent,
@@ -650,9 +649,9 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                 const parent = randomUUID();
                 await catalog.createSession(parent, { owner: OWNER });
                 const workflowSessionId = randomUUID();
-                // Published as a 1.9.0 host publishes (a worker's turn, the management client): the named agent is pinned from the
+                // Published as a host publishes (a worker's turn, the management client): the named agent is pinned from the
                 // agent registry at the exact revision its owner sees.
-                const host = { catalog, store, duroxideClient: duroxide, requests: true, resolveAgent: createWorkflowAgentResolver({ catalog }) };
+                const host = { catalog, store, duroxideClient: duroxide, resolveAgent: createWorkflowAgentResolver({ catalog }) };
                 const created = await createWorkflowV2(host, {
                     workflowSessionId, parentSessionId: parent, yaml: workflowNaming({ name: reviewer }), actor: ACTOR, operationId: "create",
                     publish: true, notifyParent: false,
@@ -700,7 +699,7 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                     const row = await store.readRun(runId);
                     return row && ENDED.includes(row.status) ? row : null;
                 });
-                expect(run).toMatchObject({ status: "completed", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, terminalOutput: { verdict: "pinned" } });
+                expect(run).toMatchObject({ status: "completed", controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION, terminalOutput: { verdict: "pinned" } });
                 expect(await store.readNodeExecution(nodeExecutionId)).toMatchObject({ outcome: "accepted", winner: "agent", output: { verdict: "pinned" } });
 
                 // The run kept its publication's revision: the invocation carries the pin, the child is bound to that exact
@@ -752,7 +751,7 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                     const row = await store.readRun(laterRunId);
                     return row && ENDED.includes(row.status) ? row : null;
                 });
-                expect(laterRun).toMatchObject({ status: "completed", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, terminalOutput: { verdict: "pinned" } });
+                expect(laterRun).toMatchObject({ status: "completed", controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION, terminalOutput: { verdict: "pinned" } });
                 const laterInvocation = await store.readAgentInvocation(laterNode);
                 expect(laterInvocation.task).toEqual({ source: "agent", ...laterPin });
                 expect(laterInvocation.childSessionId).not.toBe(child);
@@ -833,8 +832,8 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                 const versionOf = copy => (!copy ? null : copy.prompt.includes(marker("1.0.0")) ? "1.0.0" : copy.prompt.includes(marker("1.1.0")) ? "1.1.0" : "other");
                 const parent = randomUUID();
                 await catalog.createSession(parent, { owner: OWNER });
-                // Published as a 1.9.0 host publishes: the agent pinned from the registry, its interface matched and pinned.
-                const host = { catalog, store, duroxideClient: duroxide, requests: true, resolveAgent: createWorkflowAgentResolver({ catalog }) };
+                // Published as a host publishes: the agent pinned from the registry, its interface matched and pinned.
+                const host = { catalog, store, duroxideClient: duroxide, resolveAgent: createWorkflowAgentResolver({ catalog }) };
                 const named = ref => ({ name: reviewer, package: kit, interface: ref });
                 const workflowSessionId = randomUUID();
                 const created = await createWorkflowV2(host, {
@@ -906,7 +905,7 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                     const row = await store.readRun(runId);
                     return row && ENDED.includes(row.status) ? row : null;
                 });
-                expect(run).toMatchObject({ status: "completed", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, terminalOutput: { verdict: "approved" } });
+                expect(run).toMatchObject({ status: "completed", controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION, terminalOutput: { verdict: "approved" } });
                 expect(await store.readNodeExecution(nodeExecutionId)).toMatchObject({ outcome: "accepted", winner: "agent", output: { verdict: "approved" } });
 
                 // The run kept its publication's revision: the child is bound to it and its real turn ran that revision's prompt.
@@ -955,7 +954,7 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                     const row = await store.readRun(laterRunId);
                     return row && ENDED.includes(row.status) ? row : null;
                 });
-                expect(laterRun).toMatchObject({ status: "completed", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
+                expect(laterRun).toMatchObject({ status: "completed", controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION,
                     terminalOutput: { verdict: "rework", notes: "rename it everywhere" } });
                 expect(await store.readNodeExecution(laterNode)).toMatchObject({ outcome: "changes_required", winner: "agent",
                     output: { verdict: "rework", notes: "rename it everywhere" } });

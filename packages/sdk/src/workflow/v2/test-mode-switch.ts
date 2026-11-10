@@ -14,15 +14,14 @@
  * - the MCP update_workflow tool does not name them;
  * - the base guidance does not mention them (guidance.ts).
  *
- * The flag changes nothing else; every worker runs controller 1.9.0, which the test operations need. Stored test runs
- * are kept, not shown.
+ * The flag changes nothing else; every worker runs the test operations. Stored test runs are kept, not shown.
  */
 export const WORKFLOW_TEST_MODE_VARIABLE = "PILOTSWARM_WORKFLOW_TEST_MODE";
 
 /** The one value that turns test mode on. */
 export const WORKFLOW_TEST_MODE_ENABLED = "on";
 
-/** The operations test mode adds to update_workflow (with stop, the milestone operations of a 1.9.0 host). */
+/** The operations test mode adds to update_workflow (with stop, the milestone operations). */
 export const WORKFLOW_TEST_MODE_OPERATIONS: readonly string[] = ["test", "test_respond", "test_advance"];
 
 /** Words about testing being off, for an operator's log line; no surface answers a test operation with them (review SF-7). */

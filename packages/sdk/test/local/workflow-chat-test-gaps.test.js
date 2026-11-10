@@ -100,11 +100,10 @@ async function harness(env) {
         deleteSession: async sessionId => catalog.softDeleteSession(sessionId),
         wakeBackstopMs: 500,
         testPollMs: 50,
-        workflowRequests: true,
         sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
     });
     await runtime.start();
-    const host = { catalog, store, duroxideClient: client, requests: true, scripts: true };
+    const host = { catalog, store, duroxideClient: client, scripts: true };
     const chat = randomUUID();
     await catalog.createSession(chat, { owner: OWNER });
     for (const doc of [LOOP, CONTROL]) {

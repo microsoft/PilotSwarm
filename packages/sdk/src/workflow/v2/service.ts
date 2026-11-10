@@ -6,7 +6,7 @@ import { resolveEffectiveSpawnOwner, type SessionCatalog } from "../../cms.js";
 import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
 import {
-    compileWorkflowV2, declaredSemver, WORKFLOW_V2_API_VERSION, WORKFLOW_V2_MAX_YAML_BYTES, WORKFLOW_V2_MILESTONE_IR_VERSION, WORKFLOW_V2_RUNNABLE_IR_VERSION,
+    compileWorkflowV2, declaredSemver, WORKFLOW_V2_API_VERSION, WORKFLOW_V2_MAX_YAML_BYTES, WORKFLOW_V2_MILESTONE_IR_VERSION,
     type WorkflowCompileResult, type WorkflowIR,
 } from "./compiler.js";
 import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonSha256, WorkflowJsonError, type JsonValue } from "./json.js";
@@ -23,9 +23,6 @@ import {
     workflowV2TurnStopOf,
     workflowV2RunEndRequester,
     WORKFLOW_V2_NOTIFY_VERSION,
-    WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
-    WORKFLOW_V2_STOP_CONTROLLER_VERSIONS,
-    WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION,
     workflowLiveControllerInstanceId,
     workflowNotifyInstanceId,
     workflowTestControllerInstanceId,
@@ -86,16 +83,8 @@ export interface WorkflowV2Host {
         enqueueEvent(instanceId: string, queueName: string, data: string): Promise<void>;
     };
     /**
-     * Request states (design workflow-messaging-request.md 8.4; every worker
-     * sets it): a definition
-     * compiles with request states enabled (IR 7), and runs start at
-     * controller 1.9.0 with the 1.1.0 notifier. Absent or false: a request
-     * state keeps a definition an invalid draft, and runs start at 1.8.0.
-     */
-    requests?: boolean;
-    /**
      * Workflow test mode (spec 16; test-mode-switch.ts): whether this host takes the test operations (test,
-     * test_respond, test_advance) beside requests. Absent: the deployment flag PILOTSWARM_WORKFLOW_TEST_MODE, off
+     * test_respond, test_advance). Absent: the deployment flag PILOTSWARM_WORKFLOW_TEST_MODE, off
      * unless it is exactly `on`. Off, each is refused in words and stop stays.
      */
     testMode?: boolean;
@@ -111,9 +100,9 @@ export interface WorkflowV2Host {
      * owner sees by that name, among the agents of `packageName` when the
      * state names one, or null. When the host has it, publication pins every
      * named agent state of the published revision to what it returns
-     * (WorkflowStore publication, migration 0103) and refuses one it cannot
+     * (WorkflowStore publication, migration 0088) and refuses one it cannot
      * resolve (AGENT_UNAVAILABLE), also when the resolution itself fails.
-     * The hosts that run controller 1.9.0 resolve with agent-resolver.ts: a
+     * Every worker host resolves with agent-resolver.ts: a
      * package agent at the registry's exact revision.
      */
     resolveAgent?: (name: string, callerSessionId: string, packageName?: string | null) => Promise<WorkflowPublicationAgent | null>;
@@ -279,76 +268,24 @@ async function publicationAgentPins(host: Pick<WorkflowV2Host, "resolveAgent">, 
 }
 
 /**
- * The controller version a host starts runs at (WorkflowV2Host.requests). Every production host has `requests: true`
- * (every worker's turn host and the management client's default; owner decision 2026-11-08T15:30Z), so every run starts
- * at 1.9.0. Controller 1.8.0 stays registered but is unreachable: only a test host without `requests` still starts it.
- * Its deletion (with its untagged 1.0.0 orchestrations, the legacy activity names, the `requests: false` paths and
- * WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS) is a follow-up cleanup PR (ruling pse/wfs/stage2/release-1083-plan-rulings,
- * item 3).
+ * The run's controller version when this build runs it (WORKFLOW_V2_CONTROLLER_VERSION); otherwise CONTROLLER_UNAVAILABLE
+ * before anything changes (design 02 compatibility): a run is started and recovered only at the version it was admitted
+ * for, never at another.
  */
-function controllerVersionFor(host: Pick<WorkflowV2Host, "requests">): string {
-    return host.requests === true ? WORKFLOW_V2_REQUEST_CONTROLLER_VERSION : WORKFLOW_V2_CONTROLLER_VERSION;
-}
-
-/**
- * The controller version a run was admitted for (migration 0100; a run
- * admitted before it records none, and 1.8.0 was then the only version). A
- * run is started, recovered and reported only at its own version, never at
- * the version of the host that acts on it: design 02 never points a
- * new-version run at a legacy interpreter, nor an older run at a newer one.
- */
-function runControllerVersion(run: Pick<WorkflowRunRow, "controllerVersion">): string {
-    return run.controllerVersion ?? WORKFLOW_V2_CONTROLLER_VERSION;
-}
-
-/** The notifier version of a run's controller: a 1.9.0 run reports through the tagged 1.1.0 notifier. */
-function runNotifyVersion(run: Pick<WorkflowRunRow, "controllerVersion">): string {
-    return runControllerVersion(run) === WORKFLOW_V2_REQUEST_CONTROLLER_VERSION ? WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION : WORKFLOW_V2_NOTIFY_VERSION;
-}
-
-/**
- * The run's controller version when this host runs it; otherwise
- * CONTROLLER_UNAVAILABLE before anything changes (design 02 compatibility,
- * T121, T122): a 1.9.0 run is started or recovered only by a host that starts
- * 1.9.0 runs (WorkflowV2Host.requests), and never handed to 1.8.0.
- */
-function requireRunsController(host: Pick<WorkflowV2Host, "requests">, run: Pick<WorkflowRunRow, "runId" | "controllerVersion">): string {
-    const version = runControllerVersion(run);
-    if (version === WORKFLOW_V2_CONTROLLER_VERSION || (version === WORKFLOW_V2_REQUEST_CONTROLLER_VERSION && host.requests === true)) return version;
+function requireRunsController(run: Pick<WorkflowRunRow, "runId" | "controllerVersion">): string {
+    if (run.controllerVersion === WORKFLOW_V2_CONTROLLER_VERSION) return WORKFLOW_V2_CONTROLLER_VERSION;
     throw new WorkflowStoreError("CONTROLLER_UNAVAILABLE",
-        `Run ${run.runId} was admitted for workflow controller ${version}, which this build does not run; a build that runs it starts or recovers it.`,
-        { runId: run.runId, controllerVersion: version, hostControllerVersion: controllerVersionFor(host) });
+        `Run ${run.runId} was admitted for workflow controller ${run.controllerVersion ?? "(none)"}, which this build does not run; a build that runs it starts or recovers it.`,
+        { runId: run.runId, controllerVersion: run.controllerVersion, hostControllerVersion: WORKFLOW_V2_CONTROLLER_VERSION });
 }
 
-/**
- * Refuse, before anything is written, to publish or start a revision whose IR
- * this host does not run (design 02 compatibility: reader support precedes
- * new writes; T121): IR 7 and 8 (request, agent or parallel states, or a run
- * deadline) need controller 1.9.0, so a host that starts 1.8.0 runs answers
- * CONTROLLER_UNAVAILABLE and neither publishes nor admits anything; a host
- * that starts 1.9.0 runs does both. A revision that does not exist, or has no
- * compiled IR, is left to the store's own refusal.
- */
-async function requireRunsRevision(host: Pick<WorkflowV2Host, "store" | "requests">, workflowSessionId: string, revision: number | null): Promise<void> {
-    if (host.requests === true || revision === null) return;
-    const irVersion = await host.store.readRevisionIrVersion(workflowSessionId, revision);
-    if (irVersion === null || irVersion <= WORKFLOW_V2_RUNNABLE_IR_VERSION) return;
-    throw new WorkflowStoreError("CONTROLLER_UNAVAILABLE",
-        `Revision ${revision} has IR version ${irVersion} (request, agent or parallel states, a run deadline, or a clock wait), which needs workflow controller `
-            + `${WORKFLOW_V2_REQUEST_CONTROLLER_VERSION}; this build runs ${WORKFLOW_V2_CONTROLLER_VERSION}, so it neither publishes nor starts it.`,
-        { revision, irVersion, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, hostControllerVersion: WORKFLOW_V2_CONTROLLER_VERSION });
+/** A definition as every host compiles it: request, agent and parallel states, run limits and clock waits included. */
+export function compileWorkflowV2Definition(yaml: string): WorkflowCompileResult {
+    return compileWorkflowV2(yaml, { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true });
 }
 
-/** A definition as a host compiles it (WorkflowV2Host.requests): a host that starts 1.9.0 runs compiles request, agent and parallel states. */
-export function compileWorkflowV2ForHost(host: Pick<WorkflowV2Host, "requests">, yaml: string): WorkflowCompileResult {
-    return compileWorkflowV2(yaml, host.requests === true ? { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true,
-        enableClockWaits: true } : {});
-}
-
-/** How a host reads stored IR: a host that starts 1.9.0 runs reads its request, agent and parallel states (IR 7 and 8). */
-function irOptionsFor(host: Pick<WorkflowV2Host, "requests">): { maxIrVersion?: number } {
-    return host.requests === true ? { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION } : {};
-}
+/** How a host reads stored IR: request, agent and parallel states included. */
+const IR_READ_OPTIONS = { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION } as const;
 
 export interface CreateWorkflowV2Request {
     workflowSessionId: string;
@@ -438,17 +375,14 @@ function validateRunInputs(ir: WorkflowIR | null, irSha256: string | null, input
     }
 }
 
-/**
- * A live run's admission, for the controller version this host starts runs at (stored with the run, migration 0100), with
- * the agent nodes' models chosen at start (migration 0110), when any.
- */
-function liveAdmission(host: Pick<WorkflowV2Host, "requests">, workflowSessionId: string, inputs: JsonValue, vars: { [key: string]: JsonValue } | null,
+/** A live run's admission, at the controller version (stored with the run), with the agent nodes' models chosen at start, when any. */
+function liveAdmission(workflowSessionId: string, inputs: JsonValue, vars: { [key: string]: JsonValue } | null,
     agentModels: WorkflowAgentModels | null = null): RunAdmission {
     const agentModelsText = workflowAgentModelsText(agentModels);
     return {
         runId: randomUUID(), mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
         inputsText: boundedCanonicalJson(inputs, "Workflow inputs"), kvText: checkedKvText(vars ?? {}), testAgentMode: null,
-        controllerVersion: controllerVersionFor(host), ...(agentModelsText ? { agentModelsText } : {}),
+        controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION, ...(agentModelsText ? { agentModelsText } : {}),
     };
 }
 
@@ -512,7 +446,7 @@ export async function dispatchWorkflowV2Run(host: WorkflowV2Host, receipt: Workf
     if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) return;
     const input: ControllerInput = { v: 2, workflowSessionId: receipt.workflowSessionId, runId: admitted.runId };
     // At the version the run was admitted for (a replayed admission may reach a host that does not run it: refused).
-    await host.duroxideClient.startOrchestrationVersioned(admitted.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, requireRunsController(host, run));
+    await host.duroxideClient.startOrchestrationVersioned(admitted.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, requireRunsController(run));
 }
 
 /** duroxide statuses after which an orchestration does no more work. */
@@ -581,7 +515,7 @@ function parseRecoverReceipt(value: JsonValue): WorkflowV2RecoverReceipt {
  * would ignore it): a recover starts one of its own, named for its operation id, so a repeat of that recover starts the
  * same one. The stored run is not changed.
  */
-async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, run: WorkflowRunRow, operationId: string): Promise<void> {
+async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxideClient">, run: WorkflowRunRow, operationId: string): Promise<void> {
     if (run.mode !== "live" || ACTIVE_RUN_STATUSES.includes(run.status)) return;
     const definition = await host.store.readDefinition(run.workflowSessionId);
     // With notifications off the notifier records that the parent was not told (batch 7, n-2).
@@ -595,7 +529,7 @@ async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxide
     const notifier = await host.duroxideClient.getStatus(base);
     if (!ENDED_ORCHESTRATION_STATUSES.includes(notifier.status) && notifier.status !== "NotFound") return;
     const instanceId = notifier.status === "NotFound" ? base : `${base}-recover-${jsonSha256({ operationId }).slice(0, 16)}`;
-    await host.duroxideClient.startOrchestrationVersioned(instanceId, WORKFLOW_V2_NOTIFY_NAME, { runId: run.runId }, runNotifyVersion(run));
+    await host.duroxideClient.startOrchestrationVersioned(instanceId, WORKFLOW_V2_NOTIFY_NAME, { runId: run.runId }, WORKFLOW_V2_NOTIFY_VERSION);
 }
 
 /**
@@ -605,7 +539,7 @@ async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxide
  * notification is started even when a child could not be ended yet, and then the recover fails, so a later recover
  * ends the children still owed (each end is recorded once, with a stable command id).
  */
-async function finishRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">
+async function finishRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxideClient">
     & { catalog?: Partial<Pick<SessionCatalog, "turnControlAdd">> }, run: WorkflowRunRow, operationId: string): Promise<void> {
     if (ACTIVE_RUN_STATUSES.includes(run.status)) return;
     // Adversarial review R2-RT-2: the session row says the live run's end again, should a status read have written failed
@@ -631,10 +565,10 @@ async function finishRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxide
  * after an interruption; duroxide ignores a second start of an instance, and
  * the run's stored controller instance id never changes.
  */
-async function dispatchRecoveredRun(host: Pick<WorkflowV2Host, "duroxideClient" | "requests">, run: WorkflowRunRow): Promise<void> {
+async function dispatchRecoveredRun(host: Pick<WorkflowV2Host, "duroxideClient">, run: WorkflowRunRow): Promise<void> {
     if (!runNotBegun(run)) return;
     const input: ControllerInput = { v: 2, workflowSessionId: run.workflowSessionId, runId: run.runId };
-    await host.duroxideClient.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, requireRunsController(host, run));
+    await host.duroxideClient.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, requireRunsController(run));
 }
 
 /**
@@ -658,7 +592,7 @@ async function notifyCancelledBeforeBegin(host: { store: WorkflowStore; duroxide
     if (!definition?.parentSessionId) return;
     if (details.requestedBy === definition.parentSessionId || callerSessionId === definition.parentSessionId) return;
     await host.duroxideClient.startOrchestrationVersioned(workflowNotifyInstanceId(run.runId), WORKFLOW_V2_NOTIFY_NAME,
-        { runId: run.runId }, runNotifyVersion(run));
+        { runId: run.runId }, WORKFLOW_V2_NOTIFY_VERSION);
 }
 
 /**
@@ -681,7 +615,7 @@ async function notifyCancelledBeforeBegin(host: { store: WorkflowStore; duroxide
  * dispatch or the notification that receipt implies. The dispatch and the
  * notification are at least once, not exactly once.
  */
-export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, runId: string,
+export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | "duroxideClient">, runId: string,
     request: { requestedBy: string | null; operationId: string }): Promise<StoredOperation<WorkflowV2RecoverReceipt>> {
     requireOperationId(request.operationId);
     const run = await host.store.readRun(runId);
@@ -711,7 +645,7 @@ export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | 
     let receipt: WorkflowV2RecoverReceipt = { runId, action: "none", status: run.status, controller };
     if (controller.needsRecovery && controller.status === "NotFound" && runNotBegun(run)) {
         // Only a host that runs the run's controller version starts it; nothing is recorded otherwise.
-        requireRunsController(host, run);
+        requireRunsController(run);
         const dispatching: WorkflowV2RecoverReceipt = { runId, action: "dispatched", status: run.status, controller };
         let intent: { recorded: boolean; run: WorkflowRunRow };
         try {
@@ -837,7 +771,7 @@ function sameOwner(stored: SessionOwnerInfo | null | undefined, requested: Sessi
 export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWorkflowV2Request): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
     requireOperationId(request.operationId);
     requireStorableYaml(request.yaml);
-    const compiled = compileWorkflowV2ForHost(host, request.yaml);
+    const compiled = compileWorkflowV2Definition(request.yaml);
     // Stage 2.0: script nodes on a host that runs none are refused at save, before the claim (scripts-gate.ts).
     requireWorkflowScripts(host, compiled.ir, request.start ? "start" : "save");
     const publish = request.publish === true || Boolean(request.start);
@@ -853,7 +787,7 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
         ? startAgentModels(request.start.agentModels, compiled.ir,
             request.chatPin ? `revision ${request.chatPin.revision} of ${compiled.name ?? "this definition"}` : compiled.name ?? "this Workflow") : null;
     // Built before anything is written: inputs or vars over their limits refuse the request without a claim.
-    const admission = request.start ? liveAdmission(host, request.workflowSessionId, request.start.inputs, request.start.vars ?? null, agentModels) : null;
+    const admission = request.start ? liveAdmission(request.workflowSessionId, request.start.inputs, request.start.vars ?? null, agentModels) : null;
     // A definition published at creation pins its named agents first: one that cannot be resolved refuses the request
     // before anything is written.
     const agentPinsText = publish && compiled.valid ? await publicationAgentPins(host, compiled.ir, request.parentSessionId ?? request.workflowSessionId) : null;
@@ -1009,7 +943,7 @@ export async function updateWorkflowV2(
     let stored: StoredOperation<WorkflowDefinitionReceipt>;
     if (command.operation === "replace_definition") {
         requireStorableYaml(command.yaml);
-        const compiled = compileWorkflowV2ForHost(host, command.yaml);
+        const compiled = compileWorkflowV2Definition(command.yaml);
         requireWorkflowScripts(host, compiled.ir, "save");
         stored = await host.store.replaceDraft({
             workflowSessionId, expectedRevision: command.expectedRevision, yaml: command.yaml, compiled,
@@ -1021,7 +955,6 @@ export async function updateWorkflowV2(
         return stored;
     }
     if (command.operation === "publish" || command.operation === "publish_and_start") {
-        await requireRunsRevision(host, workflowSessionId, command.expectedRevision);
         // The operation decides whether a run starts; any JSON input, null included, is a value.
         const startInputs: { value: JsonValue } | null = command.operation === "publish_and_start" ? { value: command.inputs } : null;
         // The revision to publish: its inputs are checked for a start, and on a host that resolves agents its named agents
@@ -1029,7 +962,7 @@ export async function updateWorkflowV2(
         const readsIr = command.operation === "publish_and_start" || host.resolveAgent !== undefined || host.scripts === false;
         const revision = readsIr ? await host.store.readRevision(workflowSessionId, command.expectedRevision) : null;
         const revisionIr = revision?.valid && revision.irSha256
-            ? await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256, irOptionsFor(host)) : null;
+            ? await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256, IR_READ_OPTIONS) : null;
         if (command.operation === "publish_and_start" && revisionIr && revision?.irSha256) {
             validateRunInputs(revisionIr, revision.irSha256, command.inputs);
         }
@@ -1052,17 +985,16 @@ export async function updateWorkflowV2(
             workflowSessionId, expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
             operationId: context.operationId,
             requestSha256: publishSha256,
-            start: startInputs ? liveAdmission(host, workflowSessionId, startInputs.value, command.operation === "publish_and_start" ? command.vars ?? null : null,
+            start: startInputs ? liveAdmission(workflowSessionId, startInputs.value, command.operation === "publish_and_start" ? command.vars ?? null : null,
                 agentModels) : null,
             ...(command.operation === "publish_and_start" ? { notifyParent: command.notifyParent !== false } : {}),
             ...(agentPinsText !== null ? { agentPinsText } : {}),
         });
     } else {
         const definition = await host.store.readDefinition(workflowSessionId);
-        await requireRunsRevision(host, workflowSessionId, definition?.publishedRevision ?? null);
         let publishedIr: WorkflowIR | null = null;
         if (definition?.state === "published" && definition.publishedRevision !== null && definition.publishedIrSha256) {
-            publishedIr = await host.store.readRevisionIr(workflowSessionId, definition.publishedRevision, definition.publishedIrSha256, irOptionsFor(host));
+            publishedIr = await host.store.readRevisionIr(workflowSessionId, definition.publishedRevision, definition.publishedIrSha256, IR_READ_OPTIONS);
             validateRunInputs(publishedIr, definition.publishedIrSha256, command.inputs);
             requireWorkflowScripts(host, publishedIr, "start");
         }
@@ -1077,7 +1009,7 @@ export async function updateWorkflowV2(
         stored = await host.store.startLive({
             workflowSessionId, definitionHash: command.definitionHash, operationId: context.operationId,
             requestSha256: startSha256,
-            start: liveAdmission(host, workflowSessionId, command.inputs, command.vars ?? null, agentModels),
+            start: liveAdmission(workflowSessionId, command.inputs, command.vars ?? null, agentModels),
             notifyParent: command.notifyParent !== false,
         });
     }
@@ -1088,7 +1020,7 @@ export async function updateWorkflowV2(
 export type WorkflowV2RunCommand =
     | { operation: "set_vars"; runId: string | null; set: { [key: string]: JsonValue }; delete: string[]; expectedKvRevision: number }
     | { operation: "pause" | "resume" | "cancel"; runId: string | null; reason: string | null }
-    /** A graceful stop (controller 1.9.0 only): graceSeconds null is the default grace. */
+    /** A graceful stop: graceSeconds null is the default grace. */
     | { operation: "stop"; runId: string | null; reason: string | null; graceSeconds: number | null };
 
 /** The grace a stop gives a run's admitted work to settle when the request names none (design D03; at most WORKFLOW_V2_STOP_MAX_GRACE_SECONDS). */
@@ -1111,10 +1043,10 @@ async function commandRun(host: Pick<WorkflowV2Host, "store">, workflowSessionId
  * - cancel: send the run's controller its cancel command. The receipt says
  *   the command was accepted, not that the run has ended: the first
  *   run-ending transaction decides, and read_workflow shows the result;
- * - stop (controller 1.9.0 only; every new run starts there): a graceful
+ * - stop: a graceful
  *   stop. The store records it once, with its deadline
- *   (the store's clock plus the grace), for a run admitted for a controller
- *   that stops (store.requestRunStop): the run admits no new state, its
+ *   (the store's clock plus the grace), for an active run
+ *   (store.requestRunStop): the run admits no new state, its
  *   admitted work may settle until the deadline, and then its controller
  *   ends it stopped, cancelling what is still pending. The controller is
  *   told at once (a hint; its backstop collection finds the stop too). The
@@ -1147,7 +1079,6 @@ export async function controlWorkflowV2Run(
         const stored = await host.store.requestRunStop({
             workflowSessionId, runId: run.runId, operationId: context.operationId, actor: context.actor, reason: command.reason, graceSeconds,
             requestSha256: jsonSha256({ kind: "stop", runId: run.runId, reason: command.reason, graceSeconds }),
-            stoppableVersions: WORKFLOW_V2_STOP_CONTROLLER_VERSIONS,
         });
         // The stop is stored first, so a repeat of the request sends this hint again; a wake changes nothing by itself.
         if (ACTIVE_RUN_STATUSES.includes(stored.run.status)) {
@@ -1465,7 +1396,7 @@ async function acceptTypedInput(host: TypedInputHost, request: TypedInputRequest
     return { receipt: stored.receipt, replayed: stored.replayed };
 }
 
-// ─── Test runs (migration 0102; design 05 tool-mocked testing) ───
+// ─── Test runs (migration 0088; design 05 tool-mocked testing) ───
 
 /** update_workflow operation test: a test run of the exact current revision. */
 export interface WorkflowV2TestCommand {
@@ -1475,15 +1406,10 @@ export interface WorkflowV2TestCommand {
     vars?: { [key: string]: JsonValue };
     agentMode: "mocked" | "real";
     fixtures: WorkflowTestFixture[];
-    /** The scenario the test run is for (migration 0103), kept with its results as evidence; null for none. */
+    /** The scenario the test run is for (migration 0088), kept with its results as evidence; null for none. */
     scenario?: string | null;
     /** OF-S2-7: a real-agent test's agent node models (agent-models.ts); a mocked test spawns no agent and takes none. */
     agentModels?: WorkflowAgentModels | null;
-}
-
-/** The operation a host that does not run tests refuses, as an unknown operation is refused. */
-function requireTestHost(host: Pick<WorkflowV2Host, "requests">): void {
-    if (host.requests !== true) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "This build does not run workflow tests.");
 }
 
 /** Tell a run's controller to collect at once (a hint; its backstop finds the change too). */
@@ -1523,7 +1449,7 @@ async function testAgentPins(host: Pick<WorkflowV2Host, "store" | "resolveAgent"
  * at publication (`resolves: false`; its agent states' children are bound when they are created). An invalid revision
  * has nothing to resolve (`agents: []`).
  */
-export async function previewWorkflowV2AgentVersions(host: Pick<WorkflowV2Host, "store" | "resolveAgent" | "requests">, workflowSessionId: string)
+export async function previewWorkflowV2AgentVersions(host: Pick<WorkflowV2Host, "store" | "resolveAgent">, workflowSessionId: string)
     : Promise<{ [key: string]: JsonValue }> {
     const definition = await host.store.readDefinition(workflowSessionId);
     if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No Workflow ${workflowSessionId}.`);
@@ -1542,7 +1468,7 @@ export async function previewWorkflowV2AgentVersions(host: Pick<WorkflowV2Host, 
         return { ...head, locked: true, agents: listed(definition.publishedAgentPins), problem: null };
     }
     if (!revision.valid || !revision.irSha256 || !host.resolveAgent) return { ...head, locked: false, agents: [], problem: null };
-    const ir = await host.store.readRevisionIr(workflowSessionId, revisionNumber, revision.irSha256, irOptionsFor(host));
+    const ir = await host.store.readRevisionIr(workflowSessionId, revisionNumber, revision.irSha256, IR_READ_OPTIONS);
     try {
         const pinsText = await publicationAgentPins(host, ir, definition.parentSessionId ?? workflowSessionId);
         return { ...head, locked: false, agents: pinsText === null ? [] : listed(JSON.parse(pinsText) as JsonValue), problem: null };
@@ -1560,7 +1486,7 @@ export async function previewWorkflowV2AgentVersions(host: Pick<WorkflowV2Host, 
  * revision the request names (expected_revision and definition_hash), draft
  * or published, with its inputs (checked against inputs.schema), its own
  * initial KV, and the fixtures it answers intercepted effects from. The run
- * runs at controller 1.9.0 under its own controller instance; its scripts
+ * runs under its own controller instance; its scripts
  * run normally, its framework effects are intercepted, and its deadlines run
  * on its virtual clock. It never changes the live run, and it is never
  * evidence that the definition is safe to run live.
@@ -1578,14 +1504,13 @@ export async function previewWorkflowV2AgentVersions(host: Pick<WorkflowV2Host, 
 export async function startWorkflowV2Test(host: WorkflowV2Host, workflowSessionId: string, command: WorkflowV2TestCommand,
     context: { actor: WorkflowActor; operationId: string; bench?: { ownerSessionId: string; definitionId: string } | null }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
     requireOperationId(context.operationId);
-    requireTestHost(host);
     if (command.agentMode !== "mocked" && command.agentMode !== "real") {
         throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "agent_mode must be mocked or real.");
     }
     const revision = await host.store.readRevision(workflowSessionId, command.expectedRevision);
     let ir: WorkflowIR | null = null;
     if (revision?.valid && revision.irSha256) {
-        ir = await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256, irOptionsFor(host));
+        ir = await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256, IR_READ_OPTIONS);
         validateRunInputs(ir, revision.irSha256, command.inputs);
     }
     const fixturesText = canonicalJson(command.fixtures);
@@ -1613,7 +1538,7 @@ export async function startWorkflowV2Test(host: WorkflowV2Host, workflowSessionI
         start: {
             runId, mode: "test", controllerInstanceId: workflowTestControllerInstanceId(runId),
             inputsText: boundedCanonicalJson(command.inputs, "Workflow inputs"), kvText: checkedKvText(command.vars ?? {}), testAgentMode: command.agentMode,
-            controllerVersion: controllerVersionFor(host), fixturesText, ...(command.scenario ? { testScenario: command.scenario } : {}),
+            controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION, fixturesText, ...(command.scenario ? { testScenario: command.scenario } : {}),
             ...(testAgentPinsText !== null ? { testAgentPinsText } : {}),
             ...(agentModelsText ? { agentModelsText } : {}),
         },
@@ -1670,11 +1595,10 @@ async function testRun(host: Pick<WorkflowV2Host, "store">, workflowSessionId: s
  * TEST_RESPONSE_CONFLICT; an answer to an effect whose state was decided
  * otherwise (a virtual deadline, a cancel) is refused.
  */
-export async function respondWorkflowV2Test(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, workflowSessionId: string,
+export async function respondWorkflowV2Test(host: Pick<WorkflowV2Host, "store" | "duroxideClient">, workflowSessionId: string,
     command: { runId: string; interceptionId: string; response: WorkflowTestResponse }, context: { actor: WorkflowActor; operationId: string })
     : Promise<{ replayed: boolean; interception: WorkflowTestInterception; node: WorkflowNodeExecutionRow }> {
     requireOperationId(context.operationId);
-    requireTestHost(host);
     const run = await testRun(host, workflowSessionId, command.runId);
     const intercepted = await host.store.readInterception(command.interceptionId);
     if (!intercepted || intercepted.runId !== run.runId) {
@@ -1700,10 +1624,9 @@ export async function respondWorkflowV2Test(host: Pick<WorkflowV2Host, "store" |
  * operation id: what became due is decided in the same transaction, in
  * deadline order (store.advanceTestClock), and the controller is told.
  */
-export async function advanceWorkflowV2Test(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, workflowSessionId: string,
+export async function advanceWorkflowV2Test(host: Pick<WorkflowV2Host, "store" | "duroxideClient">, workflowSessionId: string,
     command: { runId: string; seconds: number }, context: { actor: WorkflowActor; operationId: string }): Promise<StoredOperation<WorkflowTestAdvanceReceipt>> {
     requireOperationId(context.operationId);
-    requireTestHost(host);
     const run = await testRun(host, workflowSessionId, command.runId);
     const stored = await host.store.advanceTestClock({
         workflowSessionId, runId: run.runId, seconds: command.seconds, operationId: context.operationId,

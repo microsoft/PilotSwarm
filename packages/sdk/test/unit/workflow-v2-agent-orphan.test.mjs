@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { endWorkflowV2AgentChild, endWorkflowV2RunAgents, registerWorkflowV2, WORKFLOW_V2_REQUEST_ACTIVITIES } from "../../dist/workflow/v2/runtime.js";
+import { endWorkflowV2AgentChild, endWorkflowV2RunAgents, registerWorkflowV2, WORKFLOW_V2_ACTIVITIES } from "../../dist/workflow/v2/runtime.js";
 
 // Adversarial review WFO-2 (TLC agent.exhausted-orphan): an agent state's child created after its state was decided,
 // when every attempt to record the spawn failed, is ended: by the spawn's failure and by the run's cleanup.
@@ -56,13 +56,13 @@ test("a child still not created stays owed; nothing is sent", async () => {
 function activitiesOf(w) {
     const activities = new Map();
     registerWorkflowV2({ registerActivity: (name, fn) => activities.set(name, fn), registerOrchestrationVersioned: () => {} }, {
-        store: w.store, catalog: {}, enabled: () => true, workflowRequests: true,
+        store: w.store, catalog: {}, enabled: () => true,
         resolveToolBinding: async () => null, openToolExecutor: async () => { throw new Error("no tools"); },
         authorizeParentNotification: async () => true, notifyParent: async () => {}, deleteSession: async () => {},
     });
     return activities;
 }
-const failSpawn = w => activitiesOf(w).get(WORKFLOW_V2_REQUEST_ACTIVITIES.agentSpawnFailed)(
+const failSpawn = w => activitiesOf(w).get(WORKFLOW_V2_ACTIVITIES.agentSpawnFailed)(
     { getClient: () => w.client }, { runId: "run-1", nodeExecutionId: "nx-1", controllerInstanceId: "ctl-1", cause: "store down" });
 
 test("when every spawn attempt failed, the spawn's failure ends a child an attempt created", async () => {

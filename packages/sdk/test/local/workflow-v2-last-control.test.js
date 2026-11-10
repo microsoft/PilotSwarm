@@ -19,7 +19,7 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { controlWorkflowV2Run } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
-import { WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_V2_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -45,7 +45,7 @@ function fakeDuroxide() {
     };
 }
 
-/** A chat and its Workflow with one live run, admitted (at controller 1.9.0, so it can be stopped). */
+/** A chat and its Workflow with one live run, admitted (at the Workflow controller, so it can be stopped). */
 async function chatWorkflow(env, label) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
@@ -63,7 +63,7 @@ async function chatWorkflow(env, label) {
         workflowSessionId, parentSessionId: chat, notifyParent: false, yaml: YAML, compiled, actor: { kind: "system", name: `${label}-test` },
         operationId: "create", requestSha256: label, publish: true, title: `Workflow: ${label}`,
         start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId), inputsText: "{}", kvText: "{}",
-            testAgentMode: null, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION },
+            testAgentMode: null, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION },
     });
     const duroxideClient = fakeDuroxide();
     const host = { catalog, store, duroxideClient };

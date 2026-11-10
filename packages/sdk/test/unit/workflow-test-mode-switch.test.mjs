@@ -1,7 +1,7 @@
 /**
  * Workflow test mode, hidden (Workflow Simplified, spec 16; owner decisions E1, O2): off unless the deployment flag
  * PILOTSWARM_WORKFLOW_TEST_MODE is exactly `on`. Off, on every surface:
- * - the agent tool: update_workflow and read_workflow of a 1.9.0 turn declare no test operation, argument or field, and
+ * - the agent tool: update_workflow and read_workflow of a 1.0.83 turn declare no test operation, argument or field, and
  *   the handler answers a test operation exactly as an unknown operation, before anything is read (review SF-7);
  * - a person's commands (the Web API and MCP run them): a test operation answers as one that does not exist; the
  *   bootstrap capabilities and a read model's personCommands do not list them, so the portal and the terminal UI offer
@@ -79,7 +79,7 @@ test("the flag is on only when it is exactly `on`, separate from the test enviro
     assert.equal(sdk.WORKFLOW_TEST_MODE_VARIABLE, WORKFLOW_TEST_MODE_VARIABLE);
 });
 
-test("agent tool: with test mode off, a 1.9.0 turn is declared stop and no test operation, argument or field", () => {
+test("agent tool: with test mode off, a 1.0.83 turn is declared stop and no test operation, argument or field", () => {
     const update = UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC;
     assert.deepEqual([...update.parameters.properties.operation.enum], [...PRODUCTION, "stop"]);
     assert.ok(update.description.includes("stop (grace_seconds 0 to 3600, default 60"));
@@ -121,7 +121,7 @@ test("agent tool: with test mode off, a 1.9.0 turn is declared stop and no test 
     assert.deepEqual(names(off).filter(name => name !== RESPOND_SESSION_REQUEST_TOOL), names(production));
 });
 
-test("agent tool: with the flag on, a 1.9.0 turn is declared the test operations as before", async () => {
+test("agent tool: with the flag on, a 1.0.83 turn is declared the test operations as before", async () => {
     await withFlag("on", () => {
         const on = ManagedSession.subAgentToolDefs({ workflowMilestone: true });
         assert.equal(named(on, "update_workflow").description, UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC.description);
@@ -130,7 +130,7 @@ test("agent tool: with the flag on, a 1.9.0 turn is declared the test operations
     });
 });
 
-/** A 1.9.0 host whose workflow child "wf" belongs to "parent"; it records every read. */
+/** A host whose workflow child "wf" belongs to "parent"; it records every read. */
 function hostOf(fields = {}) {
     const reads = [];
     return {

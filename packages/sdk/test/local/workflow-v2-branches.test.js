@@ -1,6 +1,5 @@
 /**
- * Named branches (owner decision 2026-11-08T00:35Z, option A; IR 11), INACTIVE: only controller 1.9.0 runs them, and only
- * tests register it and start runs there (the test-only option workflowRequests and a host with `requests`). Branch states
+ * Named branches (owner decision 2026-11-08T00:35Z, option A; IR 11), on the Workflow controller. Branch states
  * are real script processes and waits; no model runs.
  *
  * - All: each branch starts at its own initial with its own input (its template, else the value that arrived); the
@@ -100,7 +99,7 @@ async function baseOf(env) {
     const store = catalog.workflowStore();
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
     const client = new Client(provider);
-    return { catalog, store, provider, client, host: { catalog, store, duroxideClient: client, requests: true } };
+    return { catalog, store, provider, client, host: { catalog, store, duroxideClient: client } };
 }
 
 async function runtimeOn(base) {
@@ -118,7 +117,7 @@ async function runtimeOn(base) {
         authorizeParentNotification: async () => false,
         notifyParent: async () => { throw new Error("These workflows notify no parent."); },
         deleteSession: async sessionId => base.catalog.softDeleteSession(sessionId),
-        wakeBackstopMs: 500, workflowRequests: true,
+        wakeBackstopMs: 500, 
         sessionQueue: { ...sessionQueueTransport(base.client), version: async () => "1.0.83" },
     });
     await runtime.start();
@@ -161,7 +160,7 @@ async function withRuntime(fn) {
     }
 }
 
-describe("named branches (IR 11): controller 1.9.0", () => {
+describe("named branches (IR 11): the controller", () => {
     it("each branch starts at its own initial with its own input; the join is { <name>: output }; branch.name binds", { timeout: TIMEOUT }, async () => {
         await withRuntime(async base => {
             const doc = branchesDoc({ input: { ms: 100 }, careful: { prepare: true, input: { ms: 300, depth: "deep" } } });

@@ -91,17 +91,17 @@ async function until(check, label, timeoutMs = 60_000) {
 /**
  * A worker-equivalent registration; `authorize` answers whether the parent may still be told; `notified` records each
  * delivery. With `deliver`, the delivery is `deliver(client)` instead (the worker's own, over this runtime's client);
- * `orchestrations` ([name, version, handler]) are registered too. With `requests`, it is a host that starts runs on
- * controller 1.9.0 (the test-only option workflowRequests), whose store activities are tagged and have no attempt timeout.
+ * `orchestrations` ([name, version, handler]) are registered too. Its store activities are tagged and have no attempt
+ * timeout.
  */
-async function harness(env, { authorize = true, deliver = null, orchestrations = [], requests = false } = {}) {
+async function harness(env, { authorize = true, deliver = null, orchestrations = [] } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
     const client = new Client(provider);
     const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error",
-        ...(requests ? { workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] } } : {}) });
+        workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] } });
     for (const [name, version, handler] of orchestrations) runtime.registerOrchestrationVersioned(name, version, handler);
     const notified = [];
     registerWorkflowV2({
@@ -118,12 +118,11 @@ async function harness(env, { authorize = true, deliver = null, orchestrations =
             : async (parentSessionId, text, meta, clientMessageId) => { notified.push({ parentSessionId, text, meta, clientMessageId }); },
         deleteSession: async (sessionId) => catalog.softDeleteSession(sessionId),
         wakeBackstopMs: 500,
-        ...(requests ? { workflowRequests: true } : {}),
     });
     await runtime.start();
     return {
         store, client, notified,
-        host: { catalog, store, duroxideClient: client, ...(requests ? { requests: true } : {}) },
+        host: { catalog, store, duroxideClient: client },
         async stop() {
             await runtime.shutdown(100);
             await catalog.close();
@@ -630,16 +629,13 @@ describe("workflow v2: telling the parent when a live run ends", () => {
     });
 
     // Verification of WFO-1 and E3 (D-T9): a notice attempt slower than its activity's budget. Its default wait (15 s, for
-    // a delivery to the parent still in flight) and a queueing held 20 s make 35 s. An untagged attempt (controller 1.8.0)
-    // is timed out at 30 s and tried again; the late attempt's queueing still lands, once, and records the notice; the retry
-    // waits again, then finds it recorded and queues nothing. A tagged attempt (controller 1.9.0) has no timeout: it takes
-    // the 35 s and records the notice, with no retry. Either way the parent gets the notice once.
-    for (const [label, requests] of [["untagged (1.8.0): timed out at 30 s and tried again", false], ["tagged (1.9.0): no attempt timeout", true]]) {
-        it(`D-T9 (WFO-1, E3): a 35 s notice attempt, ${label}; the parent is told once`, { timeout: testTime.ms(240_000) }, async () => {
+    // a delivery to the parent still in flight) and a queueing held 20 s make 35 s. A tagged attempt has no timeout: it
+    // takes the 35 s and records the notice, with no retry. The parent gets the notice once.
+    {
+        it("D-T9 (WFO-1, E3): a 35 s notice attempt, tagged, with no attempt timeout; the parent is told once", { timeout: testTime.ms(240_000) }, async () => {
             const env = getEnv();
             const queued = [];
             const h = await harness(env, {
-                requests,
                 deliver: () => async (parentSessionId, prompt, sender, clientMessageId) => {
                     const began = Date.now();
                     await new Promise(resolve => setTimeout(resolve, 20_000));
@@ -677,14 +673,9 @@ describe("workflow v2: telling the parent when a live run ends", () => {
                 expect(queued[0].began - ended).toBeGreaterThanOrEqual(13_000);
                 const events = await h.host.catalog.getSessionEvents(id, 0, 100, ["workflow.parent_notifying", "workflow.parent_notified", "workflow.parent_notification_skipped"]);
                 expect(events.map(event => event.eventType)).toEqual(["workflow.parent_notifying", "workflow.parent_notified"]);
-                if (requests) {
-                    // No timeout: one attempt of about 35 s ended the controller's report.
-                    expect(tookMs).toBeGreaterThanOrEqual(33_000);
-                    expect(tookSinceSeenMs).toBeLessThan(42_000);
-                } else {
-                    // Timed out at 30 s: the retry waited its own 15 s before it found the notice recorded.
-                    expect(tookMs).toBeGreaterThanOrEqual(42_000);
-                }
+                // No timeout: one attempt of about 35 s ended the controller's report.
+                expect(tookMs).toBeGreaterThanOrEqual(33_000);
+                expect(tookSinceSeenMs).toBeLessThan(42_000);
             } finally {
                 await db.end().catch(() => undefined);
                 await h.stop();

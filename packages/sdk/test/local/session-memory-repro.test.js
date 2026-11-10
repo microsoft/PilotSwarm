@@ -182,7 +182,7 @@ describe.skipIf(!RUN)("per-session memory on one worker (opt-in repro)", () => {
                         const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
                         await chat.sendAndWait("Say ok.", 120_000);
                         if (!store) continue;
-                        const created = await service.createWorkflowV2({ catalog, store, duroxideClient: duroxide, requests: true }, {
+                        const created = await service.createWorkflowV2({ catalog, store, duroxideClient: duroxide }, {
                             workflowSessionId: randomUUID(), parentSessionId: parent, yaml: STEP_WORKFLOW, actor: ACTOR, operationId: `leak-${done}`,
                             publish: true, start: { inputs: {} }, notifyParent: false,
                         });

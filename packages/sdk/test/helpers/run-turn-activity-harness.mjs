@@ -9,9 +9,8 @@ import { registerActivities } from "../../src/session-proxy.ts";
  * Session turn control (runTurnV4) options: `catalogExtras`, `sessionExtras`
  * and `managerExtras` add or override fake methods; `sessionStore` with
  * `sessionStateDir` enables the lifecycle protocol; `workspaceProvider` serves
- * workspace attaches; `testOptions` are registerActivities' test-only switches
- * (workflowIntakeTurns registers runTurnV5, workflowRequests marks its turns as
- * a workflow worker's). `runTurn(sessionId, inputOverrides, handlerName)`
+ * workspace attaches; `testOptions` are registerActivities' test-only switches.
+ * `runTurn(sessionId, inputOverrides, handlerName)`
  * selects the input and the registered activity name.
  */
 export function makeRunTurnHarness({

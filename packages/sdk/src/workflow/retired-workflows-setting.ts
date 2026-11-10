@@ -4,7 +4,7 @@
  * warnRetiredWorkflowsSetting at start.
  * - PILOTSWARM_WORKFLOWS (owner decision 2026-11-08T08:03Z): Workflows are always on.
  * - PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT (owner decision 2026-11-08T15:30Z): every worker runs the full Workflow
- *   engine (controller 1.9.0 and session orchestration 1.0.83, the latest version), and every deployment takes a
+ *   engine (the Workflow controller and session orchestration 1.0.83, the latest version), and every deployment takes a
  *   person's workflow commands.
  * PILOTSWARM_WORKFLOW_SCRIPTS (script nodes) and PILOTSWARM_WORKFLOW_TEST_MODE (test mode) are unchanged.
  */

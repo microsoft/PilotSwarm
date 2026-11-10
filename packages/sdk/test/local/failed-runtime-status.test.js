@@ -219,7 +219,7 @@ describe("R2-RT-2: a workflow's ended row stands over a controller that failed a
         const sdk = { _catalog: catalog, duroxideClient: { getStatus: async () => FAILED }, _getLatestResponse: async () => null };
         const mgmt = {
             _ensureStarted() {}, _catalog: catalog, _readJsonValue: async () => null,
-            _duroxideClient: { getInstanceInfo: async () => ({ status: "Failed", orchestrationVersion: "1.9.0" }), getStatus: async () => FAILED },
+            _duroxideClient: { getInstanceInfo: async () => ({ status: "Failed", orchestrationVersion: "1.0.0" }), getStatus: async () => FAILED },
         };
         return {
             updates,

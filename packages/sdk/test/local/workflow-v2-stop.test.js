@@ -1,22 +1,15 @@
 /**
- * Workflow v2 graceful stop (design 02 run lifecycle and D03; migration
- * 0100), INACTIVE: only controller 1.9.0 stops a run, and only tests start
- * runs there (the test-only option workflowRequests and a host with
- * `requests`).
+ * Workflow v2 graceful stop (design 02 run lifecycle and D03).
  *
  * - The store: a stop is accepted once per operation id, with its deadline
- *   from one reading of the store's clock, only for a run admitted for a
- *   controller that stops (1.8.0 and runs admitted before 0100 are refused);
- *   a stopping run admits nothing, is neither paused nor resumed, and ends
+ *   from one reading of the store's clock; a stopping run admits nothing, is neither paused nor resumed, and ends
  *   stopped once nothing is pending or at its deadline, when what is still
  *   pending is cancelled (winner stop).
- * - Controller 1.9.0 on a native duroxide runtime: the admitted work settles
+ * - The controller on a native duroxide runtime: the admitted work settles
  *   and keeps its result, no successor is admitted, and the parent is told;
  *   at the deadline the work still pending is cancelled and its effect is
  *   asked to stop; a paused run with nothing pending stops at once; a cancel
- *   during the grace ends the run cancelled; a run started at 1.8.0 refuses
- *   the stop, and a host that does not start 1.9.0 runs does not take the
- *   operation.
+ *   during the grace ends the run cancelled.
  *
  * No model runs. Not an activation or a routing proof against an older worker.
  */
@@ -27,11 +20,14 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson } from "../../src/workflow/v2/json.ts";
-import { controlWorkflowV2Run, createWorkflowV2, WORKFLOW_V2_STOP_DEFAULT_GRACE_SECONDS } from "../../src/workflow/v2/service.ts";
+import { createWorkflowV2, WORKFLOW_V2_STOP_DEFAULT_GRACE_SECONDS } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import {
-    registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_CONTROLLER_VERSION, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
-    WORKFLOW_V2_STOP_CONTROLLER_VERSIONS, workflowEffectInstanceId, workflowLiveControllerInstanceId,
+    registerWorkflowV2,
+    sessionQueueTransport,
+    WORKFLOW_V2_CONTROLLER_VERSION,
+    workflowEffectInstanceId,
+    workflowLiveControllerInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor, WORKFLOW_V2_STOP_MAX_GRACE_SECONDS } from "../../src/workflow/v2/store.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
@@ -81,7 +77,7 @@ const scriptEntry = (runId, nodeId = "work", ordinal = 1) => ({
 
 const stopRequest = (run, fields = {}) => ({
     workflowSessionId: run.workflowSessionId, runId: run.runId, operationId: "stop-1", requestSha256: "stop-a", actor: ACTOR,
-    reason: "wrap up", graceSeconds: 30, stoppableVersions: WORKFLOW_V2_STOP_CONTROLLER_VERSIONS, ...fields,
+    reason: "wrap up", graceSeconds: 30, ...fields,
 });
 
 const stoppedProjection = ({ run, graceExpired, cancelled }) => ({
@@ -122,19 +118,11 @@ async function stopFixture(env) {
 }
 
 describe("workflow v2 graceful stop: the store", () => {
-    it("accepts a stop once per operation for a 1.9.0 run only; a stopping run admits nothing and is neither paused nor resumed", { timeout: TIMEOUT }, async () => {
+    it("accepts a stop once per operation; a stopping run admits nothing and is neither paused nor resumed", { timeout: TIMEOUT }, async () => {
         const h = await stopFixture(getEnv());
         try {
-            expect(WORKFLOW_V2_STOP_CONTROLLER_VERSIONS).toEqual([WORKFLOW_V2_REQUEST_CONTROLLER_VERSION]);
-            // A run admitted for 1.8.0, and one admitted before 0100 (no version recorded), cannot stop gracefully.
-            for (const version of [WORKFLOW_V2_CONTROLLER_VERSION, undefined]) {
-                const legacy = await h.workflow(version);
-                expect((await h.store.readRun(legacy.runId)).controllerVersion).toBe(version ?? null);
-                await expect(h.store.requestRunStop(stopRequest(legacy))).rejects.toMatchObject({ code: "RUN_STOP_UNSUPPORTED" });
-                expect((await h.store.readRun(legacy.runId)).stop).toBeNull();
-            }
             // The grace is an integer from 0 to the bound; nothing is stored otherwise.
-            const run = await h.workflow(WORKFLOW_V2_REQUEST_CONTROLLER_VERSION);
+            const run = await h.workflow(WORKFLOW_V2_CONTROLLER_VERSION);
             for (const graceSeconds of [-1, 1.5, WORKFLOW_V2_STOP_MAX_GRACE_SECONDS + 1]) {
                 await expect(h.store.requestRunStop(stopRequest(run, { graceSeconds }))).rejects.toMatchObject({ code: "WORKFLOW_COMMAND_INVALID" });
             }
@@ -144,7 +132,7 @@ describe("workflow v2 graceful stop: the store", () => {
             expect(accepted.replayed).toBe(false);
             expect(accepted.receipt).toEqual({ workflowSessionId: run.workflowSessionId, operation: "stop", runId: run.runId, status: "admitted", kvRevision: 1 });
             const stopping = await h.store.readRun(run.runId);
-            expect(stopping).toMatchObject({ status: "admitted", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
+            expect(stopping).toMatchObject({ status: "admitted", controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION,
                 stop: { operationId: "stop-1", reason: "wrap up", graceSeconds: 30, actor: ACTOR } });
             // One reading of the store's clock is the stop's time, and the deadline is that reading plus the grace.
             expect(stopping.stop.deadlineAt.getTime() - stopping.stop.requestedAt.getTime()).toBe(30_000);
@@ -178,7 +166,7 @@ describe("workflow v2 graceful stop: the store", () => {
         const h = await stopFixture(getEnv());
         try {
             // Before the deadline, with work pending, nothing changes and the store reports the time left.
-            const settled = await h.workflow(WORKFLOW_V2_REQUEST_CONTROLLER_VERSION);
+            const settled = await h.workflow(WORKFLOW_V2_CONTROLLER_VERSION);
             const work = await h.admit(settled);
             await h.store.requestRunStop(stopRequest(settled, { graceSeconds: 3600 }));
             const early = await h.store.finishStoppedRun({ runId: settled.runId, projection: stoppedProjection });
@@ -200,7 +188,7 @@ describe("workflow v2 graceful stop: the store", () => {
             expect(events.filter(event => event.eventType === "workflow.stopped")).toHaveLength(1);
 
             // At the deadline, the work still pending is cancelled with winner stop.
-            const expired = await h.workflow(WORKFLOW_V2_REQUEST_CONTROLLER_VERSION);
+            const expired = await h.workflow(WORKFLOW_V2_CONTROLLER_VERSION);
             const stuck = await h.admit(expired);
             await h.store.requestRunStop(stopRequest(expired, { graceSeconds: 1 }));
             await pause(1_200);
@@ -215,12 +203,12 @@ describe("workflow v2 graceful stop: the store", () => {
             expect(late.won).toBe(false);
 
             // A stop with no work admitted and no grace ends the run at once.
-            const empty = await h.workflow(WORKFLOW_V2_REQUEST_CONTROLLER_VERSION);
+            const empty = await h.workflow(WORKFLOW_V2_CONTROLLER_VERSION);
             await h.store.requestRunStop(stopRequest(empty, { graceSeconds: 0 }));
             expect(await h.store.finishStoppedRun({ runId: empty.runId, projection: stoppedProjection }))
                 .toMatchObject({ result: "ended", graceExpired: false, cancelled: [] });
             // A run without a stop cannot end stopped, even by direct SQL.
-            const plain = await h.workflow(WORKFLOW_V2_REQUEST_CONTROLLER_VERSION);
+            const plain = await h.workflow(WORKFLOW_V2_CONTROLLER_VERSION);
             await expect(h.q(`UPDATE SCHEMA.workflow_runs SET status = 'stopped', finished_at = now() WHERE run_id = $1`, [plain.runId]))
                 .rejects.toThrow(/workflow_runs_stop/);
             await expect(h.store.finishStoppedRun({ runId: plain.runId, projection: stoppedProjection })).rejects.toMatchObject({ code: "WORKFLOW_STORE_CORRUPT" });
@@ -230,7 +218,7 @@ describe("workflow v2 graceful stop: the store", () => {
     });
 });
 
-// ─── Controller 1.9.0 on a native runtime ────────────────────
+// ─── The controller on a native runtime ──────────────────────
 
 /** A gate the test opens; `reached` resolves when code arrives at it. */
 function gate() {
@@ -241,8 +229,8 @@ function gate() {
 }
 
 /**
- * A worker-equivalent registration with workflowRequests and the request tag
- * declared (untagged work runs too). `hold(workflowId)` holds that
+ * A worker-equivalent registration with the request tag
+ * declared. `hold(workflowId)` holds that
  * workflow's next script after its node was admitted and before it starts
  * (the tool binding read). Parent notifications are authorized and recorded.
  */
@@ -272,14 +260,13 @@ async function harness(env) {
         notifyParent: async (parentSessionId, text, meta, clientMessageId) => { notified.push({ parentSessionId, clientMessageId }); },
         deleteSession: async sessionId => catalog.softDeleteSession(sessionId),
         wakeBackstopMs: 500,
-        workflowRequests: true,
         sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
     });
     await runtime.start();
     const held = [];
     return {
         catalog, store, client, notified,
-        host: { catalog, store, duroxideClient: client, requests: true },
+        host: { catalog, store, duroxideClient: client },
         hold(workflowId) { const entry = gate(); holds.set(workflowId, entry); held.push(entry); return entry; },
         async stop() {
             for (const entry of held) entry.open();
@@ -317,7 +304,7 @@ const ended = (h, runId, statuses = ["completed", "failed", "cancelled", "stoppe
     return run && statuses.includes(run.status) ? run : null;
 }, `run ${runId} to end`);
 
-describe("workflow v2 graceful stop: controller 1.9.0 (inactive, test-only registration)", () => {
+describe("workflow v2 graceful stop: the controller", () => {
     it("stops a run once its admitted work settled: the result is kept, no successor is admitted, and the parent that asked is not told", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
@@ -348,7 +335,7 @@ describe("workflow v2 graceful stop: controller 1.9.0 (inactive, test-only regis
             await pause(1_500);
             expect(h.notified).toEqual([]);
             expect((await h.catalog.getSessionEvents(id, 0, 200, ["workflow.parent_notified", "workflow.parent_notification_skipped"]))).toEqual([]);
-            expect((await h.client.getInstanceInfo(workflowLiveControllerInstanceId(id))).orchestrationVersion).toBe(WORKFLOW_V2_REQUEST_CONTROLLER_VERSION);
+            expect((await h.client.getInstanceInfo(workflowLiveControllerInstanceId(id))).orchestrationVersion).toBe(WORKFLOW_V2_CONTROLLER_VERSION);
             // The read view keeps the stop; nothing further applies to the ended run.
             const after = await parent.read(id);
             expect(after.run).toMatchObject({ status: "stopped", stop: { graceSeconds: 60, reason: "enough" } });
@@ -390,7 +377,7 @@ describe("workflow v2 graceful stop: controller 1.9.0 (inactive, test-only regis
         }
     });
 
-    it("stops a paused run with nothing pending at once, ends a stopping run cancelled on a cancel, and refuses a stop for a 1.8.0 run", { timeout: TIMEOUT }, async () => {
+    it("stops a paused run with nothing pending at once, and ends a stopping run cancelled on a cancel", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             const parent = await parentOf(h);
@@ -415,20 +402,6 @@ describe("workflow v2 graceful stop: controller 1.9.0 (inactive, test-only regis
             expect(await ended(h, cancelled.runId)).toMatchObject({ status: "cancelled" });
             expect(await h.store.readNodeExecution(nodeExecutionIdFor(cancelled.runId, "root", "work", 1))).toMatchObject({ outcome: "cancelled", winner: "cancel" });
             cancelled.held.open();
-
-            // A host that starts runs at 1.8.0: the run records that version and refuses the stop; its tool does not take the operation.
-            const legacyHost = { ...h.host, requests: false };
-            const legacyParent = await parentOf(h, legacyHost);
-            const legacy = await startHeld(h, legacyParent, legacyHost);
-            expect((await h.store.readRun(legacy.runId)).controllerVersion).toBe(WORKFLOW_V2_CONTROLLER_VERSION);
-            expect((await h.client.getInstanceInfo(workflowLiveControllerInstanceId(legacy.workflowSessionId))).orchestrationVersion).toBe(WORKFLOW_V2_CONTROLLER_VERSION);
-            await expect(controlWorkflowV2Run(h.host, legacy.workflowSessionId, { operation: "stop", runId: null, reason: null, graceSeconds: null },
-                { actor: ACTOR, operationId: "stop-legacy" })).rejects.toMatchObject({ code: "RUN_STOP_UNSUPPORTED" });
-            expect(await legacyParent.update(legacy.workflowSessionId, { operation: "stop", operation_id: "stop-1" }))
-                .toMatchObject({ ok: false, error: { code: "WORKFLOW_COMMAND_INVALID" } });
-            expect((await h.store.readRun(legacy.runId)).stop).toBeNull();
-            legacy.held.open();
-            expect(await ended(h, legacy.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
             expect(WORKFLOW_V2_STOP_DEFAULT_GRACE_SECONDS).toBeLessThanOrEqual(WORKFLOW_V2_STOP_MAX_GRACE_SECONDS);
         } finally {
             await h.stop();

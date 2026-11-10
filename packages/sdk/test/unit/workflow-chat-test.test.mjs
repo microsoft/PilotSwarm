@@ -2,8 +2,8 @@
  * Workflow Simplified stage 2.2, without a database: an agent's test of a revision, on request (chat-test.ts).
  * - Prepared answers: a fixture without arguments answers any call of its tool or state, but only when no fixture gives
  *   that call's exact arguments; stored fixtures keep it.
- * - The test call is refused before anything is read: on a host that runs no tests (WORKFLOW_TEST_UNAVAILABLE), without a
- *   name, with fixtures that are not prepared answers; a test id that is not this chat's test bench is TEST_NOT_FOUND.
+ * - The test call is refused before anything is read: without a name, with fixtures that are not prepared answers; a test
+ *   id that is not this chat's test bench is TEST_NOT_FOUND.
  * - The report: the path, each visit's outcome and output, the first error in words, a call it had no answer for, the calls
  *   answered, the virtual time its waits took; passed only when the run completed with outcome succeeded.
  * - The test bench is a service session (workflow-test) and the scripts gate says "Nothing was tested.".
@@ -47,12 +47,9 @@ test("a fixture without arguments answers any call of its tool or step, after ev
     assert.throws(() => storedTestFixtures([{ ...JSON.parse(JSON.stringify(fixtures[0])), argumentsSha256: 7 }]), /invalid shape/);
 });
 
-test("the test call is refused before anything is read: no test host, no name, fixtures that are not prepared answers, another session's id", async () => {
+test("the test call is refused before anything is read: no name, fixtures that are not prepared answers, another session's id", async () => {
     const host = { store: untouchable("store"), catalog: untouchable("catalog"), duroxideClient: untouchable("duroxide") };
-    const unavailable = await call({ operation: "test", name: "hn" }, host);
-    assert.equal(unavailable.error.code, "WORKFLOW_TEST_UNAVAILABLE");
-    assert.match(unavailable.error.message, /^This deployment cannot run Workflow tests\. Nothing was tested;/);
-    const tester = { ...host, requests: true };
+    const tester = host;
     assert.equal((await call({ operation: "test" }, tester)).error.code, "WORKFLOW_COMMAND_INVALID");
     for (const fixtures of ["none", [{ tool: "x" }], [{ tool: "x", response: { kind: "maybe" } }], [{ arguments: {}, response: { kind: "success", value: 1 } }]]) {
         const refused = await call({ operation: "test", name: "hn", fixtures }, tester);

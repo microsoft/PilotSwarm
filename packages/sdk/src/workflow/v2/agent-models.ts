@@ -9,7 +9,7 @@
  * revision being started (an unknown id or a node that is not an agent is refused in words, never ignored) and against the
  * owning chat's model catalog (review OF7-R1: the catalog of the identity that spends, the owner of the chat that owns the
  * Workflow, never the caller's); an explicit effort or tier must be one the chosen model lists (OF7-R6). A host that cannot
- * check a model refuses a map (fail closed). The map is stored with the run (migration 0110) and read at each spawn; a
+ * check a model refuses a map (fail closed). The map is stored with the run (migration 0088) and read at each spawn; a
  * stored map that cannot be read fails the node in words, it never inherits silently. A node the map leaves out inherits
  * model, reasoning effort and context tier from the chat that owns the Workflow.
  */

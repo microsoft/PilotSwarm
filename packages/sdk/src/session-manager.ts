@@ -2597,7 +2597,7 @@ export class SessionManager {
             .map((tool: any) => (this.workflowScriptsEnabled && !isTunerSession
                 ? workflowAwareSchedulingTool(tool, config.workflowInsideWorkflow === true ? "none" : workflowContext) : tool));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
-        // Workflow v2: a turn of a worker that runs controller 1.9.0 is declared the milestone's workflow tools and
+        // Workflow v2: a 1.0.83 turn (a workflow request turn) is declared the milestone's workflow tools and
         // respond_session_request, and an agent state's own child complete_workflow_node, as the turn's handlers take them.
         // A session inside a Workflow is declared no definition tools (Workflow Simplified A1).
         const subAgentTools = ManagedSession.subAgentToolDefs({
@@ -5316,8 +5316,8 @@ export class SessionManager {
         const testMode = workflowTestModeFromEnv();
         // Workflows are always on with the full engine (owner 2026-11-08T08:03Z and 15:30Z): every session's framework base
         // carries the Workflow guidance, trimmed to its rules; the details are in the Workflow skills (owner 16:55Z). A 1.0.83
-        // turn (a workflow request turn) runs controller 1.9.0: it is told of clock waits and respond_session_request; every
-        // turn can test a revision (its host sets requests). A session inside a Workflow gets WORKFLOW_INSIDE_GUIDANCE.
+        // turn (a workflow request turn) is told of clock waits and respond_session_request; every turn can test a
+        // revision. A session inside a Workflow gets WORKFLOW_INSIDE_GUIDANCE.
         // Workflows on demand (owner 16:55Z): while they are off in the chat, a short paragraph that names enable_workflows
         // stands in the guidance's place; the read-only tuner and service sessions get neither.
         const requestTurn = config.workflowMilestoneTurn === true;

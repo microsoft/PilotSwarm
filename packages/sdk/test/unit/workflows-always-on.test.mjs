@@ -121,8 +121,7 @@ test("agents (owner 2026-11-08T16:55Z): with scripts on, cron and cron_at keep m
     assert.ok(!/spawn_workflow/.test(WORKFLOW_SCHEDULING_HINT), "the tool of this stage, not the compat one");
 });
 
-// G-4: every turn's host runs a Workflow test, a frozen 1.0.82 turn's included (session-proxy.ts workflowV2Host sets requests,
-// all that chat-test.ts requireTestHost checks), so every turn declares workflow_definition's test and the guidance teaches it.
+// G-4: every turn's host runs a Workflow test, a frozen 1.0.82 turn's included, so every turn declares workflow_definition's test and the guidance teaches it.
 test("agents (G-4): every turn declares workflow_definition's test and the guidance teaches it, a frozen 1.0.82 turn's included", async (t) => {
     const guidance = await import("../../dist/workflow/guidance.js");
     assert.equal(Object.hasOwn(guidance, "WORKFLOW_TESTS_UNAVAILABLE_GUIDANCE"), false, "no line says Workflow tests do not run here");

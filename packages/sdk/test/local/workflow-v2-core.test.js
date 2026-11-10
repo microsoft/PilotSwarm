@@ -10,7 +10,7 @@ import { withClient } from "../helpers/local-workers.js";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson, parseStoredJson, sha256Hex } from "../../src/workflow/v2/json.ts";
 import { createWorkflowV2, dispatchWorkflowV2Run, updateWorkflowV2 } from "../../src/workflow/v2/service.ts";
-import { WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_STORE_RETRY, workflowEffectInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_V2_CONTROLLER_NAME, workflowEffectInstanceId } from "../../src/workflow/v2/runtime.ts";
 import { runScriptNode } from "../../src/workflow/runner.ts";
 import { schemaSetFor } from "../../src/workflow/v2/schema.ts";
 import { WORKFLOW_V2_REVISION_LIMITS } from "../../src/workflow/v2/store.ts";
@@ -165,12 +165,6 @@ async function expectCode(promise, code) {
 }
 
 describe("workflow v2 compiler and values", () => {
-    it("schedules store activities with a retry policy duroxide-node accepts", () => {
-        // duroxide-node reads backoff as a strategy name; a number fails the orchestration.
-        expect(["undefined", "string"]).toContain(typeof WORKFLOW_V2_STORE_RETRY.backoff);
-        expect(WORKFLOW_V2_STORE_RETRY.maxAttempts).toBeGreaterThan(1);
-    });
-
     it("compiles a valid definition to a stable IR hash that changes with the source", () => {
         const a = compileWorkflowV2(PIPELINE);
         const b = compileWorkflowV2(PIPELINE);

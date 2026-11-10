@@ -528,9 +528,9 @@ export interface PilotSwarmSessionView {
     /** Stage 2.3 (P2): a coordinating chat's package Workflow Definition, `<package>/<name>` (the session list's Workflow badge). */
     workflowRef?: string;
     /**
-     * OF-S2-5: whether the session owns a live Workflow Definition (migration 0107), so a list row can say it has grown
+     * OF-S2-5: whether the session owns a live Workflow Definition (migration 0088), so a list row can say it has grown
      * Workflows without opening it. Set by the paged session list only: true or false where the definitions were read,
-     * absent where they could not be (a database without 0107).
+     * absent where they could not be (a database without migration 0088).
      */
     hasWorkflowDefinitions?: boolean;
     model?: string;
@@ -870,15 +870,14 @@ export interface PilotSwarmManagementClientOptions {
     artifactStore?: ArtifactStore | null;
     /**
      * Durable workflows: a person's workflow commands (updateWorkflow and the chat definition operations). Unset (the
-     * default) or any object: `requests` is always true (review RLR-F1), as every worker runs controller 1.9.0: the commands take the milestone operations (stop, and
-     * with test mode the test operations) and start runs at 1.9.0, as the agents' tools do, and a publication pins its named
-     * agents: package agents only, at the agent registry's exact revision (a deployment agent's name is refused
+     * default) or any object: the commands take the milestone operations (stop, and with test mode the test operations), as
+     * the agents' tools do, and a publication pins its named agents: package agents only, at the agent registry's exact revision (a deployment agent's name is refused
      * AGENT_UNAVAILABLE here). `null`: no person's commands (updateWorkflow answers WORKFLOW_COMMANDS_UNAVAILABLE, 501, and
      * changes nothing); only a test sets it. `testMode`: whether those commands take the test operations (test,
      * test_respond, test_advance); absent, the deployment flag PILOTSWARM_WORKFLOW_TEST_MODE decides, off unless it is
      * exactly `on` (spec 16: test mode hidden by default).
      */
-    workflowCommands?: { requests?: boolean; testMode?: boolean } | null;
+    workflowCommands?: { testMode?: boolean } | null;
     /**
      * Whether the deployment's workers run workflow script nodes (PILOTSWARM_WORKFLOW_SCRIPTS, an opt-out), as far as this
      * client knows: false refuses a person's save or Start of a definition with a script node, in words naming the setting
@@ -932,10 +931,9 @@ export class PilotSwarmManagementClient {
         }
         // Every deployment takes a person's workflow commands on the full engine (owner decision 2026-11-08T15:30Z); only an
         // explicit `workflowCommands: null` (a test that needs them off) leaves them off. An object, partial or not, keeps its
-        // test mode (absent: the deployment flag decides) and always starts new runs at controller 1.9.0 (review RLR-F1):
-        // a missing or false `requests` would start them at 1.8.0 and drop the test mode.
+        // test mode (absent: the deployment flag decides).
         this.config = options.workflowCommands === null ? options
-            : { ...options, workflowCommands: { ...(options.workflowCommands ?? {}), requests: true } };
+            : { ...options, workflowCommands: { ...(options.workflowCommands ?? {}) } };
         this._artifactStore = options.artifactStore ?? null;
     }
 
@@ -1217,7 +1215,7 @@ export class PilotSwarmManagementClient {
         // a catalog without it (tests, older DBs) just ships no canvases.
         const canvasesById = await this._catalog!.listSessionCanvasesFor?.(visibleRows.map((r: any) => r.sessionId)).catch(() => null);
         // OF-S2-5: which of these sessions own a live Workflow Definition, in one read. Optional and non-fatal like the
-        // canvases: a catalog without it, or a database without migration 0107, sends no flag.
+        // canvases: a catalog without it, or a database without migration 0088, sends no flag.
         const definitionOwners = await this._catalog!.listWorkflowDefinitionOwnersFor?.(visibleRows.map((r: any) => r.sessionId)).catch(() => null);
         return {
             sessions: visibleRows.map((row: any) => ({
@@ -2039,8 +2037,8 @@ export class PilotSwarmManagementClient {
             // and a step's proposed inputs (q6) compiled as its saves compile them. The portal reads a definition revision's and a
             // step's YAML only for a person who may change the workflow; this client is trusted.
             // With test mode off, test runs are not shown or found (review SF-5): this client's own test mode, or else the flag.
-            view = await readWorkflowV2({ store, ...(typeof enabled?.testMode === "boolean" ? { testMode: enabled.testMode } : {}), ...(enabled?.requests === true
-                ? { requests: true, resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}) }, sessionId, request, "api");
+            view = await readWorkflowV2({ store, ...(typeof enabled?.testMode === "boolean" ? { testMode: enabled.testMode } : {}), ...(enabled
+                ? { resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}) }, sessionId, request, "api");
         } catch (error) {
             const status = error instanceof WorkflowStoreError ? WORKFLOW_READ_STATUS[error.code] : undefined;
             if (error instanceof WorkflowStoreError && status !== undefined) throw failure(error.code, status, error.message);
@@ -2058,7 +2056,7 @@ export class PilotSwarmManagementClient {
         const definition = view.definition as { state?: unknown; currentRevision?: unknown } | null | undefined;
         const draftRevision = definition?.state === "draft" && typeof definition.currentRevision === "number" ? definition.currentRevision : null;
         return { ...view, personCommands: await workflowCommandsForPerson(store, sessionId,
-            { requests: enabled.requests === true, runId: shown, draftRevision, published: definition?.state === "published",
+            { runId: shown, draftRevision, published: definition?.state === "published",
                 testMode: resolveWorkflowTestMode(enabled.testMode) }) };
     }
 
@@ -2109,14 +2107,14 @@ export class PilotSwarmManagementClient {
         const provider = typeof options.principal?.provider === "string" ? options.principal.provider.trim() : "";
         const subject = typeof options.principal?.subject === "string" ? options.principal.subject.trim() : "";
         const actor: WorkflowActor = provider && subject ? { kind: "user", provider, subject } : { kind: "system", name: "management-client" };
-        // With controller 1.9.0, a publication pins its named agents as the workers' publications do (agent-resolver.ts);
-        // this client knows the agent registry, not a worker's deployment agents, so it pins package agents only.
+        // A publication pins its named agents as the workers' publications do (agent-resolver.ts); this client knows the agent
+        // registry, not a worker's deployment agents, so it pins package agents only.
         const host: WorkflowV2Host = {
             catalog: this._catalog!, store, duroxideClient: this._duroxideClient,
             // Stage 2.0: script nodes refused at save and Start only when this client knows the workers run none.
             ...(typeof this.config.workflowScripts === "boolean" ? { scripts: this.config.workflowScripts } : {}),
-            ...(enabled.requests === true ? { requests: true, testMode: resolveWorkflowTestMode(enabled.testMode),
-                resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}),
+            testMode: resolveWorkflowTestMode(enabled.testMode),
+            resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!),
             // OF7-R2: a person's real-agent test, start or publish_and_start with agent models is checked against the owning
             // chat's catalog before anything is admitted.
             checkAgentModel: (choice, owner) => this._checkWorkflowAgentModel(choice, owner),
@@ -2164,8 +2162,7 @@ export class PilotSwarmManagementClient {
         return {
             catalog: this._catalog!, store, duroxideClient: this._duroxideClient,
             ...(typeof this.config.workflowScripts === "boolean" ? { scripts: this.config.workflowScripts } : {}),
-            ...(enabled?.requests === true ? { requests: true, testMode: resolveWorkflowTestMode(enabled.testMode),
-                resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}),
+            ...(enabled ? { testMode: resolveWorkflowTestMode(enabled.testMode), resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}),
             // Stage 2.3: packages' Workflow Definitions (attach, Make a copy, a newer version).
             ...(packages ? { packageWorkflows: packages } : {}),
             // OF-S2-7: an agent node's model chosen at start is checked against the owning chat's catalog (its owner's).

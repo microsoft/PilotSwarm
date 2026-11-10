@@ -1,8 +1,6 @@
 /**
  * Workflow v2 parallel states and their join (IR 8; design 02 parallel scope
- * and join, D10; requirement R21), INACTIVE: only controller 1.9.0 runs
- * them, and only tests register it and start runs there (the test-only
- * option workflowRequests and a host with `requests`).
+ * and join, D10; requirement R21), on the Workflow controller.
  *
  * - The compiler: a parallel state compiles to IR 8 only with
  *   enableParallel; its body states are in the IR's nodes, named by its
@@ -11,7 +9,7 @@
  * - The store: branches are admitted in their own scopes; a failFast
  *   cancellation decides their pending work once (winner fail_fast); a
  *   parallel state's own pending node is not work for a stop.
- * - Controller 1.9.0 on a native duroxide runtime: one branch per manifest
+ * - The controller on a native duroxide runtime: one branch per manifest
  *   item, at most its concurrency at a time, each with its item and index;
  *   the joined outputs in manifest order; a blocked join that reports every
  *   branch; failFast; empty and invalid manifests; the join's outputSchema;
@@ -45,7 +43,7 @@ import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/se
 import { readWorkflowV2View, workflowV2ReaderView } from "../../src/workflow/v2/tools.ts";
 import {
     BRANCH_ROUTE, branchScopeId, describeWorkflowV2State, describeWorkflowV2States, parseBranchScope, registerWorkflowV2, sessionQueueTransport,
-    WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, WORKFLOW_V2_STOP_CONTROLLER_VERSIONS, workflowLiveControllerInstanceId,
+    WORKFLOW_V2_CONTROLLER_VERSION, workflowLiveControllerInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
@@ -289,7 +287,7 @@ describe("workflow v2 parallel states: the store", () => {
                 workflowSessionId, parentSessionId: parent, notifyParent: false, yaml, compiled, actor: ACTOR,
                 operationId: "create", requestSha256: "parallel", publish: true, title: "Workflow: parallel",
                 start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
-                    inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION },
+                    inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION },
             });
 
             const fan = nodeExecutionIdFor(runId, "root", "fan", 1);
@@ -330,7 +328,7 @@ describe("workflow v2 parallel states: the store", () => {
             expect(await h.store.isNodePending(fan)).toBe(true);
             // A stop with a long grace ends the run at once: the parallel state is cancelled with it, and the grace did not expire.
             await h.store.requestRunStop({ workflowSessionId, runId, operationId: "stop-1", requestSha256: "stop", actor: ACTOR, reason: null,
-                graceSeconds: 600, stoppableVersions: WORKFLOW_V2_STOP_CONTROLLER_VERSIONS });
+                graceSeconds: 600 });
             const finished = await h.store.finishStoppedRun({ runId,
                 projection: ({ run }) => ({ sessionId: run.workflowSessionId, update: { state: "cancelled", touch: true } }) });
             expect(finished).toMatchObject({ result: "ended", graceExpired: false, cancelled: [fan], run: { status: "stopped" } });
@@ -345,9 +343,9 @@ describe("workflow v2 parallel states: the store", () => {
     });
 });
 
-// ─── Controller 1.9.0 on a native runtime ────────────────────
+// ─── The controller on a native runtime ──────────────────────
 
-/** A worker-equivalent registration with workflowRequests and the request tag declared. */
+/** A worker-equivalent registration with the request tag declared. */
 async function harness(env) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
@@ -368,12 +366,11 @@ async function harness(env) {
         notifyParent: async () => { throw new Error("These workflows notify no parent."); },
         deleteSession: async sessionId => catalog.softDeleteSession(sessionId),
         wakeBackstopMs: 500,
-        workflowRequests: true,
         sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
     });
     await runtime.start();
     return {
-        catalog, store, client, host: { catalog, store, duroxideClient: client, requests: true },
+        catalog, store, client, host: { catalog, store, duroxideClient: client },
         async stop() {
             await runtime.shutdown(100);
             await catalog.close();
@@ -400,7 +397,7 @@ const ended = (h, runId) => until(async () => {
     return run && ["completed", "failed", "cancelled", "stopped"].includes(run.status) ? run : null;
 }, `run ${runId} to end`);
 
-describe("workflow v2 parallel states: controller 1.9.0", () => {
+describe("workflow v2 parallel states: the controller", () => {
     it("runs one branch per item, at most its concurrency at a time, each with its item and index, and joins their outputs in manifest order", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
@@ -427,7 +424,7 @@ describe("workflow v2 parallel states: controller 1.9.0", () => {
             expect((await h.store.readNodeExecution(at(1, "work"))).enteredAt.getTime()).toBeLessThan(ends[0]);
             expect((await h.store.readNodeExecution(at(2, "work"))).enteredAt.getTime()).toBeGreaterThanOrEqual(Math.min(...ends));
             expect((await h.client.getInstanceInfo(workflowLiveControllerInstanceId(workflowSessionId))).orchestrationVersion)
-                .toBe(WORKFLOW_V2_REQUEST_CONTROLLER_VERSION);
+                .toBe(WORKFLOW_V2_CONTROLLER_VERSION);
 
             // read_workflow: the graph marks the body's states; a branch's node execution names its branch.
             const view = await readWorkflowV2View(h.store, workflowSessionId);
@@ -582,7 +579,7 @@ function pausedDeadlines() {
     };
 }
 
-describe("workflow v2 parallel states: deadlines while paused (controller 1.9.0, test-only)", () => {
+describe("workflow v2 parallel states: deadlines while paused", () => {
     it("elapses a pending state at its deadline while the run is paused, and admits nothing until the resume", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
@@ -642,7 +639,7 @@ async function restartBaseOf(env) {
     const store = catalog.workflowStore();
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
     const client = new Client(provider);
-    return { catalog, store, provider, client, host: { catalog, store, duroxideClient: client, requests: true } };
+    return { catalog, store, provider, client, host: { catalog, store, duroxideClient: client } };
 }
 
 async function restartRuntimeOn(base) {
@@ -661,7 +658,7 @@ async function restartRuntimeOn(base) {
         authorizeParentNotification: async () => false,
         notifyParent: async () => { throw new Error("These workflows notify no parent."); },
         deleteSession: async sessionId => base.catalog.softDeleteSession(sessionId),
-        wakeBackstopMs: 500, workflowRequests: true,
+        wakeBackstopMs: 500, 
         sessionQueue: { ...sessionQueueTransport(base.client), version: async () => "1.0.83" },
     });
     await runtime.start();
@@ -669,7 +666,7 @@ async function restartRuntimeOn(base) {
     return { async stop() { if (!running) return; running = false; await runtime.shutdown(100); } };
 }
 
-describe("workflow v2 parallel states: a worker restart while every branch waits (controller 1.9.0, test-only)", () => {
+describe("workflow v2 parallel states: a worker restart while every branch waits", () => {
     it("joins each branch exactly once after the runtime stops with every branch persisted as waiting, keeping each wait's deadline", { timeout: testTime.ms(180_000) }, async () => {
         const base = await restartBaseOf(getEnv());
         const workers = [await restartRuntimeOn(base)];
@@ -866,7 +863,7 @@ describe("workflow v2 parallel states: a literal list is shown as its count and 
 // error; a finished branch's business output in it stays exactly as the branch stored it, as the blocked report keeps it.
 // Branch 1 ends at once with { key, token } (ordinary business fields); branch 2 waits 600 s (the time limit, 3 s, passes)
 // or is refused at once (0 s: the join of both can no longer happen, so it is blocked).
-describe("workflow v2 parallel states: a timed_out report keeps business outputs (adversarial review R3-SF-3; controller 1.9.0, test-only)", () => {
+describe("workflow v2 parallel states: a timed_out report keeps business outputs (adversarial review R3-SF-3)", () => {
     it("R3-SF-3: a timed_out report's finished branch output equals the branch's own and the blocked report's", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {

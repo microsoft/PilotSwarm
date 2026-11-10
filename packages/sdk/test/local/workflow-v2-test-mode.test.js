@@ -1,15 +1,14 @@
 /**
  * Workflow v2 test runs (design 05 tool-mocked testing; R19, R20, R28;
- * migration 0102), INACTIVE: only controller 1.9.0 runs them, and only a
- * host that starts 1.9.0 runs (the test-only option workflowRequests and a
- * host with `requests`) takes update_workflow operations test,
+ * migration 0088): the Workflow controller runs them, and every host takes
+ * update_workflow operations test,
  * test_respond and test_advance.
  *
  * - Responses and fixtures (pure): their shapes, exact matching by
  *   operation, tool or state and arguments hash, and the state results an
  *   answer gives, checked as the live effect's would be.
  * - The store: a test run's virtual clock refuses a live run.
- * - Controller 1.9.0 on a native duroxide runtime: a test run of a draft
+ * - The controller on a native duroxide runtime: a test run of a draft
  *   revision runs its script normally; its tool calls are intercepted
  *   (a fixture answers one; the parent answers another by its id, once:
  *   repeats are idempotent, a different answer is a conflict, an invalid
@@ -43,7 +42,7 @@ import {
     matchTestFixture, parseTestFixtures, parseTestResponse, testResultFor, WORKFLOW_V2_TEST_NOTICE, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE,
 } from "../../src/workflow/v2/test-mode.ts";
 import {
-    registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId,
+    registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor, WORKFLOW_V2_TEST_EPOCH } from "../../src/workflow/v2/store.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
@@ -243,7 +242,7 @@ describe("workflow v2 test runs: the store", () => {
                 workflowSessionId, parentSessionId: parent, notifyParent: false, yaml, compiled, actor: ACTOR,
                 operationId: "create", requestSha256: "test-mode", publish: true, title: "Workflow: tested",
                 start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
-                    inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION },
+                    inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION },
             });
             expect(await h.store.readRun(runId)).toMatchObject({ mode: "live", virtualNow: null });
             await expect(h.store.advanceTestClock({ workflowSessionId, runId, seconds: 60, operationId: "adv-1", requestSha256: "a",
@@ -258,10 +257,10 @@ describe("workflow v2 test runs: the store", () => {
     });
 });
 
-// ─── Controller 1.9.0 on a native runtime ────────────────────
+// ─── The controller on a native runtime ──────────────────────
 
 /**
- * A worker-equivalent registration with workflowRequests and the request tag
+ * A worker-equivalent registration with the request tag
  * declared. Scripts are granted read_build only; the live tool executor
  * must never open; parent notices are authorized and recorded. No agent
  * host: a mocked agent state never needs one.
@@ -289,12 +288,11 @@ async function harness(env) {
         deleteSession: async sessionId => catalog.softDeleteSession(sessionId),
         wakeBackstopMs: 500,
         testPollMs: 50,
-        workflowRequests: true,
         sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
     });
     await runtime.start();
     return {
-        catalog, store, client, notices, opened, host: { catalog, store, duroxideClient: client, requests: true },
+        catalog, store, client, notices, opened, host: { catalog, store, duroxideClient: client },
         async stop() {
             await runtime.shutdown(100);
             await catalog.close();
@@ -342,7 +340,7 @@ const pendingNode = (h, nodeExecutionId) => until(async () => {
     return node?.state === "pending" ? node : null;
 }, `node ${nodeExecutionId} to wait`);
 
-describe("workflow v2 test runs: controller 1.9.0 (inactive, test-only registration)", () => {
+describe("workflow v2 test runs: the controller", () => {
     it("runs a draft's script normally with its tool calls intercepted, and its wait on the virtual clock", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
@@ -356,7 +354,7 @@ describe("workflow v2 test runs: controller 1.9.0 (inactive, test-only registrat
                 fixtures: [{ tool: "read_build", arguments: { buildId: 101 }, response: { kind: "success", value: { state: "running" } } }] }))
                 .toMatchObject({ ok: true, replayed: true, run: { runId } });
             expect(await h.store.readRun(runId)).toMatchObject({ mode: "test", testAgentMode: "mocked", controllerInstanceId: workflowTestControllerInstanceId(runId),
-                controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, virtualNow: new Date(WORKFLOW_V2_TEST_EPOCH) });
+                controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION, virtualNow: new Date(WORKFLOW_V2_TEST_EPOCH) });
 
             // The fixture answered the first call; the second waits for the parent, who is told.
             const fetch = nodeExecutionIdFor(runId, "root", "fetch", 1);

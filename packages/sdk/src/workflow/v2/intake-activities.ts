@@ -155,7 +155,7 @@ export async function runWorkflowIntakeClaim(deps: WorkflowIntakeActivityDeps, i
  *   the answer names `outcome` only when the store applied another (interrupted for a requested not_dispatched beside an exposure)
  * - `cancel_held` { recipientSessionId, items: [{ exchangeId, claimId }] }: each holding row cancelled
  * - `cancel_unsent` { recipientSessionId, invocationId, items }: each item of an unsent invocation not_dispatched (cancelled), answered
- *   `settled`; or, when the invocation's items were possibly seen (an exposure is recorded, migration 0099), its cancel recorded as
+ *   `settled`; or, when the invocation's items were possibly seen (an exposure is recorded, migration 0088), its cancel recorded as
  *   requested, answered `exposed: true`
  * - `request_cancel` { recipientSessionId, invocationId, items }: each item of a sent invocation records cancel_requested
  * - `refuse` { recipientSessionId, exchangeId, claimId, outcome }: a holding row refused_full or refused_size

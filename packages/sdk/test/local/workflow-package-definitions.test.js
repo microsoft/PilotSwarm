@@ -261,7 +261,7 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
         const { h, host, chat, release, publish, releaseFiles, artifactStore } = await harness();
         const env = getEnv();
         const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
-            factsSchema: env.factsSchema, workflowCommands: { requests: true }, artifactStore });
+            factsSchema: env.factsSchema, workflowCommands: {}, artifactStore });
         await mgmt.start();
         const ref = `${release}/release-watch`;
         const offered = async () => (await mgmt.listChatWorkflowDefinitions(chat))[0].packageUpdate ?? null;
@@ -415,13 +415,13 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
     it("A2: an agent state may not use an agent that names definitions: refused at save and at Start", { timeout: TIMEOUT }, async () => {
         const { h, host, chat, release } = await harness();
         try {
-            const resolving = { ...host, requests: true, resolveAgent: createRegistryWorkflowAgentResolver(h.catalog) };
+            const resolving = { ...host, resolveAgent: createRegistryWorkflowAgentResolver(h.catalog) };
             const save = (yaml, onHost, name = "delegate") => saveChatWorkflowDefinition(onHost, { ownerSessionId: chat, name, yaml, expected: null,
                 actor: chatActor(chat), operationId: `save-${randomUUID()}`, by: "chat" });
             const atSave = await refused(save(DELEGATE("release-watcher", release), resolving), "AGENT_HAS_WORKFLOWS");
             expect(atSave.message).toMatch(/^State 'ask' uses agent "release-watcher", which names Workflow Definitions it can start\. .* Nothing was saved\.$/);
             // A host that resolves no agents saves it (Start pins every named agent)...
-            const saved = (await save(DELEGATE("release-watcher", release), { ...host, requests: true })).receipt;
+            const saved = (await save(DELEGATE("release-watcher", release), { ...host })).receipt;
             expect(saved).toMatchObject({ revision: 1, valid: true });
             // ...and Start refuses it, writing nothing.
             const atStart = await refused(startChatWorkflowDefinition(resolving, { ownerSessionId: chat, definition: { definitionId: saved.definitionId },
@@ -443,7 +443,7 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
         const { h, release, tag, publish, releaseFiles, artifactStore } = await harness();
         const env = getEnv();
         const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
-            factsSchema: env.factsSchema, workflowCommands: { requests: true }, artifactStore });
+            factsSchema: env.factsSchema, workflowCommands: {}, artifactStore });
         await mgmt.start();
         try {
             const catalog = (await mgmt.listCreatableWorkflows(VIEWER)).filter(item => item.ref.endsWith(tag) || item.package.endsWith(tag));
@@ -499,7 +499,7 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
         const { h, release, publish, releaseFiles, artifactStore } = await harness();
         const env = getEnv();
         const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
-            factsSchema: env.factsSchema, workflowCommands: { requests: true }, artifactStore });
+            factsSchema: env.factsSchema, workflowCommands: {}, artifactStore });
         await mgmt.start();
         const ref = `${release}/release-watch`;
         const coordinate = (chat, prepared) => mgmt.attachChatWorkflowPackage(chat, { ref, operationId: `coordinate-${chat}`, coordinating: true,

@@ -118,44 +118,20 @@ const NO_TOOL_GRANT_MESSAGE = "This workflow has no delegated tool grant; script
 
 export const WORKFLOW_V2_CONTROLLER_NAME = "workflow-v2-controller";
 /**
- * The controller's history shape. 1.6.0 reads its commands before every
- * admission, retries a run-ending write on durable timers, enters the
- * workflow's catch-all state at most once per run by any route (an
- * unhandled runtime error of a script, or a terminal's invalid output, goes
- * there while it has not run, and any later route to it fails the run),
- * waits while its run is paused (a refused admission of a paused run counts
- * no ordinal or step and is tried again after a resume), and runs wait
- * states on its own durable timers. The store's clock decides when a wait
- * elapses: a wait the store does not find due yet (this worker's clock runs
- * ahead of it) waits the time the store reports. 1.7.0 also runs messaging
- * receive states: no effect orchestration; the store decides between a
- * message and the receive's wait, and a wake or the backstop collects it.
- * 1.8.0 also runs messaging send states: its plan names each messaging
- * state's mode, and a send state admitted pending starts a send
- * orchestration that delivers its message and wakes the controller.
+ * The one controller version (design workflow-messaging-request.md 8.1, 8.2). It reads its commands before every
+ * admission, retries a run-ending write on durable timers, enters the workflow's catch-all state at most once per run by
+ * any route (an unhandled runtime error of a script, or a terminal's invalid output, goes there while it has not run, and
+ * any later route to it fails the run), waits while its run is paused (a refused admission of a paused run counts no
+ * ordinal or step and is tried again after a resume), and runs wait states on its own durable timers. The store's clock
+ * decides when a wait elapses: a wait the store does not find due yet (this worker's clock runs ahead of it) waits the
+ * time the store reports. It runs messaging receive states (no effect orchestration; the store decides between a message
+ * and the receive's wait, and a wake or the backstop collects it), send states (a send state admitted pending starts a
+ * send orchestration that delivers its message and wakes the controller), request, agent and parallel states, test runs,
+ * a run's deadline and a graceful stop. Every activity it schedules, and every activity of an orchestration it starts, is
+ * scheduled with the workflow-request capability tag (WORKFLOW_V2_ACTIVITIES), so a worker without that capability never
+ * fetches that work.
  */
-export const WORKFLOW_V2_CONTROLLER_VERSION = "1.8.0";
-// UNREACHABLE since 1.0.83's release (ruling pse/wfs/stage2/release-1083-plan-rulings, item 3): every production host starts
-// runs at WORKFLOW_V2_REQUEST_CONTROLLER_VERSION (service.ts controllerVersionFor). 1.8.0 and its untagged paths stay
-// registered only until the follow-up cleanup PR deletes them; Workflow V2 was never released, so no deployment has a 1.8.0 run.
-/**
- * Controller versions written only by pre-release builds, in ascending order
- * (duroxide registers an orchestration's versions only in that order). Their
- * histories are not replayed: this code would make different decisions
- * (1.2.0 re-entered the catch-all state after an explicit route into it,
- * 1.3.0 ended its controller when an admission was refused for a pause, and
- * the elapse activity of 1.5.0 returned no result; 1.6.0 refused a plan
- * with a messaging state, which this code admits; a 1.7.0 plan names no
- * messaging mode, which this code requires, and 1.7.0 would wait at a send
- * state for a result no orchestration delivers), and no test replays a
- * history an earlier build wrote. An instance of one fails at once with this
- * reason, so its run shows needsRecovery and update_workflow recover ends it
- * visibly. Its history and rows are kept. Until the first release, a build
- * replays only its own controller version: this is a recovery policy that
- * blocks those histories, not a migration of them; replay of an earlier
- * build's history remains an open requirement.
- */
-export const WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS: readonly string[] = ["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0", "1.7.0"];
+export const WORKFLOW_V2_CONTROLLER_VERSION = "1.0.0";
 export const WORKFLOW_V2_EFFECT_NAME = "workflow-v2-effect";
 export const WORKFLOW_V2_EFFECT_VERSION = "1.0.0";
 /**
@@ -172,23 +148,6 @@ export const WORKFLOW_V2_NOTIFY_VERSION = "1.0.0";
  */
 export const WORKFLOW_V2_SEND_NAME = "workflow-v2-send";
 export const WORKFLOW_V2_SEND_VERSION = "1.0.0";
-/**
- * Controller 1.9.0 (design workflow-messaging-request.md 8.1, 8.2; every
- * worker registers it, and every new run starts at it). It runs request
- * states as well, and every activity it schedules, and every activity of an
- * orchestration it starts, goes under a name of its own
- * (WORKFLOW_V2_REQUEST_ACTIVITIES) with the workflow-request capability tag,
- * so a worker without the request capability never fetches that work. It
- * starts the effect, notify and send orchestrations at
- * WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION (the same algorithms, with those
- * tagged activities) and a request's delivery orchestration
- * (WORKFLOW_V2_REQUEST_NAME). 1.8.0 is frozen: it continues as new at the
- * literal 1.8.0 and keeps its untagged activities and 1.0.0 orchestrations.
- */
-export const WORKFLOW_V2_REQUEST_CONTROLLER_VERSION = "1.9.0";
-export const WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION = "1.1.0";
-/** The controller versions that run a graceful stop (store.requestRunStop): 1.9.0 only; 1.8.0 refuses with RUN_STOP_UNSUPPORTED. */
-export const WORKFLOW_V2_STOP_CONTROLLER_VERSIONS: readonly string[] = [WORKFLOW_V2_REQUEST_CONTROLLER_VERSION];
 /** Delivers a request state's request (one per node execution, stable instance id), then wakes the controller. */
 export const WORKFLOW_V2_REQUEST_NAME = "workflow-v2-request";
 export const WORKFLOW_V2_REQUEST_VERSION = "1.0.0";
@@ -270,6 +229,12 @@ function branchBindingValue(branch: BranchBinding): { [key: string]: JsonValue }
 /** duroxide statuses after which an orchestration does no more work. */
 const TERMINAL_ORCHESTRATION_STATUSES: readonly string[] = ["Completed", "Failed", "Terminated"];
 
+/**
+ * The activities of the controller and of the orchestrations it starts (design workflow-messaging-request.md 8.2), each
+ * scheduled with the workflow-request capability tag: the store's writes and reads of a run, a script's run, a message's
+ * and a request's delivery, a request's responder's observation, an agent state's child, a parallel state's branches and
+ * join, a test run's interception, a run's deadline and its graceful stop.
+ */
 export const WORKFLOW_V2_ACTIVITIES = {
     begin: "workflow.v2.begin",
     plan: "workflow.v2.plan",
@@ -284,64 +249,25 @@ export const WORKFLOW_V2_ACTIVITIES = {
     wake: "workflow.v2.wake",
     deliver: "workflow.v2.deliver",
     deliveryFailed: "workflow.v2.deliveryFailed",
+    observe: "workflow.v2.observe",
+    deliverRequest: "workflow.v2.deliverRequest",
+    requestDeliveryFailed: "workflow.v2.requestDeliveryFailed",
+    stop: "workflow.v2.stop",
+    spawnAgent: "workflow.v2.spawnAgent",
+    agentSpawnFailed: "workflow.v2.agentSpawnFailed",
+    endAgent: "workflow.v2.endAgent",
+    endAgents: "workflow.v2.endAgents",
+    endOwedChat: "workflow.v2.endOwedChat",
+    endOwedChatLast: "workflow.v2.endOwedChatLast",
+    endBranch: "workflow.v2.endBranch",
+    cancelBranches: "workflow.v2.cancelBranches",
+    join: "workflow.v2.join",
+    intercept: "workflow.v2.intercept",
+    expire: "workflow.v2.expire",
     observeEnd: "workflow.v2.observeEnd",
 } as const;
 
-/**
- * The activities of controller 1.9.0 and of the orchestrations it starts
- * (design workflow-messaging-request.md 8.2): the legacy activities under
- * names of their own, scheduled with the workflow-request capability tag,
- * the request's own (its responder's observation, its delivery and its
- * delivery's failure) and the graceful stop's end (stop). Registered with
- * controller 1.9.0.
- */
-export const WORKFLOW_V2_REQUEST_ACTIVITIES = {
-    begin: "workflow.v2.r1.begin",
-    plan: "workflow.v2.r1.plan",
-    enter: "workflow.v2.r1.enter",
-    collect: "workflow.v2.r1.collect",
-    finish: "workflow.v2.r1.finish",
-    cancel: "workflow.v2.r1.cancel",
-    notifyParent: "workflow.v2.r1.notifyParent",
-    elapse: "workflow.v2.r1.elapse",
-    runScript: "workflow.v2.r1.runScript",
-    recordEffectResult: "workflow.v2.r1.recordEffectResult",
-    wake: "workflow.v2.r1.wake",
-    deliver: "workflow.v2.r1.deliver",
-    deliveryFailed: "workflow.v2.r1.deliveryFailed",
-    observe: "workflow.v2.r1.observe",
-    deliverRequest: "workflow.v2.r1.deliverRequest",
-    requestDeliveryFailed: "workflow.v2.r1.requestDeliveryFailed",
-    stop: "workflow.v2.r1.stop",
-    spawnAgent: "workflow.v2.r1.spawnAgent",
-    agentSpawnFailed: "workflow.v2.r1.agentSpawnFailed",
-    endAgent: "workflow.v2.r1.endAgent",
-    endAgents: "workflow.v2.r1.endAgents",
-    endOwedChat: "workflow.v2.r1.endOwedChat",
-    endOwedChatLast: "workflow.v2.r1.endOwedChatLast",
-    endBranch: "workflow.v2.r1.endBranch",
-    cancelBranches: "workflow.v2.r1.cancelBranches",
-    join: "workflow.v2.r1.join",
-    intercept: "workflow.v2.r1.intercept",
-    expire: "workflow.v2.r1.expire",
-    observeEnd: "workflow.v2.r1.observeEnd",
-} as const;
-
 type WorkflowV2ActivityKey = keyof typeof WORKFLOW_V2_ACTIVITIES;
-
-/**
- * Retry policy for store-backed activities, with the runtime's default
- * backoff. duroxide-node deserializes `backoff` as a strategy name; a number
- * (which its type declaration allows) fails the orchestration at the schedule.
- * Each attempt is timed out at 30 s; a timed-out attempt is not retried by
- * duroxide, so `persistently` tries it again on its own timers. Untagged
- * activities only (controller 1.8.0); tagged ones (1.9.0) have no attempt
- * timeout (TAGGED_STORE_RETRY_DELAYS_MS).
- */
-// No totalTimeoutMs: duroxide 0.1.32's RetryPolicy::with_total_timeout is an alias of with_timeout, applied after it, so
-// it replaced the 30 s per-attempt timeout; duroxide has no total timeout.
-export const WORKFLOW_V2_STORE_RETRY = { maxAttempts: 5, timeoutMs: 30_000 } as const;
-const STORE_RETRY = WORKFLOW_V2_STORE_RETRY;
 
 export function workflowLiveControllerInstanceId(workflowSessionId: string): string {
     return `session-${workflowSessionId}`;
@@ -351,7 +277,7 @@ export function workflowEffectInstanceId(nodeExecutionId: string): string {
     return `wfx-${nodeExecutionId}`;
 }
 
-/** The controller instance of a test run (migration 0102): one per test run, beside the workflow's live controller. */
+/** The controller instance of a test run (migration 0088): one per test run, beside the workflow's live controller. */
 export function workflowTestControllerInstanceId(runId: string): string {
     return `wft-${runId}`;
 }
@@ -381,7 +307,7 @@ export function workflowAgentClientMessageId(workflowSessionId: string, runId: s
     return `workflow:${workflowSessionId}:${runId}:agent:${nodeExecutionId}`;
 }
 
-/** The package and version a publication pinned an agent state's named agent to (migration 0103); null when it pinned none. */
+/** The package and version a publication pinned an agent state's named agent to (migration 0088); null when it pinned none. */
 function agentPinOf(pins: JsonValue, stateId: string): { package: string | null; version: string | null; packageId: string | null; revision: string | null } | null {
     if (pins === null) return null;
     const pin = isJsonObject(pins) ? pins[stateId] : undefined;
@@ -429,10 +355,10 @@ export interface ControllerState {
     cursors: ControllerCursor[];
     /** The catch-all state was admitted (by any route); it is admitted at most once per run. */
     catchAllEntered: boolean;
-    /** Controller 1.9.0: the parallel states whose branches run (absent: none; 1.8.0 never has any). */
+    /** The parallel states whose branches run (absent: none). */
     parallels?: ControllerParallel[];
     /**
-     * Controller 1.9.0 (J1d): cut branches whose work's effect or child could not be stopped or ended yet, with why they
+     * J1d: cut branches whose work's effect or child could not be stopped or ended yet, with why they
      * were cut; tried again at most once per backstop period, paused or not, busy or idle, and at the first pass after
      * continue-as-new (J1e), until none is owed (absent: none).
      */
@@ -446,7 +372,7 @@ export interface ControllerOwedCut {
 }
 
 /**
- * A parallel state's branches, as controller 1.9.0 runs them: its node
+ * A parallel state's branches, as the controller runs them: its node
  * execution (pending until the join), how many items its manifest has, the
  * next item without a branch, and how each branch that ended ended: the node
  * execution that ended it (its terminal, the state whose error had no route,
@@ -483,13 +409,13 @@ export interface ControllerPlan {
     wakeBackstopMs: number;
     /** The state an unhandled runtime error (or a terminal's invalid output) routes to, once per run; null without one. */
     catchAll: string | null;
-    /** A messaging state names its mode (1.8.0; a request state only in a 1.9.0 plan); no other state has one. An agent state only in a 1.9.0 plan. */
+    /** A messaging state names its mode; no other state has one. */
     nodes: Record<string, {
         type: "script" | "wait" | "messaging" | "agent" | "parallel" | "terminal";
         mode?: "receive" | "send" | "request";
         next: Record<string, string>;
         /**
-         * A parallel state's body initial, concurrency and failure policy (1.9.0 plans only), and IR 9: `first`, the k of a
+         * A parallel state's body initial, concurrency and failure policy, and IR 9: `first`, the k of a
          * join of the first k successes (absent for a join of every branch), and `timeLimit` when it has its own time limit
          * (absent without one), so a plan of IR 8 reads as it was written. With either, the store decides its join.
          */
@@ -502,7 +428,7 @@ export interface ControllerPlan {
             branches?: number; initials?: string[]; branchStates?: string[][] };
     }>;
     /**
-     * A test run (1.9.0 plans only; migration 0102): its agent, send and request states are intercepted (no child, delivery
+     * A test run: its agent, send and request states are intercepted (no child, delivery
      * or request exchange starts), and its deadlines run on its virtual clock. Absent for a live run.
      */
     test?: true;
@@ -513,7 +439,7 @@ export interface ControllerPlan {
      */
     realAgents?: true;
     /**
-     * A live run's deadline (1.9.0 plans only; limits.timeoutSeconds, migration 0104), as the store wrote it when the run
+     * A live run's deadline (limits.timeoutSeconds), as the store wrote it when the run
      * began: the controller wakes then to have the run expired. A test run's deadline is on its virtual clock and has none
      * here: its collection and admissions report it.
      */
@@ -662,8 +588,8 @@ function namedForkValid(parallel: Record<string, unknown>, nodes: Record<string,
     });
 }
 
-/** A controller's plan; a request state is read only for controller 1.9.0 (`requests`). */
-export function parsePlan(value: unknown, requests = false): ControllerPlan {
+/** A controller's plan. */
+export function parsePlan(value: unknown): ControllerPlan {
     const plan = record(value, "plan");
     const nodes = record(plan.nodes, "plan nodes");
     expect(typeof plan.maxNodeExecutions === "number", "plan limit is invalid");
@@ -673,8 +599,8 @@ export function parsePlan(value: unknown, requests = false): ControllerPlan {
     for (const [id, node] of Object.entries(nodes)) {
         const item = record(node, `plan node ${id}`);
         expect(item.type === "script" || item.type === "wait" || item.type === "messaging" || item.type === "terminal"
-            || (requests && (item.type === "agent" || item.type === "parallel")), `plan node ${id} type is invalid`);
-        expect(item.type === "messaging" ? item.mode === "receive" || item.mode === "send" || (requests && item.mode === "request") : item.mode === undefined,
+            || item.type === "agent" || item.type === "parallel", `plan node ${id} type is invalid`);
+        expect(item.type === "messaging" ? item.mode === "receive" || item.mode === "send" || item.mode === "request" : item.mode === undefined,
             `plan node ${id} mode is invalid`);
         const next = record(item.next, `plan node ${id} next`);
         const routes: Record<string, string> = {};
@@ -700,9 +626,9 @@ export function parsePlan(value: unknown, requests = false): ControllerPlan {
     }
     const catchAll = plan.catchAll === undefined ? null : textOrNull(plan.catchAll, "catchAll");
     expect(catchAll === null || Object.hasOwn(parsed, catchAll), "plan catch-all state is missing");
-    expect(plan.test === undefined || (requests && plan.test === true), "plan test flag is invalid");
+    expect(plan.test === undefined || plan.test === true, "plan test flag is invalid");
     expect(plan.realAgents === undefined || (plan.test === true && plan.realAgents === true), "plan real-agent flag is invalid");
-    expect(plan.deadlineMs === undefined || (requests && typeof plan.deadlineMs === "number" && Number.isSafeInteger(plan.deadlineMs) && plan.deadlineMs > 0),
+    expect(plan.deadlineMs === undefined || (typeof plan.deadlineMs === "number" && Number.isSafeInteger(plan.deadlineMs) && plan.deadlineMs > 0),
         "plan deadline is invalid");
     return {
         name: text(plan.name, "name"), version: text(plan.version, "version"), initial: text(plan.initial, "initial"),
@@ -732,7 +658,7 @@ function parseBegin(value: unknown): { status: WorkflowRunStatus; irSha256: stri
     return { status: begun.status, irSha256: text(begun.irSha256, "irSha256"), initial: text(begun.initial, "initial"), outcome: textOrNull(begun.outcome, "outcome") };
 }
 
-/** A stop's deadline in the store's clock (epoch ms), as the enter and collect activities of controller 1.9.0 report it. */
+/** A stop's deadline in the store's clock (epoch ms), as the enter and collect activities report it. */
 function parseStopping(value: unknown, what: string): { deadlineMs: number } | null {
     if (value === undefined || value === null) return null;
     const stopping = record(value, what);
@@ -742,8 +668,7 @@ function parseStopping(value: unknown, what: string): { deadlineMs: number } | n
 
 /**
  * An enter result. A refused admission of a run with an accepted stop
- * carries the stop's deadline (`stopping`; only controller 1.9.0's
- * activities report one).
+ * carries the stop's deadline (`stopping`).
  */
 function parseEnter(value: unknown): { admitted: true; nodeExecutionId: string; state: "pending" | "completed"; deadlineMs: number | null; branches: number | null }
     | { admitted: false; status: WorkflowRunStatus; outcome: string | null; stopping: { deadlineMs: number } | null; expired: boolean; cut: boolean } {
@@ -777,7 +702,7 @@ function parseElapse(value: unknown): Array<{ nodeExecutionId: string; remaining
 }
 
 /**
- * Controller 1.9.0's collect result: the stored results, and, read after them, the run's accepted stop (its deadline),
+ * The collect result: the stored results, and, read after them, the run's accepted stop (its deadline),
  * whether it is past its deadline, and whether it is paused (adversarial review R2-RT-1; a result recorded before that
  * field existed says not paused, as its controller then read it).
  */
@@ -792,7 +717,7 @@ function parseCollectedWithStop(value: unknown): { collected: CollectedResult[];
 }
 
 /**
- * The expire activity's answer (controller 1.9.0; migration 0104): the run ended (`expired` when its deadline ended it,
+ * The expire activity's answer: the run ended (`expired` when its deadline ended it,
  * false when another end came first), or the time its clock has left (at least 1 ms).
  */
 function parseExpire(value: unknown): { ended: true; expired: boolean; result: ControllerResult } | { ended: false; remainingMs: number } {
@@ -805,7 +730,7 @@ function parseExpire(value: unknown): { ended: true; expired: boolean; result: C
     return { ended: true, expired: expiry.expired, result: parseResult(expiry.result) };
 }
 
-/** The stop activity's answer (controller 1.9.0): the run ended (by this stop, or by an end that came first), or the store's time left. */
+/** The stop activity's answer: the run ended (by this stop, or by an end that came first), or the store's time left. */
 function parseStopFinish(value: unknown): { ended: true; result: ControllerResult } | { ended: false; remainingMs: number } {
     const finished = record(value, "stop result");
     if (finished.ended === false) {
@@ -851,14 +776,6 @@ function parseEndResult(value: unknown): { result: ControllerResult; elsewhere: 
     return { result: parseResult(value), elsewhere: ended.elsewhere === true };
 }
 
-/** Controller 1.8.0's collection: its results (a list, as before), and, since S7-DX3, whether the run ended. */
-function parseLegacyCollected(value: unknown): { collected: CollectedResult[]; ended: boolean } {
-    if (Array.isArray(value)) return { collected: parseCollected(value), ended: false };
-    const result = record(value, "collect result");
-    expect(result.ended === true, "collect end is invalid");
-    return { collected: parseCollected(result.collected), ended: true };
-}
-
 /**
  * The finish of a terminal state: the run ended (or had already ended), or
  * the terminal's output failed its contract and the error goes to the
@@ -883,7 +800,7 @@ function parseJoinAnswer(value: unknown): { decided: true; cut: BranchCancelReas
 }
 
 /**
- * The answer of the cancellation of cut branches (controller 1.9.0): the branches whose work's effect or child could not
+ * The answer of the cancellation of cut branches: the branches whose work's effect or child could not
  * be stopped or ended yet (J1d; none in an answer recorded before J1d, whose activity failed instead while any was owed).
  */
 function parseBranchCancel(value: unknown): { owedScopeIds: string[] } {
@@ -918,26 +835,9 @@ function publishStatus(ctx: OrchestrationContext, input: ControllerInput, plan: 
 }
 
 /**
- * Run a store activity that must not be lost: each attempt uses the store
- * retry policy, and attempts are separated by durable timers. The last
- * failure propagates.
- */
-function* persistently(ctx: OrchestrationContext, name: string, input: unknown): Generator<ScheduledTask, unknown, unknown> {
-    for (let attempt = 0; ; attempt += 1) {
-        try {
-            return yield ctx.scheduleActivityWithRetryTyped(name, input, STORE_RETRY);
-        } catch (error) {
-            if (attempt >= WORKFLOW_V2_FINALIZE_DELAYS_MS.length) throw error;
-            ctx.traceWarn(`[workflow-v2] ${name} attempt ${attempt + 1} failed; retrying: ${workflowErrorMessage(error)}`);
-            yield ctx.scheduleTimer(WORKFLOW_V2_FINALIZE_DELAYS_MS[attempt]);
-        }
-    }
-}
-
-/**
- * Durable delays between the attempts of one tagged store activity (STORE_RETRY's attempts). duroxide-node 0.2.4's
- * retrying activity cannot carry a tag (its task has no withTag), so controller 1.9.0 and the orchestrations it starts
- * retry on their own durable timers; an attempt has no timeout of its own.
+ * Durable delays between the attempts of one tagged store activity (five attempts). duroxide-node 0.2.4's retrying
+ * activity cannot carry a tag (its task has no withTag), so the controller and the orchestrations it starts retry on
+ * their own durable timers; an attempt has no timeout of its own.
  */
 const TAGGED_STORE_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000];
 
@@ -948,7 +848,7 @@ function taggedActivity(ctx: OrchestrationContext, name: string, input: unknown)
     return task.withTag(WORKFLOW_REQUEST_CAPABILITY);
 }
 
-/** A tagged store activity with STORE_RETRY's attempts on durable timers; the last failure propagates. */
+/** A tagged store activity with five attempts on durable timers; the last failure propagates. */
 function* storeTagged(ctx: OrchestrationContext, name: string, input: unknown): Generator<ScheduledTask, unknown, unknown> {
     for (let attempt = 0; ; attempt += 1) {
         try {
@@ -961,26 +861,9 @@ function* storeTagged(ctx: OrchestrationContext, name: string, input: unknown): 
 }
 
 /**
- * The 1.8.0 effect orchestration's last two activities, recordEffectResult and wake (duroxide review DX-RECORD, V-1): an
- * ordinary untagged activity with STORE_RETRY's attempts on durable timers (TAGGED_STORE_RETRY_DELAYS_MS, as storeTagged
- * retries a tagged one) and no attempt timeout; the last error propagates. A timed-out attempt is not stopped: its
- * JavaScript could still store the script's result after the orchestration ended failed, while the controller's
- * collection, finding the effect ended, decides the state execution_failed first. With the 30 s attempt timeout
- * (21993700) that became practical; duroxide-node 0.2.4's typed retry policy requires a timeout, so the retries are the
- * orchestration's own. An attempt can stay pending while its JavaScript hangs.
+ * Run a tagged store activity that must not be lost: each attempt is storeTagged's, and attempts are separated by
+ * durable timers (WORKFLOW_V2_FINALIZE_DELAYS_MS). The last failure propagates.
  */
-function* storeWithoutTimeout(ctx: OrchestrationContext, name: string, input: unknown): Generator<ScheduledTask, unknown, unknown> {
-    for (let attempt = 0; ; attempt += 1) {
-        try {
-            return yield ctx.scheduleActivityTyped(name, input);
-        } catch (error) {
-            if (attempt >= TAGGED_STORE_RETRY_DELAYS_MS.length) throw error;
-            yield ctx.scheduleTimer(TAGGED_STORE_RETRY_DELAYS_MS[attempt]);
-        }
-    }
-}
-
-/** persistently, for a tagged store activity. */
 function* persistentlyTagged(ctx: OrchestrationContext, name: string, input: unknown): Generator<ScheduledTask, unknown, unknown> {
     for (let attempt = 0; ; attempt += 1) {
         try {
@@ -993,37 +876,29 @@ function* persistentlyTagged(ctx: OrchestrationContext, name: string, input: unk
     }
 }
 
-/**
- * How a controller makes the store writes it shares with the other version:
- * 1.8.0 its untagged activities with the store retry policy (exactly the
- * tasks its histories recorded), 1.9.0 its tagged ones.
- */
-interface ControllerProfile {
-    persist(ctx: OrchestrationContext, name: WorkflowV2ActivityKey, input: unknown): Generator<ScheduledTask, unknown, unknown>;
-    /** After the run ended, before its parent is told: 1.9.0 ends the children of its decided agent states (IR 8). */
-    afterEnd?(ctx: OrchestrationContext, runId: string): Generator<ScheduledTask, void, unknown>;
+/** A store write of the controller that must not be lost (persistentlyTagged). */
+function persist(ctx: OrchestrationContext, name: WorkflowV2ActivityKey, input: unknown): Generator<ScheduledTask, unknown, unknown> {
+    return persistentlyTagged(ctx, WORKFLOW_V2_ACTIVITIES[name], input);
 }
 
-const LEGACY_PROFILE: ControllerProfile = { persist: (ctx, name, input) => persistently(ctx, WORKFLOW_V2_ACTIVITIES[name], input) };
-const REQUEST_PROFILE: ControllerProfile = {
-    persist: (ctx, name, input) => persistentlyTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES[name], input),
-    // A child that could not be ended after every attempt does not keep the run's end from being reported: the
-    // invocation shows no end (read_workflow), and the failure is traced.
-    afterEnd: function* (ctx, runId) {
-        try {
-            yield* persistentlyTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.endAgents, { runId });
-        } catch (error) {
-            ctx.traceWarn(`[workflow-v2] run=${runId} agent children were not all ended: ${workflowErrorMessage(error)}`);
-        }
-    },
-};
+/**
+ * After the run ended, before its parent is told: the children of its decided agent states are ended (IR 8). A child
+ * that could not be ended after every attempt does not keep the run's end from being reported: the invocation shows no
+ * end (read_workflow), and the failure is traced.
+ */
+function* endRunChildren(ctx: OrchestrationContext, runId: string): Generator<ScheduledTask, void, unknown> {
+    try {
+        yield* persistentlyTagged(ctx, WORKFLOW_V2_ACTIVITIES.endAgents, { runId });
+    } catch (error) {
+        ctx.traceWarn(`[workflow-v2] run=${runId} agent children were not all ended: ${workflowErrorMessage(error)}`);
+    }
+}
 
 /** Tell the parent that the run ended (at least once) and publish its final status. */
-function* reportEnded(ctx: OrchestrationContext, runId: string, result: ControllerResult, profile: ControllerProfile = LEGACY_PROFILE)
-    : Generator<ScheduledTask, ControllerResult, unknown> {
-    if (profile.afterEnd) yield* profile.afterEnd(ctx, runId);
-    yield* profile.persist(ctx, "notifyParent", { runId });
-    // A stopped run (controller 1.9.0) shows as cancelled, as its session row does (the session statuses have no "stopped").
+function* reportEnded(ctx: OrchestrationContext, runId: string, result: ControllerResult): Generator<ScheduledTask, ControllerResult, unknown> {
+    yield* endRunChildren(ctx, runId);
+    yield* persist(ctx, "notifyParent", { runId });
+    // A stopped run shows as cancelled, as its session row does (the session statuses have no "stopped").
     ctx.setCustomStatus(JSON.stringify({ status: result.status === "failed" ? "failed" : result.status === "cancelled" || result.status === "stopped" ? "cancelled" : "completed",
         sessionKind: "workflow", workflow: { v: 2, runId, outcome: result.outcome } }));
     return result;
@@ -1034,12 +909,11 @@ function* finishRun(
     ctx: OrchestrationContext,
     runId: string,
     request: { failure: { nodeId: string | null; nodeExecutionId: string | null; code: string; message: string } },
-    profile: ControllerProfile = LEGACY_PROFILE,
 ): Generator<ScheduledTask, ControllerResult, unknown> {
-    const finished = parseEndResult(yield* profile.persist(ctx, "finish", { runId, ...request }));
+    const finished = parseEndResult(yield* persist(ctx, "finish", { runId, ...request }));
     // S7-DX3 (N-1): another writer ended the run first: its end is reconciled as any other observed end.
-    if (finished.elsewhere) return yield* endedElsewhere(ctx, runId, profile);
-    return yield* reportEnded(ctx, runId, finished.result, profile);
+    if (finished.elsewhere) return yield* endedElsewhere(ctx, runId);
+    return yield* reportEnded(ctx, runId, finished.result);
 }
 
 /**
@@ -1048,24 +922,13 @@ function* finishRun(
  * state (a business route for unhandled node errors); it never runs workflow
  * code.
  */
-function* failRun(ctx: OrchestrationContext, runId: string, message: string, profile: ControllerProfile = LEGACY_PROFILE)
-    : Generator<ScheduledTask, ControllerResult, unknown> {
+function* failRun(ctx: OrchestrationContext, runId: string, message: string): Generator<ScheduledTask, ControllerResult, unknown> {
     ctx.traceError(`[workflow-v2] run=${runId} controller error: ${message}`);
-    return yield* finishRun(ctx, runId, { failure: { nodeId: null, nodeExecutionId: null, code: "controller_error", message } }, profile);
+    return yield* finishRun(ctx, runId, { failure: { nodeId: null, nodeExecutionId: null, code: "controller_error", message } });
 }
 
+/** The controller orchestration (WORKFLOW_V2_CONTROLLER_VERSION): controlRun, and a fault ends its run visibly (failRun). */
 export function* workflowV2Controller(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, ControllerResult | null, unknown> {
-    return yield* controlWithFailure(ctx, rawInput, LEGACY_PROFILE, controlRun);
-}
-
-/** Controller 1.9.0 (WORKFLOW_V2_REQUEST_CONTROLLER_VERSION): 1.8.0's loop with request states and tagged activities. */
-export function* workflowV2RequestController(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, ControllerResult | null, unknown> {
-    return yield* controlWithFailure(ctx, rawInput, REQUEST_PROFILE, controlRequestRun);
-}
-
-function* controlWithFailure(ctx: OrchestrationContext, rawInput: unknown, profile: ControllerProfile,
-    control: (ctx: OrchestrationContext, input: ControllerInput) => Generator<ScheduledTask, ControllerResult | null, unknown>)
-    : Generator<ScheduledTask, ControllerResult | null, unknown> {
     let input: ControllerInput;
     try {
         input = parseControllerInput(rawInput);
@@ -1073,12 +936,12 @@ function* controlWithFailure(ctx: OrchestrationContext, rawInput: unknown, profi
         // Fail closed: when the input still names a run, that run ends visibly.
         const runId = isRecord(rawInput) && typeof rawInput.runId === "string" ? rawInput.runId : null;
         if (runId === null) throw error;
-        return yield* failRun(ctx, runId, `The controller input is invalid: ${workflowErrorMessage(error)}`, profile);
+        return yield* failRun(ctx, runId, `The controller input is invalid: ${workflowErrorMessage(error)}`);
     }
     try {
-        return yield* control(ctx, input);
+        return yield* controlRun(ctx, input);
     } catch (error) {
-        return yield* failRun(ctx, input.runId, workflowErrorMessage(error), profile);
+        return yield* failRun(ctx, input.runId, workflowErrorMessage(error));
     }
 }
 
@@ -1103,290 +966,50 @@ function* takeQueuedCommand(ctx: OrchestrationContext): Generator<ScheduledTask,
 
 /**
  * The one reconciliation of a run that another writer ended (S7-DX2, S7-DX3 N-1, N-2), whichever store call of this
- * controller found it: an admission, a collection (1.8.0 and 1.9.0), the finish of a terminal or a failure, a command's
+ * controller found it: an admission, a collection, the finish of a terminal or a failure, a command's
  * cancel, the stop's end or the run deadline's end. The ender may be an accepted cancel or done (any entry point), the
  * workflow's deletion, the run deadline, or a recover. observeEnd asks the effects of every node that end cancelled to
  * stop (repeat-safe). Then, for any end but a deletion, the run's end is reported as this controller reports its own
- * (reportEnded: 1.9.0's agent children are ended, the parent is told by the requester the stored end records, never by a
+ * (reportEnded: its agent children are ended, the parent is told by the requester the stored end records, never by a
  * command that lost, and the final status is published); a deletion ends the children only, as before.
  */
-function* endedElsewhere(ctx: OrchestrationContext, runId: string, profile: ControllerProfile): Generator<ScheduledTask, ControllerResult, unknown> {
-    const observed = parseObservedEnd(yield* profile.persist(ctx, "observeEnd", { runId }));
+function* endedElsewhere(ctx: OrchestrationContext, runId: string): Generator<ScheduledTask, ControllerResult, unknown> {
+    const observed = parseObservedEnd(yield* persist(ctx, "observeEnd", { runId }));
     const result: ControllerResult = { runId: observed.runId, status: observed.status, outcome: observed.outcome };
-    if (!observed.deleted) return yield* reportEnded(ctx, runId, result, profile);
-    if (profile.afterEnd) yield* profile.afterEnd(ctx, runId);
+    if (!observed.deleted) return yield* reportEnded(ctx, runId, result);
+    yield* endRunChildren(ctx, runId);
     return result;
 }
 
 /** Apply one lifecycle command (cancel, done or delete) and end the controller. */
-function* applyCommand(ctx: OrchestrationContext, input: ControllerInput, command: WorkflowCommand,
-    profile: ControllerProfile = LEGACY_PROFILE): Generator<ScheduledTask, ControllerResult, unknown> {
-    const applied = parseEndResult(yield* profile.persist(ctx, "cancel", {
+function* applyCommand(ctx: OrchestrationContext, input: ControllerInput, command: WorkflowCommand)
+    : Generator<ScheduledTask, ControllerResult, unknown> {
+    const applied = parseEndResult(yield* persist(ctx, "cancel", {
         runId: input.runId, command: command.cmd, reason: command.reason ?? null, requestedBy: command.requestedBy ?? null,
     }));
     // S7-DX3 (N-2): another writer ended the run first (an accepted cancel or done, a deletion, a finish): the notice and the
     // status follow that stored end, never this command's requester.
-    if (applied.elsewhere) return yield* endedElsewhere(ctx, input.runId, profile);
+    if (applied.elsewhere) return yield* endedElsewhere(ctx, input.runId);
     const ended = applied.result;
-    // Controller 1.9.0: the children of the agent states this end decided are cancelled (IR 8).
-    if (profile.afterEnd) yield* profile.afterEnd(ctx, input.runId);
+    // The children of the agent states this end decided are cancelled (IR 8).
+    yield* endRunChildren(ctx, input.runId);
     if (command.cmd !== "delete") {
-        yield* profile.persist(ctx, "notifyParent", { runId: input.runId, requestedBy: command.requestedBy ?? null });
+        yield* persist(ctx, "notifyParent", { runId: input.runId, requestedBy: command.requestedBy ?? null });
     }
     ctx.setCustomStatus(JSON.stringify({ status: ended.status === "cancelled" ? "cancelled" : ended.status === "failed" ? "failed" : "completed",
         sessionKind: "workflow", workflow: { v: 2, runId: input.runId, outcome: ended.outcome } }));
     return ended;
 }
 
-function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generator<ScheduledTask, ControllerResult | null, unknown> {
-    let restored = input.state ?? null;
-    if (!restored) {
-        publishStatus(ctx, input, null, null, "running");
-        const begun = parseBegin(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.begin, { runId: input.runId }, STORE_RETRY));
-        if (!ACTIVE_RUN_STATUSES.includes(begun.status)) return { runId: input.runId, status: begun.status, outcome: begun.outcome };
-        restored = {
-            irSha256: begun.irSha256, steps: 0, ordinals: {}, catchAllEntered: false,
-            cursors: [{ scopeId: ROOT_SCOPE, nodeId: begun.initial, predecessorId: null, arrivalRoute: null, pending: null, deadlineMs: null }],
-        };
-    }
-    const state: ControllerState = restored;
-    const plan = parsePlan(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.plan, { runId: input.runId, irSha256: state.irSha256 }, STORE_RETRY));
-    let admittedThisExecution = 0;
-    let idleWaits = 0;
-    // S7-DX2: a lifecycle command is store state, not a queued message, so continue-as-new may drop unread wakes.
-    const continueAsNew = function* (): Generator<ScheduledTask, null, unknown> {
-        // 1.8.0 is frozen: it continues as new at itself, whatever version new runs start at.
-        yield ctx.continueAsNewVersioned({ v: 2, workflowSessionId: input.workflowSessionId, runId: input.runId, state } satisfies ControllerInput,
-            "1.8.0");
-        return null;
-    };
-
-    for (;;) {
-        // 0. Commands first. An accepted cancel, done or delete has already
-        // ended the run in the store (S7-DX2), so the admission below finds it
-        // ended and admits nothing, whatever this read finds. This read takes
-        // a queued command (also one an older build queued) and applies it to
-        // the run as it is, and drops wakes; it takes at most
-        // WORKFLOW_V2_COMMAND_READ_BATCH messages (review DX-2). A dequeue
-        // wins its race only when its message is already in the turn: duroxide
-        // returns a fetched batch in insertion order, so the poll's timer can
-        // win over a message that arrived before the timer was due (review
-        // V-4); that message is read at a later pass or while waiting.
-        // Whichever run-ending transaction commits first (finish, cancel or
-        // deletion) decides the run; a command read after that changes nothing.
-        if (state.cursors.some(cursor => cursor.pending === null)) {
-            const command = yield* takeQueuedCommand(ctx);
-            if (command) return yield* applyCommand(ctx, input, command);
-        }
-
-        // 1. Admit the next node of every cursor that is not waiting on work.
-        let rerouted = false;
-        let paused = false;
-        for (const cursor of state.cursors) {
-            if (cursor.pending !== null) continue;
-            const node: ControllerPlan["nodes"][string] | undefined = plan.nodes[cursor.nodeId];
-            expect(node !== undefined, `plan has no state ${cursor.nodeId}`);
-            if (state.steps >= plan.maxNodeExecutions) {
-                return yield* finishRun(ctx, input.runId, { failure: {
-                    nodeId: cursor.nodeId, nodeExecutionId: null, code: "limit_exceeded",
-                    message: `The run reached its limit of ${plan.maxNodeExecutions} node executions.`,
-                } });
-            }
-            const key = `${cursor.scopeId}/${cursor.nodeId}`;
-            const ordinal = (state.ordinals[key] ?? 0) + 1;
-            publishStatus(ctx, input, plan, state, "running");
-            const entered = parseEnter(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.enter, {
-                runId: input.runId, scopeId: cursor.scopeId, nodeId: cursor.nodeId, ordinal,
-                predecessorId: cursor.predecessorId, arrivalRoute: cursor.arrivalRoute,
-            }, STORE_RETRY));
-            if (!entered.admitted) {
-                // A paused run admits nothing until it is resumed; an ended one is done (S7-DX2: its post-end work).
-                if (entered.status === "paused") { paused = true; break; }
-                return yield* endedElsewhere(ctx, input.runId, LEGACY_PROFILE);
-            }
-            // The ordinal and the step count only once the admission is stored.
-            state.ordinals[key] = ordinal;
-            state.steps += 1;
-            admittedThisExecution += 1;
-            // Admitting the catch-all state, by any route, uses its one entry in this run.
-            if (cursor.nodeId === plan.catchAll) state.catchAllEntered = true;
-            if (node.type === "terminal") {
-                // While the catch-all state has not run, a terminal whose output
-                // fails its contract hands that error to it instead of failing
-                // the run. A business outcome (failed included) always ends the run.
-                const catchAll = !state.catchAllEntered ? plan.catchAll : null;
-                const finished = parseTerminalFinish(yield* persistently(ctx, WORKFLOW_V2_ACTIVITIES.finish, {
-                    runId: input.runId, terminalNodeExecutionId: entered.nodeExecutionId, ...(catchAll !== null ? { routeOutputErrors: true } : {}),
-                }));
-                if (!finished.routed) {
-                    // S7-DX3 (N-1): another writer ended the run before this finish: its end is reconciled.
-                    if (finished.elsewhere) return yield* endedElsewhere(ctx, input.runId, LEGACY_PROFILE);
-                    return yield* reportEnded(ctx, input.runId, finished.result);
-                }
-                expect(catchAll !== null && finished.nodeExecutionId === entered.nodeExecutionId, "finish routed an output error the controller did not offer");
-                state.catchAllEntered = true;
-                cursor.nodeId = catchAll;
-                cursor.predecessorId = entered.nodeExecutionId;
-                cursor.arrivalRoute = CATCH_ALL_ROUTE;
-                rerouted = true;
-                continue;
-            }
-            cursor.pending = entered.nodeExecutionId;
-            // A wait state runs on this controller's timers: no effect orchestration.
-            if (node.type === "wait") {
-                cursor.deadlineMs = entered.state === "pending" ? entered.deadlineMs : null;
-                expect(entered.state !== "pending" || cursor.deadlineMs !== null, `wait ${entered.nodeExecutionId} has no deadline`);
-                continue;
-            }
-            // A receive state waits in the store for its message, and on this
-            // controller's timers for its wait when it races one: no effect
-            // orchestration. A send state's message is delivered by its send
-            // orchestration, which records the result and wakes this controller.
-            if (node.type === "messaging") {
-                cursor.deadlineMs = entered.state === "pending" ? entered.deadlineMs : null;
-                if (node.mode === "send" && entered.state === "pending") {
-                    yield ctx.startOrchestrationVersioned(WORKFLOW_V2_SEND_NAME, WORKFLOW_V2_SEND_VERSION,
-                        workflowSendInstanceId(entered.nodeExecutionId),
-                        { runId: input.runId, nodeExecutionId: entered.nodeExecutionId, controllerInstanceId: ctx.instanceId });
-                }
-                continue;
-            }
-            if (entered.state === "pending") {
-                yield ctx.startOrchestrationVersioned(WORKFLOW_V2_EFFECT_NAME, WORKFLOW_V2_EFFECT_VERSION,
-                    workflowEffectInstanceId(entered.nodeExecutionId),
-                    { runId: input.runId, nodeExecutionId: entered.nodeExecutionId, controllerInstanceId: ctx.instanceId });
-            }
-        }
-        // A terminal's output error went to the catch-all state: admit that next.
-        if (rerouted) continue;
-
-        // 1a. Paused: wait for a resume (its wake, or the backstop timer that
-        // tries the admission again) or a lifecycle command. Results of work
-        // admitted before the pause are kept and routed after the resume.
-        if (paused) {
-            // Session statuses have no "paused"; the run status (read_workflow) says paused.
-            publishStatus(ctx, input, plan, state, "waiting");
-            const raced = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(plan.wakeBackstopMs)));
-            if (raced.index === 0) {
-                const command = parseWorkflowCommand(raced.value);
-                if (command) return yield* applyCommand(ctx, input, command);
-            }
-            idleWaits += 1;
-            if (idleWaits >= WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION) return yield* continueAsNew();
-            continue;
-        }
-
-        // 2. A wait whose deadline passed elapses (unless something else
-        // decided its node first); then route every pending node execution
-        // that has a stored result. The deadline is the store's: this
-        // controller's clock only decides when to ask. A wait the store does
-        // not find due yet waits the time the store reports, from now.
-        const waits = () => state.cursors.flatMap(cursor => cursor.pending !== null && cursor.deadlineMs !== null
-            ? [{ nodeExecutionId: cursor.pending, deadlineMs: cursor.deadlineMs }] : []);
-        let now: number | null = null;
-        if (waits().length > 0) {
-            const current = parseNow(yield ctx.utcNow());
-            now = current;
-            const due = waits().filter(wait => wait.deadlineMs <= current).map(wait => wait.nodeExecutionId);
-            if (due.length > 0) {
-                const notDue = parseElapse(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.elapse,
-                    { runId: input.runId, nodeExecutionIds: due }, STORE_RETRY));
-                if (notDue.length > 0) {
-                    const reported = parseNow(yield ctx.utcNow());
-                    now = reported;
-                    for (const wait of notDue) {
-                        const owner = state.cursors.find(cursor => cursor.pending === wait.nodeExecutionId);
-                        expect(owner !== undefined && due.includes(wait.nodeExecutionId), `elapse reported ${wait.nodeExecutionId}, which it was not asked about`);
-                        owner.deadlineMs = reported + wait.remainingMs;
-                    }
-                }
-            }
-        }
-        const pendingIds = state.cursors.flatMap(cursor => cursor.pending === null ? [] : [cursor.pending]);
-        const collection = parseLegacyCollected(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.collect,
-            { runId: input.runId, nodeExecutionIds: pendingIds }, STORE_RETRY));
-        // S7-DX3 (N-1): a run another writer ended routes none of its results; its end is reconciled (observeEnd).
-        if (collection.ended) return yield* endedElsewhere(ctx, input.runId, LEGACY_PROFILE);
-        const collected = collection.collected;
-        if (collected.length > 0) {
-            for (const result of collected) {
-                const owner = state.cursors.find(item => item.pending === result.nodeExecutionId);
-                expect(owner !== undefined, `collected ${result.nodeExecutionId} is not pending`);
-                const next = plan.nodes[owner.nodeId].next;
-                const route = selectRoute(next, result);
-                let target: { nodeId: string; arrivalRoute: string } | null = null;
-                if (route !== null) target = { nodeId: next[route], arrivalRoute: route };
-                else if (result.resultKind === "runtime_error" && plan.catchAll !== null && !state.catchAllEntered) {
-                    // The workflow's catch-all state handles an error that no
-                    // route of its state handles.
-                    target = { nodeId: plan.catchAll, arrivalRoute: CATCH_ALL_ROUTE };
-                }
-                if (target === null) {
-                    const handled = plan.catchAll !== null && result.resultKind === "runtime_error" ? " The workflow's catch-all state already ran in this run." : "";
-                    return yield* finishRun(ctx, input.runId, { failure: {
-                        nodeId: owner.nodeId, nodeExecutionId: result.nodeExecutionId, code: result.outcome,
-                        message: `State '${owner.nodeId}' ended with ${result.resultKind === "business" ? "undeclared outcome" : "runtime error"} '${result.outcome}' and has no route for it.${handled}`,
-                    } });
-                }
-                if (target.nodeId === plan.catchAll) {
-                    // The catch-all state runs at most once per run, whichever
-                    // route leads to it.
-                    if (state.catchAllEntered) {
-                        return yield* finishRun(ctx, input.runId, { failure: {
-                            nodeId: owner.nodeId, nodeExecutionId: result.nodeExecutionId, code: result.outcome,
-                            message: `State '${owner.nodeId}' ended with ${result.resultKind === "business" ? "outcome" : "runtime error"} '${result.outcome}'; `
-                                + `its route '${target.arrivalRoute}' leads to the catch-all state '${plan.catchAll}', which already ran in this run.`,
-                        } });
-                    }
-                    state.catchAllEntered = true;
-                }
-                owner.nodeId = target.nodeId;
-                owner.arrivalRoute = target.arrivalRoute;
-                owner.predecessorId = result.nodeExecutionId;
-                owner.pending = null;
-                owner.deadlineMs = null;
-            }
-            if (admittedThisExecution >= WORKFLOW_V2_ADMISSIONS_PER_EXECUTION) return yield* continueAsNew();
-            continue;
-        }
-
-        // 3. Nothing is ready: wait for a wake, a lifecycle command or the
-        // nearest wait deadline. A wake is only a hint; the backstop timer
-        // collects stored results even when every wake is lost. A message
-        // already queued wins the race.
-        publishStatus(ctx, input, plan, state, "running");
-        const deadlines = waits();
-        const nearest = now === null || deadlines.length === 0 ? null : Math.min(...deadlines.map(wait => wait.deadlineMs)) - now;
-        const timerMs = nearest === null ? plan.wakeBackstopMs : Math.max(1, Math.min(plan.wakeBackstopMs, nearest));
-        const raced = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(timerMs)));
-        // A command is applied first, so a continue-as-new never drops one it dequeued. Any other wait, the timer or a wake
-        // (a wake, or any other message, only prompts the next collection), is an idle wait, as the paused loop counts it,
-        // so a run whose work all waits continues as new under a steady stream of wakes too (V-2 diagnosis, 2026-11-08;
-        // changed in place: Workflow V2 is not on main).
-        if (raced.index === 0) {
-            const command = parseWorkflowCommand(raced.value);
-            if (command) return yield* applyCommand(ctx, input, command);
-        }
-        idleWaits += 1;
-        if (idleWaits >= WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION) return yield* continueAsNew();
-    }
-}
-
 /**
- * Controller 1.9.0's loop (design workflow-messaging-request.md
- * 4, 8.1, 8.5): 1.8.0's (controlRun) with these differences. Every activity
- * is tagged (storeTagged, REQUEST_PROFILE). Its plan may hold request states.
- * A request admitted pending starts its delivery orchestration
- * (WORKFLOW_V2_REQUEST_NAME) and waits on this controller's timers for its
- * deadline, as a wait does: the elapse activity decides it timed_out
- * (store.elapseRequest), the only producer of that result. While a request
- * waits, its responder is observed once per backstop period (the observe
- * activity, store.observeRequestResponder). The effect and send
- * orchestrations start at WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION. It
- * continues as new at 1.9.0. A response decides the request's node in its
- * own transaction; its wake, or the backstop, makes this controller collect it.
+ * The controller's loop (design workflow-messaging-request.md 4, 8.1, 8.5). Every activity is tagged (storeTagged,
+ * persistentlyTagged). A request admitted pending starts its delivery orchestration (WORKFLOW_V2_REQUEST_NAME) and waits
+ * on this controller's timers for its deadline, as a wait does: the elapse activity decides it timed_out
+ * (store.elapseRequest), the only producer of that result. While a request waits, its responder is observed once per
+ * backstop period (the observe activity, store.observeRequestResponder). It continues as new at its own version. A
+ * response decides the request's node in its own transaction; its wake, or the backstop, makes this controller collect it.
  *
- * Graceful stop (design 02 run lifecycle, D03; migration 0100): once the
+ * Graceful stop (design 02 run lifecycle, D03; migration 0088): once the
  * run has an accepted stop (an admission refused "stopping", or a
  * collection that reports it), this controller admits nothing and routes
  * no result: the work it admitted settles (its results are stored and
@@ -1408,8 +1031,8 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
  * before a pause. A pause committed after a collection's read takes effect
  * at the next admission or collection.
  */
-function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): Generator<ScheduledTask, ControllerResult | null, unknown> {
-    const R = WORKFLOW_V2_REQUEST_ACTIVITIES;
+function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generator<ScheduledTask, ControllerResult | null, unknown> {
+    const R = WORKFLOW_V2_ACTIVITIES;
     let restored = input.state ?? null;
     if (!restored) {
         publishStatus(ctx, input, null, null, "running");
@@ -1421,7 +1044,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         };
     }
     const state: ControllerState = restored;
-    const plan = parsePlan(yield* storeTagged(ctx, R.plan, { runId: input.runId, irSha256: state.irSha256 }), true);
+    const plan = parsePlan(yield* storeTagged(ctx, R.plan, { runId: input.runId, irSha256: state.irSha256 }));
     let admittedThisExecution = 0;
     let idleWaits = 0;
     // The agent states whose child this execution ended while the run was paused (RT-6 verification; not carried by
@@ -1435,7 +1058,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
     // The run's accepted stop, as the store last reported its deadline (not carried by continue-as-new: a stop is never
     // withdrawn, and the next execution reads it again at its first admission or collection).
     let stopping: { deadlineMs: number } | null = null;
-    // The run's deadline (limits.timeoutSeconds, migration 0104) on this controller's timers: a live run's, as the store wrote
+    // The run's deadline (limits.timeoutSeconds, migration 0088) on this controller's timers: a live run's, as the store wrote
     // it when the run began, moved later while the store's clock has not reached it. A test run's is on its virtual clock and
     // is not timed here: its admissions and collections report it.
     let runDeadlineMs: number | null = plan.deadlineMs ?? null;
@@ -1447,13 +1070,13 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             return null;
         }
         // Another end decided the run first (a cancel, a deletion): it is done, as when an admission finds it so.
-        if (!expiry.expired) return yield* endedElsewhere(ctx, input.runId, REQUEST_PROFILE);
-        return yield* reportEnded(ctx, input.runId, expiry.result, REQUEST_PROFILE);
+        if (!expiry.expired) return yield* endedElsewhere(ctx, input.runId);
+        return yield* reportEnded(ctx, input.runId, expiry.result);
     };
     // S7-DX2: a lifecycle command is store state, not a queued message, so continue-as-new may drop unread wakes.
     const continueAsNew = function* (): Generator<ScheduledTask, null, unknown> {
         yield ctx.continueAsNewVersioned({ v: 2, workflowSessionId: input.workflowSessionId, runId: input.runId, state } satisfies ControllerInput,
-            WORKFLOW_V2_REQUEST_CONTROLLER_VERSION);
+            WORKFLOW_V2_CONTROLLER_VERSION);
         return null;
     };
 
@@ -1634,7 +1257,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         yield* endBranch(cursor, first ? "not_started" : "cancelled", nodeExecutionId, false);
     };
     /**
-     * One pass of the paused collector (1a; as 1.8.0, nothing is admitted and no result is routed until the resume). The
+     * One pass of the paused collector (1a; nothing is admitted and no result is routed until the resume). The
      * deadlines keep running (adversarial review RT-6 and its verification): the run's (D03), and each pending state's own.
      * A pending state past its deadline is elapsed now (the store's clock decides); IR 9, a parallel state whose time limit
      * passed is asked for its join (askTimedJoins). An agent state decided while paused (its typed completion, or its
@@ -1666,7 +1289,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             else {
                 // A stop is seen by the next admission or collection; only the results and the run's own deadline matter here.
                 const collection = parseCollectedWithStop(yield* storeTagged(ctx, R.collect, { runId: input.runId, nodeExecutionIds: pendingAgents }));
-                if (collection.ended) return { result: yield* endedElsewhere(ctx, input.runId, REQUEST_PROFILE) };
+                if (collection.ended) return { result: yield* endedElsewhere(ctx, input.runId) };
                 if (collection.expired) {
                     const expired = yield* expireRun();
                     return expired !== null ? { result: expired } : null;
@@ -1722,7 +1345,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         const raced = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(pausedTimerMs)));
         if (raced.index === 0) {
             const command = parseWorkflowCommand(raced.value);
-            if (command) return { result: yield* applyCommand(ctx, input, command, REQUEST_PROFILE) };
+            if (command) return { result: yield* applyCommand(ctx, input, command) };
         }
         idleWaits += 1;
         if (idleWaits >= WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION) return { result: yield* continueAsNew() };
@@ -1730,10 +1353,10 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
     };
 
     for (;;) {
-        // 0. Commands first, as 1.8.0.
+        // 0. Commands first.
         if (state.cursors.some(cursor => cursor.pending === null)) {
             const command = yield* takeQueuedCommand(ctx);
-            if (command) return yield* applyCommand(ctx, input, command, REQUEST_PROFILE);
+            if (command) return yield* applyCommand(ctx, input, command);
         }
         // 0a. The owed stops and ends of cut branches (J1d), at most once per backstop period: every pass comes here (a pass
         // with ready results, a reroute, a paused or stopping pass, an idle wait's wake), and the first pass of an execution
@@ -1758,7 +1381,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 // Review R2-RT-1: the limit ends the run where it would admit, so a run read now as past its deadline,
                 // stopping or paused is not ended by it here (an admission's order); a paused one at its limit ends after the resume.
                 const seen = parseCollectedWithStop(yield* storeTagged(ctx, R.collect, { runId: input.runId, nodeExecutionIds: [] }));
-                if (seen.ended) return yield* endedElsewhere(ctx, input.runId, REQUEST_PROFILE);
+                if (seen.ended) return yield* endedElsewhere(ctx, input.runId);
                 if (seen.expired) {
                     const expired = yield* expireRun();
                     if (expired !== null) return expired;
@@ -1769,7 +1392,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 return yield* finishRun(ctx, input.runId, { failure: {
                     nodeId: cursor.nodeId, nodeExecutionId: null, code: "limit_exceeded",
                     message: `The run reached its limit of ${plan.maxNodeExecutions} node executions.`,
-                } }, REQUEST_PROFILE);
+                } });
             }
             const key = `${cursor.scopeId}/${cursor.nodeId}`;
             const ordinal = (state.ordinals[key] ?? 0) + 1;
@@ -1796,7 +1419,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 if (entered.stopping !== null) { stopping = entered.stopping; break; }
                 if (entered.status === "paused") { paused = true; break; }
                 // Another end decided the run (an accepted cancel or done, a deletion): its post-end work (S7-DX2).
-                return yield* endedElsewhere(ctx, input.runId, REQUEST_PROFILE);
+                return yield* endedElsewhere(ctx, input.runId);
             }
             state.ordinals[key] = ordinal;
             state.steps += 1;
@@ -1816,8 +1439,8 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 }));
                 if (!finished.routed) {
                     // S7-DX3 (N-1): another writer ended the run before this finish: its end is reconciled.
-                    if (finished.elsewhere) return yield* endedElsewhere(ctx, input.runId, REQUEST_PROFILE);
-                    return yield* reportEnded(ctx, input.runId, finished.result, REQUEST_PROFILE);
+                    if (finished.elsewhere) return yield* endedElsewhere(ctx, input.runId);
+                    return yield* reportEnded(ctx, input.runId, finished.result);
                 }
                 expect(catchAll !== null && finished.nodeExecutionId === entered.nodeExecutionId, "finish routed an output error the controller did not offer");
                 state.catchAllEntered = true;
@@ -1835,14 +1458,14 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             }
             if (node.type === "messaging") {
                 cursor.deadlineMs = entered.state === "pending" ? entered.deadlineMs : null;
-                // A test run intercepts a send's delivery and a request's exchange (migration 0102): its parent, or a fixture,
+                // A test run intercepts a send's delivery and a request's exchange (migration 0088): its parent, or a fixture,
                 // answers the interception, and a request's deadline runs on the run's virtual clock.
                 if (plan.test === true && node.mode !== "receive" && entered.state === "pending") {
                     yield* persistentlyTagged(ctx, R.intercept, { runId: input.runId, nodeExecutionId: entered.nodeExecutionId });
                     continue;
                 }
                 if (node.mode === "send" && entered.state === "pending") {
-                    yield ctx.startOrchestrationVersioned(WORKFLOW_V2_SEND_NAME, WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION,
+                    yield ctx.startOrchestrationVersioned(WORKFLOW_V2_SEND_NAME, WORKFLOW_V2_SEND_VERSION,
                         workflowSendInstanceId(entered.nodeExecutionId),
                         { runId: input.runId, nodeExecutionId: entered.nodeExecutionId, controllerInstanceId: ctx.instanceId });
                 }
@@ -1886,8 +1509,8 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 cursor.deadlineMs = entered.state === "pending" ? entered.deadlineMs : null;
                 if (entered.state === "pending") {
                     expect(cursor.deadlineMs !== null, `agent state ${entered.nodeExecutionId} has no deadline`);
-                    // A test run's agent is mocked (migration 0102): no child is created; its parent, or a fixture, answers.
-                    // A real-agent test run's agent state gets its child as a live run's does (migration 0105).
+                    // A test run's agent is mocked (migration 0088): no child is created; its parent, or a fixture, answers.
+                    // A real-agent test run's agent state gets its child as a live run's does (migration 0088).
                     if (plan.test === true && plan.realAgents !== true) {
                         yield* persistentlyTagged(ctx, R.intercept, { runId: input.runId, nodeExecutionId: entered.nodeExecutionId });
                         continue;
@@ -1899,7 +1522,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 continue;
             }
             if (entered.state === "pending") {
-                yield ctx.startOrchestrationVersioned(WORKFLOW_V2_EFFECT_NAME, WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION,
+                yield ctx.startOrchestrationVersioned(WORKFLOW_V2_EFFECT_NAME, WORKFLOW_V2_EFFECT_VERSION,
                     workflowEffectInstanceId(entered.nodeExecutionId),
                     { runId: input.runId, nodeExecutionId: entered.nodeExecutionId, controllerInstanceId: ctx.instanceId });
             }
@@ -1948,7 +1571,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         const pendingIds = state.cursors.flatMap(cursor => cursor.pending === null ? [] : [cursor.pending]);
         const collection = parseCollectedWithStop(yield* storeTagged(ctx, R.collect, { runId: input.runId, nodeExecutionIds: pendingIds }));
         // S7-DX2: a run that another transaction ended (an accepted cancel or done, a deletion) routes none of its results.
-        if (collection.ended) return yield* endedElsewhere(ctx, input.runId, REQUEST_PROFILE);
+        if (collection.ended) return yield* endedElsewhere(ctx, input.runId);
         // A run past its deadline (read after the results): the store ends it before any of them is routed.
         if (collection.expired) {
             const expired = yield* expireRun();
@@ -2011,8 +1634,8 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 const finished = parseStopFinish(yield* persistentlyTagged(ctx, R.stop, { runId: input.runId }));
                 if (finished.ended) {
                     // Another end decided the run first (a cancel, a deletion): it is done, as when an admission finds it so.
-                    if (finished.result.status !== "stopped") return yield* endedElsewhere(ctx, input.runId, REQUEST_PROFILE);
-                    return yield* reportEnded(ctx, input.runId, finished.result, REQUEST_PROFILE);
+                    if (finished.result.status !== "stopped") return yield* endedElsewhere(ctx, input.runId);
+                    return yield* reportEnded(ctx, input.runId, finished.result);
                 }
                 const read = parseNow(yield ctx.utcNow());
                 now = read;
@@ -2055,7 +1678,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                     return yield* finishRun(ctx, input.runId, { failure: {
                         nodeId: owner.nodeId, nodeExecutionId: result.nodeExecutionId, code: result.outcome,
                         message: `State '${owner.nodeId}' ended with ${result.resultKind === "business" ? "undeclared outcome" : "runtime error"} '${result.outcome}' and has no route for it.${handled}`,
-                    } }, REQUEST_PROFILE);
+                    } });
                 }
                 if (target.nodeId === plan.catchAll) {
                     if (state.catchAllEntered) {
@@ -2063,7 +1686,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                             nodeId: owner.nodeId, nodeExecutionId: result.nodeExecutionId, code: result.outcome,
                             message: `State '${owner.nodeId}' ended with ${result.resultKind === "business" ? "outcome" : "runtime error"} '${result.outcome}'; `
                                 + `its route '${target.arrivalRoute}' leads to the catch-all state '${plan.catchAll}', which already ran in this run.`,
-                        } }, REQUEST_PROFILE);
+                        } });
                     }
                     state.catchAllEntered = true;
                 }
@@ -2102,7 +1725,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         // a run whose work all waits continues as new under a steady stream of wakes too (V-2 diagnosis, 2026-11-08).
         if (raced.index === 0) {
             const command = parseWorkflowCommand(raced.value);
-            if (command) return yield* applyCommand(ctx, input, command, REQUEST_PROFILE);
+            if (command) return yield* applyCommand(ctx, input, command);
         }
         idleWaits += 1;
         if (idleWaits >= WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION) return yield* continueAsNew();
@@ -2125,85 +1748,48 @@ function parseEffectInput(value: unknown): EffectInput {
     };
 }
 
+/**
+ * A script state's effect (WORKFLOW_V2_EFFECT_NAME): the script's result is recorded in this orchestration's history
+ * before it is stored, so a crash after the script finished stores that result instead of running the script again. Then
+ * the result is stored with the node's terminal compare-and-swap and the controller is woken.
+ */
 export function* workflowV2Effect(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
     const input = parseEffectInput(rawInput);
-    // The script's result is recorded in this orchestration's history before
-    // it is stored, so a crash after the script finished stores that result
-    // instead of running the script again.
     let result: unknown;
     try {
-        result = yield ctx.scheduleActivityTyped(WORKFLOW_V2_ACTIVITIES.runScript, input);
+        result = yield taggedActivity(ctx, WORKFLOW_V2_ACTIVITIES.runScript, input);
     } catch (error) {
         result = { kind: "result", result: generatorRuntimeError("execution_failed", workflowErrorMessage(error)) };
     }
-    // Review DX-RECORD, V-1: no attempt timeout, so the orchestration does not end while an attempt can still store the
-    // result (changed in place: never activated, and every hot patch requires no run in flight).
-    yield* storeWithoutTimeout(ctx, WORKFLOW_V2_ACTIVITIES.recordEffectResult, { ...input, outcome: result });
-    yield* storeWithoutTimeout(ctx, WORKFLOW_V2_ACTIVITIES.wake, input);
+    yield* storeTagged(ctx, WORKFLOW_V2_ACTIVITIES.recordEffectResult, { ...input, outcome: result });
+    yield* storeTagged(ctx, WORKFLOW_V2_ACTIVITIES.wake, input);
     return null;
 }
 
 /**
- * The terminal notification of a run that update_workflow recover ended
- * after its controller had ended: the controller's own notification
- * activity, with its retries and its stable client message id.
+ * The terminal notification of a run that update_workflow recover ended after its controller had ended: the controller's
+ * own notification activity, with its retries and its stable client message id.
  */
 export function* workflowV2Notify(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
     const runId = text(record(rawInput, "notify input").runId, "runId");
-    yield* persistently(ctx, WORKFLOW_V2_ACTIVITIES.notifyParent, { runId });
+    yield* persistentlyTagged(ctx, WORKFLOW_V2_ACTIVITIES.notifyParent, { runId });
     return null;
 }
 
 /**
- * A messaging send state's delivery (WORKFLOW_V2_SEND_NAME): the deliver
- * activity is attempted with the run-ending writes' schedule (each attempt
- * with the store retry policy, the attempts apart on durable timers). Each
- * attempt decides again whether to send, under the session locks, and an
- * attempt that queued the message records it; a decision (sent, refused, or
- * the state already decided) ends the attempts. When every attempt failed,
- * the state fails with delivery_failed. Then the controller is woken.
+ * A messaging send state's delivery (WORKFLOW_V2_SEND_NAME): the deliver activity is attempted with the run-ending
+ * writes' schedule (persistentlyTagged). Each attempt decides again whether to send, under the session locks, and an
+ * attempt that queued the message records it; a decision (sent, refused, or the state already decided) ends the
+ * attempts. When every attempt failed, the state fails with delivery_failed. Then the controller is woken.
  */
 export function* workflowV2Send(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
     const input = parseEffectInput(rawInput);
     try {
-        yield* persistently(ctx, WORKFLOW_V2_ACTIVITIES.deliver, input);
+        yield* persistentlyTagged(ctx, WORKFLOW_V2_ACTIVITIES.deliver, input);
     } catch (error) {
-        yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.deliveryFailed, { ...input, cause: workflowErrorMessage(error) }, STORE_RETRY);
+        yield* storeTagged(ctx, WORKFLOW_V2_ACTIVITIES.deliveryFailed, { ...input, cause: workflowErrorMessage(error) });
     }
-    yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.wake, input, STORE_RETRY);
-    return null;
-}
-
-/** The effect orchestration at WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION (controller 1.9.0): 1.0.0's, with tagged activities. */
-export function* workflowV2EffectTagged(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
-    const input = parseEffectInput(rawInput);
-    let result: unknown;
-    try {
-        result = yield taggedActivity(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.runScript, input);
-    } catch (error) {
-        result = { kind: "result", result: generatorRuntimeError("execution_failed", workflowErrorMessage(error)) };
-    }
-    yield* storeTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.recordEffectResult, { ...input, outcome: result });
-    yield* storeTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.wake, input);
-    return null;
-}
-
-/** The notify orchestration at WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION: 1.0.0's, with the tagged notification activity. */
-export function* workflowV2NotifyTagged(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
-    const runId = text(record(rawInput, "notify input").runId, "runId");
-    yield* persistentlyTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.notifyParent, { runId });
-    return null;
-}
-
-/** The send orchestration at WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION: 1.0.0's, with tagged activities. */
-export function* workflowV2SendTagged(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
-    const input = parseEffectInput(rawInput);
-    try {
-        yield* persistentlyTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.deliver, input);
-    } catch (error) {
-        yield* storeTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.deliveryFailed, { ...input, cause: workflowErrorMessage(error) });
-    }
-    yield* storeTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.wake, input);
+    yield* storeTagged(ctx, WORKFLOW_V2_ACTIVITIES.wake, input);
     return null;
 }
 
@@ -2219,11 +1805,11 @@ export function* workflowV2SendTagged(ctx: OrchestrationContext, rawInput: unkno
 export function* workflowV2RequestDelivery(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
     const input = parseEffectInput(rawInput);
     try {
-        yield* persistentlyTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.deliverRequest, input);
+        yield* persistentlyTagged(ctx, WORKFLOW_V2_ACTIVITIES.deliverRequest, input);
     } catch (error) {
-        yield* storeTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.requestDeliveryFailed, { ...input, cause: workflowErrorMessage(error) });
+        yield* storeTagged(ctx, WORKFLOW_V2_ACTIVITIES.requestDeliveryFailed, { ...input, cause: workflowErrorMessage(error) });
     }
-    yield* storeTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.wake, input);
+    yield* storeTagged(ctx, WORKFLOW_V2_ACTIVITIES.wake, input);
     return null;
 }
 
@@ -2241,12 +1827,12 @@ export function* workflowV2AgentSpawn(ctx: OrchestrationContext, rawInput: unkno
     const input = parseEffectInput(rawInput);
     let wake = false;
     try {
-        wake = record(yield* persistentlyTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.spawnAgent, input), "spawn result").wake === true;
+        wake = record(yield* persistentlyTagged(ctx, WORKFLOW_V2_ACTIVITIES.spawnAgent, input), "spawn result").wake === true;
     } catch (error) {
-        yield* storeTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.agentSpawnFailed, { ...input, cause: workflowErrorMessage(error) });
+        yield* storeTagged(ctx, WORKFLOW_V2_ACTIVITIES.agentSpawnFailed, { ...input, cause: workflowErrorMessage(error) });
         wake = true;
     }
-    if (wake) yield* storeTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.wake, input);
+    if (wake) yield* storeTagged(ctx, WORKFLOW_V2_ACTIVITIES.wake, input);
     return null;
 }
 
@@ -2452,21 +2038,13 @@ export interface WorkflowV2RuntimeDeps {
      */
     workflowIntake?: () => boolean;
     /**
-     * Request states (design workflow-messaging-request.md 8; every worker
-     * sets it): controller 1.9.0, the orchestrations it starts at
-     * WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION, a request's delivery, and
-     * their tagged activities are registered. Absent or false: none is, and
-     * nothing reads IR 7.
-     */
-    workflowRequests?: boolean;
-    /**
      * Whether a responder's effective tools include respond_session_request
      * (design 8.3), read at each delivery attempt; absent: the version check
      * alone decides.
      */
     respondToolAvailable?: (sessionId: string) => Promise<boolean>;
     /**
-     * Agent states (IR 8; every worker passes it, with workflowRequests; its
+     * Agent states (IR 8; every worker passes it; its
      * host is milestone-worker.ts's): what creates an agent state's child
      * agent session.
      * Absent: an agent state fails unavailable when its child would be
@@ -2505,7 +2083,7 @@ export interface WorkflowAgentSpawnRequest {
     /** The state's outer deadline, ISO 8601. */
     deadlineAt: string;
     /**
-     * OF-S2-7: the model chosen at start for this node (the run's agent models, migration 0110); absent or null: the node
+     * OF-S2-7: the model chosen at start for this node (the run's agent models, migration 0088); absent or null: the node
      * inherits the owning chat's model, reasoning effort and context tier.
      */
     agentModel?: WorkflowAgentModelChoice | null;
@@ -2908,14 +2486,6 @@ export function describeWorkflowV2States(ir: WorkflowIR): Array<{ [key: string]:
     });
 }
 
-/** The handler of an unsupported pre-release controller version: it fails the instance with a reason. */
-function unsupportedController(version: string) {
-    return function* unsupported(): Generator<ScheduledTask, never, unknown> {
-        throw new ControllerProtocolError(`This run's controller history has version ${version}, written by a pre-release build; `
-            + "this build does not replay it. Recover the run (update_workflow operation recover) to end it.");
-    };
-}
-
 /** What ending an agent state's child needs of a duroxide client: an activity's, or a host's (recovery; RT-3). */
 export interface WorkflowV2AgentEndClient {
     getStatus(instanceId: string): Promise<{ status: string }>;
@@ -2974,7 +2544,7 @@ export async function carryDeletedEnd(client: WorkflowV2AgentEndClient | null, c
 }
 
 /**
- * End the child of a decided agent state (controller 1.9.0; IR 8): done
+ * End the child of a decided agent state (IR 8): done
  * after the agent's own typed completion, cancel after anything else (its
  * deadline, a cancel, a stop, a deletion or the run's end). The first end
  * recorded stands (store.recordAgentEnd), and the command is sent to the
@@ -3349,9 +2919,9 @@ async function startContinuedChatEndRetry(client: WorkflowV2AgentEndClient, run:
 export function* workflowV2ChatEnd(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
     const input = record(rawInput, "chat end input");
     try {
-        yield* persistentlyTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.endOwedChat, input);
+        yield* persistentlyTagged(ctx, WORKFLOW_V2_ACTIVITIES.endOwedChat, input);
     } catch {
-        yield* storeTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.endOwedChatLast, input);
+        yield* storeTagged(ctx, WORKFLOW_V2_ACTIVITIES.endOwedChatLast, input);
     }
     return null;
 }
@@ -3359,9 +2929,8 @@ export function* workflowV2ChatEnd(ctx: OrchestrationContext, rawInput: unknown)
 /**
  * How long the run-end notice waits for the run's deliveries to the parent still in flight, how often it looks, and how
  * recent a delivery attempt must be to be waited for (adversarial review WFO-1). Each look has its own statement
- * timeout. Under controller 1.8.0 the wait keeps an attempt inside its 30-second attempt timeout
- * (WORKFLOW_V2_STORE_RETRY); a 1.9.0 attempt (a tagged activity) has no attempt timeout. These waits are bounded; the
- * attempt is not (review DX-5): getting a connection, the SQL calls and the send have no time limit of their own.
+ * timeout. An attempt (a tagged activity) has no attempt timeout. These waits are bounded; the attempt is not (review
+ * DX-5): getting a connection, the SQL calls and the send have no time limit of their own.
  */
 export const WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS = 15_000;
 /** Deployed check DS-2: the skip reason of a run's end notice kept as a note for its parent chat's first turn. */
@@ -3370,11 +2939,10 @@ const WORKFLOW_V2_NOTICE_DELIVERY_POLL_MS = 200;
 const WORKFLOW_V2_NOTICE_DELIVERY_RECENT_SECONDS = 60;
 const WORKFLOW_V2_NOTICE_DELIVERY_QUERY_MS = 2_000;
 /**
- * How long an attempt waits for the run's notice lock that another attempt holds, how often it tries it, and the part of
- * an attempt's 30 s that the wait for deliveries and the wait for the lock may use together (E3-R1). The 30 s is the
- * attempt timeout of controller 1.8.0's store activities (WORKFLOW_V2_STORE_RETRY); 1.9.0's tagged activities have none.
- * The budget bounds only these two voluntary waits, not the attempt (review DX-5): a holder that hangs in a connection,
- * a SQL call or the send keeps the lock, and can stay pending with no end (a 1.9.0 attempt has no timeout). The other
+ * How long an attempt waits for the run's notice lock that another attempt holds, how often it tries it, and the time
+ * (27 s) that the wait for deliveries and the wait for the lock may use together (E3-R1). The budget bounds only these
+ * two voluntary waits, not the attempt (review DX-5): a holder that hangs in a connection, a SQL call or the send keeps
+ * the lock, and can stay pending with no end (an attempt has no timeout). The other
  * attempts and recover make progress only after that holder settles, or after its database connection or its worker
  * process ends and releases the lock (S7-DX3, N-3); nothing here releases the lock while the old send may still run.
  */
@@ -3387,36 +2955,16 @@ export const WORKFLOW_V2_OWED_AGENT_PAGE = 200;
 
 export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: WorkflowV2RuntimeDeps): void {
     const { store } = deps;
-    // Request states (design workflow-messaging-request.md 8): every worker sets workflowRequests (worker.ts); a test may leave it off.
-    const requestsEnabled = deps.workflowRequests === true;
-    // duroxide accepts an orchestration's versions only in ascending order:
-    // the fenced pre-release versions first, the version new runs use last.
-    for (const version of WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS) {
-        runtime.registerOrchestrationVersioned(WORKFLOW_V2_CONTROLLER_NAME, version, unsupportedController(version));
-    }
-    // Controller 1.8.0: registered but unreachable (every production host starts runs at 1.9.0); deleted by the cleanup PR.
     runtime.registerOrchestrationVersioned(WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, workflowV2Controller);
     runtime.registerOrchestrationVersioned(WORKFLOW_V2_EFFECT_NAME, WORKFLOW_V2_EFFECT_VERSION, workflowV2Effect);
     runtime.registerOrchestrationVersioned(WORKFLOW_V2_NOTIFY_NAME, WORKFLOW_V2_NOTIFY_VERSION, workflowV2Notify);
     runtime.registerOrchestrationVersioned(WORKFLOW_V2_SEND_NAME, WORKFLOW_V2_SEND_VERSION, workflowV2Send);
-    if (requestsEnabled) {
-        runtime.registerOrchestrationVersioned(WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowV2RequestController);
-        runtime.registerOrchestrationVersioned(WORKFLOW_V2_EFFECT_NAME, WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION, workflowV2EffectTagged);
-        runtime.registerOrchestrationVersioned(WORKFLOW_V2_NOTIFY_NAME, WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION, workflowV2NotifyTagged);
-        runtime.registerOrchestrationVersioned(WORKFLOW_V2_SEND_NAME, WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION, workflowV2SendTagged);
-        runtime.registerOrchestrationVersioned(WORKFLOW_V2_REQUEST_NAME, WORKFLOW_V2_REQUEST_VERSION, workflowV2RequestDelivery);
-        runtime.registerOrchestrationVersioned(WORKFLOW_V2_AGENT_NAME, WORKFLOW_V2_AGENT_VERSION, workflowV2AgentSpawn);
-        runtime.registerOrchestrationVersioned(WORKFLOW_V2_CHAT_END_NAME, WORKFLOW_V2_CHAT_END_VERSION, workflowV2ChatEnd);
-    }
-    /**
-     * Each activity under its legacy name (as 1.8.0 and the 1.0.0
-     * orchestrations schedule it: `requests` false, IR 7 refused), and, with
-     * request states enabled, under its tagged name too (`requests` true:
-     * IR 7 read, request states run).
-     */
-    const register = (key: WorkflowV2ActivityKey, handler: (actx: ActivityContext, rawInput: unknown, requests: boolean) => Promise<unknown>) => {
-        runtime.registerActivity(WORKFLOW_V2_ACTIVITIES[key], (actx, rawInput) => handler(actx, rawInput, false));
-        if (requestsEnabled) runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES[key], (actx, rawInput) => handler(actx, rawInput, true));
+    runtime.registerOrchestrationVersioned(WORKFLOW_V2_REQUEST_NAME, WORKFLOW_V2_REQUEST_VERSION, workflowV2RequestDelivery);
+    runtime.registerOrchestrationVersioned(WORKFLOW_V2_AGENT_NAME, WORKFLOW_V2_AGENT_VERSION, workflowV2AgentSpawn);
+    runtime.registerOrchestrationVersioned(WORKFLOW_V2_CHAT_END_NAME, WORKFLOW_V2_CHAT_END_VERSION, workflowV2ChatEnd);
+    /** Each activity under its tagged name (WORKFLOW_V2_ACTIVITIES). */
+    const register = (key: WorkflowV2ActivityKey, handler: (actx: ActivityContext, rawInput: unknown) => Promise<unknown>) => {
+        runtime.registerActivity(WORKFLOW_V2_ACTIVITIES[key], handler);
     };
 
     const runOf = async (runId: string): Promise<WorkflowRunRow> => {
@@ -3424,36 +2972,26 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (!run) throw new WorkflowStoreError("RUN_NOT_FOUND", `Workflow run ${runId} does not exist.`);
         return run;
     };
-    /** The run's pinned definition; IR 7 (request states) only for a 1.9.0 run's activities. */
-    const irOf = (run: WorkflowRunRow, requests = false): Promise<WorkflowIR> => store.readRevisionIr(run.workflowSessionId, run.revision, run.irSha256,
-        requests ? { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION } : {});
+    /** The run's pinned definition. */
+    const irOf = (run: WorkflowRunRow): Promise<WorkflowIR> => store.readRevisionIr(run.workflowSessionId, run.revision, run.irSha256,
+        { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION });
     const nodeOf = (ir: WorkflowIR, nodeId: string): WorkflowIRNode => {
         const node = ir.nodes[nodeId];
         if (!node) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Pinned definition has no state ${nodeId}.`);
         return node;
     };
-    /**
-     * The enter result of a run with an accepted stop (controller 1.9.0): no
-     * admission, and the stop's deadline in the store's clock. Only a 1.9.0
-     * run can be stopped (the stop records the run's controller version), so
-     * a legacy activity never meets one: it fails rather than end its
-     * controller with an active status.
-     */
-    const stoppingRefusal = (run: WorkflowRunRow, requests: boolean) => {
-        if (!requests || run.stop === null) {
-            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${run.runId} is stopping, which only controller ${WORKFLOW_V2_REQUEST_CONTROLLER_VERSION} runs.`);
-        }
+    /** The enter result of a run with an accepted stop: no admission, and the stop's deadline in the store's clock. */
+    const stoppingRefusal = (run: WorkflowRunRow) => {
+        if (run.stop === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${run.runId} is stopping, but has no stop.`);
         return { admitted: false, status: run.status, outcome: null, stopping: { deadlineMs: run.stop.deadlineAt.getTime() } };
     };
-    /** The enter result of a run past its deadline (controller 1.9.0; migration 0104): no admission; its controller expires it. */
-    const expiredRefusal = (run: WorkflowRunRow, requests: boolean) => {
-        if (!requests || run.deadlineAt === null) {
-            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${run.runId} has a deadline, which only controller ${WORKFLOW_V2_REQUEST_CONTROLLER_VERSION} runs.`);
-        }
+    /** The enter result of a run past its deadline: no admission; its controller expires it. */
+    const expiredRefusal = (run: WorkflowRunRow) => {
+        if (run.deadlineAt === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${run.runId} is past its deadline, but has none.`);
         return { admitted: false, status: run.status, outcome: null, expired: true };
     };
     /**
-     * End the child of a decided agent state (controller 1.9.0; IR 8): done
+     * End the child of a decided agent state (IR 8): done
      * after the agent's own typed completion, cancel after anything else (its
      * deadline, a cancel, a stop, a deletion or the run's end). The first end
      * recorded stands (store.recordAgentEnd), and the command is sent to the
@@ -3594,7 +3132,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Scope ${scopeId} names no branch of run ${run.runId}.`);
         }
         // IR 11: a named branch's name, from the IR the run runs.
-        const spec = (ir ?? await irOf(run, true)).nodes[parallel.nodeId];
+        const spec = (ir ?? await irOf(run)).nodes[parallel.nodeId];
         const name = spec?.type === "parallel" ? spec.branches?.[scope.index]?.name ?? null : null;
         return { parallelNodeExecutionId: parallel.nodeExecutionId, parallelNodeId: parallel.nodeId, item: parallel.input[scope.index], index: scope.index, name };
     };
@@ -3802,11 +3340,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     const manifestSize = (row: WorkflowNodeExecutionRow): number | null =>
         row.nodeType === "parallel" && row.state === "pending" && Array.isArray(row.input) ? row.input.length : null;
 
-    register("begin", async (actx, rawInput, requests) => {
+    register("begin", async (actx, rawInput) => {
         const runId = text(record(rawInput, "begin input").runId, "runId");
         const run = await runOf(runId);
-        const ir = await irOf(run, requests);
-        // A run deadline (controller 1.9.0; limits.timeoutSeconds) starts when the run begins: the begin writes it.
+        const ir = await irOf(run);
+        // A run deadline (limits.timeoutSeconds) starts when the run begins: the begin writes it.
         const begun = await store.beginRun(runId, {
             sessionId: run.workflowSessionId,
             events: [{ eventType: "workflow.started", data: {
@@ -3814,7 +3352,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 name: ir.name, version: ir.version, initial: ir.initial, states: describeWorkflowV2States(ir),
             } }],
             update: { state: "running", lastError: null, touch: true },
-        }, requests && ir.limits.timeoutSeconds !== undefined ? { deadlineSeconds: ir.limits.timeoutSeconds } : {});
+        }, ir.limits.timeoutSeconds !== undefined ? { deadlineSeconds: ir.limits.timeoutSeconds } : {});
         // A run that an accepted cancel ended before it began (this begin's
         // repair, or the cancel's own transaction) ended without a controller
         // to report it, and the request that ended it may have stopped before
@@ -3826,24 +3364,19 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (await parentToldOfCancelBeforeBegin(begun.run)) {
             const client = actx.getClient();
             if (!client) throw new Error("Workflow begin needs the durable client.");
-            await client.startOrchestrationVersioned(workflowNotifyInstanceId(runId), WORKFLOW_V2_NOTIFY_NAME, { runId },
-                requests ? WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION : WORKFLOW_V2_NOTIFY_VERSION);
+            await client.startOrchestrationVersioned(workflowNotifyInstanceId(runId), WORKFLOW_V2_NOTIFY_NAME, { runId }, WORKFLOW_V2_NOTIFY_VERSION);
         }
         return { status: begun.run.status, irSha256: run.irSha256, initial: ir.initial, outcome: begun.run.terminalOutcome };
     });
 
-    register("plan", async (_ctx, rawInput, requests) => {
+    register("plan", async (_ctx, rawInput) => {
         const input = record(rawInput, "plan input");
         const run = await runOf(text(input.runId, "runId"));
         if (run.irSha256 !== text(input.irSha256, "irSha256")) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "Run definition pin changed.");
-        const ir = await irOf(run, requests);
+        const ir = await irOf(run);
         const nodes: ControllerPlan["nodes"] = {};
         for (const node of Object.values(ir.nodes)) {
             if (node.type === "messaging") {
-                // A request state is run only by controller 1.9.0; 1.8.0 never reads IR 7 (parseWorkflowIr).
-                if (node.mode === "request" && !requests) {
-                    throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `State ${node.id} is a request state, which this build does not run.`);
-                }
                 nodes[node.id] = { type: node.type, mode: node.mode, next: node.next };
             } else if (node.type === "parallel") {
                 nodes[node.id] = { type: "parallel", next: node.next,
@@ -3859,21 +3392,15 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const plan: ControllerPlan = {
             name: ir.name, version: ir.version, initial: ir.initial, maxNodeExecutions: ir.limits.maxNodeExecutions,
             wakeBackstopMs: deps.wakeBackstopMs ?? WORKFLOW_V2_DEFAULT_WAKE_BACKSTOP_MS, catchAll: ir.catchAll, nodes,
-            // A test run (migration 0102) runs only on controller 1.9.0.
-            ...(run.mode === "test" ? (() => {
-                if (!requests) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${run.runId} is a test run, which only controller ${WORKFLOW_V2_REQUEST_CONTROLLER_VERSION} runs.`);
-                return { test: true as const, ...(run.testAgentMode === "real" ? { realAgents: true as const } : {}) };
-            })() : {}),
-            // A live run's deadline (migration 0104), as its begin wrote it; a test run's is on its virtual clock.
-            ...(run.deadlineAt !== null && run.mode === "live" ? (() => {
-                if (!requests) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${run.runId} has a deadline, which only controller ${WORKFLOW_V2_REQUEST_CONTROLLER_VERSION} runs.`);
-                return { deadlineMs: run.deadlineAt.getTime() };
-            })() : {}),
+            // A test run.
+            ...(run.mode === "test" ? { test: true as const, ...(run.testAgentMode === "real" ? { realAgents: true as const } : {}) } : {}),
+            // A live run's deadline, as its begin wrote it; a test run's is on its virtual clock.
+            ...(run.deadlineAt !== null && run.mode === "live" ? { deadlineMs: run.deadlineAt.getTime() } : {}),
         };
         return plan;
     });
 
-    register("enter", async (actx, rawInput, requests) => {
+    register("enter", async (actx, rawInput) => {
         const input = record(rawInput, "enter input");
         const runId = text(input.runId, "runId");
         const scopeId = text(input.scopeId, "scopeId");
@@ -3883,7 +3410,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const predecessorId = textOrNull(input.predecessorId, "predecessorId");
         const arrivalRoute = textOrNull(input.arrivalRoute, "arrivalRoute");
         const run = await runOf(runId);
-        const ir = await irOf(run, requests);
+        const ir = await irOf(run);
         const node = nodeOf(ir, nodeId);
         const nodeExecutionId = nodeExecutionIdFor(runId, scopeId, nodeId, ordinal);
         // A retry after the admission committed returns that admission: its
@@ -3899,8 +3426,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         }
         // A run with an accepted stop admits nothing (store.enterNode decides it again under the locks; a stop is never
         // withdrawn, so this early answer only saves the evaluation).
-        if (ACTIVE_RUN_STATUSES.includes(run.status) && run.stop !== null) return stoppingRefusal(run, requests);
-        // A branch's states see its manifest item and index (IR 8; only controller 1.9.0 admits a branch scope).
+        if (ACTIVE_RUN_STATUSES.includes(run.status) && run.stop !== null) return stoppingRefusal(run);
+        // A branch's states see its manifest item and index (IR 8).
         const branch = await branchOf(run, scopeId, ir);
         // The admission pins the KV revision that is current when it commits.
         // set_vars locks the run row as the admission does, so every set_vars
@@ -3939,7 +3466,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     const problems = schemaSetFor(current.irSha256, ir.schemaDefs).validate(node.inputSchema, value);
                     if (problems.length) immediate = runtimeError("invalid_input", `Input does not match ${node.inputSchema}.`, problemsJson(problems));
                 }
-                // A parallel state's manifest is evaluated once, here, and frozen as its input (IR 8; controller 1.9.0): a list
+                // A parallel state's manifest is evaluated once, here, and frozen as its input (IR 8): a list
                 // of at most WORKFLOW_V2_PARALLEL_MAX_ITEMS items that matches its inputSchema. Its branches start from it.
                 if (!immediate && node.type === "parallel") {
                     let manifest: JsonValue = null;
@@ -4008,7 +3535,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     else send = { recipient: resolved.recipient, contract: node.contract, payloadText: resolved.payloadText, correlationText: resolved.correlationText };
                 }
                 // An agent state's child, task, deadline and output contract are resolved once, here, and frozen for this
-                // occurrence (controller 1.9.0; IR 8): its input as a script's, its seconds as a wait's, its child's id
+                // occurrence (IR 8): its input as a script's, its seconds as a wait's, its child's id
                 // derived from this node execution, and the workflow's parent as its controlling agent.
                 if (!immediate && node.type === "agent") {
                     const seconds = waitSeconds(node.timeoutSeconds, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), `states.${nodeId}.timeoutSeconds`);
@@ -4016,10 +3543,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     else {
                         const definition = await store.readDefinition(current.workflowSessionId);
                         // A run of a published revision, live or test (design 05: a test pins as a live run would), binds a
-                        // named agent to what its publication pinned (migration 0103; T018, T070): a package republished since
+                        // named agent to what its publication pinned (migration 0088; T018, T070): a package republished since
                         // is never picked up silently. A pin with the exact package revision (R18) runs that revision after a
                         // republish; one without (a publication made before revisions were pinned) is refused once its version
-                        // is gone. A real-agent test run binds to what it pinned when it was admitted (migration 0105: its
+                        // is gone. A real-agent test run binds to what it pinned when it was admitted (migration 0088: its
                         // publication's pins, or a draft's as its publication would pin them), whatever is published since.
                         const pin = !("agent" in node.invoke) ? null
                             : current.mode === "test" && current.testAgentMode === "real" ? agentPinOf(current.testAgentPins, nodeId)
@@ -4039,7 +3566,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     }
                 }
                 // A request's responder, message and deadline are resolved once, here, and frozen for this occurrence
-                // (controller 1.9.0; design workflow-messaging-request.md 2): its seconds as a wait's, its response
+                // (design workflow-messaging-request.md 2): its seconds as a wait's, its response
                 // schema the one its contract declares.
                 if (!immediate && node.type === "messaging" && node.mode === "request") {
                     const scope = scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch);
@@ -4065,7 +3592,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 inputText = canonicalJson(null);
             }
             if (immediate) immediate = { ...immediate, winner: "controller" };
-            // A test run intercepts what an agent, send or request state would do (migration 0102; design 05): an interception
+            // A test run intercepts what an agent, send or request state would do (migration 0088; design 05): an interception
             // record, with what the live effect would have used, replaces the child, the outbox message and the request record;
             // its deadline runs on the run's virtual clock, and its parent, or a fixture, answers it. Checked as live: the
             // input, the message against its contract, the deadline. In agent mode real an agent state is not intercepted: its
@@ -4073,7 +3600,6 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             // are intercepted in its turns instead (test-agent-tools.ts).
             let intercept: { operation: "agent" | "send" | "request"; argumentsText: string; responseSchema: string | null } | null = null;
             if (current.mode === "test" && !immediate && (agent !== null || send !== null || requested !== null)) {
-                if (!requests) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${runId} is a test run, which only controller ${WORKFLOW_V2_REQUEST_CONTROLLER_VERSION} runs.`);
                 if (agent !== null && current.testAgentMode !== "real") {
                     if (current.testAgentMode !== "mocked") {
                         throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Test run ${runId} has agent mode ${String(current.testAgentMode)}, which this build does not run.`);
@@ -4149,8 +3675,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             if (result.reason === "inactive") return { admitted: false, status: result.run.status, outcome: result.run.terminalOutcome };
             // IR 9: the branch's parallel state was already decided, or its time limit passed (then only a terminal is admitted).
             if (result.reason === "cut") return { admitted: false, status: result.run.status, outcome: result.run.terminalOutcome, cut: true };
-            if (result.reason === "expired") return expiredRefusal(result.run, requests);
-            if (result.reason === "stopping") return stoppingRefusal(result.run, requests);
+            if (result.reason === "expired") return expiredRefusal(result.run);
+            if (result.reason === "stopping") return stoppingRefusal(result.run);
             // kv_changed: a set_vars committed after this evaluation read the run.
             if (evaluation >= WORKFLOW_V2_ADMISSION_EVALUATIONS) {
                 throw new WorkflowStoreError("KV_CHANGING", `The run's KV changed during each of ${evaluation} evaluations of state '${nodeId}'; the admission is retried.`);
@@ -4158,7 +3684,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         }
     });
 
-    register("collect", async (actx, rawInput, requests) => {
+    register("collect", async (actx, rawInput) => {
         const input = record(rawInput, "collect input");
         expect(Array.isArray(input.nodeExecutionIds), "nodeExecutionIds is not a list");
         const ids = input.nodeExecutionIds.map((id, index) => text(id, `nodeExecutionIds[${index}]`));
@@ -4176,10 +3702,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             for (const nodeExecutionId of unresolved) {
                 const executed = await store.readNodeExecution(nodeExecutionId);
                 if (!executed || executed.runId !== runId || executed.state !== "pending") continue;
-                // Request-aware collection (controller 1.9.0; design workflow-messaging-request.md 8.5): a request
-                // whose delivery orchestration ended with its request delivered awaits its response; one that ended
-                // with the request still pending fails delivery_failed; a failed request message failed its node then.
-                if (requests && executed.nodeType === "messaging" && executed.receive === null) {
+                // Request-aware collection (design workflow-messaging-request.md 8.5): a request whose delivery
+                // orchestration ended with its request delivered awaits its response; one that ended with the request
+                // still pending fails delivery_failed; a failed request message failed its node then.
+                if (executed.nodeType === "messaging" && executed.receive === null) {
                     const message = await store.readOutboxMessage(nodeExecutionId);
                     if (message?.mode === "request") {
                         if (message.state !== "pending") continue;
@@ -4240,18 +3766,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         // (a branch cancelled under failFast, IR 8, is never collected: its controller dropped it first).
         const collected = rows.map(row => ({ nodeExecutionId: row.nodeExecutionId, outcome: row.outcome, resultKind: row.resultKind,
             ...(row.winner === BRANCH_CANCEL_WINNERS.join || row.winner === BRANCH_CANCEL_WINNERS.timeout ? { cut: true } : {}) }));
-        // Controller 1.8.0 (adversarial review R2-RT-1): a paused run's results are not given to it, read after them, so it
-        // routes none of them and ends no run by them until the resume, also when its cursor waits on work and no admission
-        // would find the pause. They stay stored; a collection after the resume returns them. Its loop was changed in place
-        // since (S7-DX2, S7-DX3; Workflow V2 was never activated): a run that ended is reported as ended.
-        if (!requests) {
-            const current = await runOf(runId);
-            // S7-DX3 (N-1): a run another writer ended is reported so (its controller reconciles the end, observeEnd).
-            if (!ACTIVE_RUN_STATUSES.includes(current.status)) return { collected, ended: true };
-            return current.status === "paused" ? [] : collected;
-        }
-        // Controller 1.9.0: also the run's accepted stop, read after the results, so a stop accepted before this read
-        // reaches the controller with them (it routes none of them then). A stop is never withdrawn.
+        // Also the run's accepted stop, read after the results, so a stop accepted before this read reaches the controller
+        // with them (it routes none of them then). A stop is never withdrawn.
         const run = await runOf(runId);
         // chat: continue (formal Q5): a stopping run's idle continued chats are not started work; they are ended at once.
         if (ACTIVE_RUN_STATUSES.includes(run.status) && Boolean(run.stop)) {
@@ -4261,7 +3777,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     actx.traceWarn?.(`[workflow-v2] run=${runId} an idle agent chat was not ended yet: ${workflowErrorMessage(error)}`));
             }
         }
-        // And whether the run is past its deadline (migration 0104), by its own clock: only a run with one says so.
+        // And whether the run is past its deadline, by its own clock: only a run with one says so.
         const expired = ACTIVE_RUN_STATUSES.includes(run.status) && await store.isRunExpired(run);
         // And whether it is paused (adversarial review R2-RT-1): its controller then routes none of these results, even when
         // every cursor waits on work and no admission would find the pause. And whether it ended (S7-DX2: an accepted cancel
@@ -4271,7 +3787,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             ...(!ACTIVE_RUN_STATUSES.includes(run.status) ? { ended: true } : {}) };
     });
 
-    register("finish", async (_ctx, rawInput, requests) => {
+    register("finish", async (_ctx, rawInput) => {
         const input = record(rawInput, "finish input");
         const run = await runOf(text(input.runId, "runId"));
         // S7-DX3: `elsewhere` says another writer (or an earlier attempt of this finish) had ended the run; the controller
@@ -4288,9 +3804,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         let terminalNode: { nodeExecutionId: string; result: NodeResultInput } | null = null;
         let summary: string | null = null;
         if (typeof input.terminalNodeExecutionId === "string") {
-            // Set only while the run's catch-all state has not run (controller 1.3.0 and later).
+            // Set only while the run's catch-all state has not run.
             const routeOutputErrors = input.routeOutputErrors === true;
-            const ir = await irOf(run, requests);
+            const ir = await irOf(run);
             const executed = await store.readNodeExecution(input.terminalNodeExecutionId);
             if (!executed || executed.runId !== run.runId) throw new WorkflowStoreError("NODE_NOT_FOUND", "Terminal node execution is missing.");
             const node = nodeOf(ir, executed.nodeId);
@@ -4459,7 +3975,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         await stopCancelledEffects(actx, run, reason);
         await retireEndedTests(run);
         // Soft-deleting the session tombstones the definition in the same
-        // transaction (migration 0090 trigger), whichever path deletes it.
+        // transaction (migration 0088 trigger), whichever path deletes it.
         if (command === "delete") await deps.deleteSession(run.workflowSessionId);
         // S7-DX3 (N-2): `elsewhere` says another writer had ended the run: the controller follows that stored end.
         return { runId: run.runId, status: ended.run.status, outcome: ended.run.terminalOutcome, ...(ended.ended ? {} : { elsewhere: true }) };
@@ -4520,9 +4036,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     };
 
     register("notifyParent", async (_actx, rawInput) => {
-        // The budget of the attempt's voluntary waits (27 s of the 30 s attempt timeout of 1.8.0's store activities; 1.9.0's
-        // tagged activities have no attempt timeout) bounds the wait for deliveries and the wait for the lock together; the
-        // connection, the SQL calls and the send are not timed (review DX-5).
+        // The budget of the attempt's voluntary waits (27 s; an attempt has no timeout of its own) bounds the wait for
+        // deliveries and the wait for the lock together; the connection, the SQL calls and the send are not timed (review
+        // DX-5).
         const attemptStarted = Date.now();
         const input = record(rawInput, "notify input");
         const run = await runOf(text(input.runId, "runId"));
@@ -4642,9 +4158,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * find due yet, with the milliseconds left; a result that won first (a
      * cancellation or a deletion) is kept.
      */
-    // How long a paused 1.8.0 run waits before it looks again at a decided wait (R2-RT1-RC1): its backstop period.
-    const pausedRecheckMs = Math.max(1, deps.wakeBackstopMs ?? WORKFLOW_V2_DEFAULT_WAKE_BACKSTOP_MS);
-    register("elapse", async (_ctx, rawInput, requests) => {
+    register("elapse", async (_ctx, rawInput) => {
         const input = record(rawInput, "elapse input");
         const runId = text(input.runId, "runId");
         expect(Array.isArray(input.nodeExecutionIds), "nodeExecutionIds is not a list");
@@ -4654,18 +4168,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         for (const nodeExecutionId of ids) {
             const executed = await store.readNodeExecution(nodeExecutionId);
             if (!executed || executed.runId !== runId
-                || (executed.nodeType !== "wait" && executed.nodeType !== "messaging" && !(requests && (executed.nodeType === "agent" || executed.nodeType === "parallel")))) {
+                || (executed.nodeType !== "wait" && executed.nodeType !== "messaging" && executed.nodeType !== "agent" && executed.nodeType !== "parallel")) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} is not a wait state or a receive state of run ${runId}.`);
             }
-            if (executed.state !== "pending") {
-                // Re-check R2-RT1-RC1 (controller 1.8.0, whose collections give no result while its run is paused): a wait or a
-                // receive decided while the run is paused keeps its past deadline in that controller's cursor until the
-                // resume, which would ask again at once. It is reported not due for a backstop period, so a paused run waits
-                // that long between its looks; after the resume its result is collected and routed as before.
-                if (!requests && run.status === "paused") notDue.push({ nodeExecutionId, remainingMs: pausedRecheckMs });
-                continue;
-            }
-            // IR 9: a parallel state's own time limit (controller 1.9.0), decided only here or by a test run's clock
+            if (executed.state !== "pending") continue;
+            // IR 9: a parallel state's own time limit, decided only here or by a test run's clock
             // (store.elapseParallelNode, the store's one count): timed_out, or blocked when k could no longer happen by then,
             // with its running branches' work cancelled in the same transaction; or its join is due (k successes were
             // committed by the deadline) and nothing is decided. Either way the controller then asks the join (askJoin), which
@@ -4677,7 +4184,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 if (elapsed.result === "not_due") notDue.push({ nodeExecutionId, remainingMs: elapsed.remainingMs });
                 continue;
             }
-            // An agent state's outer deadline (controller 1.9.0): timed_out, decided only here (store.elapseAgentNode; durable
+            // An agent state's outer deadline: timed_out, decided only here (store.elapseAgentNode; durable
             // expiry). Its child is ended when the controller collects the result (endAgent).
             if (executed.nodeType === "agent") {
                 const result: NodeResultInput = {
@@ -4694,8 +4201,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 if (elapsed.result === "not_due") notDue.push({ nodeExecutionId, remainingMs: elapsed.remainingMs });
                 continue;
             }
-            // A request's deadline (controller 1.9.0): timed_out, decided only here (store.elapseRequest; durable expiry).
-            if (requests && executed.nodeType === "messaging" && executed.receive === null) {
+            // A request's deadline: timed_out, decided only here (store.elapseRequest; durable expiry).
+            if (executed.nodeType === "messaging" && executed.receive === null) {
                 const result: NodeResultInput = {
                     ...runtimeError("timed_out", "No response or refusal was accepted before the request's deadline."), winner: "controller",
                 };
@@ -4716,13 +4223,13 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         return { notDue };
     });
 
-    register("runScript", async (actx, rawInput, requests) => {
+    register("runScript", async (actx, rawInput) => {
         const input = parseEffectInput(rawInput);
         const executed = await store.readNodeExecution(input.nodeExecutionId);
         if (!executed || executed.runId !== input.runId) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${input.nodeExecutionId} is missing.`);
         if (executed.state === "completed") return { kind: "completed" };
         const run = await runOf(executed.runId);
-        const ir = await irOf(run, requests);
+        const ir = await irOf(run);
         const node = nodeOf(ir, executed.nodeId);
         if (node.type !== "script") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${executed.nodeId} is not a script state.`);
         if (!deps.enabled()) return { kind: "result", result: runtimeError("unavailable", WORKFLOW_SCRIPTS_DISABLED_MESSAGE) };
@@ -4734,7 +4241,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         // VR-1..3, E1b).
         const tools: { executor: WorkflowToolExecutor | null; opening: Promise<WorkflowToolExecutor> | null; stop: AbortController } = {
             executor: null, opening: null, stop: new AbortController() };
-        // A test run's tool calls are intercepted (migration 0102; design 05): no live tool runs. Each call is recorded by
+        // A test run's tool calls are intercepted (migration 0088; design 05): no live tool runs. Each call is recorded by
         // its stable id (the script's n-th call) and answered by a fixture (its tool and the exact hash of its arguments) or
         // by the parent; the script waits for the answer, within its own timeout. The grant decides which tools a script may
         // call, as live, except that a fixture answers a call of a tool the grant lacks (G3; never a control tool).
@@ -5067,8 +4574,6 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         return { woke: true };
     });
 
-    if (!requestsEnabled) return;
-
     /**
      * Create an agent state's child (its agent orchestration, IR 8; design 03
      * agent node): when the state is still pending and no attempt recorded its
@@ -5080,7 +4585,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * child was being created gets its child ended here. Returns whether the
      * controller must be woken (the state failed here).
      */
-    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.spawnAgent, async (actx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.spawnAgent, async (actx, rawInput) => {
         const input = parseEffectInput(rawInput);
         const client = actx.getClient();
         if (!client) throw new Error("Workflow agent spawn needs the durable client.");
@@ -5117,7 +4622,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             if (!host) {
                 return fail({ ...runtimeError("unavailable", "This worker creates no agent sessions for workflow agent states."), winner: "controller" });
             }
-            const ir = await irOf(run, true);
+            const ir = await irOf(run);
             const state = nodeOf(ir, begun.node.nodeId);
             if (state.type !== "agent") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${begun.node.nodeId} is not an agent state.`);
             const schemas: { [key: string]: JsonValue } = {};
@@ -5222,7 +4727,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     });
 
     /** Every attempt to create an agent state's child failed: the state fails unavailable with the last cause (winner controller). */
-    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.agentSpawnFailed, async (actx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.agentSpawnFailed, async (actx, rawInput) => {
         const input = parseEffectInput(rawInput);
         const cause = textOrNull(record(rawInput, "agent spawn failure").cause, "cause") ?? "unknown";
         const executed = await store.readNodeExecution(input.nodeExecutionId);
@@ -5266,7 +4771,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     });
 
     /** End the child of an agent state the controller collected (endAgentChild). */
-    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.endAgent, async (actx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.endAgent, async (actx, rawInput) => {
         const input = record(rawInput, "end agent input");
         const runId = text(input.runId, "runId");
         const nodeExecutionId = text(input.nodeExecutionId, "nodeExecutionId");
@@ -5296,7 +4801,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     };
 
     /** A continued chat's detached end retry (workflowV2ChatEnd): one look; still owed, it fails, so the schedule looks again. */
-    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.endOwedChat, async (actx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.endOwedChat, async (actx, rawInput) => {
         const input = record(rawInput, "chat end input");
         const client = actx.getClient();
         if (!client) throw new Error("A continued chat's end needs the durable client.");
@@ -5304,7 +4809,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     });
 
     /** The detached end retry's last look: a chat still not visible is reported. */
-    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.endOwedChatLast, async (actx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.endOwedChatLast, async (actx, rawInput) => {
         const input = record(rawInput, "chat end input");
         const client = actx.getClient();
         if (!client) throw new Error("A continued chat's end needs the durable client.");
@@ -5315,7 +4820,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     });
 
     /** End the children of every decided agent state of a run whose end the controller saw (endRunAgents). */
-    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.endAgents, async (actx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.endAgents, async (actx, rawInput) => {
         const runId = text(record(rawInput, "end agents input").runId, "runId");
         const client = actx.getClient();
         if (!client) throw new Error("Workflow agent end needs the durable client.");
@@ -5324,7 +4829,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     });
 
     /**
-     * End a parallel branch at its terminal (controller 1.9.0; IR 8): the
+     * End a parallel branch at its terminal (IR 8): the
      * terminal's output (its template, with the branch's bindings) checked
      * against the terminal's own schema is the branch's result, with the
      * terminal's outcome; an output that cannot be evaluated or stored, or
@@ -5334,7 +4839,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * branch succeeded (its terminal's outcome succeeded, as a business
      * result).
      */
-    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.endBranch, async (_actx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.endBranch, async (_actx, rawInput) => {
         const input = record(rawInput, "end branch input");
         const run = await runOf(text(input.runId, "runId"));
         const nodeExecutionId = text(input.nodeExecutionId, "nodeExecutionId");
@@ -5342,7 +4847,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (!executed || executed.runId !== run.runId || executed.scopeId === ROOT_SCOPE) {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} is not a branch state of run ${run.runId}.`);
         }
-        const ir = await irOf(run, true);
+        const ir = await irOf(run);
         const node = nodeOf(ir, executed.nodeId);
         if (node.type !== "terminal") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${executed.nodeId} is not a terminal state.`);
         let stored = executed;
@@ -5383,7 +4888,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
 
     /**
      * Cancel the other branches of a parallel state whose failFast policy met
-     * a branch that did not succeed (controller 1.9.0; IR 8;
+     * a branch that did not succeed (IR 8;
      * store.cancelBranchScopes): their pending states are decided cancelled
      * (winner fail_fast). IR 9: the same for the branches still running when
      * a join of the first k had its successes (`reason` join; winner join),
@@ -5404,7 +4909,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * cannot be reached fails the activity, as before: the cancellation is
      * not stored until it is.
      */
-    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.cancelBranches, async (actx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.cancelBranches, async (actx, rawInput) => {
         const input = record(rawInput, "cancel branches input");
         const run = await runOf(text(input.runId, "runId"));
         expect(Array.isArray(input.scopeIds), "scopeIds is not a list");
@@ -5475,7 +4980,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     });
 
     /**
-     * Join a parallel state (controller 1.9.0). IR 8, and IR 9 with a join of
+     * Join a parallel state. IR 8, and IR 9 with a join of
      * every branch and no time limit (all_required, D10): once every branch
      * ended, its node is decided in one compare-and-swap. Joined when every
      * branch ended at a terminal with outcome succeeded: the output is their
@@ -5507,7 +5012,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * whatever its join, so a failFast block cuts the other branches and
      * decides the fork in one transaction. A For each keeps its schedule.
      */
-    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.join, async (_actx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.join, async (_actx, rawInput) => {
         const input = record(rawInput, "join input");
         const run = await runOf(text(input.runId, "runId"));
         const parallelNodeExecutionId = text(input.parallelNodeExecutionId, "parallelNodeExecutionId");
@@ -5515,7 +5020,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (!executed || executed.runId !== run.runId || executed.nodeType !== "parallel") {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${parallelNodeExecutionId} is not a parallel state of run ${run.runId}.`);
         }
-        const ir = await irOf(run, true);
+        const ir = await irOf(run);
         const node = nodeOf(ir, executed.nodeId);
         if (node.type !== "parallel" || !Array.isArray(executed.input)) {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${executed.nodeId} is not a parallel state with a manifest.`);
@@ -5590,15 +5095,15 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     });
 
     /**
-     * Surface a test run's intercepted agent, send or request (migration
-     * 0102; design 05): a fixture for it (its operation, its state and the
+     * Surface a test run's intercepted agent, send or request (design
+     * 05): a fixture for it (its operation, its state and the
      * exact hash of its input or message) answers it at once, checked as the
      * parent's answer is (testResultFor), and decides the state; a fixture
      * that is refused is recorded (workflow.test_fixture_refused) and the
      * parent answers instead. Otherwise the parent is told that the run waits
      * for its answer. Returns whether the state was decided here.
      */
-    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.intercept, async (_actx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.intercept, async (_actx, rawInput) => {
         const input = record(rawInput, "intercept input");
         const run = await runOf(text(input.runId, "runId"));
         const nodeExecutionId = text(input.nodeExecutionId, "nodeExecutionId");
@@ -5606,7 +5111,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (!executed || executed.runId !== run.runId || run.mode !== "test") {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} is not a state of test run ${run.runId}.`);
         }
-        const ir = await irOf(run, true);
+        const ir = await irOf(run);
         const node = nodeOf(ir, executed.nodeId);
         const operation = node.type === "agent" ? "agent" as const : node.type === "messaging" && node.mode !== "receive" ? node.mode : null;
         if (operation === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `State ${node.id} has no effect a test run intercepts.`);
@@ -5638,8 +5143,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     });
 
     /**
-     * End a run at its deadline (controller 1.9.0; limits.timeoutSeconds with
-     * onExceeded expired, migration 0104): by the run's own clock (a test
+     * End a run at its deadline (limits.timeoutSeconds with
+     * onExceeded expired): by the run's own clock (a test
      * run's virtual clock, else the store's clock), store.expireRun ends it
      * failed with timed_out, paused or stopping or not, and cancels what is
      * still pending; before the deadline it reports the time left. Then the
@@ -5649,10 +5154,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * still sends the requests. A run that another end decided first is
      * reported as it ended (`expired` false).
      */
-    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.expire, async (actx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.expire, async (actx, rawInput) => {
         const runId = text(record(rawInput, "expire input").runId, "runId");
         const run = await runOf(runId);
-        const ir = await irOf(run, true);
+        const ir = await irOf(run);
         const timeoutSeconds = ir.limits.timeoutSeconds;
         if (timeoutSeconds === undefined) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${runId} declares no deadline.`);
         const label = await store.readRevisionLabel(run.workflowSessionId, run.revision);
@@ -5698,7 +5203,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     });
 
     /**
-     * End a stopping run stopped (controller 1.9.0; design 02 run lifecycle,
+     * End a stopping run stopped (design 02 run lifecycle,
      * D03): when none of its work is pending, or at the stop's deadline by the
      * store's clock (store.finishStoppedRun), which cancels what is still
      * pending then; before that it reports the time left. Then the effect
@@ -5708,7 +5213,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * ended still sends the requests. A run that another end decided first
      * (a cancel, a deletion, a failure) is reported as it ended.
      */
-    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.stop, async (actx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.stop, async (actx, rawInput) => {
         const runId = text(record(rawInput, "stop input").runId, "runId");
         const run = await runOf(runId);
         const label = await store.readRevisionLabel(run.workflowSessionId, run.revision);
@@ -5765,14 +5270,14 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
 
     /**
      * Observe the waiting requests' responders (design 4.4; once per backstop
-     * period, from controller 1.9.0): a responder whose session
+     * period, from the controller): a responder whose session
      * orchestration is in a terminal status (read here, outside the locks) or
      * that is deleted or no longer allowed (decided under the session locks)
      * fails its request; only before its deadline and any expired binding
      * (store.observeRequestResponder). A failed status read leaves the
      * request as it is, for the next observation.
      */
-    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.observe, async (actx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.observe, async (actx, rawInput) => {
         const input = record(rawInput, "observe input");
         const runId = text(input.runId, "runId");
         expect(Array.isArray(input.nodeExecutionIds), "nodeExecutionIds is not a list");
@@ -5810,7 +5315,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * responder with its stable client message id, and the delivery is
      * recorded; the request then waits for its response.
      */
-    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.deliverRequest, async (actx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.deliverRequest, async (actx, rawInput) => {
         const input = parseEffectInput(rawInput);
         const message = await store.readOutboxMessage(input.nodeExecutionId);
         if (!message || message.runId !== input.runId || message.mode !== "request") {
@@ -5839,7 +5344,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         });
         if (begun.kind !== "deliver") return { kind: begun.kind, outcome: begun.node.outcome };
         const run = await runOf(message.runId);
-        const ir = await irOf(run, true);
+        const ir = await irOf(run);
         const clientMessageId = workflowRequestClientMessageId(message.workflowSessionId, message.runId, message.nodeExecutionId);
         await queue.enqueue(responder, {
             prompt: workflowRequestPrompt({
@@ -5861,7 +5366,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     });
 
     /** Every delivery attempt of a request failed: it fails delivery_failed (store.failRequestDelivery), unless decided first. */
-    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.requestDeliveryFailed, async (_ctx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.requestDeliveryFailed, async (_ctx, rawInput) => {
         const input = parseEffectInput(rawInput);
         const cause = text(record(rawInput, "delivery failure").cause, "cause");
         const message = await store.readOutboxMessage(input.nodeExecutionId);

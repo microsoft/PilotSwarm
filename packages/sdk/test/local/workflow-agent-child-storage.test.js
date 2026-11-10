@@ -56,7 +56,7 @@ describe("a Workflow agent step's child client borrows the worker's storage (rev
                     const borrowed = vi.spyOn(PilotSwarmClient.prototype, "_startOnShared");
                     const before = await connections();
                     for (let index = 0; index < 3; index += 1) {
-                        const created = await createWorkflowV2({ catalog, store, duroxideClient: duroxide, requests: true }, {
+                        const created = await createWorkflowV2({ catalog, store, duroxideClient: duroxide }, {
                             workflowSessionId: randomUUID(), parentSessionId: parent, yaml: STEP_WORKFLOW, actor: ACTOR, operationId: `child-${index}`,
                             publish: true, start: { inputs: {} }, notifyParent: false,
                         });

@@ -3,7 +3,7 @@
  * pse/decision/always-on-scope-20261108T1530). New sessions start here and every continue-as-new targets it; 1.0.82 is
  * frozen in orchestration_1_0_82/ and its sessions move here at their next continue-as-new. It is 1.0.82 plus the
  * durable workflow intake (design docs/proposals/workflow-durable-intake.md, revision 3 with amendment 2): its turns are
- * workflow request turns (controller 1.9.0's request, agent and parallel states). Its continue-as-new never targets an
+ * workflow request turns (the Workflow controller's request, agent and parallel states). Its continue-as-new never targets an
  * older version (lifecycle.ts versionedContinueAsNew).
  *
  * Flat event loop backed by a KV FIFO work buffer:

@@ -749,8 +749,7 @@ export function workflowV2TestModeListed(model) {
  * The test review (design 05; mocks M18 to M20; R19, R20, R26, R28) given the
  * view's last command, or null: without `personCommands` (the deployment
  * takes no person's commands), when the workflow takes no test from people (a
- * host that does not run controller 1.9.0, or a workflow agent state's
- * subtree), and unless the definition is a draft (of-06, the owner's decision:
+ * workflow agent state's subtree, or test mode off), and unless the definition is a draft (of-06, the owner's decision:
  * a published workflow is not tested). Never throws.
  *
  * A test runs the exact current revision of the draft with its definition
@@ -802,8 +801,8 @@ export function workflowV2ScenarioDraft(source) {
 /**
  * A test run's answers and clock (design 05; mocks M18 and M19; R19, R20,
  * R26) given the view's last command, or null: without `personCommands`
- * listing test_respond or test_advance (a host without controller 1.9.0, or
- * a workflow agent state's subtree), or unless the read model shows a test
+ * listing test_respond or test_advance (test mode off, or a workflow agent
+ * state's subtree), or unless the read model shows a test
  * run. `waiting` lists the run's held calls that wait for an answer
  * (`awaiting_parent`), with what the answer must match. `respond` and
  * `advance` say whether a person may answer and move the virtual clock now:

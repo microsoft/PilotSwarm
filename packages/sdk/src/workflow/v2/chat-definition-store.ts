@@ -1,5 +1,5 @@
 /**
- * Chat-owned Workflow Definitions (Workflow Simplified stage 2.1; migration 0107; spec "definitions", "editing", "tools";
+ * Chat-owned Workflow Definitions (Workflow Simplified stage 2.1; migration 0088; spec "definitions", "editing", "tools";
  * the coordinator's 2.1 readings Q1–Q10 and F2–F4).
  *
  * A definition belongs to one chat and is named in it; each save is an immutable revision with its author and the revision
@@ -11,9 +11,9 @@
  *   Workflows is active (R6);
  * - Start (WorkflowStore.createDefinition with a chat pin, requireChatStartLocked): the chat row (FOR SHARE: live), the
  *   definition row (FOR SHARE: not deleted), the revision (valid, the YAML being stored), before the Workflow's own rows.
- * A chat that ends ends its Workflows (migration 0107's trigger, R5 and F2).
+ * A chat that ends ends its Workflows (migration 0088's trigger, R5 and F2).
  *
- * Stage 2.3 (migration 0108; P2, P5, P6, E2-7): a package's definition attached to a chat is a locked definition named
+ * Stage 2.3 (migration 0088; P2, P5, P6, E2-7): a package's definition attached to a chat is a locked definition named
  * `<package>/<name>` (attachPackage). Each package version attached is a revision recording the package and its card; a save
  * to a locked definition is refused (DEFINITION_LOCKED), and a person makes an editable copy instead (a first save of the
  * package's YAML under its own name).
@@ -51,7 +51,7 @@ export interface ChatDefinitionRow {
     ownerSessionId: string;
     name: string;
     currentRevision: number;
-    /** 'imported' (0107), 'package' (2.3), 'copy' (a Make a copy, L1), or null (the chat's or a person's first save). */
+    /** 'imported' (a stage 1 import; no migration makes one now), 'package' (2.3), 'copy' (a Make a copy, L1), or null (the chat's or a person's first save). */
     source: string | null;
     /** L1: a copy's source (source 'copy'); null for any other definition. */
     copiedFrom: ChatCopiedFrom | null;
@@ -785,7 +785,7 @@ export class ChatDefinitionStore {
                 `UPDATE ${this.t.definitions} SET deleted_at = now(), deleted_by = $2, updated_at = now() WHERE definition_id = $1 RETURNING deleted_at`,
                 [input.definitionId, canonicalJson(input.actor)]);
             // S2RT-F6: its hidden tests end with it (their reports stay): their bench sessions in id order, then their active test
-            // runs in id order, then their pending nodes, their runs and their sessions, as the chat-ended trigger (0109) does.
+            // runs in id order, then their pending nodes, their runs and their sessions, as the chat-ended trigger does.
             await endDefinitionTests(client, this.schema, input.ownerSessionId, input.definitionId);
             const receipt: ChatDeleteReceipt = { operation: "delete", definitionId: found.definitionId, name: found.name, deletedAt: iso(deleted[0].deleted_at) };
             await this.recordOperation(client, input.ownerSessionId, input.operationId, "delete", input.requestSha256, receipt);

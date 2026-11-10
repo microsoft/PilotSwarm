@@ -17,7 +17,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { createManagementClient } from "../helpers/local-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
-import { WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_V2_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
 import { formattedWorkflowYaml, readWorkflowFromTool, readWorkflowV2, readWorkflowV2DefinitionRevision, readWorkflowV2StepInput, readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
@@ -71,7 +71,7 @@ async function liveWorkflow(catalog, label, { testRunId = null } = {}) {
         await store.startTest({
             workflowSessionId, expectedRevision: 1, definitionHash: compiled.yamlSha256, operationId: "test-1", requestSha256: label,
             start: { runId: testRunId, mode: "test", controllerInstanceId: workflowTestControllerInstanceId(testRunId), inputsText: "{}", kvText: "{}",
-                testAgentMode: "mocked", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION },
+                testAgentMode: "mocked", controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION },
         });
         await store.publish({ workflowSessionId, expectedRevision: 1, definitionHash: compiled.yamlSha256, operationId: "publish",
             requestSha256: label, start: live });
@@ -605,7 +605,7 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             const actor = { kind: "system", name: "step-input-test" };
             await store.createDefinition({ workflowSessionId, parentSessionId: parent, notifyParent: false, yaml, compiled, actor,
                 operationId: "create", requestSha256: "step-input", publish: false, start: null, title: "Workflow: step-input" });
-            const host = { store, requests: true };
+            const host = { store };
             const read = (value, others = {}) => readWorkflowV2(host, workflowSessionId, { ...others, stepInput: value }, "api");
 
             const { stepInput } = await read({ state: "review" });
@@ -719,7 +719,7 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             await store.createDefinition({ workflowSessionId, parentSessionId: parent, notifyParent: false, yaml, compiled,
                 actor: { kind: "system", name: "step-input-parser-test" }, operationId: "create", requestSha256: "step-input-parser",
                 publish: false, start: null, title: "Workflow: step-input-parser" });
-            const read = value => readWorkflowV2({ store, requests: true }, workflowSessionId, { stepInput: value }, "api");
+            const read = value => readWorkflowV2({ store }, workflowSessionId, { stepInput: value }, "api");
 
             // A quoted key (with a space, or with ?? as data, and spaces inside the brackets) is a source the editor sets; a
             // previous step's path is kept exactly as written. A default and a value built of several parts stay as written.

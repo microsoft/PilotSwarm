@@ -934,7 +934,7 @@ export class PilotSwarmWorker {
         this.sessionManager.setDuroxideClient(inspectClient);
 
         // The full Workflow engine (owner decision 2026-11-08T15:30Z): every worker serves orchestration 1.0.83's intake and
-        // request turns, controller 1.9.0 and the agent host of agent states (milestone-worker.ts).
+        // request turns, the Workflow controller and the agent host of agent states (milestone-worker.ts).
         const milestone = await import("./workflow/v2/milestone-worker.js");
 
         const runtimeOptions = {
@@ -1083,7 +1083,7 @@ export class PilotSwarmWorker {
                 registration.handler,
             );
         }
-        // Workflow v2: drafts, publication and durable runs (migration 0089).
+        // Workflow v2: drafts, publication and durable runs (migration 0088).
         if (this._catalog?.workflowStore) {
             registerWorkflowV2(this.runtime, {
                 store: this._catalog.workflowStore(),
@@ -1098,8 +1098,7 @@ export class PilotSwarmWorker {
                     await this.factStore?.deleteSessionFactsForSession(sessionId);
                 },
                 runnerOptions: { executables: workflowScriptSettings.executables },
-                // Controller 1.9.0 with this worker's agent host: every run starts at 1.9.0.
-                workflowRequests: true,
+                // This worker's agent host.
                 agentNodes: milestone.workflowMilestoneAgentNodes({
                     catalog: this._catalog,
                     deploymentAgents: () => ({ userAgents: [...this._rawLoadedAgents], systemAgents: [...this._loadedSystemAgents] }),

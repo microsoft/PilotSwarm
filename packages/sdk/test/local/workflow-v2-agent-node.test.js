@@ -1,8 +1,6 @@
 /**
  * Workflow v2 agent states (IR 8; design 03 agent node, 04 tool surface;
- * requirements R09 to R11, R14 and R15), INACTIVE: only controller 1.9.0
- * runs them, and only tests register it and start runs there (the test-only
- * option workflowRequests and a host with `requests`).
+ * requirements R09 to R11, R14 and R15), on the Workflow controller.
  *
  * - The compiler: agent states compile to IR 8 only with enableAgents; the
  *   task is exactly one of an inline prompt or a named agent; outcomes and
@@ -15,7 +13,7 @@
  *   ended page by page on real rows past 200 settled ones, with failures,
  *   undecided states and a row added meanwhile kept for the next call
  *   (verification of RT-5, M-11).
- * - Controller 1.9.0 on a native duroxide runtime with a test-double host:
+ * - The controller on a native duroxide runtime with a test-double host:
  *   the child is created with the host-generated wrapper and a stable id;
  *   its typed completion routes the state and its session is told done; its
  *   deadline routes timed_out and its session is cancelled; a host refusal
@@ -57,7 +55,7 @@ import { readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
 import { completeWorkflowNodeFromTool, COMPLETE_WORKFLOW_NODE_TOOL } from "../../src/workflow/v2/agent-node-service.ts";
 import {
     branchScopeId, describeWorkflowV2State, endWorkflowV2RunAgents, registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_OWED_AGENT_PAGE,
-    WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowAgentChildSessionId, workflowAgentClientMessageId, workflowLiveControllerInstanceId,
+    WORKFLOW_V2_CONTROLLER_VERSION, workflowAgentChildSessionId, workflowAgentClientMessageId, workflowLiveControllerInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor, WORKFLOW_V2_AGENT_MAX_INVALID_COMPLETIONS } from "../../src/workflow/v2/store.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
@@ -285,7 +283,7 @@ states:
 
 // ─── The store ────────────────────────────────────────────────
 
-/** A store over a migrated schema, and published agent workflows whose live run is admitted for 1.9.0 (no controller runs them). */
+/** A store over a migrated schema, and published agent workflows whose live run is admitted (no controller runs them). */
 async function agentFixture(env) {
     const h = await openWorkflowStore(env);
     const parent = randomUUID();
@@ -303,7 +301,7 @@ async function agentFixture(env) {
                 workflowSessionId, parentSessionId: parent, notifyParent: false, yaml, compiled, actor: ACTOR,
                 operationId: "create", requestSha256: "agent", publish: true, title: "Workflow: agent",
                 start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
-                    inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION },
+                    inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION },
             });
             return { workflowSessionId, runId, compiled };
         },
@@ -788,7 +786,7 @@ describe("workflow v2 agent states: a child created after its end found no sessi
     });
 });
 
-// ─── Controller 1.9.0 on a native runtime ────────────────────
+// ─── The controller on a native runtime ──────────────────────
 
 /** The child session double: it records every message its queue gets as its custom status, and keeps running. */
 const CHILD = "test-agent-child";
@@ -802,7 +800,7 @@ function* agentChild(ctx) {
 }
 
 /**
- * A worker-equivalent registration with workflowRequests and the request tag
+ * A worker-equivalent registration with the request tag
  * declared. With `host`, agent states' children are created by a double that
  * records each spawn request, starts the child double under the session's
  * instance id and gives it the first prompt (or refuses, when `refusal` is
@@ -842,7 +840,6 @@ async function harness(env, { host = true } = {}) {
         notifyParent: async () => { throw new Error("These workflows notify no parent."); },
         deleteSession: async sessionId => catalog.softDeleteSession(sessionId),
         wakeBackstopMs: 500,
-        workflowRequests: true,
         sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
         ...(host ? { agentNodes } : {}),
     });
@@ -850,7 +847,7 @@ async function harness(env, { host = true } = {}) {
     return {
         catalog, store, client, spawns, control,
         // OF-S2-7: a host that checks agent models (every one is usable here), so a start may choose them.
-        host: { catalog, store, duroxideClient: client, requests: true, checkAgentModel: async () => null },
+        host: { catalog, store, duroxideClient: client, checkAgentModel: async () => null },
         async stop() {
             await runtime.shutdown(100);
             await catalog.close();
@@ -889,7 +886,7 @@ const lifecycleCommand = (h, childSessionId) => until(async () => {
 const completeAs = (h, childSessionId, args) => completeWorkflowNodeFromTool(args, { callerSessionId: childSessionId, store: h.store, client: h.client })
     .then(text => JSON.parse(text));
 
-describe("workflow v2 agent states: controller 1.9.0", () => {
+describe("workflow v2 agent states: the controller", () => {
     it("creates the child with the wrapper and a stable id, routes its typed completion, and tells its session done", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
@@ -940,7 +937,7 @@ describe("workflow v2 agent states: controller 1.9.0", () => {
                     endChildStatus: "Running" },
             });
             expect((await h.client.getInstanceInfo(workflowLiveControllerInstanceId(workflowSessionId))).orchestrationVersion)
-                .toBe(WORKFLOW_V2_REQUEST_CONTROLLER_VERSION);
+                .toBe(WORKFLOW_V2_CONTROLLER_VERSION);
             const events = await h.catalog.getSessionEvents(workflowSessionId, 0, 500);
             expect(events.filter(event => event.eventType === "workflow.agent_spawned")).toHaveLength(1);
             expect(events.filter(event => event.eventType === "workflow.agent_ended").map(event => event.data))
@@ -1335,7 +1332,7 @@ const nothingAdmitted = async (h, runId) => {
     expect((await h.store.listNodeExecutions(runId)).map(node => node.nodeId).sort()).toEqual(["fan", "review", "review"]);
 };
 
-describe("workflow v2 agent states while the run is paused (verification of RT-6; controller 1.9.0, test-only)", () => {
+describe("workflow v2 agent states while the run is paused (verification of RT-6)", () => {
     it("ends the child of an agent state that completes while the run is paused, routes its result only after the resume, and cancels the children of a paused run that is cancelled", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
@@ -1555,7 +1552,7 @@ const commandsOf = async (h, childSessionId) => (await childMessages(h, childSes
  * (failFast, IR 8 and IR 9), asks a join or ends the run before the resume, and a decided agent state's child is still
  * ended, its failed end tried again. The node limit ends a run only where it would admit, so not while paused.
  */
-describe("workflow v2 while the run is paused with every cursor waiting (review R2-RT-1; controller 1.9.0, test-only)", () => {
+describe("workflow v2 while the run is paused with every cursor waiting (review R2-RT-1)", () => {
     it("an agent's error with no route ends nothing while paused; the run fails with it after the resume", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
@@ -1723,7 +1720,7 @@ const TIMED_CUT_YAML = ({ agent = 3600, parallel = 4 } = {}) => PARALLEL_AGENT_Y
     .replace("timed_out: late", "timed_out: hold")
     .replace("  late: { type: terminal", "  hold: { type: wait, seconds: 600, transition: { next: { elapsed: late } } }\n  late: { type: terminal");
 
-describe("workflow v2: a parallel state's time limit ends a cut branch's decided agent child (review R3-PS1; controller 1.9.0, test-only)", () => {
+describe("workflow v2: a parallel state's time limit ends a cut branch's decided agent child (review R3-PS1)", () => {
     it("paused: an agent state timed out while its child's end failed is ended by the cut's owed retries, while the run is still paused", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
@@ -1796,7 +1793,7 @@ describe("workflow v2: a parallel state's time limit ends a cut branch's decided
     });
 });
 
-describe("workflow v2 recover ends a dead controller's agent children (verification of RT-3, M-09; controller 1.9.0, test-only)", () => {
+describe("workflow v2 recover ends a dead controller's agent children (verification of RT-3, M-09)", () => {
     it("M-09: a recover whose child cleanup fails, then loses the record of a sent end, is finished by its repeats and a new recover, with one command id and no new child", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {

@@ -207,7 +207,7 @@ function withoutBudgetGate(catalog) {
 /**
  * `script(call, prompt, opts)` plays the model session's n-th run (see
  * scriptedModelSession). `options.testOptions` adds to the worker's test-only
- * switches (workflowRequests, for workflow request and agent states).
+ * switches.
  * `options.workspaceProvider` serves workspace
  * attaches (a fake provider), with `options.managerExtras` for the session
  * manager methods a workspace session needs. `options.runtimeOptions` are
@@ -244,7 +244,7 @@ export async function intakeNativeFixture(env, script, options = {}) {
             if (sessionId !== intake.recipientSessionId) throw new Error(`session ${sessionId} is not this test's`);
         };
         // The config each turn gives the session manager, as given (a shallow copy): the session manager declares the model's
-        // tools from it (a 1.9.0 turn's workflowMilestoneTurn and an agent state's own child's workflowAgentChild), and this
+        // tools from it (a 1.0.83 turn's workflowMilestoneTurn and an agent state's own child's workflowAgentChild), and this
         // double does not declare anything, so a case reads it here.
         const sessionConfigs = [];
         const sessionManager = {

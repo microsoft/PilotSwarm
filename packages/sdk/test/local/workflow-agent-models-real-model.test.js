@@ -1,7 +1,7 @@
 /**
  * OF-S2-7 on a REAL model: one agent node mapped to a model at start completes on that model, while the chat that owns
  * the Workflow is on its own model and effort (an unset node would inherit those). Local target only: a worker in this
- * process with the test-only option (testOptions.workflowRequests) on its own test schemas and the model catalog of
+ * process on its own test schemas and the model catalog of
  * PS_MODEL_PROVIDERS_PATH.
  *
  * It spends model tokens, so it runs only when asked: PS_WORKFLOW_V2_REAL_MODEL=run with PS_WORKFLOW_V2_REAL_MODEL_REF
@@ -102,7 +102,7 @@ describe("OF-S2-7: per-node models on a real model (local target)", () => {
                 await withClient(env, { worker }, async (client) => {
                     const store = catalog.workflowStore();
                     // Review OF7-R1: the start's choice is checked as a worker checks it, against the owning chat's catalog.
-                    const host = { catalog, store, duroxideClient: client._getDuroxideClient(), requests: true,
+                    const host = { catalog, store, duroxideClient: client._getDuroxideClient(),
                         checkAgentModel: client._workflowAgentModelCheck() };
                     const parent = randomUUID();
                     await catalog.createSession(parent, { owner: OWNER, model: plan.model.ref, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });

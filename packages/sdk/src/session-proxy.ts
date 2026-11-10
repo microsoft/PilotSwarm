@@ -1647,8 +1647,8 @@ export function registerActivities(
         /** 1.0.83 (runTurnV5): the invocation this attempt carries, already checked; null on every other name. */
         turnIntake: IntakeTurnField | null = null,
         /**
-         * A 1.0.83 turn (the latest version's runTurnV5 names): a workflow request turn, whose host runs controller 1.9.0's
-         * request, agent and parallel states, and whose session can answer a workflow's request (respond_session_request).
+         * A 1.0.83 turn (the latest version's runTurnV5 names): a workflow request turn, whose host runs the Workflow
+         * controller's request, agent and parallel states, and whose session can answer a workflow's request (respond_session_request).
          * A frozen version's turn (runTurn, runTurnV4) is not.
          */
         workflowRequestTurn = false,
@@ -2721,10 +2721,9 @@ export function registerActivities(
             }
         };
 
-        // Every worker runs controller 1.9.0 (owner decision 2026-11-08T15:30Z), so every turn's host does, a frozen
+        // Every worker runs the full Workflow engine (owner decision 2026-11-08T15:30Z), so every turn's host does, a frozen
         // version's turn included (a chat of the previous release, until its continue-as-new): the workflow tools take
-        // request, agent and parallel states and the stop and test operations, every run starts at 1.9.0 (controller 1.8.0
-        // stays registered but unreachable), and a publication pins its named agents: package agents at the registry's
+        // request, agent and parallel states and the stop and test operations, and a publication pins its named agents: package agents at the registry's
         // exact revision, this worker's deployment and system agents by name (agent-resolver.ts).
         const workflowV2Host = async (): Promise<WorkflowToolHost> => {
             if (!catalog?.workflowStore) throw new Error("Workflow storage is unavailable on this worker.");
@@ -2737,7 +2736,6 @@ export function registerActivities(
                 ...(packageWorkflowSource ? { packageWorkflows: packageWorkflowSource } : {}),
                 // OF-S2-7: an agent node's model chosen at start is checked against the owning chat's catalog (its owner's).
                 checkAgentModel: sdkClient._workflowAgentModelCheck(),
-                requests: true,
                 // The test operations only while workflow test mode is on (spec 16; off by default).
                 testMode: workflowTestModeFromEnv(),
                 resolveAgent: createWorkflowAgentResolver({
@@ -3228,7 +3226,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }, workflowTestScope, input.sessionId)(tool, args);
                 },
             } : {}),
-            /** Controller 1.9.0's tool surface: the workflow tools' descriptions match what their host takes (R26). */
+            /** A workflow request turn's tool surface: the workflow tools' descriptions match what their host takes (R26). */
             ...(workflowRequestTurn ? { workflowMilestone: true } : {}),
             /** complete_workflow_node (agent states): the calling session is the host-stamped child of the state. */
             ...(workflowAgentChild ? {
@@ -6684,7 +6682,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         activityCtx.traceInfo(`[sendCommandToSession] session=${input.sessionId} cmd=${input.command?.cmd}`);
         // Stage 2.1 (R4): complete_agent's done for a chat with an active Workflow is refused; the orchestration's catch tells
         // the caller (complete_agent failed: …). A parent's own shutdown cascade is not refused: its children end, and their
-        // Workflows with them (migration 0107's trigger).
+        // Workflows with them (migration 0088's trigger).
         if (input.command?.cmd === "done" && input.command?.args?.reason === "Completed by parent") {
             const r4 = await chatCompletionRefusalText(input.sessionId);
             if (r4) throw new Error(r4);

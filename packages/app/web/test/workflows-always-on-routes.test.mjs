@@ -45,7 +45,7 @@ async function harness() {
         _ensureStarted() {},
         _started: true,
         // As every management client is now configured (its default): a person's commands, on the full engine.
-        config: { workflowCommands: { requests: true } },
+        config: { workflowCommands: {} },
         _catalog: {
             workflowStore: () => { counts.reads += 1; return { readDefinition: async () => ({ parentSessionId: "p1" }), readWorkflowLineage: async () => null }; },
             getSession: async (sessionId) => { counts.reads += 1; return { sessionId, sessionKind: "workflow", deletedAt: null }; },

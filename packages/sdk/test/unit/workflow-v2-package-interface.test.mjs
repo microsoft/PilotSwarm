@@ -2,7 +2,7 @@
  * A package agent's workflow interface (workflow/v2/package-interface.ts;
  * design 04 "Package-agent I/O export", 03 package agents, 09
  * `interface: name@version`; R09, T011, T071, mock M17), DB-less. INACTIVE:
- * only a host that runs controller 1.9.0 compiles agent states and checks an
+ * only a host that runs the Workflow controller compiles agent states and checks an
  * interface at publication.
  *
  * - An agent file declares it in its front matter (schemaVersion 5): the

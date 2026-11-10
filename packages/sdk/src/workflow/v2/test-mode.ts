@@ -13,8 +13,7 @@ import { promptSafeJson, workflowUpdateHeader, workflowUpdateMessage, workflowUp
 import { redactErrorThenClip } from "./redact.js";
 
 /**
- * Workflow test runs (design 05 tool-mocked testing; R19, R20, R28;
- * controller 1.9.0 runs them).
+ * Workflow test runs (design 05 tool-mocked testing; R19, R20, R28).
  *
  * A test run executes its scripts normally: their direct effects (network,
  * files, processes, the clock, randomness) are real. What the framework

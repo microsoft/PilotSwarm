@@ -146,9 +146,9 @@ const webClient = (bootstrap) => new WebPilotSwarmManagementClient({ api: { getB
     assert.equal(toolsWith({ mgmt }).has("update_workflow"), false);
 }
 
-// 5b. The test-only option: the controller version the runs start at and the operations a person may send, and the tool.
-for (const [requests, controllerVersion, stop] of [[false, "1.8.0", false], [true, "1.9.0", true]]) {
-    const mgmt = directClient({ workflowCommands: { requests } });
+// 5b. A person's commands: the controller version the runs start at and the operations a person may send, and the tool.
+for (const [workflowCommands, controllerVersion, stop] of [[{}, "1.0.0", true]]) {
+    const mgmt = directClient({ workflowCommands });
     const advertised = await mgmt.getWorkflowCapabilities();
     const { tool, resource } = await describedBy(capabilityCtx(mgmt, { workflowCommands: true }));
     assert.deepEqual(tool.workflows, advertised);
@@ -346,7 +346,7 @@ console.log("✅ the retired Workflow V2 test environment switch: every server r
     try {
         for (const off of [descriptions({ workflowCommands: true, mgmt: {} }), descriptions({ workflowCommands: true, workflowTestMode: false, mgmt: {} })]) {
             for (const word of ["test_respond", "test_advance", "agent_mode", "fixtures", "interception_id", " test,"]) assert.ok(!off.includes(word), word);
-            // Every worker runs controller 1.9.0: stop is named without a condition.
+            // Stop is named without a condition.
             assert.ok(off.includes("operation (replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel and stop),"), off);
             assert.ok(!/controller 1\.9\.0|when the workers run/.test(off), off);
             assert.ok(off.includes("grace_seconds"));

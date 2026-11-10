@@ -73,8 +73,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
 
     if (ctx.workflowCommands !== true) return;
 
-    // Off, update_workflow names stop and no test operation. Every worker runs controller 1.9.0, so stop (and, with test mode
-    // on, the test operations) are named without a condition.
+    // Off, update_workflow names stop and no test operation; with test mode on, the test operations too.
     const operations = testMode
         ? "operation (replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel, stop, test, test_respond "
             + "and test_advance), operation_id (repeat it to retry the same command) and the operation's arguments (expected_revision, "

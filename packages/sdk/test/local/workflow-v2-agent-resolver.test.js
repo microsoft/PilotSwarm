@@ -1,10 +1,8 @@
 /**
  * Workflow v2 publication pins from the agent registry (workflow/v2/agent-resolver.ts;
  * design 03 package agents, 02 publication; R09, R18), on real PostgreSQL,
- * INACTIVE: only the hosts that run controller 1.9.0 pin named agents (a
- * management client created with the test-only option
- * workflowCommands.requests, and a worker turn with the test-only option
- * workflowRequests).
+ * on every host that publishes: a management client that takes a person's
+ * commands, and a worker turn.
  *
  * - A person's publication (the management client's updateWorkflow): each
  *   named agent state is pinned to the registry package that the workflow's
@@ -85,7 +83,7 @@ function naming(agents) {
     }, null, 2);
 }
 
-/** A draft workflow of `parent` (revision 1), compiled as a 1.9.0 host compiles it. */
+/** A draft workflow of `parent` (revision 1), compiled as a host compiles it. */
 async function draftOf(catalog, store, parent, yaml) {
     const workflowSessionId = randomUUID();
     const compiled = compileWorkflowV2(yaml, { enableRequests: true, enableAgents: true });
@@ -114,7 +112,7 @@ describe("workflow v2: a person's publication pins named agents from the agent r
         await catalog.initialize();
         const mgmt = new PilotSwarmManagementClient({
             store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema,
-            workflowCommands: { requests: true },
+            workflowCommands: {},
         });
         await mgmt.start();
         try {
@@ -198,7 +196,7 @@ describe("workflow v2: a person's publication matches a state's contract against
         await catalog.initialize();
         const mgmt = new PilotSwarmManagementClient({
             store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema,
-            workflowCommands: { requests: true },
+            workflowCommands: {},
         });
         await mgmt.start();
         try {

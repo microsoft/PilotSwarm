@@ -229,7 +229,7 @@ test("PRS-002: the HTTP save of an agent step's session is refused with the huma
             workflowSessionId: "wf-1", controllingSessionId: "chat-1", distance: 0 } }),
     };
     const mgmt = Object.assign(Object.create(PilotSwarmManagementClient.prototype), {
-        config: { workflowCommands: { requests: true } },
+        config: { workflowCommands: {} },
         _ensureStarted() {},
         _catalog: { getSession: async (sessionId) => ({ sessionId, sessionKind: "agent", deletedAt: null, owner }), workflowStore: () => store },
         _artifactStore: null,

@@ -2,7 +2,7 @@
  * Named branches (IR 11, owner decision 2026-11-08T00:35Z) on a REAL model: one parallel state with two named branches,
  * quick and careful, each with its own agent node mapped to its own model at start. Both run at once; each completes on
  * its own model and effort, never on the other's or the chat's; the join passes { quick: output, careful: output }.
- * Local target only: a worker in this process with the test-only option (testOptions.workflowRequests) on its own test
+ * Local target only: a worker in this process on its own test
  * schemas and the model catalog of PS_MODEL_PROVIDERS_PATH.
  *
  * It spends model tokens, so it runs only when asked: PS_WORKFLOW_V2_REAL_MODEL=run with PS_WORKFLOW_V2_REAL_MODEL_REF
@@ -127,7 +127,7 @@ describe("named branches on a real model, two branches on two models (local targ
                     const store = catalog.workflowStore();
                     // Each branch's agent node is its own state id, so each takes its own entry, checked against the owning
                     // chat's catalog as a worker checks it.
-                    const host = { catalog, store, duroxideClient: client._getDuroxideClient(), requests: true,
+                    const host = { catalog, store, duroxideClient: client._getDuroxideClient(),
                         checkAgentModel: client._workflowAgentModelCheck() };
                     const parent = randomUUID();
                     await catalog.createSession(parent, { owner: OWNER, model: plan.model.ref, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });

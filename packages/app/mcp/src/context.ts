@@ -156,7 +156,7 @@ export interface CreateContextOptions {
      * the management client takes them on the full engine (its default); in web mode the deployment takes them. `null`: no
      * update_workflow, and in direct mode no person's commands (a test).
      */
-    workflowCommands?: { requests?: boolean } | null;
+    workflowCommands?: { testMode?: boolean } | null;
 }
 
 /** The session an MCP server acts for (PILOTSWARM_ORIGINATING_SESSION_ID, trimmed), or null when it was not started for one. */

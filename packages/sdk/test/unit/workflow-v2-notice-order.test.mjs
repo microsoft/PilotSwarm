@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
     registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_COMMAND_READ_BATCH, WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS, WORKFLOW_V2_NOTICE_KEPT_AS_NOTE,
-    WORKFLOW_V2_STORE_RETRY, workflowV2Effect,
+    workflowV2Effect,
 } from "../../dist/workflow/v2/runtime.js";
 
 // Adversarial review WFO-1 (TLC parent.late-message, parent.late-request): a send's message or a request to the parent
@@ -279,23 +279,13 @@ test("E3-R1, DX-5: the voluntary waits (deliveries in flight, the held lock) end
     assert.ok(Date.now() - started < 2_000);
 });
 
-// Owed D-T9's finding (parent decision store-retry-timeout): duroxide 0.1.32's with_total_timeout is an alias of
-// with_timeout, and duroxide-node 0.2.4 applies it after timeoutMs, so a totalTimeoutMs replaced the 30 s per-attempt
-// timeout of the store activities. The policy has none: each 1.8.0 attempt is timed out at 30 s, and the notice's waits
-// fit in that.
-test("the store activities' retry policy times each attempt out at 30 s and sets no total timeout (a duroxide alias of it)", () => {
-    assert.equal(WORKFLOW_V2_STORE_RETRY.timeoutMs, 30_000);
-    assert.equal(Object.hasOwn(WORKFLOW_V2_STORE_RETRY, "totalTimeoutMs"), false);
-    assert.ok(WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS < WORKFLOW_V2_STORE_RETRY.timeoutMs);
-});
-
-// Duroxide review DX-RECORD, V-1: the 1.8.0 effect orchestration stores the script's result and wakes its controller as
-// ordinary activities with no attempt timeout (duroxide-node 0.2.4's typed retry policy requires one), retried after an
-// error on its own durable timers, as often as the store activities' (5 attempts). DX-2: a read of the command queue takes
-// fewer messages in a row than duroxide's 100 per turn.
-test("DX-RECORD, V-1, DX-2: the effect's record and wake are timeout-free activities retried on durable timers; a command read takes at most 32 messages", () => {
+// Duroxide review DX-RECORD, V-1: the effect orchestration stores the script's result and wakes its controller as tagged
+// activities with no attempt timeout (duroxide-node 0.2.4's typed retry policy requires one and cannot carry a tag),
+// retried after an error on its own durable timers (5 attempts). DX-2: a read of the command queue takes fewer messages in
+// a row than duroxide's 100 per turn.
+test("DX-RECORD, V-1, DX-2: the effect's record and wake are timeout-free tagged activities retried on durable timers; a command read takes at most 32 messages", () => {
     const ctx = {
-        scheduleActivityTyped: (name, input) => ({ kind: "activity", name, input }),
+        scheduleActivityTyped: (name, input) => ({ kind: "activity", name, input, withTag(tag) { return { ...this, tag }; } }),
         scheduleActivityWithRetryTyped: (name, input, policy) => ({ kind: "retry", name, input, policy }),
         scheduleTimer: ms => ({ kind: "timer", ms }),
     };
@@ -326,6 +316,7 @@ test("DX-RECORD, V-1, DX-2: the effect's record and wake are timeout-free activi
         ["activity", WORKFLOW_V2_ACTIVITIES.wake],
     ]);
     assert.ok(ok.tasks.every(task => task.kind !== "retry"), "no retry policy, so no attempt timeout");
+    assert.ok(ok.tasks.every(task => task.kind !== "activity" || task.tag === "pilotswarm.workflow-request.v1"), "every activity is tagged");
     assert.deepEqual(ok.tasks[1].input, { ...input, outcome: ran });
     // Every attempt fails: 5 attempts, 4 durable delays, then the last error ends the orchestration.
     assert.throws(() => drive(task => (task.name === WORKFLOW_V2_ACTIVITIES.recordEffectResult ? { error: new Error("store unavailable") }
@@ -338,6 +329,6 @@ test("DX-RECORD, V-1, DX-2: the effect's record and wake are timeout-free activi
             return { error: new Error("store unavailable") };
         });
     } catch { /* the last error */ }
-    assert.equal(attempts, WORKFLOW_V2_STORE_RETRY.maxAttempts);
+    assert.equal(attempts, 5);
     assert.equal(WORKFLOW_V2_COMMAND_READ_BATCH, 32);
 });

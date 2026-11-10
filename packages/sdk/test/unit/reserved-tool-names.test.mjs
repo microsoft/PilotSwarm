@@ -30,14 +30,14 @@ test("runtime-discovered Copilot names are reserved before the first turn", () =
 });
 
 test("the workflow turn tools are reserved whatever a session declares", () => {
-    // The same names as the tools a 1.9.0 turn declares (their modules are not imported by the reserved list).
+    // The same names as the tools a 1.0.83 turn declares (their modules are not imported by the reserved list).
     assert.deepEqual([...WORKFLOW_TURN_TOOL_NAMES].sort(), [COMPLETE_WORKFLOW_NODE_TOOL, RESPOND_SESSION_REQUEST_TOOL].sort());
     // The worker checks package tools against an ordinary session's declarations, which never have them.
     const ordinary = [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()].map(tool => tool.name);
     const declared = ManagedSession.subAgentToolDefs({ workflowMilestone: true, workflowAgentChild: true }).map(tool => tool.name);
     for (const name of WORKFLOW_TURN_TOOL_NAMES) {
         assert.ok(!ordinary.includes(name), `an ordinary session does not declare ${name}`);
-        assert.ok(declared.includes(name), `a 1.9.0 agent state's child declares ${name}`);
+        assert.ok(declared.includes(name), `an agent state's child declares ${name}`);
         assert.equal(findReservedPackageToolName(["domain_tool", name], ordinary, []), name, `a package tool named ${name}`);
         // A capability export is checked against no platform list at all.
         assert.equal(findReservedPackageToolName([name], [], []), name, `a capability tool named ${name}`);

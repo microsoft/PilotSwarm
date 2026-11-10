@@ -27,7 +27,7 @@ import { canonicalJson, isJsonObject, sha256Hex, type JsonObject, type JsonValue
 import { WorkflowStoreError, type WorkflowActor, type WorkflowDefinitionReceipt } from "./store.js";
 import { WORKFLOW_HUMAN_INPUT_DENIED, workflowHumanInputError } from "./input-policy.js";
 import { parseWorkflowAgentModels, readStoredAgentModels, type WorkflowAgentModels } from "./agent-models.js";
-import { compileWorkflowV2ForHost, createWorkflowV2, requireNoAgentBringsWorkflows, type WorkflowV2Host } from "./service.js";
+import { compileWorkflowV2Definition, createWorkflowV2, requireNoAgentBringsWorkflows, type WorkflowV2Host } from "./service.js";
 import { requireWorkflowScripts } from "./scripts-gate.js";
 import { WORKFLOW_V2_MILESTONE_IR_VERSION, type WorkflowCompileResult } from "./compiler.js";
 import { workflowV2GraphJson } from "./tools.js";
@@ -214,7 +214,7 @@ export async function saveChatWorkflowDefinition(host: WorkflowV2Host, request: 
         || request.expected.revision < 1)) {
         throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "The revision guard needs the definition id and the revision the save was based on.");
     }
-    const compiled = request.compiled ?? compileWorkflowV2ForHost(host, request.yaml);
+    const compiled = request.compiled ?? compileWorkflowV2Definition(request.yaml);
     if (compiled.name && compiled.name !== name) {
         throw new WorkflowStoreError("WORKFLOW_NAME_MISMATCH", `The YAML's metadata.name is ${compiled.name}, not ${name}. Nothing was saved.`);
     }
@@ -277,7 +277,7 @@ async function replayChatStart(host: WorkflowV2Host, request: Parameters<typeof 
     // depth limit and budget, its own claim not counted. One whose Workflow was stored is answered from what it made.
     const resumedClaim = !(await host.store.readDefinition(workflowSessionId));
     if (resumedClaim) {
-        const again = compileWorkflowV2ForHost(host, saved.yaml);
+        const again = compileWorkflowV2Definition(saved.yaml);
         if (!again.valid) {
             const first = again.diagnostics.find(item => item.severity !== "warning");
             throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${prior.revision} of ${pinned.name} does not compile in this version`
@@ -351,7 +351,7 @@ export async function startChatWorkflowDefinition(host: WorkflowV2Host, request:
     }
     // Owner 2026-11-09T06:30Z: a Start compiles the revision's YAML again. One this build no longer compiles (an agent state's
     // `chat:`, now `session:`) is refused with its first error, so the one save it needs is plain.
-    const again = compileWorkflowV2ForHost(host, saved.yaml);
+    const again = compileWorkflowV2Definition(saved.yaml);
     if (!again.valid) {
         const first = again.diagnostics.find(item => item.severity !== "warning");
         throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} of ${definition.name} does not compile in this version`
@@ -412,7 +412,7 @@ export async function listChatWorkflowDefinitions(host: Pick<WorkflowV2Host, "st
  * `graph` (the screens' read, stage 2.1b): the revision's graph as a Workflow's view draws it (workflowV2GraphJson), for a
  * valid revision; null for one with errors.
  */
-export async function readChatWorkflowDefinition(host: Pick<WorkflowV2Host, "store" | "requests">, ownerSessionId: string,
+export async function readChatWorkflowDefinition(host: Pick<WorkflowV2Host, "store">, ownerSessionId: string,
     ref: { definitionId?: string | null; name?: string | null }, options: { revision?: number | null; forChat?: boolean; graph?: boolean } = {})
     : Promise<ChatDefinitionView & { revision: ChatRevisionRow | null; graph?: { [key: string]: JsonValue } | null }> {
     const definition = ref.definitionId ? await host.store.chat.readDefinition(ref.definitionId)
@@ -431,7 +431,7 @@ export async function readChatWorkflowDefinition(host: Pick<WorkflowV2Host, "sto
     // Owner 2026-11-09T07:03Z: the graph shows what a Start runs. A Start compiles the revision's YAML again, so a revision
     // saved before an agent session's default changed shows it as a Start runs it. A YAML this build no longer compiles
     // (one with `chat:`, now `session:`) shows the graph stored with it; its Start is refused in words.
-    const again = revision?.valid && typeof revision.yaml === "string" ? compileWorkflowV2ForHost(host, revision.yaml) : null;
+    const again = revision?.valid && typeof revision.yaml === "string" ? compileWorkflowV2Definition(revision.yaml) : null;
     const ir = again?.valid && again.ir ? again.ir : revision?.valid && revision.irSha256
         ? await host.store.chat.readRevisionIr(definition.definitionId, revision.revision, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION }) : null;
     return { ...view, revision, graph: ir ? workflowV2GraphJson(ir, revision!.revision) : null };
@@ -448,7 +448,7 @@ export async function deleteChatWorkflowDefinition(host: Pick<WorkflowV2Host, "s
 
 /**
  * R4: a chat cannot complete while one of its Workflows is active. The refusal names them (WORKFLOW_ACTIVE, 409); null
- * when the chat may complete. Its cancel, failure and deletion end its Workflows instead (migration 0107's trigger).
+ * when the chat may complete. Its cancel, failure and deletion end its Workflows instead (migration 0088's trigger).
  */
 export async function chatCompletionRefusal(host: Pick<WorkflowV2Host, "store">, ownerSessionId: string): Promise<WorkflowStoreError | null> {
     const active = await host.store.chat.activeWorkflowsOfChat(ownerSessionId);
@@ -537,7 +537,7 @@ export async function attachChatPackageWorkflow(host: WorkflowV2Host, request: {
         { ref: entry.ref, semver: entry.semver });
     }
     const yaml = await requirePackages(host).readYaml(entry);
-    const compiled = compileWorkflowV2ForHost(host, yaml);
+    const compiled = compileWorkflowV2Definition(yaml);
     if (!compiled.valid || !compiled.ir) {
         const first = compiled.diagnostics.find(item => item.severity !== "warning");
         throw new WorkflowStoreError("PACKAGE_WORKFLOW_UNSUPPORTED", `This server cannot run ${entry.ref} ${entry.semver}`
@@ -586,7 +586,7 @@ export async function copyChatPackageWorkflow(host: WorkflowV2Host, request: {
     }
     const revision = await host.store.chat.readRevision(definition.definitionId, request.revision ?? definition.currentRevision);
     if (!revision) throw new WorkflowStoreError("REVISION_NOT_FOUND", `${definition.name} has no revision ${request.revision ?? definition.currentRevision}.`);
-    const compiled = compileWorkflowV2ForHost(host, revision.yaml);
+    const compiled = compileWorkflowV2Definition(revision.yaml);
     if (!compiled.name) throw new WorkflowStoreError("DEFINITION_INVALID", `${definition.name} has no metadata.name to name its copy.`);
     // L1: the copy records where it came from (source 'copy'): the locked definition, the revision and its package version.
     const copiedFrom: ChatCopiedFrom = { definitionId: definition.definitionId, name: definition.name, revision: revision.revision,

@@ -40,6 +40,7 @@ import { canonicalJson, jsonSha256 } from "../../src/workflow/v2/json.ts";
 import { registerActivities } from "../../src/session-proxy.ts";
 import { controlWorkflowV2Run, createWorkflowV2, SESSION_COMMAND_OPERATION_PREFIX } from "../../src/workflow/v2/service.ts";
 import { registerWorkflowV2, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
@@ -87,7 +88,7 @@ async function harness(env, { factStore, wrapActivityStore } = {}) {
     const store = catalog.workflowStore();
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
     const client = new Client(provider);
-    const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
+    const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] } });
     registerWorkflowV2(runtime, {
         store, catalog,
         enabled: () => true,

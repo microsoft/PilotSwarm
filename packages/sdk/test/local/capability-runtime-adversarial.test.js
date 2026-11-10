@@ -147,7 +147,7 @@ describe("capability binding exact identity and access boundaries", () => {
     });
 
     it("rejects the workflow turn tools as exports, though an ordinary session never declares them", () => {
-        // A 1.9.0 turn declares respond_session_request, and an agent state's own child complete_workflow_node; a capability
+        // A 1.0.83 turn declares respond_session_request, and an agent state's own child complete_workflow_node; a capability
         // export of either name would be declared twice there, so it is refused for every session, as a reserved name.
         for (const name of ["complete_workflow_node", "respond_session_request"]) {
             const src = source("shared", { tools: [tool("lookup"), tool(name)] });

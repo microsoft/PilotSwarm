@@ -1,6 +1,6 @@
 /**
  * The harness of the robust join tests (J3; test design join-k-of-n, hooks HG-1, HG-3, HG-4 and HG-10), against the
- * real store on PostgreSQL and controller 1.9.0 on a native duroxide runtime (test-only registration):
+ * real store on PostgreSQL and the Workflow controller on a native duroxide runtime (test-only registration):
  *
  * - joinBaseOf: one catalog, store, provider and client for a test, and a private pg pool (`q`) to read rows the store
  *   writes, as SQL sees them (their exact completed_at, deadline_at and commit rank; HG-3).
@@ -174,7 +174,7 @@ export async function joinBaseOf(env) {
     const q = async (text, params = []) => (await pool.query(text.replaceAll("SCHEMA.", `"${env.cmsSchema}".`), params)).rows;
     return {
         catalog, store, provider, client, q, pool, schema: env.cmsSchema,
-        host: { catalog, store, duroxideClient: client, requests: true },
+        host: { catalog, store, duroxideClient: client },
         async close() {
             try { await catalog.close(); } finally { await pool.end(); }
         },
@@ -182,7 +182,7 @@ export async function joinBaseOf(env) {
 }
 
 /**
- * A worker-equivalent registration on `base` (workflowRequests, the request tag declared), with `wrap` (activity name ->
+ * A worker-equivalent registration on `base` (the request tag declared), with `wrap` (activity name ->
  * (realHandler) => handler) around the real handlers (HG-1). `calls` counts each wrapped activity's deliveries; `handlers`
  * are the real registered handlers, so a test can call one as a contender exactly as a delivery would (with the events it
  * records). The activity lock is a PilotSwarm worker's default (10 s, renewed every 5 s while an activity runs: a running
@@ -212,7 +212,7 @@ export async function joinRuntimeOn(base, { wrap = {}, workerConcurrency = JOIN_
         authorizeParentNotification: async () => false,
         notifyParent: async () => { throw new Error("These workflows notify no parent."); },
         deleteSession: async sessionId => base.catalog.softDeleteSession(sessionId),
-        wakeBackstopMs, workflowRequests: true,
+        wakeBackstopMs, 
         sessionQueue: { ...sessionQueueTransport(base.client), version: async () => "1.0.83" },
         ...deps,
     });

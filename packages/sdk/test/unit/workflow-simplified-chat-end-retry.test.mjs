@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    endOwedContinuedChat, endWorkflowV2ContinuedChats, registerWorkflowV2, WORKFLOW_V2_CHAT_END_NAME, WORKFLOW_V2_REQUEST_ACTIVITIES,
+    endOwedContinuedChat, endWorkflowV2ContinuedChats, registerWorkflowV2, WORKFLOW_V2_CHAT_END_NAME, WORKFLOW_V2_ACTIVITIES,
     workflowAgentChatSessionId, workflowChatEndInstanceId,
 } from "../../dist/workflow/v2/runtime.js";
 
@@ -87,7 +87,7 @@ test("O2: a look that cannot take the chat's end lock leaves the end to the hold
 function activitiesOf(w) {
     const activities = new Map();
     registerWorkflowV2({ registerActivity: (name, fn) => activities.set(name, fn), registerOrchestrationVersioned: () => {} }, {
-        store: w.store, catalog: {}, enabled: () => true, workflowRequests: true,
+        store: w.store, catalog: {}, enabled: () => true,
         resolveToolBinding: async () => null, openToolExecutor: async () => { throw new Error("no tools"); },
         authorizeParentNotification: async () => true, notifyParent: async () => {}, deleteSession: async () => {},
     });
@@ -95,7 +95,7 @@ function activitiesOf(w) {
 }
 
 test("O2: the last look reports another look holding the end, or a chat never seen, on the newest visit's node", async () => {
-    const last = (w) => activitiesOf(w).get(WORKFLOW_V2_REQUEST_ACTIVITIES.endOwedChatLast)({ getClient: () => w.client }, { runId: "run-1", childSessionId: CHAT });
+    const last = (w) => activitiesOf(w).get(WORKFLOW_V2_ACTIVITIES.endOwedChatLast)({ getClient: () => w.client }, { runId: "run-1", childSessionId: CHAT });
     const held = world({ locked: false });
     assert.deepEqual(await last(held), { result: "held_elsewhere" });
     assert.deepEqual(held.log.events.map((event) => [event.eventType, event.data.reason, event.data.stateId, event.data.error]), [

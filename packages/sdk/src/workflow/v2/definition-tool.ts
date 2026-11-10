@@ -16,13 +16,13 @@ import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
 import type { JsonValue } from "./json.js";
 import { WorkflowStoreError, type WorkflowActor } from "./store.js";
-import { compileWorkflowV2ForHost, type WorkflowV2Host } from "./service.js";
+import { compileWorkflowV2Definition, type WorkflowV2Host } from "./service.js";
 import { requireWorkflowScripts } from "./scripts-gate.js";
 import {
     listChatWorkflowDefinitions, readChatWorkflowDefinition, saveChatWorkflowDefinition, startChatWorkflowDefinition, type ChatDefinitionView,
 } from "./chat-definitions.js";
 import { workflowToolErrorPayload } from "./tools.js";
-import { chatTestBench, requireTestHost, startChatWorkflowTest, waitChatWorkflowTest, WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS } from "./chat-test.js";
+import { chatTestBench, startChatWorkflowTest, waitChatWorkflowTest, WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS } from "./chat-test.js";
 import { parseTestFixtures } from "./test-mode.js";
 import type { ChatRevisionRow, ChatSaveReceipt } from "./chat-definition-store.js";
 import {
@@ -36,19 +36,16 @@ export const WORKFLOW_DEFINITION_TOOL = "workflow_definition";
 
 /**
  * The tool's declaration, its contract only (owner 2026-11-08T16:55Z: details in the workflow-tools skill). Every turn's
- * host runs a Workflow test, a frozen 1.0.82 turn's included (session-proxy.ts workflowV2Host sets requests, all that
- * chat-test.ts requireTestHost checks), so every turn declares the test operation. `tests: false` declares none: for a host
- * that cannot run one (requests unset), where a call of it is refused (WORKFLOW_TEST_UNAVAILABLE).
+ * host runs a Workflow test, a frozen 1.0.82 turn's included, so every turn declares the test operation.
  */
-export function workflowDefinitionToolSpec(options: { tests?: boolean } = {}) {
-    const tests = options.tests !== false;
+export function workflowDefinitionToolSpec() {
     return {
         description:
             "This chat's Workflow Definitions, each named, with revisions 1, 2, 3. list: yours, and under canStart the package definitions "
             + "(<package>/<name>, locked) you may start. read: one, with its YAML, errors and Workflows. save: a new revision (to change one, "
             + "definition_id and the expected_revision you read; a stale save is refused); a revision with errors is saved but cannot start. "
             + "start: a new Workflow from a revision (default the newest valid); start again to run it again. "
-            + (tests ? "test: only when the user asks, or before you publish it in a package. " : "")
+            + "test: only when the user asks, or before you publish it in a package. "
             + "card: a package definition's inputs and results; read it before you start one. "
             + "A definition's inputs are one JSON Schema under inputs.schema, as in: inputs: { schema: { type: object, required: [topic], "
             + "properties: { topic: { type: string } } } }. "
@@ -56,7 +53,7 @@ export function workflowDefinitionToolSpec(options: { tests?: boolean } = {}) {
         parameters: {
             type: "object",
             properties: {
-                operation: { type: "string", enum: tests ? ["list", "read", "save", "start", "test", "card"] : ["list", "read", "save", "start", "card"] },
+                operation: { type: "string", enum: ["list", "read", "save", "start", "test", "card"] },
                 name: { type: "string", description: "metadata.name, or <package>/<name>." },
                 definition_id: { type: "string" },
                 expected_revision: { type: "integer", description: "save: the revision you read." },
@@ -66,12 +63,10 @@ export function workflowDefinitionToolSpec(options: { tests?: boolean } = {}) {
                 vars: { type: "object" },
                 notify_on_completion: { type: "boolean", description: "start: default true." },
                 agent_models: { type: "object", description: "start: only when the person asks for a model." },
-                ...(tests ? {
-                    fixtures: { type: "array", items: { type: "object" }, description: "test: prepared answers (call load_skill with name workflow-tools)." },
-                    expect: { type: "string", maxLength: WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS,
-                        description: "test: the terminal state or outcome it must end at (default: succeeded)." },
-                    test_id: { type: "string", description: "test: a test still running." },
-                } : {}),
+                fixtures: { type: "array", items: { type: "object" }, description: "test: prepared answers (call load_skill with name workflow-tools)." },
+                expect: { type: "string", maxLength: WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS,
+                    description: "test: the terminal state or outcome it must end at (default: succeeded)." },
+                test_id: { type: "string", description: "test: a test still running." },
                 update: { type: "boolean", description: "start: a package's newer version." },
             },
             required: ["operation"],
@@ -79,7 +74,7 @@ export function workflowDefinitionToolSpec(options: { tests?: boolean } = {}) {
     } as const;
 }
 
-/** The declaration with the test operation (a host that runs Workflow tests). */
+/** The declaration. */
 export const WORKFLOW_DEFINITION_TOOL_SPEC = workflowDefinitionToolSpec();
 
 type Args = Record<string, unknown>;
@@ -229,7 +224,7 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
             }
             const yaml = String(args.yaml ?? "");
             // The scripts gate first (d52e5ed2): a host that runs no scripts refuses a script node before anything is read.
-            const compiled = yaml.trim() ? compileWorkflowV2ForHost(context.host, yaml) : undefined;
+            const compiled = yaml.trim() ? compileWorkflowV2Definition(yaml) : undefined;
             if (compiled) requireWorkflowScripts(context.host, compiled.ir, "save");
             const expectedRevision = intArg(args, "expected_revision");
             let expected: { definitionId: string; revision: number } | null = null;
@@ -295,8 +290,6 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
         if (operation === "test") {
             // Stage 2.2 (chat-test.ts): only when the person asks; a hidden test of a revision with prepared answers, and its report.
             const actor: WorkflowActor = { kind: "agent", sessionId: chat } as WorkflowActor;
-            // S2RT-F9: tests run only where they can, a test read again by its id too.
-            requireTestHost(context.host);
             const testId = text(args.test_id);
             if (testId) {
                 const bench = await chatTestBench(context.host, chat, testId);
@@ -347,7 +340,7 @@ export async function spawnWorkflowCompatFromTool(
         if (args.state !== undefined && args.state !== "draft" && args.state !== "published") throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "state must be draft or published.");
         if (args.start === true && args.state !== "published") throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "start needs state: published.");
         const chat = context.callerSessionId;
-        const compiled = compileWorkflowV2ForHost(context.host, args.yaml);
+        const compiled = compileWorkflowV2Definition(args.yaml);
         const name = compiled.name ?? (() => { throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "The YAML needs metadata.name: it names the definition."); })();
         // A host that runs no scripts refuses a definition with a script node before anything else (d52e5ed2: before the
         // chat's tool binding is captured, its owner read or its definitions read), in the words of what was asked (a save,

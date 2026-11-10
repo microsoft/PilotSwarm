@@ -51,24 +51,6 @@ test("the tool: one name, list, read, save, start and (stage 2.2) test, the guar
     assert.ok(!/delete/i.test(WORKFLOW_DEFINITION_TOOL_SPEC.parameters.properties.operation.enum.join(" ")), "a person deletes (Q8)");
 });
 
-// Stage 2.5: where its host cannot run a test, the tool is declared without test, so the model is not offered an operation
-// that always refuses; a call of it is still refused, with its code, before anything is read.
-test("without tests the tool declares no test operation, fixtures or test_id, and says a test cannot run here", async () => {
-    assert.deepEqual(workflowDefinitionToolSpec(), WORKFLOW_DEFINITION_TOOL_SPEC);
-    assert.deepEqual(workflowDefinitionToolSpec({ tests: true }), WORKFLOW_DEFINITION_TOOL_SPEC);
-    const spec = workflowDefinitionToolSpec({ tests: false });
-    assert.deepEqual(spec.parameters.properties.operation.enum, ["list", "read", "save", "start", "card"]);
-    assert.equal(Object.hasOwn(spec.parameters.properties, "fixtures"), false);
-    assert.equal(Object.hasOwn(spec.parameters.properties, "test_id"), false);
-    assert.ok(!/\btest\b/.test(spec.description), spec.description);
-    for (const key of ["name", "definition_id", "expected_revision", "yaml", "revision", "inputs", "vars", "notify_on_completion", "update"]) {
-        assert.deepEqual(spec.parameters.properties[key], WORKFLOW_DEFINITION_TOOL_SPEC.parameters.properties[key], key);
-    }
-    const refused = await call({ operation: "test", name: "x" }, { host: { ...untouched(), requests: false } });
-    assert.equal(refused.ok, false);
-    assert.equal(refused.error.code, "WORKFLOW_TEST_UNAVAILABLE");
-});
-
 test("an invalid call is refused before anything is read, with its code", async () => {
     for (const [args, extra, code] of [
         [{ operation: "explode" }, {}, "WORKFLOW_COMMAND_INVALID"],

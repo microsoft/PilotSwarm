@@ -8,9 +8,9 @@
  * - as a deployment is configured today (no workflowCommands): version 2
  *   reads on, a person's commands off, with the refusal that every command
  *   then gets, which is the refusal the real adapter gives;
- * - with the test-only option (INACTIVE): the controller version the runs
- *   start at and the operations a person may send (1.8.0, or 1.9.0 with
- *   stop and the test operations);
+ * - with a person's commands on: the controller version the runs start at
+ *   and the operations a person may send (stop, and with test mode the test
+ *   operations);
  * - the legacy create keeps its version 1 semantics (never a v2 draft);
  * - an older host without the getter advertises nothing (null).
  * Both HTTP-backed clients read the same value back over real fetch. The
@@ -95,17 +95,15 @@ test("a deployment as configured today advertises version 2 reads and a person's
     }
 });
 
-test("with the test-only option, it advertises the controller version and the operations a person may send", async () => {
+test("with a person's commands on, it advertises the controller version and the operations a person may send", async () => {
     // Workflow test mode is off by default (Workflow Simplified, spec 16): the test operations are listed only with it on.
     const flag = process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
     delete process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
     try {
         for (const [config, controllerVersion, operations] of [
-            [{ workflowCommands: {} }, "1.8.0", EVERY_HOST],
-            [{ workflowCommands: { requests: false } }, "1.8.0", EVERY_HOST],
-            [{ workflowCommands: { requests: true } }, "1.9.0", [...EVERY_HOST, "stop"]],
-            [{ workflowCommands: { requests: true, testMode: false } }, "1.9.0", [...EVERY_HOST, "stop"]],
-            [{ workflowCommands: { requests: true, testMode: true } }, "1.9.0", [...EVERY_HOST, ...MILESTONE]],
+            [{ workflowCommands: {} }, "1.0.0", [...EVERY_HOST, "stop"]],
+            [{ workflowCommands: { testMode: false } }, "1.0.0", [...EVERY_HOST, "stop"]],
+            [{ workflowCommands: { testMode: true } }, "1.0.0", [...EVERY_HOST, ...MILESTONE]],
         ]) {
             const h = await bootstrapHarness({ config });
             try {
@@ -124,7 +122,7 @@ test("with the test-only option, it advertises the controller version and the op
         // The deployment flag, exactly `on`, lists them too; any other value does not.
         for (const [value, listed] of [["on", true], ["1", false], ["ON", false], ["true", false]]) {
             process.env.PILOTSWARM_WORKFLOW_TEST_MODE = value;
-            const h = await bootstrapHarness({ config: { workflowCommands: { requests: true } } });
+            const h = await bootstrapHarness({ config: { workflowCommands: {} } });
             try {
                 const { workflows } = await h.bootstrap();
                 assert.deepEqual(workflows.v2.commands.operations, listed ? [...EVERY_HOST, ...MILESTONE] : [...EVERY_HOST, "stop"], value);
@@ -145,7 +143,7 @@ test("with the test-only option, it advertises the controller version and the op
         // A test operation sent anyway, while test mode is off, answers as an operation that does not exist (owner answer
         // Q3): the same code, status and words as an unknown operation, with no word of testing.
         delete process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
-        const h = await bootstrapHarness({ config: { workflowCommands: { requests: true } } });
+        const h = await bootstrapHarness({ config: { workflowCommands: {} } });
         try {
             const refusal = async (operation) => {
                 let caught = null;
@@ -174,7 +172,7 @@ test("with the test-only option, it advertises the controller version and the op
 });
 
 test("both HTTP-backed clients read the advertisement back, and an older host advertises none", async () => {
-    const h = await bootstrapHarness({ config: { workflowCommands: { requests: true, testMode: true } } });
+    const h = await bootstrapHarness({ config: { workflowCommands: { testMode: true } } });
     try {
         const advertised = (await h.bootstrap()).workflows;
         const api = () => new ApiClient({ apiUrl: h.origin });
@@ -222,7 +220,7 @@ test("the portal's runtime options are exactly its storage options and mode, and
     const runtime = new PortalRuntime(options);
     assert.equal(Object.hasOwn(runtime.transport, "workerTestOptions"), false);
     assert.equal(Object.hasOwn(runtime.transport, "sessionStartVersion"), false);
-    assert.deepEqual(runtime.transport.mgmt.config.workflowCommands, { requests: true });
+    assert.deepEqual(runtime.transport.mgmt.config.workflowCommands, {});
     // Only a test turns a person's commands off.
     assert.equal(new PortalRuntime({ ...options, workflowCommands: null }).transport.mgmt.config.workflowCommands, null);
 });

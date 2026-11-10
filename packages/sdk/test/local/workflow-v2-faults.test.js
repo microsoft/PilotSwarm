@@ -40,6 +40,7 @@ import {
     WORKFLOW_V2_NOTIFY_NAME, WORKFLOW_V2_NOTIFY_VERSION,
     workflowEffectInstanceId, workflowLiveControllerInstanceId, workflowNotifyInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
@@ -128,7 +129,7 @@ async function baseOf(env) {
 async function harness(env, wrap, { wrapStore, runtimeOptions, base: shared, ...options } = {}) {
     const base = shared ?? await baseOf(env);
     const { catalog, store, provider, client } = base;
-    const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", ...runtimeOptions });
+    const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] }, ...runtimeOptions });
     const registrar = {
         registerActivity: (name, fn) => runtime.registerActivity(name, wrap[name] ? wrap[name](fn) : fn),
         registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
@@ -527,40 +528,6 @@ states:
                 { callerSessionId: randomUUID(), host: h.host }));
             expect(stranger).toMatchObject({ ok: false, error: { code: "FORBIDDEN" } });
             expect((await h.store.readRun(lost.receipt.run.runId)).status).toBe("completed");
-        } finally { await h.stop(); }
-    });
-
-    it("fails a controller instance of each pre-release version visibly, and recover ends its run", { timeout: TIMEOUT }, async () => {
-        const h = await harness(getEnv(), {});
-        try {
-            const parentId = randomUUID();
-            await h.host.catalog.createSession(parentId, {});
-            const context = { callerSessionId: parentId, host: h.host };
-            const undispatched = { ...h.host, duroxideClient: { ...h.host.duroxideClient, startOrchestrationVersioned: async () => undefined } };
-            // 1.4.0 to 1.7.0 are fenced too: no test replays a history an earlier build wrote.
-            for (const version of ["1.1.0", "1.4.0", "1.5.0", "1.6.0", "1.7.0"]) {
-                const id = randomUUID();
-                const created = await createWorkflowV2(undispatched, { workflowSessionId: id, parentSessionId: parentId, yaml: TWO_STEPS,
-                    actor: ACTOR, operationId: "start", start: { inputs: {} } });
-                const { runId, controllerInstanceId } = created.receipt.run;
-                // As a pre-release build would have started it.
-                await h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, { v: 2, workflowSessionId: id, runId }, version);
-                const failed = await until(async () => {
-                    const status = await h.client.getStatus(controllerInstanceId);
-                    return status.status === "Failed" ? status : null;
-                }, `the pre-release ${version} controller to fail`);
-                expect(failed.error).toContain(`version ${version}, written by a pre-release build`);
-                expect((await h.store.readRun(runId)).status, version).toBe("admitted");
-                expect(await h.store.listNodeExecutions(runId)).toEqual([]);
-                const view = JSON.parse(await readWorkflowFromTool({ workflow_id: id }, context));
-                expect(view.run, version).toMatchObject({ status: "admitted", controller: { status: "Failed", needsRecovery: true } });
-                expect(view.run.controller.error).toContain("pre-release build");
-                const recovered = JSON.parse(await updateWorkflowFromTool({ workflow_id: id, operation: "recover", operation_id: "recover" }, context));
-                expect(recovered, version).toMatchObject({ ok: true, action: "ended", status: "failed" });
-                const run = await h.store.readRun(runId);
-                expect(run.terminalError).toMatchObject({ code: "controller_ended", details: { controllerStatus: "Failed" } });
-                expect(run.terminalError.details.controllerError).toContain(`version ${version}, written by a pre-release build`);
-            }
         } finally { await h.stop(); }
     });
 

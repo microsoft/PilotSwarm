@@ -32,7 +32,7 @@ import {
     type WorkflowActor, type WorkflowNodeExecutionRow, type WorkflowRunRow, type WorkflowTestInterception,
 } from "./store.js";
 import {
-    advanceWorkflowV2Test, compileWorkflowV2ForHost, controlWorkflowV2Run, createWorkflowV2, sendWorkflowInputV2, startWorkflowV2Test, testBenchExpect,
+    advanceWorkflowV2Test, compileWorkflowV2Definition, controlWorkflowV2Run, createWorkflowV2, sendWorkflowInputV2, startWorkflowV2Test, testBenchExpect,
     type WorkflowV2Host,
 } from "./service.js";
 import { requireWorkflowScripts } from "./scripts-gate.js";
@@ -374,8 +374,8 @@ export async function chatTestReport(host: Pick<WorkflowV2Host, "store"> & Parti
 
 /**
  * Start a test of a revision of the chat's definition (default its newest valid one) on a new test bench, with its
- * inputs, initial variables and prepared answers. Refused on a host that runs no tests (WORKFLOW_TEST_UNAVAILABLE), for a
- * revision with errors, and, on a host that runs no scripts, for a revision with a script node (before anything is made).
+ * inputs, initial variables and prepared answers. Refused for a revision with errors, and, on a host that runs no scripts,
+ * for a revision with a script node (before anything is made).
  * G4: `expect` (a terminal state of the revision or an outcome; parseChatTestExpect) is checked before anything is made and
  * kept in the bench's creation config (agentTest.expect), where its report reads it. RLR-F6: a repeat of the operation with
  * another expect (or revision) is refused by the bench's creation (WORKFLOW_EXISTS) before a run; the test answered is the
@@ -395,7 +395,6 @@ export async function startChatWorkflowTest(host: WorkflowV2Host, request: {
     owner: () => Promise<SessionOwnerInfo | null>;
     binding: () => Promise<WorkflowToolBinding | null>;
 }): Promise<ChatTestBench & { runId: string; expect: ChatTestExpect | null }> {
-    requireTestHost(host);
     await requireChatDefinitionsWritable(host, request.ownerSessionId);
     const definition = await definitionOf(host, request.ownerSessionId, request.definition);
     const revision = request.revision ?? await host.store.chat.newestValidRevision(definition.definitionId);
@@ -406,7 +405,7 @@ export async function startChatWorkflowTest(host: WorkflowV2Host, request: {
     if (!saved.valid) throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} of ${definition.name} has errors, so it cannot be tested. Nothing was tested.`);
     // Review PRA-F1: a test compiles the revision's YAML again, as a Start does (the bench is made from that YAML). One this
     // build no longer compiles (an agent state's `chat:`, now `session:`) is refused with its first error, before anything is made.
-    const again = compileWorkflowV2ForHost(host, saved.yaml);
+    const again = compileWorkflowV2Definition(saved.yaml);
     if (!again.valid || !again.ir) {
         const first = again.diagnostics.find(item => item.severity !== "warning");
         throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} of ${definition.name} does not compile in this version`
@@ -437,18 +436,6 @@ export async function startChatWorkflowTest(host: WorkflowV2Host, request: {
     return { ...stored, runId, expect: stored.expect ?? null };
 }
 
-/**
- * A host that runs Workflow tests (every turn's: session-proxy.ts sets requests), or WORKFLOW_TEST_UNAVAILABLE. S2RT-F9:
- * checked before a new test and before a test is read again by its id (which can advance its clock or end it), so neither
- * runs where tests cannot.
- */
-export function requireTestHost(host: Pick<WorkflowV2Host, "requests">): void {
-    if (host.requests !== true) {
-        throw new WorkflowStoreError("WORKFLOW_TEST_UNAVAILABLE", "This deployment cannot run Workflow tests. Nothing was tested; start the revision "
-            + "when the person asks, or tell them a test cannot run here.");
-    }
-}
-
 /** A chat's test bench by its id: the chat's own, or TEST_NOT_FOUND. Its definition, name and revision. */
 export async function chatTestBench(host: Pick<WorkflowV2Host, "catalog" | "store">, ownerSessionId: string, testId: string): Promise<ChatTestBench> {
     const [row, config] = await Promise.all([host.catalog.getSession(testId), host.catalog.getSessionCreationConfig?.(testId) ?? null]);
@@ -468,7 +455,7 @@ export async function chatTestBench(host: Pick<WorkflowV2Host, "catalog" | "stor
  * clock past its waits, and failing it when a call has no prepared answer; then its report (status running when it has
  * not ended yet).
  */
-export async function waitChatWorkflowTest(host: Pick<WorkflowV2Host, "catalog" | "store" | "duroxideClient" | "requests">,
+export async function waitChatWorkflowTest(host: Pick<WorkflowV2Host, "catalog" | "store" | "duroxideClient">,
     bench: ChatTestBench,
     options: { waitMs?: number; pollMs?: number; graceMs?: number; actor: WorkflowActor; sleep?: (ms: number) => Promise<void> }): Promise<ChatTestReport> {
     const waitMs = options.waitMs ?? WORKFLOW_DEFINITION_TEST_WAIT_MS;

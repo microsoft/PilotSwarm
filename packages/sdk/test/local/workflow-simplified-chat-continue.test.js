@@ -7,7 +7,7 @@
  *   of a continued chat binds ONLY by the node execution id it gives (none, or one that is not the chat's, is refused in
  *   words; a late one binds to its own decided visit and is refused there,
  *   the open visit unaffected); a reminder binds to the open visit and names it.
- * - Controller 1.9.0 with a test-double host (as workflow-v2-agent-node.test.js): two visits go to ONE chat; the
+ * - The controller with a test-double host (as workflow-v2-agent-node.test.js): two visits go to ONE chat; the
  *   second prompt says cycle 2 with the variables now, which changed and the previous result; a visit's time limit stops
  *   its turn (a turn control Stop, never the chat) and the next visit runs; the chat is ended once, when the Workflow
  *   ends; a cancel ends it; a graceful stop ends an idle chat at once; a chat that ended on its own between visits is
@@ -28,7 +28,7 @@ import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/se
 import { completeWorkflowNodeFromTool } from "../../src/workflow/v2/agent-node-service.ts";
 import { readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
 import {
-    registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowAgentChatSessionId, workflowAgentChildSessionId,
+    registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_CONTROLLER_VERSION, workflowAgentChatSessionId, workflowAgentChildSessionId,
     workflowLiveControllerInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
@@ -197,7 +197,7 @@ describe("chat: continue in the store", () => {
                 workflowSessionId, parentSessionId: parent, notifyParent: false, yaml, compiled, actor: ACTOR,
                 operationId: "create", requestSha256: "chat", publish: true, title: "Workflow: chatter",
                 start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
-                    inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION },
+                    inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION },
             });
             const chat = workflowAgentChatSessionId(runId, "talk");
             const admit = async (ordinal, predecessorId) => {
@@ -328,7 +328,7 @@ describe("chat: continue in the store", () => {
     });
 });
 
-// ─── Controller 1.9.0 ─────────────────────────────────────────
+// ─── The controller ───────────────────────────────────────────
 
 const CHILD = "test-chat-child";
 function* chatChild(ctx) {
@@ -452,13 +452,12 @@ async function harness(env, { storeHooks = null, storeBefore = null, beforeCreat
         notifyParent: async () => { throw new Error("These workflows notify no parent."); },
         deleteSession: async sessionId => catalog.softDeleteSession(sessionId),
         wakeBackstopMs: 500,
-        workflowRequests: true,
         sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
         agentNodes,
     });
     await runtime.start();
     return {
-        catalog, store, client, spawns, stops, sentTo, host: { catalog, store, duroxideClient: client, requests: true },
+        catalog, store, client, spawns, stops, sentTo, host: { catalog, store, duroxideClient: client },
         /** A deferred chat's session starts now, and gets the prompts it was sent while it was not visible. */
         async makeVisible(chat) {
             const instanceId = `session-${chat}`;
@@ -565,7 +564,7 @@ states:
 
 // Owner 2026-11-09T05:38Z: an agent state that sets no session continues one agent session across its visits where it may (a
 // loop of the outer graph); inside a For each each item's visit has its own; an explicit `session: new` still gets one each visit.
-describe("the default chat mode on controller 1.9.0 (test-only registration)", () => {
+describe("the default chat mode on the controller", () => {
     it("a loop's agent state that sets no session keeps one agent session across its visits", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
@@ -629,7 +628,7 @@ describe("the default chat mode on controller 1.9.0 (test-only registration)", (
     });
 });
 
-describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
+describe("chat: continue on the controller", () => {
     it("two visits share one chat; the second is cycle 2 with the variables now; a time limit stops the turn, not the chat; the chat ends once with the Workflow", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {

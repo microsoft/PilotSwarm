@@ -27,7 +27,7 @@ import {
 } from "../../dist/workflow/v2/human-commands.js";
 import { WORKFLOW_HUMAN_INPUT_DENIED } from "../../dist/workflow/v2/input-policy.js";
 import { WORKFLOW_V2_API_VERSION } from "../../dist/workflow/v2/compiler.js";
-import { WORKFLOW_V2_CONTROLLER_VERSION, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION } from "../../dist/workflow/v2/runtime.js";
+import { WORKFLOW_V2_CONTROLLER_VERSION } from "../../dist/workflow/v2/runtime.js";
 import { PilotSwarmManagementClient } from "../../dist/management-client.js";
 import * as sdk from "../../dist/index.js";
 
@@ -116,25 +116,22 @@ test("advertises the workflow support the host was configured with: a person's c
     assert.equal(off.v2.apiVersion, "pilotswarm.dev/v2-draft");
     assert.deepEqual(workflowCapabilities({ read: true, commands: undefined }), off);
     // Workflows are always on (owner 2026-11-08T08:03Z): `enabled` is always true, kept for an older client.
-    assert.equal(workflowCapabilities({ read: false, commands: { requests: true } }).enabled, true);
+    assert.equal(workflowCapabilities({ read: false, commands: {} }).enabled, true);
     // Without a workflow store, reads are not advertised.
     assert.equal(workflowCapabilities({ read: false, commands: null }).v2.read, false);
-    // On: the production controller and the operations every host takes; the 1.9.0 host's adds stop and, with workflow test
-    // mode on, the test operations (Workflow Simplified, spec 16: test mode is hidden unless it is on).
-    assert.deepEqual(workflowCapabilities({ read: true, commands: {} }).v2.commands,
-        { available: true, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION, operations: [...WORKFLOW_HUMAN_OPERATIONS] });
-    assert.deepEqual(workflowCapabilities({ read: true, commands: { requests: false } }).v2.commands.controllerVersion, "1.8.0");
-    const milestone = workflowCapabilities({ read: true, commands: { requests: true, testMode: true } }).v2.commands;
-    assert.deepEqual(milestone, { available: true, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
+    // On: the controller and the operations every host takes: stop and, with workflow test mode on, the test operations
+    // (Workflow Simplified, spec 16: test mode is hidden unless it is on).
+    const milestone = workflowCapabilities({ read: true, commands: { testMode: true } }).v2.commands;
+    assert.deepEqual(milestone, { available: true, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION,
         operations: [...WORKFLOW_HUMAN_OPERATIONS, ...WORKFLOW_HUMAN_MILESTONE_OPERATIONS] });
-    assert.deepEqual(workflowCapabilities({ read: true, commands: { requests: true, testMode: false } }).v2.commands.operations,
+    assert.deepEqual(workflowCapabilities({ read: true, commands: { testMode: false } }).v2.commands.operations,
         [...WORKFLOW_HUMAN_OPERATIONS, "stop"]);
-    assert.equal(milestone.controllerVersion, "1.9.0");
+    assert.equal(milestone.controllerVersion, "1.0.0");
     // recover stays the agent's: never advertised to a person.
     assert.ok(!milestone.operations.includes("recover"));
     // Each answer is a fresh value: a client that changes it changes nothing here.
     milestone.operations.push("recover");
-    assert.ok(!workflowCapabilities({ read: true, commands: { requests: true } }).v2.commands.operations.includes("recover"));
+    assert.ok(!workflowCapabilities({ read: true, commands: {} }).v2.commands.operations.includes("recover"));
 });
 
 test("the management client answers from its own configuration and catalog, before and after it starts", async () => {
@@ -148,22 +145,21 @@ test("the management client answers from its own configuration and catalog, befo
     // A catalog without one (no version 2 workflows here): reads off.
     assert.equal((await as({ config: {}, _catalog: {} }).getWorkflowCapabilities()).v2.read, false);
     // The full engine's commands, as every client is now created (its default).
-    assert.deepEqual((await as({ config: { workflowCommands: { requests: true } }, _catalog: store }).getWorkflowCapabilities()).v2.commands,
-        workflowCapabilities({ read: true, commands: { requests: true } }).v2.commands);
-    assert.equal((await as({ config: { workflowCommands: {} }, _catalog: store }).getWorkflowCapabilities()).v2.commands.controllerVersion, "1.8.0");
+    assert.deepEqual((await as({ config: { workflowCommands: {} }, _catalog: store }).getWorkflowCapabilities()).v2.commands,
+        workflowCapabilities({ read: true, commands: {} }).v2.commands);
     // A real client, constructed as a deployment constructs it: commands on, on the full engine (owner decision
     // 2026-11-08T15:30Z); only an explicit null leaves them off.
     const client = new PilotSwarmManagementClient({ store: "postgres://capabilities.invalid/none" });
-    assert.deepEqual(client.config.workflowCommands, { requests: true });
+    assert.deepEqual(client.config.workflowCommands, {});
     assert.equal(new PilotSwarmManagementClient({ store: "postgres://capabilities.invalid/none", workflowCommands: null }).config.workflowCommands, null);
-    // Review RLR-F1: an explicit object, partial or not, still takes commands on the full engine: every new run starts at
-    // controller 1.9.0, and its test mode is kept (absent, the deployment flag decides).
-    for (const [given, want] of [[{}, { requests: true }], [{ testMode: true }, { requests: true, testMode: true }],
-        [{ requests: false }, { requests: true }], [{ requests: false, testMode: false }, { requests: true, testMode: false }]]) {
+    // Review RLR-F1: an explicit object, partial or not, still takes commands on the full engine, and its test mode is kept
+    // (absent, the deployment flag decides).
+    for (const [given, want] of [[{}, {}], [{ testMode: true }, { testMode: true }], [{ testMode: false }, { testMode: false }]]) {
         const made = new PilotSwarmManagementClient({ store: "postgres://capabilities.invalid/none", workflowCommands: given });
         assert.deepEqual(made.config.workflowCommands, want, JSON.stringify(given));
         const capabilities = await as({ config: made.config, _catalog: store }).getWorkflowCapabilities();
-        assert.equal(capabilities.v2.commands.controllerVersion, "1.9.0", JSON.stringify(given));
+        assert.equal(capabilities.v2.commands.controllerVersion, WORKFLOW_V2_CONTROLLER_VERSION, JSON.stringify(given));
+        assert.ok(capabilities.v2.commands.operations.includes("stop"), JSON.stringify(given));
     }
     const testing = new PilotSwarmManagementClient({ store: "postgres://capabilities.invalid/none", workflowCommands: { testMode: true } });
     assert.ok((await as({ config: testing.config, _catalog: store }).getWorkflowCapabilities()).v2.commands.operations.includes("test"),
@@ -172,7 +168,7 @@ test("the management client answers from its own configuration and catalog, befo
 
 // The retired Workflow V2 test environment switch (owner decision 2026-11-08T15:30Z): the SDK no longer exports it, and its
 // management client takes a person's commands on the full engine by default.
-test("the Workflow V2 test environment switch is retired: no export reads it; a real management client takes 1.9.0 commands", async () => {
+test("the Workflow V2 test environment switch is retired: no export reads it; a real management client takes the full engine's commands", async () => {
     for (const name of ["WORKFLOW_V2_TEST_ENVIRONMENT_VARIABLE", "WORKFLOW_V2_TEST_ENVIRONMENT_ENABLED", "workflowV2TestEnvironmentFromEnv",
         "workerOptionsForWorkflowV2TestEnvironment", "workflowV2TestEnvironmentNotice"]) {
         assert.equal(name in sdk, false, name);
@@ -182,5 +178,5 @@ test("the Workflow V2 test environment switch is retired: no export reads it; a 
     const advertised = await Object.assign(Object.create(PilotSwarmManagementClient.prototype), {
         config: client.config, _catalog: { workflowStore: () => ({}) } }).getWorkflowCapabilities();
     assert.equal(advertised.v2.commands.available, true);
-    assert.equal(advertised.v2.commands.controllerVersion, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION);
+    assert.equal(advertised.v2.commands.controllerVersion, WORKFLOW_V2_CONTROLLER_VERSION);
 });

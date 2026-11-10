@@ -26,8 +26,8 @@ test("every worker declares the workflow-request tag and serves the full engine,
     assert.deepEqual([...WORKFLOW_MILESTONE_WORKER_TAGS], [WORKFLOW_REQUEST_CAPABILITY]);
     assert.match(WORKER, /const milestone = await import\("\.\/workflow\/v2\/milestone-worker\.js"\);/);
     assert.match(WORKER, /\.\.\.milestone\.WORKFLOW_MILESTONE_WORKER_TAGS\]/);
-    assert.match(WORKER, /workflowRequests: true,\n\s+agentNodes: milestone\.workflowMilestoneAgentNodes\(/);
-    assert.doesNotMatch(WORKER, /testOptions\?\.workflowRequests/);
+    assert.match(WORKER, /\n\s+agentNodes: milestone\.workflowMilestoneAgentNodes\(/);
+    assert.doesNotMatch(WORKER, /workflowRequests/);
 });
 
 test("it registers 1.0.83's intake activities and no orchestration; the registry's latest version is 1.0.83", () => {

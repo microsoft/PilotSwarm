@@ -1,7 +1,7 @@
 import { WORKFLOW_V2_API_VERSION } from "./compiler.js";
 import { sessionInsideWorkflow, WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT, WORKFLOW_DEFINITION_TOOLS_REFUSED, workflowHumanInputError } from "./input-policy.js";
 import { jsonbSafeText, type JsonValue } from "./json.js";
-import { WORKFLOW_V2_CONTROLLER_VERSION, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, WORKFLOW_V2_STOP_CONTROLLER_VERSIONS } from "./runtime.js";
+import { WORKFLOW_V2_CONTROLLER_VERSION } from "./runtime.js";
 import type { WorkflowV2Host } from "./service.js";
 import { WorkflowStoreError, type WorkflowActor, type WorkflowStore } from "./store.js";
 import { UPDATE_WORKFLOW_OPERATIONS, operationWords, runUpdateWorkflowCommand, workflowTestModeAbsentError } from "./tools.js";
@@ -31,10 +31,10 @@ import { resolveWorkflowTestMode, WORKFLOW_TEST_MODE_OPERATIONS } from "./test-m
  *   stop, cancel); anything else that changes or drives it is refused with
  *   403 WORKFLOW_HUMAN_INPUT_DENIED, naming its controlling agent. Every other
  *   workflow takes every command the host takes.
- * - The milestone operations (stop, test, test_respond, test_advance) are
- *   taken only by a host that runs controller 1.9.0, as for the tool; the
- *   test operations only while workflow test mode is on (spec 16): while it
- *   is off, a test operation answers as an operation that does not exist.
+ * - The milestone operations (stop, test, test_respond, test_advance): the
+ *   test operations only while workflow test mode is on (spec 16), as for the
+ *   tool: while it is off, a test operation answers as an operation that does
+ *   not exist.
  */
 
 /** A person's brakes: the lifecycle controls a workflow in an agent state's subtree still takes (design 03). */
@@ -43,12 +43,12 @@ export const WORKFLOW_HUMAN_BRAKE_OPERATIONS: readonly string[] = ["pause", "sto
 /** A person's operations on every host: the update_workflow tool's, without recover (the agent's path). */
 export const WORKFLOW_HUMAN_OPERATIONS: readonly string[] = [...UPDATE_WORKFLOW_OPERATIONS.definition, ...UPDATE_WORKFLOW_OPERATIONS.run];
 
-/** A person's further operations on a host that runs controller 1.9.0 (WorkflowV2Host.requests): stop and the test operations. */
+/** A person's further operations: stop and the test operations. */
 export const WORKFLOW_HUMAN_MILESTONE_OPERATIONS: readonly string[] = [...UPDATE_WORKFLOW_OPERATIONS.milestone];
 
 /**
- * A person's further operations on a 1.9.0 host as workflow test mode decides them (spec 16; test-mode-switch.ts):
- * stop, and the test operations only while it is on.
+ * A person's further operations as workflow test mode decides them (spec 16; test-mode-switch.ts): stop, and the test
+ * operations only while it is on.
  */
 export function workflowHumanMilestoneOperations(testMode: boolean): string[] {
     return WORKFLOW_HUMAN_MILESTONE_OPERATIONS.filter(operation => testMode || !WORKFLOW_TEST_MODE_OPERATIONS.includes(operation));
@@ -89,9 +89,8 @@ export const WORKFLOW_CAPABILITIES_SCHEMA = 1;
  *   offers no test control and shows no test run. `v2.testMode: true` says it
  *   is on (absent when off), with or without commands (review SF-D5).
  */
-export function workflowCapabilities(options: { read: boolean; commands: { requests?: boolean; testMode?: boolean } | null | undefined }): { [key: string]: JsonValue } {
+export function workflowCapabilities(options: { read: boolean; commands: { testMode?: boolean } | null | undefined }): { [key: string]: JsonValue } {
     const commands = options.commands ?? null;
-    const requests = commands?.requests === true;
     return {
         schema: WORKFLOW_CAPABILITIES_SCHEMA,
         enabled: true,
@@ -106,10 +105,8 @@ export function workflowCapabilities(options: { read: boolean; commands: { reque
             commands: commands
                 ? {
                     available: true,
-                    controllerVersion: requests ? WORKFLOW_V2_REQUEST_CONTROLLER_VERSION : WORKFLOW_V2_CONTROLLER_VERSION,
-                    operations: requests
-                        ? [...WORKFLOW_HUMAN_OPERATIONS, ...workflowHumanMilestoneOperations(resolveWorkflowTestMode(commands.testMode))]
-                        : [...WORKFLOW_HUMAN_OPERATIONS],
+                    controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION,
+                    operations: [...WORKFLOW_HUMAN_OPERATIONS, ...workflowHumanMilestoneOperations(resolveWorkflowTestMode(commands.testMode))],
                 }
                 : { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
         },
@@ -129,8 +126,7 @@ export function workflowCapabilities(options: { read: boolean; commands: { reque
  *   which `restriction` then explains, naming the workflow that holds the
  *   agent state and its controlling agent.
  * - `run`: for the run the read model shows (`runId`), whether it takes a
- *   graceful stop (offered, and its run was admitted for a controller that
- *   stops runs); null when no run is shown.
+ *   graceful stop (offered); null when no run is shown.
  * - `draft` (only for a draft, `draftRevision`, that a person may change:
  *   replace_definition offered): the current revision's number, definition
  *   hash and YAML, the text a person edits. The human read omits the YAML
@@ -140,10 +136,10 @@ export function workflowCapabilities(options: { read: boolean; commands: { reque
  */
 export async function workflowCommandsForPerson(
     store: Pick<WorkflowStore, "readWorkflowLineage" | "readRun" | "readRevision"> & Partial<Pick<WorkflowStore, "readDefinition">>, workflowSessionId: string,
-    options: { requests: boolean; runId: string | null; draftRevision?: number | null; published?: boolean; testMode?: boolean }): Promise<{ [key: string]: JsonValue }> {
+    options: { runId: string | null; draftRevision?: number | null; published?: boolean; testMode?: boolean }): Promise<{ [key: string]: JsonValue }> {
     // The test operations only while workflow test mode is on (spec 16): off, a screen offers no test control and no test run.
     const testMode = resolveWorkflowTestMode(options.testMode);
-    const offered = options.requests ? [...WORKFLOW_HUMAN_OPERATIONS, ...workflowHumanMilestoneOperations(testMode)] : [...WORKFLOW_HUMAN_OPERATIONS];
+    const offered = [...WORKFLOW_HUMAN_OPERATIONS, ...workflowHumanMilestoneOperations(testMode)];
     const [lineage, run, definition] = await Promise.all([store.readWorkflowLineage(workflowSessionId), options.runId ? store.readRun(options.runId) : null,
         typeof store.readDefinition === "function" ? store.readDefinition(workflowSessionId) : null]);
     const root = lineage?.agentRoot ?? null;
@@ -164,8 +160,7 @@ export async function workflowCommandsForPerson(
             reason: `This workflow was started by an agent step of another workflow: people can ${operationWords(operations)} it; only its controlling agent ${testMode ? "changes, resumes or tests" : "changes or resumes"} it.`,
             workflowSessionId: root.workflowSessionId, controllingSessionId: root.controllingSessionId,
         } : null,
-        run: shown ? { runId: shown.runId, stop: operations.includes("stop") && shown.controllerVersion !== null
-            && WORKFLOW_V2_STOP_CONTROLLER_VERSIONS.includes(shown.controllerVersion) } : null,
+        run: shown ? { runId: shown.runId, stop: operations.includes("stop") } : null,
         ...(revision ? { draft: { revision: revision.revision, definitionHash: revision.yamlSha256, yaml: jsonbSafeText(revision.yaml) } } : {}),
     };
 }

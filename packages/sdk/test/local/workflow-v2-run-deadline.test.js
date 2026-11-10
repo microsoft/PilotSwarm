@@ -1,8 +1,7 @@
 /**
  * Workflow v2 run deadlines (design 02 run lifecycle, D03, and the canonical
- * `limits: { timeoutSeconds, onExceeded }`; migration 0104), INACTIVE: only
- * a host that starts runs at controller 1.9.0 compiles one, and only that
- * controller enforces it.
+ * `limits: { timeoutSeconds, onExceeded }`; migration 0088): every host
+ * compiles one, and the Workflow controller enforces it.
  *
  * - The compiler: limits.timeoutSeconds and onExceeded (expired, the only
  *   policy) compile to IR 8 only with run limits enabled; elsewhere they are
@@ -12,7 +11,7 @@
  *   admitted, and expireRun ends the run failed with timed_out, cancelling
  *   what is pending (winner deadline); before it, it reports the time left.
  *   A test clock advance never decides a deadline after the run's.
- * - Controller 1.9.0 on a native runtime: a test run's deadline on its
+ * - The controller on a native runtime: a test run's deadline on its
  *   virtual clock ends it before a later wait, and after it an answer to an
  *   open interception is refused; a live run ends at its deadline by the
  *   store's clock, paused or not.
@@ -29,7 +28,7 @@ import { canonicalJson } from "../../src/workflow/v2/json.ts";
 import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import {
-    registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowTestControllerInstanceId,
+    registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_CONTROLLER_VERSION, workflowTestControllerInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor, WORKFLOW_V2_TEST_EPOCH } from "../../src/workflow/v2/store.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
@@ -132,7 +131,7 @@ describe("workflow v2 run deadlines: the compiler", () => {
     });
 });
 
-/** A parent, a published workflow of `doc` and one run of it (`mode`), admitted at controller 1.9.0 and not begun. */
+/** A parent, a published workflow of `doc` and one run of it (`mode`), admitted at the Workflow controller and not begun. */
 async function admittedRun(h, doc, mode) {
     const parent = randomUUID();
     await h.catalog.createSession(parent, {});
@@ -147,7 +146,7 @@ async function admittedRun(h, doc, mode) {
         workflowSessionId, parentSessionId: parent, notifyParent: false, yaml, compiled, actor: ACTOR,
         operationId: "create", requestSha256: "run-deadline", publish: true, title: "Workflow: deadline",
         start: { runId, mode, controllerInstanceId: mode === "test" ? workflowTestControllerInstanceId(runId) : `wf-${workflowSessionId}`,
-            inputsText: "{}", kvText: "{}", testAgentMode: mode === "test" ? "mocked" : null, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
+            inputsText: "{}", kvText: "{}", testAgentMode: mode === "test" ? "mocked" : null, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION,
             ...(mode === "test" ? { fixturesText: "[]" } : {}) },
     });
     return { workflowSessionId, runId };
@@ -217,9 +216,9 @@ describe("workflow v2 run deadlines: the store", () => {
     });
 });
 
-// ─── Controller 1.9.0 on a native runtime ────────────────────
+// ─── The controller on a native runtime ──────────────────────
 
-/** A worker-equivalent registration with workflowRequests and the request tag declared; parent notices are recorded. */
+/** A worker-equivalent registration with the request tag declared; parent notices are recorded. */
 async function harness(env) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
@@ -242,12 +241,11 @@ async function harness(env) {
         deleteSession: async sessionId => catalog.softDeleteSession(sessionId),
         wakeBackstopMs: 500,
         testPollMs: 50,
-        workflowRequests: true,
         sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
     });
     await runtime.start();
     return {
-        catalog, store, client, notices, host: { catalog, store, duroxideClient: client, requests: true },
+        catalog, store, client, notices, host: { catalog, store, duroxideClient: client },
         async stop() {
             await runtime.shutdown(100);
             await catalog.close();
@@ -286,7 +284,7 @@ const pendingNode = (h, nodeExecutionId) => until(async () => {
     return node?.state === "pending" ? node : null;
 }, `node ${nodeExecutionId} to wait`);
 
-describe("workflow v2 run deadlines: controller 1.9.0 (inactive, test-only registration)", () => {
+describe("workflow v2 run deadlines: the controller", () => {
     it("a test run's deadline on its virtual clock ends it before a later wait, which it cancels", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {

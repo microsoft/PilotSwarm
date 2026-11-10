@@ -1,6 +1,6 @@
 /**
  * Stage 2.4 (PR 235 955856f9): a wait state's `at` (the cron_at fields), DB-less. Compiled only where clock waits are
- * enabled (controller 1.9.0), to IR 10; refused otherwise, and refused with seconds, with a bad zone, an unknown field,
+ * enabled, to IR 10; refused otherwise, and refused with seconds, with a bad zone, an unknown field,
  * a day without an hour, or both day fields. The stored IR reads back only for a reader that asks for version 10. Its
  * words, and the graph's description of it.
  *

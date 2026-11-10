@@ -15,7 +15,7 @@ import type { WorkflowStore } from "./store.js";
  * pse/decision/always-on-scope-20261108T1530: session orchestration 1.0.83 is the latest version and the Workflow work is
  * on every deployment). The worker (worker.ts) uses all of it, always:
  *
- * - The workflow-request activity tag: controller 1.9.0's activities and the turn and intake activities of orchestration
+ * - The workflow-request activity tag: the Workflow controller's activities and the turn and intake activities of orchestration
  *   1.0.83 are routed with it, so a worker of an older image (which does not declare the tag) never fetches them.
  * - The intake activities (claim and settle) of orchestration 1.0.83, which the registry registers as the latest version.
  *   Its turn activities are registered by registerActivities (session-proxy.ts).
@@ -25,7 +25,7 @@ import type { WorkflowStore } from "./store.js";
  *   complete its state (complete_workflow_node).
  *
  * Duroxide cannot route orchestration items by version: during a rolling deployment a worker of an older image that
- * fetches a 1.0.83 or controller 1.9.0 item has no such version registered and abandons it with duroxide's
+ * fetches a 1.0.83 or Workflow controller item has no such version registered and abandons it with duroxide's
  * unregistered-version backoff, so a worker of this image takes it (design.md, "Rolling deployment and rollback").
  */
 

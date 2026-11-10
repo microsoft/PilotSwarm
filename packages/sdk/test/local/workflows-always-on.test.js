@@ -18,7 +18,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { createManagementClient, PilotSwarmClient } from "../helpers/local-workers.js";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { WORKFLOW_HUMAN_INPUT_DENIED } from "../../src/workflow/v2/input-policy.ts";
-import { WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_V2_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 import { openWorkflowStore } from "../helpers/workflow-v2-request-fixture.js";
 import { intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-v2-intake-native-fixture.js";
@@ -57,7 +57,7 @@ async function agentStateOf({ catalog, store }, parent, childSessionId, owner = 
         workflowSessionId, parentSessionId: parent, notifyParent: false, yaml: AGENT_YAML, compiled, actor: ACTOR,
         operationId: "create", requestSha256: "workflows-switch", publish: true, title: "Workflow: reviewer",
         start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
-            inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION },
+            inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION },
     });
     const nodeExecutionId = nodeExecutionIdFor(runId, "root", "review", 1);
     expect(await store.enterNode({

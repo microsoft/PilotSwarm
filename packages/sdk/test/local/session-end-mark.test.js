@@ -65,7 +65,7 @@ describe("an end's mark is recorded only when its command is sent (G1 residual)"
             const chat = randomUUID();
             await catalog.createSession(chat, { owner: OWNER });
             const host = { catalog, store: catalog.workflowStore(), duroxideClient: { startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "Running" }),
-                enqueueEvent: async () => {} }, requests: true };
+                enqueueEvent: async () => {} } };
             const created = await createWorkflowV2(host, { workflowSessionId: randomUUID(), parentSessionId: chat, owner: OWNER, yaml: HOLD,
                 actor: { kind: "system", name: "end-mark-test" }, operationId: "start", start: { inputs: {} } });
             expect(created.receipt.valid).toBe(true);

@@ -10,23 +10,23 @@
  *
  * - V-3: the shortest valid workflow (a first state that completes at once, then its terminal), with 33 wakes and then a
  *   cancel accepted while its plan is held: no state is admitted after the acceptance, and the run
- *   ends cancelled (1.8.0 and 1.9.0).
+ *   ends cancelled.
  * - V-2: wakes queued all the time (counted only when the queue accepted them, N-4) do not hold back a graceful stop or
- *   the run deadline, and a paused run continues as new under them, the condition the old pre-rollover drain met (1.9.0).
- * - DX-1: at controller 1.9.0's paused continue-as-new, a cancel behind more than 100 wakes: the run ended when the cancel
+ *   the run deadline, and a paused run continues as new under them, the condition the old pre-rollover drain met.
+ * - DX-1: at the controller's paused continue-as-new, a cancel behind more than 100 wakes: the run ended when the cancel
  *   was accepted, and the controller finishes.
- * - A cancel accepted while the controller is admitting the next state: no further state is admitted (1.8.0 and 1.9.0).
+ * - A cancel accepted while the controller is admitting the next state: no further state is admitted.
  * - done and delete from the parent's session (the sendCommandToSession path): done ends the run cancelled "Stopped",
  *   delete deletes the workflow; both before the controller reads anything.
  * - DX-2, R5: 150 wakes and a cancel an older build queued (only in the queue), behind a held plan: no turn reads more
- *   than 32 messages in a row, so the controller does not fail, and the queued cancel still ends the run (1.8.0, 1.9.0).
- * - N-1: an end another writer stored (an accepted cancel during a held 1.8.0 collection; an operator's delete of a
- *   running 1.9.0 workflow) gets its running script effect a stop request, with the script's own liveness check slowed.
- * - N-2: an older queued parent command that lost to a person's cancel does not silence the parent's notice (1.9.0).
+ *   than 32 messages in a row, so the controller does not fail, and the queued cancel still ends the run.
+ * - N-1: an end another writer stored (an accepted cancel during a held collection; an operator's delete of a
+ *   running workflow) gets its running script effect a stop request, with the script's own liveness check slowed.
+ * - N-2: an older queued parent command that lost to a person's cancel does not silence the parent's notice.
  * - The operator paths: the management API's cancelSession, completeSession and deleteSession, and the agent manager's
  *   manage_agent_session (its call: applyOperatorCommandToWorkflowV2 with the durable client), end a begun run in the
  *   store at once while the controller is in the middle of an admission, and no state is admitted after them; an
- *   operator's cancel of a run that has not begun tells the parent (1.9.0).
+ *   operator's cancel of a run that has not begun tells the parent.
  *
  * No model runs. Not an activation proof.
  *
@@ -42,8 +42,12 @@ import {
     SESSION_COMMAND_OPERATION_PREFIX,
 } from "../../src/workflow/v2/service.ts";
 import {
-    registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_COMMAND_READ_BATCH, WORKFLOW_V2_REQUEST_ACTIVITIES,
-    workflowEffectInstanceId, workflowNotifyInstanceId,
+    registerWorkflowV2,
+    sessionQueueTransport,
+    WORKFLOW_V2_ACTIVITIES,
+    WORKFLOW_V2_COMMAND_READ_BATCH,
+    workflowEffectInstanceId,
+    workflowNotifyInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 import { PilotSwarmManagementClient } from "../helpers/local-workers.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
@@ -127,17 +131,16 @@ function gate() {
 }
 
 /**
- * A worker-equivalent registration: controller 1.9.0 with its tagged activities when `requests`, else 1.8.0. An activity
- * named in `wrap` is wrapped (to hold it); `options` replace registration options (a slow liveness check, a parent notice).
+ * A worker-equivalent registration (the request tag declared). An activity named in `wrap` is wrapped (to hold it); `options` replace registration options (a slow liveness check, a parent notice).
  */
-async function harness(env, { requests, wrap = {}, options = {} }) {
+async function harness(env, { wrap = {}, options = {} } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
     const client = new Client(provider);
     const runtime = new Runtime(provider, {
-        dispatcherPollIntervalMs: 10, logLevel: "error", ...(requests ? { workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] } } : {}),
+        dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
     });
     registerWorkflowV2({
         registerActivity: (name, fn) => runtime.registerActivity(name, wrap[name] ? wrap[name](fn) : fn),
@@ -150,12 +153,12 @@ async function harness(env, { requests, wrap = {}, options = {} }) {
         notifyParent: async () => { throw new Error("These workflows notify no parent."); },
         deleteSession: async sessionId => catalog.softDeleteSession(sessionId),
         wakeBackstopMs: 500,
-        ...(requests ? { workflowRequests: true, sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" } } : {}),
+        sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
         ...options,
     });
     await runtime.start();
     return {
-        catalog, store, client, host: { catalog, store, duroxideClient: client, ...(requests ? { requests: true } : {}) },
+        catalog, store, client, host: { catalog, store, duroxideClient: client },
         async stop() {
             await runtime.shutdown(100);
             await catalog.close();
@@ -249,15 +252,14 @@ async function controllerFinished(h, controller, status) {
     expect(typeof raw === "string" ? JSON.parse(raw) : raw).toMatchObject({ status });
 }
 
-const VERSIONS = [["1.8.0", false, WORKFLOW_V2_ACTIVITIES], ["1.9.0", true, WORKFLOW_V2_REQUEST_ACTIVITIES]];
-
-describe("workflow v2 lifecycle commands as store state (duroxide races review S7-DX2; 1.9.0 test-only)", () => {
-    for (const [version, requests, R] of VERSIONS) {
+describe("workflow v2 lifecycle commands as store state (duroxide races review S7-DX2)", () => {
+    {
+        const R = WORKFLOW_V2_ACTIVITIES;
         // V-3: before S7-DX2 a full read of 32 wakes returned no command, the terminal was admitted and the run completed.
-        it(`V-3 (${version}): a run whose first state completes at once, with 33 wakes and then an accepted cancel, admits no state and ends cancelled`, { timeout: TIMEOUT }, async () => {
+        it(`V-3: a run whose first state completes at once, with 33 wakes and then an accepted cancel, admits no state and ends cancelled`, { timeout: TIMEOUT }, async () => {
             const plan = gate();
             let planned = false;
-            const h = await harness(getEnv(), { requests, wrap: {
+            const h = await harness(getEnv(), { wrap: {
                 [R.plan]: fn => async (ctx, input) => {
                     if (!planned) { planned = true; plan.arrive(); await plan.wait(); }
                     return fn(ctx, input);
@@ -283,10 +285,10 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
             }
         });
 
-        it(`(${version}): a cancel accepted while the controller admits the next state: no further state is admitted`, { timeout: TIMEOUT }, async () => {
+        it(`a cancel accepted while the controller admits the next state: no further state is admitted`, { timeout: TIMEOUT }, async () => {
             const admit = gate();
             let held = false;
-            const h = await harness(getEnv(), { requests, wrap: {
+            const h = await harness(getEnv(), { wrap: {
                 [R.enter]: fn => async (ctx, input) => {
                     if (!held && input?.nodeId === "next") { held = true; admit.arrive(); await admit.wait(); }
                     return fn(ctx, input);
@@ -308,11 +310,11 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
         });
 
         // DX-2 and R5: a cancel an older build queued is only in the queue; the controller still applies it when it reads it.
-        it(`DX-2, R5 (${version}): ${WAKES} wakes and a queued cancel behind a held plan do not fail the controller; the cancel ends the run`,
+        it(`DX-2, R5: ${WAKES} wakes and a queued cancel behind a held plan do not fail the controller; the cancel ends the run`,
             { timeout: TIMEOUT }, async () => {
                 const plan = gate();
                 let planned = false;
-                const h = await harness(getEnv(), { requests, wrap: {
+                const h = await harness(getEnv(), { wrap: {
                     [R.plan]: fn => async (ctx, input) => {
                         if (!planned) { planned = true; plan.arrive(); await plan.wait(); }
                         return fn(ctx, input);
@@ -339,8 +341,8 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
     }
 
     // V-2: the queue is never empty, so every wait of the controller ends with a wake at once.
-    it("V-2 (1.9.0): wakes queued all the time hold back neither a graceful stop nor the run deadline", { timeout: TIMEOUT }, async () => {
-        const h = await harness(getEnv(), { requests: true });
+    it("V-2: wakes queued all the time hold back neither a graceful stop nor the run deadline", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
         let pump = null;
         try {
             // A graceful stop with no grace: the wait is pending, so it ends the run stopped at once.
@@ -368,7 +370,7 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
     // flowing it reaches its 50th wait and continues as new while the queue is still being filled; the old drain read on
     // until the queue was empty. The run deadline must still end the run, and the controller must roll over.
     //
-    // Deterministic (review of the DEV runs at d52e5ed2, aa5bb84a and 67fe212c): each counted wait of a paused 1.9.0 run is
+    // Deterministic (review of the DEV runs at d52e5ed2, aa5bb84a and 67fe212c): each counted wait of a paused run is
     // one pass of its loop, a store collection and at least one orchestration turn, and under four producers every queued
     // wake adds a history event and a turn that replays the whole history. How many passes fit in the run's 15 s depends
     // on the machine; at 67fe212c the deadline came at the 49th counted wait (its 54 status writes: begin, admission, one
@@ -381,11 +383,11 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
     // queued wake is a history event the next turn replays, so each pass grew slower (53,000 events, 29 passes in 90 s) and
     // the 50th never came. One producer, a wake every 20 ms, keeps wakes flowing through the whole rollover (a pass that
     // finds one takes it at once), with a history the passes can replay.
-    it("V-2 (1.9.0): under sustained wakes a paused run continues as new and still ends at its run deadline", { timeout: TIMEOUT }, async () => {
+    it("V-2: under sustained wakes a paused run continues as new and still ends at its run deadline", { timeout: TIMEOUT }, async () => {
         let rolledOver = async () => false;
         let held = 0;
-        const h = await harness(getEnv(), { requests: true, wrap: {
-            [WORKFLOW_V2_REQUEST_ACTIVITIES.expire]: fn => async (ctx, input) => {
+        const h = await harness(getEnv(), { wrap: {
+            [WORKFLOW_V2_ACTIVITIES.expire]: fn => async (ctx, input) => {
                 if (await rolledOver()) return fn(ctx, input);
                 held += 1;
                 return { ended: false, remainingMs: 60_000 };
@@ -425,10 +427,10 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
 
     // DX-1: the paused loop counts a wait for each wake it takes, and continues as new at its 50th, with about 100 of the
     // wakes still unread: more than duroxide carries. The cancel is not among them: it ended the run as it was accepted.
-    it("DX-1 (1.9.0): at the paused continue-as-new, a cancel accepted behind more than 100 wakes has ended the run", { timeout: TIMEOUT }, async () => {
-        const R = WORKFLOW_V2_REQUEST_ACTIVITIES;
+    it("DX-1: at the paused continue-as-new, a cancel accepted behind more than 100 wakes has ended the run", { timeout: TIMEOUT }, async () => {
+        const R = WORKFLOW_V2_ACTIVITIES;
         let hold = null;
-        const h = await harness(getEnv(), { requests: true, wrap: {
+        const h = await harness(getEnv(), { wrap: {
             [R.collect]: fn => async (ctx, input) => {
                 const held = hold;
                 if (held) { hold = null; held.arrive(); await held.wait(); }
@@ -461,7 +463,7 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
     });
 
     it("done and delete from the parent's session end a begun run in the store before its controller reads anything", { timeout: TIMEOUT }, async () => {
-        const h = await harness(getEnv(), { requests: true });
+        const h = await harness(getEnv());
         try {
             const send = async (parent, target, cmd, id) => {
                 const command = { type: "cmd", cmd, id, args: {}, requestedBy: parent };
@@ -497,9 +499,9 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
     describe("operator paths", () => {
         /** A harness whose admission of "next" waits, per run, until the test opens it (the controller is in the middle of a turn). */
         const heldHarness = async () => {
-            const R = WORKFLOW_V2_REQUEST_ACTIVITIES;
+            const R = WORKFLOW_V2_ACTIVITIES;
             const holds = new Map();
-            const h = await harness(getEnv(), { requests: true, wrap: {
+            const h = await harness(getEnv(), { wrap: {
                 [R.enter]: fn => async (ctx, input) => {
                     const held = input?.nodeId === "next" ? holds.get(input.runId) : undefined;
                     if (held) { holds.delete(input.runId); held.arrive(); await held.wait(); }
@@ -586,10 +588,10 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
                 await h.stop();
             }
             // Before begin: the run ends in the store, and as no controller will tell its parent, the notice is started.
-            const R = WORKFLOW_V2_REQUEST_ACTIVITIES;
+            const R = WORKFLOW_V2_ACTIVITIES;
             const begin = gate();
             let begun = false;
-            const early = await harness(getEnv(), { requests: true, wrap: {
+            const early = await harness(getEnv(), { wrap: {
                 [R.begin]: fn => async (ctx, input) => {
                     if (!begun) { begun = true; begin.arrive(); await begin.wait(); }
                     return fn(ctx, input);
@@ -631,9 +633,9 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
             return status.status !== "Running" ? status : null;
         }, "the script's effect to be stopped", 40_000);
 
-        it("(a) 1.8.0: a cancel accepted while its collection is held; the collection reports the end and the effect is stopped", { timeout: TIMEOUT }, async () => {
+        it("(a) a cancel accepted while its collection is held; the collection reports the end and the effect is stopped", { timeout: TIMEOUT }, async () => {
             let hold = null;
-            const h = await harness(getEnv(), { requests: false, options: SLOW_LIVENESS, wrap: {
+            const h = await harness(getEnv(), { options: SLOW_LIVENESS, wrap: {
                 [WORKFLOW_V2_ACTIVITIES.collect]: fn => async (ctx, input) => {
                     const held = hold;
                     if (held) { hold = null; held.arrive(); await held.wait(); }
@@ -659,8 +661,8 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
             }
         });
 
-        it("(b) 1.9.0: an operator's delete of a running workflow; the controller's next store call finds it and the effect is stopped", { timeout: TIMEOUT }, async () => {
-            const h = await harness(getEnv(), { requests: true, options: SLOW_LIVENESS });
+        it("(b) an operator's delete of a running workflow; the controller's next store call finds it and the effect is stopped", { timeout: TIMEOUT }, async () => {
+            const h = await harness(getEnv(), { options: SLOW_LIVENESS });
             try {
                 const run = await started(h, SLOW_SCRIPT);
                 const node = await scriptRunning(h, run.runId);
@@ -680,15 +682,15 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
 
     // Review N-2 (S7-DX3): the parent notice follows the stored end, the first run-ending commit, not a queued command that
     // lost. An older build's queued parent "done" (requestedBy: the parent) is read after a person's cancel ended the run.
-    it("N-2 (1.9.0): an older queued parent command that lost to a person's cancel does not silence the parent's notice", { timeout: TIMEOUT }, async () => {
+    it("N-2: an older queued parent command that lost to a person's cancel does not silence the parent's notice", { timeout: TIMEOUT }, async () => {
         const notices = [];
         const plan = gate();
         let planned = false;
-        const h = await harness(getEnv(), { requests: true, options: {
+        const h = await harness(getEnv(), { options: {
             authorizeParentNotification: async () => true,
             notifyParent: async (parentSessionId, text) => { notices.push({ parentSessionId, text }); },
         }, wrap: {
-            [WORKFLOW_V2_REQUEST_ACTIVITIES.plan]: fn => async (ctx, input) => {
+            [WORKFLOW_V2_ACTIVITIES.plan]: fn => async (ctx, input) => {
                 if (!planned) { planned = true; plan.arrive(); await plan.wait(); }
                 return fn(ctx, input);
             },
@@ -718,8 +720,8 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
     // Review R3-GR1 (formal r3, graph.r3-delete-after-cmd and r3-delete-after-retry): a deletion that follows another end does
     // not silence that end's notice: whatever ended the run first decides who is told. The controller is held (its plan, or
     // its finish's attempt) while another writer ends the run and the workflow is then deleted; the parent is told once.
-    describe("R3-GR1 (1.9.0): a deletion after another end keeps that end's parent notice", () => {
-        /** A 1.9.0 harness whose parent notices are recorded, with `wrap`. */
+    describe("R3-GR1: a deletion after another end keeps that end's parent notice", () => {
+        /** A harness whose parent notices are recorded, with `wrap`. */
         const noticed = (wrap = {}) => {
             const notices = [];
             return { notices, options: { authorizeParentNotification: async () => true,
@@ -728,7 +730,7 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
         const heldPlan = () => {
             const plan = gate();
             let planned = false;
-            return { plan, wrap: { [WORKFLOW_V2_REQUEST_ACTIVITIES.plan]: fn => async (ctx, input) => {
+            return { plan, wrap: { [WORKFLOW_V2_ACTIVITIES.plan]: fn => async (ctx, input) => {
                 if (!planned) { planned = true; plan.arrive(); await plan.wait(); }
                 return fn(ctx, input);
             } } };
@@ -752,7 +754,7 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
             it(`${label}, then the workflow's deletion, while the controller is held: the parent is told once, of that end`, { timeout: TIMEOUT }, async () => {
                 const held = heldPlan();
                 const n = noticed(held.wrap);
-                const h = await harness(getEnv(), { requests: true, options: n.options, wrap: n.wrap });
+                const h = await harness(getEnv(), { options: n.options, wrap: n.wrap });
                 try {
                     const parent = randomUUID();
                     const run = await started(h, HOLD(), { parent });
@@ -778,7 +780,7 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
             // fails (a crash after the commit); its retry finds the run ended and reconciles it.
             let crashed = false;
             let h = null;
-            const n = noticed({ [WORKFLOW_V2_REQUEST_ACTIVITIES.finish]: fn => async (ctx, input) => {
+            const n = noticed({ [WORKFLOW_V2_ACTIVITIES.finish]: fn => async (ctx, input) => {
                 const result = await fn(ctx, input);
                 if (!crashed) {
                     crashed = true;
@@ -787,7 +789,7 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
                 }
                 return result;
             } });
-            h = await harness(getEnv(), { requests: true, options: n.options, wrap: n.wrap });
+            h = await harness(getEnv(), { options: n.options, wrap: n.wrap });
             try {
                 const parent = randomUUID();
                 // HOLD with a one-second wait: the run ends by its own terminal.

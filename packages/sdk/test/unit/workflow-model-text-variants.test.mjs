@@ -29,7 +29,6 @@ import {
     READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC, READ_WORKFLOW_MILESTONE_TOOL_SPEC, READ_WORKFLOW_TOOL_SPEC, readWorkflowToolSpec,
     UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC, UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC, UPDATE_WORKFLOW_TOOL_SPEC, updateWorkflowFromTool,
 } from "../../dist/workflow/v2/tools.js";
-import { requireTestHost } from "../../dist/workflow/v2/chat-test.js";
 import { workflowDefinitionToolSpec } from "../../dist/workflow/v2/definition-tool.js";
 
 const {
@@ -142,13 +141,7 @@ test("G-4: every turn's host runs a Workflow test, so no guidance says tests do 
         assert.ok(text.includes(TEST_LINE), `requests ${requests}`);
         assert.ok(!/tests do not run here|has no `test`/i.test(text), `requests ${requests}`);
     }
-    // The host every turn makes (a frozen 1.0.82 turn's too) sets requests unconditionally: the one thing requireTestHost checks.
-    const proxy = fs.readFileSync(new URL("../../src/session-proxy.ts", import.meta.url), "utf8");
-    const host = proxy.slice(proxy.indexOf("const workflowV2Host = async (): Promise<WorkflowToolHost> => {"));
-    assert.match(host.slice(0, host.indexOf("\n        };\n")), /\n {16}requests: true,\n/);
-    assert.doesNotThrow(() => requireTestHost({ requests: true }));
-    assert.throws(() => requireTestHost({}), error => error.code === "WORKFLOW_TEST_UNAVAILABLE");
-    // The declaration with the test operation is the default.
+    // The declaration always has the test operation (every turn's host runs a test, a frozen 1.0.82 turn's too).
     assert.ok(workflowDefinitionToolSpec().parameters.properties.operation.enum.includes("test"));
 });
 

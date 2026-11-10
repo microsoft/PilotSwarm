@@ -1,8 +1,7 @@
 /**
  * Workflow v2 agent states: human input and depth in an agent state's
- * subtree (design 03 human-input denial and depth; R12 to R14, R16),
- * INACTIVE: only controller 1.9.0 creates agent states' children, and only
- * tests run it.
+ * subtree (design 03 human-input denial and depth; R12 to R14, R16): the
+ * Workflow controller creates agent states' children.
  *
  * - The store's lineage read: levels from the session rows (deleted rows
  *   included), the nearest agent state's child with its workflow and
@@ -36,7 +35,7 @@ import { createManagementClient, PilotSwarmClient } from "../helpers/local-worke
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson } from "../../src/workflow/v2/json.ts";
 import { WORKFLOW_HUMAN_INPUT_DENIED } from "../../src/workflow/v2/input-policy.ts";
-import { WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_V2_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
 import { parseTestFixtures } from "../../src/workflow/v2/test-mode.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 import { openWorkflowStore } from "../helpers/workflow-v2-request-fixture.js";
@@ -66,7 +65,7 @@ states:
 
 /**
  * A workflow of `parent` with an agent state admitted pending whose child is
- * `childSessionId` (its invocation record, as controller 1.9.0 admits one).
+ * `childSessionId` (its invocation record, as the Workflow controller admits one).
  */
 async function agentStateOf({ catalog, store }, parent, childSessionId, owner = null) {
     const compiled = compileWorkflowV2(AGENT_YAML, { enableRequests: true, enableAgents: true });
@@ -79,7 +78,7 @@ async function agentStateOf({ catalog, store }, parent, childSessionId, owner = 
         workflowSessionId, parentSessionId: parent, notifyParent: false, yaml: AGENT_YAML, compiled, actor: ACTOR,
         operationId: "create", requestSha256: "input-policy", publish: true, title: "Workflow: reviewer",
         start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
-            inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION },
+            inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION },
     });
     const nodeExecutionId = nodeExecutionIdFor(runId, "root", "review", 1);
     expect(await store.enterNode({
@@ -93,7 +92,7 @@ async function agentStateOf({ catalog, store }, parent, childSessionId, owner = 
 
 /**
  * A draft workflow of `parent` with a real-agent test run (agent mode real) whose agent state is admitted pending with its
- * child `childSessionId`, as controller 1.9.0 admits one; the test answers read_build { buildId: 7 } from a fixture.
+ * child `childSessionId`, as the Workflow controller admits one; the test answers read_build { buildId: 7 } from a fixture.
  */
 async function realTestAgentStateOf({ catalog, store }, parent, childSessionId) {
     const compiled = compileWorkflowV2(AGENT_YAML, { enableRequests: true, enableAgents: true });
@@ -110,7 +109,7 @@ async function realTestAgentStateOf({ catalog, store }, parent, childSessionId) 
     await store.startTest({
         workflowSessionId, expectedRevision: 1, definitionHash: compiled.yamlSha256, operationId: "test-1", requestSha256: "input-policy-test",
         start: { runId, mode: "test", controllerInstanceId: workflowTestControllerInstanceId(runId), inputsText: "{}", kvText: "{}",
-            testAgentMode: "real", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, fixturesText: canonicalJson(fixtures) },
+            testAgentMode: "real", controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION, fixturesText: canonicalJson(fixtures) },
     });
     const nodeExecutionId = nodeExecutionIdFor(runId, "root", "review", 1);
     expect(await store.enterNode({
@@ -266,7 +265,7 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
             expect(await h.store.readNodeExecution(nodeExecutionId)).toMatchObject({ outcome: "accepted", winner: "agent", output: { verdict: "ok" } });
             const turns = h.calls.filter(call => call.name === "runTurnV5" && call.input?.sessionId === h.sessionId);
             expect(turns.length).toBeGreaterThanOrEqual(1);
-            // The model is declared its tools from the config each turn gives the session manager (session-manager.ts): a 1.9.0
+            // The model is declared its tools from the config each turn gives the session manager (session-manager.ts): a 1.0.83
             // turn's milestone tools and respond_session_request, and an agent state's own child's complete_workflow_node. The
             // bridge alone is invisible to the model; the first real-worker run had it without the declaration.
             expect(h.sessionConfigs.length).toBeGreaterThanOrEqual(1);
@@ -326,7 +325,7 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
             await h.until(({ history }) => history.some(event => event.kind === "QueueSubscribed"), "the session waits for its messages");
             await h.say("hello", "cm-plain-1");
             await h.until(async () => seen.length >= 1, "the turn runs");
-            // A turn of a worker that runs 1.9.0: its workflow tools describe and take the milestone (R26).
+            // A 1.0.83 turn (a workflow request turn): its workflow tools describe and take the milestone (R26).
             expect(seen[0]).toEqual({ subtree: false, complete: false, respond: true, milestone: true, test: false });
             expect(canonicalJson(seen)).not.toContain("true,\"complete\":true");
             // Its turns are declared the milestone tools and respond_session_request, never complete_workflow_node.

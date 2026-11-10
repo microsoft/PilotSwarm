@@ -1,5 +1,5 @@
 /**
- * Workflow Simplified stage 2.2, on PostgreSQL with controller 1.9.0 on a native runtime: an agent's test of a revision, on
+ * Workflow Simplified stage 2.2, on PostgreSQL with the Workflow controller on a native runtime: an agent's test of a revision, on
  * request (chat-test.ts; spec "Agent-only test, on request"; readings item 6). The chat's workflow_definition test:
  * - runs the revision to its end on a hidden test bench with prepared answers: a script's tool call answered by a fixture
  *   without arguments, an agent step answered by its fixture, and a one-hour wait that passes at once on the virtual clock;
@@ -57,7 +57,7 @@ const FIXTURES = [
     { operation: "agent", state: "summarize", response: { kind: "success", value: { outcome: "done", output: { lines: 2 } } } },
 ];
 
-/** A worker-equivalent registration (workflowRequests; scripts granted read_build only); parent notices are recorded. */
+/** A worker-equivalent registration (scripts granted read_build only); parent notices are recorded. */
 async function harness(env) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
@@ -81,11 +81,10 @@ async function harness(env) {
         deleteSession: async sessionId => catalog.softDeleteSession(sessionId),
         wakeBackstopMs: 500,
         testPollMs: 50,
-        workflowRequests: true,
         sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
     });
     await runtime.start();
-    const host = { catalog, store, duroxideClient: client, requests: true, scripts: true };
+    const host = { catalog, store, duroxideClient: client, scripts: true };
     const chat = randomUUID();
     await catalog.createSession(chat, { owner: OWNER });
     const saved = (await saveChatWorkflowDefinition(host, { ownerSessionId: chat, name: "build-watch", yaml: yamlOf(DOC), expected: null,

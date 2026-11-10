@@ -85,7 +85,7 @@ describe("Workflow Definitions with revisions (stage 2.1), on a real model", () 
             const worker = { workflowScripts: { enabled: true }, logLevel: "warning" };
             await withClient(env, { worker }, async (client) => {
                 mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
-                    factsSchema: env.factsSchema, workflowCommands: { requests: true } });
+                    factsSchema: env.factsSchema, workflowCommands: {} });
                 await mgmt.start();
                 const catalog = client._catalog;
                 const chatStore = catalog.workflowStore().chat;

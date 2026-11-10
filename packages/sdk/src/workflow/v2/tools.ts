@@ -24,7 +24,7 @@ import { parseTestFixtures, parseTestResponse, WORKFLOW_V2_TEST_NOTICE, WORKFLOW
 import { resolveWorkflowTestMode } from "./test-mode-switch.js";
 import {
     advanceWorkflowV2Test,
-    compileWorkflowV2ForHost,
+    compileWorkflowV2Definition,
     controlWorkflowV2Run,
     createWorkflowV2,
     inspectWorkflowV2Controller,
@@ -66,8 +66,8 @@ import {
 
 /**
  * update_workflow's operations, declared once (design 04): the definition commands, the run commands, recover (the
- * parent agent's only; a person's adapter refuses it), and the milestone operations a host that runs controller 1.9.0
- * also takes (stop, then the test operations). The tool's operation enums, a person's lists (human-commands.ts), the
+ * parent agent's only; a person's adapter refuses it), and the milestone operations (stop, then the test operations;
+ * declared on a turn of session orchestration 1.0.83). The tool's operation enums, a person's lists (human-commands.ts), the
  * dispatch below and its refusals are made from these.
  */
 export const UPDATE_WORKFLOW_OPERATIONS = {
@@ -142,7 +142,7 @@ export const READ_WORKFLOW_TOOL_SPEC = {
     },
 } as const;
 
-/** The operations update_workflow takes only on a host that starts runs at controller 1.9.0 (every 1.0.83 turn). */
+/** The operations update_workflow declares only on a 1.0.83 turn (a workflow request turn); its handler always takes them. */
 export const UPDATE_WORKFLOW_MILESTONE_OPERATIONS = UPDATE_WORKFLOW_OPERATIONS.milestone;
 
 /** update_workflow on a 1.0.83 turn while workflow test mode is off (spec 16, E1/O2): stop, and no test operation. */
@@ -435,21 +435,18 @@ const RUN_COMMANDS: ReadonlySet<string> = new Set(UPDATE_WORKFLOW_OPERATIONS.run
  * The test operations of update_workflow (design 05): test (start a
  * test run of the exact current revision), test_respond (answer an
  * intercepted effect by its interception id) and test_advance (move a test
- * run's virtual clock). Taken, like a graceful stop (operation stop), only by
- * a host that starts runs at controller 1.9.0 (WorkflowV2Host.requests, as
- * every production host does), and there only while workflow test mode is on
- * (test-mode-switch.ts; hidden by default, spec 16); elsewhere they are
+ * run's virtual clock). Taken only while workflow test mode is on
+ * (test-mode-switch.ts; hidden by default, spec 16); otherwise they are
  * refused. The tool's published description and operation enum are unchanged.
  */
 const TEST_OPERATIONS: ReadonlySet<string> = new Set(UPDATE_WORKFLOW_OPERATIONS.milestone.filter(operation => operation !== "stop"));
 
 /**
- * The refusal of a test operation on a host that runs controller 1.9.0 while workflow test mode is off (spec 16;
- * test-mode-switch.ts), before any workflow is read: the refusal an unknown operation gets, with no word of testing
- * (review SF-7). Null for every other operation and host.
+ * The refusal of a test operation while workflow test mode is off (spec 16; test-mode-switch.ts), before any workflow is
+ * read: the refusal an unknown operation gets, with no word of testing (review SF-7). Null for every other operation.
  */
-export function workflowTestModeRefusal(operation: unknown, host: Pick<WorkflowToolHost, "requests" | "testMode">): WorkflowStoreError | null {
-    if (host.requests !== true || typeof operation !== "string" || !TEST_OPERATIONS.has(operation) || resolveWorkflowTestMode(host.testMode)) return null;
+export function workflowTestModeRefusal(operation: unknown, host: Pick<WorkflowToolHost, "testMode">): WorkflowStoreError | null {
+    if (typeof operation !== "string" || !TEST_OPERATIONS.has(operation) || resolveWorkflowTestMode(host.testMode)) return null;
     return unknownOperationError(operation, { milestone: true, testing: false });
 }
 
@@ -458,7 +455,7 @@ export function workflowTestModeRefusal(operation: unknown, host: Pick<WorkflowT
  * does not exist (spec 16; owner answer Q3): the refusal any unknown operation gets on this host, with no word of
  * testing. Null for every other operation and host.
  */
-export function workflowTestModeAbsentError(operation: unknown, host: Pick<WorkflowToolHost, "requests" | "testMode">): WorkflowStoreError | null {
+export function workflowTestModeAbsentError(operation: unknown, host: Pick<WorkflowToolHost, "testMode">): WorkflowStoreError | null {
     return workflowTestModeRefusal(operation, host) ? unknownOperationError(null, { milestone: true, testing: false }) : null;
 }
 
@@ -519,8 +516,7 @@ function graceSecondsArg(args: Record<string, unknown>): number | null {
 
 /**
  * Parse the update_workflow arguments of a run command. `stop` (a graceful
- * stop: optional reason and grace_seconds) only when `options.stop` (a host
- * that runs controller 1.9.0).
+ * stop: optional reason and grace_seconds) only when `options.stop`.
  */
 export function parseRunCommandArgs(args: Record<string, unknown>, options: { stop?: boolean } = {}): { workflowSessionId: string; operationId: string; command: WorkflowV2RunCommand } {
     const workflowSessionId = requiredString(args, "workflow_id");
@@ -585,22 +581,21 @@ async function recoverWorkflowFromTool(args: Record<string, unknown>, context: {
  */
 export async function runUpdateWorkflowCommand(args: Record<string, unknown>, host: WorkflowToolHost, actor: WorkflowActor,
     authorize: (workflowSessionId: string) => Promise<void>): Promise<{ [key: string]: JsonValue }> {
-    // A host that starts runs at controller 1.9.0 (WorkflowV2Host.requests) also takes stop, and the test operations while
-    // workflow test mode is on (WorkflowV2Host.testMode, or else the deployment flag; test-mode-switch.ts).
-    const milestone = host.requests === true;
-    const testing = milestone && resolveWorkflowTestMode(host.testMode);
+    // Stop, and the test operations while workflow test mode is on (WorkflowV2Host.testMode, or else the deployment flag;
+    // test-mode-switch.ts).
+    const testing = resolveWorkflowTestMode(host.testMode);
     const refusal = workflowTestModeRefusal(args.operation, host);
     if (refusal) throw refusal;
     if (typeof args.operation === "string" && TEST_OPERATIONS.has(args.operation) && testing) {
         return await testOperation(args, host, actor, authorize);
     }
-    if (typeof args.operation === "string" && (RUN_COMMANDS.has(args.operation) || (milestone && args.operation === "stop"))) {
-        const { workflowSessionId, operationId, command } = parseRunCommandArgs(args, { stop: milestone });
+    if (typeof args.operation === "string" && (RUN_COMMANDS.has(args.operation) || args.operation === "stop")) {
+        const { workflowSessionId, operationId, command } = parseRunCommandArgs(args, { stop: true });
         await authorize(workflowSessionId);
         const stored = await controlWorkflowV2Run(host, workflowSessionId, command, { actor, operationId });
         return runCommandJson(stored.receipt, stored.replayed);
     }
-    const { workflowSessionId, operationId, command } = parseUpdateWorkflowArgs(args, { milestone, testing });
+    const { workflowSessionId, operationId, command } = parseUpdateWorkflowArgs(args, { milestone: true, testing });
     await authorize(workflowSessionId);
     // SEMVER_REUSED: an agent's or a person's draft replacement keeps one definition per name and version among the
     // parent's Workflows (WorkflowStore.requireVersionFree).
@@ -680,7 +675,7 @@ export function workflowV2ExclusiveRead(request: WorkflowV2ReadRequest): "agentV
  * of its own, any other given option refused by the caller's name for it, or the view, a page or a value. Who may read
  * is decided before this, and what an adapter adds to the view, after it.
  */
-export async function readWorkflowV2(host: Pick<WorkflowV2Host, "store" | "resolveAgent" | "requests"> & { testMode?: boolean },
+export async function readWorkflowV2(host: Pick<WorkflowV2Host, "store" | "resolveAgent"> & { testMode?: boolean },
     workflowSessionId: string, request: WorkflowV2ReadRequest, names: "tool" | "api", reader: { callerSessionId?: string | null } = {})
     : Promise<{ [key: string]: JsonValue }> {
     const own = workflowV2ExclusiveRead(request);
@@ -704,7 +699,7 @@ const readAlone = (what: string, extra: readonly string[]): void => {
  * previewWorkflowV2AgentVersions): `agent_versions: true` on the tool, `agentVersions: true` on the API. A read of its
  * own: any other read argument given with it (`extra`, by its name as the caller wrote it) is WORKFLOW_READ_INVALID.
  */
-export async function readWorkflowV2AgentVersions(host: Pick<WorkflowV2Host, "store" | "resolveAgent" | "requests">, workflowSessionId: string,
+export async function readWorkflowV2AgentVersions(host: Pick<WorkflowV2Host, "store" | "resolveAgent">, workflowSessionId: string,
     value: unknown, extra: readonly string[] = []): Promise<{ [key: string]: JsonValue }> {
     if (value !== true) throw readInvalid("agent_versions (agentVersions) must be true: it reads the agent versions that publishing would lock.");
     readAlone("The agent versions are a read of their own", extra);
@@ -904,7 +899,7 @@ function spliceStepInput(source: string, document: ReturnType<typeof parseDocume
  * `revision` (a changed draft is refused). Reading changes nothing. Only a draft's agent step, written as a block
  * mapping, is edited here; anything else is WORKFLOW_READ_INVALID with what to do instead.
  */
-export async function readWorkflowV2StepInput(host: Pick<WorkflowV2Host, "store" | "requests">, workflowSessionId: string, value: unknown,
+export async function readWorkflowV2StepInput(host: Pick<WorkflowV2Host, "store">, workflowSessionId: string, value: unknown,
     extra: readonly string[] = []): Promise<{ [key: string]: JsonValue }> {
     if (!isJsonObject(value) || typeof value.state !== "string" || !value.state) throw readInvalid("step_input (stepInput) must be { state, input? }.");
     readAlone("A step's inputs are a read of their own", extra);
@@ -966,7 +961,7 @@ export async function readWorkflowV2StepInput(host: Pick<WorkflowV2Host, "store"
         if (written === undefined || canonicalJson(written) !== canonicalJson(built)) {
             throw readInvalid(`Step '${state}''s inputs could not be written safely into its YAML; change them in the YAML editor.`);
         }
-        const compiled = compileWorkflowV2ForHost(host, yaml);
+        const compiled = compileWorkflowV2Definition(yaml);
         stepInput.proposed = { yaml, changed: yaml !== revision.yaml, valid: compiled.valid, diagnostics: diagnosticsJson(compiled.diagnostics) };
     }
     return { workflowId: workflowSessionId, stepInput };
@@ -1126,11 +1121,11 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
     const selected = options.runId ? runs.find(run => run.runId === options.runId) : runs.find(run => run.mode === "live");
     if (options.runId && !selected) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${options.runId} is not a run of this workflow.`);
     const sections = selected ? await runSectionsOf(store, selected, limits) : null;
-    // A paused run has settled once no state it admitted is still running; so has a stopping run (migration 0100).
+    // A paused run has settled once no state it admitted is still running; so has a stopping run (migration 0088).
     const pauseSettled = selected?.status === "paused" ? !await store.hasPendingNodes(selected.runId) : null;
     const stopping = selected?.stop && ACTIVE_RUN_STATUSES.includes(selected.status) ? selected.stop : null;
     const stopSettled = stopping !== null ? !await store.hasPendingNodes(selected!.runId) : null;
-    // A test run (migration 0102): its notice, virtual clock, interceptions and coverage.
+    // A test run (migration 0088): its notice, virtual clock, interceptions and coverage.
     const test = selected && sections && selected.mode === "test"
         ? await testViewOf(store, workflowSessionId, selected, definition.currentRevision, [...sections.executions.rows, ...sections.openExecutions], limits.interceptions)
         : null;
@@ -1144,7 +1139,7 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
             publishedRevision: definition.publishedRevision, publishedDefinitionHash: definition.publishedYamlSha256,
             // Whether the parent agent is told when the live run ends (batch 7, n-1): spawn_workflow sets it, a live start sets it again.
             notifyOnCompletion: definition.notifyParent,
-            // What publication pinned each named agent state to (migration 0103; R18, R28); only a definition with any shows it.
+            // What publication pinned each named agent state to (migration 0088; R18, R28); only a definition with any shows it.
             ...(definition.publishedAgentPins !== null ? { publishedAgentPins: definition.publishedAgentPins } : {}),
         },
         revision: {
@@ -1161,7 +1156,7 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
         run: selected && sections ? {
             runId: selected.runId, mode: selected.mode, status: selected.status, outcome: selected.terminalOutcome,
             ...(selected.pausedFrom !== null ? { pausedFrom: selected.pausedFrom, pauseSettled } : {}),
-            // A graceful stop (controller 1.9.0; only such a run has one): when it was accepted, its deadline, and while the run is
+            // A graceful stop (only such a run has one): when it was accepted, its deadline, and while the run is
             // still active, whether its admitted work has settled.
             ...(selected.stop !== null ? { stop: {
                 requestedAt: selected.stop.requestedAt.toISOString(), deadline: selected.stop.deadlineAt.toISOString(),
@@ -1170,7 +1165,7 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
             } } : {}),
             ...(control ? { lastControl: runControlView(control, options.callerSessionId ?? null) } : {}),
             ...(test !== null ? { test: test.view } : {}),
-            // A run deadline (migration 0104; limits.timeoutSeconds, controller 1.9.0): only a run with one shows it (a test
+            // A run deadline (migration 0088; limits.timeoutSeconds): only a run with one shows it (a test
             // run's is on its virtual clock).
             ...(selected.deadlineAt ? { deadline: selected.deadlineAt.toISOString() } : {}),
             terminalState: selected.terminalNodeId,
@@ -1486,7 +1481,7 @@ async function testViewOf(store: WorkflowStore, workflowSessionId: string, run: 
         view: {
             notice: WORKFLOW_V2_TEST_NOTICE,
             agentMode: run.testAgentMode,
-            // What a real-agent test pinned its named agents to when it was admitted (migration 0105; R18, R28).
+            // What a real-agent test pinned its named agents to when it was admitted (migration 0088; R18, R28).
             ...(run.testAgentMode === "real" ? { agentNotice: WORKFLOW_V2_TEST_REAL_AGENT_NOTICE, agentPins: run.testAgentPins } : {}),
             scenario: run.testScenario,
             testedRevision: run.revision,

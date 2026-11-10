@@ -23,6 +23,7 @@ import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { registerWorkflowV2 } from "../../src/workflow/v2/runtime.ts";
 import { DURABLE_SESSION_ORCHESTRATION_NAME } from "../../src/orchestration-registry.ts";
 import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
+import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 
@@ -284,7 +285,7 @@ describe("workflow v2 admission at the session creation boundary", () => {
         const duroxide = new Client(provider);
         // A worker-equivalent registration runs one v2 workflow to its end. It stops before the
         // ordinary client acts: no session runtime runs while the client is observed.
-        const v2Runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
+        const v2Runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] } });
         registerWorkflowV2(v2Runtime, {
             store: h.store, catalog: h.catalog, enabled: () => true,
             resolveToolBinding: async () => null,

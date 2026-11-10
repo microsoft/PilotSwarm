@@ -17,8 +17,7 @@ import { WORKFLOW_RUN_STATE_WORDS, workflowAgentModel, workflowSpawnedModels, wo
     workflowDuration, workflowFailureDetail, workflowNodeCardWords, workflowOutcomeWord, workflowShortTime, workflowTimeTitle, workflowVisitBadge,
 } from "./workflow-words.js";
 
-// Agent and parallel states (IR 8) and stopped runs are written only by controller 1.9.0;
-// they are read here so a test deployment shows them, and nothing else changes for the others.
+// Agent and parallel states (IR 8) and stopped runs are read here as every other state and status is.
 const STATE_TYPES = new Set(["script", "wait", "messaging", "agent", "parallel", "terminal"]);
 const MESSAGING_MODES = new Set(["receive", "send", "request"]);
 const TERMINAL_OUTCOMES = new Set(["succeeded", "blocked", "failed", "cancelled"]);
@@ -203,8 +202,8 @@ export function workflowV2ShortHash(value) {
  * M17 "Inspect package pin"): the workflow interface the state names (its
  * graph's `invoke.interface`, `<name>@<version>`), and its pin in `source`,
  * the shown run's pins (projectWorkflowV2): `{ by: "publication" | "test",
- * pins }` (migration 0103's publication pins, or a real-agent test run's,
- * migration 0105), or `{ by: "mocked" }` for a mocked test run, whose
+ * pins }` (migration 0088's publication pins, or a real-agent test run's,
+ * migration 0088), or `{ by: "mocked" }` for a mocked test run, whose
  * agents do not run. A pin is the package, version, exact revision and the
  * interface's digest publication matched. Null for any other state.
  */
@@ -541,7 +540,7 @@ function normalizeRun(raw, older = null) {
     return {
         runId: raw.runId, mode: raw.mode, status: raw.status, outcome: raw.outcome ?? null,
         pausedFrom: raw.pausedFrom ?? null, pauseSettled: typeof raw.pauseSettled === "boolean" ? raw.pauseSettled : null,
-        // A graceful stop (controller 1.9.0) and a test run's evidence (notice, virtual clock, interceptions, coverage); its
+        // A graceful stop and a test run's evidence (notice, virtual clock, interceptions, coverage); its
         // interceptions are its page, the waiting ones the page does not hold and any older pages loaded, as one list.
         stop: isRecord(raw.stop) ? raw.stop : null, test: isRecord(raw.test) ? { ...raw.test, interceptions: rows.interceptions } : null,
         terminalState: raw.terminalState ?? null, output: raw.output ?? null, error: raw.error ?? null,
@@ -722,7 +721,7 @@ export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now
         ok: true, status, workflowId: model.workflowId, definition: graph, diagnostics, banners, workflowBanners, run, overlay, runRevision, waitingReplies,
         lifecycle: lifecycle.state, semver: lifecycle.semver ?? null, currentRevision: lifecycle.currentRevision, latestRevision: revision.revision,
         publishedRevision: lifecycle.publishedRevision ?? null, validRevision: revision.valid, runs: model.runs,
-        // What publication pinned each named agent state to (migration 0103; only a definition with any has them).
+        // What publication pinned each named agent state to (migration 0088; only a definition with any has them).
         publishedAgentPins: isRecord(lifecycle.publishedAgentPins) ? lifecycle.publishedAgentPins : null,
         // The server's word that its test runs are shown (review UI-5; workflowV2TestRunsShown).
         ...(model.testMode === true ? { testMode: true } : {}),

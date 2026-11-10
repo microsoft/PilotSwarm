@@ -30,7 +30,7 @@ import { normalizeSchema, schemaReferences, WorkflowSchemaError, WorkflowSchemaS
  * so the interface of an exact revision never changes.
  *
  * A workflow names it on an agent state (`invoke.agent: { name, package,
- * interface: review_change@1 }`). At publication (a 1.9.0 host),
+ * interface: review_change@1 }`). At publication,
  * the state's contract must match the exported interface exactly: the same
  * name and version, the same outcomes, the same output schema, and, when the
  * interface declares one, the same input schema. Nothing is inferred and no

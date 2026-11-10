@@ -14,7 +14,7 @@ import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson } from "../../src/workflow/v2/json.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 import { startChatWorkflowTest } from "../../src/workflow/v2/chat-test.ts";
-import { WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowAgentChildSessionId, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_V2_CONTROLLER_VERSION, workflowAgentChildSessionId, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -60,7 +60,7 @@ async function stepFixture(env) {
         workflowSessionId, parentSessionId: chat, notifyParent: false, yaml: STEP_YAML, compiled, actor: { kind: "system", name: "step-guard-test" },
         operationId: "create", requestSha256: "step-guard", publish: true, title: "Workflow: stepper",
         start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId), inputsText: "{}", kvText: "{}",
-            testAgentMode: null, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION },
+            testAgentMode: null, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION },
     });
     const nodeExecutionId = nodeExecutionIdFor(runId, "root", "talk", 1);
     const step = workflowAgentChildSessionId(nodeExecutionId);
@@ -82,7 +82,7 @@ describe("a chat's Workflow Definitions change only outside a Workflow (PRS-002)
         const env = getEnv();
         const f = await stepFixture(env);
         const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
-            factsSchema: env.factsSchema, workflowCommands: { requests: true } });
+            factsSchema: env.factsSchema, workflowCommands: {} });
         await mgmt.start();
         try {
             for (const session of [f.step, f.below]) {
@@ -92,7 +92,7 @@ describe("a chat's Workflow Definitions change only outside a Workflow (PRS-002)
                     () => mgmt.copyChatWorkflowDefinition(session, { definitionId: "def-any", operationId: `copy-${session}` }, { principal: PERSON }),
                     () => mgmt.updateChatWorkflowPackage(session, { definitionId: "def-any", operationId: `update-${session}` }, { principal: PERSON }),
                     () => mgmt.deleteChatWorkflowDefinition(session, { definitionId: "def-any", operationId: `delete-${session}` }, { principal: PERSON }),
-                    () => startChatWorkflowTest({ catalog: f.catalog, store: f.store, duroxideClient: null, requests: true }, {
+                    () => startChatWorkflowTest({ catalog: f.catalog, store: f.store, duroxideClient: null }, {
                         ownerSessionId: session, definition: { name: "waiter" }, inputs: {}, fixtures: [], operationId: `test-${session}`,
                         actor: { kind: "agent", sessionId: session }, owner: async () => OWNER, binding: async () => null }),
                 ];

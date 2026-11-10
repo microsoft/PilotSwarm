@@ -7,7 +7,6 @@ import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
-import { WORKFLOW_V2_STOP_CONTROLLER_VERSIONS } from "../../src/workflow/v2/runtime.ts";
 import { readWorkflowFromTool, readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
 import pg from "pg";
 
@@ -79,8 +78,8 @@ describe("workflow v2 event redaction", () => {
             const store = catalog.workflowStore();
             const parent = randomUUID();
             await catalog.createSession(parent, {});
-            // No controller starts: each run stays admitted (not begun), on controller 1.9.0.
-            const host = { catalog, store, requests: true,
+            // No controller starts: each run stays admitted (not begun), on the Workflow controller.
+            const host = { catalog, store,
                 duroxideClient: { startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "NotFound" }), enqueueEvent: async () => {} } };
             const yaml = [
                 "apiVersion: pilotswarm.dev/v2-draft", "kind: Workflow", "metadata: { name: redact, version: \"1.0.0\" }", "initial: pause", "states:",
@@ -107,7 +106,7 @@ describe("workflow v2 event redaction", () => {
             // A stop: its request and the run's error when it ends.
             const stopped = await started();
             await store.requestRunStop({ workflowSessionId: stopped.id, runId: stopped.runId, operationId: "stop-1", requestSha256: "stop", actor, reason,
-                graceSeconds: 0, stoppableVersions: WORKFLOW_V2_STOP_CONTROLLER_VERSIONS });
+                graceSeconds: 0 });
             expect(String((await stored(stopped.runId)).stop_request)).not.toContain(SENTINEL);
             const ended = await store.finishStoppedRun({ runId: stopped.runId,
                 projection: ({ run }) => ({ sessionId: run.workflowSessionId, update: { state: "cancelled", touch: true } }) });
@@ -151,7 +150,7 @@ describe("workflow v2 event redaction", () => {
             const store = catalog.workflowStore();
             const parent = randomUUID();
             await catalog.createSession(parent, {});
-            const host = { catalog, store, requests: true,
+            const host = { catalog, store,
                 duroxideClient: { startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "NotFound" }), enqueueEvent: async () => {} } };
             const yaml = [
                 "apiVersion: pilotswarm.dev/v2-draft", "kind: Workflow", "metadata: { name: redact, version: \"1.0.0\" }", "initial: pause", "states:",
@@ -182,7 +181,7 @@ describe("workflow v2 event redaction", () => {
             // A stop: its request, its event, the run read while it stops, and the stopped run's error.
             const stopped = await started();
             await store.requestRunStop({ workflowSessionId: stopped.id, runId: stopped.runId, operationId: "stop-1", requestSha256: "stop", actor, reason,
-                graceSeconds: 600, stoppableVersions: WORKFLOW_V2_STOP_CONTROLLER_VERSIONS });
+                graceSeconds: 600 });
             clean(String((await row(stopped.runId)).stop_request));
             const stopping = await readWorkflowV2View(store, stopped.id);
             expect(stopping.run.stop.reason).toContain("postgres://<hidden>");

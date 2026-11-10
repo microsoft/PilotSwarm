@@ -37,8 +37,9 @@ import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/se
 import { readWorkflowFromTool, runControlView, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import {
     registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_ADMISSION_EVALUATIONS, WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION,
-    WORKFLOW_V2_STORE_RETRY, workflowEffectInstanceId, workflowNotifyInstanceId,
+    workflowEffectInstanceId, workflowNotifyInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
@@ -232,14 +233,14 @@ function gate() {
 }
 
 /**
- * The collect activity, recording in `withheld` each run whose collection gave
- * its controller no result while results of the work it asked about were
- * stored (controller 1.8.0 while its run is paused; review R2-RT-1).
+ * The collect activity, recording in `withheld` each run whose collection
+ * reported it paused while results of the work it asked about were stored, so
+ * its controller routes none of them until the resume (review R2-RT-1).
  */
 function withholding(store, fn, withheld) {
     return async (ctx, input) => {
         const collected = await fn(ctx, input);
-        if (Array.isArray(collected) && collected.length === 0 && input.nodeExecutionIds.length > 0
+        if (collected?.paused === true && input.nodeExecutionIds.length > 0
             && (await store.readCompletedNodes(input.runId, input.nodeExecutionIds)).length > 0) withheld.push(input.runId);
         return collected;
     };
@@ -260,7 +261,7 @@ async function harness(env, { wrapStore, notify = false } = {}) {
     const store = catalog.workflowStore();
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
     const client = new Client(provider);
-    const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
+    const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] } });
     const holds = new Map();
     const refusals = [];
     const withheld = [];
@@ -401,7 +402,7 @@ describe("workflow v2 run control on the real runtime", () => {
             expect((await parent.read(id)).run).toMatchObject({ status: "paused", pausedFrom: "running", pauseSettled: false });
 
             // The admitted script still runs and its result is kept; it is not routed while paused (review R2-RT-1: the
-            // collection keeps it from the controller, which tries no admission), so no next state is admitted.
+            // collection reports the pause, so the controller tries no admission), so no next state is admitted.
             held.open();
             await until(async () => (await h.store.listNodeExecutions(runId))[0]?.state === "completed", "the admitted script's result");
             await until(async () => h.withheld.includes(runId), "a collection that keeps the result for the resume");
@@ -935,8 +936,8 @@ describe("workflow v2 run control on the real runtime", () => {
     });
 
     it("ends the run as failed with KV_CHANGING when set_vars commits during every evaluation of every attempt of one admission", { timeout: TIMEOUT }, async () => {
-        // The production budget this checks: five evaluations per attempt, five attempts of the store retry policy.
-        expect([WORKFLOW_V2_ADMISSION_EVALUATIONS, WORKFLOW_V2_STORE_RETRY.maxAttempts]).toEqual([5, 5]);
+        // The production budget this checks: five evaluations per attempt, five attempts of a tagged store activity.
+        expect(WORKFLOW_V2_ADMISSION_EVALUATIONS).toBe(5);
         let target = null;
         let change = null;
         const reads = [];

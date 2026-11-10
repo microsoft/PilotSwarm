@@ -8,7 +8,7 @@ import type { WorkflowLineage, WorkflowStore } from "./store.js";
  * the agent states' immutable invocation records), never from a caller's
  * claim, so it holds whichever transport the input came through. A session
  * is in an agent state's subtree when it, or an ancestor, is an agent state's
- * child; controller 1.9.0 creates such children (the session of an agent
+ * child; the controller creates such children (the session of an agent
  * state). A session outside every agent state's subtree is not affected.
  *
  * - Human conversational input (a prompt, an answer, a steer, a custom

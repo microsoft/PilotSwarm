@@ -62,6 +62,7 @@ import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool
 import {
     registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, workflowEffectInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
@@ -156,15 +157,15 @@ async function harness(env, { wakeBackstopMs = 500, storePool = null, wrapStore 
     const runtimeStore = wrapStore ? wrapStore(baseStore) : baseStore;
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
     const client = new Client(provider);
-    const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
+    const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] } });
     const direct = new pg.Pool({ connectionString: env.store, max: 2 });
     const refusals = [];
     const withheld = [];
     registerWorkflowV2({
         registerActivity: (name, fn) => runtime.registerActivity(name, name === WORKFLOW_V2_ACTIVITIES.collect ? async (ctx, input) => {
-            // Review R2-RT-1: a collection that gave controller 1.8.0 no result while results of the work it asked about were stored.
+            // Review R2-RT-1: a collection that reported the run paused while results of the work it asked about were stored.
             const collected = await fn(ctx, input);
-            if (Array.isArray(collected) && collected.length === 0 && input.nodeExecutionIds.length > 0
+            if (collected?.paused === true && input.nodeExecutionIds.length > 0
                 && (await store.readCompletedNodes(input.runId, input.nodeExecutionIds)).length > 0) withheld.push(input.runId);
             return collected;
         } : name !== WORKFLOW_V2_ACTIVITIES.enter ? fn : async (ctx, input) => {

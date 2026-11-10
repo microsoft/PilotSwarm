@@ -31,7 +31,13 @@ import {
     WORKFLOW_V2_NOTIFY_VERSION,
     WORKFLOW_V2_SEND_NAME,
     WORKFLOW_V2_SEND_VERSION,
-    WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS,
+    WORKFLOW_V2_REQUEST_NAME,
+    WORKFLOW_V2_REQUEST_VERSION,
+    WORKFLOW_V2_AGENT_NAME,
+    WORKFLOW_V2_AGENT_VERSION,
+    WORKFLOW_V2_CHAT_END_NAME,
+    WORKFLOW_V2_CHAT_END_VERSION,
+    WORKFLOW_V2_ACTIVITIES,
 } from "../../dist/workflow/v2/runtime.js";
 
 const yaml = (stateExtra = "", stateId = "only") => `
@@ -110,43 +116,28 @@ test("send_workflow_input is declared beside the workflow tools, with the sender
     }
 });
 
-/** True when semantic version a is later than b. */
-function laterVersion(a, b) {
-    const [x, y] = [a, b].map((version) => version.split(".").map(Number));
-    for (let i = 0; i < 3; i += 1) if (x[i] !== y[i]) return x[i] > y[i];
-    return false;
-}
-
-test("workflow v2 registers each orchestration's versions in ascending order, the version new runs use last", () => {
+test("workflow v2 registers exactly one version of each orchestration, and each activity once under one name", () => {
     const registered = [];
+    const activities = [];
     const runtime = {
-        registerActivity: () => {},
-        registerOrchestrationVersioned: (name, version, fn) => {
-            // duroxide refuses a version that is not later than the latest one registered under its name.
-            const latest = registered.filter((entry) => entry.name === name).at(-1);
-            assert.ok(!latest || laterVersion(version, latest.version), `${name} ${version} registered after ${latest?.version}`);
-            registered.push({ name, version, fn });
-        },
+        registerActivity: (name) => activities.push(name),
+        registerOrchestrationVersioned: (name, version, fn) => registered.push({ name, version, fn }),
     };
     registerWorkflowV2(runtime, { store: {} });
-    const controllers = registered.filter((entry) => entry.name === WORKFLOW_V2_CONTROLLER_NAME);
-    assert.deepEqual(controllers.map((entry) => entry.version), [...WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS, WORKFLOW_V2_CONTROLLER_VERSION]);
-    // Only the current version runs this build's controller: no earlier history is replayed.
-    const fenced = controllers.slice(0, WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS.length);
-    assert.deepEqual(controllers.slice(fenced.length).map((entry) => [entry.version, entry.fn]), [[WORKFLOW_V2_CONTROLLER_VERSION, workflowV2Controller]]);
-    for (const version of ["1.4.0", "1.5.0", "1.6.0", "1.7.0"]) {
-        assert.ok(WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS.includes(version), `${version} is fenced: no test replays a history it wrote`);
-    }
-    assert.equal(WORKFLOW_V2_CONTROLLER_VERSION, "1.8.0");
-    // Each fenced version keeps its handler: it fails at once, naming its version and the way out.
-    assert.ok(fenced.length > 0);
-    for (const entry of fenced) {
-        assert.throws(() => entry.fn().next(), (error) => error.message.includes(`version ${entry.version}, written by a pre-release build`)
-            && error.message.includes("update_workflow operation recover"));
-    }
-    assert.deepEqual(registered.filter((entry) => entry.name === WORKFLOW_V2_EFFECT_NAME).map((entry) => entry.version), [WORKFLOW_V2_EFFECT_VERSION]);
-    assert.deepEqual(registered.filter((entry) => entry.name === WORKFLOW_V2_NOTIFY_NAME).map((entry) => entry.version), [WORKFLOW_V2_NOTIFY_VERSION]);
-    assert.deepEqual(registered.filter((entry) => entry.name === WORKFLOW_V2_SEND_NAME).map((entry) => entry.version), [WORKFLOW_V2_SEND_VERSION]);
+    assert.deepEqual(registered.map((entry) => [entry.name, entry.version]), [
+        [WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION],
+        [WORKFLOW_V2_EFFECT_NAME, WORKFLOW_V2_EFFECT_VERSION],
+        [WORKFLOW_V2_NOTIFY_NAME, WORKFLOW_V2_NOTIFY_VERSION],
+        [WORKFLOW_V2_SEND_NAME, WORKFLOW_V2_SEND_VERSION],
+        [WORKFLOW_V2_REQUEST_NAME, WORKFLOW_V2_REQUEST_VERSION],
+        [WORKFLOW_V2_AGENT_NAME, WORKFLOW_V2_AGENT_VERSION],
+        [WORKFLOW_V2_CHAT_END_NAME, WORKFLOW_V2_CHAT_END_VERSION],
+    ]);
+    assert.ok(registered.every((entry) => entry.version === "1.0.0"), "every orchestration is at 1.0.0");
+    assert.equal(registered.find((entry) => entry.name === WORKFLOW_V2_CONTROLLER_NAME).fn, workflowV2Controller);
+    // Every activity is registered once, under its one name.
+    assert.deepEqual([...activities].sort(), [...new Set(Object.values(WORKFLOW_V2_ACTIVITIES))].sort());
+    assert.ok(activities.every((name) => /^workflow\.v2\.[A-Za-z]+$/.test(name)), activities.join(", "));
 });
 
 test("script tools are the generic agent's data-plane tools, bound to the workflow session", async () => {

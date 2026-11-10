@@ -1,8 +1,7 @@
 /**
  * Workflow v2 publication pins (design 02 publication record, 03 package
- * agents; R18, R28; T011, T018, T070; migration 0103), INACTIVE: only a host
- * that starts runs at controller 1.9.0 compiles agent states and resolves
- * agents. Here a mutable test-double catalog stands in for the resolver
+ * agents; R18, R28; T011, T018, T070; migration 0088): every host compiles
+ * agent states and resolves agents. Here a mutable test-double catalog stands in for the resolver
  * (the registry-backed one those hosts use is
  * workflow-v2-agent-resolver.test.js's).
  *
@@ -77,7 +76,7 @@ function* agentChild(ctx) {
 }
 
 /**
- * A worker-equivalent registration with workflowRequests, whose agent host is
+ * A worker-equivalent registration whose agent host is
  * the real one over a mutable catalog of visible agents (`visible`), and a
  * service host that resolves agents from the same catalog at publication.
  */
@@ -115,7 +114,6 @@ async function harness(env) {
         notifyParent: async () => { throw new Error("These workflows notify no parent."); },
         deleteSession: async sessionId => catalog.softDeleteSession(sessionId),
         wakeBackstopMs: 500,
-        workflowRequests: true,
         sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
         agentNodes,
     });
@@ -124,7 +122,7 @@ async function harness(env) {
     await catalog.createSession(parent, {});
     return {
         catalog, store, client, visible, children, parent,
-        host: { catalog, store, duroxideClient: client, requests: true, resolveAgent },
+        host: { catalog, store, duroxideClient: client, resolveAgent },
         /** A workflow child of `parent` with this agent; published when `publish`. */
         async workflow(agent, { publish = false } = {}) {
             const workflowSessionId = randomUUID();

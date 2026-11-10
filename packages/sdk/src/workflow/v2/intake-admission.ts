@@ -8,7 +8,7 @@
  *
  * Before a model request may include an invocation's items, the store
  * records that they were possibly seen, or refuses
- * (WorkflowStore.exposeWorkflowIntake, migration 0099). The request names
+ * (WorkflowStore.exposeWorkflowIntake, migration 0088). The request names
  * the recipient from the activity's own session, the attempt's id and
  * `sentBefore` as the orchestration recorded them, and each item's exchange
  * and claim with the hash of the exact text the request would include,

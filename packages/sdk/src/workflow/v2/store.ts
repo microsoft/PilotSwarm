@@ -30,7 +30,7 @@ import { ChatDefinitionStore, requireBenchLiveLocked, requireChatStartLocked } f
 import { workflowAgentChatContinues } from "./agent-ids.js";
 
 /**
- * PostgreSQL persistence for workflow v2 (tables from migrations 0089 and 0091 to 0100).
+ * PostgreSQL persistence for workflow v2 (tables from migration 0088).
  *
  * Every definition mutation runs in one transaction that first locks the
  * definition row (or creates it with INSERT ... ON CONFLICT, which waits for
@@ -59,7 +59,7 @@ export interface WorkflowRunControl {
 }
 
 export type WorkflowDefinitionState = "draft" | "published" | "deleted";
-/** `stopped` (migration 0100): a run that ended by a graceful stop (requestRunStop, finishStoppedRun); only controller 1.9.0 stops a run. */
+/** `stopped` (migration 0088): a run that ended by a graceful stop (requestRunStop, finishStoppedRun). */
 export type WorkflowRunStatus = "admitted" | "running" | "paused" | "completed" | "failed" | "cancelled" | "stopped";
 export type WorkflowRunMode = "live" | "test";
 /** A run that has not ended: it can still be cancelled, deleted, recovered and finish its admitted work. */
@@ -91,7 +91,7 @@ export function commandEndOf(run: Pick<WorkflowRunRow, "status" | "terminalError
         operationId: typeof details.operationId === "string" ? details.operationId : null };
 }
 
-/** The end the workflow session's deletion gives a run it ends (migrations 0090 and 0091, workflow_v2_on_session_deleted). */
+/** The end the workflow session's deletion gives a run it ends (migration 0088, workflow_v2_on_session_deleted). */
 export const WORKFLOW_V2_SESSION_DELETED_MESSAGE = "The workflow session was deleted.";
 
 /**
@@ -104,7 +104,7 @@ export function runEndedByDeletion(run: Pick<WorkflowRunRow, "status" | "termina
     const error = run.terminalError;
     // Review DRR-5: the stored command decides first: a cancel, a done or an end before begin is not a deletion, whatever
     // its reason says (a person's reason can be the deletion's own words). The deletion trigger's end is recognised only
-    // in its exact shape (migrations 0090 and 0091): its code and message, and nothing else.
+    // in its exact shape (migration 0088): its code and message, and nothing else.
     if (error.details !== undefined) return isJsonObject(error.details) && error.details.command === "delete";
     const keys = Object.keys(error);
     return keys.length === 2 && error.code === "cancelled" && error.message === WORKFLOW_V2_SESSION_DELETED_MESSAGE;
@@ -173,12 +173,12 @@ export interface WorkflowDefinitionRow {
     updatedAt: Date;
     publishedAt: Date | null;
     /**
-     * What each named agent state of the published revision was resolved to at publication (migration 0103): state id ->
+     * What each named agent state of the published revision was resolved to at publication (migration 0088): state id ->
      * { name, package, version, packageId }; null when there is none.
      */
     publishedAgentPins: JsonValue;
     /**
-     * Stage 2.1 (migration 0107): the chat definition and revision this Workflow is a copy of; null for a Workflow that is
+     * Stage 2.1 (migration 0088): the chat definition and revision this Workflow is a copy of; null for a Workflow that is
      * not one (its chat was deleted, or it has no name). A pinned Workflow takes none of the stage 1 definition operations
      * (requireNotChatPinned).
      */
@@ -223,30 +223,30 @@ export interface WorkflowRunRow {
     kvRevision: number;
     /** While paused: the status a resume returns to. */
     pausedFrom: "admitted" | "running" | null;
-    /** The controller version the run was admitted for (migration 0100); null for a run admitted before it. */
+    /** The controller version the run was admitted for (migration 0088); null for a run admitted before it. */
     controllerVersion: string | null;
-    /** The run's accepted stop (migration 0100), written once; null when none was requested. */
+    /** The run's accepted stop (migration 0088), written once; null when none was requested. */
     stop: WorkflowRunStop | null;
     /**
-     * A test run's virtual clock (migration 0102): it starts at WORKFLOW_V2_TEST_EPOCH and moves only by advanceTestClock;
+     * A test run's virtual clock (migration 0088): it starts at WORKFLOW_V2_TEST_EPOCH and moves only by advanceTestClock;
      * a test run's deadlines are counted from it. Null for a live run.
      */
     virtualNow: Date | null;
-    /** The scenario a test run was started for (migration 0103); null for a live run and a test run without one. */
+    /** The scenario a test run was started for (migration 0088); null for a live run and a test run without one. */
     testScenario: string | null;
     /**
-     * The run's deadline (migration 0104; limits.timeoutSeconds, controller 1.9.0): the run's clock when it began (a test
+     * The run's deadline (migration 0088; limits.timeoutSeconds): the run's clock when it began (a test
      * run's virtual clock) plus those seconds; null for a run without one. It is not paused with the run.
      */
     deadlineAt: Date | null;
     /**
-     * A real-agent test run's agent pins (migration 0105; design 05, R18): what its named agent states were pinned to when
+     * A real-agent test run's agent pins (migration 0088; design 05, R18): what its named agent states were pinned to when
      * the test was admitted, as a publication pins them, for a tested revision that is not the published one (a test of the
      * published revision uses the publication's pins). Null for every other run.
      */
     testAgentPins: JsonValue;
     /**
-     * OF-S2-7: the agent nodes' models chosen at start (migration 0110; agent-models.ts), as stored: the text of an object of
+     * OF-S2-7: the agent nodes' models chosen at start (migration 0088; agent-models.ts), as stored: the text of an object of
      * agent node ids to { model, reasoningEffort?, contextTier? }, read with readStoredAgentModels where it is used (a spawn,
      * Run again, a read). Kept as text (DEV at fed7e7ac): a stored value that does not parse never makes reading the run fail.
      * Null for a run started without any (each node uses the chat's).
@@ -293,18 +293,18 @@ export interface WorkflowNodeExecutionRow {
     hasOutput: boolean;
     winner: string | null;
     effectAttempts: number;
-    /** The KV revision pinned when this node execution was admitted (null before migration 0091). */
+    /** The KV revision pinned when this node execution was admitted (null before migration 0088). */
     kvRevision: number | null;
-    /** A wait state's absolute deadline, fixed at its admission (migration 0092); null for other states. */
+    /** A wait state's absolute deadline, fixed at its admission (migration 0088); null for other states. */
     deadlineAt: Date | null;
-    /** What a receive state accepts, resolved when it was admitted (migration 0093); null for other states. */
+    /** What a receive state accepts, resolved when it was admitted (migration 0088); null for other states. */
     receive: { contract: string; from: string | null; correlation: JsonValue } | null;
     enteredAt: Date;
     completedAt: Date | null;
 }
 
 /**
- * One typed input a sender gave a run (migrations 0093, 0094), as it is now.
+ * One typed input a sender gave a run (migration 0088), as it is now.
  * Times are the stored values, exactly (ISO 8601 UTC with microseconds).
  */
 export interface WorkflowInboxMessage {
@@ -472,7 +472,7 @@ function definitionFrom(row: Row): WorkflowDefinitionRow {
 export const PINNED_TO_CHAT_REVISION = "PINNED_TO_CHAT_REVISION";
 
 /**
- * Code check G1 (stage 2.1, R1/R4/R6): a Workflow that is a copy of a chat revision (a stage 1 child migration 0107
+ * Code check G1 (stage 2.1, R1/R4/R6): a Workflow that is a copy of a chat revision (a stage 1 child migration 0088
  * pinned, or one a Start made) takes none of the stage 1 definition operations (replace_definition, publish,
  * publish_and_start, start). Its copy never changes, and it is started only by a chat Start, which checks the chat, the
  * definition and the revision under their locks (requireChatStartLocked). Checked in the store, under the definition's
@@ -522,12 +522,12 @@ function runFrom(row: Row): WorkflowRunRow {
         controllerVersion: strOrNull(row, "controller_version"), stop: stopOf(row), virtualNow: dateOrNull(row, "virtual_now"),
         testScenario: strOrNull(row, "test_scenario"), deadlineAt: dateOrNull(row, "deadline_at"),
         testAgentPins: jsonOrNull(row, "test_agent_pins"),
-        // A schema before migration 0110 has no column: no choices. The text as stored: parsed where it is used.
+        // A schema before migration 0088 has no column: no choices. The text as stored: parsed where it is used.
         agentModels: Object.hasOwn(row, "agent_models") ? strOrNull(row, "agent_models") : null,
     };
 }
 
-/** A run's stop columns (migration 0100): all null, or an accepted stop with its stored request. */
+/** A run's stop columns (migration 0088): all null, or an accepted stop with its stored request. */
 function stopOf(row: Row): WorkflowRunStop | null {
     const requestedAt = dateOrNull(row, "stop_requested_at");
     const deadlineAt = dateOrNull(row, "stop_deadline_at");
@@ -666,7 +666,7 @@ export interface RequestSpecInput extends SendSpecInput {
     workflowRecipient: { result: NodeResultInput; projection?: SessionProjection };
 }
 
-// ─── Agent states (IR 8, migration 0101) ──
+// ─── Agent states (IR 8, migration 0088) ──
 
 /**
  * An agent state's task: its inline prompt, or the named agent definition it
@@ -951,7 +951,7 @@ export const WORKFLOW_V2_DECLINE_SCHEMA: JsonValue = {
 const REQUEST_FAILURE_CODES: readonly string[] = ["unavailable", "forbidden", "delivery_failed", "unsupported_contract", "invalid_input"];
 
 /**
- * Where a test run's virtual clock starts (migration 0102; design 05): after any real time, so no decision by the store's
+ * Where a test run's virtual clock starts (migration 0088; design 05): after any real time, so no decision by the store's
  * clock ever finds a test run's deadline due. Only advanceTestClock moves it.
  */
 export const WORKFLOW_V2_TEST_EPOCH = "9000-01-01T00:00:00.000Z";
@@ -970,7 +970,7 @@ export function workflowTestInterceptionId(nodeExecutionId: string, operation: E
 }
 
 /**
- * An intercepted effect of a test run (migration 0102): what was reached (its operation, tool and arguments, and the schema
+ * An intercepted effect of a test run (migration 0088): what was reached (its operation, tool and arguments, and the schema
  * a response must match) and, once answered, the response (by the parent or a fixture). An answered record never changes.
  */
 export interface WorkflowTestInterception {
@@ -1098,8 +1098,8 @@ export interface WorkflowSendReceipt {
 }
 
 /**
- * A send state's message in the outbox (migrations 0095, 0096), or a request
- * state's (migration 0097, mode request), as it is now. Times are the stored
+ * A send state's message in the outbox (migration 0088), or a request
+ * state's (migration 0088, mode request), as it is now. Times are the stored
  * values, exactly (ISO 8601 UTC with microseconds). Only a send's message is
  * delivered by a send orchestration (beginDelivery, recordDelivery and
  * failDelivery refuse a request's).
@@ -1112,12 +1112,12 @@ export interface WorkflowOutboxMessage {
     runId: string;
     mode: "send" | "request";
     recipientSessionId: string;
-    /** What the admission decided the recipient is (rows before migration 0096: agent). */
+    /** What the admission decided the recipient is (rows before migration 0088: agent). */
     recipientKind: RecipientKind;
     contract: string;
     payload: JsonValue;
     payloadSha256: string;
-    /** The correlation object the state resolved ({} for rows before migration 0096). */
+    /** The correlation object the state resolved ({} for rows before migration 0088). */
     correlation: JsonValue;
     /** pending until a delivery is recorded (delivered), or none will be (failed). */
     state: "pending" | "delivered" | "failed";
@@ -1204,7 +1204,7 @@ export function parseSendReceipt(value: JsonValue): WorkflowSendReceipt {
     };
 }
 
-// ─── Durable recipient intake (migration 0098; design workflow-durable-intake.md 3, 4, 5.1, 5.2, 5.6, 5.7) ──
+// ─── Durable recipient intake (migration 0088; design workflow-durable-intake.md 3, 4, 5.1, 5.2, 5.6, 5.7) ──
 
 /** An intake row's state: holding until one final state (design 5.1). */
 export type WorkflowIntakeState = "holding" | "admitted" | "cancelled" | "refused_full" | "refused_size";
@@ -1223,7 +1223,7 @@ function isIntakeProcessing(value: string): value is WorkflowIntakeProcessing {
     return (INTAKE_PROCESSING as readonly string[]).includes(value);
 }
 
-/** One exchange's intake row (migration 0098), as stored. Times are exact (ISO 8601 UTC with microseconds). */
+/** One exchange's intake row (migration 0088), as stored. Times are exact (ISO 8601 UTC with microseconds). */
 export interface WorkflowIntakeRow {
     exchangeId: string;
     recipientSessionId: string;
@@ -1330,7 +1330,7 @@ interface IntakeOutboxRow {
     runId: string;
     mode: string;
     recipientSessionId: string;
-    /** Rows before migration 0096 have none: an agent session. */
+    /** Rows before migration 0088 have none: an agent session. */
     recipientKind: string;
     contract: string;
     payloadText: string;
@@ -1421,7 +1421,7 @@ function renderedIntake(render: WorkflowIntakeRender, source: WorkflowIntakeRend
     return { text, clientMessageId: intakeClientMessageId(rendered.clientMessageId, "render.clientMessageId") };
 }
 
-/** An invocation's record (migration 0098), written once by its first bind: its recipient and complete membership. */
+/** An invocation's record (migration 0088), written once by its first bind: its recipient and complete membership. */
 interface IntakeInvocationRecord {
     recipientSessionId: string;
     /** Each member exchange with its claim, in the first bind's order. */
@@ -1457,7 +1457,7 @@ function intakeMemberClaim(invocation: IntakeInvocationRecord, invocationId: str
 }
 
 /**
- * An admission's answer (migration 0099; exposure protocol revision 2,
+ * An admission's answer (migration 0088; exposure protocol revision 2,
  * section 3): allowed, or refused. `exposed`: the items were possibly seen
  * under another attempt, and this one may not include them. `settled`: the
  * invocation ended, or a named item was cancelled before any exposure; the
@@ -1465,7 +1465,7 @@ function intakeMemberClaim(invocation: IntakeInvocationRecord, invocationId: str
  */
 export type WorkflowIntakeAdmission = { allowed: true } | { allowed: false; reason: "exposed" | "settled" };
 
-/** An invocation's exposure record (migration 0099), as stored: the first admission that let an attempt include its items. */
+/** An invocation's exposure record (migration 0088), as stored: the first admission that let an attempt include its items. */
 export interface WorkflowIntakeExposure {
     invocationId: string;
     recipientSessionId: string;
@@ -1492,7 +1492,7 @@ function intakeAdmissionBatch(raw: unknown, path: string): Array<{ exchangeId: s
     });
 }
 
-/** A request's immutable record (migration 0097), with exact times. */
+/** A request's immutable record (migration 0088), with exact times. */
 interface WorkflowRequestRecord {
     exchangeId: string;
     workflowSessionId: string;
@@ -1817,7 +1817,7 @@ export class WorkflowStore {
     revisionLimits: { maxRevisions: number; maxYamlBytes: number } = WORKFLOW_V2_REVISION_LIMITS;
     private chatStore: ChatDefinitionStore | null = null;
 
-    /** Stage 2.1: the chat-owned Workflow Definitions (migration 0107), on this store's pool and schema. */
+    /** Stage 2.1: the chat-owned Workflow Definitions (migration 0088), on this store's pool and schema. */
     get chat(): ChatDefinitionStore {
         if (!this.chatStore) this.chatStore = new ChatDefinitionStore(this.pool, this.schema);
         return this.chatStore;
@@ -1905,7 +1905,7 @@ export class WorkflowStore {
     private async lockSessionPair(client: PoolClient, workflowSessionId: string, otherSessionId: string)
         : Promise<{ workflow: AuthoritySession | null; other: AuthoritySession | null; definition: { parentSessionId: string | null } | null }> {
         const locked = new Set<string>();
-        // S2RT-F2: a Workflow and its own parent chat are locked chat first, as the chat-ended trigger (0109) and a Start lock
+        // S2RT-F2: a Workflow and its own parent chat are locked chat first, as the chat-ended trigger and a Start lock
         // them; any other pair in ascending id order. The parent is read unlocked: a session's parent never changes.
         const parentRow = await client.query(`SELECT parent_session_id FROM ${this.t.sessions} WHERE session_id = $1`, [workflowSessionId]);
         const parentId = parentRow.rows[0]?.parent_session_id ?? null;
@@ -2383,9 +2383,8 @@ export class WorkflowStore {
                     { runId: str(rows[0], "run_id") });
             }
         }
-        // A run admitted without a controller version records none and names no column of migration 0100, so a schema
-        // before it (an upgrade test's populated one) admits it as before. Only a test run names the columns of 0102: its
-        // virtual clock, which starts at the test epoch, and its fixtures.
+        // A run admitted without a controller version records none (only a store test does that). Only a test run names
+        // its virtual clock, which starts at the test epoch, and its fixtures.
         const versioned = typeof start.controllerVersion === "string";
         const test = start.mode === "test";
         const extra: Array<[string, unknown]> = [
@@ -2393,7 +2392,7 @@ export class WorkflowStore {
             ...(test ? [["virtual_now", WORKFLOW_V2_TEST_EPOCH] as [string, unknown], ["test_fixtures", start.fixturesText ?? "[]"] as [string, unknown]] : []),
             ...(test && typeof start.testScenario === "string" ? [["test_scenario", start.testScenario] as [string, unknown]] : []),
             ...(test && typeof start.testAgentPinsText === "string" ? [["test_agent_pins", start.testAgentPinsText] as [string, unknown]] : []),
-            // OF-S2-7 (migration 0110): named only by a run started with agent node models.
+            // OF-S2-7 (migration 0088): named only by a run started with agent node models.
             ...(typeof start.agentModelsText === "string" ? [["agent_models", start.agentModelsText] as [string, unknown]] : []),
         ];
         await client.query(
@@ -2520,7 +2519,7 @@ export class WorkflowStore {
         start: RunAdmission | null;
         /** Session title, written with the definition under the session lock. */
         title: string;
-        /** The published revision's agent pins as canonical JSON (migration 0103); null or absent when there are none. */
+        /** The published revision's agent pins as canonical JSON (migration 0088); null or absent when there are none. */
         agentPinsText?: string | null;
         /**
          * Review SDK3-F3: the version check (requireVersionFreeLocked) for a definition stored on a claim this request did
@@ -2567,7 +2566,7 @@ export class WorkflowStore {
             let definition = await this.lockDefinition(client, input.workflowSessionId);
             let run: WorkflowRunReceipt | null = null;
             if (input.publish) {
-                // The pins name the column of migration 0103 only when there are any.
+                // The pins name the column of migration 0088 only when there are any.
                 const pinned = typeof input.agentPinsText === "string";
                 const { rows } = await client.query(
                     `UPDATE ${this.t.definitions}
@@ -2653,7 +2652,7 @@ export class WorkflowStore {
         operationId: string;
         requestSha256: string;
         start: RunAdmission | null;
-        /** The published revision's agent pins as canonical JSON (migration 0103); null or absent when there are none. */
+        /** The published revision's agent pins as canonical JSON (migration 0088); null or absent when there are none. */
         agentPinsText?: string | null;
         /** With start: whether the parent is told when the live run ends (batch 7, n-1); absent leaves it as it is. */
         notifyParent?: boolean;
@@ -2841,7 +2840,7 @@ export class WorkflowStore {
             if (!ACTIVE_RUN_STATUSES.includes(run.status)) {
                 throw new WorkflowStoreError("RUN_ENDED", `Run ${run.runId} has ended (${run.status}).`, { status: run.status });
             }
-            // A stopping run admits nothing either way (migration 0100); its stop decides how it ends.
+            // A stopping run admits nothing either way (migration 0088); its stop decides how it ends.
             if (run.stop !== null) {
                 throw new WorkflowStoreError("RUN_STOPPING", `Run ${run.runId} is stopping, until ${run.stop.deadlineAt.toISOString()}; it cannot be ${kind}d.`,
                     { deadlineAt: run.stop.deadlineAt.toISOString() });
@@ -2868,13 +2867,9 @@ export class WorkflowStore {
     }
 
     /**
-     * Accept a graceful stop of a run (design 02 run lifecycle, D03;
-     * migration 0100), once per operation id, in one transaction under the
-     * session, definition and run locks. The run must be active and admitted
-     * for a controller version that runs a stop (`stoppableVersions`:
-     * controller 1.9.0; a run admitted for another version, or before 0100,
-     * is refused with RUN_STOP_UNSUPPORTED and can be cancelled), and must
-     * not be stopping already. The stop is written once: one reading of the
+     * Accept a graceful stop of a run (design 02 run lifecycle, D03), once per
+     * operation id, in one transaction under the session, definition and run
+     * locks. The run must be active and must not be stopping already. The stop is written once: one reading of the
      * store's clock is its requested time, and that reading plus
      * `graceSeconds` its deadline. From then on the run admits no new node
      * execution (enterNode refuses "stopping", paused or not); its admitted
@@ -2892,7 +2887,6 @@ export class WorkflowStore {
         actor: WorkflowActor;
         reason: string | null;
         graceSeconds: number;
-        stoppableVersions: readonly string[];
     }): Promise<StoredOperation<WorkflowRunCommandReceipt> & { run: WorkflowRunRow }> {
         if (!Number.isSafeInteger(input.graceSeconds) || input.graceSeconds < 0 || input.graceSeconds > WORKFLOW_V2_STOP_MAX_GRACE_SECONDS) {
             throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `grace_seconds must be an integer from 0 to ${WORKFLOW_V2_STOP_MAX_GRACE_SECONDS}.`);
@@ -2907,11 +2901,6 @@ export class WorkflowStore {
             if (prior) return { receipt: prior, replayed: true, run };
             if (!ACTIVE_RUN_STATUSES.includes(run.status)) {
                 throw new WorkflowStoreError("RUN_ENDED", `Run ${run.runId} has ended (${run.status}).`, { status: run.status });
-            }
-            if (run.controllerVersion === null || !input.stoppableVersions.includes(run.controllerVersion)) {
-                throw new WorkflowStoreError("RUN_STOP_UNSUPPORTED",
-                    `Run ${run.runId} runs on workflow controller ${run.controllerVersion ?? "1.8.0 or earlier"}, which cannot stop a run gracefully; cancel it instead.`,
-                    { controllerVersion: run.controllerVersion });
             }
             if (run.stop !== null) {
                 throw new WorkflowStoreError("RUN_ALREADY_STOPPING", `Run ${run.runId} is already stopping, until ${run.stop.deadlineAt.toISOString()}.`,
@@ -3039,7 +3028,7 @@ export class WorkflowStore {
      * operation id, in one transaction under the session, definition and run
      * locks:
      * - delete soft-deletes the child here, whatever its run is doing: the
-     *   deletion trigger (migrations 0090, 0091) tombstones the definition
+     *   deletion trigger (migration 0088) tombstones the definition
      *   and ends an active run in this same transaction (its pending nodes
      *   lose to the deletion, and a running script's liveness check stops
      *   it); a run that already ended keeps its result. A delete never waits
@@ -3439,10 +3428,10 @@ export class WorkflowStore {
      * Lock one run's row FOR UPDATE.
      *
      * The lock-order rule (stage 2 review S2RT-F2; lock-order check O2): every writer of a Workflow's runs or nodes holds
-     * that Workflow's session row first (lockLiveSession, lockSessionPair, or the chat-ended trigger of migration 0109,
+     * that Workflow's session row first (lockLiveSession, lockSessionPair, or the chat-ended trigger of migration 0088,
      * which locks the chat's Workflow sessions in id order before their runs). The global order is: a chat's row, its
      * definition's row, the Workflow session rows (a chat before its own Workflows, otherwise ascending id), the Workflow's
-     * definition row, its run rows (in id order), its node rows. The cascades of 0109 and 0090 change nodes and runs
+     * definition row, its run rows (in id order), its node rows. The cascades of the chat-ended and deletion triggers change nodes and runs
      * without ordering them among themselves; that is safe only because the session row they hold serializes every other
      * writer of those rows. A new path that writes runs or nodes without the Workflow's session row reopens S2RT-F2.
      */
@@ -3472,8 +3461,8 @@ export class WorkflowStore {
      * the same way, and the parent is then not told of that cancel.
      */
     /**
-     * `options.deadlineSeconds` (controller 1.9.0; a definition with limits.timeoutSeconds): the transition that begins the
-     * run also writes its deadline (migration 0104): the run's clock now (a test run's virtual clock) plus those seconds.
+     * `options.deadlineSeconds` (a definition with limits.timeoutSeconds): the transition that begins the
+     * run also writes its deadline (migration 0088): the run's clock now (a test run's virtual clock) plus those seconds.
      */
     async beginRun(runId: string, projection?: SessionProjection, options: { deadlineSeconds?: number | null } = {})
         : Promise<{ run: WorkflowRunRow; transitioned: boolean }> {
@@ -3481,7 +3470,7 @@ export class WorkflowStore {
         if (deadlineSeconds !== null && !(Number.isSafeInteger(deadlineSeconds) && deadlineSeconds >= 1)) {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${runId} has an invalid deadline of ${String(deadlineSeconds)} seconds.`);
         }
-        // Named only with a deadline, so a schema before migration 0104 begins every other run as before.
+        // Named only with a deadline, so a schema before migration 0088 begins every other run as before.
         const deadline = deadlineSeconds === null ? "" : ", deadline_at = COALESCE(virtual_now, clock_timestamp()) + $2::integer * interval '1 second'";
         const deadlineParams = deadlineSeconds === null ? [] : [deadlineSeconds];
         return this.transaction(async client => {
@@ -3627,7 +3616,7 @@ export class WorkflowStore {
          */
         agent?: AgentSpecInput | null;
         /**
-         * A test run's intercepted effect (migration 0102; design 05): an
+         * A test run's intercepted effect (migration 0088; design 05): an
          * agent, send or request state admitted pending without its live
          * record (no child session, outbox message or request record); its
          * interception record is written in this transaction, awaiting the
@@ -3661,11 +3650,11 @@ export class WorkflowStore {
                 }
                 return { admitted: true as const, inserted: false, node };
             }
-            // A run past its deadline (migration 0104) admits nothing, stopping or paused or not: its controller ends it.
+            // A run past its deadline (migration 0088) admits nothing, stopping or paused or not: its controller ends it.
             if (live && ACTIVE_RUN_STATUSES.includes(run.status) && run.deadlineAt !== null && await this.runExpiredIn(client, run.runId)) {
                 return { admitted: false as const, reason: "expired" as const, run };
             }
-            // A run with an accepted stop admits nothing new (migration 0100), paused or not: its admitted work settles,
+            // A run with an accepted stop admits nothing new (migration 0088), paused or not: its admitted work settles,
             // then it ends stopped. A paused run admits nothing new; a deleted or ended one admits nothing at all.
             if (live && ACTIVE_RUN_STATUSES.includes(run.status) && run.stop !== null) return { admitted: false as const, reason: "stopping" as const, run };
             if (!live || !ADMITTING_RUN_STATUSES.includes(run.status)) return { admitted: false as const, reason: "inactive" as const, run };
@@ -3688,7 +3677,7 @@ export class WorkflowStore {
             let receive = input.receive ?? null;
             let send = input.send ?? null;
             let request = input.request ?? null;
-            // A test run's interception replaces the live record of its agent, send or request state (migration 0102), and
+            // A test run's interception replaces the live record of its agent, send or request state (migration 0088), and
             // every deadline of a test run is counted from its virtual clock.
             const intercept = input.intercept ?? null;
             if (intercept !== null && (run.mode !== "test" || immediate !== null || input.nodeType !== (intercept.operation === "agent" ? "agent" : "messaging"))) {
@@ -3698,7 +3687,7 @@ export class WorkflowStore {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Test run ${run.runId} has no virtual clock.`);
             }
             // A test run's agent state is intercepted in agent mode mocked, and has a child (an agent spec) only in agent mode
-            // real (design 05; migration 0105).
+            // real (design 05; migration 0088).
             if (run.mode === "test" && ((intercept?.operation === "agent" && run.testAgentMode !== "mocked")
                 || (input.agent != null && run.testAgentMode !== "real"))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Agent state ${input.nodeExecutionId} does not match test run ${run.runId}'s agent mode.`);
@@ -4158,7 +4147,7 @@ export class WorkflowStore {
                    FROM ${this.t.nodes} WHERE node_execution_id = $1`, [nodeExecutionId]);
             if (!rows[0]) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${nodeExecutionId} does not exist.`);
             const node = nodeFrom(rows[0]);
-            // The deletion that made the session not live also decided its pending work (migration 0090 trigger).
+            // The deletion that made the session not live also decided its pending work (migration 0088 trigger).
             if (node.state === "completed" || !live) return { result: "decided" as const, node };
             // A request's deadline is elapsed only by elapseRequest (its outcome is timed_out, never elapsed).
             if ((node.nodeType !== "wait" && (node.nodeType !== "messaging" || node.receive === null)) || node.deadlineAt === null) {
@@ -4364,7 +4353,7 @@ export class WorkflowStore {
 
     /**
      * The intake outcomes of the run's outbox messages `exchangeIds` that have
-     * one, by exchange id (migration 0098; design 5.6): the recipient's intake
+     * one, by exchange id (migration 0088; design 5.6): the recipient's intake
      * refused the message after its delivery was recorded. Only the messages
      * named are read (the caller names the bounded page it shows), and none
      * when none are named. Read apart from the message, whose state,
@@ -4668,7 +4657,7 @@ export class WorkflowStore {
         });
     }
 
-    // ─── Request runtime: deadline, observation, delivery and wakes (controller 1.9.0) ──
+    // ─── Request runtime: deadline, observation, delivery and wakes ──
 
     /**
      * Elapse a pending request (design workflow-messaging-request.md 4.3;
@@ -5269,7 +5258,7 @@ export class WorkflowStore {
         });
     }
 
-    // ─── Durable recipient intake (migrations 0098 and 0099; called only while the deployment capability is on) ──
+    // ─── Durable recipient intake (migration 0088; called only while the deployment capability is on) ──
 
     /** One reading of the store's clock, as text that later statements of the transaction read back exactly. */
     private async clockIn(client: PoolClient): Promise<string> {
@@ -5311,7 +5300,7 @@ export class WorkflowStore {
     }
 
     /**
-     * The invocation's exposure record (migration 0099), read under its lock
+     * The invocation's exposure record (migration 0088), read under its lock
      * (only an admission holding that lock inserts one): its attempt id, or
      * null when no admission let an attempt include its items. A record of
      * another recipient, or without a valid attempt id, is corrupt.
@@ -5597,7 +5586,7 @@ export class WorkflowStore {
 
     /**
      * Admit an attempt's include of an invocation's items in a model request
-     * (migration 0099; exposure protocol revision 2, section 3): the durable
+     * (migration 0088; exposure protocol revision 2, section 3): the durable
      * record that the items were possibly seen, made before any request may
      * include them, and never evidence that a request was sent or completed.
      * In one READ COMMITTED transaction, under the invocation's lock
@@ -5707,7 +5696,7 @@ export class WorkflowStore {
      * each of its members is a cancelled-unsent row, and writes nothing, its
      * retries alike. `ended` is true only for the call that settled rows.
      *
-     * Possible exposure (migration 0099; exposure protocol revision 2,
+     * Possible exposure (migration 0088; exposure protocol revision 2,
      * section 6): with an exposure recorded, a requested `not_dispatched` is
      * applied as `interrupted`, the outcome computed under the lock before
      * the first update, and the one a replay compares with; the answer then
@@ -5808,7 +5797,7 @@ export class WorkflowStore {
      * invocation's end no longer names it. Already so: the same (nothing
      * written), answered before any exposure is read, so an item cancelled
      * before an exposure stays settled (exposure protocol revision 2, section
-     * 6). With an exposure recorded (migration 0099), the items were possibly
+     * 6). With an exposure recorded (migration 0088), the items were possibly
      * seen: the cancel is recorded as requested, once (cancel_requested, as
      * requestCancelWorkflowIntake records it), whatever the row's processing,
      * a final one included and kept, and the answer says `exposed`.
@@ -5903,7 +5892,7 @@ export class WorkflowStore {
         return rows[0] ? intakeFrom(rows[0]) : null;
     }
 
-    /** An invocation's exposure record as stored (migration 0099), or null when no admission let an attempt include its items. */
+    /** An invocation's exposure record as stored (migration 0088), or null when no admission let an attempt include its items. */
     async readWorkflowIntakeExposure(invocationId: string): Promise<WorkflowIntakeExposure | null> {
         if (!storableId(invocationId)) return null;
         const { rows } = await this.pool.query(
@@ -5921,7 +5910,7 @@ export class WorkflowStore {
      * R13, R16): one recursive read of the session rows from the session up
      * (soft-deleted rows included, so a deleted ancestor still counts), with
      * the agent state invocation, if any, of each. Null when the session row
-     * does not exist. A schema without the invocation table (migration 0101
+     * does not exist. A schema without the invocation table (migration 0088
      * not applied yet) has no agent states, so no session is in one's subtree.
      */
     async readWorkflowLineage(sessionId: string): Promise<WorkflowLineage | null> {
@@ -5939,7 +5928,7 @@ export class WorkflowStore {
                        : "NULL::text AS node_execution_id, NULL::text AS workflow_session_id, NULL::text AS controlling_session_id"}
               FROM lineage
               ${withInvocations ? `LEFT JOIN LATERAL (
-                  -- One row per lineage session (review RT-4): a chat that continues has one invocation per visit (0106), and
+                  -- One row per lineage session (review RT-4): a chat that continues has one invocation per visit, and
                   -- a join of them all repeated the session (read as a cycle). Its open visit, else its newest.
                   SELECT i.node_execution_id, i.workflow_session_id, i.controlling_session_id
                     FROM ${this.t.agentInvocations} i LEFT JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
@@ -5973,7 +5962,7 @@ export class WorkflowStore {
         return { sessionId, level, agentRoot, deleted: rows[0].deleted === true };
     }
 
-    // ─── Agent states (IR 8, migration 0101) ──
+    // ─── Agent states (IR 8, migration 0088) ──
 
     /**
      * FU-17: the tools an agent state limits its agent to (`tools`), for the session of a turn in that state's subtree: the
@@ -6799,7 +6788,7 @@ export class WorkflowStore {
         });
     }
     /**
-     * End a stopping run stopped (migration 0100; its controller, 1.9.0,
+     * End a stopping run stopped (migration 0088; its controller
      * asks): in one transaction under the session and run locks, with one
      * reading of the store's clock, kept as exact SQL text, deciding. When no
      * work of the run is pending (a parallel state's own node execution waits
@@ -6871,9 +6860,9 @@ export class WorkflowStore {
     }
 
     /**
-     * Whether a run's deadline (migration 0104) has passed by its own clock: a
+     * Whether a run's deadline (migration 0088) has passed by its own clock: a
      * test run's virtual clock, else the store's clock. Only a run with a
-     * deadline is asked (a schema before migration 0104 has no such column).
+     * deadline is asked (a schema before migration 0088 has no such column).
      */
     private async runExpiredIn(client: PoolClient, runId: string): Promise<boolean> {
         const { rows } = await client.query(
@@ -6881,7 +6870,7 @@ export class WorkflowStore {
         return rows[0]?.expired === true;
     }
 
-    /** runExpiredIn outside a transaction (controller 1.9.0's collection reports it). False for a run without a deadline. */
+    /** runExpiredIn outside a transaction (the controller's collection reports it). False for a run without a deadline. */
     async isRunExpired(run: Pick<WorkflowRunRow, "runId" | "deadlineAt">): Promise<boolean> {
         if (run.deadlineAt === null) return false;
         const { rows } = await this.pool.query(
@@ -6890,8 +6879,8 @@ export class WorkflowStore {
     }
 
     /**
-     * End a run whose deadline passed (migration 0104; limits.timeoutSeconds,
-     * onExceeded expired; its controller, 1.9.0, asks): in one transaction
+     * End a run whose deadline passed (migration 0088; limits.timeoutSeconds,
+     * onExceeded expired; its controller asks): in one transaction
      * under the session and run locks, with one reading of the run's clock (a
      * test run's virtual clock, else the store's clock) deciding. At or after
      * the deadline the run ends failed with timed_out, paused or stopping or
@@ -6952,7 +6941,7 @@ export class WorkflowStore {
 
     /**
      * Cancel the other branches of a parallel state whose failFast policy
-     * met a branch that did not succeed (controller 1.9.0; IR 8): in one
+     * met a branch that did not succeed (IR 8): in one
      * transaction under the session and run locks, every node execution of
      * these branch scopes still pending is decided cancelled (winner
      * `fail_fast`), and a message one of their send states sent to a workflow
@@ -7021,7 +7010,7 @@ export class WorkflowStore {
     }
 
     /**
-     * A parallel state's own time limit (IR 9; controller 1.9.0; owner
+     * A parallel state's own time limit (IR 9; owner
      * decision join-k-of-n with formal questions Q1 to Q3 and finding H1), as
      * elapseWait is a wait's: in one transaction under the session and run
      * locks (an admission's order, so no branch state is admitted between
@@ -7056,7 +7045,7 @@ export class WorkflowStore {
                    FROM ${this.t.nodes} WHERE node_execution_id = $1 FOR UPDATE`, [nodeExecutionId]);
             const node = nodeFrom(rows[0]);
             if (node.nodeType !== "parallel") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${nodeExecutionId} is not a parallel state.`);
-            // The deletion that made the session not live also decided its pending work (migration 0090 trigger).
+            // The deletion that made the session not live also decided its pending work (migration 0088 trigger).
             if (node.state === "completed" || !live) return { result: "decided" as const, node };
             if (node.deadlineAt === null) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Parallel state ${nodeExecutionId} has no time limit.`);
@@ -7079,7 +7068,7 @@ export class WorkflowStore {
 
     /**
      * Decide the join of a parallel state of IR 9 (a join of the first k, or
-     * a join with its own time limit; controller 1.9.0), which its controller
+     * a join with its own time limit), which its controller
      * asks for whenever a branch ends: in one transaction under the session
      * and run locks and the state's row, the store's one count decides, the
      * same count its time limit uses (settleParallelIn; formal finding H1).
@@ -7276,13 +7265,13 @@ export class WorkflowStore {
         return cancelled;
     }
 
-    // ─── Test runs (migration 0102; design 05 tool-mocked testing) ───
+    // ─── Test runs (migration 0088; design 05 tool-mocked testing) ───
 
     /**
      * Admit a test run (mode test) of the definition's current revision, once
      * per operation id: exactly the revision and hash the request names,
-     * valid, draft or published. It has its own KV, inbox and outbox, runs at
-     * controller 1.9.0 under its own controller instance, and its virtual
+     * valid, draft or published. It has its own KV, inbox and outbox, runs
+     * under its own controller instance, and its virtual
      * clock starts at WORKFLOW_V2_TEST_EPOCH. Any number of test runs may
      * exist beside the live run, which they never change.
      */
@@ -7332,7 +7321,7 @@ export class WorkflowStore {
         });
     }
 
-    /** A test run's fixtures (migration 0102), as admitted; an empty list for a test run without any. */
+    /** A test run's fixtures (migration 0088), as admitted; an empty list for a test run without any. */
     async readTestFixtures(runId: string): Promise<JsonValue> {
         const { rows } = await this.pool.query(`SELECT mode, test_fixtures FROM ${this.t.runs} WHERE run_id = $1`, [runId]);
         if (!rows[0]) throw new WorkflowStoreError("RUN_NOT_FOUND", `Workflow run ${runId} does not exist.`);
@@ -7597,7 +7586,7 @@ export class WorkflowStore {
                            ${isoUtc("(virtual_now - $2::integer * interval '1 second')")} AS from_iso`,
                 [run.runId, input.seconds]);
             const nowText = str(moved[0], "now_text");
-            // A deadline after the run's own (migration 0104) is never reached: the run expires first, and its controller's
+            // A deadline after the run's own (migration 0088) is never reached: the run expires first, and its controller's
             // expiry cancels what is still pending then.
             const { rows: due } = await client.query(
                 `SELECT * FROM ${this.t.nodes}
@@ -7649,7 +7638,7 @@ export class WorkflowStore {
     }
 
     /**
-     * The test runs of a workflow that retention may delete (migration 0102;
+     * The test runs of a workflow that retention may delete (migration 0088;
      * design 05 cleanup): its ended test runs beyond the newest `keep` (by
      * admission), each ended at least `graceSeconds` ago by the store's
      * clock. Never a live run, never an active test run, and never a test run
@@ -7675,7 +7664,7 @@ export class WorkflowStore {
     }
 
     /**
-     * Delete one ended test run and the records it owns (migration 0102
+     * Delete one ended test run and the records it owns (migration 0088
      * retention; design 05 cleanup: only test-created scratch): its
      * interceptions, the typed input given to it, its node executions, its
      * KV revisions and its run row, in one transaction under the session and
@@ -7731,17 +7720,17 @@ export interface RunAdmission {
     kvText: string;
     testAgentMode: "mocked" | "real" | null;
     /**
-     * The controller version this run is admitted for (migration 0100); stored once and never changed. The service always
-     * names it; omitted (or null), the run records none, as a run admitted before 0100 (only a store test does that).
+     * The controller version this run is admitted for (migration 0088); stored once and never changed. The service always
+     * names it; omitted (or null), the run records none (only a store test does that).
      */
     controllerVersion?: string | null;
-    /** A test run's fixtures as canonical JSON (migration 0102); only a test admission names them. */
+    /** A test run's fixtures as canonical JSON (migration 0088); only a test admission names them. */
     fixturesText?: string | null;
-    /** The scenario a test run is started for (migration 0103); only a test admission names one. */
+    /** The scenario a test run is started for (migration 0088); only a test admission names one. */
     testScenario?: string | null;
-    /** A real-agent test run's agent pins as canonical JSON (migration 0105); only such a test admission names them. */
+    /** A real-agent test run's agent pins as canonical JSON (migration 0088); only such a test admission names them. */
     testAgentPinsText?: string | null;
-    /** OF-S2-7: the agent nodes' models chosen at start as canonical JSON (migration 0110); only a start that chose any. */
+    /** OF-S2-7: the agent nodes' models chosen at start as canonical JSON (migration 0088); only a start that chose any. */
     agentModelsText?: string | null;
 }
 

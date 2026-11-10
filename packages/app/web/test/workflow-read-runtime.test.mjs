@@ -324,19 +324,19 @@ test("READ-WIRE-04: both HTTP-backed clients and the route carry a run that is n
     }
 });
 
-test("with the test-only workflowCommands option, the real adapter says which commands the workflow takes and the route adds the caller's own decision", async () => {
-    const h = await routeHarness({ config: { workflowCommands: { requests: false } } });
+test("with workflowCommands, the real adapter says which commands the workflow takes and the route adds the caller's own decision", async () => {
+    const h = await routeHarness({ config: { workflowCommands: {} } });
     try {
         const read = await h.get("/sessions/wf1/workflow");
         assert.equal(read.status, 200);
         assert.equal(read.body.result.run.runId, "run-live");
         assert.deepEqual(read.body.result.personCommands, {
-            operations: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel"],
-            restriction: null, run: { runId: "run-live", stop: false }, viewer: { allowed: true, reason: null },
+            operations: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "stop"],
+            restriction: null, run: { runId: "run-live", stop: true }, viewer: { allowed: true, reason: null },
         });
         // The run that was asked for is the one described.
         const test = await h.get("/sessions/wf1/workflow?runId=R");
-        assert.deepEqual(test.body.result.personCommands.run, { runId: "R", stop: false });
+        assert.deepEqual(test.body.result.personCommands.run, { runId: "R", stop: true });
         // With test mode off (the default), a test run kept from while it was on is not listed, and its id is refused as an
         // unknown run's is, over the route too (review SF-5).
         assert.deepEqual(read.body.result.runs.map(item => item.runId), ["run-live", "R"]);

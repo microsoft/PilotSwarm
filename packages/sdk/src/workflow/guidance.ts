@@ -26,7 +26,7 @@ const REQUEST_GUIDANCE = "`request`: answer it once with `respond_session_reques
 
 /**
  * The Workflow guidance a chat carries while Workflows are on in it (owner 2026-11-08T16:55Z: trimmed for every chat; the
- * details are in the skills). Every Workflow runs on the full engine (controller 1.9.0 and session orchestration 1.0.83
+ * details are in the skills). Every Workflow runs on the full engine (the Workflow controller and session orchestration 1.0.83
  * on every worker). workflowSessionGuidance adds the lines that depend on the turn and the worker.
  */
 export const WORKFLOW_SESSION_GUIDANCE = `## Workflows\n\n${DEFINITION_GUIDANCE}\n\n${FOLLOW_GUIDANCE} ${REQUEST_GUIDANCE} ${WORKFLOW_PERSON_CONTROL_GUIDANCE}`;
@@ -44,7 +44,7 @@ const TEST_WAITING_GUIDANCE = "`test_waiting`: a test run's held call; answer it
 export const WORKFLOW_SCRIPTS_OFF_GUIDANCE = "Script nodes are off on this server (PILOTSWARM_WORKFLOW_SCRIPTS=0): save and start refuse one. "
     + "Use wait, messaging, agent and parallel nodes, or tell the user an operator must turn scripts on.";
 
-/** Stage 2.4: the line the guidance carries where clock waits run (controller 1.9.0). */
+/** Stage 2.4: the line the guidance carries where clock waits run. */
 export const WORKFLOW_CLOCK_WAIT_GUIDANCE = "A wait state can wait until a clock time: `at: { minute: 0, hour: 9, tz: America/Los_Angeles }` "
     + "instead of `seconds` (`day_of_week` or `day_of_month` for weekly or monthly).";
 
@@ -86,10 +86,10 @@ export const ENABLE_WORKFLOWS_TOOL_SPEC = {
 } as const;
 
 /**
- * The Workflow guidance for one chat with Workflows on. Every turn's host runs a revision test (session-proxy.ts
- * workflowV2Host sets requests; chat-test.ts requireTestHost), so every chat that may write definitions is taught it.
+ * The Workflow guidance for one chat with Workflows on. Every turn's host runs a revision test, so every chat that may
+ * write definitions is taught it.
  * - `testMode` (spec 16): with test mode on, the test_waiting line;
- * - `clockWaits`: the clock-wait line (controller 1.9.0); `scripts: false`: the scripts-off line;
+ * - `clockWaits`: the clock-wait line; `scripts: false`: the scripts-off line;
  * - `requests: false`: a turn that is not declared respond_session_request (a frozen 1.0.82 turn): no request sentence;
  * - `insideWorkflow`: a chat inside a Workflow (declared no definition tools): WORKFLOW_INSIDE_GUIDANCE in the definition
  *   paragraphs' place, and none of the lines on writing or testing one (test_waiting, clock waits, scripts off), nor the

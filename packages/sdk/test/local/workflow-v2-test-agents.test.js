@@ -1,8 +1,7 @@
 /**
  * Workflow v2 real-agent test runs (design 05 agent mode real; R18 to R20,
- * D08, T112, T114; migration 0105), INACTIVE: only controller 1.9.0 runs
- * test runs, and only a host that starts 1.9.0 runs (the test-only option
- * workflowRequests and a host with `requests`) takes the test operations.
+ * D08, T112, T114; migration 0088): the Workflow controller runs test runs,
+ * and every host takes the test operations.
  *
  * - An agent state of a real-agent test gets an ordinary child, created by
  *   the real agent host as a live run's is (the same id, owner, depth and
@@ -101,7 +100,7 @@ function* agentChild(ctx) {
 }
 
 /**
- * A worker-equivalent registration with workflowRequests, whose agent host is
+ * A worker-equivalent registration whose agent host is
  * the real one over a mutable catalog of visible agents (`visible`) and a
  * child double that creates the child's session row (its lineage) and
  * queue. The parent is owned, so a test's notices to it are authorized; they
@@ -144,14 +143,13 @@ async function harness(env) {
         deleteSession: async sessionId => catalog.softDeleteSession(sessionId),
         wakeBackstopMs: 500,
         testPollMs: 50,
-        workflowRequests: true,
         sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
         agentNodes,
     });
     await runtime.start();
     const parent = randomUUID();
     await catalog.createSession(parent, { owner: OWNER });
-    const host = { catalog, store, duroxideClient: client, requests: true, resolveAgent };
+    const host = { catalog, store, duroxideClient: client, resolveAgent };
     const notices = [];
     const context = { callerSessionId: parent, host };
     return {
@@ -221,7 +219,7 @@ const lifecycleCommand = (h, childSessionId) => until(async () => {
     return messages.find(message => message?.type === "cmd") ?? null;
 }, `the lifecycle command of ${childSessionId}`);
 
-describe("workflow v2 real-agent test runs: controller 1.9.0 (inactive, test-only registration)", () => {
+describe("workflow v2 real-agent test runs: the controller", () => {
     it("gives the agent state an ordinary child whose framework tool calls the test answers, and ends it as a live run's", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {

@@ -1,6 +1,6 @@
 /**
  * A worker process for the join crash and compatibility tests (J3 JK-07, JK-21, JK-23; HG-2): forked by
- * workflow-v2-join-harness.js, it registers controller 1.9.0 and its activities from a built SDK on the test's provider
+ * workflow-v2-join-harness.js, it registers the Workflow controller and its activities from a built SDK on the test's provider
  * and catalog, test-only as the in-process harness does, with 2 s locks so a new worker takes over work a stopped or
  * killed one held within seconds. The build is this one's dist/ unless the start message names another (`dist`: an
  * absolute path to a built packages/sdk/dist, for example of 8d568890); duroxide is loaded from beside that build.
@@ -41,7 +41,7 @@ async function start(message) {
         authorizeParentNotification: async () => false,
         notifyParent: async () => { throw new Error("These workflows notify no parent."); },
         deleteSession: async sessionId => catalog.softDeleteSession(sessionId),
-        wakeBackstopMs: Number.isSafeInteger(message.wakeBackstopMs) ? message.wakeBackstopMs : 500, workflowRequests: true,
+        wakeBackstopMs: Number.isSafeInteger(message.wakeBackstopMs) ? message.wakeBackstopMs : 500, 
         sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
     });
     await runtime.start();
@@ -58,7 +58,7 @@ process.on("message", async message => {
             await started.catalog.createSession(parent, {});
             const workflowSessionId = randomUUID();
             try {
-                const created = await started.createWorkflowV2({ catalog: started.catalog, store: started.store, duroxideClient: started.client, requests: true }, {
+                const created = await started.createWorkflowV2({ catalog: started.catalog, store: started.store, duroxideClient: started.client }, {
                     workflowSessionId, parentSessionId: parent, yaml: message.yaml, actor: { kind: "system", name: "workflow-v2-join-compat" },
                     operationId: "start", start: { inputs: {} } });
                 process.send({ type: "created", requestId: message.requestId, parent, workflowSessionId, valid: created.receipt.valid,

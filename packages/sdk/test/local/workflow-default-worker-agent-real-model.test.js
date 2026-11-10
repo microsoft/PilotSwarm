@@ -1,13 +1,13 @@
 /**
  * The full Workflow engine on a DEFAULT worker, on a REAL model (owner decision 2026-11-08T15:30Z): a worker made with no
- * test options (as every deployment's is) serves controller 1.9.0 and session orchestration 1.0.83, so a chat started
+ * test options (as every deployment's is) serves the Workflow controller and session orchestration 1.0.83, so a chat started
  * there builds and runs a Workflow with an agent step. Asked once, with script nodes off (PILOTSWARM_WORKFLOW_SCRIPTS=0; on
  * by default since 8ef4b681):
  * "Set up a Workflow with one agent step that writes a one-line haiku about the sea, start it, and tell me the haiku."
  *
  * PASS: the chat is at the latest version (1.0.83); it saved a valid revision with at least one agent state; no save or
  * start was refused (WORKFLOW_NODE_TYPE_UNSUPPORTED, WORKFLOW_FEATURE_UNSUPPORTED, CONTROLLER_UNAVAILABLE in a Workflow
- * tool's result: a loaded skill's text names these codes and is not read); a Workflow of it started at controller 1.9.0
+ * tool's result: a loaded skill's text names these codes and is not read); a Workflow of it started at the Workflow controller
  * and completed, through an agent node's chat. The answer is recorded, not judged. Written
  * when every chat had the Workflow tools, it turns Workflows on in its chat before the ask (test/helpers/workflows-on.js).
  *
@@ -357,7 +357,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             expect(receipt.steps.refused, `no refusal. ${why}`).toEqual([]);
             expect(receipt.steps.workflows.length, `a Workflow started. ${why}`).toBeGreaterThan(0);
             expect(receipt.steps.workflows.some(row => row.status === "completed"), `a Workflow completed. ${why}`).toBe(true);
-            expect(runs.every(version => version === "1.9.0"), `every run at controller 1.9.0. ${why}`).toBe(true);
+            expect(runs.every(version => version === "1.0.0"), `every run at the Workflow controller. ${why}`).toBe(true);
         }, { workflowsOn: true });
     });
 
@@ -551,7 +551,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             // A person saves the definition in the chat and starts it (the chat is its parent), as from the portal.
             prepare: async ({ env, catalog, chat }) => {
                 const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
-                    factsSchema: env.factsSchema, workflowCommands: { requests: true } });
+                    factsSchema: env.factsSchema, workflowCommands: {} });
                 await mgmt.start();
                 const close = () => mgmt.stop();
                 try {

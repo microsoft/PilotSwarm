@@ -1,8 +1,7 @@
 /**
  * Workflow v2 parallel joins of the first k and a parallel state's own time
- * limit (IR 9; owner decision join-k-of-n of 2026-11-04), INACTIVE: only
- * controller 1.9.0 runs them, and only tests register it and start runs there
- * (the test-only option workflowRequests and a host with `requests`).
+ * limit (IR 9; owner decision join-k-of-n of 2026-11-04), on the Workflow
+ * controller.
  *
  * - The compiler: every accepted and refused form of `join` (all,
  *   all_required, { first: k }) and of `timeoutSeconds`, the timed_out route
@@ -13,7 +12,7 @@
  *   timed_out with every branch's end and their pending work cancelled), and
  *   once only against a join (both orders); a branch of a decided parallel
  *   state admits nothing more; the cancellations are listed with why.
- * - Controller 1.9.0 on a native duroxide runtime: a race of three scripts of
+ * - The controller on a native duroxide runtime: a race of three scripts of
  *   different lengths (one winner, the others cancelled, nothing of theirs
  *   routed later); the first 2 of 4 in the order they finished; k that can no
  *   longer happen with failFast and without; a time limit with 1 of 3
@@ -64,8 +63,8 @@ import {
 import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowV2View, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import {
-    BRANCH_ROUTE, branchScopeId, describeWorkflowV2State, registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_REQUEST_ACTIVITIES,
-    WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId,
+    BRANCH_ROUTE, branchScopeId, describeWorkflowV2State, registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_ACTIVITIES,
+    WORKFLOW_V2_CONTROLLER_VERSION, workflowLiveControllerInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
@@ -380,7 +379,7 @@ async function storedRun(h, doc) {
         workflowSessionId, parentSessionId: parent, notifyParent: false, yaml, compiled, actor: ACTOR,
         operationId: "create", requestSha256: "join", publish: true, title: "Workflow: join",
         start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
-            inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION },
+            inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION },
     });
     const fan = nodeExecutionIdFor(runId, "root", "fan", 1);
     return { workflowSessionId, runId, fan };
@@ -725,7 +724,7 @@ describe("workflow v2 parallel joins: the store's one count for the join and the
     });
 });
 
-// ─── Controller 1.9.0 on a native runtime ────────────────────
+// ─── The controller on a native runtime ──────────────────────
 
 /**
  * Worker slots for these runtimes. A branch's script holds a worker slot for its whole run, and every controller step
@@ -736,7 +735,7 @@ describe("workflow v2 parallel joins: the store's one count for the join and the
  */
 const WORKER_SLOTS = 16;
 
-/** A worker-equivalent registration with workflowRequests and the request tag declared. */
+/** A worker-equivalent registration with the request tag declared. */
 async function harness(env, { wakeBackstopMs = 500, workerConcurrency = WORKER_SLOTS } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
@@ -757,12 +756,11 @@ async function harness(env, { wakeBackstopMs = 500, workerConcurrency = WORKER_S
         notifyParent: async () => { throw new Error("These workflows notify no parent."); },
         deleteSession: async sessionId => catalog.softDeleteSession(sessionId),
         wakeBackstopMs,
-        workflowRequests: true,
         sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
     });
     await runtime.start();
     return {
-        catalog, store, client, host: { catalog, store, duroxideClient: client, requests: true },
+        catalog, store, client, host: { catalog, store, duroxideClient: client },
         async stop() {
             await runtime.shutdown(100);
             await catalog.close();
@@ -803,7 +801,7 @@ async function scheduledInputs(client, instanceId, name) {
     });
 }
 
-describe("workflow v2 parallel joins of the first k: controller 1.9.0 (inactive, test-only registration)", () => {
+describe("workflow v2 parallel joins of the first k: the controller", () => {
     // CI run 114 (HorizonDB): the join came after the losers' 5 s and 9 s scripts had ended. The losers' lengths, and the wait
     // past the slowest of them, are scaled with the database; the winner's 200 ms is not.
     it("a race of three scripts: the first success joins, the others are cancelled with their effects, and nothing of theirs is routed later", { timeout: TIMEOUT }, async () => {
@@ -944,7 +942,7 @@ describe("workflow v2 parallel joins of the first k: controller 1.9.0 (inactive,
     });
 });
 
-describe("workflow v2 parallel time limits: controller 1.9.0 (inactive, test-only registration)", () => {
+describe("workflow v2 parallel time limits: the controller", () => {
     // CI run 114: on a loaded runner the 2 s time limit passed before the first branch had finished, so the second was
     // never admitted (once the limit passed a branch admits only its terminal) and nothing was running to cut. The time
     // limit is now 20 s, and the case first waits until the first branch has finished and the second is in its wait. Seen
@@ -1119,7 +1117,7 @@ async function restartBaseOf(env) {
     const store = catalog.workflowStore();
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
     const client = new Client(provider);
-    return { catalog, store, provider, client, host: { catalog, store, duroxideClient: client, requests: true } };
+    return { catalog, store, provider, client, host: { catalog, store, duroxideClient: client } };
 }
 
 async function restartRuntimeOn(base) {
@@ -1138,7 +1136,7 @@ async function restartRuntimeOn(base) {
         authorizeParentNotification: async () => false,
         notifyParent: async () => { throw new Error("These workflows notify no parent."); },
         deleteSession: async sessionId => base.catalog.softDeleteSession(sessionId),
-        wakeBackstopMs: 500, workflowRequests: true,
+        wakeBackstopMs: 500, 
         sessionQueue: { ...sessionQueueTransport(base.client), version: async () => "1.0.83" },
     });
     await runtime.start();
@@ -1146,7 +1144,7 @@ async function restartRuntimeOn(base) {
     return { async stop() { if (!running) return; running = false; await runtime.shutdown(100); } };
 }
 
-describe("workflow v2 parallel time limits: a worker restart across the deadline (controller 1.9.0, test-only)", () => {
+describe("workflow v2 parallel time limits: a worker restart across the deadline", () => {
     // CI run 114 (HorizonDB): the 6 s limit passed before both branches' waits were admitted. The limit is scaled.
     it("decides the time limit once after the runtime was down at its deadline, keeping the deadline", { timeout: testTime.ms(180_000) }, async () => {
         const base = await restartBaseOf(getEnv());
@@ -1192,7 +1190,7 @@ describe("workflow v2 parallel time limits: a worker restart across the deadline
     });
 });
 
-describe("workflow v2 parallel states of IR 8 (controller 1.9.0, test-only)", () => {
+describe("workflow v2 parallel states of IR 8", () => {
     it("an IR 8 parallel run schedules what it did before: no time limit, no reason for its cancellation, the same join input", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
@@ -1202,11 +1200,11 @@ describe("workflow v2 parallel states of IR 8 (controller 1.9.0, test-only)", ()
             expect(await ended(h, runId)).toMatchObject({ terminalNodeId: "stuck" });
             expect((await h.store.readNodeExecution(fan)).deadlineAt).toBeNull();
             const instanceId = workflowLiveControllerInstanceId(workflowSessionId);
-            expect(await scheduledInputs(h.client, instanceId, WORKFLOW_V2_REQUEST_ACTIVITIES.cancelBranches))
+            expect(await scheduledInputs(h.client, instanceId, WORKFLOW_V2_ACTIVITIES.cancelBranches))
                 .toEqual([{ runId, scopeIds: [branchScopeId(fan, 1)] }]);
-            expect((await scheduledInputs(h.client, instanceId, WORKFLOW_V2_REQUEST_ACTIVITIES.elapse)).some(input => input.nodeExecutionIds.includes(fan)))
+            expect((await scheduledInputs(h.client, instanceId, WORKFLOW_V2_ACTIVITIES.elapse)).some(input => input.nodeExecutionIds.includes(fan)))
                 .toBe(false);
-            const joins = await scheduledInputs(h.client, instanceId, WORKFLOW_V2_REQUEST_ACTIVITIES.join);
+            const joins = await scheduledInputs(h.client, instanceId, WORKFLOW_V2_ACTIVITIES.join);
             expect(joins).toHaveLength(1);
             expect(Object.keys(joins[0]).sort()).toEqual(["parallelNodeExecutionId", "results", "runId"]);
             expect(joins[0]).toMatchObject({ runId, parallelNodeExecutionId: fan });
@@ -1221,7 +1219,7 @@ describe("workflow v2 parallel states of IR 8 (controller 1.9.0, test-only)", ()
     });
 });
 
-describe("workflow v2 parallel joins and time limits, J1b: controller 1.9.0 (inactive, test-only registration)", () => {
+describe("workflow v2 parallel joins and time limits, J1b: the controller", () => {
     it("(a) a success committed before the time limit while the run was paused still joins after the resume: the time limit finds the join due", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {

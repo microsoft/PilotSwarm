@@ -371,11 +371,10 @@ test("G4: pass is the expected end (that state or outcome) with nothing unanswer
     assert.equal(cancelled.status, "failed");
 });
 
-test("G4: the tool declares expect with tests (bounded) and not without; a bad expect is refused before anything is read; the bench keeps it", async () => {
+test("G4: the tool declares expect (bounded); a bad expect is refused before anything is read; the bench keeps it", async () => {
     const spec = workflowDefinitionToolSpec();
     assert.equal(spec.parameters.properties.expect.type, "string");
     assert.equal(spec.parameters.properties.expect.maxLength, 64);
-    assert.equal(Object.hasOwn(workflowDefinitionToolSpec({ tests: false }).parameters.properties, "expect"), false);
     const host = { store: untouchable("store"), catalog: untouchable("catalog"), duroxideClient: untouchable("duroxide"), requests: true };
     for (const expect of [7, "", "x".repeat(65), { state: "done" }]) {
         const refused = JSON.parse(await workflowDefinitionFromTool({ operation: "test", name: "watch", expect }, { callerSessionId: "chat", host,

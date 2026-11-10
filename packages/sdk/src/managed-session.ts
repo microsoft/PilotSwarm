@@ -1502,7 +1502,7 @@ export class ManagedSession {
         // workflow tools' milestone descriptions and respond_session_request, and, for an agent state's own child,
         // complete_workflow_node. Every other turn's declarations are unchanged.
         const workflowMilestone = opts?.workflowMilestone === true;
-        // Workflow test mode is hidden unless the deployment flag is on (spec 16): the 1.9.0 declarations then name stop only.
+        // Workflow test mode is hidden unless the deployment flag is on (spec 16): the declarations then name stop only.
         const workflowSpecs = { milestone: workflowMilestone, testMode: workflowTestModeFromEnv() };
         const updateWorkflowTool = defineTool("update_workflow", {
             ...updateWorkflowToolSpec(workflowSpecs), handler: async () => "stub",
@@ -1512,7 +1512,7 @@ export class ManagedSession {
         });
         const sendWorkflowInputTool = defineTool("send_workflow_input", { ...SEND_WORKFLOW_INPUT_TOOL_SPEC, handler: async () => "stub" });
         // Stage 2.1: the chat's definitions, with revisions (definition-tool.ts).
-        // Every turn's host runs a Workflow test (session-proxy.ts sets requests), a frozen 1.0.82 turn's included.
+        // Every turn's host runs a Workflow test, a frozen 1.0.82 turn's included.
         const workflowDefinitionTool = defineTool(WORKFLOW_DEFINITION_TOOL, {
             ...workflowDefinitionToolSpec(), handler: async () => "stub",
         });
@@ -3296,10 +3296,10 @@ export class ManagedSession {
         // spawn_workflow runs inline through the control bridge and does not
         // end the turn. Without a bridge it refuses rather than staying
         // silent: a declared tool with no answer hangs the turn.
-        // On a turn of a worker that runs controller 1.9.0, the workflow tools describe what their host
+        // On a turn of session orchestration 1.0.83 (a workflow request turn), the workflow tools describe what their host
         // takes there (R26); every other turn keeps the production descriptions byte for byte.
         const workflowMilestone = controlBridge?.workflowMilestone === true;
-        // Workflow test mode is hidden unless the deployment flag is on (spec 16): the 1.9.0 tools then describe stop only.
+        // Workflow test mode is hidden unless the deployment flag is on (spec 16): the tools then describe stop only.
         const workflowSpecs = { milestone: workflowMilestone, testMode: workflowTestModeFromEnv() };
         // A1 (Workflow Simplified, spec 14): a session inside a Workflow is declared no definition tools; a stale declaration
         // still gets an answer here, the refusal in words, before the bridge (which refuses them too).
@@ -3340,7 +3340,7 @@ export class ManagedSession {
         });
         // Stage 2.1: the chat's Workflow Definitions (definition-tool.ts): list, read, save and start. Refused inside a Workflow
         // (A1), as the other definition tools are.
-        // Every turn's host runs a Workflow test (session-proxy.ts sets requests), a frozen 1.0.82 turn's included.
+        // Every turn's host runs a Workflow test, a frozen 1.0.82 turn's included.
         const workflowDefinitionTool = defineTool(WORKFLOW_DEFINITION_TOOL, {
             ...workflowDefinitionToolSpec(),
             handler: async (args: Record<string, unknown>, invocation?: { toolCallId?: string }) => {

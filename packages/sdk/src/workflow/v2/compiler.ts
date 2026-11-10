@@ -40,8 +40,8 @@ export const WORKFLOW_V2_KIND = "Workflow";
  *   never reads it as version 6.
  * - 8: version 7 plus agent states and parallel states
  *   (WORKFLOW_V2_AGENT_IR_VERSION), written only for a workflow that has one
- *   of them and only when they are enabled (WorkflowCompileOptions; a host
- *   that starts runs at controller 1.9.0 enables them). A parallel state's body
+ *   of them and only when they are enabled (WorkflowCompileOptions; every
+ *   host enables them, service.ts compileWorkflowV2Definition). A parallel state's body
  *   states are in `nodes` with the others, named by its `body.states`. A
  *   reader takes it only when asked to, as version 7.
  * - 9: version 8 plus a parallel state's join of the first k successes
@@ -70,13 +70,13 @@ export const WORKFLOW_V2_JOIN_IR_VERSION = 9;
 export const WORKFLOW_V2_CLOCK_WAIT_IR_VERSION = 10;
 export const WORKFLOW_V2_BRANCHES_IR_VERSION = 11;
 /**
- * The newest IR version controller 1.9.0's activities read (request, agent and parallel states, joins of the first k,
+ * The newest IR version the controller's activities read (request, agent and parallel states, joins of the first k,
  * clock waits and named branches).
  */
 export const WORKFLOW_V2_MILESTONE_IR_VERSION = WORKFLOW_V2_BRANCHES_IR_VERSION;
 /**
- * The newest IR version a reader takes unless asked for more (parseWorkflowIr's default; a host that runs controller
- * 1.9.0, as every worker, portal and MCP server does, asks for WORKFLOW_V2_MILESTONE_IR_VERSION).
+ * The newest IR version a reader takes unless asked for more (parseWorkflowIr's default; every worker, portal and MCP
+ * server asks for WORKFLOW_V2_MILESTONE_IR_VERSION).
  */
 export const WORKFLOW_V2_RUNNABLE_IR_VERSION = 6;
 /** A wait state's seconds: an integer in this range, literal or bound. */
@@ -510,27 +510,23 @@ export interface WorkflowCompileOptions {
      */
     enableRequests?: boolean;
     /**
-     * Compile agent states to IR 8 (a host that starts runs at controller
-     * 1.9.0, as every production host does, sets it). Off by default: a state of type agent
+     * Compile agent states to IR 8 (every host sets it). Off by default: a state of type agent
      * stays unsupported, as before.
      */
     enableAgents?: boolean;
     /**
-     * Compile parallel states to IR 8 (a host that starts runs at controller
-     * 1.9.0, as every production host does, sets it). Off by default: a state of type parallel
+     * Compile parallel states to IR 8 (every host sets it). Off by default: a state of type parallel
      * stays unsupported, as before.
      */
     enableParallel?: boolean;
     /**
      * Compile a run deadline (limits.timeoutSeconds and onExceeded) to IR 8
-     *.
-     * Off by default: the fields are refused with WORKFLOW_FEATURE_UNSUPPORTED,
-     * so no definition that a 1.8.0 run would not enforce is published.
+     * (every host sets it). Off by default: the fields are refused with
+     * WORKFLOW_FEATURE_UNSUPPORTED.
      */
     enableRunLimits?: boolean;
     /**
-     * Compile clock waits (a wait state's `at`) to IR 10 (a host that starts runs at controller 1.9.0, as every production
-     * host does, sets it). Off by default: `at` is refused with WORKFLOW_FEATURE_UNSUPPORTED.
+     * Compile clock waits (a wait state's `at`) to IR 10 (every host sets it). Off by default: `at` is refused with WORKFLOW_FEATURE_UNSUPPORTED.
      */
     enableClockWaits?: boolean;
 }

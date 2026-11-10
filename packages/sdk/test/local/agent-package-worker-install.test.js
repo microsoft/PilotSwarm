@@ -261,7 +261,7 @@ describe("agent-package worker install", () => {
     });
 
     it("quarantines a package whose worker module exports a workflow turn tool name, which an ordinary session never declares", { timeout: TIMEOUT }, async () => {
-        // A 1.9.0 turn declares respond_session_request, and an agent state's own child complete_workflow_node; a package tool of
+        // A 1.0.83 turn declares respond_session_request, and an agent state's own child complete_workflow_node; a package tool of
         // either name would be declared twice there, so the worker refuses it at install, as any reserved name.
         const env = await getEnv();
         const catalog = await createCatalog(env);
@@ -314,7 +314,7 @@ describe("agent-package worker install", () => {
     });
 
     it("lists a package agent's workflow interface from its installed version, as the version's manifest exports it", { timeout: TIMEOUT }, async () => {
-        // INACTIVE in effect: only Workflow V2 publication on a 1.9.0 host matches an interface. Discovery shows it for authors.
+        // Only Workflow V2 publication matches an interface. Discovery shows it for authors.
         const env = await getEnv();
         const catalog = await createCatalog(env);
         const artifactStore = new FilesystemArtifactStore(path.join(path.dirname(env.sessionStateDir), "artifacts"));
