@@ -25,7 +25,8 @@ COPY packages/sdk/package.json ./packages/sdk/
 COPY packages/horizon-store/package.json ./packages/horizon-store/
 COPY packages/app/package.json ./packages/app/
 
-RUN npm ci --force
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+RUN npm ci --force --registry "${NPM_REGISTRY}"
 
 # Copy the runtime sources and starter appliance assets.
 COPY packages/sdk ./packages/sdk
