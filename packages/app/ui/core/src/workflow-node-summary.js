@@ -38,7 +38,7 @@ const party = value => (value === "parent" ? "the parent session" : value === nu
 const an = word => `${/^[aeiou]/i.test(String(word ?? "")) ? "an" : "a"} ${word}`;
 const seconds = value => (typeof value === "number" ? formatSeconds(value) : value === undefined || value === null ? null : `the time in ${value}`);
 
-/** IR 11: the name of the named branch a step is in, or null (a For each's step, or a step outside a parallel step). */
+/** The name of the named branch a step is in, or null (a For each's step, or a step outside a parallel step). */
 const branchNameOf = node => (typeof node?.branchName === "string" && node.branchName ? node.branchName : null);
 
 /** What a node does, in one sentence: the definition's own description when it has one, else from its kind and fields. */
@@ -66,7 +66,7 @@ export function workflowNodeWhat(node) {
             const limit = seconds(node.waitSeconds);
             return `Waits for ${an(node.contract)} message from ${party(node.from)}${limit ? `, for at most ${limit}` : ""}.`;
         }
-        // IR 11: named branches by their names, and a named branch's end.
+        // Named branches by their names, and a named branch's end.
         case "parallel": return Array.isArray(node.namedBranches)
             ? `Runs its branches (${node.namedBranches.map(item => item.name).join(", ")}) ${node.concurrency >= node.namedBranches.length ? "all at once"
                 : node.concurrency > 1 ? `up to ${node.concurrency} at a time` : "one at a time"}, then joins them.`

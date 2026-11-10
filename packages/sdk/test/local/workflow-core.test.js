@@ -181,7 +181,7 @@ describe("workflow compiler and values", () => {
         const cases = [
             [PIPELINE.replace("ok: second,", "ok: nowhere,"), "WORKFLOW_TARGET_UNKNOWN"],
             [PIPELINE.replace('$ref: "#/schemas/In"', '$ref: "https://example.invalid/in.json"'), "WORKFLOW_SCHEMA_INVALID"],
-            [PIPELINE.replace("type: script\n    outputSchema", "type: agent\n    outputSchema"), "WORKFLOW_NODE_TYPE_UNSUPPORTED"],
+            [PIPELINE.replace("type: script\n    outputSchema", "type: join\n    outputSchema"), "WORKFLOW_NODE_TYPE_UNSUPPORTED"],
             [PIPELINE.replace('version: "1.0.0"', "version: 1.0"), "WORKFLOW_SEMVER_INVALID"],
             [PIPELINE.replace("initial: first", "initial: first\ninitial: second"), "WORKFLOW_YAML_INVALID"],
             [LOOP.replace("enough: done", "enough: step"), "WORKFLOW_NO_TERMINAL_PATH"],
@@ -219,7 +219,6 @@ describe("workflow compiler and values", () => {
     it("compiles a workflow-wide catch-all state and refuses an undeclared or initial one", () => {
         const terminal = compileWorkflow(CATCH_ALL('  handler: { type: terminal, outcome: blocked, output: "${input}" }'));
         expect(terminal.valid, JSON.stringify(terminal.diagnostics)).toBe(true);
-        expect(terminal.ir.irVersion).toBe(3);
         expect(terminal.ir.catchAll).toBe("handler");
         // With a catch-all, a state without a failure route is not warned about; without one it is.
         expect(terminal.diagnostics.map(item => item.code)).not.toContain("WORKFLOW_FAILURE_UNHANDLED");

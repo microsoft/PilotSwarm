@@ -1,7 +1,7 @@
 /**
  * The Workflow guidance and the engine every session has (owner decision 2026-11-08T15:30Z, which supersedes the
  * always-on review's AOS-F1 fix): session orchestration 1.0.83 is the latest version and every worker runs the full
- * Workflow engine, so every session's host compiles agent, parallel and request states (compileWorkflowDefinition),
+ * Workflow engine, so every session's host compiles agent, parallel and request states (compileWorkflow),
  * and every session is taught them.
  * a) a default worker (scripts off, no request-turn flag) carries the full text (trimmed, owner 2026-11-08T16:55Z): agent
  *    nodes, the request answer and the skills, and a scripts-off line that names agent and parallel nodes;
@@ -15,7 +15,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../../dist/session-manager.js";
-import { compileWorkflowDefinition } from "../../dist/workflow/service.js";
+import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import * as guidance from "../../dist/workflow/guidance.js";
 import { workflowTestModeFromEnv } from "../../dist/workflow/test-mode-switch.js";
 
@@ -112,7 +112,7 @@ function inlineExamples(text) {
     return examples;
 }
 
-const compileErrors = (yaml) => compileWorkflowDefinition(yaml).diagnostics.filter(item => item.severity === "error");
+const compileErrors = (yaml) => compileWorkflow(yaml).diagnostics.filter(item => item.severity === "error");
 
 test("the canonical examples are real: each compiles on the host every session has", () => {
     for (const [type, { yaml }] of Object.entries(STATE_TYPES)) {

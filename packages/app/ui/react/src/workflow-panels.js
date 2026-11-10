@@ -310,7 +310,7 @@ function ParallelSections({ selected, current, nodes, select, openSession }) {
     const property = (label, value, title = undefined) => h("div", { className: "ps-workflow-property", key: label },
         h("span", title ? { title } : null, label), h("strong", null, value));
     const steps = workflowBranchSteps(selected, nodes);
-    // IR 11: named branches instead of a For each over a list.
+    // Named branches instead of a For each over a list.
     const named = Array.isArray(selected.namedBranches) ? selected.namedBranches : null;
     return h(React.Fragment, null,
         h("h3", null, named ? "Branches" : "For each"),
@@ -334,7 +334,7 @@ function ParallelSections({ selected, current, nodes, select, openSession }) {
 /**
  * Which branch a branch step's details show (owner batch 7, H2): a choice per branch that reached the step in the shown
  * visit of its parallel step; by default the first where it runs, else the one that ended last. `onBranch(index)` chooses.
- * Its label is "Branch" for a step of a named branch (IR 11; final review FUI-F3), "Item" for a For each's.
+ * Its label is "Branch" for a step of a named branch (final review FUI-F3), "Item" for a For each's.
  */
 function BranchPicker({ branches, chosen, onBranch = null, named = false }) {
     return h("label", { className: "ps-workflow-field ps-workflow-branch-picker" }, h("span", null, named ? "Branch" : "Item"),

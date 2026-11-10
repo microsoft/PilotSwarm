@@ -165,8 +165,7 @@ export function createPackageWorkflowSource(deps: {
             const cached = factsCache.get(key);
             if (cached) return cached;
             // Compiled as publication compiles it (every node type), from the checked bytes.
-            const compiled = compileWorkflow(await this.readYaml(entry),
-                { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true });
+            const compiled = compileWorkflow(await this.readYaml(entry));
             if (!compiled.ir) {
                 throw new WorkflowStoreError("PACKAGE_UNAVAILABLE", `The package ${entry.packageName} ${entry.semver}'s ${entry.workflow.name} does not compile here.`,
                     { packageId: entry.packageId });

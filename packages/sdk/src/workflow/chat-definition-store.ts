@@ -393,9 +393,9 @@ export class ChatDefinitionStore {
     }
 
     /** A valid revision's compiled IR (checked against its stored hash). */
-    async readRevisionIr(definitionId: string, revision: number, options: { maxIrVersion?: number } = {}): Promise<WorkflowIR> {
+    async readRevisionIr(definitionId: string, revision: number): Promise<WorkflowIR> {
         const { rows } = await this.pool.query(`SELECT ir, ir_sha256 FROM ${this.t.revisions} WHERE definition_id = $1 AND revision = $2`, [definitionId, revision]);
-        return revisionIrFrom(rows[0], revision, undefined, options);
+        return revisionIrFrom(rows[0], revision, undefined);
     }
 
     /** The Workflows started from a definition (or every definition of a chat), oldest first, with their live run's status. */

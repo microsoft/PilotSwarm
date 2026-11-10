@@ -31,9 +31,6 @@ import { startAgentModelsOf } from "../../dist/workflow/chat-definitions.js";
 import { workflowDefinitionFromTool } from "../../dist/workflow/definition-tool.js";
 import { spawnWorkflowFromTool } from "../../dist/workflow/spawn.js";
 import { workflowCommandStatus } from "../../dist/workflow/human-commands.js";
-
-const ALL = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true };
-
 const YAML = `
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
@@ -100,7 +97,7 @@ test("the map's shape: node ids to { model, reasoningEffort?, contextTier? }, th
 });
 
 test("checked against exactly the revision started: an unknown id or a node that is not an agent node is refused; a For each body's agent is one key", () => {
-    const compiled = compileWorkflow(YAML, ALL);
+    const compiled = compileWorkflow(YAML);
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     const ir = compiled.ir;
     requireAgentModelsForRevision(null, ir, "revision 1 of models");
@@ -111,7 +108,7 @@ test("checked against exactly the revision started: an unknown id or a node that
     assert.throws(() => requireAgentModelsForRevision({ pause: { model: "a:b" } }, ir, "revision 1 of models"),
         error => error.code === "AGENT_MODELS_INVALID" && error.message === "agentModels names pause, a wait node of revision 1 of models; only agent nodes take a model.");
     // A definition still never names a model: a model key on a node is an unknown field.
-    const named = compileWorkflow(YAML.replace("invoke: { prompt: \"Classify it.\" }", "invoke: { prompt: \"Classify it.\" }\n    model: azure:gpt-5"), ALL);
+    const named = compileWorkflow(YAML.replace("invoke: { prompt: \"Classify it.\" }", "invoke: { prompt: \"Classify it.\" }\n    model: azure:gpt-5"));
     assert.equal(named.valid, false);
     assert.ok(named.diagnostics.some(item => item.code === "WORKFLOW_FIELD_UNKNOWN"), JSON.stringify(named.diagnostics));
 });

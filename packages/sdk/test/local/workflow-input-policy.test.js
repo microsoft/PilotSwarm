@@ -68,7 +68,7 @@ states:
  * `childSessionId` (its invocation record, as the Workflow controller admits one).
  */
 async function agentStateOf({ catalog, store }, parent, childSessionId, owner = null) {
-    const compiled = compileWorkflow(AGENT_YAML, { enableRequests: true, enableAgents: true });
+    const compiled = compileWorkflow(AGENT_YAML);
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
     const workflowSessionId = randomUUID();
     const runId = randomUUID();
@@ -95,7 +95,7 @@ async function agentStateOf({ catalog, store }, parent, childSessionId, owner = 
  * child `childSessionId`, as the Workflow controller admits one; the test answers read_build { buildId: 7 } from a fixture.
  */
 async function realTestAgentStateOf({ catalog, store }, parent, childSessionId) {
-    const compiled = compileWorkflow(AGENT_YAML, { enableRequests: true, enableAgents: true });
+    const compiled = compileWorkflow(AGENT_YAML);
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
     const workflowSessionId = randomUUID();
     const runId = randomUUID();

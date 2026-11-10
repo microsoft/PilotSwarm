@@ -29,11 +29,10 @@ test("the guidance keeps its rules in about 2,000 characters, whatever the turn 
 test("I1: the guidance names every state type the compiler takes, and only those", async () => {
     assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("A state's `type` is `script`, `wait`, `messaging` (`mode: send`, `request` or `receive`), `agent`, `parallel` or `terminal`; there is no other."), WORKFLOW_SESSION_GUIDANCE);
     const { compileWorkflow } = await import("../../dist/workflow/compiler.js");
-    const FLAGS = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true };
     const named = ["script", "wait", "messaging", "agent", "parallel", "terminal"];
     for (const type of [...named, "send", "receive", "request", "http", "task", "join"]) {
         const result = compileWorkflow(`apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: t, version: "1.0.0" }\ninitial: a\n`
-            + `states:\n  a: { type: ${type} }\n  done: { type: terminal, outcome: succeeded }\n`, FLAGS);
+            + `states:\n  a: { type: ${type} }\n  done: { type: terminal, outcome: succeeded }\n`);
         const typeError = result.diagnostics.find(item => item.path === "states.a.type");
         // A named type is a type (its other fields may be missing); every other word is refused as a type.
         assert.equal(Boolean(typeError), !named.includes(type), `${type}: ${JSON.stringify(typeError)}`);

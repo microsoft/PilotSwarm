@@ -559,7 +559,6 @@ describe("workflow readWorkflow (direct management client)", () => {
             const parent = randomUUID();
             await catalog.createSession(parent, { owner });
             const workflowSessionId = randomUUID();
-            const AGENTS = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true };
             const yaml = [
                 "apiVersion: pilotswarm.dev/v1",
                 "kind: Workflow",
@@ -600,7 +599,7 @@ describe("workflow readWorkflow (direct management client)", () => {
                 "  end: { type: terminal, outcome: succeeded }",
                 "",
             ].join("\n");
-            const compiled = compileWorkflow(yaml, AGENTS);
+            const compiled = compileWorkflow(yaml);
             expect((await catalog.createWorkflowSession(workflowSessionId, { parentSessionId: parent, owner,
                 creationConfig: { workflow: { requestSha256: "step-input" } } })).created).toBe(true);
             const actor = { kind: "system", name: "step-input-test" };
@@ -630,7 +629,7 @@ describe("workflow readWorkflow (direct management client)", () => {
             ].join("\n"));
             expect(proposal.yaml).toBe(expected);
             expect(proposal.changed).toBe(true);
-            const again = compileWorkflow(expected, AGENTS);
+            const again = compileWorkflow(expected);
             expect(proposal.valid).toBe(again.valid);
             // A step with no input mapping gains one after its last field; an empty mapping is written as {}.
             const added = (await read({ state: "summarize", input: { text: { source: "previous_step", path: "" } } })).stepInput.proposed.yaml;
@@ -714,7 +713,7 @@ describe("workflow readWorkflow (direct management client)", () => {
                 "  end: { type: terminal, outcome: succeeded }",
                 "",
             ].join("\n");
-            const compiled = compileWorkflow(yaml, { enableRequests: true, enableAgents: true });
+            const compiled = compileWorkflow(yaml);
             expect((await catalog.createWorkflowSession(workflowSessionId, { parentSessionId: parent, owner,
                 creationConfig: { workflow: { requestSha256: "step-input-parser" } } })).created).toBe(true);
             await store.createDefinition({ workflowSessionId, parentSessionId: parent, notifyParent: false, yaml, compiled,

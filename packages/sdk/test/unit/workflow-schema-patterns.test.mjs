@@ -10,8 +10,6 @@ import { compileWorkflow } from "../../dist/workflow/compiler.js";
 // subschema keyword). A regular expression can take a very long time on some inputs, and no check of the expression
 // rules that out (adversarial review SF-5 and its verifications), so the pattern checker is gone and the keywords are
 // refused with WORKFLOW_SCHEMA_INVALID. A revision saved before this rule fails where its validators are built.
-
-const MILESTONE = { enableRequests: true, enableAgents: true };
 const HINT = "Use enum or const for fixed values, minLength and maxLength for a length, or check the text in an agent step.";
 const STR = { type: "string" };
 const PATTERN = { type: "string", pattern: "^[0-9a-f]{40}$" };
@@ -63,7 +61,7 @@ function docWith(over = {}) {
 /** The definition is refused with WORKFLOW_SCHEMA_INVALID at `path`, naming `keyword` and what to use instead. */
 /** The definition is refused with WORKFLOW_SCHEMA_INVALID at `path`, its message holding each of `texts`. */
 function refusedWith(yaml, path, texts) {
-    const compiled = compileWorkflow(yaml, MILESTONE);
+    const compiled = compileWorkflow(yaml);
     assert.equal(compiled.valid, false);
     const hit = compiled.diagnostics.find(item => item.code === "WORKFLOW_SCHEMA_INVALID" && item.path === path);
     assert.ok(hit, `${path}: ${JSON.stringify(compiled.diagnostics)}`);
@@ -81,7 +79,7 @@ function refusedAtRef(yaml, path, value) {
 }
 
 test("the pattern-free definition compiles (the control for every case below)", () => {
-    const compiled = compileWorkflow(docWith(), MILESTONE);
+    const compiled = compileWorkflow(docWith());
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
 });
 
@@ -109,7 +107,7 @@ test("a property named 'pattern', and 'pattern' inside data (enum, const, defaul
         schemas: { Change: { type: "object", properties: { pattern: STR, patternProperties: STR },
             default: { pattern: "x" }, examples: [{ pattern: "y" }] } },
         message: { type: "object", properties: { note: { enum: [{ pattern: "a" }, "hi"] }, tag: { const: { patternProperties: 1 } } } },
-    }), MILESTONE);
+    }));
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
 });
 
@@ -184,7 +182,7 @@ test("R1: whole named schemas are still referenced, data holding a pattern still
     const compiled = compileWorkflow(docWith({
         schemas: { Holder: DATA_HOLDER, Used: { $ref: "#/schemas/Holder" }, Plain: { type: "object", properties: { head: { $ref: "#/schemas/Note" } } } },
         inputs: { type: "object", properties: { used: { $ref: "#/schemas/Used" }, plain: { $ref: "#/$defs/Plain" }, $ref: STR } },
-    }), MILESTONE);
+    }));
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
 });
 
@@ -213,7 +211,7 @@ test("Q2: 'dependencies' is refused, a nested pattern in it included; dependentS
     refusedAt(docWith({ schemas: { Change: { type: "object", dependencies: { head: { properties: { note: PATTERN } } } } } }),
         "schemas.Change.dependencies", "dependencies");
     const compiled = compileWorkflow(docWith({ schemas: { Change: { type: "object",
-        dependentSchemas: { head: { properties: { note: STR } } }, dependentRequired: { head: ["note"] } } } }), MILESTONE);
+        dependentSchemas: { head: { properties: { note: STR } } }, dependentRequired: { head: ["note"] } } } }));
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     assert.throws(() => new WorkflowSchemaSet({ Old: { type: "object", dependencies: { head: { properties: { note: PATTERN } } } } }),
         /\$defs\.Old\.dependencies: 'dependencies' is not supported in workflow schemas: use dependentSchemas or dependentRequired/);

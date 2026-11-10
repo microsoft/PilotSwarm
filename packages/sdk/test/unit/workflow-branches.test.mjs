@@ -3,11 +3,11 @@
  *
  * - `type: parallel` with `branches: { <name>: { initial, states, input? } }` instead of forEach and body: each branch its
  *   own graph (its routes stay in it), state ids unique across the Workflow (so agentModels works per branch), concurrency
- *   defaulting to the number of branches; the same joins, failFast and time limit; IR 11 only for a Workflow with one.
+ *   defaulting to the number of branches; the same joins, failFast and time limit.
  * - Refused: forEach or body with branches, an empty map, a bad name, a missing or foreign initial, a route into another
  *   branch, k above the branches, branch.name in a For each, `branch` in a branch's input template, a continued agent session in a
  *   branch, a state id used twice; and a route with a list of targets says how to run several nodes at once.
- * - The stored IR reads back as compiled (only by a reader of IR 11), and malformed branches are refused.
+ * - The stored IR reads back as compiled, and malformed branches are refused.
  * - The joined output is { <name>: output } (for a join of the first k, its winners only); a report names each branch.
  * - FJ-S11: a named branch with an agent state, or a receive with no wait, warns when its parallel state has no time limit
  *   of its own (a join of every branch waits as long as its slowest branch runs).
@@ -21,15 +21,12 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-    compileWorkflow, parseWorkflowIr, WORKFLOW_BRANCHES_IR_VERSION, WORKFLOW_CLOCK_WAIT_IR_VERSION, WORKFLOW_MILESTONE_IR_VERSION,
-} from "../../dist/workflow/compiler.js";
+import { compileWorkflow, parseWorkflowIr, WORKFLOW_IR_VERSION } from "../../dist/workflow/compiler.js";
 import { canonicalJson } from "../../dist/workflow/json.js";
 import { describeWorkflowState, parallelBranchInitial, parsePlan } from "../../dist/workflow/runtime.js";
 import { branchScopeId, branchScopeNameList, branchScopeNames, parallelJoinedOutput, parallelReportText } from "../../dist/workflow/parallel.js";
 import { requireAgentModelsForRevision } from "../../dist/workflow/agent-models.js";
 
-const ALL = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true };
 const yamlOf = doc => JSON.stringify(doc, null, 2);
 const errorsOf = result => result.diagnostics.filter(item => item.severity === "error");
 
@@ -74,11 +71,10 @@ function branchesDoc(change = () => {}) {
     return doc;
 }
 
-test("named branches compile to IR 11: each branch its own graph from its own initial; concurrency defaults to their number", () => {
-    const compiled = compileWorkflow(yamlOf(branchesDoc()), ALL);
+test("named branches compile: each branch its own graph from its own initial; concurrency defaults to their number", () => {
+    const compiled = compileWorkflow(yamlOf(branchesDoc()));
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
-    assert.equal(compiled.ir.irVersion, WORKFLOW_BRANCHES_IR_VERSION);
-    assert.equal(WORKFLOW_MILESTONE_IR_VERSION, WORKFLOW_BRANCHES_IR_VERSION);
+    assert.equal(compiled.ir.irVersion, WORKFLOW_IR_VERSION);
     const views = compiled.ir.nodes.views;
     assert.equal(views.forEach, null);
     assert.equal(views.concurrency, 2, "every branch at once");
@@ -102,16 +98,15 @@ test("named branches compile to IR 11: each branch its own graph from its own in
     const tuned = compileWorkflow(yamlOf(branchesDoc((_, views) => {
         Object.assign(views, { join: { first: 1 }, failFast: true, concurrency: 1, timeoutSeconds: 60 });
         views.transition.next.timed_out = "failed";
-    })), ALL);
+    })));
     assert.equal(tuned.valid, true, JSON.stringify(tuned.diagnostics));
     assert.deepEqual([tuned.ir.nodes.views.join, tuned.ir.nodes.views.failFast, tuned.ir.nodes.views.concurrency, tuned.ir.nodes.views.timeoutSeconds],
         [{ first: 1 }, true, 1, 60]);
-    // A For each stays as it was (IR 8, no branches field).
+    // A For each has no branches field.
     const forEach = compileWorkflow(yamlOf({ ...branchesDoc(), states: { fan: { type: "parallel", forEach: [1, 2],
         body: { initial: "end", states: { end: { type: "terminal", outcome: "succeeded" } } }, transition: { next: { joined: "done", blocked: "done" } } },
-    done: { type: "terminal", outcome: "succeeded" } }, initial: "fan" }), ALL);
+    done: { type: "terminal", outcome: "succeeded" } }, initial: "fan" }));
     assert.equal(forEach.valid, true, JSON.stringify(forEach.diagnostics));
-    assert.ok(forEach.ir.irVersion < WORKFLOW_BRANCHES_IR_VERSION);
     assert.equal(Object.hasOwn(forEach.ir.nodes.fan, "branches"), false);
 });
 
@@ -145,7 +140,7 @@ test("named branches are refused in words: with forEach or body, empty, misnamed
             /^route 'joined' lists several states: a route has one target; use a parallel state with branches to run several nodes at once\.$/],
     ];
     for (const [label, change, code, path, message] of cases) {
-        const result = compileWorkflow(yamlOf(branchesDoc(change)), ALL);
+        const result = compileWorkflow(yamlOf(branchesDoc(change)));
         assert.equal(result.valid, false, label);
         const found = errorsOf(result).find(item => item.code === code && item.path.startsWith(path));
         assert.ok(found, `${label}: ${JSON.stringify(errorsOf(result).map(item => [item.code, item.path, item.message]))}`);
@@ -155,24 +150,21 @@ test("named branches are refused in words: with forEach or body, empty, misnamed
     const forEach = compileWorkflow(yamlOf({ ...branchesDoc(), initial: "fan", states: {
         fan: { type: "parallel", forEach: [1, 2], body: { initial: "end", states: { end: { type: "terminal", outcome: "succeeded", output: "${branch.name}" } } },
             transition: { next: { joined: "done", blocked: "done" } } },
-        done: { type: "terminal", outcome: "succeeded" } } }), ALL);
+        done: { type: "terminal", outcome: "succeeded" } } }));
     assert.deepEqual(errorsOf(forEach).map(item => [item.code, item.path, item.message]), [["WORKFLOW_BINDING_INVALID", "states.fan.body.states.end.output",
         "branch.name is bound only in a parallel state with branches; in a For each, use branch.index or branch.item."]]);
-    // A host without parallel states refuses them as before.
-    assert.equal(compileWorkflow(yamlOf(branchesDoc()), { enableRequests: true, enableAgents: true }).valid, false);
 });
 
-test("the stored IR 11 reads back as compiled, only by a reader of IR 11; malformed branches are refused", () => {
-    const compiled = compileWorkflow(yamlOf(branchesDoc()), ALL);
+test("the stored IR reads back as compiled; malformed branches are refused", () => {
+    const compiled = compileWorkflow(yamlOf(branchesDoc()));
     const stored = JSON.parse(canonicalJson(compiled.ir));
-    const read = value => parseWorkflowIr(JSON.parse(JSON.stringify(value)), { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION });
+    const read = value => parseWorkflowIr(JSON.parse(JSON.stringify(value)));
     assert.deepEqual(read(stored), compiled.ir);
-    assert.throws(() => parseWorkflowIr(stored, { maxIrVersion: WORKFLOW_CLOCK_WAIT_IR_VERSION }), /stored IR version 11 is not supported/);
     const views = stored.nodes.views;
     const withViews = change => ({ ...stored, nodes: { ...stored.nodes, views: { ...views, ...change } } });
     const branch = (index, change) => views.branches.map((item, at) => (at === index ? { ...item, ...change } : item));
     for (const [label, broken] of [
-        ["an older version", { ...stored, irVersion: 10 }],
+        ["another IR version", { ...stored, irVersion: WORKFLOW_IR_VERSION + 1 }],
         ["no branches", withViews({ branches: [] })],
         ["a duplicate name", withViews({ branches: branch(1, { name: "quick" }) })],
         ["a bad name", withViews({ branches: branch(0, { name: "1st" }) })],
@@ -208,14 +200,14 @@ test("FJ-S11: a named branch that can wait long warns when its parallel state ha
     const message = (branch, state) => `branch '${branch}' has agent state '${state}', and parallel state 'views' has no timeoutSeconds: `
         + "its join waits as long as that branch runs. Give 'views' a timeoutSeconds and a timed_out route to bound the wait.";
     // Both branches have an agent node, and the parallel state has no timeoutSeconds: a warning each, and it still compiles.
-    const plain = compileWorkflow(yamlOf(branchesDoc()), ALL);
+    const plain = compileWorkflow(yamlOf(branchesDoc()));
     assert.equal(plain.valid, true);
     assert.deepEqual(warningsOf(plain), [
         ["warning", "states.views.branches.quick", message("quick", "quick_summary")],
         ["warning", "states.views.branches.careful", message("careful", "careful_summary")],
     ]);
     // With its own time limit, none.
-    const timed = compileWorkflow(yamlOf(branchesDoc((_, views) => { views.timeoutSeconds = 3600; views.transition.next.timed_out = "failed"; })), ALL);
+    const timed = compileWorkflow(yamlOf(branchesDoc((_, views) => { views.timeoutSeconds = 3600; views.transition.next.timed_out = "failed"; })));
     assert.equal(timed.valid, true, JSON.stringify(timed.diagnostics));
     assert.deepEqual(warningsOf(timed), []);
     // A receive with no wait can wait until the run is cancelled or stopped; with a wait it cannot. A branch of scripts: none.
@@ -225,7 +217,7 @@ test("FJ-S11: a named branch that can wait long warns when its parallel state ha
             transition: { next: { received: "quick_end", ...(wait ? { elapsed: "quick_end" } : {}), failure: "quick_failed" } } };
         views.branches.careful.states.careful_summary = { type: "script", outcomes: ["done"], source: "await setResult(\"done\", context.input);\n",
             transition: { next: { done: "careful_end", failure: "careful_failed" } } };
-    })), ALL);
+    })));
     const unbounded = receiving(false);
     assert.equal(unbounded.valid, true, JSON.stringify(unbounded.diagnostics));
     assert.deepEqual(warningsOf(unbounded), [["warning", "states.views.branches.quick", "branch 'quick' has receive state 'quick_summary' with no wait, "
@@ -237,13 +229,13 @@ test("FJ-S11: a named branch that can wait long warns when its parallel state ha
         fan: { type: "parallel", forEach: [1, 2], body: { initial: "look", states: {
             look: { type: "agent", invoke: { prompt: "Look." }, outcomes: ["done"], timeoutSeconds: 600, transition: { next: { done: "end", failure: "end" } } },
             end: { type: "terminal", outcome: "succeeded" } } }, transition: { next: { joined: "done", blocked: "done" } } },
-        done: { type: "terminal", outcome: "succeeded" } } }), ALL);
+        done: { type: "terminal", outcome: "succeeded" } } }));
     assert.equal(forEach.valid, true, JSON.stringify(forEach.diagnostics));
     assert.deepEqual(warningsOf(forEach), []);
 });
 
 test("NB-R4: a named fork's plan gives its branch count, one initial per branch in its own branch, and its branches' states", () => {
-    const compiled = compileWorkflow(yamlOf(branchesDoc()), ALL);
+    const compiled = compileWorkflow(yamlOf(branchesDoc()));
     const views = compiled.ir.nodes.views;
     const spec = { initial: views.body.initial, concurrency: 2, failFast: false, branches: 2, initials: views.branches.map(branch => branch.initial),
         branchStates: views.branches.map(branch => branch.states) };
@@ -285,24 +277,24 @@ test("NB-R3: more than 16 named branches without a concurrency are refused in wo
         views.branches = Object.fromEntries(Array.from({ length: count }, (_, index) => [`b${index + 1}`, { initial: `b${index + 1}_end`,
             states: { [`b${index + 1}_end`]: { type: "terminal", outcome: "succeeded" } } }]));
     });
-    const refused = compileWorkflow(yamlOf(many(17)), ALL);
+    const refused = compileWorkflow(yamlOf(many(17)));
     assert.equal(refused.valid, false);
     assert.deepEqual(errorsOf(refused).map(item => [item.code, item.path, item.message]), [["WORKFLOW_FIELD_INVALID", "states.views.concurrency",
         "17 branches would not all start at once: set concurrency (at most 16) or use fewer branches."]]);
     // 16 run at once by default; 17 with an explicit concurrency start as it says.
-    const sixteen = compileWorkflow(yamlOf(many(16)), ALL);
+    const sixteen = compileWorkflow(yamlOf(many(16)));
     assert.equal(sixteen.valid, true, JSON.stringify(sixteen.diagnostics));
     assert.equal(sixteen.ir.nodes.views.concurrency, 16);
     const capped = compileWorkflow(yamlOf(branchesDoc((doc, views) => {
         Object.assign(views, many(17).states.views, { concurrency: 4 });
-    })), ALL);
+    })));
     assert.equal(capped.valid, true, JSON.stringify(capped.diagnostics));
     assert.equal(capped.ir.nodes.views.concurrency, 4);
     // A For each keeps its default of 1, whatever its items.
     const forEach = compileWorkflow(yamlOf({ ...branchesDoc(), initial: "fan", states: {
         fan: { type: "parallel", forEach: Array.from({ length: 20 }, (_, index) => index), body: { initial: "end", states: { end: { type: "terminal", outcome: "succeeded" } } },
             transition: { next: { joined: "done", blocked: "done" } } },
-        done: { type: "terminal", outcome: "succeeded" } } }), ALL);
+        done: { type: "terminal", outcome: "succeeded" } } }));
     assert.equal(forEach.valid, true, JSON.stringify(forEach.diagnostics));
     assert.equal(forEach.ir.nodes.fan.concurrency, 1);
 });
@@ -311,7 +303,7 @@ test("NB-R6 (no change): a named fork with timeoutSeconds must route timed_out i
     const result = compileWorkflow(yamlOf(branchesDoc((doc, views) => {
         views.timeoutSeconds = 60;
         doc.catchAll = "failed";
-    })), ALL);
+    })));
     assert.equal(result.valid, false);
     assert.ok(errorsOf(result).some(item => item.code === "WORKFLOW_ROUTE_MISSING" && item.path.startsWith("states.views") && /timed_out/.test(item.message)),
         JSON.stringify(errorsOf(result)));

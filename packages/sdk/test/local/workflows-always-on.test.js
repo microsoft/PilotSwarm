@@ -47,7 +47,7 @@ states:
 
 /** A published workflow of `parent` whose agent state is admitted pending with its child `childSessionId`. */
 async function agentStateOf({ catalog, store }, parent, childSessionId, owner = null) {
-    const compiled = compileWorkflow(AGENT_YAML, { enableRequests: true, enableAgents: true });
+    const compiled = compileWorkflow(AGENT_YAML);
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
     const workflowSessionId = randomUUID();
     const runId = randomUUID();

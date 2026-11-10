@@ -52,7 +52,7 @@ import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import {
-    compileWorkflow, parseWorkflowIr, WORKFLOW_IR_VERSION, WORKFLOW_MESSAGING_IR_VERSION, WORKFLOW_WAIT_IR_VERSION,
+    compileWorkflow, parseWorkflowIr, WORKFLOW_IR_VERSION,
 } from "../../src/workflow/compiler.ts";
 import { canonicalJson, sha256Hex } from "../../src/workflow/json.ts";
 import { WorkflowStore } from "../../src/workflow/store.ts";
@@ -369,10 +369,10 @@ async function nodeAt(store, runId, nodeId, ordinal, state) {
 const BUILD = { buildId: 7, state: "succeeded" };
 
 describe("workflow messaging receive", () => {
-    it("compiles a receive state and its contracts, writes IR version 5 only for a workflow with one, and refuses what this build does not run", () => {
+    it("compiles a receive state and its contracts, and refuses what a receive state may not be", () => {
         const compiled = compileWorkflow(RECEIVER({ from: true }));
         expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
-        expect(compiled.ir.irVersion).toBe(WORKFLOW_MESSAGING_IR_VERSION);
+        expect(compiled.ir.irVersion).toBe(WORKFLOW_IR_VERSION);
         expect(compiled.ir.contracts).toEqual({ "BuildEvent@1": { schema: "BuildEvent" } });
         expect(compiled.ir.nodes.await_build).toEqual({
             id: "await_build", type: "messaging", description: null, mode: "receive", contract: "BuildEvent@1",
@@ -382,16 +382,15 @@ describe("workflow messaging receive", () => {
         });
         const stored = JSON.parse(JSON.stringify(compiled.ir));
         expect(parseWorkflowIr(stored)).toEqual(compiled.ir);
-        // Version 4 has no messaging states or contracts.
-        expect(() => parseWorkflowIr({ ...stored, irVersion: WORKFLOW_WAIT_IR_VERSION })).toThrow("stored IR has contracts before version 5");
+        // A stored IR states its contracts.
         const { contracts, ...withoutContracts } = stored;
         expect(contracts).toBeDefined();
-        expect(() => parseWorkflowIr({ ...withoutContracts, irVersion: WORKFLOW_WAIT_IR_VERSION })).toThrow("stored IR messaging state await_build is invalid");
+        expect(() => parseWorkflowIr(withoutContracts)).toThrow("stored IR contracts are invalid");
         // The parent as sender, and no wait: received is the only outcome.
         const parentOnly = compileWorkflow(PARENT_RECEIVER);
         expect(parentOnly.valid, JSON.stringify(parentOnly.diagnostics)).toBe(true);
         expect(parentOnly.ir.nodes.await_build).toMatchObject({ from: { parent: true }, waitSeconds: null });
-        // A workflow with no receive keeps its earlier IR version and stores no contracts (they are reported unused).
+        // A workflow with no receive stores its contracts too (they are reported unused).
         const noReceive = compileWorkflow(`
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
@@ -408,13 +407,12 @@ states:
 `);
         expect(noReceive.valid, JSON.stringify(noReceive.diagnostics)).toBe(true);
         expect(noReceive.ir.irVersion).toBe(WORKFLOW_IR_VERSION);
-        expect(Object.hasOwn(noReceive.ir, "contracts")).toBe(false);
+        expect(noReceive.ir.contracts).toEqual({ "BuildEvent@1": { schema: "BuildEvent" } });
         expect(noReceive.diagnostics).toContainEqual(expect.objectContaining({ severity: "warning", code: "WORKFLOW_CONTRACT_UNUSED", path: "contracts.BuildEvent@1" }));
         const refusals = [
             [RECEIVER().replace("contract: BuildEvent@1\n", "contract: Other@1\n"), "WORKFLOW_CONTRACT_UNKNOWN", "states.await_build.contract"],
-            // A send state needs a recipient (a receive's fields are not a send's); request is not supported yet.
+            // A send state needs a recipient (a receive's fields are not a send's).
             [RECEIVER().replace("mode: receive", "mode: send"), "WORKFLOW_FIELD_REQUIRED", "states.await_build.recipient"],
-            [RECEIVER().replace("mode: receive", "mode: request"), "WORKFLOW_FEATURE_UNSUPPORTED", "states.await_build.mode"],
             [RECEIVER().replace("received: got, ", ""), "WORKFLOW_ROUTE_MISSING", "states.await_build.transition.next"],
             [RECEIVER({ wait: false }).replace("received: got", "received: got, elapsed: timed_out"), "WORKFLOW_ROUTE_INVALID", "states.await_build.transition.next.elapsed"],
             [RECEIVER().replace("received: got,", "received: got, arrived: got,"), "WORKFLOW_ROUTE_INVALID", "states.await_build.transition.next.arrived"],

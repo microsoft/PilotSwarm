@@ -61,7 +61,6 @@ import { PilotSwarmManagementClient, withClient } from "../helpers/local-workers
 import { turnWorkflowsOn } from "../helpers/workflows-on.js";
 import { sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
-import { WORKFLOW_MILESTONE_IR_VERSION } from "../../src/workflow/compiler.ts";
 import { realModelPlan } from "../helpers/workflow-real-model.mjs";
 import { realModelWorkflowEvidence } from "../helpers/workflow-real-model-evidence.mjs";
 import { loadModelProviders } from "../../src/index.ts";
@@ -336,7 +335,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             for (const definition of await chatStore.listDefinitions(chat.sessionId, { includeDeleted: true })) {
                 for (const summary of await chatStore.listRevisions(definition.definitionId)) {
                     if (!summary.valid) continue;
-                    const ir = await chatStore.readRevisionIr(definition.definitionId, summary.revision, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION });
+                    const ir = await chatStore.readRevisionIr(definition.definitionId, summary.revision);
                     valid.push({ name: definition.name, revision: summary.revision, states: stateKinds(ir) });
                 }
             }
@@ -471,7 +470,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             for (const definition of await chatStore.listDefinitions(chat.sessionId, { includeDeleted: true })) {
                 for (const summary of await chatStore.listRevisions(definition.definitionId)) {
                     const ir = summary.valid
-                        ? await chatStore.readRevisionIr(definition.definitionId, summary.revision, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION })
+                        ? await chatStore.readRevisionIr(definition.definitionId, summary.revision)
                         : null;
                     saved.push({ name: definition.name, revision: summary.revision, valid: summary.valid, createdAt: summary.createdAt,
                         states: ir ? stateKinds(ir) : [], errors: summary.errorCount });

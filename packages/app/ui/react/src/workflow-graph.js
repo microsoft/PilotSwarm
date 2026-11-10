@@ -76,7 +76,7 @@ function litAttributes(count, age) {
 
 /** What an edge says to a screen reader: its route, or (owner batch 7, H2) the way into a branch box or into a join bar. */
 function edgeAria(edge, error) {
-    // IR 11: a named branch's lane starts at its first step, and ends at the join.
+    // A named branch's lane starts at its first step, and ends at the join.
     if (edge.branch && typeof edge.lane === "string") return `${edge.from}: branch ${edge.lane} starts at ${edge.start}`;
     if (edge.branch && edge.start !== undefined) return `${edge.from}: each item starts${edge.start ? ` at ${edge.start}` : ""}`;
     if (edge.join && typeof edge.lane === "string") return `${edge.from}: branch ${edge.lane} ends at the join of ${edge.owner}`;
@@ -123,7 +123,7 @@ export function WorkflowEdgeShape({ edge, markerEnd, litCount = 0, litAge = null
 /**
  * A parallel step's branch box (owner batch 7, H2): a dashed box drawn as a stack (one branch per item), labelled "Each
  * branch" and, while the step runs, how many branches run, wait and are done. `node` is the parallel step's view. Its
- * label row is where it is dragged (React Flow's drag handle). IR 11: a box of named branches (`group.lanes`) is
+ * label row is where it is dragged (React Flow's drag handle). A box of named branches (`group.lanes`) is
  * "Branches", with no stack: its lanes stand side by side in it.
  */
 export function WorkflowGroupBox({ group, node = null }) {

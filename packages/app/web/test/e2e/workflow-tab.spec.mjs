@@ -4096,7 +4096,7 @@ test("parallel fixture: the same graph mounts on a phone, its join bar selects t
 });
 
 // ------------------------------------------------------------------------------------------------------------
-// Named branches (IR 11, owner decision 2026-11-08T00:35Z, slice 2): a parallel step with two named branches, quick
+// Named branches (owner decision 2026-11-08T00:35Z, slice 2): a parallel step with two named branches, quick
 // (one step) and careful (two). The graph draws them as lanes side by side in one box ("Branches", no stack), in their
 // declared order with their first steps on one row, and the parallel step leads into each lane by an edge labelled with
 // the branch's name. The Node panel says what the parallel step and a branch step do in branch words. Quick ended,

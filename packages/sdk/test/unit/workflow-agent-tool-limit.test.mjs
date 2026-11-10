@@ -18,12 +18,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compileWorkflow, parseWorkflowIr, WORKFLOW_MILESTONE_IR_VERSION, WORKFLOW_AGENT_TOOLS_MAX } from "../../dist/workflow/compiler.js";
+import { compileWorkflow, parseWorkflowIr, WORKFLOW_AGENT_TOOLS_MAX } from "../../dist/workflow/compiler.js";
 import { describeWorkflowStates } from "../../dist/workflow/runtime.js";
 import { SessionManager, buildBindingFingerprintInput, workflowAgentToolAllowlist, workflowLimitedSdkTools } from "../../dist/session-manager.js";
-
-const OPTIONS = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true };
-const READ = { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION };
 const yaml = (tools) => `
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
@@ -37,7 +34,7 @@ states:
     transition: { next: { done: finish } }
   finish: { type: terminal, outcome: succeeded }
 `;
-const compile = (tools) => compileWorkflow(yaml(tools), OPTIONS);
+const compile = (tools) => compileWorkflow(yaml(tools));
 const errors = (compiled) => compiled.diagnostics.filter(item => item.severity === "error");
 
 test("tools: none, a list, or absent; the IR keeps it only when set, and a stored IR keeps it", () => {
@@ -53,13 +50,13 @@ test("tools: none, a list, or absent; the IR keeps it only when set, and a store
     assert.equal(plain.valid, true);
     assert.equal(Object.hasOwn(plain.ir.nodes.analyze, "tools"), false, "a definition that sets no limit has the IR it had");
     for (const compiled of [none, listed]) {
-        assert.deepEqual(parseWorkflowIr(JSON.parse(JSON.stringify(compiled.ir)), READ).nodes.analyze.tools, compiled.ir.nodes.analyze.tools);
+        assert.deepEqual(parseWorkflowIr(JSON.parse(JSON.stringify(compiled.ir))).nodes.analyze.tools, compiled.ir.nodes.analyze.tools);
     }
-    assert.equal(Object.hasOwn(parseWorkflowIr(JSON.parse(JSON.stringify(plain.ir)), READ).nodes.analyze, "tools"), false);
+    assert.equal(Object.hasOwn(parseWorkflowIr(JSON.parse(JSON.stringify(plain.ir))).nodes.analyze, "tools"), false);
     // A stored IR whose limit is not a list of tool names is refused, never read as no limit.
     const broken = JSON.parse(JSON.stringify(none.ir));
     broken.nodes.analyze.tools = "none";
-    assert.throws(() => parseWorkflowIr(broken, READ), /stored IR agent state analyze is invalid/);
+    assert.throws(() => parseWorkflowIr(broken), /stored IR agent state analyze is invalid/);
 });
 
 test("anything else is refused in words", () => {
@@ -81,7 +78,7 @@ initial: hold
 states:
   hold: { type: wait, seconds: 5, tools: none, transition: { next: { elapsed: done } } }
   done: { type: terminal, outcome: succeeded }
-`, OPTIONS);
+`);
     assert.equal(script.valid, false);
     assert.ok(errors(script).some(item => item.path.startsWith("states.hold")), JSON.stringify(script.diagnostics));
 });

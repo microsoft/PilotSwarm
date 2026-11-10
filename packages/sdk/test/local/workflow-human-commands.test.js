@@ -83,11 +83,11 @@ async function refused(call, code, status) {
 }
 
 /** A workflow session of `parent` with `yaml`; published and started when `start` (its live run id is returned). */
-async function workflowOf(catalog, parent, yaml, { start = false, compile = {}, controllerVersion } = {}) {
+async function workflowOf(catalog, parent, yaml, { start = false, controllerVersion } = {}) {
     const store = catalog.workflowStore();
     const workflowSessionId = randomUUID();
     const runId = randomUUID();
-    const compiled = compileWorkflow(yaml, compile);
+    const compiled = compileWorkflow(yaml);
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
     expect((await catalog.createWorkflowSession(workflowSessionId, { parentSessionId: parent, owner: null,
         creationConfig: { workflow: { requestSha256: "human-commands" } } })).created).toBe(true);
@@ -238,7 +238,7 @@ describe("workflow: a person's workflow command (direct management client, inact
             const parent = randomUUID();
             await catalog.createSession(parent, { owner: PERSON });
             // The container: a workflow of the person's agent whose agent state was admitted with its child C.
-            const container = await workflowOf(catalog, parent, AGENT_YAML, { start: true, compile: { enableRequests: true, enableAgents: true },
+            const container = await workflowOf(catalog, parent, AGENT_YAML, { start: true,
                 controllerVersion: WORKFLOW_CONTROLLER_VERSION });
             const child = randomUUID();
             const nodeExecutionId = nodeExecutionIdFor(container.runId, "root", "review", 1);

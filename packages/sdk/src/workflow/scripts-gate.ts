@@ -83,9 +83,6 @@ export function requireWorkflowScripts(host: { scripts?: boolean }, ir: Pick<Wor
     throw new WorkflowStoreError(WORKFLOW_SCRIPTS_DISABLED, workflowScriptsDisabledText(nodes, when), { scriptNodes: nodes, setting: "PILOTSWARM_WORKFLOW_SCRIPTS" });
 }
 
-/** Every node type a host may take: a definition's script nodes are found whichever other node types it has. */
-const EVERY_NODE_TYPE = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true } as const;
-
 /**
  * The scripts gate decided from the YAML alone (the e02ec6f8 run: a definition with a script node on a worker that runs no
  * scripts answered WORKFLOW_ERROR, because the turn's workflow host could not be made there, and the gate came after it).
@@ -98,6 +95,6 @@ const EVERY_NODE_TYPE = { enableRequests: true, enableAgents: true, enableParall
 export function requireWorkflowScriptsInYaml(scripts: boolean | undefined, yaml: unknown, when: "save" | "start"): void {
     if (scripts !== false || typeof yaml !== "string" || !yaml.trim()) return;
     let ir: WorkflowIR | null = null;
-    try { ir = compileWorkflow(yaml, EVERY_NODE_TYPE).ir; } catch { return; }
+    try { ir = compileWorkflow(yaml).ir; } catch { return; }
     requireWorkflowScripts({ scripts }, ir, when);
 }

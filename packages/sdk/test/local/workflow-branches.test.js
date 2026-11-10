@@ -1,5 +1,5 @@
 /**
- * Named branches (owner decision 2026-11-08T00:35Z, option A; IR 11), on the Workflow controller. Branch states
+ * Named branches (owner decision 2026-11-08T00:35Z, option A), on the Workflow controller. Branch states
  * are real script processes and waits; no model runs.
  *
  * - All: each branch starts at its own initial with its own input (its template, else the value that arrived); the
@@ -160,7 +160,7 @@ async function withRuntime(fn) {
     }
 }
 
-describe("named branches (IR 11): the controller", () => {
+describe("named branches: the controller", () => {
     it("each branch starts at its own initial with its own input; the join is { <name>: output }; branch.name binds", { timeout: TIMEOUT }, async () => {
         await withRuntime(async base => {
             const doc = branchesDoc({ input: { ms: 100 }, careful: { prepare: true, input: { ms: 300, depth: "deep" } } });

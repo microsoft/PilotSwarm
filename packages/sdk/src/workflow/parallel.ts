@@ -4,7 +4,7 @@ import type { NodeResultInput, WorkflowNodeExecutionRow } from "./store.js";
 
 /**
  * A parallel state's branches and its join, as the controller, the store and
- * the read model share them (IR 8 and 9; design 02 parallel scope and join;
+ * the read model share them (design 02 parallel scope and join;
  * owner decision join-k-of-n). Pure: nothing here reads or writes anything.
  */
 
@@ -20,7 +20,7 @@ export function parseBranchScope(scopeId: string): { parallelNodeExecutionId: st
 }
 
 /**
- * IR 11: the names of branch scopes, each from its OWN fork (the parallel node execution its scope id names), never from
+ * The names of branch scopes, each from its OWN fork (the parallel node execution its scope id names), never from
  * another scope's, so the cuts of two forks never mix names. `forks` maps a parallel node execution id to its state's IR
  * node. A scope of a For each, or of a fork not given, has no name. Pure.
  */
@@ -76,7 +76,7 @@ export function branchCancelError(reason: BranchCancelReason): { code: "cancelle
 
 /**
  * How one branch ended, for a parallel state's report: at its terminal, by a
- * result no route takes, cancelled, or never started. IR 9 adds `finished`:
+ * result no route takes, cancelled, never started, or `finished`:
  * its last state's result was stored and takes a route, but its next state
  * was never admitted; that result is kept (owner decision join-k-of-n, J1b).
  * `running` is a state of it still running; a decided report never has one,
@@ -88,9 +88,9 @@ export interface ParallelBranchEnd {
     nodeExecutionId: string | null;
     /** The node execution that ended it, as stored (none for a branch never started, or cancelled between two states). */
     row?: Pick<WorkflowNodeExecutionRow, "outcome" | "resultKind" | "output" | "error"> | undefined;
-    /** IR 9: why a cancelled branch was cancelled (another branch under failFast, the join, or the time limit). */
+    /** Why a cancelled branch was cancelled (another branch under failFast, the join, or the time limit). */
     cancelledBy?: BranchCancelReason;
-    /** IR 9: a success committed after the state's time limit; it did not count toward the join. */
+    /** A success committed after the state's time limit; it did not count toward the join. */
     late?: true;
 }
 
@@ -104,14 +104,14 @@ export function branchSucceeded(branch: ParallelBranchEnd): boolean {
  * every branch in index order with how it ended, the node execution that
  * ended it, its outcome and its output or error (each dropped, with
  * `truncated` true, when the report would not fit), the successes the join
- * needed, and whether the state's own time limit ended it. IR 9 adds, only
+ * needed, and whether the state's own time limit ended it. It adds, only
  * where they apply, why a cancelled branch was cancelled (`cancelledBy`) and
  * that a success came after the time limit (`late`); `succeeded` is then the
  * successes that counted. Bounded canonical JSON, at most `maxBytes`. A
  * state's outputSchema checks only its joined output, never a report.
  */
 export function parallelReportText(input: { total: number; needed: number; failFast: boolean; timedOut: boolean; branches: ParallelBranchEnd[]; succeeded?: number;
-    /** IR 11: the branches' names, by index (a named-branch state's report names each branch). */
+    /** The branches' names, by index (a named-branch state's report names each branch). */
     names?: readonly string[] },
     what: string, maxBytes = WORKFLOW_PAYLOAD_MAX_BYTES): string {
     const succeeded = input.succeeded ?? input.branches.filter(branchSucceeded).length;
@@ -152,7 +152,7 @@ export interface ParallelCommit {
     inTime: boolean;
 }
 
-/** One branch as a parallel state's join or time limit sees it (IR 9; owner decision join-k-of-n, J1b). */
+/** One branch as a parallel state's join or time limit sees it (owner decision join-k-of-n, J1b). */
 export interface ParallelBranchState extends ParallelBranchEnd {
     /** It ended, or ends once its terminal is admitted, at a terminal with outcome succeeded. */
     success: boolean;
@@ -266,7 +266,7 @@ export function parallelSuccesses(branches: ParallelBranchState[]): ParallelBran
 }
 
 /**
- * What a parallel state's join or its time limit decides (IR 9; owner
+ * What a parallel state's join or its time limit decides (owner
  * decision join-k-of-n with formal questions Q1 to Q3 and finding H1): one
  * count for both. With k successes (parallelSuccesses): joined with the
  * first k in commit order (every branch in index order for a join of all)
@@ -330,13 +330,13 @@ export function parallelTimeoutResult(parallel: WorkflowIRParallel, total: numbe
     };
 }
 
-/** IR 11: a named-branch state's branch names, by index, for its report; nothing for a For each. */
+/** A named-branch state's branch names, by index, for its report; nothing for a For each. */
 export function parallelNames(parallel: Pick<WorkflowIRParallel, "branches">): { names?: string[] } {
     return parallel.branches !== undefined ? { names: parallel.branches.map(branch => branch.name) } : {};
 }
 
 /**
- * The joined output of a parallel state from its winners (`{ index, output }`): IR 11, a named-branch state's
+ * The joined output of a parallel state from its winners (`{ index, output }`): a named-branch state's
  * `{ <name>: output }` (for a join of the first k, its winners only); a For each's outputs in index order, or for a join
  * of the first k `[{ index, output }]` in the order given (the store's commit order).
  */

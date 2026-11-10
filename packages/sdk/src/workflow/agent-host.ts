@@ -8,7 +8,7 @@ import { pinnedAgentPackageId } from "../agent-package-pins.js";
 import type { JsonValue } from "./json.js";
 
 /**
- * Workflow agent states (IR 8; design 03 agent node, R09 to R11, R16):
+ * Workflow agent states (design 03 agent node, R09 to R11, R16):
  * the host that creates an agent state's child, an ordinary agent session.
  * Every worker builds one (milestone-worker.ts workflowMilestoneAgentNodes).
  *

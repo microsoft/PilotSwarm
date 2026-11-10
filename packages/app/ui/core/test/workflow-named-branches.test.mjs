@@ -1,4 +1,4 @@
-// Named branches (owner decision 2026-11-08T00:35Z, IR 11), the minimal UI: a parallel step with branches says their
+// Named branches (owner decision 2026-11-08T00:35Z), the minimal UI: a parallel step with branches says their
 // names instead of "Item N" in its Node panel (its Branches section and results table), a branch step says its branch,
 // the branch picker and a step's places name the branch, and the TUI's node details count and list branches by name.
 // Slice 2: the graph draws the branches as lanes side by side in one box (no stack), the parallel step leading into

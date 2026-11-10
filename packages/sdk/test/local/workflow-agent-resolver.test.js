@@ -86,7 +86,7 @@ function naming(agents) {
 /** A draft workflow of `parent` (revision 1), compiled as a host compiles it. */
 async function draftOf(catalog, store, parent, yaml) {
     const workflowSessionId = randomUUID();
-    const compiled = compileWorkflow(yaml, { enableRequests: true, enableAgents: true });
+    const compiled = compileWorkflow(yaml);
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
     expect((await catalog.createWorkflowSession(workflowSessionId, { parentSessionId: parent, owner: null,
         creationConfig: { workflow: { requestSha256: "agent-resolver" } } })).created).toBe(true);

@@ -29,12 +29,10 @@ import path from "node:path";
 import {
     exportWorkflowInterface, readWorkflowInterfaceExport, WORKFLOW_INTERFACE_SCHEMA_MAX_BYTES, workflowInterfaceDigest, workflowInterfaceMismatches,
 } from "../../dist/workflow/package-interface.js";
-import { compileWorkflow, parseWorkflowInterfaceRef, parseWorkflowIr, WORKFLOW_MILESTONE_IR_VERSION } from "../../dist/workflow/compiler.js";
+import { compileWorkflow, parseWorkflowInterfaceRef, parseWorkflowIr } from "../../dist/workflow/compiler.js";
 import { describeWorkflowState } from "../../dist/workflow/runtime.js";
 import { canonicalJson } from "../../dist/workflow/json.js";
 import { agentFrontmatterProblem, loadAgentFiles, validateAgentDefinition } from "../../dist/agent-loader.js";
-
-const MILESTONE = { enableRequests: true, enableAgents: true };
 const INPUT = { type: "object", required: ["head"], properties: { head: { type: "string" } }, additionalProperties: false };
 const RESULT = { type: "object", required: ["verdict"], properties: { verdict: { type: "string" }, notes: { type: "string" } }, additionalProperties: false };
 const OUTCOMES = ["accepted", "changes_required"];
@@ -198,24 +196,24 @@ test("a stored interface is read back only when it is well formed and its digest
 });
 
 test("an agent state names an interface with its package and an outputSchema; the IR keeps it and the stored IR reads it back", () => {
-    const compiled = compileWorkflow(AGENT_YAML(), MILESTONE);
+    const compiled = compileWorkflow(AGENT_YAML());
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     assert.deepEqual(compiled.ir.nodes.review.invoke,
         { agent: { name: "code-reviewer", package: "review-kit", version: "1.2.0", interface: WANTED } });
     assert.equal(describeWorkflowState(compiled.ir.nodes.review).invoke.interface, "review_change@1");
     const stored = JSON.parse(canonicalJson(compiled.ir));
-    assert.deepEqual(parseWorkflowIr(stored, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION }), compiled.ir);
+    assert.deepEqual(parseWorkflowIr(stored), compiled.ir);
     for (const bad of [{ name: "review_change" }, { ...WANTED, extra: "x" }, "review_change@1", { name: "bad name", version: "1" }]) {
         const copy = structuredClone(stored);
         copy.nodes.review.invoke.agent.interface = bad;
-        assert.throws(() => parseWorkflowIr(copy, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION }), /stored IR agent state review is invalid/);
+        assert.throws(() => parseWorkflowIr(copy), /stored IR agent state review is invalid/);
     }
     const unpackaged = structuredClone(stored);
     unpackaged.nodes.review.invoke.agent.package = null;
-    assert.throws(() => parseWorkflowIr(unpackaged, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION }), /stored IR agent state review is invalid/);
+    assert.throws(() => parseWorkflowIr(unpackaged), /stored IR agent state review is invalid/);
 
     // Without an interface the IR is as before: no interface key.
-    const plain = compileWorkflow(AGENT_YAML({ invoke: "{ agent: { name: code-reviewer, package: review-kit } }" }), MILESTONE);
+    const plain = compileWorkflow(AGENT_YAML({ invoke: "{ agent: { name: code-reviewer, package: review-kit } }" }));
     assert.deepEqual(plain.ir.nodes.review.invoke, { agent: { name: "code-reviewer", package: "review-kit", version: null } });
     assert.equal("interface" in describeWorkflowState(plain.ir.nodes.review).invoke, false);
 
@@ -227,7 +225,7 @@ test("an agent state names an interface with its package and an outputSchema; th
         [{ invoke: "{ agent: { name: code-reviewer, interface: review_change@1 } }" }, ["WORKFLOW_FIELD_INVALID", "states.review.invoke.agent.interface"]],
         [{ output: "" }, ["WORKFLOW_FIELD_REQUIRED", "states.review.outputSchema"]],
     ]) {
-        const result = compileWorkflow(AGENT_YAML(options), MILESTONE);
+        const result = compileWorkflow(AGENT_YAML(options));
         assert.equal(result.valid, false, JSON.stringify(options));
         assert.deepEqual(errorsOf(result), [expected], JSON.stringify(options));
     }
@@ -236,7 +234,7 @@ test("an agent state names an interface with its package and an outputSchema; th
 test("publication's check: the state's outcomes and schemas are exactly the interface's, nothing inferred", t => {
     const dir = packageDir(t);
     const { exported } = exportWorkflowInterface(dir, DECLARED);
-    const compiled = compileWorkflow(AGENT_YAML(), MILESTONE);
+    const compiled = compileWorkflow(AGENT_YAML());
     const node = compiled.ir.nodes.review;
     const check = (exportedValue, { state = node, ir = compiled.ir, wanted = WANTED } = {}) => workflowInterfaceMismatches(state, ir, wanted, exportedValue);
     assert.deepEqual(check(exported), []);
@@ -264,7 +262,7 @@ test("publication's check: the state's outcomes and schemas are exactly the inte
     assert.deepEqual(check(anyInput, { state: { ...node, inputSchema: null } }), []);
     // A workflow schema that refers to another one is not the interface's schema, even when it would validate the same.
     const referring = compileWorkflow(AGENT_YAML({ result: JSON.stringify({ ...RESULT, properties: { verdict: { $ref: "#/schemas/Verdict" },
-        notes: { type: "string" } } }) }).replace("schemas:\n", "schemas:\n  Verdict: { type: string }\n"), MILESTONE);
+        notes: { type: "string" } } }) }).replace("schemas:\n", "schemas:\n  Verdict: { type: string }\n"));
     assert.equal(referring.valid, true, JSON.stringify(referring.diagnostics));
     assert.deepEqual(check(exported, { state: referring.ir.nodes.review, ir: referring.ir }), ["its outputSchema is not exactly the interface's output schema"]);
 });

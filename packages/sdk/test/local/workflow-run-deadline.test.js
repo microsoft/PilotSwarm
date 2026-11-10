@@ -4,8 +4,8 @@
  * compiles one, and the Workflow controller enforces it.
  *
  * - The compiler: limits.timeoutSeconds and onExceeded (expired, the only
- *   policy) compile to IR 8 only with run limits enabled; elsewhere they are
- *   refused, and every other definition's IR is as before.
+ *   policy) compile into the IR's limits; without them the limits hold the
+ *   node limit only.
  * - The store: the begin writes the deadline (the run's clock plus the
  *   seconds; a test run's virtual clock); past it no node execution is
  *   admitted, and expireRun ends the run failed with timed_out, cancelling
@@ -23,7 +23,7 @@ import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { compileWorkflow, parseWorkflowIr, WORKFLOW_AGENT_IR_VERSION, WORKFLOW_WAIT_IR_VERSION } from "../../src/workflow/compiler.ts";
+import { compileWorkflow, parseWorkflowIr, WORKFLOW_IR_VERSION } from "../../src/workflow/compiler.ts";
 import { canonicalJson } from "../../src/workflow/json.ts";
 import { createWorkflow } from "../../src/workflow/service.ts";
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/tools.ts";
@@ -38,7 +38,6 @@ const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("du
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
 const ACTOR = { kind: "system", name: "workflow-run-deadline-test" };
-const MILESTONE = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true };
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function until(check, label, timeoutMs = 60_000) {
@@ -89,19 +88,14 @@ function agentDoc() {
 }
 
 describe("workflow run deadlines: the compiler", () => {
-    it("compiles limits.timeoutSeconds and onExceeded to IR 8 only with run limits enabled, and leaves every other IR as it was", () => {
+    it("compiles limits.timeoutSeconds and onExceeded into the IR's limits; without them the limits hold the node limit only", () => {
         const doc = holdDoc({ limits: { timeoutSeconds: 300 } });
-        for (const options of [{}, { enableRequests: true, enableAgents: true, enableParallel: true }]) {
-            const refused = compileWorkflow(yamlOf(doc), options);
-            expect(refused.valid).toBe(false);
-            expect(errorsOf(refused)).toEqual([["WORKFLOW_FEATURE_UNSUPPORTED", "limits.timeoutSeconds"]]);
-        }
-        const compiled = compileWorkflow(yamlOf(doc), MILESTONE);
+        const compiled = compileWorkflow(yamlOf(doc));
         expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
-        expect(compiled.ir.irVersion).toBe(WORKFLOW_AGENT_IR_VERSION);
+        expect(compiled.ir.irVersion).toBe(WORKFLOW_IR_VERSION);
         expect(compiled.ir.limits).toEqual({ maxNodeExecutions: 1000, timeoutSeconds: 300, onExceeded: "expired" });
         // expired is the default and the only policy: stating it compiles to the same IR.
-        expect(compileWorkflow(yamlOf(holdDoc({ limits: { timeoutSeconds: 300, onExceeded: "expired" } })), MILESTONE).irSha256).toBe(compiled.irSha256);
+        expect(compileWorkflow(yamlOf(holdDoc({ limits: { timeoutSeconds: 300, onExceeded: "expired" } }))).irSha256).toBe(compiled.irSha256);
         for (const [limits, code, path] of [
             [{ timeoutSeconds: 0 }, "WORKFLOW_FIELD_INVALID", "limits.timeoutSeconds"],
             [{ timeoutSeconds: 2_592_001 }, "WORKFLOW_FIELD_INVALID", "limits.timeoutSeconds"],
@@ -110,23 +104,20 @@ describe("workflow run deadlines: the compiler", () => {
             [{ timeoutSeconds: 300, onExceeded: "fail" }, "WORKFLOW_FIELD_INVALID", "limits.onExceeded"],
             [{ onExceeded: "expired" }, "WORKFLOW_FIELD_REQUIRED", "limits.timeoutSeconds"],
         ]) {
-            const result = compileWorkflow(yamlOf(holdDoc({ limits })), MILESTONE);
+            const result = compileWorkflow(yamlOf(holdDoc({ limits })));
             expect(result.valid, JSON.stringify(limits)).toBe(false);
             expect(errorsOf(result), JSON.stringify(limits)).toEqual([[code, path]]);
         }
-        // Without a deadline nothing changes: a wait workflow stays IR 4 with its node limit only, whatever the options.
-        const plain = compileWorkflow(yamlOf(holdDoc({ limits: { maxNodeExecutions: 50 } })), MILESTONE);
-        expect(plain.ir.irVersion).toBe(WORKFLOW_WAIT_IR_VERSION);
+        // Without a deadline the limits hold the node limit only.
+        const plain = compileWorkflow(yamlOf(holdDoc({ limits: { maxNodeExecutions: 50 } })));
         expect(plain.ir.limits).toEqual({ maxNodeExecutions: 50 });
-        expect(plain.irSha256).toBe(compileWorkflow(yamlOf(holdDoc({ limits: { maxNodeExecutions: 50 } })), {}).irSha256);
-        // Stored IR reads back only where IR 8 is read; a deadline in an earlier version, or another policy, is refused.
+        // The stored IR reads back as compiled; a deadline without its policy, or another policy, is refused.
         const stored = JSON.parse(canonicalJson(compiled.ir));
-        expect(parseWorkflowIr(stored, { maxIrVersion: WORKFLOW_AGENT_IR_VERSION })).toEqual(compiled.ir);
-        expect(() => parseWorkflowIr(stored, {})).toThrow(/stored IR version 8 is not supported/);
+        expect(parseWorkflowIr(stored)).toEqual(compiled.ir);
         const plainStored = JSON.parse(canonicalJson(plain.ir));
-        expect(() => parseWorkflowIr({ ...plainStored, limits: { maxNodeExecutions: 50, timeoutSeconds: 300, onExceeded: "expired" } },
-            { maxIrVersion: WORKFLOW_AGENT_IR_VERSION })).toThrow(/run deadline is invalid/);
-        expect(() => parseWorkflowIr({ ...stored, limits: { ...stored.limits, onExceeded: "fail" } }, { maxIrVersion: WORKFLOW_AGENT_IR_VERSION }))
+        expect(parseWorkflowIr(plainStored)).toEqual(plain.ir);
+        expect(() => parseWorkflowIr({ ...plainStored, limits: { maxNodeExecutions: 50, timeoutSeconds: 300 } })).toThrow(/run deadline is invalid/);
+        expect(() => parseWorkflowIr({ ...stored, limits: { ...stored.limits, onExceeded: "fail" } }))
             .toThrow(/run deadline is invalid/);
     });
 });
@@ -136,7 +127,7 @@ async function admittedRun(h, doc, mode) {
     const parent = randomUUID();
     await h.catalog.createSession(parent, {});
     const yaml = yamlOf(doc);
-    const compiled = compileWorkflow(yaml, MILESTONE);
+    const compiled = compileWorkflow(yaml);
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
     const workflowSessionId = randomUUID();
     const runId = randomUUID();

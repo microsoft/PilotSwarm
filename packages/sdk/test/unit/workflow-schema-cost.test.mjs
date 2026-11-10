@@ -11,9 +11,6 @@ import { compileWorkflow } from "../../dist/workflow/compiler.js";
 // its place; a schema may refer back to itself in one place only, which goes into a property or an item; uniqueItems
 // on items that are not plain values needs maxItems of at most 100. And uniqueItems never compares more than 100 such
 // items, even when maxItems has already failed (allErrors).
-
-const MILESTONE = { enableRequests: true, enableAgents: true };
-
 /** A definition whose inputs schema and script input schema are `inputs`, with `schemas`, and a fixed script input. */
 function docWith(schemas, inputs, input = {}) {
     return JSON.stringify({
@@ -45,7 +42,7 @@ function schemaErrors(compiled) {
 
 test("a compact doubling of 30 schemas is refused at once when the definition is compiled, with its fixed input never checked", () => {
     const started = performance.now();
-    const compiled = compileWorkflow(docWith(doubling(30), { $ref: "#/schemas/S30" }, { a: "x" }), MILESTONE);
+    const compiled = compileWorkflow(docWith(doubling(30), { $ref: "#/schemas/S30" }, { a: "x" }));
     const elapsedMs = performance.now() - started;
     assert.equal(compiled.valid, false);
     const [error] = schemaErrors(compiled);
@@ -63,7 +60,7 @@ test("a compact doubling of 30 schemas is refused at once when the definition is
 
 test("the expanded count: under the limit compiles, over it is refused; a schema named many times counts each time", () => {
     // S10 stands for 5 * 2^10 - 3 = 5,117 parts: allowed; S11 for 10,237: refused.
-    const fine = compileWorkflow(docWith(doubling(10), { $ref: "#/schemas/S10" }), MILESTONE);
+    const fine = compileWorkflow(docWith(doubling(10), { $ref: "#/schemas/S10" }));
     assert.equal(fine.valid, true, JSON.stringify(fine.diagnostics));
     assert.equal(schemaCostRefusal(Object.fromEntries(Object.entries(doubling(11)).map(([name, schema]) =>
         [name, JSON.parse(JSON.stringify(schema).replaceAll("#/schemas/", "#/$defs/"))])))?.path, "$defs.S11");
@@ -86,7 +83,7 @@ test("ordinary nested schemas still compile: shared parts named a few times, lis
     };
     const inputs = { type: "object", properties: { team: { $ref: "#/schemas/Team" }, tree: { $ref: "#/schemas/Tree" }, tags: { $ref: "#/schemas/Tags" },
         pairs: { $ref: "#/schemas/Pairs" } } };
-    const compiled = compileWorkflow(docWith(schemas, inputs, { team: { lead: { name: "a", home: { city: "x" } } }, tags: ["a", "b"] }), MILESTONE);
+    const compiled = compileWorkflow(docWith(schemas, inputs, { team: { lead: { name: "a", home: { city: "x" } } }, tags: ["a", "b"] }));
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     // Two schemas that refer to each other once each, going into the value, are a tree too.
     assert.equal(schemaCostRefusal({
@@ -98,7 +95,7 @@ test("ordinary nested schemas still compile: shared parts named a few times, lis
 test("a schema that refers back to itself in two places, or without going into the value, is refused", () => {
     const twice = compileWorkflow(docWith({
         Node: { type: "object", properties: { left: { $ref: "#/schemas/Node" }, right: { $ref: "#/schemas/Node" } } },
-    }, { $ref: "#/schemas/Node" }), MILESTONE);
+    }, { $ref: "#/schemas/Node" }));
     const [error] = schemaErrors(twice);
     assert.ok(error, JSON.stringify(twice.diagnostics));
     assert.equal(error.path, "$defs.Node");
@@ -119,7 +116,7 @@ test("a schema that refers back to itself in two places, or without going into t
 });
 
 test("uniqueItems on items that are not plain values needs maxItems of at most 100; plain items need none", () => {
-    const refused = compileWorkflow(docWith({ Rows: { type: "array", items: { type: "object" }, uniqueItems: true } }, { $ref: "#/schemas/Rows" }), MILESTONE);
+    const refused = compileWorkflow(docWith({ Rows: { type: "array", items: { type: "object" }, uniqueItems: true } }, { $ref: "#/schemas/Rows" }));
     const [error] = schemaErrors(refused);
     assert.ok(error, JSON.stringify(refused.diagnostics));
     assert.equal(error.path, "$defs.Rows.uniqueItems");

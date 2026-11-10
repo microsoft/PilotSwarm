@@ -7,7 +7,9 @@
 > controllers 1.0.0 to 1.7.0, the untagged orchestrations and activities, and the `workflowRequests` and
 > `WorkflowHost.requests` switches are gone: every activity is `workflow.<name>` with the workflow-request tag.
 > The CMS migrations this document numbers 0088 to 0111 are one migration, 0088 (`migrations/workflow-0088.ts`), which
-> creates their final schema. Version and migration numbers below are the design's history.
+> creates their final schema. Stored IR has one version, 1, which holds every state type; the IR versions 1 to 11
+> named below, the compiler's per-feature switches and the reader's version limit are gone. Version and migration
+> numbers below are the design's history.
 
 Status: revised design checkpoint for review. Docs only; no code changes.
 Revision 2 (`f9e04db8`) revised `72f1e701` after the parent review

@@ -25,7 +25,7 @@ const doc = forEach => JSON.stringify({
 
 test("a literal list is shown as its count and digest only", () => {
     const list = [{ name: SENTINEL }, { name: "b" }, 3];
-    const compiled = compileWorkflow(doc(list), { enableParallel: true });
+    const compiled = compileWorkflow(doc(list));
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     const states = describeWorkflowStates(compiled.ir);
     assert.ok(!JSON.stringify(states).includes(SENTINEL));
@@ -35,7 +35,7 @@ test("a literal list is shown as its count and digest only", () => {
 });
 
 test("a binding is shown as its text", () => {
-    const compiled = compileWorkflow(doc("${input.items}"), { enableParallel: true });
+    const compiled = compileWorkflow(doc("${input.items}"));
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     assert.equal(describeWorkflowStates(compiled.ir).find(state => state.id === "fan").forEach, "${input.items}");
 });
@@ -54,7 +54,7 @@ test("workflowForEachView", () => {
 // every field the graph and workflow.started show that may be a binding.
 test("R3-SF-1: a forEach binding's list default is shown as its count and digest, never its values", () => {
     const forEach = `\${input.items ?? [{"note":"${SENTINEL}"},{"note":"b"}]}`;
-    const compiled = compileWorkflow(doc(forEach), { enableParallel: true });
+    const compiled = compileWorkflow(doc(forEach));
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     const fan = describeWorkflowStates(compiled.ir).find(state => state.id === "fan");
     assert.ok(!JSON.stringify(fan).includes(SENTINEL));

@@ -40,7 +40,7 @@ states:
 /** A started workflow under `parent` whose agent state `review` admitted `childSessionId`, and that visit. */
 async function agentStateOf({ catalog, store }, parent, childSessionId, tools) {
     const text = yaml(tools);
-    const compiled = compileWorkflow(text, { enableRequests: true, enableAgents: true });
+    const compiled = compileWorkflow(text);
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
     const workflowSessionId = randomUUID();
     const runId = randomUUID();

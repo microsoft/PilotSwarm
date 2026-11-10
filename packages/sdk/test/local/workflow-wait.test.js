@@ -29,7 +29,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { compileWorkflow, parseWorkflowIr, WORKFLOW_IR_VERSION, WORKFLOW_WAIT_IR_VERSION } from "../../src/workflow/compiler.ts";
+import { compileWorkflow, parseWorkflowIr, WORKFLOW_IR_VERSION } from "../../src/workflow/compiler.ts";
 import { createWorkflow } from "../../src/workflow/service.ts";
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/tools.ts";
 import { registerWorkflow, WORKFLOW_ACTIVITIES, workflowEffectInstanceId } from "../../src/workflow/runtime.ts";
@@ -201,20 +201,16 @@ function lateness(node) {
 }
 
 describe("workflow wait states", () => {
-    it("compiles a wait state's seconds, input and routes, and writes IR version 4 only for a workflow with one", () => {
+    it("compiles a wait state's seconds, input and routes", () => {
         const compiled = compileWorkflow(NAP());
         expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
-        expect(compiled.ir.irVersion).toBe(WORKFLOW_WAIT_IR_VERSION);
+        expect(compiled.ir.irVersion).toBe(WORKFLOW_IR_VERSION);
         expect(compiled.ir.nodes.nap).toEqual({ id: "nap", type: "wait", description: null, seconds: "${kv.secs}", hasInput: false, input: null,
             next: { elapsed: "after", invalid_input: "bad" } });
         expect(parseWorkflowIr(JSON.parse(JSON.stringify(compiled.ir))).nodes.nap).toEqual(compiled.ir.nodes.nap);
-        // The same IR stated as version 3 is refused: version 3 has no wait states.
-        expect(() => parseWorkflowIr({ ...JSON.parse(JSON.stringify(compiled.ir)), irVersion: 3 })).toThrow("stored IR wait nap is invalid");
-        // A workflow without a wait state keeps IR version 3.
-        const scriptsOnly = compileWorkflow(NAP().replace(/  nap:\n    type: wait\n    seconds: "\$\{kv.secs\}"\n    transition: \{ next: \{ elapsed: after, invalid_input: bad \} \}\n/, "")
-            .replace("initial: nap", "initial: after"));
-        expect(scriptsOnly.valid, JSON.stringify(scriptsOnly.diagnostics)).toBe(true);
-        expect(scriptsOnly.ir.irVersion).toBe(WORKFLOW_IR_VERSION);
+        // A stored IR of another version is refused.
+        expect(() => parseWorkflowIr({ ...JSON.parse(JSON.stringify(compiled.ir)), irVersion: WORKFLOW_IR_VERSION + 1 }))
+            .toThrow(`stored IR version ${WORKFLOW_IR_VERSION + 1} is not supported`);
         for (const [seconds, path] of [["0", "states.nap.seconds"], ["86401", "states.nap.seconds"], ["1.5", "states.nap.seconds"],
             ['"soon"', "states.nap.seconds"], ['"${nowhere.x}"', "states.nap.seconds"]]) {
             const result = compileWorkflow(NAP(seconds));

@@ -8,16 +8,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { compileWorkflow, workflowNearestStateType } from "../../dist/workflow/compiler.js";
 
-const FLAGS = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true };
 const ALL = ["script", "wait", "messaging", "agent", "parallel", "terminal"];
-const typeError = (type, flags = FLAGS) => compileWorkflow(`apiVersion: pilotswarm.dev/v1
+const typeError = type => compileWorkflow(`apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: types, version: "1.0.0" }
 initial: a
 states:
   a: { type: ${type}, transition: { next: { ok: done } } }
   done: { type: terminal, outcome: succeeded }
-`, flags).diagnostics.find(item => item.path === "states.a.type");
+`).diagnostics.find(item => item.path === "states.a.type");
 
 test("an unknown type is refused with the types this compile takes and the one most likely meant", () => {
     for (const [word, meant] of [["scirpt", "script"], ["scripts", "script"], ["code", "script"], ["http", "script"], ["sleep", "wait"],
@@ -30,8 +29,6 @@ test("an unknown type is refused with the types this compile takes and the one m
     }
     // No near type: the list only.
     assert.equal(typeError("banana").message, "'banana' is not a workflow state type. The types are script, wait, messaging, agent, parallel, terminal.");
-    // A compile without agents or parallel names only what it takes, and suggests only those.
-    assert.equal(typeError("llm", {}).message, "'llm' is not a workflow state type. The types are script, wait, messaging, terminal.");
     // A type this build knows but does not take keeps its own message.
     assert.equal(typeError("join").code, "WORKFLOW_NODE_TYPE_UNSUPPORTED");
 });

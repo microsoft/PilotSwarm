@@ -1,9 +1,8 @@
 /**
- * Workflow parallel states and their join (IR 8; design 02 parallel scope
- * and join, D10; requirement R21), on the Workflow controller.
+ * Workflow parallel states and their join (design 02 parallel scope and
+ * join, D10; requirement R21), on the Workflow controller.
  *
- * - The compiler: a parallel state compiles to IR 8 only with
- *   enableParallel; its body states are in the IR's nodes, named by its
+ * - The compiler: its body states are in the IR's nodes, named by its
  *   body; its manifest, concurrency, join, routes and body are checked;
  *   `branch` is bound only in a body; ids are unique across bodies.
  * - The store: branches are admitted in their own scopes; a failFast
@@ -35,7 +34,7 @@ import { randomUUID } from "node:crypto";
 import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import {
-    compileWorkflow, parseWorkflowIr, WORKFLOW_AGENT_IR_VERSION, WORKFLOW_MILESTONE_IR_VERSION, WORKFLOW_PARALLEL_MAX_CONCURRENCY,
+    compileWorkflow, parseWorkflowIr, WORKFLOW_IR_VERSION, WORKFLOW_PARALLEL_MAX_CONCURRENCY,
     WORKFLOW_PARALLEL_MAX_ITEMS,
 } from "../../src/workflow/compiler.ts";
 import { canonicalJson } from "../../src/workflow/json.ts";
@@ -54,7 +53,6 @@ const getEnv = useSuiteEnv(import.meta.url);
 // CI run 114 (HorizonDB, about ten times slower): the test's own bounds grow with the database (test/helpers/time-scale.js).
 const TIMEOUT = testTime.ms(120_000);
 const ACTOR = { kind: "system", name: "workflow-parallel-test" };
-const PARALLEL = { enableRequests: true, enableAgents: true, enableParallel: true };
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function until(check, label, timeoutMs = 60_000) {
@@ -169,15 +167,11 @@ function holdOut(items = [1]) {
     };
 }
 
-describe("workflow parallel states: compiler and IR 8", () => {
-    it("compiles a parallel state to IR 8 only when enabled; its body states are in the IR, named by its body; a reader takes it only when asked to", () => {
-        const refused = compileWorkflow(yamlOf(fanOut()), { enableRequests: true, enableAgents: true });
-        expect(refused.valid).toBe(false);
-        expect(errorsOf(refused).map(item => [item.code, item.path])).toEqual([["WORKFLOW_NODE_TYPE_UNSUPPORTED", "states.fan.type"]]);
-
-        const compiled = compileWorkflow(yamlOf(fanOut()), PARALLEL);
+describe("workflow parallel states: compiler and IR", () => {
+    it("compiles a parallel state; its body states are in the IR, named by its body; the stored IR reads back", () => {
+        const compiled = compileWorkflow(yamlOf(fanOut()));
         expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
-        expect(compiled.ir.irVersion).toBe(WORKFLOW_AGENT_IR_VERSION);
+        expect(compiled.ir.irVersion).toBe(WORKFLOW_IR_VERSION);
         expect(compiled.ir.nodes.fan).toEqual({
             id: "fan", type: "parallel", description: null, forEach: "${input.items}", concurrency: 2, join: "all_required", failFast: false,
             inputSchema: "Items", outputSchema: null, body: { initial: "work", states: ["work", "done", "refused"] },
@@ -192,8 +186,7 @@ describe("workflow parallel states: compiler and IR 8", () => {
         })]);
 
         const stored = JSON.parse(canonicalJson(compiled.ir));
-        expect(parseWorkflowIr(stored, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION })).toEqual(compiled.ir);
-        expect(() => parseWorkflowIr(stored)).toThrow(/stored IR version 8 is not supported/);
+        expect(parseWorkflowIr(stored)).toEqual(compiled.ir);
         // A stored body that names a missing state or another parallel state, or an initial that is a body state, is refused.
         for (const broken of [
             { ...stored, nodes: { ...stored.nodes, fan: { ...stored.nodes.fan, body: { initial: "work", states: ["work", "gone"] } } } },
@@ -201,7 +194,7 @@ describe("workflow parallel states: compiler and IR 8", () => {
             { ...stored, initial: "work" },
             { ...stored, nodes: { ...stored.nodes, fan: { ...stored.nodes.fan, concurrency: WORKFLOW_PARALLEL_MAX_CONCURRENCY + 1 } } },
         ]) {
-            expect(() => parseWorkflowIr(broken, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION })).toThrow(/stored IR/);
+            expect(() => parseWorkflowIr(broken)).toThrow(/stored IR/);
         }
 
         expect(describeWorkflowState(compiled.ir.nodes.fan)).toEqual({
@@ -217,12 +210,12 @@ describe("workflow parallel states: compiler and IR 8", () => {
         const variant = change => {
             const doc = structuredClone(fanOut());
             change(doc, doc.states.fan, doc.states.fan.body.states);
-            return compileWorkflow(yamlOf(doc), PARALLEL);
+            return compileWorkflow(yamlOf(doc));
         };
         for (const [label, change, code, path] of [
             ["concurrency 0", (_, fan) => { fan.concurrency = 0; }, "WORKFLOW_FIELD_INVALID", "states.fan.concurrency"],
             ["concurrency above the limit", (_, fan) => { fan.concurrency = WORKFLOW_PARALLEL_MAX_CONCURRENCY + 1; }, "WORKFLOW_FIELD_INVALID", "states.fan.concurrency"],
-            // IR 9: `all` and `{ first: k }` are the joins; any other is refused (workflow-join.test.js has every form).
+            // `all` and `{ first: k }` are the joins; any other is refused (workflow-join.test.js has every form).
             ["another join", (_, fan) => { fan.join = "any"; }, "WORKFLOW_FIELD_INVALID", "states.fan.join"],
             ["a forEach that is no binding or list", (_, fan) => { fan.forEach = "items"; }, "WORKFLOW_FIELD_INVALID", "states.fan.forEach"],
             ["a literal manifest over the limit", (_, fan) => { fan.forEach = Array.from({ length: WORKFLOW_PARALLEL_MAX_ITEMS + 1 }, (_, n) => ({ n })); },
@@ -277,7 +270,7 @@ describe("workflow parallel states: the store", () => {
             const parent = randomUUID();
             await h.catalog.createSession(parent, {});
             const yaml = yamlOf(holdOut([1, 2]));
-            const compiled = compileWorkflow(yaml, PARALLEL);
+            const compiled = compileWorkflow(yaml);
             expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
             const workflowSessionId = randomUUID();
             const runId = randomUUID();
@@ -450,7 +443,7 @@ describe("workflow parallel states: the controller", () => {
             const run = await ended(h, runId);
             expect(run).toMatchObject({ status: "completed", terminalOutcome: "blocked", terminalNodeId: "stuck" });
             expect(run.terminalOutput).toEqual({
-                // Every branch was needed (join all), and the state's own time limit did not end it (IR 9 report fields).
+                // Every branch was needed (join all), and the state's own time limit did not end it (the report's fields).
                 joined: false, timedOut: false, total: 3, needed: 3, succeeded: 1, failFast: false,
                 branches: [
                     { index: 0, ended: "terminal", nodeExecutionId: at(0, "done"), outcome: "succeeded", resultKind: "business", output: { doubled: 2, index: 0 } },
@@ -859,7 +852,7 @@ describe("workflow parallel states: a literal list is shown as its count and dig
     });
 });
 
-// Adversarial review R3-SF-3: a parallel state whose time limit passes before its join (IR 9) records its report as its
+// Adversarial review R3-SF-3: a parallel state whose time limit passes before its join records its report as its
 // error; a finished branch's business output in it stays exactly as the branch stored it, as the blocked report keeps it.
 // Branch 1 ends at once with { key, token } (ordinary business fields); branch 2 waits 600 s (the time limit, 3 s, passes)
 // or is refused at once (0 s: the join of both can no longer happen, so it is blocked).

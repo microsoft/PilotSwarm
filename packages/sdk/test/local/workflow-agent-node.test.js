@@ -1,11 +1,9 @@
 /**
- * Workflow agent states (IR 8; design 03 agent node, 04 tool surface;
+ * Workflow agent states (design 03 agent node, 04 tool surface;
  * requirements R09 to R11, R14 and R15), on the Workflow controller.
  *
- * - The compiler: agent states compile to IR 8 only with enableAgents; the
- *   task is exactly one of an inline prompt or a named agent; outcomes and
- *   routes; a reader takes IR 8 only when asked to; a definition without an
- *   agent state compiles to the same IR either way.
+ * - The compiler: the task is exactly one of an inline prompt or a named
+ *   agent; outcomes and routes; the stored IR reads back as compiled.
  * - The store: an agent state's admission records its invocation with the
  *   node's deadline; complete_workflow_node's operation (shape, identity,
  *   contract, correction budget, durable expiry, repeats and conflicts); the
@@ -23,10 +21,10 @@
  *   failed end is tried again while paused, a deadline is the store's when
  *   its clock and the controller's differ (M-12), and nothing is routed or
  *   admitted until the resume, also when every cursor waits on work (review
- *   R2-RT-1: an error with no route, a failFast branch failure of IR 8 and
- *   IR 9, the first decided agent's failed end, and the node limit end
+ *   R2-RT-1: an error with no route, a failFast branch failure with a join
+ *   of every branch and of the first k, the first decided agent's failed end, and the node limit end
  *   nothing before the resume); an agent state in a parallel branch that the
- *   parallel state's own time limit cancels (IR 9) has its child ended; the
+ *   parallel state's own time limit cancels has its child ended; the
  *   child of a loser branch whose end fails is owed: the run goes on at
  *   once, and the end is tried again, running or paused, until it works
  *   (reviews J1-R2 and J1C-1, J1d), also while the run always has a result
@@ -47,7 +45,7 @@ import { randomUUID } from "node:crypto";
 import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import {
-    compileWorkflow, parseWorkflowIr, WORKFLOW_AGENT_IR_VERSION, WORKFLOW_MILESTONE_IR_VERSION, WORKFLOW_REQUEST_IR_VERSION,
+    compileWorkflow, parseWorkflowIr, WORKFLOW_IR_VERSION,
 } from "../../src/workflow/compiler.ts";
 import { canonicalJson } from "../../src/workflow/json.ts";
 import { controlWorkflowRun, createWorkflow, recoverWorkflowRun } from "../../src/workflow/service.ts";
@@ -66,7 +64,6 @@ const getEnv = useSuiteEnv(import.meta.url);
 // CI run 114 (HorizonDB, about ten times slower): the test's own bounds grow with the database (test/helpers/time-scale.js).
 const TIMEOUT = testTime.ms(120_000);
 const ACTOR = { kind: "system", name: "workflow-agent-node-test" };
-const AGENTS = { enableRequests: true, enableAgents: true };
 const TASK = "Review the change at the given head. Do not edit source.";
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -109,7 +106,7 @@ ${extra}    transition: { next: { accepted: done, changes_required: rework, need
 
 const errorsOf = result => result.diagnostics.filter(item => item.severity === "error");
 
-/** A parallel state (IR 9) over one head whose branch is an agent state, with a 3-second time limit of its own. */
+/** A parallel state over one head whose branch is an agent state, with a 3-second time limit of its own. */
 const PARALLEL_AGENT_YAML = `
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
@@ -143,7 +140,7 @@ states:
   failed: { type: terminal, outcome: failed }
 `;
 
-/** A race of two agent branches (IR 9, join of the first 1); after the join the run waits, so it is still running. */
+/** A race of two agent branches (join of the first 1); after the join the run waits, so it is still running. */
 const RACE_AGENT_YAML = `
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
@@ -194,15 +191,11 @@ const SPIN_AGENT_YAML = RACE_AGENT_YAML.replace("joined: hold", "joined: spin").
     transition: { next: { joined: spin, blocked: finished, failure: failed } }
 `);
 
-describe("workflow agent states: compiler and IR 8", () => {
-    it("compiles an agent state to IR 8 only when agents are enabled, and reads IR 8 only when asked to", () => {
-        const refused = compileWorkflow(AGENT_YAML(), { enableRequests: true });
-        expect(refused.valid).toBe(false);
-        expect(errorsOf(refused).map(item => [item.code, item.path])).toEqual([["WORKFLOW_NODE_TYPE_UNSUPPORTED", "states.review.type"]]);
-
-        const compiled = compileWorkflow(AGENT_YAML(), AGENTS);
+describe("workflow agent states: compiler and IR", () => {
+    it("compiles an agent state, and reads the stored IR back as compiled", () => {
+        const compiled = compileWorkflow(AGENT_YAML());
         expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
-        expect(compiled.ir.irVersion).toBe(WORKFLOW_AGENT_IR_VERSION);
+        expect(compiled.ir.irVersion).toBe(WORKFLOW_IR_VERSION);
         expect(compiled.ir.contracts).toEqual({});
         expect(compiled.ir.nodes.review).toEqual({
             id: "review", type: "agent", description: null, invoke: { prompt: TASK }, hasInput: false, input: null,
@@ -210,10 +203,7 @@ describe("workflow agent states: compiler and IR 8", () => {
             next: { accepted: "done", changes_required: "rework", needs_input: "ask", timed_out: "late", failure: "failed" },
         });
         const stored = JSON.parse(canonicalJson(compiled.ir));
-        expect(parseWorkflowIr(stored, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION })).toEqual(compiled.ir);
-        for (const options of [{}, { maxIrVersion: WORKFLOW_REQUEST_IR_VERSION }]) {
-            expect(() => parseWorkflowIr(stored, options)).toThrow(/stored IR version 8 is not supported/);
-        }
+        expect(parseWorkflowIr(stored)).toEqual(compiled.ir);
         expect(describeWorkflowState(compiled.ir.nodes.review)).toEqual({
             id: "review", type: "agent", invoke: { source: "prompt" }, timeoutSeconds: 3600, outcomes: ["accepted", "changes_required"],
             next: compiled.ir.nodes.review.next,
@@ -221,16 +211,16 @@ describe("workflow agent states: compiler and IR 8", () => {
 
         // A named agent, pinned to a package and version; a version needs its package; so does a workflow interface, which
         // the IR keeps (publication matches it against the package's export: workflow-agent-resolver.test.js).
-        const named = compileWorkflow(AGENT_YAML({ invoke: `{ agent: { name: code-reviewer, package: review-kit, version: "1.2.0" } }` }), AGENTS);
+        const named = compileWorkflow(AGENT_YAML({ invoke: `{ agent: { name: code-reviewer, package: review-kit, version: "1.2.0" } }` }));
         expect(named.valid, JSON.stringify(named.diagnostics)).toBe(true);
         expect(named.ir.nodes.review.invoke).toEqual({ agent: { name: "code-reviewer", package: "review-kit", version: "1.2.0" } });
-        expect(compileWorkflow(AGENT_YAML({ invoke: `{ agent: { name: code-reviewer } }` }), AGENTS).ir.nodes.review.invoke)
+        expect(compileWorkflow(AGENT_YAML({ invoke: `{ agent: { name: code-reviewer } }` })).ir.nodes.review.invoke)
             .toEqual({ agent: { name: "code-reviewer", package: null, version: null } });
-        const contracted = compileWorkflow(AGENT_YAML({ invoke: `{ agent: { name: code-reviewer, package: review-kit, interface: "review_change@1" } }` }), AGENTS);
+        const contracted = compileWorkflow(AGENT_YAML({ invoke: `{ agent: { name: code-reviewer, package: review-kit, interface: "review_change@1" } }` }));
         expect(contracted.valid, JSON.stringify(contracted.diagnostics)).toBe(true);
         expect(contracted.ir.nodes.review.invoke).toEqual({ agent: { name: "code-reviewer", package: "review-kit", version: null,
             interface: { name: "review_change", version: "1" } } });
-        expect(parseWorkflowIr(JSON.parse(canonicalJson(contracted.ir)), { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION })).toEqual(contracted.ir);
+        expect(parseWorkflowIr(JSON.parse(canonicalJson(contracted.ir)))).toEqual(contracted.ir);
         for (const [invoke, code, path] of [
             [`{ agent: { name: code-reviewer, version: "1.2.0" } }`, "WORKFLOW_FIELD_INVALID", "states.review.invoke.agent.version"],
             [`{ agent: { name: code-reviewer, interface: "review_change@1" } }`, "WORKFLOW_FIELD_INVALID", "states.review.invoke.agent.interface"],
@@ -241,7 +231,7 @@ describe("workflow agent states: compiler and IR 8", () => {
             [`{ prompt: "" }`, "WORKFLOW_FIELD_INVALID", "states.review.invoke.prompt"],
             [`{ agent: { name: "-bad" } }`, "WORKFLOW_FIELD_INVALID", "states.review.invoke.agent.name"],
         ]) {
-            const result = compileWorkflow(AGENT_YAML({ invoke }), AGENTS);
+            const result = compileWorkflow(AGENT_YAML({ invoke }));
             expect(result.valid, invoke).toBe(false);
             expect(errorsOf(result).map(item => [item.code, item.path]), invoke).toContainEqual([code, path]);
         }
@@ -249,35 +239,20 @@ describe("workflow agent states: compiler and IR 8", () => {
 
     it("checks an agent state's outcomes, routes and deadline; a definition without one compiles to the same IR either way", () => {
         // Declared outcomes need routes, and every non-runtime route must be a declared outcome.
-        const declared = compileWorkflow(AGENT_YAML({ extra: "    outcomes: [accepted]\n" }), AGENTS);
+        const declared = compileWorkflow(AGENT_YAML({ extra: "    outcomes: [accepted]\n" }));
         expect(errorsOf(declared).map(item => [item.code, item.path])).toEqual([["WORKFLOW_ROUTE_INVALID", "states.review.transition.next.changes_required"]]);
-        const unrouted = compileWorkflow(AGENT_YAML({ extra: "    outcomes: [accepted, changes_required, approved]\n" }), AGENTS);
+        const unrouted = compileWorkflow(AGENT_YAML({ extra: "    outcomes: [accepted, changes_required, approved]\n" }));
         expect(errorsOf(unrouted).map(item => item.code)).toEqual(["WORKFLOW_ROUTE_MISSING"]);
-        const runtimeOutcome = compileWorkflow(AGENT_YAML({ extra: "    outcomes: [accepted, timed_out]\n" }), AGENTS);
+        const runtimeOutcome = compileWorkflow(AGENT_YAML({ extra: "    outcomes: [accepted, timed_out]\n" }));
         expect(errorsOf(runtimeOutcome).map(item => [item.code, item.path])).toContainEqual(["WORKFLOW_FIELD_INVALID", "states.review.outcomes"]);
         for (const timeoutSeconds of ["0", "86401", "1.5", "nope"]) {
-            const result = compileWorkflow(AGENT_YAML({ timeoutSeconds }), AGENTS);
+            const result = compileWorkflow(AGENT_YAML({ timeoutSeconds }));
             expect(result.valid, timeoutSeconds).toBe(false);
             expect(errorsOf(result).map(item => item.path), timeoutSeconds).toContain("states.review.timeoutSeconds");
         }
-        const bound = compileWorkflow(AGENT_YAML({ timeoutSeconds: `"\${kv.limit}"` }), AGENTS);
+        const bound = compileWorkflow(AGENT_YAML({ timeoutSeconds: `"\${kv.limit}"` }));
         expect(bound.valid, JSON.stringify(bound.diagnostics)).toBe(true);
         expect(bound.ir.nodes.review.timeoutSeconds).toBe("${kv.limit}");
-
-        // Without an agent state, enabling agents changes nothing in the IR.
-        const plain = `
-apiVersion: pilotswarm.dev/v1
-kind: Workflow
-metadata: { name: plain, version: "1.0.0" }
-initial: wait
-states:
-  wait: { type: wait, seconds: 5, transition: { next: { elapsed: done } } }
-  done: { type: terminal, outcome: succeeded }
-`;
-        const before = compileWorkflow(plain, { enableRequests: true });
-        const after = compileWorkflow(plain, AGENTS);
-        expect(after.irSha256).toBe(before.irSha256);
-        expect(after.ir.irVersion).toBe(4);
     });
 });
 
@@ -291,7 +266,7 @@ async function agentFixture(env) {
     return Object.assign(h, {
         parent,
         async workflow(yaml = AGENT_YAML()) {
-            const compiled = compileWorkflow(yaml, AGENTS);
+            const compiled = compileWorkflow(yaml);
             expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
             const workflowSessionId = randomUUID();
             const runId = randomUUID();
@@ -973,7 +948,7 @@ describe("workflow agent states: the controller", () => {
         }
     });
 
-    // Owner decision join-k-of-n (IR 9): a parallel state's own time limit cancels its running branches; an agent state's child
+    // Owner decision join-k-of-n: a parallel state's own time limit cancels its running branches; an agent state's child
     // in one of them is ended as a timed-out agent state's is.
     it("ends the child of an agent state in a branch that the parallel state's time limit cancels; a late completion finds the state closed", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
@@ -1208,7 +1183,7 @@ describe("workflow agent states: the controller", () => {
         }
     });
 
-    // Named branches (owner 2026-11-08, IR 11): each branch's agent node is its own state, so a start gives each its own model.
+    // Named branches (owner 2026-11-08): each branch's agent node is its own state, so a start gives each its own model.
     it("named branches: each branch's agent node starts with the model the start chose for it", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
@@ -1505,7 +1480,7 @@ states:
   done: { type: terminal, outcome: succeeded, output: "\${input}" }
 `;
 
-/** Two agent branches with failFast (review R2-RT-1); `join` is an IR 9 join line. A branch whose agent reports an error ends by it. */
+/** Two agent branches with failFast (review R2-RT-1); `join` is a join line. A branch whose agent reports an error ends by it. */
 const FAIL_FAST_AGENTS_YAML = ({ join = "" } = {}) => `
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
@@ -1549,7 +1524,7 @@ const commandsOf = async (h, childSessionId) => (await childMessages(h, childSes
 /**
  * Adversarial review R2-RT-1: a pause found while every cursor waits on work (no admission is tried, so none is refused).
  * The collection reads the pause after its results and routes none of them: nothing ends a branch, cancels a sibling
- * (failFast, IR 8 and IR 9), asks a join or ends the run before the resume, and a decided agent state's child is still
+ * (failFast), asks a join or ends the run before the resume, and a decided agent state's child is still
  * ended, its failed end tried again. The node limit ends a run only where it would admit, so not while paused.
  */
 describe("workflow while the run is paused with every cursor waiting (review R2-RT-1)", () => {
@@ -1575,11 +1550,11 @@ describe("workflow while the run is paused with every cursor waiting (review R2-
         }
     });
 
-    it("a failFast branch's failure cancels no sibling while paused (IR 8, and an IR 9 join of the first 2); after the resume it does", { timeout: TIMEOUT }, async () => {
+    it("a failFast branch's failure cancels no sibling while paused (and a join of the first 2); after the resume it does", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             let already = 0;
-            for (const [label, join] of [["IR 8", ""], ["IR 9", "    join: { first: 2 }\n"]]) {
+            for (const [label, join] of [["every branch", ""], ["the first 2", "    join: { first: 2 }\n"]]) {
                 const { workflowSessionId, runId } = await started(h, FAIL_FAST_AGENTS_YAML({ join }));
                 const fan = nodeExecutionIdFor(runId, "root", "fan", 1);
                 const review = index => nodeExecutionIdFor(runId, branchScopeId(fan, index), "review", 1);

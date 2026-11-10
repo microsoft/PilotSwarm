@@ -2,20 +2,15 @@
  * Workflow messaging request states: the disabled foundation (design
  * docs/proposals/workflow-messaging-request.md, section 8.4).
  *
- * - With requests enabled, a request state compiles to IR version 7: its
- *   contract declares a response, its payload is `input`, its deadline is
- *   `timeoutSeconds` (1 to 86,400, or one binding), and its routes are
- *   responded, declined and runtime error codes (timed_out among them). The
- *   obsolete spellings `request` and the route `timeout` are refused by
- *   name. A send or receive state may use a contract that declares a
- *   response; such a workflow is version 7 too. A response schema, with the
- *   schemas it references, is at most 8 KiB.
- * - The compiler's own options can leave requests out (its unit tests use
- *   that): a request state or a contract response is then checked field by
- *   field and refused. Every host compiles with them on.
- * - A worker reads IR version 7 only when asked to: by default it refuses it
- *   explicitly, and a version 6 or earlier IR never carries a response or a
- *   request state. IR 1 to 6 compile exactly as before.
+ * - A request state compiles: its contract declares a response, its
+ *   payload is `input`, its deadline is `timeoutSeconds` (1 to 86,400, or
+ *   one binding), and its routes are responded, declined and runtime error
+ *   codes (timed_out among them). The obsolete spellings `request` and the
+ *   route `timeout` are refused by name. A send or receive state may use a
+ *   contract that declares a response. A response schema, with the schemas
+ *   it references, is at most 8 KiB.
+ * - The stored IR reads back as compiled; a request state needs its
+ *   contract's response.
  *
  * Nothing here runs a request: the controller, the tool and the delivery
  * are gated (design section 8.4).
@@ -71,7 +66,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { checkpoint, reachedDuring, requestClock, requestFixture } from "../helpers/workflow-request-fixture.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import {
-    compileWorkflow, parseWorkflowIr, REQUEST_RESPONSE_SCHEMA_MAX_BYTES, WORKFLOW_REQUEST_IR_VERSION, WORKFLOW_SEND_IR_VERSION,
+    compileWorkflow, parseWorkflowIr, REQUEST_RESPONSE_SCHEMA_MAX_BYTES, WORKFLOW_IR_VERSION,
 } from "../../src/workflow/compiler.ts";
 import { canonicalJson, jsonSha256, kindValueSha256 } from "../../src/workflow/json.ts";
 import { schemaReferences } from "../../src/workflow/schema.ts";
@@ -83,8 +78,6 @@ import {
 const getEnv = useSuiteEnv(import.meta.url);
 const ACTOR = { kind: "system", name: "workflow-request-test" };
 const TIMEOUT = 120_000;
-const ENABLED = { enableRequests: true };
-
 const SCHEMAS = `schemas:
   Question: { type: object, required: [q], properties: { q: { type: string } }, additionalProperties: false }
   Answer: { type: object, required: [approved], properties: { approved: { type: boolean } }, additionalProperties: false }`;
@@ -190,18 +183,18 @@ async function expectCode(promise, code) {
     return caught;
 }
 
-describe("workflow request states: compiler and IR 7", () => {
-    it("compiles a request state to IR 7 only when requests are enabled", () => {
-        const compiled = compileWorkflow(REQUESTER(), ENABLED);
+describe("workflow request states: compiler and IR", () => {
+    it("compiles a request state", () => {
+        const compiled = compileWorkflow(REQUESTER());
         expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
-        expect(compiled.ir.irVersion).toBe(WORKFLOW_REQUEST_IR_VERSION);
+        expect(compiled.ir.irVersion).toBe(WORKFLOW_IR_VERSION);
         expect(compiled.ir.contracts).toEqual({ "Approval@1": { schema: "Question", response: { schema: "Answer" } } });
         expect(compiled.ir.nodes.ask).toEqual({
             id: "ask", type: "messaging", description: null, mode: "request", contract: "Approval@1", recipient: { parent: true },
             correlate: null, hasInput: true, input: { q: "ship?" }, timeoutSeconds: 3600,
             next: { responded: "done", declined: "blocked", timed_out: "blocked", failure: "failed" },
         });
-        expect(compileWorkflow(REQUESTER(), ENABLED).irSha256).toBe(compiled.irSha256);
+        expect(compileWorkflow(REQUESTER()).irSha256).toBe(compiled.irSha256);
         expect(describeWorkflowState(compiled.ir.nodes.ask)).toEqual({
             id: "ask", type: "messaging", mode: "request", contract: "Approval@1", recipient: "parent", timeoutSeconds: 3600,
             outcomes: ["responded", "declined"], next: { responded: "done", declined: "blocked", timed_out: "blocked", failure: "failed" },
@@ -214,53 +207,29 @@ describe("workflow request states: compiler and IR 7", () => {
     correlate: { candidate: "\${inputs.head}" }
     timeoutSeconds: "\${kv.secs}"
     transition: { next: { responded: done, declined: blocked, failure: failed } }`,
-        }), ENABLED);
+        }));
         expect(bound.valid, JSON.stringify(bound.diagnostics)).toBe(true);
         expect(bound.ir.nodes.ask).toMatchObject({
             recipient: { sessionId: "${kv.approver}" }, correlate: { candidate: "${inputs.head}" }, hasInput: false, input: null,
             timeoutSeconds: "${kv.secs}",
         });
-
-        // Not enabled (the default): the same document is refused field by field, never compiled.
-        const disabled = compileWorkflow(REQUESTER());
-        expect(disabled.valid).toBe(false);
-        expect(disabled.ir).toBeNull();
-        expect(disabled.irSha256).toBeNull();
-        expect(errorsOf(disabled)).toEqual(expect.arrayContaining([
-            expect.objectContaining({ code: "WORKFLOW_FEATURE_UNSUPPORTED", path: "states.ask.mode" }),
-            expect.objectContaining({ code: "WORKFLOW_FEATURE_UNSUPPORTED", path: "contracts.Approval@1.response" }),
-        ]));
-        expect(errorsOf(disabled)).toHaveLength(2);
     });
 
-    it("lets send and receive states use a contract that declares a response, as IR 7", () => {
+    it("lets send and receive states use a contract that declares a response", () => {
         const plain = compileWorkflow(SENDER());
         expect(plain.valid, JSON.stringify(plain.diagnostics)).toBe(true);
-        expect(plain.ir.irVersion).toBe(WORKFLOW_SEND_IR_VERSION);
-        // A workflow without request states or responses is the same IR whether or not requests are enabled.
-        expect(compileWorkflow(SENDER(), ENABLED).irSha256).toBe(plain.irSha256);
         const plainReceive = compileWorkflow(RECEIVER());
         expect(plainReceive.valid, JSON.stringify(plainReceive.diagnostics)).toBe(true);
-        expect(compileWorkflow(RECEIVER(), ENABLED).irSha256).toBe(plainReceive.irSha256);
 
-        const sent = compileWorkflow(SENDER({ response: RESPONDING }), ENABLED);
+        const sent = compileWorkflow(SENDER({ response: RESPONDING }));
         expect(sent.valid, JSON.stringify(sent.diagnostics)).toBe(true);
-        expect(sent.ir.irVersion).toBe(WORKFLOW_REQUEST_IR_VERSION);
         expect(sent.ir.nodes.tell.mode).toBe("send");
         expect(sent.ir.contracts["Approval@1"]).toEqual({ schema: "Question", response: { schema: "Answer" } });
-        const received = compileWorkflow(RECEIVER({ response: RESPONDING }), ENABLED);
+        const received = compileWorkflow(RECEIVER({ response: RESPONDING }));
         expect(received.valid, JSON.stringify(received.diagnostics)).toBe(true);
-        expect(received.ir.irVersion).toBe(WORKFLOW_REQUEST_IR_VERSION);
         expect(received.ir.nodes.listen.mode).toBe("receive");
         expect(received.ir.contracts["Approval@1"]).toEqual({ schema: "Question", response: { schema: "Answer" } });
-        expect(parseWorkflowIr(storedForm(received.ir), { maxIrVersion: WORKFLOW_REQUEST_IR_VERSION })).toEqual(received.ir);
-        storeError(() => parseWorkflowIr(storedForm(received.ir)));
-
-        for (const yaml of [SENDER({ response: RESPONDING }), RECEIVER({ response: RESPONDING })]) {
-            const disabled = compileWorkflow(yaml);
-            expect(disabled.valid).toBe(false);
-            expect(errorsOf(disabled)).toEqual([expect.objectContaining({ code: "WORKFLOW_FEATURE_UNSUPPORTED", path: "contracts.Approval@1.response" })]);
-        }
+        expect(parseWorkflowIr(storedForm(received.ir))).toEqual(received.ir);
     });
 
     it("counts a response schema and the schemas it references in schema positions, each once", () => {
@@ -277,27 +246,27 @@ describe("workflow request states: compiler and IR 7", () => {
         const limit = REQUEST_RESPONSE_SCHEMA_MAX_BYTES;
         // {"description":"<n x>","type":"string"} is 34 + n bytes of canonical JSON.
         const exact = n => `  Exact: { type: string, description: "${"x".repeat(n)}" }`;
-        const atLimit = compileWorkflow(WITH_RESPONSE_SCHEMA("Exact", exact(limit - 34)), ENABLED);
+        const atLimit = compileWorkflow(WITH_RESPONSE_SCHEMA("Exact", exact(limit - 34)));
         expect(atLimit.valid, JSON.stringify(atLimit.diagnostics)).toBe(true);
-        const overLimit = compileWorkflow(WITH_RESPONSE_SCHEMA("Exact", exact(limit - 33)), ENABLED);
+        const overLimit = compileWorkflow(WITH_RESPONSE_SCHEMA("Exact", exact(limit - 33)));
         expect(overLimit.diagnostics).toContainEqual(expect.objectContaining({ code: "WORKFLOW_SCHEMA_TOO_LARGE", path: "contracts.Approval@1.response.schema" }));
 
         // A literal that looks like a reference adds nothing, even when it names a large declared schema.
         const large = `  Large: { type: string, description: "${"x".repeat(limit)}" }`;
         const literal = compileWorkflow(WITH_RESPONSE_SCHEMA("Literal", `${large}
-  Literal: { const: { $ref: "#/$defs/Large" }, examples: [{ $ref: "#/$defs/Large" }] }`), ENABLED);
+  Literal: { const: { $ref: "#/$defs/Large" }, examples: [{ $ref: "#/$defs/Large" }] }`));
         expect(literal.valid, JSON.stringify(literal.diagnostics)).toBe(true);
         // The same schema referenced in a schema position counts (the control).
         const referenced = compileWorkflow(WITH_RESPONSE_SCHEMA("Holder", `${large}
-  Holder: { type: object, properties: { detail: { $ref: "#/schemas/Large" } } }`), ENABLED);
+  Holder: { type: object, properties: { detail: { $ref: "#/schemas/Large" } } }`));
         expect(referenced.diagnostics).toContainEqual(expect.objectContaining({ code: "WORKFLOW_SCHEMA_TOO_LARGE", path: "contracts.Approval@1.response.schema" }));
 
         // A schema referenced twice counts once (5,034 + 5,034 bytes would be over the limit), and a recursive one ends.
         const half = `  Half: { type: string, description: "${"x".repeat(5_000)}" }`;
         const twice = compileWorkflow(WITH_RESPONSE_SCHEMA("Pair", `${half}
-  Pair: { type: object, properties: { a: { $ref: "#/schemas/Half" }, b: { $ref: "#/schemas/Half" } } }`), ENABLED);
+  Pair: { type: object, properties: { a: { $ref: "#/schemas/Half" }, b: { $ref: "#/schemas/Half" } } }`));
         expect(twice.valid, JSON.stringify(twice.diagnostics)).toBe(true);
-        const recursive = compileWorkflow(WITH_RESPONSE_SCHEMA("Tree", `  Tree: { type: object, properties: { child: { $ref: "#/schemas/Tree" } } }`), ENABLED);
+        const recursive = compileWorkflow(WITH_RESPONSE_SCHEMA("Tree", `  Tree: { type: object, properties: { child: { $ref: "#/schemas/Tree" } } }`));
         expect(recursive.valid, JSON.stringify(recursive.diagnostics)).toBe(true);
     });
 
@@ -350,7 +319,7 @@ describe("workflow request states: compiler and IR 7", () => {
             [REQUESTER({ response: "    response: { schema: { $ref: \"#/schemas/Missing\" } }\n" }), "WORKFLOW_SCHEMA_UNKNOWN", "contracts.Approval@1.response.schema.$ref"],
         ];
         for (const [yaml, code, path] of refusals) {
-            const result = compileWorkflow(yaml, ENABLED);
+            const result = compileWorkflow(yaml);
             expect(result.valid, `${code} ${path}: ${JSON.stringify(result.diagnostics)}`).toBe(false);
             expect(result.diagnostics, `${code} ${path}`).toContainEqual(expect.objectContaining({ code, path }));
         }
@@ -363,7 +332,7 @@ describe("workflow request states: compiler and IR 7", () => {
   Detail: { type: string, description: "${big}" }`,
             response: `    response: { schema: { $ref: "#/schemas/Wrapper" } }\n`,
         });
-        const refused = compileWorkflow(oversize, ENABLED);
+        const refused = compileWorkflow(oversize);
         expect(refused.valid).toBe(false);
         expect(refused.diagnostics).toContainEqual(expect.objectContaining({ code: "WORKFLOW_SCHEMA_TOO_LARGE", path: "contracts.Approval@1.response.schema" }));
         const small = compileWorkflow(REQUESTER({
@@ -371,31 +340,26 @@ describe("workflow request states: compiler and IR 7", () => {
   Wrapper: { type: object, properties: { detail: { $ref: "#/schemas/Detail" } } }
   Detail: { type: string, description: "short" }`,
             response: `    response: { schema: { $ref: "#/schemas/Wrapper" } }\n`,
-        }), ENABLED);
+        }));
         expect(small.valid, JSON.stringify(small.diagnostics)).toBe(true);
     });
 
-    it("reads IR 7 only when asked to, and never a response or a request state in earlier versions", () => {
-        const compiled = compileWorkflow(REQUESTER(), ENABLED);
+    it("reads the stored IR back as compiled; a request state needs its contract's response, and another IR version is refused", () => {
+        const compiled = compileWorkflow(REQUESTER());
         const stored = storedForm(compiled.ir);
-        const refused = storeError(() => parseWorkflowIr(stored));
-        expect(refused.message).toContain("stored IR version 7 is not supported by this worker");
-        expect(parseWorkflowIr(stored, { maxIrVersion: WORKFLOW_REQUEST_IR_VERSION })).toEqual(compiled.ir);
+        expect(parseWorkflowIr(stored)).toEqual(compiled.ir);
+        const refused = storeError(() => parseWorkflowIr({ ...stored, irVersion: WORKFLOW_IR_VERSION + 1 }));
+        expect(refused.message).toContain(`stored IR version ${WORKFLOW_IR_VERSION + 1} is not supported by this worker`);
 
-        // A request state needs its contract's response, and version 7.
+        // A request state needs its contract's response and its deadline.
         const { response: _response, ...withoutResponse } = stored.contracts["Approval@1"];
-        storeError(() => parseWorkflowIr({ ...stored, contracts: { "Approval@1": withoutResponse } }, { maxIrVersion: 7 }));
-        storeError(() => parseWorkflowIr({ ...stored, nodes: { ...stored.nodes, ask: { ...stored.nodes.ask, timeoutSeconds: null } } }, { maxIrVersion: 7 }));
+        storeError(() => parseWorkflowIr({ ...stored, contracts: { "Approval@1": withoutResponse } }));
+        storeError(() => parseWorkflowIr({ ...stored, nodes: { ...stored.nodes, ask: { ...stored.nodes.ask, timeoutSeconds: null } } }));
 
         const send = storedForm(compileWorkflow(SENDER()).ir);
-        expect(send.irVersion).toBe(WORKFLOW_SEND_IR_VERSION);
         expect(parseWorkflowIr(send).nodes.tell.mode).toBe("send");
-        // Version 6 never carries a response or a request state, even for a reader that takes version 7.
-        const withResponse = { ...send, contracts: { "Approval@1": { schema: "Question", response: { schema: "Answer" } } } };
-        storeError(() => parseWorkflowIr(withResponse));
-        storeError(() => parseWorkflowIr(withResponse, { maxIrVersion: 7 }));
-        storeError(() => parseWorkflowIr({ ...send, nodes: { ...send.nodes, tell: { ...send.nodes.tell, mode: "request", timeoutSeconds: 60 } } },
-            { maxIrVersion: 7 }));
+        // A send state whose contract declares no response is no request state.
+        storeError(() => parseWorkflowIr({ ...send, nodes: { ...send.nodes, tell: { ...send.nodes.tell, mode: "request", timeoutSeconds: 60 } } }));
     });
 });
 
@@ -458,7 +422,7 @@ async function requestHarness(env) {
     const parent = await session(alice);
     const peer = await session(alice);
     const stranger = await session(bob);
-    const compiled = compileWorkflow(REQUESTS, ENABLED);
+    const compiled = compileWorkflow(REQUESTS);
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
     const workflow = async (owner = alice, parentSessionId = parent) => {
         const workflowSessionId = randomUUID();
@@ -541,9 +505,7 @@ describe("workflow request states: records and the response transaction (store)"
             // Delivery by a send orchestration refuses a request's message.
             await expectCode(h.store.beginDelivery(exchangeId, { refused: { unavailable: { result: null }, forbidden: { result: null } }, ended: null,
                 delivered: { stateId: "ask", projection: () => ({ sessionId: run.workflowSessionId }) } }), "WORKFLOW_STORE_CORRUPT");
-            // Requests are stored, not run: IR 7 is read only when asked for.
-            await expectCode(h.store.readRevisionIr(run.workflowSessionId, 1, h.compiled.irSha256), "WORKFLOW_STORE_CORRUPT");
-            expect((await h.store.readRevisionIr(run.workflowSessionId, 1, h.compiled.irSha256, { maxIrVersion: 7 })).irVersion).toBe(7);
+            expect((await h.store.readRevisionIr(run.workflowSessionId, 1, h.compiled.irSha256)).irVersion).toBe(WORKFLOW_IR_VERSION);
 
             // The request rule: only the frozen responder. Another session of the same user, another user's, an unknown request
             // and an unknown session all get the same refusal, before any structural check, and nothing is written.

@@ -16,7 +16,8 @@ import type { SessionOwnerInfo } from "../types.js";
 import type { WorkflowToolBinding } from "./tool-policy.js";
 import type { JsonValue } from "./json.js";
 import { WorkflowStoreError, type WorkflowActor } from "./store.js";
-import { compileWorkflowDefinition, type WorkflowHost } from "./service.js";
+import { compileWorkflow } from "./compiler.js";
+import type { WorkflowHost } from "./service.js";
 import { requireWorkflowScripts } from "./scripts-gate.js";
 import {
     listChatWorkflowDefinitions, readChatWorkflowDefinition, saveChatWorkflowDefinition, startChatWorkflowDefinition, type ChatDefinitionView,
@@ -224,7 +225,7 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
             }
             const yaml = String(args.yaml ?? "");
             // The scripts gate first (d52e5ed2): a host that runs no scripts refuses a script node before anything is read.
-            const compiled = yaml.trim() ? compileWorkflowDefinition(yaml) : undefined;
+            const compiled = yaml.trim() ? compileWorkflow(yaml) : undefined;
             if (compiled) requireWorkflowScripts(context.host, compiled.ir, "save");
             const expectedRevision = intArg(args, "expected_revision");
             let expected: { definitionId: string; revision: number } | null = null;
@@ -340,7 +341,7 @@ export async function spawnWorkflowCompatFromTool(
         if (args.state !== undefined && args.state !== "draft" && args.state !== "published") throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "state must be draft or published.");
         if (args.start === true && args.state !== "published") throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "start needs state: published.");
         const chat = context.callerSessionId;
-        const compiled = compileWorkflowDefinition(args.yaml);
+        const compiled = compileWorkflow(args.yaml);
         const name = compiled.name ?? (() => { throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "The YAML needs metadata.name: it names the definition."); })();
         // A host that runs no scripts refuses a definition with a script node before anything else (d52e5ed2: before the
         // chat's tool binding is captured, its owner read or its definitions read), in the words of what was asked (a save,

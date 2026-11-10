@@ -5,7 +5,7 @@ import {
     type JsonObject,
     type JsonValue,
 } from "./json.js";
-import { WORKFLOW_MILESTONE_IR_VERSION, type WorkflowIR } from "./compiler.js";
+import { compileWorkflow, type WorkflowIR } from "./compiler.js";
 import { schemaWithoutLiterals } from "./schema.js";
 import { workflowResolvedInputsSchema } from "./resolved-schema.js";
 import { parseBindingExpression, WorkflowBindingError, type BindingExpression } from "./bindings.js";
@@ -22,7 +22,6 @@ import { parseTestFixtures, parseTestResponse, WORKFLOW_TEST_NOTICE, WORKFLOW_TE
 import { resolveWorkflowTestMode } from "./test-mode-switch.js";
 import {
     advanceWorkflowTest,
-    compileWorkflowDefinition,
     controlWorkflowRun,
     inspectWorkflowController,
     previewWorkflowAgentVersions,
@@ -958,7 +957,7 @@ export async function readWorkflowStepInput(host: Pick<WorkflowHost, "store">, w
         if (written === undefined || canonicalJson(written) !== canonicalJson(built)) {
             throw readInvalid(`Step '${state}''s inputs could not be written safely into its YAML; change them in the YAML editor.`);
         }
-        const compiled = compileWorkflowDefinition(yaml);
+        const compiled = compileWorkflow(yaml);
         stepInput.proposed = { yaml, changed: yaml !== revision.yaml, valid: compiled.valid, diagnostics: diagnosticsJson(compiled.diagnostics) };
     }
     return { workflowId: workflowSessionId, stepInput };
@@ -1111,9 +1110,9 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
     if (!revision) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "The current revision is missing.");
     const graphRevision = definition.publishedRevision ?? definition.currentRevision;
     const graphRow = graphRevision === revision.revision ? revision : await store.readRevision(workflowSessionId, graphRevision);
-    // Reading shows any stored graph, request and agent states (IR 7 and 8) included; it runs nothing.
+    // Reading shows any stored graph, request and agent states included; it runs nothing.
     const ir = graphRow?.valid && graphRow.irSha256
-        ? await store.readRevisionIr(workflowSessionId, graphRow.revision, graphRow.irSha256, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION }) : null;
+        ? await store.readRevisionIr(workflowSessionId, graphRow.revision, graphRow.irSha256) : null;
     const runs = readableRuns(await store.listRuns(workflowSessionId), options.hideTestRuns);
     const selected = options.runId ? runs.find(run => run.runId === options.runId) : runs.find(run => run.mode === "live");
     if (options.runId && !selected) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${options.runId} is not a run of this workflow.`);
@@ -1248,7 +1247,7 @@ function openNotPaged<T>(open: readonly T[], paged: readonly T[], id: (row: T) =
     return open.filter(row => !shown.has(id(row)));
 }
 
-/** An agent state's child session and its lifecycle (IR 8), by node execution id: read only for the agent states shown. */
+/** An agent state's child session and its lifecycle, by node execution id: read only for the agent states shown. */
 async function agentInvocationsOf(store: WorkflowStore, runId: string, nodes: readonly WorkflowNodeExecutionRow[]): Promise<Map<string, WorkflowAgentInvocation>> {
     const ids = nodes.filter(node => node.nodeType === "agent").map(node => node.nodeExecutionId);
     return ids.length > 0 ? new Map((await store.listAgentInvocationsFor(runId, ids)).map(invocation => [invocation.nodeExecutionId, invocation] as const))
@@ -1320,11 +1319,11 @@ function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap
         outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts, kvRevision: node.kvRevision,
         // When the visit started and ended (owner feedback 2026-11-06, finding 7: the Node panel's Now and Runs lines).
         enteredAt: node.enteredAt.toISOString(), ...(node.completedAt !== null ? { endedAt: node.completedAt.toISOString() } : {}),
-        // A parallel branch's state (IR 8): its branch's parallel state execution and index, and the state before
+        // A parallel branch's state: its branch's parallel state execution and index, and the state before
         // it in its branch (its last state is the one no other names; owner decision join-k-of-n, review J1-R1).
         ...(node.scopeId !== ROOT_SCOPE ? { scopeId: node.scopeId, ...branchViewOf(node.scopeId), predecessorId: node.predecessorId } : {}),
         ...(node.nodeType === "parallel" && Array.isArray(node.input) ? { branches: node.input.length } : {}),
-        // When a parallel state or a branch state ended (IR 9, J1c): a success counts only when stored by the time limit.
+        // When a parallel state or a branch state ended (J1c): a success counts only when stored by the time limit.
         ...((node.nodeType === "parallel" || node.scopeId !== ROOT_SCOPE) && node.completedAt !== null ? { completedAt: node.completedAt.toISOString() } : {}),
         ...(node.deadlineAt !== null ? { deadline: node.deadlineAt.toISOString() } : {}),
         ...(node.receive !== null ? { receive: { contract: node.receive.contract, from: node.receive.from, correlation: node.receive.correlation } } : {}),
@@ -1468,7 +1467,7 @@ async function testViewOf(store: WorkflowStore, workflowSessionId: string, run: 
     const open = await store.listOpenInterceptions(run.runId, WORKFLOW_READ_OPEN_MAX);
     const openApart = openNotPaged(open.rows, page.rows, item => item.interceptionId);
     const nodes = await interceptedNodesOf(store, run.runId, [...page.rows, ...openApart], known);
-    const ir = await store.readRevisionIr(workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION });
+    const ir = await store.readRevisionIr(workflowSessionId, run.revision, run.irSha256);
     const coverage = await store.testCoverage(run.runId);
     const entered = new Set(coverage.entered);
     const outcomes = new Map<string, Set<string>>();

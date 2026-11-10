@@ -29,9 +29,6 @@ import { catalogModelNames, ModelProviderRegistry } from "../../dist/model-provi
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { validateAgentPackageDir } from "../../dist/agent-package-format.js";
 import { loadAgentFiles, validateAgentDefinition } from "../../dist/agent-loader.js";
-
-const ALL = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true };
-
 export const RELEASE_WATCH_YAML = `
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
@@ -115,7 +112,7 @@ effects: None; five seconds.
 `;
 
 const compiled = yaml => {
-    const result = compileWorkflow(yaml, ALL);
+    const result = compileWorkflow(yaml);
     assert.equal(result.valid, true, JSON.stringify(result.diagnostics));
     return result.ir;
 };
@@ -248,7 +245,7 @@ test("a package exports its Workflow Definitions with their cards, and its agent
     assert.equal(exported.version, "1.2.0");
     assert.equal(exported.description, "Watches a release train and reports blockers.");
     const ir = compiled(RELEASE_WATCH_YAML);
-    assert.equal(exported.yamlSha256, compileWorkflow(RELEASE_WATCH_YAML, ALL).yamlSha256);
+    assert.equal(exported.yamlSha256, compileWorkflow(RELEASE_WATCH_YAML).yamlSha256);
     assert.deepEqual(exported.interface, JSON.parse(JSON.stringify(workflowCardInterface(ir))));
     assert.equal(exported.cardDigest, workflowCardDigest(exported.card, exported.interface));
     assert.deepEqual(validation.manifest.agents[0].workflows, ["release-watch", "ops-kit/incident-digest"]);

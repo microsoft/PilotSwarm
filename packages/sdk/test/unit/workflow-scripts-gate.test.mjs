@@ -55,7 +55,6 @@ function storeOf(yaml, { published = false } = {}) {
     return {
         readRevision: async () => ({ revision: 1, valid: true, irSha256: compiled.irSha256, yamlSha256: compiled.yamlSha256 }),
         readRevisionIr: async () => compiled.ir,
-        readRevisionIrVersion: async () => compiled.ir.irVersion ?? 1,
         readDefinition: async () => ({ state: published ? "published" : "draft", publishedRevision: published ? 1 : null,
             publishedIrSha256: published ? compiled.irSha256 : null, parentSessionId: "p" }),
         publish: async () => { throw new Error("publish was reached"); },

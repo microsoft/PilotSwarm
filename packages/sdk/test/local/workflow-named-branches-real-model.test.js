@@ -1,5 +1,5 @@
 /**
- * Named branches (IR 11, owner decision 2026-11-08T00:35Z) on a REAL model: one parallel state with two named branches,
+ * Named branches (owner decision 2026-11-08T00:35Z) on a REAL model: one parallel state with two named branches,
  * quick and careful, each with its own agent node mapped to its own model at start. Both run at once; each completes on
  * its own model and effort, never on the other's or the chat's; the join passes { quick: output, careful: output }.
  * Local target only: a worker in this process on its own test

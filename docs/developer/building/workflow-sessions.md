@@ -341,7 +341,7 @@ another revision under the same operation is refused (`OPERATION_CONFLICT`).
 A Workflow session has no turn, so it offers no Stop: its run has its own Stop
 and Cancel.
 
-**Clock waits** (stage 2.4; IR 10). A wait state may
+**Clock waits** (stage 2.4). A wait state may
 give `at` instead of `seconds`, with the `cron_at` fields:
 
 ```yaml
@@ -1102,7 +1102,7 @@ process it started, even one that left its process tree, does not outlive the
 step, and one that keeps the script's output open no longer holds the step
 until its timeout.
 
-**Named branches** (IR 11; owner decision 2026-11-08, option A; not on TEST
+**Named branches** (owner decision 2026-11-08, option A; not on TEST
 until the formal design model passes). A parallel state may give `branches`
 instead of `forEach` and `body`:
 `branches: { <name>: { initial, states, input? } }`. Each branch is its own
@@ -1178,12 +1178,8 @@ list. The base guidance and Agent Smith (1.4.7) say the same.
 A parallel state that does not join ends with a report of its
 branches (`joined: false`, `total`, `succeeded`, `failFast`, `branches`). The
 report also has `timedOut` (whether the state's time limit ended it) and
-`needed` (the successes its join needed). A run compiled before parallel time
-limits existed (IR 8) gets both too, with `timedOut` always `false`; a report
-already stored is not rewritten. These fields are added; none is removed or
-changed, so read a report by the fields you use, not by its exact set of
-fields. Workflows were not turned on before these fields came, so no stored
-run depends on the shorter report.
+`needed` (the successes its join needed). Read a report by the fields you
+use, not by its exact set of fields.
 
 A Workflow hides more secrets in its text than it did before. Events and
 rows that were stored before this change are not rewritten. Such events and

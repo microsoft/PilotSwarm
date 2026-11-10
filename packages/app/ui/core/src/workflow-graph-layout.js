@@ -20,7 +20,7 @@ import { annotateWorkflowEdges } from "./workflow-view.js";
  * join bar under the box, and the parallel step's own routes (joined, blocked, its runtime-error routes) leave from that
  * bar. A graph without a parallel step is laid out exactly as before.
  *
- * Named branches (IR 11, owner decision 2026-11-08): a parallel step with named branches has the same box and bar, but
+ * Named branches (owner decision 2026-11-08): a parallel step with named branches has the same box and bar, but
  * no stack behind the box: its branches are lanes side by side in it, in their declared order, and the parallel step
  * leads into each lane by its own edge, labelled with the branch's name, to the lane's first step.
  */
@@ -105,7 +105,7 @@ export function workflowGraphBodies(states) {
 }
 
 /**
- * IR 11: a parallel step's named branches that are lanes of its branch box (`members`, its box's steps): each with its
+ * A parallel step's named branches that are lanes of its branch box (`members`, its box's steps): each with its
  * name and its first step, in declared order. Empty for a For each, or when a branch's first step is not in the box. Pure.
  */
 export function workflowGraphLanes(node, members) {
@@ -120,7 +120,7 @@ export function workflowGraphLanes(node, members) {
  * state of its body ("each branch"). Targets that are not steps of the graph are left out. A parallel step with a branch
  * box (H2) leads into the box by one edge without a label (`branch`, `start` its first step), and its own routes leave
  * from its join bar (`owner` the parallel step); a route into or out of a branch box is not drawn (the compiler allows
- * none). IR 11: a box of named branches is entered by one edge to each lane's first step instead (`branch`, `lane` its
+ * none). A box of named branches is entered by one edge to each lane's first step instead (`branch`, `lane` its
  * name, labelled with it).
  */
 function graphEdges(states, { bodies, memberOf }) {
@@ -300,7 +300,7 @@ function moveEdge(edge, dx, dy) {
  * One branch box's steps laid out on their own (H2), from its first step down: its steps (`positions`), the routes
  * between them (shaped in place), and where each branch end leaves the box (`exits`: its line to the point `sink` on
  * the box's bottom edge, where the lines meet, so they never cross a step). Coordinates start at 0, 0; `width` and
- * `height` hold everything drawn. IR 11: a box of named branches (`laneEdges`, one edge into each lane) lays each lane
+ * `height` hold everything drawn. A box of named branches (`laneEdges`, one edge into each lane) lays each lane
  * out on its own (layoutLanes).
  */
 function layoutBody(parallel, members, byId, edges, laneEdges = []) {
@@ -311,7 +311,7 @@ function layoutBody(parallel, members, byId, edges, laneEdges = []) {
 
 /**
  * Steps (`order`, the first one first) laid out by dagre with their routes (`edges`, shaped in place), and their ends'
- * lines to one point under them (`exits`, `sink`). With `laneEdge` (IR 11), the edge into a lane: it comes down from a
+ * lines to one point under them (`exits`, `sink`). With `laneEdge`, the edge into a lane: it comes down from a
  * point above the lane's first step, with room for its label. Moved so its top-left is at 0, 0.
  */
 function layoutSteps(order, byId, edges, laneEdge) {
@@ -349,7 +349,7 @@ function layoutSteps(order, byId, edges, laneEdge) {
 }
 
 /**
- * IR 11: a box of named branches, each lane laid out on its own (layoutSteps) and the lanes set side by side in their
+ * A box of named branches, each lane laid out on its own (layoutSteps) and the lanes set side by side in their
  * declared order, their tops on one line. Each lane's ends lead straight down to the box's bottom edge under the lane
  * (`exits`); `sink` is that edge's middle.
  */
@@ -412,7 +412,7 @@ export function layoutWorkflowGraphTB(definition) {
     const outer = order.filter(node => !parts.memberOf.has(node.id));
     // Each branch box's own routes are laid out with its steps; every other edge is the graph's.
     const bodyEdges = new Map([...parts.bodies.keys()].map(id => [id, []]));
-    // IR 11: the edges into the lanes of a box of named branches are laid out with the box's steps.
+    // The edges into the lanes of a box of named branches are laid out with the box's steps.
     const laneEdges = new Map([...parts.bodies.keys()].map(id => [id, []]));
     const mainEdges = [];
     for (const edge of edges) {
@@ -483,7 +483,7 @@ export function layoutWorkflowGraphTB(definition) {
     const joinEdges = [];
     for (const [id, body] of bodies) {
         for (const edge of bodyEdges.get(id)) moveEdge(edge, body.dx, body.dy);
-        // IR 11: each lane's edge comes down from the parallel step, into the box at its lane, to the lane's first step.
+        // Each lane's edge comes down from the parallel step, into the box at its lane, to the lane's first step.
         const parallel = boxes.get(id);
         const group = groups.get(id);
         for (const edge of laneEdges.get(id)) {
@@ -496,7 +496,7 @@ export function layoutWorkflowGraphTB(definition) {
             const points = exit.points.map(([x, y]) => [x + body.dx, y + body.dy]);
             const [x, y] = points.at(-1);
             points.push([Math.min(Math.max(x, join.x + JOIN_INSET), join.x + join.width - JOIN_INSET), join.y]);
-            // IR 11: a named branch's end says its branch.
+            // A named branch's end says its branch.
             const lane = laneEdges.get(id).length && typeof byId.get(exit.id)?.branchName === "string" ? byId.get(exit.id).branchName : undefined;
             joinEdges.push({ from: exit.id, to: join.id, outcome: "", outcomes: [], join: true, owner: id, labelText: "", labelWidth: 0,
                 points, labelX: x, labelY: y, back: false, ...(lane !== undefined ? { lane } : {}) });

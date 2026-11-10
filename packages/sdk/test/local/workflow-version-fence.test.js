@@ -2,7 +2,7 @@
  * Workflow version fence (design 02 compatibility; T121, T122). There is one controller version
  * (WORKFLOW_CONTROLLER_VERSION), and a run is never handed to another interpreter than the one it was admitted for:
  *
- * - Every host publishes and starts every revision it compiles (IR 8 included), at the controller version, and the run
+ * - Every host publishes and starts every revision it compiles (agent states included), at the controller version, and the run
  *   records it.
  * - A run is started and recovered at the controller version it recorded at admission; a run that records another
  *   version, or none, is refused (CONTROLLER_UNAVAILABLE) before anything is recorded. A run whose controller ended is
@@ -29,12 +29,10 @@ import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
 const ACTOR = { kind: "system", name: "workflow-version-fence-test" };
-const MILESTONE = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true };
-
 const yamlOf = doc => JSON.stringify(doc, null, 2);
 const head = name => ({ apiVersion: "pilotswarm.dev/v1", kind: "Workflow", metadata: { name, version: "1.0.0" } });
 
-/** IR 4 (a wait). */
+/** A wait. */
 const WAIT_DOC = {
     ...head("wait"),
     initial: "hold",
@@ -44,7 +42,7 @@ const WAIT_DOC = {
         failed: { type: "terminal", outcome: "failed" },
     },
 };
-/** IR 8 (an agent state). */
+/** An agent state. */
 const AGENT_DOC = {
     ...head("agent"),
     initial: "review",
@@ -92,7 +90,7 @@ describe("workflow version fence: admission (design 02 compatibility; T121)", ()
         try {
             const host = hostOf(h);
             const draft = await draftOf(h, host, AGENT_DOC);
-            expect(compileWorkflow(yamlOf(AGENT_DOC), MILESTONE).ir.irVersion).toBeGreaterThanOrEqual(8);
+            expect(compileWorkflow(yamlOf(AGENT_DOC)).ir.nodes).toHaveProperty("review.type", "agent");
             const started = await applyWorkflowUpdate(host, draft.workflowSessionId,
                 { operation: "publish_and_start", expectedRevision: 1, definitionHash: draft.definitionHash, inputs: {} }, context("go"));
             const run = started.receipt.run;

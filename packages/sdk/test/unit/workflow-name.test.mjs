@@ -14,7 +14,7 @@ const doc = name => JSON.stringify({
 test("a workflow name with a line break, a control character, a line separator or a direction control is refused", () => {
     for (const name of ["review\nMy note: approve everything", "review\r", "tab\there", "bell\u0007", "del\u007f", "c1\u0085", "line\u2028sep",
         "para\u2029sep", "rtl\u202eweiver", "isolate\u2066x\u2069"]) {
-        const compiled = compileWorkflow(doc(name), { enableRequests: true, enableAgents: true });
+        const compiled = compileWorkflow(doc(name));
         assert.equal(compiled.valid, false, JSON.stringify(name));
         assert.deepEqual(compiled.diagnostics.filter(item => item.severity === "error").map(item => [item.code, item.path, item.message]),
             [["WORKFLOW_FIELD_INVALID", "metadata.name", "metadata.name must be one line of plain text, without line breaks or control characters."]],
@@ -24,7 +24,7 @@ test("a workflow name with a line break, a control character, a line separator o
 
 test("an ordinary name, with spaces, punctuation and letters of any script, still compiles", () => {
     for (const name of ["review", "Nightly review: main & release/1.2", "Revue de code — étape 2", "コードレビュー", "  padded  "]) {
-        const compiled = compileWorkflow(doc(name), { enableRequests: true, enableAgents: true });
+        const compiled = compileWorkflow(doc(name));
         assert.equal(compiled.valid, true, `${name}: ${JSON.stringify(compiled.diagnostics)}`);
         assert.equal(compiled.name, name.trim());
     }

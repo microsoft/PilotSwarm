@@ -79,7 +79,7 @@ export async function requestFixture(env) {
         const owner = { provider: "test", subject: `request-owner-${randomUUID()}` };
         const parent = randomUUID();
         await h.catalog.createSession(parent, { owner });
-        const compiled = compileWorkflow(REQUESTS, { enableRequests: true });
+        const compiled = compileWorkflow(REQUESTS);
         expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
         const workflow = async () => {
             const workflowSessionId = randomUUID();

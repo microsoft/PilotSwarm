@@ -5532,7 +5532,7 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
   pointer-events: none;
 }
 .ps-workflow-group.is-waiting { border-color: var(--ps-accent); }
-/* IR 11: named branches are lanes side by side in one box, not a stack of items. */
+/* Named branches are lanes side by side in one box, not a stack of items. */
 .ps-workflow-group.is-named { box-shadow: none; }
 .ps-workflow-group.is-joined, .ps-workflow-group.is-done { border-color: var(--ps-success); }
 .ps-workflow-group.is-blocked, .ps-workflow-group.is-failed, .ps-workflow-group.is-timed_out { border-color: var(--ps-wf-danger-text, var(--ps-danger)); }

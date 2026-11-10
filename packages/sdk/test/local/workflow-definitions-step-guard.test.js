@@ -52,7 +52,7 @@ async function stepFixture(env) {
     await catalog.createSession(chat, { owner: OWNER });
     const workflowSessionId = randomUUID();
     const runId = randomUUID();
-    const compiled = compileWorkflow(STEP_YAML, { enableRequests: true, enableAgents: true });
+    const compiled = compileWorkflow(STEP_YAML);
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
     expect((await catalog.createWorkflowSession(workflowSessionId, { parentSessionId: chat, owner: OWNER,
         creationConfig: { workflow: { requestSha256: "step-guard" } } })).created).toBe(true);

@@ -214,7 +214,7 @@ export function workflowGraphOrder(definition) {
 }
 
 /**
- * A state's routes: its outcomes and runtime-error routes, and for a parallel state where each branch starts (IR 11: where
+ * A state's routes: its outcomes and runtime-error routes, and for a parallel state where each branch starts (where
  * each named branch starts, by its name).
  */
 function transitionsOf(node, layers) {
@@ -262,7 +262,7 @@ function groupedOrder(entries) {
         bodies.get(parallel).push(entry);
     }
     if (!bodies.size) return entries;
-    // IR 11: named branches' steps lane by lane, in their declared order (each lane in graph order).
+    // Named branches' steps lane by lane, in their declared order (each lane in graph order).
     for (const [parallel, list] of bodies) {
         const lanes = entries.find(entry => entry.id === parallel)?.node?.namedBranches;
         if (!Array.isArray(lanes)) continue;
@@ -1700,7 +1700,7 @@ function detailLines(selection, width) {
     if (node.evidence) {
         const evidence = node.evidence;
         // Review 19:27Z (rows 8, 9; C): items, "k/n ok", the marks of the words module, no quotes or parentheses.
-        // IR 11: a named-branch state counts branches, by name.
+        // A named-branch state counts branches, by name.
         add(`${evidence.names ? "Branches" : "Items"}: ${workflowItemsFraction(evidence.succeeded, evidence.total) ?? `${evidence.succeeded}/${evidence.total} ok`}${evidence.running ? ` · ${evidence.running} running` : ""}`, "cyan");
         if (evidence.blocked && evidence.blocking.length) {
             add(`  Join blocked by ${workflowItemList(evidence.blocking, evidence.names)}`, "yellow");
@@ -1714,7 +1714,7 @@ function detailLines(selection, width) {
                 row.status === "failed" || row.status.startsWith("canceled") ? "yellow" : "gray");
         }
         if (evidence.rows.length > EVIDENCE_ROWS) {
-            // IR 11: a named fork's rows are branches.
+            // A named fork's rows are branches.
             const more = evidence.rows.length - EVIDENCE_ROWS;
             add(`  … ${more} more ${evidence.names ? (more === 1 ? "branch" : "branches") : "items"} · the portal lists them all`, "gray");
         }

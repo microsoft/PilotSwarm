@@ -21,7 +21,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { compileWorkflow, parseWorkflowIr, WORKFLOW_MILESTONE_IR_VERSION } from "../../dist/workflow/compiler.js";
+import { compileWorkflow, parseWorkflowIr } from "../../dist/workflow/compiler.js";
 import {
     describeWorkflowState, workflowAgentChatContinues, workflowAgentChatSessionId, workflowAgentChildSessionId, workflowAgentCyclePrompt,
     workflowAgentPrompt,
@@ -30,9 +30,6 @@ import { workflowAgentReminderText } from "../../dist/workflow/agent-reminder.js
 import { COMPLETE_WORKFLOW_NODE_TOOL_SPEC } from "../../dist/workflow/agent-node-service.js";
 import { WORKFLOW_SESSION_GUIDANCE, WORKFLOW_SKILLS_DIR } from "../../dist/workflow/guidance.js";
 
-const AGENTS = { enableRequests: true, enableAgents: true };
-const PARALLEL = { ...AGENTS, enableParallel: true };
-const READ = { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION };
 const errors = result => result.diagnostics.filter(item => item.severity === "error");
 
 const LOOP = chat => `
@@ -118,9 +115,9 @@ ${chat === undefined ? "" : `            session: ${chat}\n`}            timeout
 `;
 
 test("the compiler: continue is the default where it is allowed and is carried; new leaves the IR without a mode; anything else is refused", () => {
-    const plain = compileWorkflow(LOOP(undefined), AGENTS);
-    const fresh = compileWorkflow(LOOP("new"), AGENTS);
-    const continued = compileWorkflow(LOOP("continue"), AGENTS);
+    const plain = compileWorkflow(LOOP(undefined));
+    const fresh = compileWorkflow(LOOP("new"));
+    const continued = compileWorkflow(LOOP("continue"));
     for (const result of [plain, fresh, continued]) assert.deepEqual(errors(result), [], JSON.stringify(result.diagnostics));
     // Owner 2026-11-09T05:38Z: a loop's agent state that sets no chat continues; its IR is the explicit continue's.
     assert.equal(plain.ir.nodes.talk.chat, "continue");
@@ -129,13 +126,13 @@ test("the compiler: continue is the default where it is allowed and is carried; 
     assert.notEqual(continued.irSha256, fresh.irSha256);
     // A stored IR keeps the mode it was compiled with: absent is still new (a revision compiled before keeps it), and an
     // invalid stored value is refused.
-    assert.equal(parseWorkflowIr(JSON.parse(JSON.stringify(continued.ir)), READ).nodes.talk.chat, "continue");
-    assert.equal(Object.hasOwn(parseWorkflowIr(JSON.parse(JSON.stringify(fresh.ir)), READ).nodes.talk, "chat"), false);
+    assert.equal(parseWorkflowIr(JSON.parse(JSON.stringify(continued.ir))).nodes.talk.chat, "continue");
+    assert.equal(Object.hasOwn(parseWorkflowIr(JSON.parse(JSON.stringify(fresh.ir))).nodes.talk, "chat"), false);
     const bad = JSON.parse(JSON.stringify(continued.ir));
     bad.nodes.talk.chat = "sometimes";
-    assert.throws(() => parseWorkflowIr(bad, READ), /stored IR agent state talk is invalid/);
+    assert.throws(() => parseWorkflowIr(bad), /stored IR agent state talk is invalid/);
 
-    const wrong = compileWorkflow(LOOP("sometimes"), AGENTS);
+    const wrong = compileWorkflow(LOOP("sometimes"));
     assert.deepEqual(errors(wrong).map(item => [item.code, item.path]), [["WORKFLOW_FIELD_INVALID", "states.talk.session"]]);
     assert.match(errors(wrong)[0].message, /^session must be continue \(one agent session across the state's visits, the default\) or new /);
 });
@@ -143,7 +140,7 @@ test("the compiler: continue is the default where it is allowed and is carried; 
 // Owner 2026-11-09T06:30Z: "lets drop the "chat" in YAML as well and replace with "session"": `chat` is no field now, and no alias.
 test("the compiler refuses the old key chat, saying what to write", () => {
     for (const value of ["continue", "new"]) {
-        const old = compileWorkflow(LOOP(undefined).replace("    timeoutSeconds: 60", `    chat: ${value}\n    timeoutSeconds: 60`), AGENTS);
+        const old = compileWorkflow(LOOP(undefined).replace("    timeoutSeconds: 60", `    chat: ${value}\n    timeoutSeconds: 60`));
         assert.equal(old.valid, false);
         assert.deepEqual(errors(old).map(item => [item.code, item.path, item.message]),
             [["WORKFLOW_FIELD_INVALID", "states.talk.chat", "`chat` is now `session`: write `session: continue` or `session: new`."]]);
@@ -151,29 +148,29 @@ test("the compiler refuses the old key chat, saying what to write", () => {
 });
 
 test("the compiler: in a For each body or a named branch an agent state that sets no chat gets a new chat each visit", () => {
-    const forEach = compileWorkflow(FOR_EACH.replace("          session: continue\n", ""), PARALLEL);
+    const forEach = compileWorkflow(FOR_EACH.replace("          session: continue\n", ""));
     assert.deepEqual(errors(forEach), [], JSON.stringify(forEach.diagnostics));
     assert.equal(Object.hasOwn(forEach.ir.nodes.talk, "chat"), false);
-    assert.equal(forEach.irSha256, compileWorkflow(FOR_EACH.replace("session: continue", "session: new"), PARALLEL).irSha256);
-    const branches = compileWorkflow(BRANCHES(undefined), PARALLEL);
+    assert.equal(forEach.irSha256, compileWorkflow(FOR_EACH.replace("session: continue", "session: new")).irSha256);
+    const branches = compileWorkflow(BRANCHES(undefined));
     assert.deepEqual(errors(branches), [], JSON.stringify(branches.diagnostics));
     for (const id of ["left_talk", "right_talk"]) assert.equal(Object.hasOwn(branches.ir.nodes[id], "chat"), false, id);
     // Outside the parallel state the same Workflow's agent state continues.
     assert.equal(branches.ir.nodes.sum_up.chat, "continue");
     // An explicit continue in a branch is still refused, in today's words; an explicit new is accepted.
-    const refused = errors(compileWorkflow(BRANCHES("continue"), PARALLEL)).filter(item => item.path === "states.fan.branches.left.states.left_talk.session");
+    const refused = errors(compileWorkflow(BRANCHES("continue"))).filter(item => item.path === "states.fan.branches.left.states.left_talk.session");
     assert.equal(refused.length, 1);
     assert.equal(refused[0].message, "state 'left_talk' cannot continue its agent session: it runs inside branch 'left' of parallel state 'fan'. Use session: new.");
-    assert.deepEqual(errors(compileWorkflow(BRANCHES("new"), PARALLEL)), []);
+    assert.deepEqual(errors(compileWorkflow(BRANCHES("new"))), []);
 });
 
 test("the compiler refuses session: continue inside a For each body, in words", () => {
-    const result = compileWorkflow(FOR_EACH, PARALLEL);
+    const result = compileWorkflow(FOR_EACH);
     const refused = errors(result).filter(item => item.path === "states.fan.body.states.talk.session");
     assert.equal(refused.length, 1, JSON.stringify(result.diagnostics));
     assert.equal(refused[0].code, "WORKFLOW_FIELD_INVALID");
     assert.match(refused[0].message, /^state 'talk' cannot continue its agent session: it runs inside For each state 'fan', whose items run side by side and cannot share one agent session\. Use session: new\.$/);
-    const fresh = compileWorkflow(FOR_EACH.replace("session: continue", "session: new"), PARALLEL);
+    const fresh = compileWorkflow(FOR_EACH.replace("session: continue", "session: new"));
     assert.deepEqual(errors(fresh), [], JSON.stringify(fresh.diagnostics));
 });
 
@@ -241,8 +238,8 @@ test("the prompts: a continued chat's first asks for node_execution_id; the cycl
 });
 
 test("the graph shows the mode only when the chat continues; the reminder names the cycle; the tool takes node_execution_id", () => {
-    const continued = compileWorkflow(LOOP("continue"), AGENTS);
-    const plain = compileWorkflow(LOOP("new"), AGENTS);
+    const continued = compileWorkflow(LOOP("continue"));
+    const plain = compileWorkflow(LOOP("new"));
     assert.equal(describeWorkflowState(continued.ir.nodes.talk).chat, "continue");
     assert.equal(Object.hasOwn(describeWorkflowState(plain.ir.nodes.talk), "chat"), false);
     assert.equal(workflowAgentReminderText("talk", "nx-2"), "Reminder from the workflow: step 'talk' is still open. If you have finished, call "

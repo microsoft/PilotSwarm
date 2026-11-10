@@ -6,7 +6,7 @@ import { resolveEffectiveSpawnOwner, type SessionCatalog } from "../cms.js";
 import type { SessionOwnerInfo } from "../types.js";
 import type { WorkflowToolBinding } from "./tool-policy.js";
 import {
-    compileWorkflow, declaredSemver, WORKFLOW_API_VERSION, WORKFLOW_MAX_YAML_BYTES, WORKFLOW_MILESTONE_IR_VERSION,
+    compileWorkflow, declaredSemver, WORKFLOW_API_VERSION, WORKFLOW_MAX_YAML_BYTES,
     type WorkflowCompileResult, type WorkflowIR,
 } from "./compiler.js";
 import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonSha256, WorkflowJsonError, type JsonValue } from "./json.js";
@@ -278,14 +278,6 @@ function requireRunsController(run: Pick<WorkflowRunRow, "runId" | "controllerVe
         `Run ${run.runId} was admitted for workflow controller ${run.controllerVersion ?? "(none)"}, which this build does not run; a build that runs it starts or recovers it.`,
         { runId: run.runId, controllerVersion: run.controllerVersion, hostControllerVersion: WORKFLOW_CONTROLLER_VERSION });
 }
-
-/** A definition as every host compiles it: request, agent and parallel states, run limits and clock waits included. */
-export function compileWorkflowDefinition(yaml: string): WorkflowCompileResult {
-    return compileWorkflow(yaml, { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true });
-}
-
-/** How a host reads stored IR: request, agent and parallel states included. */
-const IR_READ_OPTIONS = { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION } as const;
 
 export interface CreateWorkflowRequest {
     workflowSessionId: string;
@@ -764,7 +756,7 @@ function sameOwner(stored: SessionOwnerInfo | null | undefined, requested: Sessi
 export async function createWorkflow(host: WorkflowHost, request: CreateWorkflowRequest): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
     requireOperationId(request.operationId);
     requireStorableYaml(request.yaml);
-    const compiled = compileWorkflowDefinition(request.yaml);
+    const compiled = compileWorkflow(request.yaml);
     // Stage 2.0: script nodes on a host that runs none are refused at save, before the claim (scripts-gate.ts).
     requireWorkflowScripts(host, compiled.ir, request.start ? "start" : "save");
     const publish = request.publish === true || Boolean(request.start);
@@ -921,7 +913,7 @@ export async function applyWorkflowUpdate(
     let stored: StoredOperation<WorkflowDefinitionReceipt>;
     if (command.operation === "replace_definition") {
         requireStorableYaml(command.yaml);
-        const compiled = compileWorkflowDefinition(command.yaml);
+        const compiled = compileWorkflow(command.yaml);
         requireWorkflowScripts(host, compiled.ir, "save");
         stored = await host.store.replaceDraft({
             workflowSessionId, expectedRevision: command.expectedRevision, yaml: command.yaml, compiled,
@@ -940,7 +932,7 @@ export async function applyWorkflowUpdate(
         const readsIr = command.operation === "publish_and_start" || host.resolveAgent !== undefined || host.scripts === false;
         const revision = readsIr ? await host.store.readRevision(workflowSessionId, command.expectedRevision) : null;
         const revisionIr = revision?.valid && revision.irSha256
-            ? await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256, IR_READ_OPTIONS) : null;
+            ? await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256) : null;
         if (command.operation === "publish_and_start" && revisionIr && revision?.irSha256) {
             validateRunInputs(revisionIr, revision.irSha256, command.inputs);
         }
@@ -972,7 +964,7 @@ export async function applyWorkflowUpdate(
         const definition = await host.store.readDefinition(workflowSessionId);
         let publishedIr: WorkflowIR | null = null;
         if (definition?.state === "published" && definition.publishedRevision !== null && definition.publishedIrSha256) {
-            publishedIr = await host.store.readRevisionIr(workflowSessionId, definition.publishedRevision, definition.publishedIrSha256, IR_READ_OPTIONS);
+            publishedIr = await host.store.readRevisionIr(workflowSessionId, definition.publishedRevision, definition.publishedIrSha256);
             validateRunInputs(publishedIr, definition.publishedIrSha256, command.inputs);
             requireWorkflowScripts(host, publishedIr, "start");
         }
@@ -1335,9 +1327,9 @@ async function acceptTypedInput(host: TypedInputHost, request: TypedInputRequest
     const run = request.runId ? runs.find(item => item.runId === request.runId) : runs.find(item => item.mode === "live");
     if (!run) throw new WorkflowStoreError("RUN_NOT_FOUND", request.runId ? `Run ${request.runId} is not a run of this workflow.` : "This workflow has no live run to give input to.");
     if (typeof request.contract !== "string") throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "contract must name a contract, such as BuildEvent@1.");
-    // Reading the contracts runs nothing: a run of request or agent states (IR 7 and 8) takes input as any run.
-    const ir = await host.store.readRevisionIr(workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION });
-    const contract = ir.contracts?.[request.contract];
+    // Reading the contracts runs nothing: a run of request or agent states takes input as any run.
+    const ir = await host.store.readRevisionIr(workflowSessionId, run.revision, run.irSha256);
+    const contract = ir.contracts[request.contract];
     const received = new Set(Object.values(ir.nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? [node.contract] : []));
     if (!contract || !received.has(request.contract)) {
         throw new WorkflowStoreError("UNSUPPORTED_CONTRACT", `This workflow does not receive contract '${request.contract}'.`, { receives: [...received].sort() });
@@ -1446,7 +1438,7 @@ export async function previewWorkflowAgentVersions(host: Pick<WorkflowHost, "sto
         return { ...head, locked: true, agents: listed(definition.publishedAgentPins), problem: null };
     }
     if (!revision.valid || !revision.irSha256 || !host.resolveAgent) return { ...head, locked: false, agents: [], problem: null };
-    const ir = await host.store.readRevisionIr(workflowSessionId, revisionNumber, revision.irSha256, IR_READ_OPTIONS);
+    const ir = await host.store.readRevisionIr(workflowSessionId, revisionNumber, revision.irSha256);
     try {
         const pinsText = await publicationAgentPins(host, ir, definition.parentSessionId ?? workflowSessionId);
         return { ...head, locked: false, agents: pinsText === null ? [] : listed(JSON.parse(pinsText) as JsonValue), problem: null };
@@ -1488,7 +1480,7 @@ export async function startWorkflowTest(host: WorkflowHost, workflowSessionId: s
     const revision = await host.store.readRevision(workflowSessionId, command.expectedRevision);
     let ir: WorkflowIR | null = null;
     if (revision?.valid && revision.irSha256) {
-        ir = await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256, IR_READ_OPTIONS);
+        ir = await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256);
         validateRunInputs(ir, revision.irSha256, command.inputs);
     }
     const fixturesText = canonicalJson(command.fixtures);
@@ -1584,7 +1576,7 @@ export async function respondWorkflowTest(host: Pick<WorkflowHost, "store" | "du
     }
     const executed = await host.store.readNodeExecution(intercepted.nodeExecutionId);
     if (!executed) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Interception ${command.interceptionId} names no node execution.`);
-    const ir = await host.store.readRevisionIr(workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION });
+    const ir = await host.store.readRevisionIr(workflowSessionId, run.revision, run.irSha256);
     const node = ir.nodes[executed.nodeId];
     if (!node) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `The pinned definition has no state ${executed.nodeId}.`);
     const decide = testResultFor(intercepted, node, ir, run.irSha256, command.response);

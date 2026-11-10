@@ -16,7 +16,7 @@ import { WORKFLOW_RUN_STATE_WORDS, workflowAgentModel, workflowSpawnedModels, wo
     workflowDuration, workflowFailureDetail, workflowNodeCardWords, workflowOutcomeWord, workflowRunStateWord, workflowShortTime, workflowTimeTitle, workflowVisitBadge,
 } from "./workflow-words.js";
 
-// Agent and parallel states (IR 8) and stopped runs are read here as every other state and status is.
+// Agent and parallel states and stopped runs are read here as every other state and status is.
 const STATE_TYPES = new Set(["script", "wait", "messaging", "agent", "parallel", "terminal"]);
 const MESSAGING_MODES = new Set(["receive", "send", "request"]);
 const TERMINAL_OUTCOMES = new Set(["succeeded", "blocked", "failed", "cancelled"]);
@@ -93,7 +93,7 @@ export function workflowDefinition(data, meta = {}) {
             if (!ids.has(target)) throw new Error(`Node '${node.id}' leads to a node that is not defined.`);
         }
     }
-    // IR 11: a parallel state's named branches (the graph's `branches`) are its `namedBranches` here: on a step's view,
+    // A parallel state's named branches (the graph's `branches`) are its `namedBranches` here: on a step's view,
     // `branches` is its branch picker's choices.
     const states = data.states.map(node => (node.type === "parallel" && Array.isArray(node.branches)
         ? (({ branches, ...rest }) => ({ ...rest, namedBranches: branches.filter(isRecord).map(item => ({ name: String(item.name ?? ""),
@@ -228,7 +228,7 @@ export function workflowAgentBindingRows(binding) {
     return rows;
 }
 
-/** IR 11: how many of a parallel step's named branches run at once: "all at once", "one at a time" or "up to N at a time". */
+/** How many of a parallel step's named branches run at once: "all at once", "one at a time" or "up to N at a time". */
 function namedBranchPace(node) {
     const count = Array.isArray(node?.namedBranches) ? node.namedBranches.length : 0;
     return node.concurrency >= count ? "all at once" : node.concurrency === 1 ? "one at a time" : `up to ${node.concurrency} at a time`;
@@ -247,7 +247,7 @@ export function workflowNodeLabel(node) {
         case "send": return `Send · ${node.contract}`;
         case "request": return `Ask · ${node.contract}`;
         case "agent": return node.invoke?.source === "agent" ? `Agent · ${node.invoke.name}` : "Agent";
-        // IR 11: a parallel step with named branches says "Branches" and how many run at once.
+        // A parallel step with named branches says "Branches" and how many run at once.
         case "parallel": return Array.isArray(node.namedBranches) ? `Branches · ${namedBranchPace(node)}`
             : `For each · ${node.concurrency === 1 ? "one item at a time" : `up to ${node.concurrency} at a time`}`;
         // An item's end is not the Workflow's (owner batch 7, H2); a named branch's end is its branch's.
@@ -934,7 +934,7 @@ const outcomeText = (kind, outcome, named = false) => {
     if (kind === "receive" && outcome === "elapsed") return "Done · elapsed, no message";
     if (kind === "send" && outcome === "sent") return "Done · sent, queued at recipient";
     if (kind === "parallel" && outcome === "joined") return "Done · joined, all ok";
-    // IR 11: a parallel step with named branches says "branch" where a For each says "item".
+    // A parallel step with named branches says "branch" where a For each says "item".
     if (kind === "parallel" && outcome === "blocked") return named ? "Done · blocked, a branch failed" : "Done · blocked, an item failed";
     // Review 18:45Z: an Ask's answer in its own words ("✓ answered", "✕ declined").
     if (kind === "request" && workflowAskAnswerWords(outcome)) return workflowAskAnswerWords(outcome);
@@ -999,7 +999,7 @@ export function describeWorkflowExecution(node, execution, sessionName = null) {
         // Its agent chat (open, who may write) is shown once, beside the node: the portal's Agent session, the terminal's Agent chats.
         if (pending) lines.push("Only the agent's result completes this node; its messages in the agent session do not.");
     } else if (kind === "parallel" && Array.isArray(node.namedBranches)) {
-        // IR 11: named branches, each from its own first node.
+        // Named branches, each from its own first node.
         lines.push(`Branches: ${node.namedBranches.map(item => item.name).join(", ")}.`);
         if (pending) lines.push(`Each branch starts at its own first node · ${namedBranchPace(node)}.`);
     } else if (kind === "parallel") {
@@ -1083,7 +1083,7 @@ export function workflowVisitPlaces(executions, parallelOrdinals = null, current
         const number = workflowBranchNumber(item.branch.index);
         const named = visits.size > 1 || parentVisits > 1 || (current !== null && item.branch.parallelNodeExecutionId !== current);
         return [item.id, { index: item.branch.index, number, parallelExecutionId: item.branch.parallelNodeExecutionId, parallelVisit,
-            // IR 11: a named branch's step says its branch's name.
+            // A named branch's step says its branch's name.
             label: `${typeof branchName === "string" && branchName ? `branch ${branchName}` : `item ${number}`}${named
                 ? ` · ${branchName ? "parallel" : "For each"} visit ${parallelVisit ?? "not loaded"}` : ""}` }];
     }));
@@ -1321,7 +1321,7 @@ export function projectWorkflow({ definition = null, readModel = null, workflowM
     }
     const collected = bound
         ? collectExecutions(events, runId, run, true) : { executions: [], ignoredEvents: 0, ignoredRows: 0 };
-    // IR 11: a visit in a named branch carries its branch's name (its step's, on the graph), so every word that names its
+    // A visit in a named branch carries its branch's name (its step's, on the graph), so every word that names its
     // branch can say it: why it ended, the replay, the places.
     const branchNames = new Map((active?.states ?? []).flatMap(node => (typeof node?.branchName === "string" && node.branchName
         && typeof node.parallel === "string" ? [[node.id, node.branchName]] : [])));
@@ -1701,7 +1701,7 @@ export function workflowBranchList(indexes) {
 }
 
 /**
- * "items 2, 3" or "item 2" for the item indexes given (from 0), as people read them (D-W4); IR 11, with a named-branch
+ * "items 2, 3" or "item 2" for the item indexes given (from 0), as people read them (D-W4); with a named-branch
  * state's `names` (by index), "branches quick, careful". Pure.
  */
 export function workflowItemList(indexes, names = null) {
@@ -1755,7 +1755,7 @@ export function workflowContinueWords(node, visit = null) {
     return `Joins at the first ${first}${items === null ? "" : ` of ${items}`}`;
 }
 
-/** The k of a parallel step's join of the first k (owner decision join-k-of-n, IR 9); null for a join of every branch. Pure. */
+/** The k of a parallel step's join of the first k (owner decision join-k-of-n); null for a join of every branch. Pure. */
 export function workflowJoinFirst(node) {
     const first = isRecord(node?.join) ? node.join.first : null;
     return Number.isSafeInteger(first) && first >= 1 ? first : null;
@@ -1794,7 +1794,7 @@ export function workflowJoinWords(node) {
 }
 
 /**
- * A parallel step's own time limit (owner decision join-k-of-n, IR 9; the engine enforces it), as people read it: null
+ * A parallel step's own time limit (owner decision join-k-of-n; the engine enforces it), as people read it: null
  * without one; else `{ text, title }`. It says "time limit 30 s" (or "time limit from the input" for a binding), and
  * "time limit until <time>" while the shown visit waits with a deadline; once it timed out, the title says when it passed
  * (the join's own words say that it did). Pure.
@@ -1856,7 +1856,7 @@ export function workflowJoinView(view, context) {
     return {
         id: `join:${view.id}`, state, rule, label: workflowContinueWords(view, visit), stateText: blockedAtLimit ? "blocked · limit" : JOIN_WORDS[state] ?? null,
         limit: workflowJoinLimit(view, visit, { running, timedOut: timedOut || blockedAtLimit }),
-        // IR 11: named branches are "Branches".
+        // Named branches are "Branches".
         group: { label: Array.isArray(view.namedBranches) ? "Branches" : "For each item", counts, text: groupText },
     };
 }
@@ -2197,8 +2197,8 @@ const WORKFLOW_EVENT_TEXT = {
         short: () => ({ text: "Answer arrived · the Workflow takes it next", level: "warning" }),
     },
     "workflow.branches_cancelled": {
-        // IR 9: why, when it is not failFast: the join had its successes, or the parallel step's own time limit passed.
-        // IR 11: named branches by their names.
+        // Why, when it is not failFast: the join had its successes, or the parallel step's own time limit passed.
+        // Named branches by their names.
         short: data => {
             const names = Array.isArray(data.branches) ? data.branches.filter(name => typeof name === "string" && name) : [];
             if (names.length) {
@@ -2244,7 +2244,7 @@ export function workflowReplayFrames(executions) {
         .map(item => ({ atMs: visitMs(item.enteredAt), nodeExecutionId: item.id, stateId: item.stateId,
             ordinal: Number.isSafeInteger(item.ordinal) ? item.ordinal : null,
             branchIndex: isRecord(item.branch) && Number.isSafeInteger(item.branch.index) ? item.branch.index : null,
-            // IR 11: a visit in a named branch, its branch's name.
+            // A visit in a named branch, its branch's name.
             branchName: isRecord(item.branch) && typeof item.branch.name === "string" && item.branch.name ? item.branch.name : null }))
         .sort((a, b) => a.atMs - b.atMs || (a.ordinal ?? 0) - (b.ordinal ?? 0) || a.nodeExecutionId.localeCompare(b.nodeExecutionId));
 }
@@ -2477,11 +2477,11 @@ const VISIT_WINNERS = {
     stop: "The Workflow was canceled after started nodes finished; this node had not finished when the time to finish ended",
     deadline: "The Workflow's limit passed",
     fail_fast: "Another item failed, so this one was canceled",
-    // Owner decision join-k-of-n (IR 9): a join of the first k that had its successes, and a parallel node's own limit.
+    // Owner decision join-k-of-n: a join of the first k that had its successes, and a parallel node's own limit.
     join: "The join already had the successes it needs, so this item was canceled",
     join_timeout: "The For each node's limit passed, so this item was canceled",
 };
-/** IR 11: the same, for a visit in a named branch ("branch" where a For each says "item"). */
+/** The same, for a visit in a named branch ("branch" where a For each says "item"). */
 const NAMED_VISIT_WINNERS = {
     ...VISIT_WINNERS,
     fail_fast: "Another branch failed, so this one was canceled",
@@ -2648,7 +2648,7 @@ export function workflowBranchEvidence(executions, states, parallel, complete = 
         // It joined after its time limit passed: the successes saved before it still joined (J1b, Q1).
         joinedAfterLimit: parallel.status === "completed" && parallel.outcome === "joined" && limitPassed,
         blocking: blocked ? rows.filter(row => !counted.has(row.index)).map(row => row.index) : [],
-        // IR 11: a named-branch state's branch names (by index), and each row's.
+        // A named-branch state's branch names (by index), and each row's.
         ...(names ? { names } : {}), rows: names ? rows.map(row => ({ ...row, name: names[row.index] ?? null })) : rows,
     };
 }
@@ -2657,7 +2657,7 @@ export function workflowBranchEvidence(executions, states, parallel, complete = 
 export function layoutWorkflowGraph(definition, availableWidth = 640) {
     const nodes = definition?.states || [];
     const byId = new Map(nodes.map(node => [node.id, node]));
-    // A parallel state (workflow, IR 8) also leads to its body's first state: each branch starts there.
+    // A parallel state (workflow) also leads to its body's first state: each branch starts there.
     const branchStart = node => node?.type === "parallel" && typeof node.body?.initial === "string" && byId.has(node.body.initial) ? node.body.initial : null;
     const successors = id => [...new Set([...Object.values(byId.get(id)?.next || {}), ...(branchStart(byId.get(id)) ? [branchStart(byId.get(id))] : [])])]
         .filter(target => byId.has(target));

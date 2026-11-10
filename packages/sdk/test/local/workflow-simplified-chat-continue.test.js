@@ -184,7 +184,7 @@ describe("chat: continue in the store", () => {
 
             const store = catalog.workflowStore();
             const yaml = CHAT_YAML();
-            const compiled = compileWorkflow(yaml, { enableRequests: true, enableAgents: true });
+            const compiled = compileWorkflow(yaml);
             expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
             expect(compiled.ir.nodes.talk.chat).toBe("continue");
             const parent = randomUUID();

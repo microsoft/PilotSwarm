@@ -1,13 +1,12 @@
 /**
  * Workflow parallel joins of the first k and a parallel state's own time
- * limit (IR 9; owner decision join-k-of-n of 2026-11-04), on the Workflow
+ * limit (owner decision join-k-of-n of 2026-11-04), on the Workflow
  * controller.
  *
  * - The compiler: every accepted and refused form of `join` (all,
  *   all_required, { first: k }) and of `timeoutSeconds`, the timed_out route
- *   it needs (and that is refused without it), k against a literal list; IR 9
- *   only for a state that uses one of them, so every other IR stays as it was;
- *   the stored IR's checks.
+ *   it needs (and that is refused without it), k against a literal list; the
+ *   stored IR's checks.
  * - The store: the time limit decides once by its clock (not due, then
  *   timed_out with every branch's end and their pending work cancelled), and
  *   once only against a join (both orders); a branch of a decided parallel
@@ -21,8 +20,8 @@
  *   items; the time limit and the branch's last result at one virtual
  *   instant (a test run's clock: the result counts, one decision, joined);
  *   the time limit while the run is paused; a worker restart, and a
- *   continue-as-new, while the time limit is pending; an IR 8 parallel run
- *   schedules what it did before.
+ *   continue-as-new, while the time limit is pending; a parallel run without
+ *   a time limit has no deadline.
  * - J1b (owner decision join-k-of-n, formal questions Q1 to Q3 and finding
  *   H1): the store's one count for the join and the time limit (pure: commit
  *   order with ties by index, late successes, time-limit cancellations,
@@ -53,8 +52,7 @@ import { randomUUID } from "node:crypto";
 import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import {
-    compileWorkflow, parseWorkflowIr, WORKFLOW_AGENT_IR_VERSION, WORKFLOW_JOIN_IR_VERSION, WORKFLOW_MILESTONE_IR_VERSION,
-    WORKFLOW_PARALLEL_MAX_ITEMS,
+    compileWorkflow, parseWorkflowIr, WORKFLOW_IR_VERSION, WORKFLOW_PARALLEL_MAX_ITEMS,
 } from "../../src/workflow/compiler.ts";
 import { canonicalJson } from "../../src/workflow/json.ts";
 import {
@@ -75,7 +73,6 @@ const getEnv = useSuiteEnv(import.meta.url);
 // CI run 114 (HorizonDB, about ten times slower): the test's own bounds grow with the database (test/helpers/time-scale.js).
 const TIMEOUT = testTime.ms(120_000);
 const ACTOR = { kind: "system", name: "workflow-join-test" };
-const PARALLEL = { enableRequests: true, enableAgents: true, enableParallel: true };
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function until(check, label, timeoutMs = 60_000) {
@@ -145,53 +142,45 @@ function joinDoc({ items = [], forEach = "${input.items}", join, failFast = fals
     };
 }
 
-describe("workflow parallel joins: compiler and IR 9", () => {
-    it("compiles join all, all_required and { first: k }, and timeoutSeconds; IR 9 only for a state that uses one of them", () => {
+describe("workflow parallel joins: compiler and IR", () => {
+    it("compiles join all, all_required and { first: k }, and timeoutSeconds", () => {
         for (const join of [undefined, "all", "all_required"]) {
-            const compiled = compileWorkflow(yamlOf(joinDoc({ items: [{ ms: 0 }], join })), PARALLEL);
+            const compiled = compileWorkflow(yamlOf(joinDoc({ items: [{ ms: 0 }], join })));
             expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
-            // A join of every branch without a time limit is IR 8, written exactly as before.
-            expect(compiled.ir.irVersion).toBe(WORKFLOW_AGENT_IR_VERSION);
+            // A join of every branch without a time limit has no time limit field.
+            expect(compiled.ir.irVersion).toBe(WORKFLOW_IR_VERSION);
             expect(compiled.ir.nodes.fan.join).toBe("all_required");
             expect(Object.keys(compiled.ir.nodes.fan).sort()).toEqual(
                 ["body", "concurrency", "description", "failFast", "forEach", "id", "inputSchema", "join", "next", "outputSchema", "type"]);
         }
-        const first = compileWorkflow(yamlOf(joinDoc({ items: [{ ms: 0 }, { ms: 1 }], join: { first: 2 } })), PARALLEL);
+        const first = compileWorkflow(yamlOf(joinDoc({ items: [{ ms: 0 }, { ms: 1 }], join: { first: 2 } })));
         expect(first.valid, JSON.stringify(first.diagnostics)).toBe(true);
-        expect(first.ir.irVersion).toBe(WORKFLOW_JOIN_IR_VERSION);
         expect(first.ir.nodes.fan).toMatchObject({ join: { first: 2 } });
         expect(first.ir.nodes.fan.timeoutSeconds).toBeUndefined();
 
-        const timed = compileWorkflow(yamlOf(joinDoc({ items: [{ ms: 0 }], timeoutSeconds: 30 })), PARALLEL);
+        const timed = compileWorkflow(yamlOf(joinDoc({ items: [{ ms: 0 }], timeoutSeconds: 30 })));
         expect(timed.valid, JSON.stringify(timed.diagnostics)).toBe(true);
-        expect(timed.ir.irVersion).toBe(WORKFLOW_JOIN_IR_VERSION);
         expect(timed.ir.nodes.fan).toMatchObject({ join: "all_required", timeoutSeconds: 30, next: expect.objectContaining({ timed_out: "late" }) });
-        const bound = compileWorkflow(yamlOf({ ...joinDoc({ items: [{ ms: 0 }], timeoutSeconds: "${input.limit}" }), initialInput: { items: [{ ms: 0 }], limit: 5 } }),
-            PARALLEL);
+        const bound = compileWorkflow(yamlOf({ ...joinDoc({ items: [{ ms: 0 }], timeoutSeconds: "${input.limit}" }), initialInput: { items: [{ ms: 0 }], limit: 5 } }));
         expect(bound.valid, JSON.stringify(bound.diagnostics)).toBe(true);
         expect(bound.ir.nodes.fan.timeoutSeconds).toBe("${input.limit}");
-        // The graph and events show them; an IR 8 state shows neither.
+        // The graph and events show them; a state without them shows neither.
         expect(describeWorkflowState(timed.ir.nodes.fan)).toMatchObject({ join: "all_required", timeoutSeconds: 30 });
         expect(describeWorkflowState(first.ir.nodes.fan)).toMatchObject({ join: { first: 2 } });
         expect(describeWorkflowState(first.ir.nodes.fan).timeoutSeconds).toBeUndefined();
 
-        // A reader takes IR 9 only when asked to, and stored IR 9 reads back as compiled.
+        // The stored IR reads back as compiled.
         for (const compiled of [first, timed, bound]) {
             const stored = JSON.parse(canonicalJson(compiled.ir));
-            expect(parseWorkflowIr(stored, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION })).toEqual(compiled.ir);
-            expect(() => parseWorkflowIr(stored, { maxIrVersion: WORKFLOW_AGENT_IR_VERSION })).toThrow(/stored IR version 9 is not supported/);
-            expect(() => parseWorkflowIr(stored)).toThrow(/stored IR version 9 is not supported/);
+            expect(parseWorkflowIr(stored)).toEqual(compiled.ir);
         }
-        // Joins are IR 9. The milestone reads them; stage 2.4's clock waits (IR 10) made it the newer one.
-        expect(WORKFLOW_JOIN_IR_VERSION).toBe(9);
-        expect(WORKFLOW_MILESTONE_IR_VERSION).toBeGreaterThanOrEqual(WORKFLOW_JOIN_IR_VERSION);
     });
 
     it("refuses every other join, a k above a literal list, a bad time limit, and a timed_out route without a time limit or the reverse", () => {
         const variant = (options, change = () => {}) => {
             const doc = joinDoc(options);
             change(doc, doc.states.fan);
-            return compileWorkflow(yamlOf(doc), PARALLEL);
+            return compileWorkflow(yamlOf(doc));
         };
         const items = [{ ms: 0 }, { ms: 0 }];
         for (const [label, options, change, code, path] of [
@@ -230,15 +219,14 @@ describe("workflow parallel joins: compiler and IR 9", () => {
             .toBe("join.first is 3, but forEach lists 2 items: 3 successes can never happen.");
     });
 
-    it("refuses stored IR whose join or time limit its version does not have, or that is malformed", () => {
-        const first = compileWorkflow(yamlOf(joinDoc({ items: [{ ms: 0 }], join: { first: 1 }, timeoutSeconds: 10 })), PARALLEL);
+    it("refuses stored IR of another version, or whose join or time limit is malformed", () => {
+        const first = compileWorkflow(yamlOf(joinDoc({ items: [{ ms: 0 }], join: { first: 1 }, timeoutSeconds: 10 })));
         expect(first.valid, JSON.stringify(first.diagnostics)).toBe(true);
         const stored = JSON.parse(canonicalJson(first.ir));
-        const read = value => parseWorkflowIr(value, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION });
+        const read = value => parseWorkflowIr(value);
         const withFan = change => ({ ...stored, nodes: { ...stored.nodes, fan: { ...stored.nodes.fan, ...change } } });
         for (const broken of [
-            { ...stored, irVersion: 8 },
-            { ...withFan({ timeoutSeconds: undefined }), irVersion: 8 },
+            { ...stored, irVersion: WORKFLOW_IR_VERSION + 1 },
             withFan({ join: { first: 0 } }),
             withFan({ join: { first: 2.5 } }),
             withFan({ join: { first: 1, extra: true } }),
@@ -248,8 +236,8 @@ describe("workflow parallel joins: compiler and IR 9", () => {
         ]) {
             expect(() => read(JSON.parse(JSON.stringify(broken)))).toThrow(/stored IR/);
         }
-        // An IR 8 state with neither reads back as it was.
-        const plain = compileWorkflow(yamlOf(joinDoc({ items: [{ ms: 0 }] })), PARALLEL);
+        // A state with neither reads back as compiled.
+        const plain = compileWorkflow(yamlOf(joinDoc({ items: [{ ms: 0 }] })));
         expect(read(JSON.parse(canonicalJson(plain.ir)))).toEqual(plain.ir);
     });
 });
@@ -258,7 +246,7 @@ describe("workflow parallel joins: compiler and IR 9", () => {
 
 describe("workflow parallel joins: the store's one count for the join and the time limit (J1b)", () => {
     const P = "nx-00ab";
-    const ir = compileWorkflow(yamlOf(joinDoc({ items: [{ ms: 0 }, { ms: 0 }, { ms: 0 }], join: { first: 2 }, timeoutSeconds: 60 })), PARALLEL).ir;
+    const ir = compileWorkflow(yamlOf(joinDoc({ items: [{ ms: 0 }, { ms: 0 }, { ms: 0 }], join: { first: 2 }, timeoutSeconds: 60 }))).ir;
     let clock = 0;
     /**
      * A stored node execution of branch `index`: completed (with `outcome`, `resultKind`, `winner`) or pending; a terminal
@@ -369,7 +357,7 @@ async function storedRun(h, doc) {
     const parent = randomUUID();
     await h.catalog.createSession(parent, {});
     const yaml = yamlOf(doc);
-    const compiled = compileWorkflow(yaml, PARALLEL);
+    const compiled = compileWorkflow(yaml);
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
     const workflowSessionId = randomUUID();
     const runId = randomUUID();
@@ -1190,12 +1178,12 @@ describe("workflow parallel time limits: a worker restart across the deadline", 
     });
 });
 
-describe("workflow parallel states of IR 8", () => {
-    it("an IR 8 parallel run schedules what it did before: no time limit, no reason for its cancellation, the same join input", { timeout: TIMEOUT }, async () => {
+describe("workflow parallel states without a time limit", () => {
+    it("a parallel run without a time limit has no deadline, no reason for its cancellation, the same join input", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             const doc = joinDoc({ items: [{ fail: true, ms: 1_500 }, { seconds: 600 }], failFast: true });
-            expect(compileWorkflow(yamlOf(doc), PARALLEL).ir.irVersion).toBe(WORKFLOW_AGENT_IR_VERSION);
+            expect(compileWorkflow(yamlOf(doc)).ir.nodes.fan.timeoutSeconds).toBeUndefined();
             const { workflowSessionId, runId, fan, at } = await started(h, doc);
             expect(await ended(h, runId)).toMatchObject({ terminalNodeId: "stuck" });
             expect((await h.store.readNodeExecution(fan)).deadlineAt).toBeNull();

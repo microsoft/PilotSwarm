@@ -54,7 +54,7 @@ import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import {
-    compileWorkflow, parseWorkflowIr, WORKFLOW_MESSAGING_IR_VERSION, WORKFLOW_SEND_IR_VERSION,
+    compileWorkflow, parseWorkflowIr, WORKFLOW_IR_VERSION,
 } from "../../src/workflow/compiler.ts";
 import { canonicalJson, sha256Hex } from "../../src/workflow/json.ts";
 import { createWorkflow, sendTypedWorkflowInput } from "../../src/workflow/service.ts";
@@ -367,10 +367,10 @@ function compressFinalizeSchedule(delayMs) {
 }
 
 describe("workflow messaging send", () => {
-    it("compiles a send state, writes IR version 6 only for a workflow with one, and refuses what a send state may not be", () => {
+    it("compiles a send state and refuses what a send state may not be", () => {
         const compiled = compileWorkflow(SENDER());
         expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
-        expect(compiled.ir.irVersion).toBe(WORKFLOW_SEND_IR_VERSION);
+        expect(compiled.ir.irVersion).toBe(WORKFLOW_IR_VERSION);
         expect(compiled.ir.nodes.tell).toEqual({
             id: "tell", type: "messaging", description: null, mode: "send", contract: "BuildStatus@1", recipient: { parent: true },
             correlate: null, hasInput: false, input: null, next: { sent: "done", failure: "refused" },
@@ -379,17 +379,15 @@ describe("workflow messaging send", () => {
         expect(compiled.diagnostics.filter(item => item.code === "WORKFLOW_CONTRACT_UNUSED").map(item => item.path)).toEqual(["contracts.Note@1", "contracts.Batch@1"]);
         const stored = JSON.parse(JSON.stringify(compiled.ir));
         expect(parseWorkflowIr(stored)).toEqual(compiled.ir);
-        // Version 5 has no send states.
-        expect(() => parseWorkflowIr({ ...stored, irVersion: WORKFLOW_MESSAGING_IR_VERSION })).toThrow("stored IR messaging state tell is invalid");
         // A named recipient is a session id, literal or one binding, kept as written.
         expect(compileWorkflow(SENDER({ recipient: '"${kv.peer}"' })).ir.nodes.tell.recipient).toEqual({ sessionId: "${kv.peer}" });
         expect(compileWorkflow(SENDER({ recipient: "{ sessionId: s-1 }" })).ir.nodes.tell.recipient).toEqual({ sessionId: "s-1" });
         // An optional correlation (a workflow recipient's receive states match it), kept as written.
         expect(compileWorkflow(SENDER({ extra: '    correlate: { buildId: "${inputs.buildId}" }\n' })).ir.nodes.tell.correlate)
             .toEqual({ buildId: "${inputs.buildId}" });
-        // Version 6 IR from before the correlation field reads as having none.
+        // A stored send state states its correlation (null for none).
         const { correlate: _absent, ...withoutCorrelate } = stored.nodes.tell;
-        expect(parseWorkflowIr({ ...stored, nodes: { ...stored.nodes, tell: withoutCorrelate } }).nodes.tell.correlate).toBeNull();
+        expect(() => parseWorkflowIr({ ...stored, nodes: { ...stored.nodes, tell: withoutCorrelate } })).toThrow("stored IR messaging state tell is invalid");
         const refusals = [
             [SENDER().replace("    recipient: { parent: true }\n", ""), "WORKFLOW_FIELD_REQUIRED", "states.tell.recipient"],
             [SENDER({ recipient: "{ parent: false }" }), "WORKFLOW_FIELD_INVALID", "states.tell.recipient"],
@@ -400,7 +398,6 @@ describe("workflow messaging send", () => {
             [SENDER().replace("next: { sent: done, failure: refused }", "next: { sent: done, received: done, failure: refused }"),
                 "WORKFLOW_ROUTE_INVALID", "states.tell.transition.next.received"],
             [SENDER().replace("next: { sent: done, failure: refused }", "next: { failure: refused }"), "WORKFLOW_ROUTE_MISSING", "states.tell.transition.next"],
-            [SENDER().replace("mode: send", "mode: request"), "WORKFLOW_FEATURE_UNSUPPORTED", "states.tell.mode"],
         ];
         for (const [yaml, code, path] of refusals) {
             const result = compileWorkflow(yaml);

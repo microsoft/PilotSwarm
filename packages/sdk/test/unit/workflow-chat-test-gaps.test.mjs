@@ -31,7 +31,6 @@ import { workflowSessionGuidance, WORKFLOW_SESSION_GUIDANCE } from "../../dist/w
 import fs from "node:fs";
 
 const sha = text => createHash("sha256").update(text).digest("hex");
-const ALL = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true };
 const ok = (kind = "success", value = null) => ({ kind, value });
 const untouchable = what => new Proxy({}, { get: (_target, name) => { throw new Error(`${what}.${String(name)} was used`); } });
 
@@ -124,7 +123,7 @@ ${wait ? "    wait: { seconds: 300 }\n" : ""}    transition: { next: { received:
 
 /** One wait of a test whose run waits at receive await_event (visit `ordinal`), with these fixtures: what it did, and its report. */
 async function receiveTest(fixtures, { wait = false, ordinal = 1, from = null, lag = 0, graceMs = 600_000 } = {}) {
-    const compiled = compileWorkflow(RECEIVER({ wait }), ALL);
+    const compiled = compileWorkflow(RECEIVER({ wait }));
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     const runRow = (extra = {}) => ({ runId: "run-1", workflowSessionId: "bench-1", mode: "test", status: "running", revision: 1, irSha256: compiled.irSha256,
         controllerInstanceId: "ctl-1", terminalOutcome: null, terminalNodeId: null, terminalError: null, stop: null, finishedAt: null,
@@ -336,7 +335,7 @@ states:
 `;
 
 test("G4: expect names a terminal state of the revision or an outcome; anything else is refused with what it may name", () => {
-    const { ir } = compileWorkflow(ENDS_YAML, ALL);
+    const { ir } = compileWorkflow(ENDS_YAML);
     assert.deepEqual(parseChatTestExpect("rejected", ir), { state: "rejected" });
     assert.deepEqual(parseChatTestExpect("failed", ir), { state: "failed" }, "a terminal state's id wins over the outcome of that name");
     assert.deepEqual(parseChatTestExpect("blocked", ir), { outcome: "blocked" });
@@ -462,7 +461,7 @@ states:
 `;
 
 test("G5: each step says the step and route it came by, its branch (a named branch, or item N of a For each) and its input", async () => {
-    const compiled = compileWorkflow(BRANCHES_YAML, ALL);
+    const compiled = compileWorkflow(BRANCHES_YAML);
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     const fork = "nx-aa11", items = "nx-bb22";
     const nodes = [
@@ -491,7 +490,7 @@ test("G5: each step says the step and route it came by, its branch (a named bran
 });
 
 test("G5: an unanswered call's fixture skeleton is exact: parsed and matched, it answers that call (and that visit only)", async () => {
-    const compiled = compileWorkflow(BRANCHES_YAML, ALL);
+    const compiled = compileWorkflow(BRANCHES_YAML);
     const input = { round: 2, notes: ["x"] };
     const judge = visitRow("judge", 2, { nodeType: "agent", state: "pending", input, inputSha256: sha(canonicalJson(input)) });
     const waiting = [{ interceptionId: "i-1", nodeExecutionId: judge.nodeExecutionId, operation: "agent", tool: null, arguments: null, state: "awaiting_parent", response: null }];

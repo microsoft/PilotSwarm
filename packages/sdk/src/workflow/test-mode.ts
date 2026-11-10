@@ -287,7 +287,7 @@ export function testResultFor(interception: Pick<WorkflowTestInterception, "oper
         return { outcome: REQUEST_DECLINED, resultKind: "business", valueText: canonicalJson(value.decline), winner: "test" };
     }
     if (node.mode !== "request") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `State ${node.id} is not a request state.`);
-    const schema = ir.contracts?.[node.contract]?.response?.schema;
+    const schema = ir.contracts[node.contract]?.response?.schema;
     if (!schema) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Contract ${node.contract} declares no response.`);
     const problems = schemaSetFor(irSha256, ir.schemaDefs).validate(schema, value.response);
     if (problems.length > 0) throw invalid(`The response does not match ${schema}.`, { problems: problemsJson(problems) });

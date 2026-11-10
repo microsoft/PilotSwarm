@@ -68,7 +68,7 @@ async function lineageOf(catalog) {
     await catalog.createSession(parent, { owner: PERSON });
     const workflowSessionId = randomUUID();
     const runId = randomUUID();
-    const compiled = compileWorkflow(AGENT_YAML, { enableRequests: true, enableAgents: true });
+    const compiled = compileWorkflow(AGENT_YAML);
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
     expect((await catalog.createWorkflowSession(workflowSessionId, { parentSessionId: parent, owner: null,
         creationConfig: { workflow: { requestSha256: "a1-refusal" } } })).created).toBe(true);

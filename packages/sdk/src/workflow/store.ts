@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import {
     AGENT_REPORTED_ERROR_CODES, MESSAGE_SENT, parseDiagnostics, parseWorkflowIr, RECEIVE_RECEIVED, REQUEST_DECLINED, REQUEST_RESPONDED, WAIT_ELAPSED, WAIT_MAX_SECONDS,
-    WORKFLOW_API_VERSION, WORKFLOW_MAX_YAML_BYTES, WORKFLOW_MILESTONE_IR_VERSION, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR,
+    WORKFLOW_API_VERSION, WORKFLOW_MAX_YAML_BYTES, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR,
     type WorkflowIRClockWait, type WorkflowIRNode,
 } from "./compiler.js";
 import { computeCronAtNextFire } from "../cron-at.js";
@@ -398,7 +398,7 @@ export interface NodeResultInput {
     winner: string;
 }
 
-/** What a parallel state's join or its own time limit decided (IR 9), for the state's events: its result, its branches, the successes that counted, and the work cancelled with it. */
+/** What a parallel state's join or its own time limit decided, for the state's events: its result, its branches, the successes that counted, and the work cancelled with it. */
 export interface ParallelSettled {
     result: NodeResultInput;
     total: number;
@@ -650,7 +650,7 @@ export interface SendSpecInput {
 }
 
 /**
- * What a request state requests, resolved when it is entered (IR 7; no
+ * What a request state requests, resolved when it is entered (no
  * runtime enters one yet, design workflow-messaging-request.md 8.4): a send
  * state's spec, plus its deadline's seconds (frozen at admission, from 1 to
  * WAIT_MAX_SECONDS) and the name of the schema a response must satisfy in
@@ -666,7 +666,7 @@ export interface RequestSpecInput extends SendSpecInput {
     workflowRecipient: { result: NodeResultInput; projection?: SessionProjection };
 }
 
-// ─── Agent states (IR 8, migration 0088) ──
+// ─── Agent states (migration 0088) ──
 
 /**
  * An agent state's task: its inline prompt, or the named agent definition it
@@ -1696,14 +1696,14 @@ function responseValueOf(raw: unknown, kind: "response" | "decline"): JsonValue 
 }
 
 /** A revision row's IR, verified against its stored hash (and the pinned one, when given). */
-export function revisionIrFrom(row: Row | undefined, revision: number, expectedIrSha256: string | undefined, options: { maxIrVersion?: number }): WorkflowIR {
+export function revisionIrFrom(row: Row | undefined, revision: number, expectedIrSha256: string | undefined): WorkflowIR {
     const text = row ? strOrNull(row, "ir") : null;
     const stored = row ? strOrNull(row, "ir_sha256") : null;
     if (!text || !stored) throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} has no compiled IR.`);
     if (sha256Hex(text) !== stored || (expectedIrSha256 && stored !== expectedIrSha256)) {
         throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Revision ${revision} IR does not match its pinned hash.`);
     }
-    return parseWorkflowIr(parseStoredJson(text, "ir"), options);
+    return parseWorkflowIr(parseStoredJson(text, "ir"));
 }
 
 /**
@@ -1715,7 +1715,7 @@ export function revisionIrFrom(row: Row | undefined, revision: number, expectedI
  */
 function declaredResponseSchema(ir: WorkflowIR, stateId: string, contract: string, what: string): string {
     const node = Object.hasOwn(ir.nodes, stateId) ? ir.nodes[stateId] : undefined;
-    const declared = ir.contracts !== undefined && Object.hasOwn(ir.contracts, contract) ? ir.contracts[contract].response?.schema : undefined;
+    const declared = Object.hasOwn(ir.contracts, contract) ? ir.contracts[contract].response?.schema : undefined;
     if (node === undefined || node.type !== "messaging" || node.mode !== "request" || node.contract !== contract
         || declared === undefined || !Object.hasOwn(ir.schemaDefs, declared)) {
         return corrupt(`${what}: state ${stateId} of its pinned definition is not a request state of contract ${contract} that declares a response.`);
@@ -3326,41 +3326,18 @@ export class WorkflowStore {
         return rows[0] ? { name: strOrNull(rows[0], "name"), semver: strOrNull(rows[0], "semver") } : null;
     }
 
-    /**
-     * The IR of a valid revision, verified against its stored hash. IR 7 (request states) is read only when the caller
-     * asks for it (parseWorkflowIr's maxIrVersion); the runtime does not.
-     */
-    async readRevisionIr(workflowSessionId: string, revision: number, expectedIrSha256?: string, options: { maxIrVersion?: number } = {}): Promise<WorkflowIR> {
+    /** The IR of a valid revision, verified against its stored hash. */
+    async readRevisionIr(workflowSessionId: string, revision: number, expectedIrSha256?: string): Promise<WorkflowIR> {
         const { rows } = await this.pool.query(
             `SELECT ir, ir_sha256 FROM ${this.t.revisions} WHERE workflow_session_id = $1 AND revision = $2`, [workflowSessionId, revision]);
-        return revisionIrFrom(rows[0], revision, expectedIrSha256, options);
-    }
-
-    /**
-     * A revision's IR version, read from its stored IR without parsing it
-     * (so a build reads it whatever version it runs; null for a revision
-     * that does not exist or has no compiled IR). Hosts use it to refuse a
-     * revision they do not run before anything is written.
-     */
-    async readRevisionIrVersion(workflowSessionId: string, revision: number): Promise<number | null> {
-        const { rows } = await this.pool.query(
-            `SELECT CASE WHEN ir IS NULL THEN NULL ELSE ir::jsonb ->> 'irVersion' END AS ir_version FROM ${this.t.revisions}
-              WHERE workflow_session_id = $1 AND revision = $2`, [workflowSessionId, revision]);
-        const value = rows[0]?.ir_version;
-        if (value === null || value === undefined) return null;
-        const irVersion = Number(value);
-        if (!Number.isSafeInteger(irVersion) || irVersion < 1) {
-            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Revision ${revision} of workflow ${workflowSessionId} has an invalid IR version.`);
-        }
-        return irVersion;
+        return revisionIrFrom(rows[0], revision, expectedIrSha256);
     }
 
     /** readRevisionIr in the caller's transaction (a second connection is never needed while its locks are held). */
-    private async revisionIrIn(client: PoolClient, workflowSessionId: string, revision: number, expectedIrSha256: string, options: { maxIrVersion?: number })
-        : Promise<WorkflowIR> {
+    private async revisionIrIn(client: PoolClient, workflowSessionId: string, revision: number, expectedIrSha256: string): Promise<WorkflowIR> {
         const { rows } = await client.query(
             `SELECT ir, ir_sha256 FROM ${this.t.revisions} WHERE workflow_session_id = $1 AND revision = $2`, [workflowSessionId, revision]);
-        return revisionIrFrom(rows[0], revision, expectedIrSha256, options);
+        return revisionIrFrom(rows[0], revision, expectedIrSha256);
     }
 
     async listRuns(workflowSessionId: string): Promise<WorkflowRunRow[]> {
@@ -3560,7 +3537,7 @@ export class WorkflowStore {
          */
         waitSeconds: number | null;
         /**
-         * Stage 2.4: a clock wait's time (IR 10), instead of waitSeconds: its deadline is the next time it names after the
+         * Stage 2.4: a clock wait's time, instead of waitSeconds: its deadline is the next time it names after the
          * admission's accepted-entry reading of the store's clock (a test run's virtual clock), DST-safe (cron-at.ts).
          */
         waitAt?: WorkflowIRClockWait | null;
@@ -3639,7 +3616,7 @@ export class WorkflowStore {
             if (live && ACTIVE_RUN_STATUSES.includes(run.status) && run.stop !== null) return { admitted: false as const, reason: "stopping" as const, run };
             if (!live || !ADMITTING_RUN_STATUSES.includes(run.status)) return { admitted: false as const, reason: "inactive" as const, run };
             if (run.kvRevision !== input.kvRevision) return { admitted: false as const, reason: "kv_changed" as const, run };
-            // IR 9: a branch of a parallel state already decided (its join or its own time limit; the run lock orders this
+            // A branch of a parallel state already decided (its join or its own time limit; the run lock orders this
             // with that decision) admits nothing more, and once the state's time limit passed (by the run's clock) a branch
             // admits only its terminal: work that starts then can no longer count, and a terminal records the end of work
             // stored before (J1b). Its controller ends the branch when it is refused.
@@ -3693,7 +3670,7 @@ export class WorkflowStore {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid agent spec.`);
             }
             if (agent !== null) {
-                const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION });
+                const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256);
                 const declared = ir.nodes[input.nodeId];
                 if (declared?.type !== "agent" || declared.outputSchema !== agent.outputSchema
                     || canonicalJson([...declared.outcomes].sort()) !== canonicalJson([...agent.outcomes].sort())) {
@@ -3704,7 +3681,7 @@ export class WorkflowStore {
             // A request's record freezes the response schema that its state's contract declares in the run's pinned
             // definition, never another schema of that definition.
             if (request !== null) {
-                const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION });
+                const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256);
                 if (declaredResponseSchema(ir, input.nodeId, request.contract, `Node execution ${input.nodeExecutionId}`) !== request.responseSchema) {
                     throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has a request spec whose response `
                         + `schema ${request.responseSchema} is not the one contract ${request.contract} declares.`);
@@ -3712,7 +3689,7 @@ export class WorkflowStore {
             }
             // A wait admitted pending has a whole number of seconds; a receive may
             // race a wait (then it has them too); an intercepted agent or request has its deadline's; a parallel state may
-            // have its own time limit (IR 9); nothing else has any.
+            // have its own time limit; nothing else has any.
             const waitAt = input.waitAt ?? null;
             const waits = input.nodeType === "wait" && immediate === null;
             const deadlined = intercept !== null && intercept.operation !== "send";
@@ -4045,7 +4022,7 @@ export class WorkflowStore {
 
     /**
      * Whether a run has work that still awaits its result: a pending node execution other than a parallel state's own
-     * (IR 8), which waits on its branches' node executions and is not work.
+     *, which waits on its branches' node executions and is not work.
      */
     async hasPendingNodes(runId: string): Promise<boolean> {
         const { rows } = await this.pool.query(
@@ -4065,7 +4042,7 @@ export class WorkflowStore {
      * completed_at is the store's clock read after the session lock (not the
      * transaction's start), so the results of one workflow are stamped in the
      * order they commit: a parallel state's join of the first k and its time
-     * limit read that order (IR 9; owner decision join-k-of-n, J1b).
+     * limit read that order (owner decision join-k-of-n, J1b).
      */
     async completeNode(nodeExecutionId: string, result: NodeResultInput, projection?: SessionProjection): Promise<{ won: boolean; node: WorkflowNodeExecutionRow }> {
         return this.transaction(async client => {
@@ -4546,7 +4523,7 @@ export class WorkflowStore {
 
             // 5. The schema of the response (the one its state's contract declares in the run's pinned definition) or of a decline.
             const run = await this.lockRun(client, request.runId);
-            const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION });
+            const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256);
             const { nodeId: stateId } = await this.nodeIn(client, request.exchangeId);
             if (declaredResponseSchema(ir, stateId, request.contract, `Request ${request.exchangeId}`) !== request.responseSchema) {
                 return corrupt(`Request ${request.exchangeId} froze response schema ${request.responseSchema}, which contract ${request.contract} does not declare.`);
@@ -5942,7 +5919,7 @@ export class WorkflowStore {
         return { sessionId, level, agentRoot, deleted: rows[0].deleted === true };
     }
 
-    // ─── Agent states (IR 8, migration 0088) ──
+    // ─── Agent states (migration 0088) ──
 
     /**
      * FU-17: the tools an agent state limits its agent to (`tools`), for the session of a turn in that state's subtree: the
@@ -5955,8 +5932,7 @@ export class WorkflowStore {
             `SELECT n.node_id, r.workflow_session_id, r.revision, r.ir_sha256 FROM ${this.t.nodes} n JOIN ${this.t.runs} r ON r.run_id = n.run_id
               WHERE n.node_execution_id = $1`, [nodeExecutionId]);
         if (!rows[0]) return null;
-        const ir = await this.readRevisionIr(str(rows[0], "workflow_session_id"), int(rows[0], "revision"), str(rows[0], "ir_sha256"),
-            { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION });
+        const ir = await this.readRevisionIr(str(rows[0], "workflow_session_id"), int(rows[0], "revision"), str(rows[0], "ir_sha256"));
         const node = ir.nodes[str(rows[0], "node_id")];
         return node?.type === "agent" && Array.isArray(node.tools) ? [...node.tools] : null;
     }
@@ -6574,7 +6550,7 @@ export class WorkflowStore {
             }
 
             // 4. The result against the state's contract in the run's pinned definition.
-            const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION });
+            const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256);
             const declared = ir.nodes[node.nodeId];
             if (declared?.type !== "agent" || declared.outputSchema !== invocation.outputSchema) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Agent state ${nodeExecutionId} froze an output contract its state does not declare.`);
@@ -6801,7 +6777,7 @@ export class WorkflowStore {
                         GREATEST(1, CEIL(EXTRACT(EPOCH FROM (run.stop_deadline_at - reading.at)) * 1000))::bigint AS remaining_ms
                    FROM (SELECT clock_timestamp() AS at) AS reading, ${this.t.runs} AS run WHERE run.run_id = $1`, [run.runId]);
             const at = str(clock[0], "at");
-            // A parallel state (IR 8) waits on its branches' node executions, not on work of its own: it neither holds the
+            // A parallel state waits on its branches' node executions, not on work of its own: it neither holds the
             // stop past their settling nor counts as an expired grace; it is cancelled with what is pending when the run ends.
             const { rows: pendingRows } = await client.query(
                 `SELECT node_execution_id, node_type FROM ${this.t.nodes} WHERE run_id = $1 AND state = 'pending' ORDER BY node_execution_id FOR UPDATE`, [run.runId]);
@@ -6921,11 +6897,11 @@ export class WorkflowStore {
 
     /**
      * Cancel the other branches of a parallel state whose failFast policy
-     * met a branch that did not succeed (IR 8): in one
+     * met a branch that did not succeed: in one
      * transaction under the session and run locks, every node execution of
      * these branch scopes still pending is decided cancelled (winner
      * `fail_fast`), and a message one of their send states sent to a workflow
-     * and still pending is decided with it (decidePendingSendsIn). IR 9: with
+     * and still pending is decided with it (decidePendingSendsIn). With
      * `reason` join, the branches still running when a join of the first k
      * had its successes (winner `join`); with `reason` timeout, those the
      * state's own time limit cut (winner `join_timeout`; elapseParallelNode
@@ -6963,7 +6939,7 @@ export class WorkflowStore {
                 if (now.length > 0) {
                     await this.decidePendingSendsIn(client, workflowSessionId, input.runId, now);
                     // The branches whose work this cancelled, in the order named (J1d): a branch that had already ended is not one.
-                    // IR 11: named branches by their names too.
+                    // Named branches by their names too.
                     const cut = new Set(decided.map(row => str(row, "scope_id")));
                     const scopes = input.scopeIds.filter(scopeId => cut.has(scopeId));
                     await this.project(client, input.projection?.(now, scopes, branchScopeNameList(scopes, names)));
@@ -6990,7 +6966,7 @@ export class WorkflowStore {
     }
 
     /**
-     * A parallel state's own time limit (IR 9; owner
+     * A parallel state's own time limit (owner
      * decision join-k-of-n with formal questions Q1 to Q3 and finding H1), as
      * elapseWait is a wait's: in one transaction under the session and run
      * locks (an admission's order, so no branch state is admitted between
@@ -7047,8 +7023,8 @@ export class WorkflowStore {
     }
 
     /**
-     * Decide the join of a parallel state of IR 9 (a join of the first k, or
-     * a join with its own time limit), which its controller
+     * Decide the join of a parallel state with a join of the first k, or
+     * with its own time limit, which its controller
      * asks for whenever a branch ends: in one transaction under the session
      * and run locks and the state's row, the store's one count decides, the
      * same count its time limit uses (settleParallelIn; formal finding H1).
@@ -7090,7 +7066,7 @@ export class WorkflowStore {
 
     /**
      * The store's one count for a parallel state's join and its time limit
-     * (IR 9), in the caller's transaction (which holds the session and run
+     *, in the caller's transaction (which holds the session and run
      * locks, and the state's row, pending): every node execution of its
      * branch scopes is read with its place in the store's commit order and
      * whether it was committed at or before the state's deadline
@@ -7107,10 +7083,10 @@ export class WorkflowStore {
         : Promise<{ node: WorkflowNodeExecutionRow; cancelled: string[]; decided: ParallelSettled | null; held?: true }> {
         const total = Array.isArray(node.input) ? node.input.length : 0;
         const scopeIds = branchScopeIds(node.nodeExecutionId, total);
-        const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION });
+        const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256);
         const parallel = ir.nodes[node.nodeId];
         if (parallel?.type !== "parallel") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `State ${node.nodeId} of run ${run.runId} is not a parallel state.`);
-        // Review NB-R2 (IR 11, a named fork): after an accepted graceful stop (the caller holds the run's lock) nothing settles
+        // Review NB-R2 (a named fork): after an accepted graceful stop (the caller holds the run's lock) nothing settles
         // the fork, neither its join nor its own time limit: its started branches' work runs to its own deadlines, nothing of
         // theirs is cut, and no report is written; the stop's end cancels the pending fork (finishStoppedRun). A For each
         // keeps its recorded behaviour.
@@ -7139,7 +7115,7 @@ export class WorkflowStore {
         let result: NodeResultInput;
         if (verdict.kind === "joined") {
             if (input.joined === undefined) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Parallel state ${node.nodeExecutionId} was joined by its time limit.`);
-            // IR 11: a named-branch state's output is { <name>: output }.
+            // A named-branch state's output is { <name>: output }.
             result = input.joined(parallelJoinedOutput(parallel, verdict.winners.map(branch => ({ index: branch.index, output: branch.row?.output ?? null }))));
         } else {
             const ends = branches.map(parallelBranchEnd);
@@ -7208,7 +7184,7 @@ export class WorkflowStore {
                     `SELECT node_execution_id, node_id FROM ${this.t.nodes} WHERE run_id = $1 AND node_execution_id = ANY($2::text[])`, [runId, forkIds]);
                 if (rows.length === 0) return new Map<string, string>();
                 const run = runFrom((await client.query(`SELECT * FROM ${this.t.runs} WHERE run_id = $1`, [runId])).rows[0]);
-                const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION });
+                const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256);
                 return branchScopeNames(scopeIds, new Map(rows.map(row => [str(row, "node_execution_id"), ir.nodes[str(row, "node_id")]])));
             });
         } catch (error) {
@@ -7235,7 +7211,7 @@ export class WorkflowStore {
             // at its terminal, and a branch that had already ended or never started, are not among them.
             const cut = new Set(rows.map(row => str(row, "scope_id")));
             const scopes = scopeIds.filter(scopeId => cut.has(scopeId)).slice(0, 64);
-            // IR 11: named branches by their names too (the state's IR node, which settleParallelIn read; each scope's own fork).
+            // Named branches by their names too (the state's IR node, which settleParallelIn read; each scope's own fork).
             const names = branchScopeNameList(scopes, branchScopeNames(scopes, new Map([[fork.nodeExecutionId, fork.node]])));
             await this.project(client, { sessionId: run.workflowSessionId, events: [{ eventType: "workflow.branches_cancelled", data: {
                 runId: run.runId, scopeIds: scopes, cancelledCount: cancelled.length, cancelled: cancelled.slice(0, 64),
@@ -7522,7 +7498,7 @@ export class WorkflowStore {
      * transaction every pending state of the run whose deadline the new
      * virtual time reached is decided, in deadline order: a wait or a
      * receive's wait elapsed (with the value it was given), an intercepted
-     * request or agent timed_out, and (IR 9) a parallel state at its own time
+     * request or agent timed_out, and a parallel state at its own time
      * limit by the store's one count (settleParallelIn): join due (nothing
      * decided), blocked or timed_out, with its branches' pending work
      * cancelled and not decided again; at one virtual instant a parallel
@@ -7574,7 +7550,7 @@ export class WorkflowStore {
                     AND deadline_at <= LEAST($2::timestamptz, COALESCE($3::timestamptz, $2::timestamptz))
                   ORDER BY deadline_at, node_type = 'parallel', node_execution_id FOR UPDATE`, [run.runId, nowText, run.deadlineAt === null ? null : run.deadlineAt.toISOString()]);
             const decided: WorkflowTestAdvanceReceipt["decided"] = [];
-            // IR 9: a parallel state's own time limit cancels its branches' pending work; what it cancelled is not due any more.
+            // A parallel state's own time limit cancels its branches' pending work; what it cancelled is not due any more.
             // At one virtual instant its branches' results are decided first (a parallel state sorts after the other states
             // with its deadline): a result at the deadline counts toward its join (owner decision join-k-of-n, J1b (e)).
             const cut = new Set<string>();

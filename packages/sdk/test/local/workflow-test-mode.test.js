@@ -143,8 +143,6 @@ function mockedDoc() {
     };
 }
 
-const PARALLEL_HOST = { enableRequests: true, enableAgents: true, enableParallel: true };
-
 describe("workflow test runs: responses and fixtures", () => {
     it("parses responses and fixtures strictly, matches fixtures exactly (or, without arguments, any call of the same tool or state), and checks each answer as the live effect's result", () => {
         expect(parseTestResponse({ kind: "success", value: { a: 1 } })).toEqual({ kind: "success", value: { a: 1 } });
@@ -194,7 +192,7 @@ describe("workflow test runs: responses and fixtures", () => {
             expect(thrownCode(() => parseTestFixtures(bad)), JSON.stringify(bad)).toBe("WORKFLOW_COMMAND_INVALID");
         }
 
-        const compiled = compileWorkflow(yamlOf(mockedDoc()), PARALLEL_HOST);
+        const compiled = compileWorkflow(yamlOf(mockedDoc()));
         expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
         const { ir, irSha256 } = compiled;
         const at = (operation, args = {}) => ({ operation, interceptionId: `nx-1/${operation}`, arguments: args });
@@ -233,7 +231,7 @@ describe("workflow test runs: the store", () => {
             const parent = randomUUID();
             await h.catalog.createSession(parent, {});
             const yaml = yamlOf(toolsDoc());
-            const compiled = compileWorkflow(yaml, PARALLEL_HOST);
+            const compiled = compileWorkflow(yaml);
             const workflowSessionId = randomUUID();
             const runId = randomUUID();
             expect(await h.catalog.createWorkflowSession(workflowSessionId, { parentSessionId: parent, owner: null,

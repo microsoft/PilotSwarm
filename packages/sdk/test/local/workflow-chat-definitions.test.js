@@ -604,12 +604,11 @@ states:
   failed: { type: terminal, outcome: failed }
 `;
         const agentsHost = { ...host };
-        const FLAGS = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true };
         const modeOf = graph => graph.states.find(state => state.id === "classify").chat ?? "new";
         const workflowMode = async workflowId => modeOf((await readWorkflowModel(agentsHost, workflowId, {}, "tool")).graph);
         /** `yaml` as a build before the default changed stored it: its IR with no session mode (a new session each visit). */
         const storedBefore = (yaml, compiledFrom = yaml) => {
-            const fresh = compileWorkflow(compiledFrom, FLAGS);
+            const fresh = compileWorkflow(compiledFrom);
             const ir = JSON.parse(JSON.stringify(fresh.ir));
             delete ir.nodes.classify.chat;
             return { ...fresh, ir, irSha256: sha256Hex(canonicalJson(ir)), yamlSha256: sha256Hex(yaml) };
@@ -629,7 +628,7 @@ states:
             // The same YAML saved again (revision 2) compiles to continue.
             const resaved = (await save(agentsHost, chat, AGENTS, { definitionId: old.definitionId, revision: 1 }, { name: "triage" })).receipt;
             expect(resaved).toMatchObject({ revision: 2, valid: true });
-            expect(resaved.irSha256).toBe(compileWorkflow(AGENTS, FLAGS).irSha256);
+            expect(resaved.irSha256).toBe(compileWorkflow(AGENTS).irSha256);
             expect(resaved.irSha256).not.toBe(before.irSha256);
             // A revision a build before the rename stored with `chat: new` does not start now: its words say what to write.
             const OLD_KEY = AGENTS.replace("    timeoutSeconds: 600", "    chat: new\n    timeoutSeconds: 600");

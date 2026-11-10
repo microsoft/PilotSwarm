@@ -9,7 +9,7 @@ import { assertJsonValue, isJsonObject, type JsonValue } from "./json.js";
  * node: the predecessor's output, or its runtime error envelope on an error
  * route), `kv` (the pinned KV snapshot), `runtime` (`runtime.error`) and,
  * only in a parallel state's body (the compiler refuses it elsewhere),
- * `branch` (`branch.item` and `branch.index` of the branch, and IR 11 `branch.name` of a named branch).
+ * `branch` (`branch.item` and `branch.index` of the branch, and `branch.name` of a named branch).
  * Segments: `.name`, `[index]` or `["any key"]` (a JSON string, so any open
  * KV key can be named). The operator `??` and a nested `${` count only
  * outside JSON strings: a quoted key or a string default may contain them.
@@ -34,7 +34,7 @@ export interface BindingScope {
     input: JsonValue;
     kv: JsonValue;
     runtime: JsonValue;
-    /** A parallel branch's `{ item, index }` (IR 11: and a named branch's `name`); absent (null) outside a branch. */
+    /** A parallel branch's `{ item, index }` (and a named branch's `name`); absent (null) outside a branch. */
     branch?: JsonValue;
 }
 

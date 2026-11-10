@@ -32,11 +32,11 @@ import {
     type WorkflowActor, type WorkflowNodeExecutionRow, type WorkflowRunRow, type WorkflowTestInterception,
 } from "./store.js";
 import {
-    advanceWorkflowTest, compileWorkflowDefinition, controlWorkflowRun, createWorkflow, sendTypedWorkflowInput, startWorkflowTest, testBenchExpect,
+    advanceWorkflowTest, controlWorkflowRun, createWorkflow, sendTypedWorkflowInput, startWorkflowTest, testBenchExpect,
     type WorkflowHost,
 } from "./service.js";
 import { requireWorkflowScripts } from "./scripts-gate.js";
-import { TERMINAL_OUTCOMES, WORKFLOW_MILESTONE_IR_VERSION } from "./compiler.js";
+import { compileWorkflow, TERMINAL_OUTCOMES } from "./compiler.js";
 import { definitionOf, requireChatDefinitionsWritable } from "./chat-definitions.js";
 import { matchTestFixture, storedTestFixtures, testResultFor, WORKFLOW_TEST_NOTICE, type WorkflowTestFixture } from "./test-mode.js";
 import type { WorkflowIR, WorkflowIRNode } from "./compiler.js";
@@ -259,7 +259,7 @@ export async function chatTestReport(host: Pick<WorkflowHost, "store"> & Partial
     // The tested revision, for branch names and an agent step's outcomes; the report does without it when it cannot be read.
     let ir: WorkflowIR | null = null;
     try {
-        ir = await host.store.readRevisionIr(run.workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION });
+        ir = await host.store.readRevisionIr(run.workflowSessionId, run.revision, run.irSha256);
     } catch {
         ir = null;
     }
@@ -405,7 +405,7 @@ export async function startChatWorkflowTest(host: WorkflowHost, request: {
     if (!saved.valid) throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} of ${definition.name} has errors, so it cannot be tested. Nothing was tested.`);
     // Review PRA-F1: a test compiles the revision's YAML again, as a Start does (the bench is made from that YAML). One this
     // build no longer compiles (an agent state's `chat:`, now `session:`) is refused with its first error, before anything is made.
-    const again = compileWorkflowDefinition(saved.yaml);
+    const again = compileWorkflow(saved.yaml);
     if (!again.valid || !again.ir) {
         const first = again.diagnostics.find(item => item.severity !== "warning");
         throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} of ${definition.name} does not compile in this version`
@@ -471,7 +471,7 @@ export async function waitChatWorkflowTest(host: Pick<WorkflowHost, "catalog" | 
     // F-SM2: a prepared answer the test refuses (testResultFor, as the run checked it) fails the test at once, saying why.
     let tested: WorkflowIR | null = null;
     const testedIr = async (): Promise<WorkflowIR> => {
-        tested ??= await host.store.readRevisionIr(run.workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION });
+        tested ??= await host.store.readRevisionIr(run.workflowSessionId, run.revision, run.irSha256);
         return tested;
     };
     // An agent step's outcomes, for the shape its answer needs (none when its revision cannot be read).

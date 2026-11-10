@@ -18,67 +18,10 @@ import { isValidTimezone, normalizeCronAtInput } from "../cron-at.js";
 export const WORKFLOW_API_VERSION = "pilotswarm.dev/v1";
 export const WORKFLOW_KIND = "Workflow";
 /**
- * IR version this compiler writes for a workflow of script and terminal
- * states. Stored IR is never rewritten or recompiled; every earlier version
- * is still read as stored:
- * - 1: no root outputSchema (each succeeded terminal carries the contract it
- *   was compiled with) and no catchAll;
- * - 2: root outputSchema, no catchAll;
- * - 3: root outputSchema and catchAll;
- * - 4: version 3 plus wait states (WORKFLOW_WAIT_IR_VERSION), written
- *   only for a workflow that has one, so other IR stays byte-identical;
- * - 5: version 4 plus messaging receive states and the root contracts they
- *   name (WORKFLOW_MESSAGING_IR_VERSION), written only for a workflow
- *   that has one;
- * - 6: version 5 plus messaging send states (WORKFLOW_SEND_IR_VERSION),
- *   written only for a workflow that has one;
- * - 7: version 6 plus messaging request states and contract responses
- *   (WORKFLOW_REQUEST_IR_VERSION), written only for a workflow that has
- *   one of them and only when requests are enabled (WorkflowCompileOptions).
- *   A reader takes it only when asked to (parseWorkflowIr's maxIrVersion):
- *   a build that does not run request states refuses it explicitly and
- *   never reads it as version 6.
- * - 8: version 7 plus agent states and parallel states
- *   (WORKFLOW_AGENT_IR_VERSION), written only for a workflow that has one
- *   of them and only when they are enabled (WorkflowCompileOptions; every
- *   host enables them, service.ts compileWorkflowDefinition). A parallel state's body
- *   states are in `nodes` with the others, named by its `body.states`. A
- *   reader takes it only when asked to, as version 7.
- * - 9: version 8 plus a parallel state's join of the first k successes
- *   (`join: { first: k }`) and its own time limit (`timeoutSeconds`)
- *   (WORKFLOW_JOIN_IR_VERSION), written only for a workflow with a
- *   parallel state that uses one of them, so every other IR stays as it was.
- *   A reader takes it only when asked to, as version 8.
- * - 10: version 9 plus clock waits (a wait state's `at`: the next time a
- *   cron_at schedule names, DST-safe; Workflow Simplified stage 2.4)
- *   (WORKFLOW_CLOCK_WAIT_IR_VERSION), written only for a workflow with
- *   one, and only when they are enabled (WorkflowCompileOptions). A reader
- *   takes it only when asked to, as version 9.
- * - 11: version 10 plus a parallel state's named branches (`branches`: each
- *   branch its own graph with its own initial; owner decision 2026-11-08
- *   named branches, option A) (WORKFLOW_BRANCHES_IR_VERSION), written
- *   only for a workflow with one. A reader takes it only when asked to, as
- *   version 10.
+ * The IR version this compiler writes, and the only one a reader takes. Stored IR is never rewritten or recompiled: a
+ * run reads the IR its revision was compiled to.
  */
-export const WORKFLOW_IR_VERSION = 3;
-export const WORKFLOW_WAIT_IR_VERSION = 4;
-export const WORKFLOW_MESSAGING_IR_VERSION = 5;
-export const WORKFLOW_SEND_IR_VERSION = 6;
-export const WORKFLOW_REQUEST_IR_VERSION = 7;
-export const WORKFLOW_AGENT_IR_VERSION = 8;
-export const WORKFLOW_JOIN_IR_VERSION = 9;
-export const WORKFLOW_CLOCK_WAIT_IR_VERSION = 10;
-export const WORKFLOW_BRANCHES_IR_VERSION = 11;
-/**
- * The newest IR version the controller's activities read (request, agent and parallel states, joins of the first k,
- * clock waits and named branches).
- */
-export const WORKFLOW_MILESTONE_IR_VERSION = WORKFLOW_BRANCHES_IR_VERSION;
-/**
- * The newest IR version a reader takes unless asked for more (parseWorkflowIr's default; every worker, portal and MCP
- * server asks for WORKFLOW_MILESTONE_IR_VERSION).
- */
-export const WORKFLOW_RUNNABLE_IR_VERSION = 6;
+export const WORKFLOW_IR_VERSION = 1;
 /** A wait state's seconds: an integer in this range, literal or bound. */
 export const WAIT_MAX_SECONDS = 86_400;
 /** The one business outcome of a wait state, and a receive state's outcome when its wait wins. */
@@ -104,7 +47,7 @@ export const WORKFLOW_AGENT_COMPLETION_TOOL = "complete_workflow_node";
 /** The most branches of one parallel state that are active at once. */
 export const WORKFLOW_PARALLEL_MAX_CONCURRENCY = 16;
 /**
- * A run's deadline (root limits.timeoutSeconds; IR 8): at most this many seconds,
+ * A run's deadline (root limits.timeoutSeconds): at most this many seconds,
  * counted from when the run begins. onExceeded expired (the only policy) ends the run failed with timed_out.
  */
 export const WORKFLOW_RUN_TIMEOUT_MAX_SECONDS = 30 * 86_400;
@@ -134,14 +77,9 @@ export const RUNTIME_ERROR_CODES = [
 /** The catch route a runtime error takes when its own code has no route. */
 export const FAILURE_ROUTE = "failure";
 /** Node types this build compiles. Others are refused explicitly, never run differently. */
-export const SUPPORTED_NODE_TYPES = ["script", "wait", "messaging", "terminal"] as const;
-/**
- * Messaging modes this build runs. A request state compiles to IR 7 only
- * when requests are enabled; otherwise it is refused explicitly, so no
- * definition with one is published or run.
- */
-export const SUPPORTED_MESSAGING_MODES = ["receive", "send"] as const;
-const KNOWN_NODE_TYPES = ["script", "terminal", "wait", "messaging", "agent", "parallel", "join"];
+export const SUPPORTED_NODE_TYPES = ["script", "wait", "messaging", "agent", "parallel", "terminal"] as const;
+/** A state type that is named but not compiled: refused as unsupported rather than unknown. */
+const KNOWN_NODE_TYPES = [...SUPPORTED_NODE_TYPES, "join"] as readonly string[];
 
 /**
  * I2 (owner 2026-11-09T06:40Z; UXP-AC-01: a real user's chat invented state types): words a writer uses for a state type,
@@ -240,7 +178,7 @@ export interface WorkflowIRTerminal {
 }
 
 /**
- * A clock wait's time (IR 10; Workflow Simplified stage 2.4): the next wall-clock time a cron_at schedule names, in its
+ * A clock wait's time (Workflow Simplified stage 2.4): the next wall-clock time a cron_at schedule names, in its
  * time zone: `minute` alone (hourly), with `hour` (daily), with `dayOfWeek` (weekly, 0 Sunday) or `dayOfMonth` (monthly).
  */
 export interface WorkflowIRClockWait {
@@ -260,7 +198,7 @@ export interface WorkflowIRWait {
      * wait (`at`).
      */
     seconds: number | string | null;
-    /** IR 10: a clock wait waits until the next time this names, decided once when the state is entered. */
+    /** A clock wait waits until the next time this names, decided once when the state is entered. */
     at?: WorkflowIRClockWait;
     /** The value the wait passes on when it elapses; without an input binding, the value that arrived. */
     hasInput: boolean;
@@ -303,8 +241,7 @@ export interface WorkflowIRSend {
     recipient: WorkflowIRSender;
     /**
      * A JSON template of correlation values evaluated on entry (null is {}):
-     * a workflow recipient's receive states match it. Version 6 IR written
-     * before this field was added has none (null).
+     * a workflow recipient's receive states match it.
      */
     correlate: JsonValue;
     /** The payload: the input binding's value, or without one the value that arrived. */
@@ -317,7 +254,7 @@ export interface WorkflowIRSend {
 export type WorkflowIRMessaging = WorkflowIRReceive | WorkflowIRSend | WorkflowIRRequest;
 
 /**
- * A request state (IR 7): one typed request of its contract to its
+ * A request state: one typed request of its contract to its
  * recipient, answered by one typed result: an accepted response (outcome
  * responded) or the responder's declared refusal (outcome declined); its
  * deadline (timed_out) and the other runtime errors route by code.
@@ -343,7 +280,7 @@ export interface WorkflowIRRequest {
 }
 
 /**
- * An agent state (IR 8): an ordinary child agent session with the
+ * An agent state: an ordinary child agent session with the
  * standard base, given the state's validated input in a host-generated
  * wrapper, that finishes the state only with a typed completion
  * (complete_workflow_node: one of `outcomes` with an output that satisfies
@@ -390,7 +327,7 @@ export interface WorkflowIRAgent {
 }
 
 /**
- * A parallel state (IR 8): its manifest (`forEach`, evaluated once
+ * A parallel state: its manifest (`forEach`, evaluated once
  * on entry and frozen as the state's input; a JSON array of at most
  * WORKFLOW_PARALLEL_MAX_ITEMS items) runs one branch per item through
  * its body, at most `concurrency` at a time. A branch starts at the body's
@@ -399,12 +336,12 @@ export interface WorkflowIRAgent {
  * the item count n): when every branch ended, the state's outcome is
  * `joined` (every branch ended succeeded; its output is their outputs in
  * manifest order) or `blocked` (its output lists every branch's outcome and
- * output). IR 9: the join `{ first: k }` is joined as soon as k branches
+ * output). The join `{ first: k }` is joined as soon as k branches
  * succeeded (its output is `[{ index, output }]` of those k, in the order the
  * store committed their successes, ties by index); the branches still running
  * are cancelled and the queued ones not started. Either join is blocked once
  * k successes cannot happen: with `failFast` the other branches are cancelled
- * at once, without it they run to their end first. IR 9: an optional
+ * at once, without it they run to their end first. An optional
  * `timeoutSeconds`, from the state's entry, races the join: a success counts
  * only when committed by then. When it passes, the running branches are
  * cancelled; with k counted successes the state still joins, with fewer it
@@ -419,17 +356,17 @@ export interface WorkflowIRParallel {
     /** A JSON template (a binding or a literal array) that gives the manifest; null for a state with named branches. */
     forEach: JsonValue;
     /**
-     * IR 11: named branches, in their declared order (branch i is the manifest's item i): each its own graph, from its own
+     * Named branches, in their declared order (branch i is the manifest's item i): each its own graph, from its own
      * initial over its own states (all of them in `body.states` too), started with its `input` (a template read in the
      * parallel state's scope when it is entered; without one, the value that arrived at the parallel state). Its joined
      * output is `{ <name>: output }`; `branch.name` binds in its states. Absent: a For each over `forEach`.
      */
     branches?: WorkflowIRBranch[];
     concurrency: number;
-    /** Every branch must succeed (k = n), or IR 9: joined at the first k successes. */
+    /** Every branch must succeed (k = n), or joined at the first k successes. */
     join: "all_required" | { first: number };
     failFast: boolean;
-    /** IR 9: the state's own time limit, seconds from its entry (an integer, or one binding read at entry); absent without one. */
+    /** The state's own time limit, seconds from its entry (an integer, or one binding read at entry); absent without one. */
     timeoutSeconds?: number | string;
     /** The manifest's schema (the whole array). */
     inputSchema: string | null;
@@ -441,7 +378,7 @@ export interface WorkflowIRParallel {
     next: Record<string, string>;
 }
 
-/** IR 11: one named branch of a parallel state. */
+/** One named branch of a parallel state. */
 export interface WorkflowIRBranch {
     name: string;
     initial: string;
@@ -453,18 +390,14 @@ export interface WorkflowIRBranch {
 export interface WorkflowIRContract {
     /** The schema (in schemaDefs) every payload of this contract must satisfy. */
     schema: string;
-    /** Version 7: the schema (in schemaDefs) a response to a request of this contract must satisfy. */
+    /** The schema (in schemaDefs) a response to a request of this contract must satisfy. */
     response?: { schema: string };
 }
 
 export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRMessaging | WorkflowIRAgent | WorkflowIRParallel | WorkflowIRTerminal;
 
 export interface WorkflowIR {
-    /**
-     * 1 and 2 are read-only earlier shapes (outputSchema and catchAll null when absent); 3, 4 with wait states, 5 with
-     * receive states, 6 with send states, 7 with request states or contract responses, or 8 with agent or parallel states is written now.
-     */
-    irVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+    irVersion: typeof WORKFLOW_IR_VERSION;
     apiVersion: typeof WORKFLOW_API_VERSION;
     name: string;
     version: string;
@@ -481,13 +414,13 @@ export interface WorkflowIR {
      */
     catchAll: string | null;
     /**
-     * maxNodeExecutions, and from version 8 an optional run deadline: timeoutSeconds, counted from when the run begins,
+     * maxNodeExecutions, and an optional run deadline: timeoutSeconds, counted from when the run begins,
      * with its policy onExceeded (expired: the run ends failed with timed_out). Both are absent without a deadline.
      */
     limits: { maxNodeExecutions: number; timeoutSeconds?: number; onExceeded?: typeof WORKFLOW_RUN_ON_EXCEEDED[number] };
     schemaDefs: Record<string, JsonValue>;
-    /** Version 5 and later: the root contracts (absent before version 5). Its receive and send states name them. */
-    contracts?: Record<string, WorkflowIRContract>;
+    /** The root contracts (an empty map when there are none). Its messaging states name them. */
+    contracts: Record<string, WorkflowIRContract>;
     nodes: Record<string, WorkflowIRNode>;
 }
 
@@ -499,36 +432,6 @@ export interface WorkflowCompileResult {
     version: string | null;
     ir: WorkflowIR | null;
     irSha256: string | null;
-}
-
-export interface WorkflowCompileOptions {
-    /**
-     * Compile request states and contract responses to IR 7. Off by default:
-     * they are still checked field by field, but the result is invalid with
-     * WORKFLOW_FEATURE_UNSUPPORTED, so no definition with one is stored as
-     * valid, published or run until requests are enabled.
-     */
-    enableRequests?: boolean;
-    /**
-     * Compile agent states to IR 8 (every host sets it). Off by default: a state of type agent
-     * stays unsupported, as before.
-     */
-    enableAgents?: boolean;
-    /**
-     * Compile parallel states to IR 8 (every host sets it). Off by default: a state of type parallel
-     * stays unsupported, as before.
-     */
-    enableParallel?: boolean;
-    /**
-     * Compile a run deadline (limits.timeoutSeconds and onExceeded) to IR 8
-     * (every host sets it). Off by default: the fields are refused with
-     * WORKFLOW_FEATURE_UNSUPPORTED.
-     */
-    enableRunLimits?: boolean;
-    /**
-     * Compile clock waits (a wait state's `at`) to IR 10 (every host sets it). Off by default: `at` is refused with WORKFLOW_FEATURE_UNSUPPORTED.
-     */
-    enableClockWaits?: boolean;
 }
 
 /** True when the text declares the Workflow apiVersion (spawn_workflow refuses any other document). */
@@ -779,7 +682,7 @@ function secondsField(value: unknown, path: string, diagnostics: Diagnostics, fi
 const CLOCK_WAIT_FIELDS = ["minute", "hour", "day_of_week", "day_of_month", "tz"] as const;
 
 /**
- * A wait's `at` (IR 10): the cron_at tool's fields (minute; hour; day_of_week or day_of_month, with hour; tz, an IANA
+ * A wait's `at`: the cron_at tool's fields (minute; hour; day_of_week or day_of_month, with hour; tz, an IANA
  * time zone), literal, checked by the cron_at rules. Null with its diagnostics when it is not one.
  */
 function clockWaitField(value: unknown, path: string, diagnostics: Diagnostics): WorkflowIRClockWait | null {
@@ -827,17 +730,14 @@ export function workflowClockWaitWords(at: WorkflowIRClockWait): string {
     return `the next ${time} (${at.tz})`;
 }
 
-function compileWait(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, hasCatchAll: boolean, diagnostics: Diagnostics,
-    options: { clockWaits: boolean } = { clockWaits: false }): WorkflowIRWait | null {
+function compileWait(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, hasCatchAll: boolean, diagnostics: Diagnostics)
+    : WorkflowIRWait | null {
     const path = `states.${id}`;
     checkKeys(raw, ["type", "description", "seconds", "at", "input", "transition"], path, diagnostics);
     // Stage 2.4: a wait waits a number of seconds, or until a clock time (`at`); exactly one of the two.
     const clock = Object.hasOwn(raw, "at");
     if (clock && Object.hasOwn(raw, "seconds")) {
         diagnostics.error("WORKFLOW_FIELD_INVALID", path, "a wait has seconds or at, not both.");
-    }
-    if (clock && !options.clockWaits) {
-        diagnostics.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.at`, "a clock wait (at) is not enabled in this build: a definition with one is not published or run.");
     }
     const at = clock ? clockWaitField(raw.at, `${path}.at`, diagnostics) : null;
     const seconds = clock ? null : secondsField(raw.seconds, `${path}.seconds`, diagnostics);
@@ -929,7 +829,7 @@ function compileSend(id: string, raw: Record<string, unknown>, nodeIds: Readonly
 }
 
 /**
- * A request state (IR 7): one typed request of its contract, which must
+ * A request state: one typed request of its contract, which must
  * declare a response, to its recipient (the workflow's parent or a named
  * session, resolved and authorized when the state is entered), answered by
  * one typed result: an accepted response (responded), the responder's
@@ -986,9 +886,8 @@ function compileRequest(id: string, raw: Record<string, unknown>, nodeIds: Reado
 }
 
 /**
- * A messaging state. This build compiles modes receive and send, and
- * request (compileRequest) when requests are enabled; otherwise a request
- * state is checked field by field and refused. A receive state takes one
+ * A messaging state: mode receive, send (compileSend) or request
+ * (compileRequest). A receive state takes one
  * typed message of its contract, from its sender and with its correlation,
  * that a sender gave the run (send_workflow_input) before or after the
  * state was entered, in the order the run accepted them. An optional wait
@@ -996,16 +895,10 @@ function compileRequest(id: string, raw: Record<string, unknown>, nodeIds: Reado
  * compileSend's.
  */
 function compileMessaging(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, contracts: ReadonlySet<string>, hasCatchAll: boolean,
-    diagnostics: Diagnostics, requests: { responding: ReadonlySet<string>; enabled: boolean }): WorkflowIRMessaging | null {
+    diagnostics: Diagnostics, responding: ReadonlySet<string>): WorkflowIRMessaging | null {
     const path = `states.${id}`;
     if (raw.mode === "send") return compileSend(id, raw, nodeIds, contracts, hasCatchAll, diagnostics);
-    if (raw.mode === "request") {
-        if (!requests.enabled) {
-            diagnostics.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.mode`,
-                `messaging mode 'request' is not enabled in this build: a definition with a request state is not published or run (enabled: ${SUPPORTED_MESSAGING_MODES.join(", ")}).`);
-        }
-        return compileRequest(id, raw, nodeIds, contracts, requests.responding, hasCatchAll, diagnostics);
-    }
+    if (raw.mode === "request") return compileRequest(id, raw, nodeIds, contracts, responding, hasCatchAll, diagnostics);
     if (raw.mode !== "receive") {
         diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.mode`, "mode must be receive, send or request.");
         return null;
@@ -1066,7 +959,7 @@ export function parseWorkflowInterfaceRef(text: unknown): { name: string; versio
 }
 
 /**
- * An agent state (IR 8; enabled only with enableAgents): an ordinary child
+ * An agent state: an ordinary child
  * agent session (the standard base, normal capabilities) given the state's
  * input in a host-generated wrapper. `invoke` names exactly one task
  * source: an inline `prompt`, or `agent: {name, package?, version?,
@@ -1225,13 +1118,13 @@ function nodeTemplates(node: WorkflowIRNode): Array<[string, JsonValue]> {
 }
 
 /**
- * A parallel state (IR 8; enabled only with enableParallel): `forEach` (a
+ * A parallel state: `forEach` (a
  * binding, or a literal array) gives its manifest when the state is entered;
  * `concurrency` (1 to WORKFLOW_PARALLEL_MAX_CONCURRENCY, default 1) bounds
  * the active branches; `join` is `all` (the default; `all_required` is the
- * same) or, IR 9, `{ first: k }` (k from 1 to WORKFLOW_PARALLEL_MAX_ITEMS,
+ * same) or `{ first: k }` (k from 1 to WORKFLOW_PARALLEL_MAX_ITEMS,
  * and at most the items of a literal list); `failFast` (default false)
- * cancels the other branches once the join can no longer be had. IR 9:
+ * cancels the other branches once the join can no longer be had.
  * `timeoutSeconds` (as a wait's seconds) is the state's own time limit; it
  * needs a `timed_out` route, which is refused without it. `body` is a graph
  * of its own (`initial`, `states`): its routes stay in it, it holds no
@@ -1239,7 +1132,7 @@ function nodeTemplates(node: WorkflowIRNode): Array<[string, JsonValue]> {
  * other outcome does not count toward the join). Its outcomes are joined
  * and blocked; both need routes.
  *
- * IR 11 (owner decision 2026-11-08, named branches): `branches` instead of
+ * Named branches (owner decision 2026-11-08): `branches` instead of
  * `forEach` and `body`: `{ <name>: { initial, states, input? } }`, each
  * branch its own graph (its routes stay in it), all of them started when the
  * state is entered (`concurrency` defaults to their number). The same joins,
@@ -1411,8 +1304,8 @@ function checkGraph(ir: { initial: string; catchAll: string | null; nodes: Recor
         const node = ir.nodes[id];
         return node && node.type !== "terminal" ? Object.values(node.next) : [];
     };
-    // A parallel state's body is a graph of its own: its states are reached from its initial and end at its terminals. IR 11:
-    // each named branch is its own graph.
+    // A parallel state's body is a graph of its own: its states are reached from its initial and end at its terminals. Each
+    // named branch is its own graph.
     const bodies = Object.values(ir.nodes).flatMap(node => node.type !== "parallel" ? []
         : node.branches !== undefined
             ? node.branches.map(branch => ({ id: node.id, initial: branch.initial, states: new Set(branch.states), branch: branch.name as string | null }))
@@ -1485,12 +1378,8 @@ function checkGraph(ir: { initial: string; catchAll: string | null; nodes: Recor
 }
 
 /** Compile one document. Never throws for document content; returns diagnostics instead. */
-export function compileWorkflow(yaml: string, options: WorkflowCompileOptions = {}): WorkflowCompileResult {
+export function compileWorkflow(yaml: string): WorkflowCompileResult {
     const diagnostics = new Diagnostics();
-    const enableRequests = options.enableRequests === true;
-    const enableAgents = options.enableAgents === true;
-    const enableParallel = options.enableParallel === true;
-    const enableClockWaits = options.enableClockWaits === true;
     if (typeof yaml !== "string") throw new TypeError("Workflow YAML must be a string.");
     const yamlSha256 = sha256Hex(yaml);
     const result = (name: string | null, version: string | null, ir: WorkflowIR | null): WorkflowCompileResult => {
@@ -1572,7 +1461,7 @@ export function compileWorkflow(yaml: string, options: WorkflowCompileOptions = 
     const rootOutputSchema = schemaField(root.outputSchema, "workflow.output", "outputSchema", schemas, diagnostics);
 
     // Named typed exchanges: a receive state names one; a sender's payload must satisfy its schema. A contract may also
-    // declare a response (IR 7): the schema a response to a request of it must satisfy.
+    // declare a response: the schema a response to a request of it must satisfy.
     const contracts: Record<string, WorkflowIRContract> = {};
     const declaredContracts = new Set<string>();
     const respondingContracts = new Set<string>();
@@ -1596,10 +1485,6 @@ export function compileWorkflow(yaml: string, options: WorkflowCompileOptions = 
             const schema = schemaField(definition.schema, generated, `${path}.schema`, schemas, diagnostics);
             let responseSchema: string | null = null;
             if (Object.hasOwn(definition, "response")) {
-                if (!enableRequests) {
-                    diagnostics.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.response`,
-                        "a contract response is not enabled in this build: a definition with one is not published or run.");
-                }
                 const response = definition.response;
                 if (!isJsonObject(response) || !Object.hasOwn(response, "schema")) {
                     diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.response`, "a contract's response must be { schema: <JSON Schema> }.");
@@ -1615,7 +1500,7 @@ export function compileWorkflow(yaml: string, options: WorkflowCompileOptions = 
     }
 
     let maxNodeExecutions = WORKFLOW_DEFAULT_MAX_NODE_EXECUTIONS;
-    // A run deadline (IR 8; enableRunLimits): seconds from when the run begins, and what happens when it passes.
+    // A run deadline: seconds from when the run begins, and what happens when it passes.
     let runDeadline: { timeoutSeconds: number; onExceeded: typeof WORKFLOW_RUN_ON_EXCEEDED[number] } | null = null;
     if (root.limits !== undefined) {
         if (!isJsonObject(root.limits)) diagnostics.error("WORKFLOW_FIELD_INVALID", "limits", "limits must be a mapping.");
@@ -1630,10 +1515,6 @@ export function compileWorkflow(yaml: string, options: WorkflowCompileOptions = 
             const timeout = root.limits.timeoutSeconds;
             const onExceeded = root.limits.onExceeded;
             if (timeout !== undefined || onExceeded !== undefined) {
-                if (options.enableRunLimits !== true) {
-                    diagnostics.error("WORKFLOW_FEATURE_UNSUPPORTED", timeout !== undefined ? "limits.timeoutSeconds" : "limits.onExceeded",
-                        "a run deadline (limits.timeoutSeconds, onExceeded) is not enabled in this build: a definition with one is not published or run.");
-                }
                 if (timeout === undefined) {
                     diagnostics.error("WORKFLOW_FIELD_REQUIRED", "limits.timeoutSeconds", "onExceeded needs limits.timeoutSeconds.");
                 } else if (typeof timeout !== "number" || !Number.isInteger(timeout) || timeout < 1 || timeout > WORKFLOW_RUN_TIMEOUT_MAX_SECONDS) {
@@ -1651,7 +1532,7 @@ export function compileWorkflow(yaml: string, options: WorkflowCompileOptions = 
     const nodes: Record<string, WorkflowIRNode> = {};
     /** Body state id -> its parallel state's id (a body's states are compiled with the body's own ids as their targets). */
     const bodyOf = new Map<string, string>();
-    /** IR 11: a named branch's state id -> its branch's name (for the paths of its diagnostics). */
+    /** A named branch's state id -> its branch's name (for the paths of its diagnostics). */
     const branchOfState = new Map<string, string>();
     /** Compile one state of the outer graph (`body` null) or of a parallel state's body (`body` its id) into `nodes`. */
     const compileState = (id: string, rawNode: unknown, nodeIds: ReadonlySet<string>, body: string | null, into: Diagnostics): void => {
@@ -1665,24 +1546,23 @@ export function compileWorkflow(yaml: string, options: WorkflowCompileOptions = 
             const node = compileScript(id, rawNode, nodeIds, schemas, catchAllApplies, into);
             if (node) nodes[id] = node;
         } else if (type === "wait") {
-            const node = compileWait(id, rawNode, nodeIds, catchAllApplies, into, { clockWaits: enableClockWaits });
+            const node = compileWait(id, rawNode, nodeIds, catchAllApplies, into);
             if (node) nodes[id] = node;
         } else if (type === "messaging") {
-            const node = compileMessaging(id, rawNode, nodeIds, declaredContracts, catchAllApplies, into,
-                { responding: respondingContracts, enabled: enableRequests });
+            const node = compileMessaging(id, rawNode, nodeIds, declaredContracts, catchAllApplies, into, respondingContracts);
             if (node) nodes[id] = node;
         } else if (type === "terminal") {
             const node = compileTerminal(id, rawNode, schemas, into);
             if (node) nodes[id] = node;
-        } else if (type === "agent" && enableAgents) {
+        } else if (type === "agent") {
             const node = compileAgent(id, rawNode, nodeIds, schemas, catchAllApplies, into);
             // Owner 2026-11-09T05:38Z: an agent state that does not set `session` continues its agent session across its
             // visits, where it may: outside a parallel state's body. In a body (For each items, named branches) it is `new`.
             if (node && body === null && rawNode.session === undefined) node.chat = "continue";
             if (node) nodes[id] = node;
-        } else if (type === "parallel" && enableParallel && body !== null) {
+        } else if (type === "parallel" && body !== null) {
             into.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.type`, "a parallel state's body cannot hold another parallel state.");
-        } else if (type === "parallel" && enableParallel) {
+        } else if (type === "parallel") {
             const node = compileParallel(id, rawNode, nodeIds, schemas, hasCatchAll, into, (bodyIds, bodyStates, branchName) => {
                 // A body's diagnostics name the body's path, not an outer state's.
                 const scoped = new Diagnostics();
@@ -1711,7 +1591,7 @@ export function compileWorkflow(yaml: string, options: WorkflowCompileOptions = 
             into.error("WORKFLOW_NODE_TYPE_UNSUPPORTED", `${path}.type`, `state type '${type}' is not supported by this build yet (supported: ${SUPPORTED_NODE_TYPES.join(", ")}).`);
         } else {
             // I2: the types this compile takes, and the one most likely meant.
-            const types = ["script", "wait", "messaging", ...(enableAgents ? ["agent"] : []), ...(enableParallel ? ["parallel"] : []), "terminal"];
+            const types: string[] = [...SUPPORTED_NODE_TYPES];
             const meant = typeof type === "string" ? workflowNearestStateType(type, types) : null;
             into.error("WORKFLOW_NODE_TYPE_UNKNOWN", `${path}.type`, `'${String(type)}' is not a workflow state type. The types are ${types.join(", ")}.`
                 + (meant ? ` Did you mean ${meant}?` : ""));
@@ -1755,7 +1635,7 @@ export function compileWorkflow(yaml: string, options: WorkflowCompileOptions = 
                 if (bindingRootsOf(root.initialInput).has("branch")) diagnostics.error("WORKFLOW_BINDING_INVALID", "initialInput", "branch is bound only in a parallel state's body.");
             } catch { /* reported by its own check */ }
         }
-        // IR 11: `branch.name` names a named branch; a For each's items have none.
+        // `branch.name` names a named branch; a For each's items have none.
         const named = new Set(Object.values(nodes).flatMap(node => node.type === "parallel" && node.branches !== undefined ? [node.id] : []));
         for (const node of Object.values(nodes)) {
             const parallel = bodyOf.get(node.id);
@@ -1812,22 +1692,8 @@ export function compileWorkflow(yaml: string, options: WorkflowCompileOptions = 
                 `no state receives, sends or requests contract '${contractName}'; this workflow refuses input of it.`);
         }
     }
-    const responds = Object.values(contracts).some(contract => contract.response !== undefined);
-    const joins = Object.values(nodes).some(node => node.type === "parallel" && (node.join !== "all_required" || node.timeoutSeconds !== undefined));
-    const clockWaits = Object.values(nodes).some(node => node.type === "wait" && node.at !== undefined);
-    const branched = Object.values(nodes).some(node => node.type === "parallel" && node.branches !== undefined);
-    const irVersion: WorkflowIR["irVersion"] = branched ? WORKFLOW_BRANCHES_IR_VERSION
-        : clockWaits ? WORKFLOW_CLOCK_WAIT_IR_VERSION : joins ? WORKFLOW_JOIN_IR_VERSION
-        : Object.values(nodes).some(node => node.type === "agent" || node.type === "parallel") || runDeadline !== null
-        ? WORKFLOW_AGENT_IR_VERSION
-        : requested.size > 0 || responds ? WORKFLOW_REQUEST_IR_VERSION
-            : sent.size > 0 ? WORKFLOW_SEND_IR_VERSION
-                : received.size > 0 ? WORKFLOW_MESSAGING_IR_VERSION
-                    : Object.values(nodes).some(node => node.type === "wait") ? WORKFLOW_WAIT_IR_VERSION : WORKFLOW_IR_VERSION;
-    // From version 5 on, the IR states its contracts (an empty map when it has none).
-    const hasMessaging = irVersion >= WORKFLOW_MESSAGING_IR_VERSION;
     const ir: WorkflowIR = {
-        irVersion,
+        irVersion: WORKFLOW_IR_VERSION,
         apiVersion: WORKFLOW_API_VERSION,
         name, version,
         description: optionalText(root.description, "description", diagnostics),
@@ -1838,7 +1704,7 @@ export function compileWorkflow(yaml: string, options: WorkflowCompileOptions = 
         catchAll,
         limits: { maxNodeExecutions, ...(runDeadline !== null ? runDeadline : {}) },
         schemaDefs: schemas.defs,
-        ...(hasMessaging ? { contracts } : {}),
+        contracts,
         nodes,
     };
     try { canonicalJson(ir); }
@@ -2156,7 +2022,7 @@ export function parseDiagnostics(value: JsonValue): WorkflowDiagnostic[] {
 }
 
 /** Read stored IR (already hash-verified) back with its declared shape. */
-/** A stored clock wait's `at` (IR 10), checked as the compiler wrote it; null when it is not one. */
+/** A stored clock wait's `at`, checked as the compiler wrote it; null when it is not one. */
 function storedClockWait(value: unknown): WorkflowIRClockWait | null {
     if (!isJsonObject(value)) return null;
     const int = (x: unknown, min: number, max: number) => typeof x === "number" && Number.isInteger(x) && x >= min && x <= max;
@@ -2174,52 +2040,37 @@ function storedClockWait(value: unknown): WorkflowIRClockWait | null {
     };
 }
 
-export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: number } = {}): WorkflowIR {
-    // A worker reads only the versions it runs: request states (version 7) are read only when asked for.
-    const maxIrVersion = options.maxIrVersion ?? WORKFLOW_RUNNABLE_IR_VERSION;
+export function parseWorkflowIr(value: JsonValue): WorkflowIR {
     need(isJsonObject(value), "stored IR is not an object");
-    need(value.irVersion === 1 || value.irVersion === 2 || value.irVersion === 3 || value.irVersion === 4 || value.irVersion === 5
-        || value.irVersion === 6 || (value.irVersion === 7 && maxIrVersion >= WORKFLOW_REQUEST_IR_VERSION)
-        || (value.irVersion === 8 && maxIrVersion >= WORKFLOW_AGENT_IR_VERSION)
-        || (value.irVersion === 9 && maxIrVersion >= WORKFLOW_JOIN_IR_VERSION)
-        || (value.irVersion === 10 && maxIrVersion >= WORKFLOW_CLOCK_WAIT_IR_VERSION)
-        || (value.irVersion === 11 && maxIrVersion >= WORKFLOW_BRANCHES_IR_VERSION),
-        `stored IR version ${String(value.irVersion)} is not supported by this worker`);
-    const irVersion: WorkflowIR["irVersion"] = value.irVersion;
-    // A field a version introduced must be stated (null when absent) from that version on.
-    const rootOutputSchema = irVersion === 1 && !Object.hasOwn(value, "outputSchema") ? null : value.outputSchema;
-    const catchAll = irVersion < 3 && !Object.hasOwn(value, "catchAll") ? null : value.catchAll;
+    need(value.irVersion === WORKFLOW_IR_VERSION, `stored IR version ${String(value.irVersion)} is not supported by this worker`);
+    const rootOutputSchema = value.outputSchema;
+    const catchAll = value.catchAll;
     need(value.apiVersion === WORKFLOW_API_VERSION, "stored IR has a different apiVersion");
     need(typeof value.name === "string" && typeof value.version === "string" && typeof value.initial === "string"
         && nullableString(value.description) && nullableString(value.inputsSchema) && nullableString(rootOutputSchema)
         && nullableString(catchAll), "stored IR header is invalid");
     need(isJsonObject(value.limits) && typeof value.limits.maxNodeExecutions === "number", "stored IR limits are invalid");
-    // A run deadline is stored from version 8 on, with both its fields.
+    // A run deadline is stored with both its fields, or neither.
     const deadlineSeconds = value.limits.timeoutSeconds;
     const onExceeded = value.limits.onExceeded;
-    need((deadlineSeconds === undefined && onExceeded === undefined) || (irVersion >= WORKFLOW_AGENT_IR_VERSION
-        && typeof deadlineSeconds === "number" && Number.isSafeInteger(deadlineSeconds) && deadlineSeconds >= 1
+    need((deadlineSeconds === undefined && onExceeded === undefined) || (typeof deadlineSeconds === "number" && Number.isSafeInteger(deadlineSeconds) && deadlineSeconds >= 1
         && deadlineSeconds <= WORKFLOW_RUN_TIMEOUT_MAX_SECONDS && onExceeded === "expired"), "stored IR run deadline is invalid");
     need(isJsonObject(value.schemaDefs) && isJsonObject(value.nodes), "stored IR schemas or nodes are invalid");
     need(Object.hasOwn(value, "initialInput"), "stored IR has no initialInput");
     const schemaDefs = value.schemaDefs;
-    let contracts: Record<string, WorkflowIRContract> | undefined;
-    if (irVersion >= WORKFLOW_MESSAGING_IR_VERSION) {
-        need(isJsonObject(value.contracts), "stored IR contracts are invalid");
-        contracts = {};
-        for (const [contractName, contract] of Object.entries(value.contracts)) {
-            need(CONTRACT_NAME_PATTERN.test(contractName) && isJsonObject(contract) && typeof contract.schema === "string"
-                && Object.hasOwn(schemaDefs, contract.schema), `stored IR contract ${contractName} is invalid`);
-            if (Object.hasOwn(contract, "response")) {
-                // A response is version 7's; an earlier version with one is not read as if it had none.
-                const response = contract.response;
-                need(irVersion >= WORKFLOW_REQUEST_IR_VERSION && isJsonObject(response) && Object.keys(response).length === 1
-                    && typeof response.schema === "string" && Object.hasOwn(schemaDefs, response.schema),
-                    `stored IR contract ${contractName} has an invalid response`);
-                contracts[contractName] = { schema: contract.schema, response: { schema: response.schema } };
-            } else contracts[contractName] = { schema: contract.schema };
-        }
-    } else need(!Object.hasOwn(value, "contracts"), "stored IR has contracts before version 5");
+    need(isJsonObject(value.contracts), "stored IR contracts are invalid");
+    const contracts: Record<string, WorkflowIRContract> = {};
+    for (const [contractName, contract] of Object.entries(value.contracts)) {
+        need(CONTRACT_NAME_PATTERN.test(contractName) && isJsonObject(contract) && typeof contract.schema === "string"
+            && Object.hasOwn(schemaDefs, contract.schema), `stored IR contract ${contractName} is invalid`);
+        if (Object.hasOwn(contract, "response")) {
+            const response = contract.response;
+            need(isJsonObject(response) && Object.keys(response).length === 1
+                && typeof response.schema === "string" && Object.hasOwn(schemaDefs, response.schema),
+                `stored IR contract ${contractName} has an invalid response`);
+            contracts[contractName] = { schema: contract.schema, response: { schema: response.schema } };
+        } else contracts[contractName] = { schema: contract.schema };
+    }
     const nodes: Record<string, WorkflowIRNode> = {};
     for (const [id, node] of Object.entries(value.nodes)) {
         need(isJsonObject(node) && node.id === id && nullableString(node.description), `stored IR node ${id} is invalid`);
@@ -2235,9 +2086,9 @@ export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: numb
             };
         } else if (node.type === "wait") {
             const seconds = node.seconds;
-            // IR 10: a clock wait has its `at` and no seconds.
-            const at = irVersion >= WORKFLOW_CLOCK_WAIT_IR_VERSION && seconds === null ? storedClockWait(node.at) : null;
-            need(irVersion >= WORKFLOW_WAIT_IR_VERSION && (typeof seconds === "number" || typeof seconds === "string" || at !== null)
+            // A clock wait has its `at` and no seconds.
+            const at = seconds === null ? storedClockWait(node.at) : null;
+            need((typeof seconds === "number" || typeof seconds === "string" || at !== null)
                 && (at !== null || node.at === undefined)
                 && typeof node.hasInput === "boolean" && Object.hasOwn(node, "input") && stringMap(node.next),
                 `stored IR wait ${id} is invalid`);
@@ -2245,21 +2096,20 @@ export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: numb
                 hasInput: node.hasInput, input: node.input, next: node.next };
         } else if (node.type === "messaging" && node.mode === "send") {
             const recipient = node.recipient;
-            need(irVersion >= WORKFLOW_SEND_IR_VERSION && contracts !== undefined && typeof node.contract === "string"
-                && Object.hasOwn(contracts, node.contract)
+            need(typeof node.contract === "string" && Object.hasOwn(contracts, node.contract) && Object.hasOwn(node, "correlate")
                 && isJsonObject(recipient) && Object.keys(recipient).length === 1 && (recipient.parent === true || typeof recipient.sessionId === "string")
                 && typeof node.hasInput === "boolean" && Object.hasOwn(node, "input") && stringMap(node.next),
                 `stored IR messaging state ${id} is invalid`);
             nodes[id] = {
                 id, type: "messaging", description: node.description, mode: "send", contract: node.contract,
                 recipient: typeof recipient.sessionId === "string" ? { sessionId: recipient.sessionId } : { parent: true },
-                correlate: Object.hasOwn(node, "correlate") ? node.correlate : null,
+                correlate: node.correlate,
                 hasInput: node.hasInput, input: node.input, next: node.next,
             };
         } else if (node.type === "messaging" && node.mode === "request") {
             const recipient = node.recipient;
             const timeoutSeconds = node.timeoutSeconds;
-            need(irVersion >= WORKFLOW_REQUEST_IR_VERSION && contracts !== undefined && typeof node.contract === "string"
+            need(typeof node.contract === "string"
                 && Object.hasOwn(contracts, node.contract) && contracts[node.contract].response !== undefined
                 && isJsonObject(recipient) && Object.keys(recipient).length === 1 && (recipient.parent === true || typeof recipient.sessionId === "string")
                 && Object.hasOwn(node, "correlate") && (typeof timeoutSeconds === "number" || typeof timeoutSeconds === "string")
@@ -2275,7 +2125,7 @@ export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: numb
             const waitSeconds = node.waitSeconds;
             const validFrom = from === null || (isJsonObject(from) && Object.keys(from).length === 1
                 && (from.parent === true || typeof from.sessionId === "string"));
-            need(contracts !== undefined && node.mode === "receive" && typeof node.contract === "string" && Object.hasOwn(contracts, node.contract)
+            need(node.mode === "receive" && typeof node.contract === "string" && Object.hasOwn(contracts, node.contract)
                 && validFrom && Object.hasOwn(node, "correlate")
                 && (waitSeconds === null || typeof waitSeconds === "number" || typeof waitSeconds === "string")
                 && typeof node.hasInput === "boolean" && Object.hasOwn(node, "input") && stringMap(node.next),
@@ -2299,7 +2149,7 @@ export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: numb
                 && (typeof invoke.prompt === "string" || (agent !== null && Object.keys(agent).length === (storedInterface === undefined ? 3 : 4)
                     && typeof agent.name === "string" && nullableString(agent.package) && nullableString(agent.version) && validInterface));
             const timeoutSeconds = node.timeoutSeconds;
-            need(irVersion >= WORKFLOW_AGENT_IR_VERSION && validInvoke && typeof node.hasInput === "boolean" && Object.hasOwn(node, "input")
+            need(validInvoke && typeof node.hasInput === "boolean" && Object.hasOwn(node, "input")
                 && nullableString(node.inputSchema) && nullableString(node.outputSchema) && stringArray(node.outcomes) && node.outcomes.length > 0
                 && (typeof timeoutSeconds === "number" || typeof timeoutSeconds === "string") && stringMap(node.next)
                 && (node.chat === undefined || node.chat === "continue")
@@ -2320,24 +2170,24 @@ export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: numb
             };
         } else if (node.type === "parallel") {
             const body = node.body;
-            // IR 9: a join of the first k successes, and the state's own time limit (absent without one).
+            // A join of the first k successes, and the state's own time limit (absent without one).
             const first = isJsonObject(node.join) && Object.keys(node.join).length === 1 ? node.join.first : undefined;
-            const joinValid = node.join === "all_required" || (irVersion >= WORKFLOW_JOIN_IR_VERSION && typeof first === "number" && Number.isSafeInteger(first)
+            const joinValid = node.join === "all_required" || (typeof first === "number" && Number.isSafeInteger(first)
                 && first >= 1 && first <= WORKFLOW_PARALLEL_MAX_ITEMS);
             const timeout = node.timeoutSeconds;
-            const timeoutValid = timeout === undefined || (irVersion >= WORKFLOW_JOIN_IR_VERSION && (typeof timeout === "string"
+            const timeoutValid = timeout === undefined || ((typeof timeout === "string"
                 || (typeof timeout === "number" && Number.isSafeInteger(timeout) && timeout >= 1 && timeout <= WAIT_MAX_SECONDS)));
-            need(irVersion >= WORKFLOW_AGENT_IR_VERSION && Object.hasOwn(node, "forEach") && typeof node.concurrency === "number"
+            need(Object.hasOwn(node, "forEach") && typeof node.concurrency === "number"
                 && Number.isInteger(node.concurrency) && node.concurrency >= 1 && node.concurrency <= WORKFLOW_PARALLEL_MAX_CONCURRENCY && joinValid
                 && timeoutValid && typeof node.failFast === "boolean"
                 && nullableString(node.inputSchema) && nullableString(node.outputSchema)
                 && isJsonObject(body) && typeof body.initial === "string" && stringArray(body.states) && body.states.includes(body.initial)
                 && stringMap(node.next), `stored IR parallel state ${id} is invalid`);
-            // IR 11: named branches, whose states are exactly the body's, in order, each from its own initial.
+            // Named branches, whose states are exactly the body's, in order, each from its own initial.
             let branches: WorkflowIRBranch[] | undefined;
             if (node.branches !== undefined) {
                 const list = node.branches;
-                need(irVersion >= WORKFLOW_BRANCHES_IR_VERSION && Array.isArray(list) && list.length >= 1 && list.length <= WORKFLOW_PARALLEL_MAX_ITEMS
+                need(Array.isArray(list) && list.length >= 1 && list.length <= WORKFLOW_PARALLEL_MAX_ITEMS
                     && list.every(item => isJsonObject(item) && typeof item.name === "string" && ID_PATTERN.test(item.name) && typeof item.initial === "string"
                         && stringArray(item.states) && item.states.includes(item.initial) && typeof item.hasInput === "boolean" && Object.hasOwn(item, "input"))
                     && new Set(list.map(item => (item as { name: string }).name)).size === list.length
@@ -2383,11 +2233,11 @@ export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: numb
     need(catchAll === null || Object.hasOwn(nodes, catchAll), "stored IR catch-all state is missing");
     need(catchAll === null || !bodyMembers.has(catchAll), "stored IR catch-all state is a body state");
     return {
-        irVersion, apiVersion: WORKFLOW_API_VERSION, name: value.name, version: value.version,
+        irVersion: WORKFLOW_IR_VERSION, apiVersion: WORKFLOW_API_VERSION, name: value.name, version: value.version,
         description: value.description, initial: value.initial, initialInput: value.initialInput,
         inputsSchema: value.inputsSchema, outputSchema: rootOutputSchema, catchAll,
         limits: { maxNodeExecutions: value.limits.maxNodeExecutions,
             ...(typeof deadlineSeconds === "number" ? { timeoutSeconds: deadlineSeconds, onExceeded: "expired" as const } : {}) },
-        schemaDefs, ...(contracts !== undefined ? { contracts } : {}), nodes,
+        schemaDefs, contracts, nodes,
     };
 }

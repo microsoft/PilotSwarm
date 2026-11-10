@@ -11,7 +11,7 @@ import {
 } from "./store.js";
 
 /**
- * Workflow agent states (IR 8; design 03 agent node, 04 tool surface):
+ * Workflow agent states (design 03 agent node, 04 tool surface):
  * the child's completion tool, which an agent state's own child is given on
  * its 1.0.83 turns (session-proxy, from the session's stored lineage).
  */

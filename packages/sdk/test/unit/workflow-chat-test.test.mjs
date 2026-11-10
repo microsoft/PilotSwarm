@@ -162,7 +162,7 @@ states:
 `;
 
 test("F-SM2: a prepared answer of the wrong shape fails the test at once, saying why and the shape it needs", async () => {
-    const compiled = compileWorkflow(AGENT_YAML, { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true });
+    const compiled = compileWorkflow(AGENT_YAML);
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     let current = run({ workflowSessionId: "bench-1", mode: "test", status: "running", revision: 3, irSha256: compiled.irSha256, terminalOutcome: null,
         terminalNodeId: null, finishedAt: null });
@@ -237,7 +237,7 @@ states:
 
 /** One wait of a test whose run holds one request (security_review) open, with these fixtures; what it cancelled with, and its report. */
 async function requestTest(fixtures) {
-    const compiled = compileWorkflow(REQUEST_YAML, { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true });
+    const compiled = compileWorkflow(REQUEST_YAML);
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     let current = run({ workflowSessionId: "bench-1", mode: "test", status: "running", revision: 3, irSha256: compiled.irSha256, terminalOutcome: null,
         terminalNodeId: null, finishedAt: null });

@@ -20,7 +20,6 @@ process.env.PILOTSWARM_WORKFLOW_TEST_MODE = "on";
  */
 
 const PLUGINS = fileURLToPath(new URL("../../plugins", import.meta.url));
-const MILESTONE = { enableRequests: true, enableAgents: true, enableParallel: true };
 const skills = () => loadSkillsSync(WORKFLOW_SKILLS_DIR);
 // The testing guide is hidden with test mode (Workflow Simplified, spec 16): apart from the guides agents read.
 const testModeSkills = () => loadSkillsSync(WORKFLOW_TEST_MODE_SKILLS_DIR);
@@ -94,7 +93,7 @@ test("every complete example in the workflow skills compiles as written, with no
             "workflow-reference/change-review", "workflow-testing/release-notes"]);
     const kinds = new Set();
     for (const example of examples) {
-        const compiled = compileWorkflow(example.yaml, MILESTONE);
+        const compiled = compileWorkflow(example.yaml);
         assert.equal(compiled.valid, true, `${example.name}: ${JSON.stringify(compiled.diagnostics)}`);
         assert.deepEqual(compiled.diagnostics, [], example.name);
         assert.equal(compiled.name, example.name);

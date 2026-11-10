@@ -1,4 +1,4 @@
-// Owner decision join-k-of-n (IR 9): a parallel step's join of the first k and its own time limit, as the portal and the
+// Owner decision join-k-of-n: a parallel step's join of the first k and its own time limit, as the portal and the
 // TUI show them. The join bar says the rule ("all required", "first success", "first 2 of 4", "first 2") and the real
 // time limit (its length; when the shown visit's ends; that it passed); timed_out leaves from the bar; the Branches
 // table says how each branch ended (succeeded, failed, canceled · limit, canceled after the join, cancelled,

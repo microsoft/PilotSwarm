@@ -21,7 +21,6 @@ import {
     REQUEST_RESPONDED,
     WAIT_ELAPSED,
     WAIT_MAX_SECONDS,
-    WORKFLOW_MILESTONE_IR_VERSION,
     workflowClockWaitWords,
     type WorkflowIRClockWait,
     WORKFLOW_PARALLEL_MAX_ITEMS,
@@ -150,7 +149,7 @@ export const WORKFLOW_SEND_VERSION = "1.0.0";
 /** Delivers a request state's request (one per node execution, stable instance id), then wakes the controller. */
 export const WORKFLOW_REQUEST_NAME = "workflow-request";
 export const WORKFLOW_REQUEST_VERSION = "1.0.0";
-/** Creates an agent state's child agent session (one per node execution, stable instance id; IR 8), then wakes the controller on a failure. */
+/** Creates an agent state's child agent session (one per node execution, stable instance id), then wakes the controller on a failure. */
 export const WORKFLOW_AGENT_NAME = "workflow-agent";
 export const WORKFLOW_AGENT_VERSION = "1.0.0";
 /**
@@ -211,17 +210,17 @@ export const BRANCH_ROUTE = "@branch";
 // A branch's scope (parallel.ts), as every caller of this module has read it.
 export { branchScopeId, parseBranchScope };
 
-/** A branch's `branch` binding (its manifest item and index, IR 11 its name) and the parallel state's node execution it belongs to. */
+/** A branch's `branch` binding (its manifest item and index, and a named branch's name) and the parallel state's node execution it belongs to. */
 interface BranchBinding {
     parallelNodeExecutionId: string;
     parallelNodeId: string;
     item: JsonValue;
     index: number;
-    /** IR 11: a named branch's name; null in a For each. */
+    /** A named branch's name; null in a For each. */
     name: string | null;
 }
 
-/** A branch's binding as its states read it: `{ item, index }`, and IR 11 `name` for a named branch. */
+/** A branch's binding as its states read it: `{ item, index }`, and `name` for a named branch. */
 function branchBindingValue(branch: BranchBinding): { [key: string]: JsonValue } {
     return { item: branch.item, index: branch.index, ...(branch.name !== null ? { name: branch.name } : {}) };
 }
@@ -385,8 +384,8 @@ export interface ControllerParallel {
     nextIndex: number;
     results: Array<{ index: number; nodeExecutionId: string | null; via: "terminal" | "error" | "cancelled" | "not_started" }>;
     /**
-     * No queued branch starts any more: the remaining branches were cancelled (failFast; IR 9: the state was decided), or
-     * (IR 9) the state's own time limit passed.
+     * No queued branch starts any more: the remaining branches were cancelled (failFast; the state was decided), or
+     * the state's own time limit passed.
      */
     cancelled: boolean;
 }
@@ -414,13 +413,13 @@ export interface ControllerPlan {
         mode?: "receive" | "send" | "request";
         next: Record<string, string>;
         /**
-         * A parallel state's body initial, concurrency and failure policy, and IR 9: `first`, the k of a
+         * A parallel state's body initial, concurrency and failure policy, and `first`, the k of a
          * join of the first k successes (absent for a join of every branch), and `timeLimit` when it has its own time limit
-         * (absent without one), so a plan of IR 8 reads as it was written. With either, the store decides its join.
+         * (absent without one). With either, the store decides its join.
          */
         parallel?: { initial: string; concurrency: number; failFast: boolean; first?: number; timeLimit?: true;
             /**
-             * IR 11, a named fork: `branches`, its number of branches (the discriminator), with exactly one initial for each
+             * A named fork: `branches`, its number of branches (the discriminator), with exactly one initial for each
              * (branch i starts at `initials[i]`) and each branch's states (`branchStates[i]`, which hold its initial). All three
              * are absent for a For each (review NB-R4).
              */
@@ -455,7 +454,7 @@ interface CollectedResult {
     nodeExecutionId: string;
     outcome: string;
     resultKind: "business" | "runtime_error";
-    /** IR 9: a branch state its parallel state's join or time limit cancelled (winner join or join_timeout); its result goes nowhere. */
+    /** A branch state its parallel state's join or time limit cancelled (winner join or join_timeout); its result goes nowhere. */
     cut?: true;
 }
 
@@ -557,7 +556,7 @@ function parseControllerState(value: unknown): ControllerState {
 }
 
 /**
- * The state a parallel branch starts at: the body's initial (a For each), or IR 11 its named branch's own. A plan whose
+ * The state a parallel branch starts at: the body's initial (a For each), or its named branch's own. A plan whose
  * initials are not one for each branch (one manifest item each) fails loudly rather than starting the first branch's.
  */
 export function parallelBranchInitial(spec: { initial: string; initials?: string[]; branches?: number }, index: number, total: number): string {
@@ -570,7 +569,7 @@ export function parallelBranchInitial(spec: { initial: string; initials?: string
 }
 
 /**
- * Review NB-R4: a parallel plan node's named-fork fields. A For each has none of them. A named fork (IR 11) gives its
+ * Review NB-R4: a parallel plan node's named-fork fields. A For each has none of them. A named fork gives its
  * number of branches, exactly one initial for each, the first the body's, and each branch's states, which hold its initial
  * and are nodes of the plan.
  */
@@ -788,7 +787,7 @@ function parseTerminalFinish(value: unknown): { routed: false; result: Controlle
 }
 
 /**
- * The answer of the join of a parallel state of IR 9 (the store decides it): decided (now or before), with why its
+ * The answer of the join of a parallel state that the store decides (a join of the first k, a time limit or named branches): decided (now or before), with why its
  * controller cuts the branches still running, or not yet.
  */
 function parseJoinAnswer(value: unknown): { decided: true; cut: BranchCancelReason } | { decided: false } {
@@ -882,7 +881,7 @@ function persist(ctx: OrchestrationContext, name: WorkflowActivityKey, input: un
 }
 
 /**
- * After the run ended, before its parent is told: the children of its decided agent states are ended (IR 8). A child
+ * After the run ended, before its parent is told: the children of its decided agent states are ended. A child
  * that could not be ended after every attempt does not keep the run's end from being reported: the invocation shows no
  * end (read_workflow), and the failure is traced.
  */
@@ -991,7 +990,7 @@ function* applyCommand(ctx: OrchestrationContext, input: ControllerInput, comman
     // status follow that stored end, never this command's requester.
     if (applied.elsewhere) return yield* endedElsewhere(ctx, input.runId);
     const ended = applied.result;
-    // The children of the agent states this end decided are cancelled (IR 8).
+    // The children of the agent states this end decided are cancelled.
     yield* endRunChildren(ctx, input.runId);
     if (command.cmd !== "delete") {
         yield* persist(ctx, "notifyParent", { runId: input.runId, requestedBy: command.requestedBy ?? null });
@@ -1080,7 +1079,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
         return null;
     };
 
-    // ── Parallel states (IR 8; design 02 parallel scope and join) ──
+    // ── Parallel states (design 02 parallel scope and join) ──
     const parallels = (): ControllerParallel[] => (state.parallels ??= []);
     const branchesOf = (parallel: ControllerParallel) => state.cursors.filter(item => parseBranchScope(item.scopeId)?.parallelNodeExecutionId === parallel.nodeExecutionId);
     /** Start branches of `parallel` while fewer than its concurrency are active (each a cursor at the body's initial state). */
@@ -1089,7 +1088,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
         expect(spec !== undefined, `plan state ${parallel.nodeId} is not a parallel state`);
         let room = spec.concurrency - branchesOf(parallel).length;
         while (room > 0 && parallel.nextIndex < parallel.total && !parallel.cancelled) {
-            // IR 11: a named branch starts at its own initial.
+            // A named branch starts at its own initial.
             state.cursors.push({ scopeId: branchScopeId(parallel.nodeExecutionId, parallel.nextIndex),
                 nodeId: parallelBranchInitial(spec, parallel.nextIndex, parallel.total),
                 predecessorId: parallel.nodeExecutionId, arrivalRoute: BRANCH_ROUTE, pending: null, deadlineMs: null });
@@ -1099,7 +1098,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
     };
     /**
      * Join `parallel` once every branch ended: the join decides its node (joined or blocked) for its cursor to collect
-     * (IR 8, and IR 9 without a join of the first k or a time limit).
+     * (a join of every branch without a time limit).
      */
     const joinIfDone = function* (parallel: ControllerParallel): Generator<ScheduledTask, void, unknown> {
         if (parallel.results.length < parallel.total) return;
@@ -1107,8 +1106,8 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
         state.parallels = parallels().filter(item => item !== parallel);
     };
     /**
-     * IR 9: whether the store decides this parallel state's join (a join of the first k, or a state with its own time limit).
-     * IR 11 (review NB-R5): a named fork's join always: its verdict, the cut of its other branches and its own decision are
+     * Whether the store decides this parallel state's join (a join of the first k, or a state with its own time limit).
+     * Review NB-R5: a named fork's join always: its verdict, the cut of its other branches and its own decision are
      * one store transaction. A For each keeps its recorded schedule.
      */
     const storeJoins = (parallel: ControllerParallel): boolean => {
@@ -1128,7 +1127,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
     };
     /**
      * Cut the branches of `scopeIds` (review J1C-1 and J1d): the store decides their pending work cancelled for `reason`
-     * (failFast when absent, as an IR 8 plan's history records it), which is retried until it is stored, as before. Then
+     * (failFast when absent), which is retried until it is stored, as before. Then
      * every effect is asked to stop and every agent child is ended, each once: one that could not be is owed, and the
      * controller goes on at once (retryOwedCuts tries it again; a run's end ends every owed child). The controller no
      * longer waits, for up to half an hour, for a child that cannot be ended.
@@ -1165,7 +1164,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
     };
     /**
      * Cancel the branches of `parallel` that still run (their pending work is decided cancelled for `reason`; failFast
-     * when absent, as an IR 8 plan's history records it) and record the queued ones not started: their cursors are
+     * when absent) and record the queued ones not started: their cursors are
      * dropped, and their results go nowhere.
      */
     const cutBranches = function* (parallel: ControllerParallel, reason?: Exclude<BranchCancelReason, "failFast">): Generator<ScheduledTask, void, unknown> {
@@ -1186,7 +1185,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
         parallel.nextIndex = parallel.total;
     };
     /**
-     * IR 9: ask the store to decide `parallel`'s join (its one count of the successes committed, admitted or not, by the
+     * Ask the store to decide `parallel`'s join (its one count of the successes committed, admitted or not, by the
      * state's time limit; formal finding H1). Decided (now, or before by its time limit): the branches still running are
      * cut for the reason the decision gives (PJ-C3), and the state's own cursor collects its result. Otherwise nothing
      * changes here: its winners' terminals are still to be admitted, or its branches still run.
@@ -1209,10 +1208,10 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
         return parallel;
     };
     /**
-     * A branch ended (at its terminal, by an error no route takes, or IR 9: cut by its state's time limit or decision, or
-     * refused before its first state): record how, drop its cursor, then decide. IR 8 (and a join of every branch without
-     * a time limit): cancel the others when it did not succeed under failFast, start the next ones, and join when all
-     * ended. IR 9, a join of the first k or a time limit: the store decides the join (askJoin); until it does, the next
+     * A branch ended (at its terminal, by an error no route takes, or cut by its state's time limit or decision, or
+     * refused before its first state): record how, drop its cursor, then decide. A join of every branch without a time
+     * limit: cancel the others when it did not succeed under failFast, start the next ones, and join when all ended. A
+     * join of the first k or a time limit: the store decides the join (askJoin); until it does, the next
      * ones start.
      */
     const endBranch = function* (cursor: ControllerCursor, via: "terminal" | "error" | "cancelled" | "not_started", nodeExecutionId: string | null,
@@ -1231,7 +1230,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
         yield* joinIfDone(parallel);
     };
     /**
-     * IR 9: the parallel states among `due` whose time limit the store found passed (not reported not due): each one's
+     * The parallel states among `due` whose time limit the store found passed (not reported not due): each one's
      * timer has nothing left to do, and its join is asked (askJoin) after every due state was settled here, so a cut of
      * its branches never meets a cursor this pass still reads.
      */
@@ -1246,7 +1245,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
         }
     };
     /**
-     * IR 9: a branch cursor whose work its state's time limit or decision cut (that work's effect or child is asked to
+     * A branch cursor whose work its state's time limit or decision cut (that work's effect or child is asked to
      * stop, as at any cut: the store already decided the work), or that may admit nothing more: its branch ends.
      */
     const cutBranch = function* (cursor: ControllerCursor, nodeExecutionId: string | null): Generator<ScheduledTask, void, unknown> {
@@ -1259,7 +1258,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
     /**
      * One pass of the paused collector (1a; nothing is admitted and no result is routed until the resume). The
      * deadlines keep running (adversarial review RT-6 and its verification): the run's (D03), and each pending state's own.
-     * A pending state past its deadline is elapsed now (the store's clock decides); IR 9, a parallel state whose time limit
+     * A pending state past its deadline is elapsed now (the store's clock decides); a parallel state whose time limit
      * passed is asked for its join (askTimedJoins). An agent state decided while paused (its typed completion, or its
      * deadline) is collected now and its child is ended now; its result is routed after the resume, as any other. Until its
      * child's end is recorded the state is collected again at each wake (at most a backstop period apart), so a failed end
@@ -1333,7 +1332,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                     // collection above, at once (the loop goes on), and again at each wake until its end is recorded.
                     owner.deadlineMs = null;
                 }
-                // IR 9 (Q2): a parallel state whose time limit passed is asked for its join now: its branches are cut at
+                // Q2: a parallel state whose time limit passed is asked for its join now: its branches are cut at
                 // once when the time limit decided it, and its join may be due; its route waits for the resume.
                 yield* askTimedJoins(due, notDue);
                 return null;
@@ -1402,7 +1401,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                 predecessorId: cursor.predecessorId, arrivalRoute: cursor.arrivalRoute,
             }));
             if (!entered.admitted) {
-                // IR 9: a branch whose parallel state was decided, or whose time limit passed (by the store's clock or a test
+                // A branch whose parallel state was decided, or whose time limit passed (by the store's clock or a test
                 // run's), admits nothing more but its terminal: the branch ends, no queued branch starts, and the join is asked.
                 if (entered.cut) {
                     yield* cutBranch(cursor, null);
@@ -1478,8 +1477,8 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                 }
                 continue;
             }
-            // A parallel state (IR 8) waits for its join: its branches run as cursors of their own, at most its concurrency at
-            // a time; each starts at the body's initial state with its manifest item. IR 9: its own time limit is a deadline on
+            // A parallel state waits for its join: its branches run as cursors of their own, at most its concurrency at
+            // a time; each starts at the body's initial state with its manifest item. Its own time limit is a deadline on
             // this controller's timers, as a wait's (the store's clock decides it); a join of the first k that has fewer than k
             // items starts no branch and the store blocks it at once.
             if (node.type === "parallel") {
@@ -1502,7 +1501,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                 }
                 continue;
             }
-            // An agent state (IR 8) waits for its child's typed completion, decided in the completion's own transaction,
+            // An agent state waits for its child's typed completion, decided in the completion's own transaction,
             // until its outer deadline on this controller's timers, as a request does. Its agent orchestration creates the
             // child, and wakes this controller only when the state fails there.
             if (node.type === "agent") {
@@ -1556,7 +1555,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                         owner.deadlineMs = reported + wait.remainingMs;
                     }
                 }
-                // IR 9: a parallel state whose time limit passed is asked for its join before any result is collected, so a
+                // A parallel state whose time limit passed is asked for its join before any result is collected, so a
                 // decision cuts its branches first (PJ-C5), and a join that is due waits for its winners' terminals.
                 yield* askTimedJoins(due, notDue);
             }
@@ -1600,7 +1599,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                 }
             }
         }
-        // IR 9: a parallel state decided while its branches still run (its own time limit by a test run's clock, which no
+        // A parallel state decided while its branches still run (its own time limit by a test run's clock, which no
         // elapse here reported) has its branches cut now: their pending work is cancelled with their effects and children,
         // and no result of theirs is routed. Only its time limit decides a state so (timed_out, or blocked); a join, and a
         // time limit this controller elapsed, remove the state's branches first (askJoin).
@@ -1650,7 +1649,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                 const next = plan.nodes[owner.nodeId].next;
                 const route = selectRoute(next, result);
                 // In a branch: its routes stay in its body; an error no route takes ends the branch (not the run, and never at
-                // the workflow's catch-all state). IR 9: work its parallel state's time limit cancelled before the state was
+                // the workflow's catch-all state). Work its parallel state's time limit cancelled before the state was
                 // decided (its join is due) goes nowhere: the branch ends.
                 if (owner.scopeId !== ROOT_SCOPE) {
                     if (result.cut === true) {
@@ -1814,7 +1813,7 @@ export function* workflowRequestDelivery(ctx: OrchestrationContext, rawInput: un
 }
 
 /**
- * An agent state's child (WORKFLOW_AGENT_NAME; IR 8): the
+ * An agent state's child (WORKFLOW_AGENT_NAME): the
  * spawnAgent activity with the run-ending writes' schedule. Each attempt
  * decides again whether to create the child (store.beginAgentSpawn): a
  * state decided meanwhile is not spawned, and a child an earlier attempt
@@ -2044,7 +2043,7 @@ export interface WorkflowRuntimeDeps {
      */
     respondToolAvailable?: (sessionId: string) => Promise<boolean>;
     /**
-     * Agent states (IR 8; every worker passes it; its
+     * Agent states (every worker passes it; its
      * host is milestone-worker.ts's): what creates an agent state's child
      * agent session.
      * Absent: an agent state fails unavailable when its child would be
@@ -2300,7 +2299,7 @@ function sendFailedProjection(workflowSessionId: string, executed: WorkflowNodeE
 }
 
 /**
- * The projection of a parallel state's decision (its join or its time limit; IR 9 store.decideParallelJoin and
+ * The projection of a parallel state's decision (its join or its time limit; store.decideParallelJoin and
  * store.elapseParallelNode): one workflow.state_completed (joined, blocked) or workflow.state_failed (timed_out, or a joined
  * output its schema refused) event, with its branches and the successes that counted.
  */
@@ -2416,8 +2415,8 @@ export function describeWorkflowState(node: WorkflowIRNode): { [key: string]: Js
         };
     }
     if (node.type === "parallel") {
-        // IR 9: its join of the first k ({ first: k }) and its own time limit, only when it has them (an IR 8 state reads as before).
-        // IR 11: named branches show their names, initials and states (in order) instead of a forEach.
+        // Its join of the first k ({ first: k }) and its own time limit, only when it has them.
+        // Named branches show their names, initials and states (in order) instead of a forEach.
         return {
             id: node.id, type: "parallel",
             ...(node.branches !== undefined
@@ -2470,7 +2469,7 @@ export function workflowBindingView<T extends JsonValue | undefined>(value: T): 
 }
 
 export function describeWorkflowStates(ir: WorkflowIR): Array<{ [key: string]: JsonValue }> {
-    // A parallel state's body states (IR 8) name the parallel state they belong to; IR 11, a named branch's states its name too.
+    // A parallel state's body states name the parallel state they belong to; a named branch's states its name too.
     const bodyOf = new Map<string, string>();
     const branchOfState = new Map<string, string>();
     for (const node of Object.values(ir.nodes)) {
@@ -2544,7 +2543,7 @@ export async function carryDeletedEnd(client: WorkflowAgentEndClient | null, chi
 }
 
 /**
- * End the child of a decided agent state (IR 8): done
+ * End the child of a decided agent state: done
  * after the agent's own typed completion, cancel after anything else (its
  * deadline, a cancel, a stop, a deletion or the run's end). The first end
  * recorded stands (store.recordAgentEnd), and the command is sent to the
@@ -2973,8 +2972,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         return run;
     };
     /** The run's pinned definition. */
-    const irOf = (run: WorkflowRunRow): Promise<WorkflowIR> => store.readRevisionIr(run.workflowSessionId, run.revision, run.irSha256,
-        { maxIrVersion: WORKFLOW_MILESTONE_IR_VERSION });
+    const irOf = (run: WorkflowRunRow): Promise<WorkflowIR> => store.readRevisionIr(run.workflowSessionId, run.revision, run.irSha256);
     const nodeOf = (ir: WorkflowIR, nodeId: string): WorkflowIRNode => {
         const node = ir.nodes[nodeId];
         if (!node) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Pinned definition has no state ${nodeId}.`);
@@ -2991,7 +2989,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         return { admitted: false, status: run.status, outcome: null, expired: true };
     };
     /**
-     * End the child of a decided agent state (IR 8): done
+     * End the child of a decided agent state: done
      * after the agent's own typed completion, cancel after anything else (its
      * deadline, a cancel, a stop, a deletion or the run's end). The first end
      * recorded stands (store.recordAgentEnd), and the command is sent to the
@@ -3118,7 +3116,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         ...(branch !== null ? { branch: branchBindingValue(branch) } : {}),
     });
     /**
-     * The `branch` binding of a node execution's scope (IR 8): its item in the
+     * The `branch` binding of a node execution's scope: its item in the
      * manifest its parallel state's node execution froze as its input, and its
      * index; null in the root scope. A scope that names no branch of the run
      * is corrupt.
@@ -3131,7 +3129,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             || !Array.isArray(parallel.input) || scope.index >= parallel.input.length) {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Scope ${scopeId} names no branch of run ${run.runId}.`);
         }
-        // IR 11: a named branch's name, from the IR the run runs.
+        // A named branch's name, from the IR the run runs.
         const spec = (ir ?? await irOf(run)).nodes[parallel.nodeId];
         const name = spec?.type === "parallel" ? spec.branches?.[scope.index]?.name ?? null : null;
         return { parallelNodeExecutionId: parallel.nodeExecutionId, parallelNodeId: parallel.nodeId, item: parallel.input[scope.index], index: scope.index, name };
@@ -3262,7 +3260,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             if (!(error instanceof WorkflowJsonError)) throw error;
             return { failure: runtimeError("invalid_input", error.message) };
         }
-        const contract = ir.contracts?.[node.contract];
+        const contract = ir.contracts[node.contract];
         if (!contract) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Contract ${node.contract} of state '${node.id}' is missing from its IR.`);
         const problems = schemaSetFor(run.irSha256, ir.schemaDefs).validate(contract.schema, payload);
         if (problems.length) {
@@ -3320,7 +3318,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             : { incoming: predecessor.error, runtimeError: predecessor.error };
     };
     /**
-     * The value arriving at a parallel branch's first state (IR 8; the branch
+     * The value arriving at a parallel branch's first state (the branch
      * route): its item in the manifest its parallel state's node execution
      * froze. That node execution is its predecessor, and the state is its
      * body's initial state.
@@ -3328,7 +3326,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
     const branchArrival = (ir: WorkflowIR, nodeId: string, predecessorId: string | null, branch: BranchBinding | null)
         : { incoming: JsonValue; runtimeError: JsonValue } => {
         const parallel = branch === null ? undefined : ir.nodes[branch.parallelNodeId];
-        // IR 11: a named branch starts at its own initial.
+        // A named branch starts at its own initial.
         const initial = parallel?.type !== "parallel" || branch === null ? null
             : parallel.branches === undefined ? parallel.body.initial : parallel.branches[branch.index]?.initial ?? null;
         if (branch === null || predecessorId !== branch.parallelNodeExecutionId || parallel?.type !== "parallel" || initial !== nodeId) {
@@ -3383,7 +3381,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     parallel: { initial: node.body.initial, concurrency: node.concurrency, failFast: node.failFast,
                         ...(typeof node.join === "object" ? { first: node.join.first } : {}),
                         ...(node.timeoutSeconds !== undefined ? { timeLimit: true as const } : {}),
-                        // IR 11: a named fork's plan gives its branches: their number, initials and states (review NB-R4); a plan
+                        // A named fork's plan gives its branches: their number, initials and states (review NB-R4); a plan
                         // without branches reads as it was written.
                         ...(node.branches !== undefined ? { branches: node.branches.length, initials: node.branches.map(branch => branch.initial),
                             branchStates: node.branches.map(branch => [...branch.states]) } : {}) } };
@@ -3427,7 +3425,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         // A run with an accepted stop admits nothing (store.enterNode decides it again under the locks; a stop is never
         // withdrawn, so this early answer only saves the evaluation).
         if (ACTIVE_RUN_STATUSES.includes(run.status) && run.stop !== null) return stoppingRefusal(run);
-        // A branch's states see its manifest item and index (IR 8).
+        // A branch's states see its manifest item and index.
         const branch = await branchOf(run, scopeId, ir);
         // The admission pins the KV revision that is current when it commits.
         // set_vars locks the run row as the admission does, so every set_vars
@@ -3466,11 +3464,11 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     const problems = schemaSetFor(current.irSha256, ir.schemaDefs).validate(node.inputSchema, value);
                     if (problems.length) immediate = runtimeError("invalid_input", `Input does not match ${node.inputSchema}.`, problemsJson(problems));
                 }
-                // A parallel state's manifest is evaluated once, here, and frozen as its input (IR 8): a list
+                // A parallel state's manifest is evaluated once, here, and frozen as its input: a list
                 // of at most WORKFLOW_PARALLEL_MAX_ITEMS items that matches its inputSchema. Its branches start from it.
                 if (!immediate && node.type === "parallel") {
                     let manifest: JsonValue = null;
-                    // IR 11: named branches: the state's inputSchema checks the value that arrived; the manifest is each
+                    // Named branches: the state's inputSchema checks the value that arrived; the manifest is each
                     // branch's input (its own template, else that value), in branch order.
                     if (node.branches !== undefined && node.inputSchema) {
                         const problems = schemaSetFor(current.irSha256, ir.schemaDefs).validate(node.inputSchema, arrived.incoming);
@@ -3500,7 +3498,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                             if (problems.length) immediate = runtimeError("invalid_input", `The manifest does not match ${node.inputSchema}.`, problemsJson(problems));
                         }
                     }
-                    // IR 9: its own time limit is read once, here, as a wait's seconds; the store counts them from its own clock
+                    // Its own time limit is read once, here, as a wait's seconds; the store counts them from its own clock
                     // (a test run's from its virtual clock) when it accepts the admission.
                     if (!immediate && node.timeoutSeconds !== undefined) {
                         const seconds = waitSeconds(node.timeoutSeconds, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch),
@@ -3535,7 +3533,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     else send = { recipient: resolved.recipient, contract: node.contract, payloadText: resolved.payloadText, correlationText: resolved.correlationText };
                 }
                 // An agent state's child, task, deadline and output contract are resolved once, here, and frozen for this
-                // occurrence (IR 8): its input as a script's, its seconds as a wait's, its child's id
+                // occurrence: its input as a script's, its seconds as a wait's, its child's id
                 // derived from this node execution, and the workflow's parent as its controlling agent.
                 if (!immediate && node.type === "agent") {
                     const seconds = waitSeconds(node.timeoutSeconds, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), `states.${nodeId}.timeoutSeconds`);
@@ -3572,7 +3570,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     const scope = scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch);
                     const resolved = await resolveSend(node, current, ir, scope, value);
                     const seconds = "failure" in resolved ? null : waitSeconds(node.timeoutSeconds, scope, `states.${nodeId}.timeoutSeconds`);
-                    const responseSchema = ir.contracts?.[node.contract]?.response?.schema;
+                    const responseSchema = ir.contracts[node.contract]?.response?.schema;
                     if (!responseSchema) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Contract ${node.contract} of state '${node.id}' declares no response.`);
                     if ("failure" in resolved) immediate = resolved.failure;
                     else if (typeof seconds !== "number") immediate = seconds;
@@ -3673,7 +3671,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     ...(node.type === "parallel" ? { branches: manifestSize(result.node) } : {}) };
             }
             if (result.reason === "inactive") return { admitted: false, status: result.run.status, outcome: result.run.terminalOutcome };
-            // IR 9: the branch's parallel state was already decided, or its time limit passed (then only a terminal is admitted).
+            // The branch's parallel state was already decided, or its time limit passed (then only a terminal is admitted).
             if (result.reason === "cut") return { admitted: false, status: result.run.status, outcome: result.run.terminalOutcome, cut: true };
             if (result.reason === "expired") return expiredRefusal(result.run);
             if (result.reason === "stopping") return stoppingRefusal(result.run);
@@ -3762,8 +3760,8 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 if (stored.node.state === "completed") rows.push(stored.node);
             }
         }
-        // IR 9: a branch state its parallel state's join or time limit cancelled is marked, so its controller routes it nowhere
-        // (a branch cancelled under failFast, IR 8, is never collected: its controller dropped it first).
+        // A branch state its parallel state's join or time limit cancelled is marked, so its controller routes it nowhere
+        // (a branch cancelled under failFast is never collected: its controller dropped it first).
         const collected = rows.map(row => ({ nodeExecutionId: row.nodeExecutionId, outcome: row.outcome, resultKind: row.resultKind,
             ...(row.winner === BRANCH_CANCEL_WINNERS.join || row.winner === BRANCH_CANCEL_WINNERS.timeout ? { cut: true } : {}) }));
         // Also the run's accepted stop, read after the results, so a stop accepted before this read reaches the controller
@@ -4172,7 +4170,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} is not a wait state or a receive state of run ${runId}.`);
             }
             if (executed.state !== "pending") continue;
-            // IR 9: a parallel state's own time limit, decided only here or by a test run's clock
+            // A parallel state's own time limit, decided only here or by a test run's clock
             // (store.elapseParallelNode, the store's one count): timed_out, or blocked when k could no longer happen by then,
             // with its running branches' work cancelled in the same transaction; or its join is due (k successes were
             // committed by the deadline) and nothing is decided. Either way the controller then asks the join (askJoin), which
@@ -4575,7 +4573,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
     });
 
     /**
-     * Create an agent state's child (its agent orchestration, IR 8; design 03
+     * Create an agent state's child (its agent orchestration; design 03
      * agent node): when the state is still pending and no attempt recorded its
      * child yet (store.beginAgentSpawn), the host creates the child session,
      * or finds the one an earlier attempt created, and gives it the wrapper
@@ -4829,7 +4827,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
     });
 
     /**
-     * End a parallel branch at its terminal (IR 8): the
+     * End a parallel branch at its terminal: the
      * terminal's output (its template, with the branch's bindings) checked
      * against the terminal's own schema is the branch's result, with the
      * terminal's outcome; an output that cannot be evaluated or stored, or
@@ -4888,9 +4886,8 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
 
     /**
      * Cancel the other branches of a parallel state whose failFast policy met
-     * a branch that did not succeed (IR 8;
-     * store.cancelBranchScopes): their pending states are decided cancelled
-     * (winner fail_fast). IR 9: the same for the branches still running when
+     * a branch that did not succeed (store.cancelBranchScopes): their pending states are decided cancelled
+     * (winner fail_fast). The same for the branches still running when
      * a join of the first k had its successes (`reason` join; winner join),
      * and for those the state's own time limit cancelled (`reason` timeout;
      * winner join_timeout: the store cancelled their work when it decided the
@@ -4929,7 +4926,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 events: [{ eventType: "workflow.branches_cancelled", data: {
                     runId: run.runId, scopeIds: cut.slice(0, WORKFLOW_PARALLEL_MAX_ITEMS), cancelledCount: decided.length,
                     cancelled: decided.slice(0, WORKFLOW_PARALLEL_MAX_ITEMS), ...(reason !== "failFast" ? { reason } : {}),
-                    // IR 11: named branches by their names too.
+                    // Named branches by their names too.
                     ...(names !== null ? { branches: names.slice(0, WORKFLOW_PARALLEL_MAX_ITEMS) } : {}),
                 } }],
                 update: { touch: true },
@@ -4980,8 +4977,8 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
     });
 
     /**
-     * Join a parallel state. IR 8, and IR 9 with a join of
-     * every branch and no time limit (all_required, D10): once every branch
+     * Join a parallel state with a join of every branch and no
+     * time limit (all_required, D10): once every branch
      * ended, its node is decided in one compare-and-swap. Joined when every
      * branch ended at a terminal with outcome succeeded: the output is their
      * outputs in manifest order, checked against the state's outputSchema (a
@@ -4995,7 +4992,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
      * from the store. A retry, or a run end that decided the state first,
      * finds the node decided.
      *
-     * IR 9, a join of the first k or a state with its own time limit (owner
+     * A join of the first k or a state with its own time limit (owner
      * decision join-k-of-n, J1b): the controller asks whenever a branch ends
      * and when the time limit passed, and the store decides from its own
      * count, the one its time limit uses (store.decideParallelJoin; formal
@@ -5008,7 +5005,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
      * checked as above; outputSchema never checks a blocked or timed-out
      * report. The controller's list names the branches it will never start.
      *
-     * IR 11, a named fork (review NB-R5): the store decides its join this way
+     * A named fork (review NB-R5): the store decides its join this way
      * whatever its join, so a failFast block cuts the other branches and
      * decides the fork in one transaction. A For each keeps its schedule.
      */
@@ -5047,7 +5044,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 return { ...runtimeError("invalid_output", error.message), winner: "controller" };
             }
         };
-        // IR 11 (review NB-R5): a named fork's join is the store's too, whatever its join.
+        // Review NB-R5: a named fork's join is the store's too, whatever its join.
         if (typeof node.join === "object" || node.timeoutSeconds !== undefined || node.branches !== undefined) {
             const settled = await store.decideParallelJoin({
                 nodeExecutionId: parallelNodeExecutionId,

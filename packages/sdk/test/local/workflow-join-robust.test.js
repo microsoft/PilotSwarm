@@ -64,9 +64,7 @@
  *   catchAll; without one it is refused; a timed_out route into a branch body is an unknown target; valid IR round-trips.
  * - JK-03: literal lists of 0, 1, 2 and 64 items against k = n, n + 1 and every branch; equal items stay separate; more
  *   than 64 items are refused; stored IR with a malformed join, time limit, concurrency or body is refused.
- * - JK-22: the stored IR version boundary: IR 9 read as at most IR 8 is refused (also with its header set to 8); an unknown
- *   later version is refused; a valid IR 8 reads back as IR 8. (A stand-in for an older worker: the current reader with
- *   maxIrVersion 8, not the 8d568890 build itself.)
+ * - JK-22: a stored IR of another version is refused; a join of every branch with no time limit reads back as compiled.
  * Part 4 (J1b-T5):
  * - JK-14: a binding with fewer items than k blocks at once with every branch not started and nothing run, failFast or
  *   not; an empty join of every branch joins []; k = n joins in commit order with the wrapper, a join of every branch in
@@ -91,7 +89,7 @@ import {
     branchRowsOf, JOIN_ACTOR, WORK, PROBED_WORK, probeServer, processAlive, forkJoinWorker,
 } from "../helpers/workflow-join-harness.js";
 import {
-    compileWorkflow, parseWorkflowIr, WORKFLOW_AGENT_IR_VERSION, WORKFLOW_JOIN_IR_VERSION, WORKFLOW_MILESTONE_IR_VERSION, WORKFLOW_PARALLEL_MAX_ITEMS,
+    compileWorkflow, parseWorkflowIr, WORKFLOW_IR_VERSION, WORKFLOW_PARALLEL_MAX_ITEMS,
 } from "../../src/workflow/compiler.ts";
 import { canonicalJson } from "../../src/workflow/json.ts";
 import { controlWorkflowRun } from "../../src/workflow/service.ts";
@@ -108,7 +106,6 @@ const getEnv = useSuiteEnv(import.meta.url);
 // CI run 114 (HorizonDB, about ten times slower): the test's own bounds grow with the database (test/helpers/time-scale.js;
 // the harness's until() and within() scale theirs). Time limits that must leave room for branches to start are scaled too.
 const TIMEOUT = testTime.ms(180_000);
-const PARALLEL = { enableRequests: true, enableAgents: true, enableParallel: true };
 const WAITS = n => Array.from({ length: n }, () => ({ seconds: 600 }));
 const joinedValue = value => ({ outcome: "joined", resultKind: "business", valueText: canonicalJson(value), winner: "controller" });
 /** The events of the parallel state's decision (state_completed or state_failed for its node execution). */
@@ -124,7 +121,7 @@ async function storedRun(h, doc) {
     const parent = randomUUID();
     await h.catalog.createSession(parent, {});
     const yaml = yamlOf(doc);
-    const compiled = compileWorkflow(yaml, PARALLEL);
+    const compiled = compileWorkflow(yaml);
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
     const workflowSessionId = randomUUID();
     const runId = randomUUID();
@@ -1000,7 +997,7 @@ describe("J3 robust joins, part 2: the store (no controller)", () => {
             // Claims of success (a pending state, another run's ended terminal) count for nothing: the store decides by its rows.
             expect(await call(R.join, results([{ index: 0, via: "terminal", nodeExecutionId: firstK.at(0, "hold") },
                 { index: 1, via: "terminal", nodeExecutionId: another.at(0, "done") }]))).toEqual({ decided: false });
-            // A join of every branch (IR 8): a branch's end that is another run's row, or another branch's, is refused.
+            // A join of every branch: a branch's end that is another run's row, or another branch's, is refused.
             await expect(call(R.join, { runId: all.runId, parallelNodeExecutionId: all.fan, results: [
                 { index: 0, via: "terminal", nodeExecutionId: another.at(0, "done") }, { index: 1, via: "terminal", nodeExecutionId: all.at(1, "hold") }] }))
                 .rejects.toThrow(/ended without a decided state/);
@@ -1557,15 +1554,15 @@ const compiledWith = (change = () => {}) => {
     const doc = joinDoc({ items: LITERAL, join: { first: 2 }, timeoutSeconds: 10 });
     doc.states.fan.forEach = structuredClone(LITERAL);
     change(doc.states.fan, doc);
-    return compileWorkflow(yamlOf(doc), PARALLEL);
+    return compileWorkflow(yamlOf(doc));
 };
-const readStored = (ir, maxIrVersion = WORKFLOW_MILESTONE_IR_VERSION) => parseWorkflowIr(JSON.parse(canonicalJson(ir)), { maxIrVersion });
+const readStored = ir => parseWorkflowIr(JSON.parse(canonicalJson(ir)));
 
 describe("J3 robust joins, part 5: the compiler and stored IR", () => {
     it("JK-01: every join shape but all, all_required and { first: k } (k a safe integer, 1 to 64) is refused at its own path; the accepted ones compile exactly", () => {
         const valid = compiledWith();
         expect(valid.valid, JSON.stringify(valid.diagnostics)).toBe(true);
-        expect(valid.ir.irVersion).toBe(WORKFLOW_JOIN_IR_VERSION);
+        expect(valid.ir.irVersion).toBe(WORKFLOW_IR_VERSION);
         expect(valid.ir.nodes.fan).toMatchObject({ join: { first: 2 }, timeoutSeconds: 10 });
         for (const join of [null, {}, { first: null }, { first: true }, { first: "2" }, { first: 1.5 }, { first: 0 }, { first: -1 }, { first: 2, extra: 1 },
             { first: "${input.k}" }, { first: 2 ** 53 }, { first: WORKFLOW_PARALLEL_MAX_ITEMS + 1 }, { first: { k: 2 } }, "first", "any", ["all"], 2]) {
@@ -1659,26 +1656,14 @@ describe("J3 robust joins, part 5: the compiler and stored IR", () => {
         }
     });
 
-    it("JK-22: IR 9 read as at most IR 8 is refused (also with its header set to 8); an unknown later version is refused; a valid IR 8 reads back as IR 8", () => {
-        const ir9 = JSON.parse(canonicalJson(compiledWith().ir));
-        expect(ir9.irVersion).toBe(WORKFLOW_JOIN_IR_VERSION);
-        expect(() => readStored(ir9, WORKFLOW_AGENT_IR_VERSION)).toThrow(/stored IR version 9 is not supported/);
-        // The header set to 8 with the first k and the time limit kept: refused, never read as a join of every branch.
-        expect(() => readStored({ ...ir9, irVersion: WORKFLOW_AGENT_IR_VERSION })).toThrow(/stored IR parallel state fan is invalid/);
-        const headerOnlyJoin = { ...ir9, irVersion: WORKFLOW_AGENT_IR_VERSION, nodes: { ...ir9.nodes, fan: { ...ir9.nodes.fan, timeoutSeconds: undefined } } };
-        expect(() => readStored(JSON.parse(JSON.stringify(headerOnlyJoin)))).toThrow(/stored IR parallel state fan is invalid/);
-        // A later version than this worker reads.
-        expect(() => readStored({ ...ir9, irVersion: WORKFLOW_MILESTONE_IR_VERSION + 1 })).toThrow(new RegExp(`stored IR version ${WORKFLOW_MILESTONE_IR_VERSION + 1} is not supported`));
-        // A valid IR 8 (a join of every branch, no time limit) reads back as IR 8, by both readers.
-        const ir8 = compileWorkflow(yamlOf(joinDoc({ items: LITERAL })), PARALLEL).ir;
-        expect(ir8.irVersion).toBe(WORKFLOW_AGENT_IR_VERSION);
-        for (const max of [WORKFLOW_AGENT_IR_VERSION, WORKFLOW_MILESTONE_IR_VERSION]) {
-            const read = readStored(ir8, max);
-            expect(read).toEqual(ir8);
-            expect(read.irVersion).toBe(WORKFLOW_AGENT_IR_VERSION);
-            expect(read.nodes.fan.join).toBe("all_required");
-            expect(read.nodes.fan.timeoutSeconds).toBeUndefined();
-        }
+    it("JK-22: a stored IR of another version is refused; a join of every branch with no time limit reads back as compiled", () => {
+        const stored = JSON.parse(canonicalJson(compiledWith().ir));
+        expect(() => readStored({ ...stored, irVersion: WORKFLOW_IR_VERSION + 1 })).toThrow(new RegExp(`stored IR version ${WORKFLOW_IR_VERSION + 1} is not supported`));
+        const every = compileWorkflow(yamlOf(joinDoc({ items: LITERAL }))).ir;
+        const read = readStored(every);
+        expect(read).toEqual(every);
+        expect(read.nodes.fan.join).toBe("all_required");
+        expect(read.nodes.fan.timeoutSeconds).toBeUndefined();
     });
 });
 

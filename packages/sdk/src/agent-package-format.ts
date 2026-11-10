@@ -973,8 +973,7 @@ export async function validateAgentPackageDir(
                     if (extra === "workflow.yaml" || extra === "card.md") continue;
                     warnings.push({ code: "workflow_extra_file", message: `${rel}/${extra} is shipped but not read: a Workflow Definition is its workflow.yaml and card.md`, file: `${rel}/${extra}` });
                 }
-                const compiled = compileWorkflow(fs.readFileSync(yamlPath, "utf8"),
-                    { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true });
+                const compiled = compileWorkflow(fs.readFileSync(yamlPath, "utf8"));
                 if (!compiled.valid || !compiled.ir || !compiled.irSha256) {
                     const problems = compiled.diagnostics.filter((item) => item.severity !== "warning").slice(0, 5)
                         .map((item) => `${item.path}${Number.isSafeInteger(item.line) ? ` (line ${item.line})` : ""}: ${item.message}`);

@@ -7,7 +7,7 @@
  * It lives in its own on-demand skill, workflow-patterns (at most 8 KiB), so the authoring skill every Workflow-authoring
  * chat loads stays under 20 KiB (OF-S2-6: fewer tokens). The authoring skill, the base guidance and Agent Smith point to it.
  *
- * Named branches (IR 11, slice 3): the same need is now taught as one parallel state with named branches, first, with its
+ * Named branches (slice 3): the same need is now taught as one parallel state with named branches, first, with its
  * own complete example (two-views); the router pattern stays as the older form, for branches that come from a list.
  *
  * Run: node --test test/unit/workflow-router-pattern.test.mjs (after npm run build).
@@ -19,8 +19,6 @@ import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { requireAgentModelsForRevision } from "../../dist/workflow/agent-models.js";
 import { loadSkillsSync } from "../../dist/skills.js";
 import { WORKFLOW_SESSION_GUIDANCE, WORKFLOW_SKILLS_DIR } from "../../dist/workflow/guidance.js";
-
-const ALL = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true, enableClockWaits: true };
 const read = relative => fs.readFileSync(new URL(relative, import.meta.url), "utf8");
 const AUTHORING = read("../../plugins/workflow/skills/workflow-authoring/SKILL.md");
 const REFERENCE = read("../../plugins/workflow/skills/workflow-reference/SKILL.md");
@@ -35,7 +33,7 @@ function example(name = "two-lane-summary") {
 }
 
 test("the patterns skill's router example compiles: one parallel state over literal lanes, a router script, an agent node per lane", () => {
-    const compiled = compileWorkflow(example(), ALL);
+    const compiled = compileWorkflow(example());
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     const lanes = compiled.ir.nodes.lanes;
     assert.equal(lanes.type, "parallel");
@@ -65,7 +63,7 @@ test("workflow-patterns is an on-demand skill of its own, at most 8 KiB, that th
 });
 
 test("the patterns skill's named-branches example compiles: two branches, each its own graph and agent node, bounded by a time limit", () => {
-    const compiled = compileWorkflow(example("two-views"), ALL);
+    const compiled = compileWorkflow(example("two-views"));
     assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
     assert.deepEqual(compiled.diagnostics, [], "no warning: the parallel state has its own time limit");
     const views = compiled.ir.nodes.views;

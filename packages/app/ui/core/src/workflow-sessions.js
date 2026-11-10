@@ -109,7 +109,7 @@ function stateKind(state) {
     if (state?.type === "wait") return typeof state.until === "string" ? `Wait · until ${state.until}` : `Wait · ${state.seconds ?? "?"} s`;
     if (state?.type === "messaging") return `${MESSAGING_WORDS[state.mode] ?? "Message"} · ${state.contract ?? "?"}`;
     if (state?.type === "agent") return "Agent";
-    // IR 11: a parallel state with named branches.
+    // A parallel state with named branches.
     if (state?.type === "parallel") return Array.isArray(state.branches) || Array.isArray(state.namedBranches) ? "Branches" : "For each";
     return "Script";
 }
