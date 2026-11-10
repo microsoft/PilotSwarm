@@ -14,11 +14,6 @@ revision; the Workflow runs that revision, whatever is saved later.
 Call `load_skill` with name `workflow-reference` for every field of a state,
 and with name `workflow-tools` for every tool argument.
 
-If the compiler answers `WORKFLOW_NODE_TYPE_UNSUPPORTED` or
-`WORKFLOW_FEATURE_UNSUPPORTED`, or `update_workflow` refuses an operation
-that this skill names, this host does not run that feature. Do not work
-around it. Tell the user what is not available.
-
 ## 1. Decide if a workflow is the right tool
 
 Use a workflow for an authorized, finite procedure with explicit steps,
@@ -75,10 +70,14 @@ judgment, checked against the schema you declare.
 ## 4. Move data through the graph
 
 Each state's output is the next state's input. That is the only data path
-between states, so carry what later states need in each output. A
-request's output is its response. A send's output is its delivery receipt,
-not the message: a state after it cannot read the message, so send after the
-states that need it.
+between states, so carry what later states need in each output. A send or a
+request ends the data path. After `sent` a state gets only the receipt;
+after `responded`, only the response; after `declined`, only `{reason}`.
+Put what the person must see into the request's `input:`; route on the
+response alone; put a send last on its route, or drop it: the request
+already carries the message. E.g. recommend → ask
+(`input: { reason: "${input.reason}" }`) → decide reads `${input.approved}`,
+not `${input.reason}`.
 
 | Name | What it is | Binding | In a script |
 |---|---|---|---|

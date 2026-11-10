@@ -42,7 +42,7 @@ test("the workflow skills load from their own plugin directory, which no worker 
     }
     const core = skills().find(skill => skill.name === WORKFLOW_AUTHORING_SKILL);
     for (const phrase of ["workflow-reference", "complete_workflow_node", "needs_input", "all_required",
-        "expected_revision", "definition_id", "does not run that feature", "Bound every loop"]) {
+        "expected_revision", "definition_id", "Bound every loop"]) {
         assert.ok(core.prompt.includes(phrase), `the core skill covers: ${phrase}`);
     }
     // The guides agents read do not teach test mode (spec 16): no test operation, test run or testing guide.

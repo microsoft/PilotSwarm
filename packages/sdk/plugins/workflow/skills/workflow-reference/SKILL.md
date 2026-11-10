@@ -106,7 +106,8 @@ before the state starts is taken too, in the order the run accepted it.
 | `input` | Optional template; the message. At most 16 KB, valid for the contract. |
 
 Outcome: `sent` (output: the delivery receipt): the recipient accepted the
-message. That does not mean it was read. An agent session gets it in its
+message. The next state gets this receipt, not the message. That does not
+mean it was read. An agent session gets it in its
 queue (at least once). A workflow gets it as typed input (once). Errors:
 `unavailable`, `forbidden`, `unsupported_contract`, `delivery_failed`,
 `invalid_input`.
@@ -122,7 +123,8 @@ queue (at least once). A workflow gets it as typed input (once). Errors:
 | `input` | Optional template; the request payload. |
 
 Outcomes: `responded` (output: the response, valid for the response schema)
-and `declined` (output: `{ reason }`). Routes for both are required. The
+and `declined` (output: `{ reason }`). The next state gets only that output:
+nothing from before the request. Routes for both are required. The
 deadline is `timed_out`. The recipient answers with
 `respond_session_request`; chat is not an answer.
 
