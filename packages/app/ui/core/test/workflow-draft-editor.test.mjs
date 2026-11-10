@@ -183,7 +183,7 @@ test("the YAML tab edits the draft's YAML; without it, for a published definitio
     const yamlRead = { 1: { phase: "loaded", error: null, value: { definitionRevision: { revision: 1, definitionHash: "hash-1", valid: true, yaml: YAML } } } };
     const fixed = main(mount({ readModel: modelOf({ definition: published }), readModelRunId: null, mainTab: "yaml", definitionRevisions: yamlRead }));
     // Words (Workflow Simplified 03, 17): the revision and what a person can do; no draft or published.
-    assert.ok(fixed.includes("Revision 1 · read-only. To change it, ask the chat."));
+    assert.ok(fixed.includes("Revision 1 · read-only. To change it, ask the session."));
     // React 19 writes the attribute as its prop name (readOnly=""); HTML reads it in any case.
     assert.match(fixed, /<textarea[^>]*readonly=""[^>]*>apiVersion: pilotswarm\.dev\/v1/i);
     assert.ok(!fixed.includes("data-operation=\"replace_definition\""), "nothing to save");

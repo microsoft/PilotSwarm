@@ -17,7 +17,7 @@ import { AUTO_HISTORY_EVENT_SOFT_CAP, SESSION_NAV_SETTLE_MS } from "../../core/s
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
 import { WORKFLOW_LIT_TRANSITIONS, workflowLitTransitions, workflowTransitions } from "../../core/src/workflow-transitions.js";
 import {
-    WORKFLOW_AGENT_LOG_VISITS, workflowAgentLogChats, workflowAgentNodeLog, workflowBaseInstructionsMatch, workflowBaseInstructionsReadable,
+    WORKFLOW_AGENT_LOG_VISITS, workflowAgentLogSessions, workflowAgentNodeLog, workflowBaseInstructionsMatch, workflowBaseInstructionsReadable,
 } from "../../core/src/workflow-agent-log.js";
 import {
     selectWorkflowTabContext, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowElapsedText, workflowFailure,
@@ -40,8 +40,8 @@ import { WorkflowToolButton } from "./workflow-tool-button.js";
 import { NodeCodeSections } from "./workflow-code.js";
 import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
 import { ModalDialog, dialogKey } from "./modal-dialog.js";
-import { ChatWorkflowTab } from "./workflow-chat-tab.js";
-import { chatDefinitionsLoaded, chatDefinitionsModel, chatDefinitionsStamp, chatWorkflowTabKind } from "../../core/src/workflow-chat-definitions.js";
+import { SessionWorkflowTab } from "./workflow-session-tab.js";
+import { sessionDefinitionsLoaded, sessionDefinitionsModel, sessionDefinitionsStamp, sessionWorkflowTabKind } from "../../core/src/workflow-session-definitions.js";
 
 const h = React.createElement;
 const EMPTY = Object.freeze({});
@@ -55,8 +55,8 @@ export const TIMELINE_PLAY_LIVE_TITLE = "Play — step back first; live view alr
 
 /**
  * Workflow Simplified, stage 1 (spec draft 3, sections 06–08, 11, 12): the Workflow tab. It shares the right block with
- * the canvas (L1) and shows the definitions of the session whose chat is in the middle, or the Workflow of the agent
- * node chat that is: a header row (the definition picker and the Definition | Workflows switch, L4), then the
+ * the canvas (L1) and shows the definitions of the session whose session is in the middle, or the Workflow of the agent
+ * node session that is: a header row (the definition picker and the Definition | Workflows switch, L4), then the
  * definition's graph or its Workflows, and a bottom panel (L5), closed by default. On a phone the bottom panel is a
  * sheet with a visible way back (12).
  *
@@ -78,17 +78,17 @@ function useWorkflowChild(controller, sessionId) {
     }, [controller, sessionId, events, selectedRunId, sessionUpdatedAt]);
     const { readModel, readModelAfterSeq, workflowModel, error } = workflowReadModelView(view);
     const olderHistory = view.olderHistory ?? null;
-    // OF-S2-7: the model of the chat that owns the Workflow (its agent nodes use it unless their start chose one).
-    const chatModelKey = useControllerSelector(controller, state => workflowSessionModelKey(state.sessions.byId,
+    // OF-S2-7: the model of the session that owns the Workflow (its agent nodes use it unless their start chose one).
+    const sessionModelKey = useControllerSelector(controller, state => workflowSessionModelKey(state.sessions.byId,
         state.sessions.byId?.[sessionId]?.parentSessionId ?? null));
-    const chatModel = React.useMemo(() => workflowModelFromKey(chatModelKey), [chatModelKey]);
+    const sessionModel = React.useMemo(() => workflowModelFromKey(sessionModelKey), [sessionModelKey]);
     const projection = React.useMemo(() => {
         if (!view.definition && !readModel && !workflowModel) return null;
-        return projectWorkflow({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq, olderHistory, chatModel });
-    }, [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory, chatModel]);
+        return projectWorkflow({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq, olderHistory, sessionModel });
+    }, [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory, sessionModel]);
     // Stage 2.4 (FU-26, the replay): the same projection as it stood at a moment (epoch milliseconds).
     const projectAt = React.useCallback(asOf => projectWorkflow({ definition: view.definition, readModel, workflowModel, selectedRunId, events,
-        readModelAfterSeq, olderHistory, asOf, chatModel }), [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory, chatModel]);
+        readModelAfterSeq, olderHistory, asOf, sessionModel }), [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory, sessionModel]);
     return { sessionId, session, view, places, events, olderEvents: history?.hasOlderEvents === true, projection, projectAt, readModel, workflowModel, readError: error,
         definition: projection ? projection.definition : null, nodes: projection ? projection.nodes : EMPTY_NODES };
 }
@@ -132,23 +132,23 @@ export function WorkflowTab(props) {
     const { controller } = props;
     const context = useControllerSelector(controller, selectWorkflowTabContext, workflowTabContextEqual);
     const ownerId = context.ownerId;
-    // Stage 2.1b: the chat's own definitions, read again when the chat's row or its Workflows change.
-    const stamp = useControllerSelector(controller, state => chatDefinitionsStamp(state.sessions.byId, ownerId));
-    const entry = useControllerSelector(controller, state => (ownerId ? state.ui.chatDefinitions?.[ownerId] ?? null : null));
+    // Stage 2.1b: the session's own definitions, read again when the session's row or its Workflows change.
+    const stamp = useControllerSelector(controller, state => sessionDefinitionsStamp(state.sessions.byId, ownerId));
+    const entry = useControllerSelector(controller, state => (ownerId ? state.ui.sessionDefinitions?.[ownerId] ?? null : null));
     // Read once the selection settles (the session list's own settle): with the tab open, moving through the list changes the
-    // chat per key, and a read per key put one request per row on the network.
+    // session per key, and a read per key put one request per row on the network.
     React.useEffect(() => {
         if (!ownerId) return undefined;
-        const timer = setTimeout(() => { controller.ensureChatWorkflowDefinitions?.(ownerId)?.catch?.(() => {}); }, SESSION_NAV_SETTLE_MS);
+        const timer = setTimeout(() => { controller.ensureSessionWorkflowDefinitions?.(ownerId)?.catch?.(() => {}); }, SESSION_NAV_SETTLE_MS);
         return () => clearTimeout(timer);
     }, [controller, ownerId, stamp]);
-    // UX2D-F6: a revision saved from another page changes neither the chat's row nor its Workflows; the list is read again
+    // UX2D-F6: a revision saved from another page changes neither the session's row nor its Workflows; the list is read again
     // when this page comes back (it is shown again, or the window takes focus), so the editor says a newer one was saved.
     React.useEffect(() => {
         if (!ownerId || typeof window === "undefined" || typeof document === "undefined") return undefined;
         const again = () => {
             if (document.visibilityState === "hidden") return;
-            controller.ensureChatWorkflowDefinitions?.(ownerId, { force: true })?.catch?.(() => {});
+            controller.ensureSessionWorkflowDefinitions?.(ownerId, { force: true })?.catch?.(() => {});
         };
         window.addEventListener("focus", again);
         document.addEventListener("visibilitychange", again);
@@ -157,18 +157,18 @@ export function WorkflowTab(props) {
             document.removeEventListener("visibilitychange", again);
         };
     }, [controller, ownerId]);
-    const items = chatDefinitionsLoaded(entry) ? entry.items : null;
-    const definitions = React.useMemo(() => (items ? chatDefinitionsModel(items) : null), [items]);
-    // A connection without chat definitions, a list not read yet, a Workflow shown that no definition lists, or (review
-    // S2UI-F4) no definitions while the chat has Workflow children: the chat's Workflows grouped by name, as stage 1 shows them.
+    const items = sessionDefinitionsLoaded(entry) ? entry.items : null;
+    const definitions = React.useMemo(() => (items ? sessionDefinitionsModel(items) : null), [items]);
+    // A connection without session definitions, a list not read yet, a Workflow shown that no definition lists, or (review
+    // S2UI-F4) no definitions while the session has Workflow children: the session's Workflows grouped by name, as stage 1 shows them.
     const byId = useControllerSelector(controller, state => state.sessions.byId);
-    if (chatWorkflowTabKind(definitions, { ownerId, workflowId: context.workflowId, byId }) === "chat") {
-        return h(ChatWorkflowTab, { ...props, context, definitions, listError: entry?.error ?? null });
+    if (sessionWorkflowTabKind(definitions, { ownerId, workflowId: context.workflowId, byId }) === "definitions") {
+        return h(SessionWorkflowTab, { ...props, context, definitions, listError: entry?.error ?? null });
     }
     return h(StageOneWorkflowTab, props);
 }
 
-/** The stage 1 Workflow tab: a chat's Workflows grouped by definition name, each version its own child. */
+/** The stage 1 Workflow tab: a session's Workflows grouped by definition name, each version its own child. */
 function StageOneWorkflowTab({ controller, mobile = false, modeButtons = null, displayMode = "normal" }) {
     // Owner, 2026-11-06T13:43Z: on a phone (600 px or less) the graph gets the height: two header rows, no meta line.
     const phone = useMediaQuery(PHONE_MEDIA_QUERY) && mobile;
@@ -178,7 +178,7 @@ function StageOneWorkflowTab({ controller, mobile = false, modeButtons = null, d
     const attentionAt = useControllerSelector(controller, state => workflowLifecycleAtOf(state, context.ownerId));
     React.useEffect(() => {
         // OF-S2-4d: shown once is a receipt even before any lifecycle change (1 ms: older than every change), so the panel
-        // never opens by itself again for this chat.
+        // never opens by itself again for this session.
         if (context.ownerId) controller.dispatch({ type: "canvas/viewed", sessionId: context.ownerId, workflowAt: Math.max(attentionAt, 1) });
     }, [controller, context.ownerId, attentionAt]);
     const byId = useControllerSelector(controller, state => state.sessions.byId);
@@ -259,7 +259,7 @@ function StageOneWorkflowTab({ controller, mobile = false, modeButtons = null, d
         const target = id ?? ownerId;
         if (target) controller.dispatch({ type: "sessions/selected", sessionId: target });
     }, [controller, setTab, ownerId, definition?.name]);
-    const askChat = React.useCallback(text => {
+    const askSession = React.useCallback(text => {
         controller.setPrompt(text, text.length);
         if (typeof document !== "undefined") document.querySelector(".ps-prompt-input")?.focus?.();
     }, [controller]);
@@ -270,7 +270,7 @@ function StageOneWorkflowTab({ controller, mobile = false, modeButtons = null, d
             modeButtons ? h("header", { className: "ps-wf-tab-head" }, h("span", { className: "ps-wf-tab-modes" }, modeButtons)) : null,
             h("div", { className: "ps-wf-empty" },
                 h("p", { className: "ps-wf-empty-title" }, "No definitions yet."),
-                h("p", null, "Ask the chat to create one.")));
+                h("p", null, "Ask the session to create one.")));
     }
     return h("section", { className: `ps-wf-tab${mobile ? " is-mobile" : ""}${phone ? " is-phone" : ""}`, "aria-label": "Workflow", "data-view": view,
         "data-definition": definition.name, "data-version": chosenVersion?.version ?? undefined },
@@ -292,7 +292,7 @@ function StageOneWorkflowTab({ controller, mobile = false, modeButtons = null, d
                 onShowNewest: () => setTab({ definitionChild: null, versionChild: chosenVersion?.newestId ?? null }),
                 ownerTitle: byId?.[ownerId]?.title ?? null, gone: Boolean(choice?.gone) && !chosenChild,
                 versions: versionSides(versions, views, byId, madeNumbersOf(byId, definition, views)), chosenVersion: chosenVersion?.key ?? null,
-                ownerWorking: ownerId ? workflowParentWorking(byId?.[ownerId]) : false, onStarted: id => openWorkflow(id), askChat })
+                ownerWorking: ownerId ? workflowParentWorking(byId?.[ownerId]) : false, onStarted: id => openWorkflow(id), askSession })
             : workflow
                 ? h(WorkflowRunView, { key: workflow.sessionId, controller, definition, workflow, tab, setTab, mobile, phone, displayMode, onOpen: openWorkflow,
                     nodeStateId: context.nodeStateId })
@@ -307,7 +307,7 @@ function StageOneWorkflowTab({ controller, mobile = false, modeButtons = null, d
 /**
  * D1: the session's definitions, each version its own option (owner, 2026-11-07T00:03Z: versions are first-class), highest
  * version first: "name · 1.1.0", "name · 1.0.0", with draft or not started where it applies. OF-S2-8 (owner, 2026-11-07T23:15Z): no
- * "ask the chat" option; the empty tab says to ask the chat.
+ * "ask the session" option; the empty tab says to ask the session.
  * No count of Workflows beside the definition (owner, 2026-11-06T13:43Z): the Workflow picker says how many. The chosen
  * definition's versions are `versions`; another definition's are worked out here from the same rows.
  */
@@ -362,7 +362,7 @@ function versionSides(versions, views, byId = {}, numbers = new Map()) {
 
 /**
  * The definition's newest revision line (07, D3), when it is not valid: one line over the graph. While the session that
- * owns it is still working (its chat is in a turn: it is writing the definition), the line is calm (owner batch 7, H1):
+ * owns it is still working (its session is in a turn: it is writing the definition), the line is calm (owner batch 7, H1):
  * `{ text, calm }`, or null for a valid revision.
  */
 export function revisionLine(model, { writing = false, writer = null } = {}) {
@@ -380,7 +380,7 @@ export function revisionLine(model, { writing = false, writer = null } = {}) {
     const showing = graphRevision ? ` Showing revision ${graphRevision}.` : "";
     if (writing) {
         const count = diagnostics.length;
-        return { calm: true, text: `${writer ?? "The chat"} is still writing this definition. Revision ${revision.revision} has `
+        return { calm: true, text: `${writer ?? "The session"} is still writing this definition. Revision ${revision.revision} has `
             + `${count || "unlisted"} error${count === 1 ? "" : "s"} so far.${showing}` };
     }
     return { calm: false, text: `Revision ${revision.revision} not valid${why}${stop}${showing}` };
@@ -388,7 +388,7 @@ export function revisionLine(model, { writing = false, writer = null } = {}) {
 
 /**
  * The selected node in the Definition view (D9 Node; finding 7): what it does in one sentence, its input and time limit,
- * an agent node's chat and what its agent is told, and where each outcome goes, in the words the run's Node panel uses
+ * an agent node's session and what its agent is told, and where each outcome goes, in the words the run's Node panel uses
  * (workflowNodeSummary). No run: nothing about visits or results.
  */
 export function NodeFacts({ node, yaml = null, pending = false, hidden = null }) {
@@ -403,7 +403,7 @@ export function NodeFacts({ node, yaml = null, pending = false, hidden = null })
         h("div", { className: "ps-wf-facts" },
             row("Input", input),
             row("Limit", Number.isFinite(node.timeoutSeconds) ? formatSeconds(node.timeoutSeconds) : null, "Time limit"),
-            summary.agent ? row("Agent session", summary.agent.chatMode) : null,
+            summary.agent ? row("Agent session", summary.agent.sessionMode) : null,
             summary.agent ? row("Tools", summary.agent.tools, summary.agent.toolsTitle) : null),
         summary.agent?.told ? h("details", { className: "ps-wf-told" }, h("summary", null, "Prompt"), h("pre", null, summary.agent.told))
             : summary.agent?.toldWords ? h("p", { className: "ps-wf-muted" }, summary.agent.toldWords) : null,
@@ -631,7 +631,7 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
         ? publication.controls.find(control => control.operation === "publish_and_start" || control.operation === "start") ?? null : null;
     const [mode, setMode] = React.useState("graph");
     const [starting, setStarting] = React.useState(false);
-    // Run again (W8): another Workflow from this definition. On the tested engine the chat starts it with the same YAML.
+    // Run again (W8): another Workflow from this definition. On the tested engine the session starts it with the same YAML.
     const startedAlready = !definition.startable && definition.workflows.length > 0;
     const [asking, setAsking] = React.useState(false);
     // "Start…" from the Workflows list opens the Start form here once the definition's commands are read.
@@ -713,7 +713,7 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
         h("div", { className: "ps-wf-main", hidden: mode !== "graph" || undefined },
             graph ? h(WorkflowGraph, { definition: graph, nodes, selected, select, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView,
                 places: places ?? null, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)) })
-                // No graph to draw: the line above says why; its errors are listed under it (folded while the chat writes).
+                // No graph to draw: the line above says why; its errors are listed under it (folded while the session writes).
                 : projection && line ? (line.calm
                     ? h("details", { className: "ps-wf-errors" }, h("summary", null, "Errors so far"), h(WorkflowDiagnostics, { diagnostics: projection.diagnostics }))
                     : h("div", { className: "ps-wf-errors" }, h(WorkflowDiagnostics, { diagnostics: projection.diagnostics })))
@@ -770,7 +770,7 @@ function TestPanel({ controller, child, runCommand }) {
 /** The Workflows list (08, W1): one row per Workflow of the definition, newest first. */
 function WorkflowList({ controller, definition, byId, views, onOpen, onStart, onAnother, onShowChild = null }) {
     const rows = [...definition.workflows].reverse();
-    // F9 (owner, 2026-11-06T19:40Z): the definition's children that have not started (a chat's new draft is one), newest
+    // F9 (owner, 2026-11-06T19:40Z): the definition's children that have not started (a session's new draft is one), newest
     // first: one line says so; each opens in the Definition view with its version and when it was made.
     const unstarted = workflowUnstartedChildren(byId, definition, views);
     const unstartedLine = rows.length || unstarted.length > 1 ? workflowUnstartedLine(unstarted) : null;
@@ -834,14 +834,14 @@ function WorkflowList({ controller, definition, byId, views, onOpen, onStart, on
             definition.startable
                 ? h(WorkflowToolButton, { label: "Start…", glyph: "start", "data-action": "start",
                     title: workflowTabButtonTip("start", { number: rows.length + 1 }), onClick: onStart })
-                // Run again (W8): another Workflow from this definition, which the chat starts with the same YAML.
+                // Run again (W8): another Workflow from this definition, which the session starts with the same YAML.
                 : h(WorkflowToolButton, { label: "Start another…", glyph: "start-another", "data-action": "start-another",
                     title: workflowTabButtonTip("start-another", { name: definition.name, number: rows.length + 1 }), onClick: onAnother })) : null);
 }
 
 /** One Workflow (08): its header, controls by state, its failure first, its graph and its bottom panel. */
 export function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile, phone = false, onOpen, nodeStateId = null, displayMode = "normal",
-    chatRevision = null, extraActions = null }) {
+    sessionRevision = null, extraActions = null }) {
     const child = useWorkflowChild(controller, workflow.sessionId);
     const { sessionId, session, view, places, events, projection, readModel, readError } = child;
     // Live while it is shown, also when its session's chat is the active session (the companion subscription).
@@ -963,8 +963,8 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     const notice = workflowRunCommandNotice(runCommand);
     const runId = projection?.runId ?? readModel?.run?.runId ?? null;
     const times = workflowRunTimes(events, runId);
-    // Stage 2.1b: a Workflow of a chat's definition says the definition's revision it runs (its own copy is revision 1).
-    const revision = Number.isSafeInteger(chatRevision) ? chatRevision
+    // Stage 2.1b: a Workflow of a session's definition says the definition's revision it runs (its own copy is revision 1).
+    const revision = Number.isSafeInteger(sessionRevision) ? sessionRevision
         : Number.isSafeInteger(projection?.readModel?.runRevision) ? projection.readModel.runRevision : null;
     // F6: a failed terminal's summary, from the run's end event, for a run whose failure route ended it with no error of its own.
     const endSummary = React.useMemo(() => {
@@ -978,7 +978,7 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     const [stopping, setStopping] = React.useState(false);
     // r3 (390 px): a phone shows the failure on one line beside Details; a tap on it shows all of it.
     const [failureOpen, setFailureOpen] = React.useState(false);
-    // An agent node's Log shows its chat (finding 8); "Whole Workflow" shows every line of this Workflow.
+    // An agent node's Log shows its session (finding 8); "Whole Workflow" shows every line of this Workflow.
     const [logScope, setLogScope] = React.useState("node");
     const controls = runControls?.controls ?? [];
     const has = operation => controls.find(control => control.operation === operation) ?? null;
@@ -1253,7 +1253,7 @@ export function useWorkflowRevisionYaml(controller, sessionId, view, model, want
 
 /**
  * The Node panel of a Workflow (W10; owner feedback 2026-11-06, finding 7): one view that says what the node does, where
- * it is now, how often it ran, its last result, an agent node's chat and what its agent is told, and where each outcome
+ * it is now, how often it ran, its last result, an agent node's session and what its agent is told, and where each outcome
  * goes (WorkflowNodeSummary). No Details / Output / History tabs inside the panel's tab: the Log has the visits.
  */
 export function RunNodePanel({ controller, child, selected, onLog = null, replayFrame = null }) {
@@ -1277,7 +1277,7 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
         h("p", { className: "ps-wf-node-head" }, h("strong", null, selected.id), ` · ${selected.label}`),
         h(WorkflowNodeSummary, {
             selected, nodes: child.nodes, runId,
-            // An agent node's visits, with its chat, are in its Log (finding 8).
+            // An agent node's visits, with its session, are in its Log (finding 8).
             onLog: selected.kind === "agent" ? onLog : null,
             sections: h(NodeCodeSections, { node: selected, yaml: code.yaml, pending: code.pending, hidden: code.hidden }),
             select: id => controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: id } }),
@@ -1296,7 +1296,7 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
 }
 
 /**
- * The Log panel (W10; finding 8). For an agent node: its own Log with its chat (AgentNodeLog), or, switched, the whole
+ * The Log panel (W10; finding 8). For an agent node: its own Log with its session (AgentNodeLog), or, switched, the whole
  * Workflow's. For any other node: the whole Workflow's, as before.
  */
 function RunLogPanel({ controller, workflowSessionId = null, events, runId, runs = null, selected, scope, onScope, instructionsReadable = true, replay = null }) {
@@ -1309,20 +1309,20 @@ function RunLogPanel({ controller, workflowSessionId = null, events, runId, runs
 }
 
 /**
- * An agent node's Log (finding 8): its visits with its chat, read with the same history reads as any session. Each chat
- * of the shown visits is read once; while the newest visit works, its chat is read again every 5 s and at each new line
+ * An agent node's Log (finding 8): its visits with its session, read with the same history reads as any session. Each session
+ * of the shown visits is read once; while the newest visit works, its session is read again every 5 s and at each new line
  * of the Workflow (a catch-up of the newer events only).
  */
 function AgentNodeLog({ controller, workflowSessionId = null, node, events, runId, instructionsReadable = true }) {
     const [limit, setLimit] = React.useState(WORKFLOW_AGENT_LOG_VISITS);
-    const chatIds = React.useMemo(() => workflowAgentLogChats(node, limit), [node, limit]);
-    const chatKey = chatIds.join(",");
+    const agentSessionIds = React.useMemo(() => workflowAgentLogSessions(node, limit), [node, limit]);
+    const agentSessionKey = agentSessionIds.join(",");
     const histories = useControllerSelector(controller, state => state.history.bySessionId);
-    // r4 C04: each time the Log is shown it reads the lines its chats got since they were loaded (a forced read of a loaded
-    // chat reads only the newer events): visits that ran while the Log was not shown are read too, not only a working one.
+    // r4 C04: each time the Log is shown it reads the lines its sessions got since they were loaded (a forced read of a loaded
+    // session reads only the newer events): visits that ran while the Log was not shown are read too, not only a working one.
     React.useEffect(() => {
-        for (const id of chatIds) controller.ensureSessionHistory(id, { force: true }).catch(() => {});
-    }, [controller, chatKey]);
+        for (const id of agentSessionIds) controller.ensureSessionHistory(id, { force: true }).catch(() => {});
+    }, [controller, agentSessionKey]);
     const working = node.current?.status === "pending" ? node.current.agent?.childSessionId ?? null : null;
     const lines = Array.isArray(events) ? events.length : 0;
     React.useEffect(() => {
@@ -1332,33 +1332,33 @@ function AgentNodeLog({ controller, workflowSessionId = null, node, events, runI
         const timer = setInterval(read, 5_000);
         return () => clearInterval(timer);
     }, [controller, working, lines]);
-    const chats = React.useMemo(() => new Map(chatIds.map(id => [id, histories?.get?.(id)?.events])), [chatKey, histories]);
-    const failed = React.useMemo(() => new Set(chatIds.filter(id => histories?.get?.(id)?.loadState === "failed")), [chatKey, histories]);
-    // Review UI-10: each chat's coverage (older events exist), and Load older for one chat or the run's older visits.
+    const agentSessions = React.useMemo(() => new Map(agentSessionIds.map(id => [id, histories?.get?.(id)?.events])), [agentSessionKey, histories]);
+    const failed = React.useMemo(() => new Set(agentSessionIds.filter(id => histories?.get?.(id)?.loadState === "failed")), [agentSessionKey, histories]);
+    // Review UI-10: each session's coverage (older events exist), and Load older for one session or the run's older visits.
     // Review UI-D6: at the history window's limit Load older makes no progress, so the Log says so; a failed older-page
     // read is kept and shown, with Retry.
-    const [olderChatErrors, setOlderChatErrors] = React.useState(() => new Map());
-    const coverage = React.useMemo(() => new Map(chatIds.map(id => {
+    const [olderAgentHistoryErrors, setOlderAgentHistoryErrors] = React.useState(() => new Map());
+    const coverage = React.useMemo(() => new Map(agentSessionIds.map(id => {
         const history = histories?.get?.(id);
         const capped = history?.hasOlderEvents === true && Number(history?.loadedEventCount || 0) >= AUTO_HISTORY_EVENT_SOFT_CAP;
         return [id, { hasOlder: history?.hasOlderEvents === true, ...(capped ? { cap: AUTO_HISTORY_EVENT_SOFT_CAP } : {}),
-            ...(olderChatErrors.has(id) ? { error: olderChatErrors.get(id) } : {}) }];
-    })), [chatKey, histories, olderChatErrors]);
-    const [olderChatLoading, setOlderChatLoading] = React.useState(() => new Set());
-    const onOlderChat = chatId => {
-        setOlderChatLoading(current => new Set([...current, chatId]));
-        setOlderChatErrors(current => { if (!current.has(chatId)) return current; const next = new Map(current); next.delete(chatId); return next; });
-        Promise.resolve(controller.expandSessionHistory(chatId))
-            .catch(error => setOlderChatErrors(current => new Map(current).set(chatId, String(error?.message || error || "the read failed"))))
-            .finally(() => setOlderChatLoading(current => { const next = new Set(current); next.delete(chatId); return next; }));
+            ...(olderAgentHistoryErrors.has(id) ? { error: olderAgentHistoryErrors.get(id) } : {}) }];
+    })), [agentSessionKey, histories, olderAgentHistoryErrors]);
+    const [olderAgentHistoryLoading, setOlderAgentHistoryLoading] = React.useState(() => new Set());
+    const onOlderAgentHistory = agentSessionId => {
+        setOlderAgentHistoryLoading(current => new Set([...current, agentSessionId]));
+        setOlderAgentHistoryErrors(current => { if (!current.has(agentSessionId)) return current; const next = new Map(current); next.delete(agentSessionId); return next; });
+        Promise.resolve(controller.expandSessionHistory(agentSessionId))
+            .catch(error => setOlderAgentHistoryErrors(current => new Map(current).set(agentSessionId, String(error?.message || error || "the read failed"))))
+            .finally(() => setOlderAgentHistoryLoading(current => { const next = new Set(current); next.delete(agentSessionId); return next; }));
     };
     const onOlderVisits = workflowSessionId && typeof controller.loadOlderWorkflowHistory === "function"
         ? () => { controller.loadOlderWorkflowHistory(workflowSessionId).catch(() => {}); } : null;
-    // OF-S2-7: each chat's model as its session row says it (what its visits used).
-    const chatModelsKey = useControllerSelector(controller, state => JSON.stringify(chatIds.map(id => workflowSessionModelKey(state.sessions.byId, id))));
-    const chatModels = React.useMemo(() => new Map(JSON.parse(chatModelsKey).map((key, index) => [chatIds[index], workflowModelFromKey(key)])), [chatModelsKey, chatKey]);
-    const log = React.useMemo(() => workflowAgentNodeLog({ node, events, chats, coverage, runId, limit, chatModels }),
-        [node, events, chats, coverage, runId, limit, chatModels]);
+    // OF-S2-7: each session's model as its session row says it (what its visits used).
+    const sessionModelsKey = useControllerSelector(controller, state => JSON.stringify(agentSessionIds.map(id => workflowSessionModelKey(state.sessions.byId, id))));
+    const sessionModels = React.useMemo(() => new Map(JSON.parse(sessionModelsKey).map((key, index) => [agentSessionIds[index], workflowModelFromKey(key)])), [sessionModelsKey, agentSessionKey]);
+    const log = React.useMemo(() => workflowAgentNodeLog({ node, events, agentSessions, coverage, runId, limit, sessionModels }),
+        [node, events, agentSessions, coverage, runId, limit, sessionModels]);
     // The base instructions are read like any file of a session (the Workflow's), when a person opens their row; only by
     // the Workflow's owner (review SF-3): anyone else sees the summary row and is told so. The text read is shown only
     // when its sha256 is the recorded one (review SF-4); opened again, it is read again.
@@ -1374,8 +1374,8 @@ function AgentNodeLog({ controller, workflowSessionId = null, node, events, runI
     };
     const onInstructions = instructionsReadable
         ? ref => { controller.ensureFilePreview(ref.sessionId, ref.artifact, { force: true }).catch(() => {}); } : null;
-    return h(WorkflowAgentLog, { log, failed, nodeId: node.id, readInstructions, onInstructions, onOlderChat, olderChatLoading, onOlderVisits,
-        onMore: () => setLimit(limit + WORKFLOW_AGENT_LOG_VISITS), onOpenChat: id => { controller.loadSession(id).catch(() => {}); } });
+    return h(WorkflowAgentLog, { log, failed, nodeId: node.id, readInstructions, onInstructions, onOlderAgentHistory, olderAgentHistoryLoading, onOlderVisits,
+        onMore: () => setLimit(limit + WORKFLOW_AGENT_LOG_VISITS), onOpenSession: id => { controller.loadSession(id).catch(() => {}); } });
 }
 
 /**
@@ -1556,12 +1556,12 @@ function InputField({ name, property, required, value, onChange }) {
 
 /**
  * F-1–F-7: Start asks only for what the definition needs, filled with sample values. With `onAsk` (Run again, W8) it is
- * the form for another Workflow of a started definition: the same fields, and its button asks the chat to start it
+ * the form for another Workflow of a started definition: the same fields, and its button asks the session to start it
  * (`onAsk({ inputs, vars })`, answering { ok, reason }); nothing is sent to the engine from here.
  *
  * Review UI-13: a schema the form cannot draw, or that asks for input without listing it, gets a JSON box, never "Takes
  * no inputs". Start another (`source`: the Workflow it repeats, its number and its inputs) is filled with that
- * Workflow's own inputs, never sample values; when the read does not have them it says so and asks the chat to use the
+ * Workflow's own inputs, never sample values; when the read does not have them it says so and asks the session to use the
  * same ones (inputs undefined), unless the person chooses to give others.
  */
 export function StartDialog({ controller, sessionId, publication, control = null, name, number, onClose, onStarted, onAsk = null, source = null,
@@ -1581,7 +1581,7 @@ export function StartDialog({ controller, sessionId, publication, control = null
     const [asJson, setAsJson] = React.useState(shape === "json");
     const [values, setValues] = React.useState(() => ({ ...sample }));
     const [jsonText, setJsonText] = React.useState(() => JSON.stringify(sample, null, 2));
-    // Start another whose source inputs are not known: the same ones (the chat has them) until the person gives others.
+    // Start another whose source inputs are not known: the same ones (the session has them) until the person gives others.
     const [sameInputs, setSameInputs] = React.useState(Boolean(onAsk) && repeated === null && shape !== "none");
     const [varsOpen, setVarsOpen] = React.useState(false);
     const [varsText, setVarsText] = React.useState("{}");
@@ -1620,7 +1620,7 @@ export function StartDialog({ controller, sessionId, publication, control = null
             const asked = await onAsk({ inputs, vars, noInputs: shape === "none" });
             setBusy(false);
             if (asked?.ok) onStarted();
-            else setError(asked?.reason || "The message to the chat was not sent.");
+            else setError(asked?.reason || "The message to the session was not sent.");
             return;
         }
         const command = control.operation === "start"
@@ -1638,14 +1638,14 @@ export function StartDialog({ controller, sessionId, publication, control = null
                     "aria-disabled": busy || undefined, onClick: send }, busy ? "Starting…" : `Start #${number}`)
                 : onAsk
                 ? h("button", { key: "start", type: "button", className: "ps-mini-button is-primary", "data-action": "ask-start-another",
-                    "aria-disabled": busy || undefined, onClick: send }, busy ? "Sending…" : `Ask the chat to start #${number}`)
+                    "aria-disabled": busy || undefined, onClick: send }, busy ? "Sending…" : `Ask the session to start #${number}`)
                 : h("button", { key: "start", type: "button", className: "ps-mini-button is-primary", "data-operation": control.operation,
                     disabled: !control.enabled, "aria-disabled": busy || undefined, title: control.enabled ? undefined : control.title, onClick: send },
                     busy ? "Starting…" : `Start #${number}`),
             // One way to leave without starting in words (the ✕ is the dialog's Close).
             h("button", { key: "cancel", type: "button", className: "ps-mini-button", onClick: onClose }, "Cancel"),
             h("span", { key: "note", className: "ps-wf-muted" }, onAsk
-                ? `The chat starts ${name} #${number} from the same definition.`
+                ? `The session starts ${name} #${number} from the same definition.`
                 : `Workflow #${number} runs revision ${revision ?? "—"}.`),
         ] },
         h("p", { className: "ps-wf-muted ps-wf-dialog-sub" }, `revision ${revision ?? "—"} · ${publication.valid ? "valid" : "not valid"}`),
@@ -1658,7 +1658,7 @@ export function StartDialog({ controller, sessionId, publication, control = null
             : sameInputs
                 ? h("div", { className: "ps-wf-field" }, h("span", { className: "ps-wf-label" }, "Inputs"),
                     h("p", { "data-field": "same-inputs" }, `The same as ${source?.number ? `#${source.number}` : "before"}. This screen cannot read them; `
-                        + "the chat uses the ones it started it with. ",
+                        + "the session uses the ones it started it with. ",
                     h("button", { type: "button", className: "ps-link-button", "data-action": "other-inputs", onClick: () => setSameInputs(false) }, "Give other inputs")))
             : asJson
                 ? h("div", { className: "ps-wf-field" },
@@ -1687,7 +1687,7 @@ export function StartDialog({ controller, sessionId, publication, control = null
 }
 
 /**
- * The Workflow button's badge (L2, O6) for the session whose chat is on screen: Workflows waiting for input, and failed
+ * The Workflow button's badge (L2, O6) for the session whose session is on screen: Workflows waiting for input, and failed
  * ones not yet opened.
  */
 export { workflowBadgeCount } from "../../core/src/workflow-owner.js";

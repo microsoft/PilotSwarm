@@ -179,7 +179,7 @@ export const UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC = {
     },
 } as const;
 
-const READ_MILESTONE_WORDS = " It also shows a run's stop, each agent step's chat and each branch. Each section holds its newest rows, open "
+const READ_MILESTONE_WORDS = " It also shows a run's stop, each agent step's session and each branch. Each section holds its newest rows, open "
     + "rows listed apart; limit and cursor (from run.pages) page older rows. execution_id, kv_revision with kv_key, agent_versions, "
     + "definition_revision and step_input are separate reads (call load_skill with name workflow-tools for each).";
 
@@ -633,7 +633,7 @@ export interface WorkflowViewReadOptions {
      */
     hideTestRuns?: boolean;
     /**
-     * Review PRA-F3: who reads, for the run's lastControl: the chat whose read_workflow this is (its own actions read "this
+     * Review PRA-F3: who reads, for the run's lastControl: the session whose read_workflow this is (its own actions read "this
      * session"); null for a management, Web API or MCP read (an agent's action reads "another session" with its id).
      */
     callerSessionId?: string | null;
@@ -1056,7 +1056,7 @@ export { workflowResolvedInputsSchema };
  * private as a script, and only the YAML's readers may read it. A state's `about.description` stays: the author wrote it
  * to say on the graph what the state does, for everyone who can see the graph. The rest is as read; a page or one value
  * (without a graph or a revision) is unchanged. The portal applies it for such a person, over its GET routes (a
- * Workflow's read and a chat definition's read) and so for the MCP server's web mode; whoever may change the workflow
+ * Workflow's read and a session definition's read) and so for the MCP server's web mode; whoever may change the workflow
  * gets the whole view.
  */
 export function workflowReaderView<T>(view: T): T {
@@ -1089,7 +1089,7 @@ function stateWithoutPrompt(state: JsonValue): JsonValue {
 
 /**
  * A valid revision's graph as the screens draw it: its revision, initial state, states (each with what it is for,
- * withStateAbout) and its input schema with its references resolved (null without one). A Workflow's view and a chat
+ * withStateAbout) and its input schema with its references resolved (null without one). A Workflow's view and a session
  * definition revision's read (stage 2.1) both show it.
  */
 export function workflowGraphJson(ir: WorkflowIR, revision: number): { [key: string]: JsonValue } {
@@ -1124,7 +1124,7 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
     const test = selected && sections && selected.mode === "test"
         ? await testViewOf(store, workflowSessionId, selected, definition.currentRevision, [...sections.executions.rows, ...sections.openExecutions], limits.interceptions)
         : null;
-    // UXP-AD-01, review PRA-F3: who took the run's latest control action, on every read of the view (the chat's tool, the
+    // UXP-AD-01, review PRA-F3: who took the run's latest control action, on every read of the view (the session's tool, the
     // management client, the Web API and MCP), as `options.callerSessionId` reads it.
     const control = selected ? await store.readLastRunControl(workflowSessionId, selected.runId) : null;
     return {
@@ -1173,7 +1173,7 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
             // the variables are; a cut preview is not JSON, and a screen then says it cannot read them.
             inputs: previewJson(selected.inputs, 4_000),
             // OF-S2-7: the agent node models its start chose (by state id); only a run with any shows them, and every other
-            // agent node uses its chat's model.
+            // agent node uses its session's model.
             ...(agentModelsView(selected.agentModels)),
             nodeExecutions: sections.executions.rows.map(node => nodeExecutionViewOf(node, sections.agents)),
             openExecutions: sections.openExecutions.map(node => nodeExecutionViewOf(node, sections.agents)),
@@ -1287,7 +1287,7 @@ async function runSectionsOf(store: WorkflowStore, run: WorkflowRunRow, limits: 
 /**
  * What a state is for, beside its graph entry (owner feedback 2026-11-06, finding 7: the Node panel says what a node does
  * in a sentence and what its agent is told): `about.description`, the definition's own description of the state, and an
- * agent state's inline prompt (`about.prompt`; at most 4,000 characters here, its agent chat shows it whole). Only a state
+ * agent state's inline prompt (`about.prompt`; at most 4,000 characters here, its agent session shows it whole). Only a state
  * with either gets `about`; the graph entry is otherwise as before.
  */
 function withStateAbout(state: { [key: string]: JsonValue }, ir: WorkflowIR): { [key: string]: JsonValue } {
@@ -1535,7 +1535,7 @@ function branchViewOf(scopeId: string): { [key: string]: JsonValue } {
     return scope === null ? {} : { branch: { parallelNodeExecutionId: scope.parallelNodeExecutionId, index: scope.index } };
 }
 
-/** An agent state's child, as read_workflow shows it: the session to open for its chat, and where its lifecycle is. */
+/** An agent state's child, as read_workflow shows it: the session to open for its session, and where its lifecycle is. */
 function agentViewOf(invocation: WorkflowAgentInvocation): { [key: string]: JsonValue } {
     return {
         childSessionId: invocation.childSessionId,

@@ -20,7 +20,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { createManagementClient } from "../helpers/local-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { workflowAgentChatSessionId, workflowAgentChildSessionId } from "../../src/workflow/agent-ids.ts";
+import { workflowAgentSessionId, workflowAgentChildSessionId } from "../../src/workflow/agent-ids.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 240_000;
@@ -41,7 +41,7 @@ describe("a deleted session runs no model turn (review DR2-001)", () => {
     for (const [label, childId, prompt] of [
         ["a `session: new` visit's agent session", () => workflowAgentChildSessionId(`nx-${randomUUID()}`),
             marker => `[SYSTEM: workflow node invocation ${marker}] Tell one new fact about PostgreSQL.`],
-        ["a continued agent session's replacement", () => workflowAgentChatSessionId(`run-${randomUUID()}`, "talk", 2),
+        ["a continued agent session's replacement", () => workflowAgentSessionId(`run-${randomUUID()}`, "talk", 2),
             marker => `[SYSTEM: workflow node invocation ${marker}] The agent session of its earlier cycles ended. Tell one new fact.`],
     ]) {
         it(`${label}, deleted between its create and its first send, ends without a model request or a tool call; its row stays deleted`, { timeout: TIMEOUT }, async () => {
@@ -102,37 +102,37 @@ describe("a deleted session runs no model turn (review DR2-001)", () => {
 });
 
 describe("a deleted session's due title goes to no model (review D3-001)", () => {
-    it("a chat deleted (row only, its cancel not yet arrived) when its title is due: the next turn and the title make no model request; it ends", { timeout: TIMEOUT }, async () => {
+    it("a session deleted (row only, its cancel not yet arrived) when its title is due: the next turn and the title make no model request; it ends", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
         await catalog.initialize();
         try {
             await withScriptedModel(env, { worker: { logLevel: "warning" } }, async ({ client, model, qualifiedModel }) => {
-                const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
+                const ownerSession = await client.createSession({ model: qualifiedModel, owner: OWNER });
                 const kept = `retained-${randomUUID()}`;
-                await chat.sendAndWait(`Remember the code ${kept} and say ok.`, 120_000);
+                await ownerSession.sendAndWait(`Remember the code ${kept} and say ok.`, 120_000);
                 const firstTurnAt = Date.now();
                 // The first turn armed the title for 60 s after it (FIRST_SUMMARIZE_DELAY); let it fall due.
                 await new Promise(resolve => setTimeout(resolve, Math.max(0, firstTurnAt + 65_000 - Date.now())));
                 expect(model.requests.filter(request => !request.session && JSON.stringify(request.body).includes(kept))).toEqual([]);
                 // A person's delete whose cancel has not reached the orchestration: the catalog row only.
-                await catalog.softDeleteSession(chat.sessionId);
-                expect(await catalog.workflowStore().isSessionDeleted(chat.sessionId)).toBe(true);
+                await catalog.softDeleteSession(ownerSession.sessionId);
+                expect(await catalog.workflowStore().isSessionDeleted(ownerSession.sessionId)).toBe(true);
                 const before = model.requests.length;
                 const marker = `after-delete-${randomUUID()}`;
-                await chat.send(`Say ${marker}.`);
-                const orchestrationId = `session-${chat.sessionId}`;
+                await ownerSession.send(`Say ${marker}.`);
+                const orchestrationId = `session-${ownerSession.sessionId}`;
                 const status = await until(async () => {
                     const read = (await client._getDuroxideClient().getStatus(orchestrationId)).status;
                     return ["Completed", "Failed", "Terminated"].includes(read) ? read : null;
-                }, "the deleted chat's orchestration to end", 90_000);
+                }, "the deleted session's orchestration to end", 90_000);
                 expect(["Completed", "Failed", "Terminated"]).toContain(status);
                 // No request after the delete: not the turn's (its prompt) and not the title's (the kept conversation).
                 const after = model.requests.slice(before).map(request => ({ session: request.session, path: request.path,
                     turn: JSON.stringify(request.body).includes(marker), conversation: JSON.stringify(request.body).includes(kept) }));
                 expect(after).toEqual([]);
-                expect(await catalog.workflowStore().isSessionDeleted(chat.sessionId)).toBe(true);
-                const stopped = (await catalog.getSessionEvents(chat.sessionId, 0, 500, ["session.turn_stopped"])).map(event => event.data?.reason);
+                expect(await catalog.workflowStore().isSessionDeleted(ownerSession.sessionId)).toBe(true);
+                const stopped = (await catalog.getSessionEvents(ownerSession.sessionId, 0, 500, ["session.turn_stopped"])).map(event => event.data?.reason);
                 expect(stopped).toContain("This session was deleted; this turn was not run.");
             });
         } finally {

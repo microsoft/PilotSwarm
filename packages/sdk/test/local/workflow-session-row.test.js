@@ -314,9 +314,9 @@ describe("workflow: a workflow session's row follows its live run (review B1)", 
             await h.catalog.updateSession(draft, { state: "running" });
             expect(await h.store.recordControllerFailed({ workflowSessionId: draft, message: "late" })).toEqual({ written: false });
             expect((await h.catalog.getSession(draft)).state).toBe("running");
-            const chat = randomUUID();
-            await h.catalog.createSession(chat, {});
-            expect(await h.store.recordControllerFailed({ workflowSessionId: chat, message: "late" })).toEqual({ written: false });
+            const session = randomUUID();
+            await h.catalog.createSession(session, {});
+            expect(await h.store.recordControllerFailed({ workflowSessionId: session, message: "late" })).toEqual({ written: false });
         } finally {
             await h.close();
         }

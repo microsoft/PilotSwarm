@@ -25,7 +25,7 @@ export interface CapabilityState {
     /** Agents and skills this session loaded by path (load_agent, load_skill; section 4.12). */
     loads?: WorkspaceLoad[];
     /**
-     * Workflows are on in this chat (owner 2026-11-08T16:55Z): its instructions carry the Workflow guidance and it is
+     * Workflows are on in this session (owner 2026-11-08T16:55Z): its instructions carry the Workflow guidance and it is
      * declared the Workflow tools. Set by enable_workflows or a lasting trigger; never cleared.
      */
     workflows?: true;

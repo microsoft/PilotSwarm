@@ -394,7 +394,7 @@ test("a form whose run the view no longer shows sends nothing; Esc goes back to 
     assert.equal(statusOf(h.store), "Back to the workflow view");
 });
 
-test("q12: ctrl-p sends the answer drafted in the form to the parent agent's chat instead, and the form returns to the view; nothing goes to the test run", async () => {
+test("q12: ctrl-p sends the answer drafted in the form to the parent agent's session instead, and the form returns to the view; nothing goes to the test run", async () => {
     const h = harness(workflow());
     const messages = [];
     h.controller.transport.sendMessage = async (...args) => { messages.push(args); };
@@ -423,6 +423,6 @@ test("q12: ctrl-p sends the answer drafted in the form to the parent agent's cha
     assert.ok(text.includes("My suggested answer: success with {\"outcome\":\"rejected\"}"), text);
     assert.ok(text.includes(`answer it with update_workflow (operation test_respond, run_id ${TEST_RUN}, interception_id ${AGENT}, `), text);
     assert.deepEqual(modalOf(h.store), view, "back to the view");
-    assert.equal(statusOf(h.store), "Sent to the parent agent's chat. It answers with its own tools; open its chat from the session list.");
+    assert.equal(statusOf(h.store), "Sent to the parent agent's session. It answers with its own tools; open its session from the session list.");
     assert.equal(h.sent().length, 0, "nothing was sent to the test run");
 });

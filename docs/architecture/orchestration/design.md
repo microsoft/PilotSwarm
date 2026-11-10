@@ -15,7 +15,7 @@ The current latest version is `1.0.83`: 1.0.82 plus the durable workflow
 intake (design `docs/proposals/workflow-durable-intake.md`; its turns are
 workflow request turns). The intake ships switched off: no worker sets the
 `workflowIntake` capability, so no send creates a durable exchange, and a
-Workflow's messages reach a chat through the session queue as before. Frozen prior versions live as siblings (single files
+Workflow's messages reach a session through the session queue as before. Frozen prior versions live as siblings (single files
 `packages/sdk/src/orchestration_1_0_47.ts` … `_1_0_51.ts`, then directories
 `orchestration_1_0_52/` … `orchestration_1_0_82/`) and run unchanged for any
 in-flight execution that started against them. The sections below describe

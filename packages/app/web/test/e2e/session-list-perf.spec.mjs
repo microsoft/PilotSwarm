@@ -78,14 +78,14 @@ test("moving through the session list does not fetch per keypress", async ({ pag
         .toBeLessThanOrEqual(8);
 });
 
-// Workflows are always on (3b70e2c5): a chat's Workflow Definitions are read for the chat the selection lands on, not
+// Workflows are always on (3b70e2c5): a session's Workflow Definitions are read for the session the selection lands on, not
 // per keypress, both by the background read (Workflow tab closed) and by the open Workflow tab.
 // The right block is a per-session view: a session never opened shows none, so the Workflow tab stays open through the
-// moves only where every session's stored view has it open (be5bc210 DEV: opened on the first chat, it closed on the next).
+// moves only where every session's stored view has it open (be5bc210 DEV: opened on the first session, it closed on the next).
 const stubSessionId = (i) => `1111111${i}-2222-3333-4444-55555555555${i}`;
 const OPEN_VIEW = { at: 1, canvasOpen: true, diagnosticsOpen: false, zen: false, layout: {} };
 for (const tabOpen of [false, true]) {
-    test(`moving through the session list reads the landing chat's Workflow Definitions only, Workflow tab ${tabOpen ? "open" : "closed"}`, async ({ page }) => {
+    test(`moving through the session list reads the landing session's Workflow Definitions only, Workflow tab ${tabOpen ? "open" : "closed"}`, async ({ page }) => {
         if (tabOpen) {
             const settings = {
                 desktopPanes: { canvasOpen: true, diagnosticsOpen: false, zen: false, sideTab: "workflow" },

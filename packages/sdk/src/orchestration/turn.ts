@@ -210,7 +210,7 @@ function* handleConnectionClosedRetry(
     state.carriedSteers = [];
     state.thrownTurnKey = null;
     state.retryCount = 0;
-    // PR 270: a Workflow agent chat's turn that failed for good reports it, before the session idles.
+    // PR 270: a Workflow agent session's turn that failed for good reports it, before the session idles.
     yield* oweWorkflowTurnFailure(runtime, rc.clientMessageIds, giveUpMessage);
 }
 
@@ -280,7 +280,7 @@ export function* projectAuthFailure(
     yield* dropConvertedMessages(runtime, closed?.replacedClientMessageIds);
     runtime.state.carriedSteers = [];
     runtime.state.retryCount = 0;
-    // PR 270: a Workflow agent chat's turn that failed for good reports it, before the session idles.
+    // PR 270: a Workflow agent session's turn that failed for good reports it, before the session idles.
     yield* oweWorkflowTurnFailure(runtime, clientMessageIds, blockedDetail);
 }
 
@@ -316,7 +316,7 @@ function* projectNonRetryableTurnFailure(
         }
     }
     runtime.state.retryCount = 0;
-    // PR 270: a Workflow agent chat's turn that failed for good reports it, before the session idles.
+    // PR 270: a Workflow agent session's turn that failed for good reports it, before the session idles.
     yield* oweWorkflowTurnFailure(runtime, clientMessageIds, errorMessage);
 }
 
@@ -349,7 +349,7 @@ function* handleGenericRetry(
         state.carriedSteers = [];
         state.thrownTurnKey = null;
         state.retryCount = 0;
-        // PR 270: a Workflow agent chat's turn that failed for good reports it, before the session idles. A retry owes none.
+        // PR 270: a Workflow agent session's turn that failed for good reports it, before the session idles. A retry owes none.
         yield* oweWorkflowTurnFailure(runtime, rc.clientMessageIds, `Failed after ${MAX_RETRIES} attempts: ${errorMessage}`);
         return;
     }

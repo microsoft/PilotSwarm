@@ -199,8 +199,8 @@ test("the Node panel's sections: Script, Sample input and Sample output, each cl
     assert.match(html, /<p class="ps-wf-muted ps-wf-sample-note">A sample made from the node&#x27;s input schema, not real data\.<\/p>/);
     // A script node whose YAML may not be read says so; another node without YAML shows nothing.
     const hidden = renderToStaticMarkup(React.createElement(NodeCodeSections, { node: { id: "generate", type: "script" }, yaml: null,
-        hidden: "Only this chat's owner or an admin can read the script." }));
-    assert.match(hidden, /data-section="script"><summary>Script · JavaScript<\/summary><div class="ps-wf-more-body"><p class="ps-wf-muted">Only this chat&#x27;s owner/);
+        hidden: "Only this session's owner or an admin can read the script." }));
+    assert.match(hidden, /data-section="script"><summary>Script · JavaScript<\/summary><div class="ps-wf-more-body"><p class="ps-wf-muted">Only this session&#x27;s owner/);
     assert.equal(renderToStaticMarkup(React.createElement(NodeCodeSections, { node: { id: "pause", type: "wait" }, yaml: null })), "");
     const reading = renderToStaticMarkup(React.createElement(NodeCodeSections, { node: { id: "generate", type: "script" }, pending: true }));
     assert.match(reading, /Reading the script…/);
@@ -208,11 +208,11 @@ test("the Node panel's sections: Script, Sample input and Sample output, each cl
 
 test("the panels use them: the Definition view's Node panel, a Workflow's Node panel, and the JSON boxes", () => {
     const tab = fs.readFileSync(new URL("../../react/src/workflow-tab.js", import.meta.url), "utf8");
-    const chat = fs.readFileSync(new URL("../../react/src/workflow-chat-tab.js", import.meta.url), "utf8");
+    const sessionTab = fs.readFileSync(new URL("../../react/src/workflow-session-tab.js", import.meta.url), "utf8");
     const panels = fs.readFileSync(new URL("../../react/src/workflow-panels.js", import.meta.url), "utf8");
     assert.match(tab, /h\(NodeCodeSections, \{ node, yaml, pending, hidden \}\)/);
     assert.match(tab, /sections: h\(NodeCodeSections, \{ node: selected, yaml: code\.yaml, pending: code\.pending, hidden: code\.hidden \}\)/);
-    assert.match(chat, /h\(NodeFacts, \{ node: selected, yaml: read\?\.phase === "ready" \? access\.yaml : null/);
+    assert.match(sessionTab, /h\(NodeFacts, \{ node: selected, yaml: read\?\.phase === "ready" \? access\.yaml : null/);
     for (const needle of ['h(CodeBlock, { text, language: "auto" })', 'h(CodeBlock, { text: whole.text, language: "auto", "data-whole-value": whole.kind })',
         'h(CodeBlock, { text: result.text, language: "auto" })', "h(CodeText, { text: entry.displayText })"]) {
         assert.ok(panels.includes(needle), needle);

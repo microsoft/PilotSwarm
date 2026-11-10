@@ -112,15 +112,15 @@ test("the graph fits again when the side panel opens or closes, through its disp
 
 test("each view that has the panel takes the side place and fits its graph by it", () => {
     const tab = fs.readFileSync(new URL("../../react/src/workflow-tab.js", import.meta.url), "utf8");
-    const chat = fs.readFileSync(new URL("../../react/src/workflow-chat-tab.js", import.meta.url), "utf8");
+    const sessionTab = fs.readFileSync(new URL("../../react/src/workflow-session-tab.js", import.meta.url), "utf8");
     assert.equal((tab.match(/const side = workflowPanelIsSide\(displayMode, mobile\);/g) ?? []).length, 2, "DefinitionView and WorkflowRunView");
-    assert.equal((chat.match(/const side = workflowPanelIsSide\(displayMode, mobile\);/g) ?? []).length, 1, "ChatDefinitionView");
+    assert.equal((sessionTab.match(/const side = workflowPanelIsSide\(displayMode, mobile\);/g) ?? []).length, 1, "SessionDefinitionView");
     assert.equal((tab.match(/h\(WorkflowStage, \{ side, panel: h\(BottomPanel, \{/g) ?? []).length, 2);
-    assert.equal((chat.match(/h\(WorkflowStage, \{ side, panel: h\(BottomPanel, \{/g) ?? []).length, 1);
+    assert.equal((sessionTab.match(/h\(WorkflowStage, \{ side, panel: h\(BottomPanel, \{/g) ?? []).length, 1);
     assert.equal((tab.match(/mode: workflowGraphMode\(displayMode, side, Boolean\(panel\)\)/g) ?? []).length, 2);
-    assert.equal((chat.match(/mode: workflowGraphMode\(displayMode, side, Boolean\(panel\)\)/g) ?? []).length, 1);
+    assert.equal((sessionTab.match(/mode: workflowGraphMode\(displayMode, side, Boolean\(panel\)\)/g) ?? []).length, 1);
     // Every BottomPanel is given its place.
-    for (const source of [tab, chat]) {
+    for (const source of [tab, sessionTab]) {
         const uses = source.match(/h\(BottomPanel, \{[^}]*\}/g) ?? [];
         assert.ok(uses.length > 0 && uses.every(use => /\bside\b/.test(use)), uses.join("\n"));
     }

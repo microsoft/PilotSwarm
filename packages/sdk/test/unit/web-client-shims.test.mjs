@@ -45,8 +45,8 @@ const SHIM_CASES = [
     { call: (c) => c.updateWorkflow("wf-1", { operation: "pause", operation_id: "p-1" }, { principal: USER }), op: "updateWorkflow",
         params: { sessionId: "wf-1", command: { operation: "pause", operation_id: "p-1" } } },
     // — the session the command comes from is passed on (review SF-2) —
-    { call: (c) => c.updateWorkflow("wf-1", { operation: "publish", operation_id: "p-2" }, { principal: USER, originatingSessionId: "node-chat" }),
-        op: "updateWorkflow", params: { sessionId: "wf-1", command: { operation: "publish", operation_id: "p-2" }, originatingSessionId: "node-chat" } },
+    { call: (c) => c.updateWorkflow("wf-1", { operation: "publish", operation_id: "p-2" }, { principal: USER, originatingSessionId: "node-owner" }),
+        op: "updateWorkflow", params: { sessionId: "wf-1", command: { operation: "publish", operation_id: "p-2" }, originatingSessionId: "node-owner" } },
     // — facts —
     { call: (c) => c.readFacts({ keyPattern: "k*", scope: "shared" }), op: "readFacts", params: { keyPattern: "k*", scope: "shared" } },
     { call: (c) => c.storeFact({ key: "k", value: 1 }), op: "storeFact", params: { input: { key: "k", value: 1 } } },

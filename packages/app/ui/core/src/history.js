@@ -602,7 +602,7 @@ export function parseWorkflowUpdateText(text) {
  * message whose recorded sender is the workflow's (isWorkflowUpdateSender; SF-2, UI-5): text alone makes no card. The
  * workflow's session and run come from the recorded sender where it has them.
  */
-function buildWorkflowUpdateChatCard(event, text) {
+function buildWorkflowUpdateSessionCard(event, text) {
     const parsed = parseWorkflowUpdateText(text);
     if (!parsed) return null;
     const sender = event?.data?.sender;
@@ -610,7 +610,7 @@ function buildWorkflowUpdateChatCard(event, text) {
     return workflowUpdateCardOf(event, parsed, sender, `${event.sessionId}:${event.seq}`);
 }
 
-/** The card of one parsed workflow message (buildWorkflowUpdateChatCard), with its item id. */
+/** The card of one parsed workflow message (buildWorkflowUpdateSessionCard), with its item id. */
 function workflowUpdateCardOf(event, parsed, sender, id) {
     const { type, sentence, data } = parsed;
     const recorded = sender?.kind === "workflow" ? sender.workflow : null;
@@ -646,7 +646,7 @@ function workflowUpdateCardOf(event, parsed, sender, id) {
 }
 
 /**
- * A user.message's chat items (review SF-1). A card comes only from a server-stamped sender (buildWorkflowUpdateChatCard),
+ * A user.message's session items (review SF-1). A card comes only from a server-stamped sender (buildWorkflowUpdateSessionCard),
  * never from text. A turn the session's queue merged from messages of different senders is recorded with no sender and
  * a server-stamped count (`mergedMessages`, session-proxy mergedTurnMessages): it is one message, shown neutrally as
  * several messages that arrived together, with its raw text; it is never shown as one person's words nor split into a
@@ -856,8 +856,8 @@ function stripLeadingSenderMarker(text) {
         : text;
 }
 
-/** A workflow execution event as a system chat line (see workflow-sessions.js). */
-function buildWorkflowChatMessage(event) {
+/** A workflow execution event as a system session line (see workflow-sessions.js). */
+function buildWorkflowSessionMessage(event) {
     const view = describeWorkflowEvent(event);
     if (!view) return null;
     const message = buildChatMessage({ ...event, data: { content: view.text } }, "system");
@@ -882,7 +882,7 @@ function buildChatMessage(event, role, { neutral = false } = {}) {
     const textTrusted = !neutral && !stampedByPersonOrAgent(event);
     const sessionMessageCard = textTrusted ? buildSessionMessageChatCard(event, rawText) : null;
     if (sessionMessageCard) return sessionMessageCard;
-    const workflowUpdateCard = neutral ? null : buildWorkflowUpdateChatCard(event, rawText);
+    const workflowUpdateCard = neutral ? null : buildWorkflowUpdateSessionCard(event, rawText);
     if (workflowUpdateCard) return workflowUpdateCard;
 
     // The attribution prefix and any embedded system notice come off BEFORE
@@ -1081,7 +1081,7 @@ function shouldRenderSystemMessageAsActivity(event) {
     // request/reply protocol prompts are the exception because they are the
     // durable user-visible communication channel between sessions.
     if (event?.eventType !== "system.message") return false;
-    // A workflow's message (batch 7, w-4) is shown in the chat too, as its "Workflow · <type>" card; only when its
+    // A workflow's message (batch 7, w-4) is shown in the session too, as its "Workflow · <type>" card; only when its
     // recorded sender is the workflow's (SF-2, UI-5).
     const text = messageTextFromEvent(event);
     const update = parseWorkflowUpdateText(text);
@@ -1557,7 +1557,7 @@ function formatActivity(event) {
             runs = buildLabeledActivityRuns(time, "[error]", "red", body || "session error", "white");
             break;
 
-        // Owner decision Q2: the workflow reminded this agent chat, inside its turn, to finish its step.
+        // Owner decision Q2: the workflow reminded this agent session, inside its turn, to finish its step.
         case "runtime.workflow_step_reminded": {
             const data = event?.data ?? {};
             const step = typeof data.stateId === "string" && data.stateId ? `step '${data.stateId}'` : "its step";
@@ -1662,7 +1662,7 @@ export function buildHistoryModel(events = [], options = {}) {
             settleAssistantResponses(chat, event);
         }
         if (isWorkflowEvent(event)) {
-            const message = buildWorkflowChatMessage(event);
+            const message = buildWorkflowSessionMessage(event);
             if (message) appendWorkflowProgress(chat, event, message);
             continue;
         }
@@ -1780,7 +1780,7 @@ export function appendEventToHistory(history, event) {
     next.chat = clampHistoryItems(next.chat, loadedEventLimit);
 
     if (isWorkflowEvent(event)) {
-        const message = buildWorkflowChatMessage(event);
+        const message = buildWorkflowSessionMessage(event);
         if (message) {
             appendWorkflowProgress(next.chat, event, message);
             next.chat = clampHistoryItems(next.chat, loadedEventLimit);

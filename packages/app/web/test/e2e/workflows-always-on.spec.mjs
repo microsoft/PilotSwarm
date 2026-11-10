@@ -1,5 +1,5 @@
 // Workflows are always on (owner 2026-11-08T08:03Z): the portal shows the Workflow button, the Workflow rows and a
-// coordinating chat's Workflow badge with no opt-in, at desktop and phone widths. The client reads no switch: even a
+// coordinating session's Workflow badge with no opt-in, at desktop and phone widths. The client reads no switch: even a
 // bootstrap that says `workflows.enabled: false` (no server sends it any more) hides nothing.
 //
 // Selector: npx playwright test test/e2e/workflows-always-on.spec.mjs (from packages/app/web, after build).
@@ -9,7 +9,7 @@ import { startStubServer } from "./stub-server.mjs";
 const AGENT_ID = "11111110-2222-3333-4444-555555555551";
 const WORKFLOW_ID = "77777777-2222-3333-4444-555555555551";
 const now = Date.now();
-// A chat made for a package's Workflow (workflowRef): it wears the Workflow badge.
+// A session made for a package's Workflow (workflowRef): it wears the Workflow badge.
 const COORD_ID = "88888888-2222-3333-4444-555555555551";
 const SESSIONS = [
     { sessionId: AGENT_ID, title: "Release triage agent", status: "idle", model: "test:test-model", createdAt: now - 60_000, updatedAt: now - 60_000 },
@@ -59,7 +59,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
             await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
             await expect(workflowButton(page)).toHaveCount(1);
             if (viewport.width > 600) {
-                // The coordinating chat wears the Workflow badge.
+                // The coordinating session wears the Workflow badge.
                 await expect(page.locator(`.ps-session-list-button[data-session-id="${COORD_ID}"] [data-workflow-ref="release-tools/release-watch"]`).first()).toBeVisible();
                 // Workflow rows sit under their session: the session's row opens them.
                 const row = workflowRow(page).first();

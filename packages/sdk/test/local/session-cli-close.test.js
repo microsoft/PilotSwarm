@@ -24,9 +24,9 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
         await withScriptedModel(env, { worker: { logLevel: "warning" } }, async ({ client, worker, model, qualifiedModel }) => {
             const manager = worker.sessionManager;
             expect(worker.blobEnabled).toBe(true);
-            const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
-            const id = chat.sessionId;
-            await chat.sendAndWait(FIRST, TURN_MS);
+            const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
+            const id = session.sessionId;
+            await session.sendAndWait(FIRST, TURN_MS);
             const copilot = manager.clients.get(manager.sessionClientKeys.get(id));
             expect(copilot).toBeDefined();
             const closes = [];
@@ -55,7 +55,7 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
                     expect(fs.existsSync(path.join(env.sessionStateDir, id)), `${label}: no local files`).toBe(false);
                 }
                 // The next turn resumes the session from its files, with the whole conversation so far.
-                await chat.sendAndWait(`turn ${index + 2} after ${label}`, TURN_MS);
+                await session.sendAndWait(`turn ${index + 2} after ${label}`, TURN_MS);
                 expect(lastTurn(), label).toMatchObject({ turn: index + 2, firstUserText: expect.stringContaining(FIRST) });
                 expect(lastTurn().lastUserText, label).toContain(`turn ${index + 2} after ${label}`);
             }
@@ -69,10 +69,10 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
         const env = getEnv();
         await withScriptedModel(env, { worker: { logLevel: "warning" } }, async ({ client, worker, model, qualifiedModel }) => {
             const manager = worker.sessionManager;
-            const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
-            const id = chat.sessionId;
+            const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
+            const id = session.sessionId;
             const dir = path.join(env.sessionStateDir, id);
-            await chat.sendAndWait(FIRST, TURN_MS);
+            await session.sendAndWait(FIRST, TURN_MS);
             const key = manager.sessionClientKeys.get(id);
             const copilot = manager.clients.get(key);
             const close = copilot.rpc.sessions.close;
@@ -102,7 +102,7 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
                 expect(manager.sessionClientKeys.has(id)).toBe(false);
                 expect(copilot.sessions.has(id)).toBe(false);
                 expect(fs.existsSync(dir)).toBe(false);
-                await chat.sendAndWait("turn 2 after an owed close", TURN_MS);
+                await session.sendAndWait("turn 2 after an owed close", TURN_MS);
                 expect(lastTurn()).toMatchObject({ turn: 2, firstUserText: expect.stringContaining(FIRST) });
 
             } finally {
@@ -116,10 +116,10 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
         const env = getEnv();
         await withScriptedModel(env, { worker: { logLevel: "warning" } }, async ({ client, worker, model, qualifiedModel }) => {
             const manager = worker.sessionManager;
-            const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
-            const id = chat.sessionId;
+            const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
+            const id = session.sessionId;
             const dir = path.join(env.sessionStateDir, id);
-            await chat.sendAndWait(FIRST, TURN_MS);
+            await session.sendAndWait(FIRST, TURN_MS);
             const copilot = manager.clients.get(manager.sessionClientKeys.get(id));
             const close = copilot.rpc.sessions.close;
             const resume = copilot.resumeSession;
@@ -141,7 +141,7 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
                 manager.sessionLastTouchedAt.set(id, Date.now() - 60_000);
                 await manager.sweepIdleSessions(1_000);
                 const kept = { files: fs.existsSync(dir), owed: manager.cliClosesOwed?.has(id) ?? false };
-                const turn = chat.sendAndWait("turn 2 after a held close", TURN_MS);
+                const turn = session.sendAndWait("turn 2 after a held close", TURN_MS);
                 await new Promise(resolve => setTimeout(resolve, 3_000));
                 expect(order, "the turn waits for the close").toEqual([]);
                 release();
@@ -164,9 +164,9 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
         const env = getEnv();
         await withScriptedModel(env, { worker: { logLevel: "warning" } }, async ({ client, worker, model, qualifiedModel }) => {
             const manager = worker.sessionManager;
-            const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
-            const id = chat.sessionId;
-            await chat.sendAndWait(FIRST, TURN_MS);
+            const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
+            const id = session.sessionId;
+            await session.sendAndWait(FIRST, TURN_MS);
             const currentKey = manager.sessionClientKeys.get(id);
             const current = manager.clients.get(currentKey);
             const previousKey = "drr4-previous-client";
@@ -181,7 +181,7 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
             try {
                 // The previous client served the session's last turn; the next turn binds it to the worker's client again.
                 manager.sessionClientKeys.set(id, previousKey);
-                await chat.sendAndWait("turn 2 on another client", TURN_MS);
+                await session.sendAndWait("turn 2 on another client", TURN_MS);
                 expect(lastTurn()).toMatchObject({ turn: 2, firstUserText: expect.stringContaining(FIRST) });
                 expect(manager.sessionClientKeys.get(id)).toBe(currentKey);
                 expect(previousCloses, "the rebind closed it on the previous client").toEqual([id]);
@@ -207,9 +207,9 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
         const env = getEnv();
         await withScriptedModel(env, { worker: { logLevel: "warning" } }, async ({ client, worker, model, qualifiedModel }) => {
             const manager = worker.sessionManager;
-            const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
-            const id = chat.sessionId;
-            await chat.sendAndWait(FIRST, TURN_MS);
+            const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
+            const id = session.sessionId;
+            await session.sendAndWait(FIRST, TURN_MS);
             const currentKey = manager.sessionClientKeys.get(id);
             /** A stand-in for another client that holds the session: its first close fails, later ones close. */
             const otherClient = () => {
@@ -240,7 +240,7 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
                 expect(owed()).toEqual([]);
                 expect(manager.sessions.has(id)).toBe(true);
                 expect(manager.sessionClientKeys.get(id)).toBe(currentKey);
-                await chat.sendAndWait("turn 2 on the current client", TURN_MS);
+                await session.sendAndWait("turn 2 on the current client", TURN_MS);
                 expect(model.sessionRequests(FIRST).at(-1).position).toMatchObject({ turn: 2, firstUserText: expect.stringContaining(FIRST) });
             } finally {
                 manager.clients.delete("ds2-003-a");
@@ -257,9 +257,9 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
         const env = getEnv();
         await withScriptedModel(env, { worker: { logLevel: "warning" } }, async ({ client, worker, model, qualifiedModel }) => {
             const manager = worker.sessionManager;
-            const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
-            const id = chat.sessionId;
-            await chat.sendAndWait(FIRST, TURN_MS);
+            const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
+            const id = session.sessionId;
+            await session.sendAndWait(FIRST, TURN_MS);
             const currentKey = manager.sessionClientKeys.get(id);
             const current = manager.clients.get(currentKey);
             const resume = current.resumeSession;
@@ -293,7 +293,7 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
                 manager.cliCloseSettleMs = 20_000;
                 manager.sessionClientKeys.set(id, "dr2-004-a");
                 let release = hold();
-                const turn2 = chat.sendAndWait("turn 2 after leaving A", TURN_MS);
+                const turn2 = session.sendAndWait("turn 2 after leaving A", TURN_MS);
                 await expect.poll(() => settling, { timeout: testTime.ms(30_000) }).toBeGreaterThan(0);
                 expect(order, "B does not resume while A's close is held").toEqual([]);
                 expect([...(manager.cliClosesOwed.get(id) ?? [])]).toEqual(["dr2-004-a"]);
@@ -311,7 +311,7 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
                 manager.cliCloseSettleMs = 1_000;
                 manager.sessionClientKeys.set(id, "dr2-004-a");
                 release = hold();
-                const turn3 = chat.sendAndWait("turn 3 after leaving A again", TURN_MS);
+                const turn3 = session.sendAndWait("turn 3 after leaving A again", TURN_MS);
                 await expect.poll(() => settlements, { timeout: testTime.ms(30_000) }).toContain(false);
                 expect(order, "nothing resumes on B").toEqual([]);
                 expect(manager.sessionClientKeys.get(id)).toBe("dr2-004-a");
@@ -343,9 +343,9 @@ describe("the Copilot CLI's session is closed when the worker lets it go (review
         const githubToken = process.env.GITHUB_TOKEN || "ci1-not-a-real-token";
         await withScriptedModel(env, { worker: { logLevel: "warning", githubToken } }, async ({ client, worker, qualifiedModel }) => {
             const manager = worker.sessionManager;
-            const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
-            const id = chat.sessionId;
-            await chat.sendAndWait(FIRST, TURN_MS);
+            const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
+            const id = session.sessionId;
+            await session.sendAndWait(FIRST, TURN_MS);
             const copilot = manager.clients.get(manager.sessionClientKeys.get(id));
             expect(copilot, "the binding names a pooled client").toBeDefined();
             expect(copilot.sessions.has(id), "that client holds the session").toBe(true);

@@ -1,9 +1,9 @@
 /**
  * Workflow Simplified, review UI-1: the session list's lifecycle actions target what it shows selected. A Workflow row
- * selected under its chat keeps the chat in the middle and is the highlighted row; the shortcuts c (cancel), d (done)
+ * selected under its session keeps the session in the middle and is the highlighted row; the shortcuts c (cancel), d (done)
  * and D (delete), in the portal and in the terminal UI, then act on that Workflow, as its Terminate button does, and
- * never on the chat that owns it (whose cancel or delete would reach its other Workflows too). With the chat's own row
- * selected, they act on the chat as before.
+ * never on the session that owns it (whose cancel or delete would reach its other Workflows too). With the session's own row
+ * selected, they act on the session as before.
  *
  * Run: node --test ui/core/test/workflow-simplified-row-shortcuts.test.mjs
  */
@@ -37,10 +37,10 @@ function harness() {
 }
 
 for (const [key, command] of [["c", UI_COMMANDS.CANCEL_SESSION], ["d", UI_COMMANDS.DONE_SESSION]]) {
-    test(`${key} on a highlighted Workflow row opens that Workflow's Terminate choices; nothing is sent to its chat`, async () => {
+    test(`${key} on a highlighted Workflow row opens that Workflow's Terminate choices; nothing is sent to its session`, async () => {
         const { controller, store, calls } = harness();
         store.dispatch({ type: "sessions/selected", sessionId: "wf-2" });
-        assert.equal(store.getState().sessions.activeSessionId, OWNER, "the chat stays in the middle");
+        assert.equal(store.getState().sessions.activeSessionId, OWNER, "the session stays in the middle");
         assert.equal(controller.highlightedWorkflowRow(), "wf-2");
         await controller.handleCommand(command);
         const modal = store.getState().ui.modal;
@@ -52,7 +52,7 @@ for (const [key, command] of [["c", UI_COMMANDS.CANCEL_SESSION], ["d", UI_COMMAN
     });
 }
 
-test("D on a highlighted Workflow row asks to delete that Workflow, not its chat", async () => {
+test("D on a highlighted Workflow row asks to delete that Workflow, not its session", async () => {
     const { controller, store, calls } = harness();
     store.dispatch({ type: "sessions/selected", sessionId: "wf-1" });
     await controller.handleCommand(UI_COMMANDS.DELETE_SESSION);
@@ -64,7 +64,7 @@ test("D on a highlighted Workflow row asks to delete that Workflow, not its chat
     assert.deepEqual(calls, []);
 });
 
-test("with the chat's own row selected, c, d and D act on the chat as before", async () => {
+test("with the session's own row selected, c, d and D act on the session as before", async () => {
     for (const command of [UI_COMMANDS.CANCEL_SESSION, UI_COMMANDS.DONE_SESSION, UI_COMMANDS.DELETE_SESSION]) {
         const { controller, store } = harness();
         store.dispatch({ type: "sessions/selected", sessionId: "wf-2" });
@@ -125,7 +125,7 @@ for (const [key, command, operation, label] of [
         assert.deepEqual(calls, [], "nothing before the confirm");
         await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
         assert.deepEqual(calls.map(([name, id, body]) => [name, id, body?.operation, body?.run_id]), [["updateWorkflow", "wf-2", operation, "run-b"]]);
-        assert.ok(!calls.some(([name]) => name !== "updateWorkflow"), "nothing to the owner chat");
+        assert.ok(!calls.some(([name]) => name !== "updateWorkflow"), "nothing to the owner session");
     });
 }
 
@@ -143,7 +143,7 @@ for (const [key, command, operation, label] of [
         await refused.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
         assert.equal(refused.store.getState().ui.modal, null);
         assert.equal(refused.store.getState().ui.statusText, `${label} refused: You may not command this workflow.`);
-        assert.ok(!refused.calls.some(([name]) => name !== "updateWorkflow"), "nothing to the owner chat");
+        assert.ok(!refused.calls.some(([name]) => name !== "updateWorkflow"), "nothing to the owner session");
 
         let failures = 1;
         const lost = terminalHarness({ updateWorkflow: async () => {
@@ -160,7 +160,7 @@ for (const [key, command, operation, label] of [
         assert.equal(sends.length, 2);
         assert.deepEqual(sends[1], sends[0], "the retry is the same command with the same operation id");
         assert.equal(lost.store.getState().ui.workflowViews["wf-2"].runCommand, null, "accepted the second time");
-        assert.ok(!lost.calls.some(([name]) => name !== "updateWorkflow"), "nothing to the owner chat");
+        assert.ok(!lost.calls.some(([name]) => name !== "updateWorkflow"), "nothing to the owner session");
     });
 }
 

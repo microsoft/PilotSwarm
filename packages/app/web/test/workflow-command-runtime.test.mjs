@@ -81,8 +81,8 @@ for (const enforce of [true, false]) {
         assert.deepEqual(calls.at(-1)[2], { principal: { provider: "dev", subject: "ada" } });
         assert.ok(audits.some((entry) => entry.action === "updateWorkflow" && entry.sessionId === "s1" && entry.decision === "break_glass"));
         // The session a command comes from, when the caller names one, is passed on to the client (review SF-2).
-        await runtime.call("updateWorkflow", { sessionId: "s1", command, originatingSessionId: "node-chat" }, as("alice"));
-        assert.deepEqual(calls.at(-1)[2], { principal: { provider: "dev", subject: "alice" }, originatingSessionId: "node-chat" });
+        await runtime.call("updateWorkflow", { sessionId: "s1", command, originatingSessionId: "node-owner" }, as("alice"));
+        assert.deepEqual(calls.at(-1)[2], { principal: { provider: "dev", subject: "alice" }, originatingSessionId: "node-owner" });
     });
 }
 

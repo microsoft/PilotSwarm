@@ -1,7 +1,7 @@
 /**
  * Deployed check DS-3: the Copilot runtime names a session from the first prompt it is sent (its session.title_changed
- * event, recorded into the session's events). A chat's first turn can carry runtime notes before the person's words (a
- * person's save note and a Workflow's end kept for a chat that had not started: stage 2.1 and DS-2), and that event then
+ * event, recorded into the session's events). A session's first turn can carry runtime notes before the person's words (a
+ * person's save note and a Workflow's end kept for a session that had not started: stage 2.1 and DS-2), and that event then
  * carried the notes as the session's name. It is recorded with the person's own words instead, and not at all when
  * there are none. Pure.
  */

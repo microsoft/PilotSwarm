@@ -260,7 +260,7 @@ export async function intakeNativeFixture(env, script, options = {}) {
             hydrate: async () => {},
             needsHydration: async () => false,
             // What a Workflow the session starts inherits (SessionManager.captureWorkflowToolBinding). This double's session
-            // has no live tools, so it answers the binding of a chat with none, for the session's owner.
+            // has no live tools, so it answers the binding of a session with none, for the session's owner.
             captureWorkflowToolBinding: async sessionId => {
                 ownSession(sessionId);
                 const owner = (await intake.catalog.getSession(sessionId))?.owner ?? null;

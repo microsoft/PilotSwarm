@@ -76,9 +76,9 @@ test("nesting refusals keep the limit and say it in words; ordinary sessions kee
     assert.equal(spawnNestingRefusal(2, 2, false),
         "[SYSTEM: spawn_agent failed — you are already at nesting level 2 (max 2). Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]");
     const inside = spawnNestingRefusal(3, 3, true);
-    assert.match(inside, /^\[SYSTEM: spawn_agent failed — this session runs inside a Workflow at level 3 \(the top-level chat is level 0\), /);
+    assert.match(inside, /^\[SYSTEM: spawn_agent failed — this session runs inside a Workflow at level 3 \(the top-level session is level 0\), /);
     assert.match(inside, /sessions inside a Workflow stop at level 3\. A sub-agent would be at level 4\. Do this work yourself\.\]$/);
-    // An agent node's chat at level 2 may still spawn one level; its sub-agent at level 3 may not.
+    // An agent node's session at level 2 may still spawn one level; its sub-agent at level 3 may not.
     assert.deepEqual(spawnNesting(0, 2, { sessionId: "C", level: 2, agentRoot: ROOT }), { childNestingLevel: 3, maxNestingLevel: 3 });
     assert.deepEqual(spawnNesting(0, 2, { sessionId: "G", level: 3, agentRoot: { ...ROOT, distance: 1 } }), { childNestingLevel: 4, maxNestingLevel: 3 });
 });
@@ -91,7 +91,7 @@ test("an agent node too deep is refused in words naming its node and the levels"
     const answer = await host.spawn({ workflowSessionId: "D", childSessionId: "X", stateId: "summarize", controllingSessionId: "C",
         prompt: "p", clientMessageId: "m", task: { source: "prompt", prompt: "p" } });
     assert.equal(answer.refused.code, "forbidden");
-    assert.equal(answer.refused.message, "Node summarize cannot start its agent: its chat would be at level 4 (the top-level chat is level 0), "
+    assert.equal(answer.refused.message, "Node summarize cannot start its agent: its session would be at level 4 (the top-level session is level 0), "
         + "and sessions inside a Workflow stop at level 3. Start this Workflow from a session nearer the top.");
 });
 

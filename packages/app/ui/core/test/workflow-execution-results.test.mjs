@@ -118,7 +118,7 @@ function harness(initial, { selectedRunId = null, read = async () => initial } =
     const store = createStore(appReducer, createInitialState({ mode: "local" }));
     const controller = new PilotSwarmUiController({ store, transport });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-flow", status: "running", sessionKind: "workflow" },
-        { sessionId: "chat", title: "An ordinary chat", status: "idle" }] });
+        { sessionId: "chat", title: "An ordinary session", status: "idle" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel([]) });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId, readModel: initial, readModelRunId: selectedRunId } });

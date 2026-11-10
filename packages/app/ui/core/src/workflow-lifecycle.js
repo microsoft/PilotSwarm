@@ -3,14 +3,14 @@
  * then on if the user shuts it down, just put a yellow dot whenever there is a lifecycle event (e.g. wf def, or instance
  * started paused canceled etc)".
  *
- * - B and d, auto-open (OF-S2-4d, owner 19:45Z: "if I switch to a chat with a yellow dot on the workflow and it was the
+ * - B and d, auto-open (OF-S2-4d, owner 19:45Z: "if I switch to a session with a yellow dot on the workflow and it was the
  *   first time the dot had appeared then I want the panel to auto open. Follow the same behavior as canvas"; review of
- *   2ada4690, F1): the panel opens once per chat for the person, by one rule, whether they are in the chat when its first
+ *   2ada4690, F1): the panel opens once per session for the person, by one rule, whether they are in the session when its first
  *   definition is made or arrive at it later (a switch or a page load): the profile (which holds the receipt) and a
- *   successful read of the chat's definitions list have both happened, the chat has a definition or a Workflow, and its
+ *   successful read of the session's definitions list have both happened, the session has a definition or a Workflow, and its
  *   panel was never on screen (canvas prefs `lastViewedWorkflowAt` 0 or absent, merged by MAX across devices). No
  *   freshness test: the server's times are never compared with this browser's clock (workflowArrivalAutoOpen).
- * - C, the dot: the newest lifecycle change of the chat's definitions and Workflows, as a time, against the time the
+ * - C, the dot: the newest lifecycle change of the session's definitions and Workflows, as a time, against the time the
  *   Workflow panel last showed (canvas prefs `lastViewedWorkflowAt`, "canvas/viewed" with `workflowAt`, profile-merged by
  *   MAX). Lifecycle changes: a definition created, a revision saved (by anyone), a definition deleted; an agent test
  *   started or finished; a Workflow started, paused, resumed, canceling, canceled, completed, failed or waiting for input.
@@ -24,22 +24,22 @@
  * no such time and lights nothing (F4: never this browser's clock, which would reach the receipt merged by MAX).
  */
 import { isWorkflowChild, workflowChildModel, workflowChildrenOf, workflowStarted, workflowStateOf } from "./workflow-owner.js";
-import { chatDefinitionsLoaded } from "./workflow-chat-definitions.js";
+import { sessionDefinitionsLoaded } from "./workflow-session-definitions.js";
 
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const msOf = value => (typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN);
 
-/** C: the slowest the portal reads the active chat's definitions while the Workflow panel is closed. */
+/** C: the slowest the portal reads the active session's definitions while the Workflow panel is closed. */
 export const WORKFLOW_LIFECYCLE_READ_MS = 30_000;
 
-/** C: the background reads of one chat's definitions are at least this far apart (review F3). */
+/** C: the background reads of one session's definitions are at least this far apart (review F3). */
 export const WORKFLOW_LIFECYCLE_MIN_GAP_MS = 5_000;
 
 /**
  * How long the background read (C) waits before it reads `ownerId`'s definitions. Moving through the session list with
- * j and k changes the active chat on every key, and a read at once put one request per row on the network
- * (session-list-perf, 3b70e2c5). So a chat just arrived at waits `settleMs`, the session list's own settle (the
- * controller's SESSION_NAV_SETTLE_MS), and the caller cancels it on the next move; the same chat read before waits until
+ * j and k changes the active session on every key, and a read at once put one request per row on the network
+ * (session-list-perf, 3b70e2c5). So a session just arrived at waits `settleMs`, the session list's own settle (the
+ * controller's SESSION_NAV_SETTLE_MS), and the caller cancels it on the next move; the same session read before waits until
  * WORKFLOW_LIFECYCLE_MIN_GAP_MS after that read, and never less than the settle. `last` is the last read
  * ({ ownerId, at }). Pure.
  */
@@ -73,13 +73,13 @@ function lifecycleEntryOf(session, view) {
     return { key, source: modelled ? "model" : "row" };
 }
 
-/** The stored run statuses of the chat's definitions list, for Workflows whose rows are not loaded. */
+/** The stored run statuses of the session's definitions list, for Workflows whose rows are not loaded. */
 const LISTED_KEYS = { admitted: "running", running: "running", paused: "paused", completed: "completed", failed: "failed", cancelled: "canceled",
     stopped: "canceled" };
 
 /**
- * C: each of a chat's Workflows by its lifecycle key (`keys`, { [sessionId]: key }) and where that key was read (`sources`,
- * { [sessionId]: "list" | "row" | "model" }): from its row (and its read model when loaded), else from the chat's
+ * C: each of a session's Workflows by its lifecycle key (`keys`, { [sessionId]: key }) and where that key was read (`sources`,
+ * { [sessionId]: "list" | "row" | "model" }): from its row (and its read model when loaded), else from the session's
  * definitions list. Node visits and variable changes never change a key.
  */
 export function workflowLifecycleEntries(byId, ownerId, views = {}, definitionsEntry = null) {
@@ -102,13 +102,13 @@ export function workflowLifecycleEntries(byId, ownerId, views = {}, definitionsE
     return { keys, sources };
 }
 
-/** C: each of a chat's Workflows by its lifecycle key ({ [sessionId]: key }; workflowLifecycleEntries). */
+/** C: each of a session's Workflows by its lifecycle key ({ [sessionId]: key }; workflowLifecycleEntries). */
 export function workflowLifecycleKeys(byId, ownerId, views = {}, definitionsEntry = null) {
     return workflowLifecycleEntries(byId, ownerId, views, definitionsEntry).keys;
 }
 
 /**
- * C: the time of the lifecycle changes between two observations of the same chat's keys: a Workflow whose key changed is
+ * C: the time of the lifecycle changes between two observations of the same session's keys: a Workflow whose key changed is
  * dated by its row's `updatedAt` (the server's time of that change); one with no row (known only from the list) by
  * nothing (F4). A Workflow first seen is not a change here (its start is its own `createdAt`). Review F5: neither is a
  * key that changed only because a more exact source was read (`sources`: the list, then the row, then the read model;
@@ -139,8 +139,8 @@ export function workflowLifecycleKeysEqual(a, b) {
 }
 
 /**
- * C: the newest lifecycle change of a chat (server time, ms; 0 for none): its definitions' saves, tests and deletions;
- * its Workflows' starts and ends; and what this page saw (`observed`, the chat's record from workflowLifecycleObserve, or
+ * C: the newest lifecycle change of a session (server time, ms; 0 for none): its definitions' saves, tests and deletions;
+ * its Workflows' starts and ends; and what this page saw (`observed`, the session's record from workflowLifecycleObserve, or
  * its `at` alone): the key changes, and when each Workflow waiting for input was first seen waiting (review F8: never its
  * row's `updatedAt`, which every node visit moves).
  */
@@ -177,10 +177,10 @@ export function workflowLifecycleAt(byId, ownerId, views = {}, definitionsEntry 
     return at;
 }
 
-/** C: the newest lifecycle change of the chat whose Workflow tab context is `ownerId`, from the store's state. */
+/** C: the newest lifecycle change of the session whose Workflow tab context is `ownerId`, from the store's state. */
 export function workflowLifecycleAtOf(state, ownerId) {
     if (!ownerId) return 0;
-    return workflowLifecycleAt(state?.sessions?.byId, ownerId, state?.ui?.workflowViews, state?.ui?.chatDefinitions?.[ownerId] ?? null,
+    return workflowLifecycleAt(state?.sessions?.byId, ownerId, state?.ui?.workflowViews, state?.ui?.sessionDefinitions?.[ownerId] ?? null,
         state?.ui?.workflowLifecycle?.[ownerId] ?? 0);
 }
 
@@ -191,10 +191,10 @@ export function workflowLifecycleNeedsAttention(state, ownerId) {
 }
 
 /**
- * B and d: whether the Workflow panel opens for the chat `ownerId` (the Workflow tab's, selectWorkflowTabContext) now:
- * never on unknown state (the profile read, which holds the receipt, and a successful read of the chat's definitions list
- * must both have happened; a read that failed decides nothing), never for a chat with no
- * definition and no Workflow, never once the chat's panel was on screen (its receipt) or after it opened by itself in
+ * B and d: whether the Workflow panel opens for the session `ownerId` (the Workflow tab's, selectWorkflowTabContext) now:
+ * never on unknown state (the profile read, which holds the receipt, and a successful read of the session's definitions list
+ * must both have happened; a read that failed decides nothing), never for a session with no
+ * definition and no Workflow, never once the session's panel was on screen (its receipt) or after it opened by itself in
  * this page. No time is compared (review F1).
  */
 export function workflowArrivalAutoOpen(state, ownerId) {
@@ -204,27 +204,27 @@ export function workflowArrivalAutoOpen(state, ownerId) {
     const owner = byId?.[ownerId];
     if (!isRecord(owner) || owner.isGroup || isWorkflowChild(owner)) return false;
     if ((Number(state?.canvas?.prefs?.[ownerId]?.lastViewedWorkflowAt) || 0) > 0) return false;
-    const entry = ui?.chatDefinitions?.[ownerId] ?? null;
-    if (!chatDefinitionsLoaded(entry) || entry.error) return false;
+    const entry = ui?.sessionDefinitions?.[ownerId] ?? null;
+    if (!sessionDefinitionsLoaded(entry) || entry.error) return false;
     return entry.items.length > 0 || workflowChildrenOf(byId, ownerId).some(session => workflowStarted(session, state?.ui?.workflowViews?.[session.sessionId] ?? null));
 }
 
 /**
- * Review F3: what makes the portal read the chat's definitions again while its panel is closed: the chat's status and its
+ * Review F3: what makes the portal read the session's definitions again while its panel is closed: the session's status and its
  * Workflows' statuses (an agent turn that ends, a Workflow that starts, pauses or ends), never their `updatedAt` (every
  * agent turn and node visit would read the list again).
  */
-export function chatLifecycleStamp(byId, ownerId) {
+export function sessionLifecycleStamp(byId, ownerId) {
     if (!ownerId) return "";
     const owner = byId?.[ownerId] ?? null;
     return [`${owner?.status ?? ""}`, ...workflowChildrenOf(byId, ownerId).map(session => `${session.sessionId}:${session.status ?? ""}`)].join(",");
 }
 
 /**
- * C: the store's record of the Workflow tab's chat's Workflow keys after an action (ui.workflowLifecycle[ownerId] = { keys,
+ * C: the store's record of the Workflow tab's session's Workflow keys after an action (ui.workflowLifecycle[ownerId] = { keys,
  * sources, waiting, at }): the keys now and where they were read, when each Workflow waiting for input was first seen
  * waiting (its row's `updatedAt` then, a server time; review F8), and `at` raised to the time of any key change since the
- * last record. A chat recorded for the first time starts at 0 (a page load sees no change). Returns the next
+ * last record. A session recorded for the first time starts at 0 (a page load sees no change). Returns the next
  * ui.workflowLifecycle, or the same object when nothing changed.
  */
 export function workflowLifecycleObserve(lifecycle, byId, ownerId, views, definitionsEntry) {

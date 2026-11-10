@@ -1,9 +1,9 @@
 /**
- * What a real-model case leaves in its receipt about the chat's Workflows, read before the test environment is cleaned up
+ * What a real-model case leaves in its receipt about the session's Workflows, read before the test environment is cleaned up
  * (DEV, UXP-AC-01 run 2: a valid revision started and its run failed, and the receipt held no YAML and no error, so a
  * failure the model wrote could not be told from a product defect):
- * - each saved revision of the chat's definitions: its YAML (secrets hidden, at most 8 KB) and its diagnostics;
- * - each Workflow the chat started, and each test of a revision: every run's status, terminal outcome and error;
+ * - each saved revision of the session's definitions: its YAML (secrets hidden, at most 8 KB) and its diagnostics;
+ * - each Workflow the session started, and each test of a revision: every run's status, terminal outcome and error;
  * - each node execution of those runs: its state, outcome and error, as stored (secrets hidden).
  * Reading changes nothing, and a read that fails is recorded in the evidence, never thrown: assertions are the case's.
  */
@@ -55,16 +55,16 @@ async function workflowEvidence(store, workflowSessionId, extra) {
     return evidence;
 }
 
-/** The evidence of the chat `ownerSessionId`'s definitions, Workflows and tests, from `catalog`'s workflow store. */
+/** The evidence of the session `ownerSessionId`'s definitions, Workflows and tests, from `catalog`'s workflow store. */
 export async function realModelWorkflowEvidence(catalog, ownerSessionId) {
     const evidence = { revisions: [], workflows: [], tests: [] };
     try {
         const store = catalog.workflowStore();
-        const chat = store.chat;
-        const definitions = await chat.listDefinitions(ownerSessionId, { includeDeleted: true });
+        const sessionDefinitions = store.sessionDefinitions;
+        const definitions = await sessionDefinitions.listDefinitions(ownerSessionId, { includeDeleted: true });
         for (const definition of definitions) {
-            for (const summary of await chat.listRevisions(definition.definitionId)) {
-                const row = await chat.readRevision(definition.definitionId, summary.revision).catch(error => ({ unreadable: failed(error) }));
+            for (const summary of await sessionDefinitions.listRevisions(definition.definitionId)) {
+                const row = await sessionDefinitions.readRevision(definition.definitionId, summary.revision).catch(error => ({ unreadable: failed(error) }));
                 evidence.revisions.push({
                     definitionId: definition.definitionId, name: definition.name, revision: summary.revision, valid: summary.valid,
                     savedAt: summary.createdAt ?? null,
@@ -75,12 +75,12 @@ export async function realModelWorkflowEvidence(catalog, ownerSessionId) {
                     }),
                 });
             }
-            for (const test of await chat.listTests(ownerSessionId, definition.definitionId)) {
+            for (const test of await sessionDefinitions.listTests(ownerSessionId, definition.definitionId)) {
                 evidence.tests.push(await workflowEvidence(store, test.testId,
                     { definitionId: test.definitionId, revision: test.revision, verdict: test.verdict }));
             }
         }
-        for (const row of await chat.listWorkflows({ ownerSessionId })) {
+        for (const row of await sessionDefinitions.listWorkflows({ ownerSessionId })) {
             evidence.workflows.push(await workflowEvidence(store, row.workflowSessionId, { definitionId: row.definitionId, revision: row.revision }));
         }
     } catch (error) {

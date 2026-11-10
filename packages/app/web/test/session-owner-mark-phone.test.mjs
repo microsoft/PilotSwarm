@@ -1,7 +1,7 @@
 // OF-S2-5-F1 at 390 px (42fe6838 DEV): on a phone the session list pans long rows sideways at their full width, so a long
 // title pushed the "Has Workflows" mark past the list's visible right edge. A row with the mark is at most as wide as the
 // visible list (a container query on the list's track), its title takes the ellipsis there, and the mark never shrinks.
-// The geometry itself is the browser test workflow-chat-definitions.spec.mjs -g "OF-S2-5-F1"; this is the narrow source
+// The geometry itself is the browser test workflow-session-definitions.spec.mjs -g "OF-S2-5-F1"; this is the narrow source
 // check that the phone's rules for such a row exist and outrank the phone's "rows grow to their content" rules.
 //
 // Run: node --test packages/app/web/test/session-owner-mark-phone.test.mjs

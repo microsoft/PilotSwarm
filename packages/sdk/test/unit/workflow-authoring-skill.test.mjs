@@ -31,7 +31,7 @@ test("the workflow skills load from their own plugin directory, which no worker 
     assert.deepEqual(testModeSkills().map(skill => skill.name), ["workflow-testing"]);
     for (const skill of [...skills(), ...testModeSkills()]) {
         // The skills index clips a description at 240 characters; each body stays small enough to load on demand: 20 KiB,
-        // and 8 KiB for workflow-patterns, which a chat loads only when one Workflow runs different nodes per branch (OF-S2-6).
+        // and 8 KiB for workflow-patterns, which a session loads only when one Workflow runs different nodes per branch (OF-S2-6).
         assert.ok(skill.description.length >= 80 && skill.description.length <= 240, `${skill.name} description: ${skill.description.length}`);
         const budget = skill.name === "workflow-patterns" ? 8 * 1024 : 20 * 1024;
         assert.ok(Buffer.byteLength(skill.prompt, "utf8") <= budget, `${skill.name} body: ${Buffer.byteLength(skill.prompt, "utf8")} bytes`);

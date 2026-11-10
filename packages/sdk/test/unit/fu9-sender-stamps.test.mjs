@@ -99,7 +99,7 @@ function sessionMessageRuntime() {
     const enqueued = [];
     const rows = {
         "from-session-1": { sessionId: "from-session-1", title: "Release checker", state: "running" },
-        "to-session-2": { sessionId: "to-session-2", title: "Other chat", state: "running" },
+        "to-session-2": { sessionId: "to-session-2", title: "Other session", state: "running" },
     };
     return {
         enqueued,
@@ -122,7 +122,7 @@ test("F-FU9-1: a session message and its reply are the sending session's words (
     assert.match(enqueued[0].payload.prompt, /^\[SESSION_MESSAGE /);
     assert.deepEqual(enqueued[0].payload.sender, { kind: "agent", display: "Release checker", sessionId: "from-session-1" });
     assert.match(enqueued[1].payload.prompt, /^\[SESSION_MESSAGE_RESPONSE /);
-    assert.deepEqual(enqueued[1].payload.sender, { kind: "agent", display: "Other chat", sessionId: "to-session-2" });
+    assert.deepEqual(enqueued[1].payload.sender, { kind: "agent", display: "Other session", sessionId: "to-session-2" });
 });
 
 test("F-FU9-1: the provider wake is the runtime's (a system sender)", async () => {
@@ -137,7 +137,7 @@ function eventSession() {
     const enqueued = [];
     const session = Object.create(PilotSwarmSession.prototype);
     Object.assign(session, {
-        sessionId: "chat-1",
+        sessionId: "owner-1",
         client: {
             _workflowStoreOrNull: () => null,
             _getDuroxideClient: () => ({ enqueueEvent: async (instanceId, queue, payload) => { enqueued.push({ instanceId, queue, payload: JSON.parse(payload) }); } }),

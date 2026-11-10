@@ -4,7 +4,7 @@
  * - A schema the form cannot draw, or that asks for input without listing it (oneOf, references, typed
  *   additionalProperties, minProperties, required, a non-object type), gets a JSON box.
  * - Start another is filled with the source Workflow's own inputs (its read's run.inputs), never sample values; when the
- *   read does not have them (none, or cut), it says so and asks the chat to use the same ones unless the person gives others.
+ *   read does not have them (none, or cut), it says so and asks the session to use the same ones unless the person gives others.
  *
  * Run: node --test ui/core/test/workflow-simplified-start-inputs.test.mjs
  */
@@ -63,7 +63,7 @@ test("Start another is filled with the source Workflow's inputs, not the schema'
 
 test("without the source's inputs, Start another says it cannot read them and uses the same ones; nothing is made up", () => {
     const html = render({ publication: publication(SCHEMA), onAsk: async () => ({ ok: true }), source: { number: 2, inputs: null } });
-    assert.ok(html.includes("The same as #2. This screen cannot read them; the chat uses the ones it started it with."), html);
+    assert.ok(html.includes("The same as #2. This screen cannot read them; the session uses the ones it started it with."), html);
     assert.ok(html.includes('data-action="other-inputs"') && !html.includes("west"), html);
 });
 
@@ -98,7 +98,7 @@ test("UI-D8: Start another keeps known inputs for an open, additionalProperties 
     assert.match(workflowStartAnotherText({ name: "check-items", inputs: original }), /\nInputs \(data, JSON\): \{"region":"east","limit":3\}$/);
     assert.match(workflowStartAnotherText({ name: "check-items", inputs: {} }), /\nInputs \(data, JSON\): \{\}$/);
     assert.match(workflowStartAnotherText({ name: "check-items", inputs: {}, noInputs: true }), /\nIt takes no inputs\.$/);
-    // Through the controller: the chat is asked with the original object.
+    // Through the controller: the session is asked with the original object.
     const sent = [];
     const transport = { sendMessage: async (sessionId, prompt, options) => { sent.push({ sessionId, prompt, options }); return { ok: true }; } };
     const store = createStore(appReducer, createInitialState({ mode: "local" }));
@@ -114,24 +114,24 @@ test("UI-D8: Start another keeps known inputs for an open, additionalProperties 
 });
 
 // Review UI-F4: Start another whose schema the read could not give: with the source inputs unavailable, the same-inputs
-// fallback (the chat uses the ones it started it with); with them known to be empty, a JSON box with {}; never "Takes no
+// fallback (the session uses the ones it started it with); with them known to be empty, a JSON box with {}; never "Takes no
 // inputs", and the message never says it takes none.
 test("UI-F4: a missing schema with unavailable or empty source inputs offers the same inputs or JSON, never 'Takes no inputs'", async () => {
     const unavailable = render({ publication: publication(null), onAsk: async () => ({ ok: true }), source: { number: 2, inputs: null } });
     assert.ok(!unavailable.includes("Takes no inputs."), unavailable);
-    assert.ok(unavailable.includes("The same as #2. This screen cannot read them; the chat uses the ones it started it with.")
+    assert.ok(unavailable.includes("The same as #2. This screen cannot read them; the session uses the ones it started it with.")
         && unavailable.includes('data-action="other-inputs"'), unavailable);
     const empty = render({ publication: publication(null), onAsk: async () => ({ ok: true }), source: { number: 2, inputs: {} } });
     assert.ok(!empty.includes("Takes no inputs.") && empty.includes(INPUTS_JSON), empty);
     const box = /<textarea[^>]*>([^<]*)<\/textarea>/.exec(empty);
     assert.deepEqual(JSON.parse(box[1]), {});
-    // What each asks the chat: the same inputs (unavailable), the empty object (known); never "It takes no inputs."
+    // What each asks the session: the same inputs (unavailable), the empty object (known); never "It takes no inputs."
     assert.match(workflowStartAnotherText({ name: "check-items" }), /\nUse the same inputs as before\.$/);
     assert.match(workflowStartAnotherText({ name: "check-items", inputs: {}, noInputs: false }), /\nInputs \(data, JSON\): \{\}$/);
 });
 
 
-// UX2D-F9: Run again of a chat's definition showed an Inputs JSON box holding {} for a Workflow with no inputs, where
+// UX2D-F9: Run again of a session's definition showed an Inputs JSON box holding {} for a Workflow with no inputs, where
 // the same definition's Start says "Takes no inputs.": once its revision is read, its schema is the contract, as Start's.
 test("UX2D-F9: Run again of a revision read with no input schema takes no inputs, as Start says; an unread schema keeps the JSON box", () => {
     assert.equal(workflowStartAnotherShape(null, { schemaKnown: true }), "none");

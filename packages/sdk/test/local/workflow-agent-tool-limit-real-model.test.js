@@ -2,9 +2,9 @@
  * Stage 2.1c, FU-17, on a REAL model: an agent node with `tools: none` cannot use a tool its task asks for.
  * A person saves and starts (through the management client) a definition whose one agent node has `tools: none` and a
  * task that asks it to fetch a web page with web_fetch, and, when it has no tool to fetch with, to say so in its typed
- * output. The node's agent chat runs on the real model.
+ * output. The node's agent session runs on the real model.
  *
- * PASS: the node's chat made no tool call but complete_workflow_node (no web_fetch, no other tool); its state ended by the
+ * PASS: the node's session made no tool call but complete_workflow_node (no web_fetch, no other tool); its state ended by the
  * agent's own completion (winner agent), so the one tool it keeps worked; the Workflow ended. What the model said it
  * fetched is recorded, not judged.
  *
@@ -92,14 +92,14 @@ describe("FU-17: an agent node's tool limit, on a real model", () => {
                 await mgmt.start();
                 const catalog = client._catalog;
                 const store = catalog.workflowStore();
-                const chat = await client.createSession({ model: plan.model.ref, owner: OWNER, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });
+                const session = await client.createSession({ model: plan.model.ref, owner: OWNER, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });
 
-                // The person saves and starts it: no chat turn is needed to author it.
-                const saved = await mgmt.saveChatWorkflowDefinition(chat.sessionId, { name: NAME, yaml: YAML, operationId: `save-${randomUUID()}` },
+                // The person saves and starts it: no session turn is needed to author it.
+                const saved = await mgmt.saveSessionWorkflowDefinition(session.sessionId, { name: NAME, yaml: YAML, operationId: `save-${randomUUID()}` },
                     { principal: PERSON });
                 receipt.steps.save = { revision: saved.revision, valid: saved.valid };
                 expect(saved.valid, JSON.stringify(saved)).toBe(true);
-                const started = await mgmt.startChatWorkflowDefinition(chat.sessionId, { definitionId: saved.definitionId, operationId: `start-${randomUUID()}` },
+                const started = await mgmt.startSessionWorkflowDefinition(session.sessionId, { definitionId: saved.definitionId, operationId: `start-${randomUUID()}` },
                     { principal: PERSON });
                 receipt.steps.start = { workflowId: started.workflowId, runId: started.runId, revision: started.revision };
 

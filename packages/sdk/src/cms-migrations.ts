@@ -19,6 +19,7 @@ import { motdHistoryMigration } from "./migrations/motd-history-0085.js";
 import { motdSchedulingMigration } from "./migrations/motd-scheduling-0086.js";
 import { motdSupersessionMigration } from "./migrations/motd-supersession-0087.js";
 import { workflowMigration } from "./migrations/workflow-0088.js";
+import { workflowSessionNamesMigration } from "./migrations/workflow-session-names-0089.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -418,6 +419,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0086", name: "motd_scheduling", sql: motdSchedulingMigration(schema) },
         { version: "0087", name: "motd_supersession", sql: motdSupersessionMigration(schema) },
         { version: "0088", name: "workflow", steps: workflowMigration(schema) },
+        { version: "0089", name: "workflow_session_names", sql: workflowSessionNamesMigration(schema) },
     ];
 }
 

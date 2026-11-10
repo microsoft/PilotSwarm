@@ -3,7 +3,7 @@
 > **As built (2026-11-10, owner decision: Workflow was deployed nowhere, so its versions and migrations were
 > collapsed).** Each Workflow orchestration has one version: `workflow-controller` 1.0.0 is the controller this
 > document calls 1.9.0 (the request controller); `workflow-effect`, `-notify` and `-send` 1.0.0 are its tagged
-> 1.1.0 orchestrations; `workflow-request`, `-agent` and `-chat-end` stay 1.0.0. Controller 1.8.0, the pre-release
+> 1.1.0 orchestrations; `workflow-request`, `-agent` and `-agent-session-end` stay 1.0.0. Controller 1.8.0, the pre-release
 > controllers 1.0.0 to 1.7.0, the untagged orchestrations and activities, and the `workflowRequests` and
 > `WorkflowHost.requests` switches are gone: every activity is `workflow.<name>` with the workflow-request tag.
 > The CMS migrations this document numbers 0088 to 0111 are one migration, 0088 (`migrations/workflow-0088.ts`), which
@@ -73,7 +73,7 @@ Revision 2:
 
 | Source | Requirement |
 |---|---|
-| R07; design 03 "Messaging modes" | `request`: as send, plus a response schema and a deadline. Success is an accepted typed response; chat prose is not a response. |
+| R07; design 03 "Messaging modes" | `request`: as send, plus a response schema and a deadline. Success is an accepted typed response; session prose is not a response. |
 | Design 03 | Request ids are stable across delivery retries, distinct across loop and rework occurrences, and keep the schema digest, payload hash, destination and deadline. A same response is idempotent; a different second reply conflicts. Status moves `pending -> responded \| declined \| timed_out \| cancelled` atomically. Reply acceptance and its wake intent share one transaction. Losing or late responses are audited, cannot revive the call and do not overwrite its selected transition. Caller cancellation does not cancel or delete the peer; a bounded notice is sent if supported. |
 | R13; R27; hard invariants 3, 5, 8, 9 | No caller-supplied authority. Every winner is idempotently identified. A pending operation keeps its resolved recipient, arguments and deadline. One terminal compare-and-swap resolves reply against timeout or cancellation; late events never revive a closed occurrence. Delivery is at least once; stable ids and durable acceptance suppress duplicates. |
 | D03 | Pause freezes progression, not deadlines. |

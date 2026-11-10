@@ -1,17 +1,17 @@
 /**
- * An agent's test of a revision (chat-test.ts), its gaps G1-G5, without a database:
+ * An agent's test of a revision (definition-test.ts), its gaps G1-G5, without a database:
  * - G1: a receive fixture (operation receive) is parsed only for an agent's test; the test gives it to its receive state as a
  *   real message comes (sendTypedWorkflowInput: the run's contract check and acceptInput), before its clock moves; without one,
  *   a receive with a deadline still has its clock moved and one without fails TEST_STUCK, naming the fixture to add; a message
  *   the receive refuses fails the test at once (TEST_ANSWER_REFUSED).
  * - G2: a fixture's `visit` answers only that visit (exact arguments and visit, then exact arguments, then visit, then any).
- * - G3: the report lists the calls a prepared answer gave of tools the chat lacks (its grant, as the bench keeps it).
+ * - G3: the report lists the calls a prepared answer gave of tools the session lacks (its grant, as the bench keeps it).
  *   RLR-F5: a grant it cannot read (or check) is said (needsToolAtRunTime null, toolsUnchecked), never an empty list.
  * - G4: `expect` (a terminal state or an outcome) decides pass; without it, outcome succeeded as before.
  * - G5: each step's predecessor and route, branch and input; an unanswered call's exact fixture skeleton.
- * The runs themselves are test/local/workflow-chat-test-gaps.test.js.
+ * The runs themselves are test/local/workflow-definition-test-gaps.test.js.
  *
- * Run: node --test test/unit/workflow-chat-test-gaps.test.mjs (after npm run build).
+ * Run: node --test test/unit/workflow-definition-test-gaps.test.mjs (after npm run build).
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -19,8 +19,8 @@ import { createHash } from "node:crypto";
 import { matchTestFixture, parseTestFixtures, storedTestFixtures } from "../../dist/workflow/test-mode.js";
 import { workflowDefinitionFromTool, workflowDefinitionToolSpec } from "../../dist/workflow/definition-tool.js";
 import {
-    chatTestBench, chatTestFixtureSkeleton, chatTestReport, parseChatTestExpect, waitChatWorkflowTest,
-} from "../../dist/workflow/chat-test.js";
+    definitionTestBench, definitionTestFixtureSkeleton, definitionTestReport, parseDefinitionTestExpect, waitSessionWorkflowTest,
+} from "../../dist/workflow/definition-test.js";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { canonicalJson } from "../../dist/workflow/json.js";
 import { WORKFLOW_TEST_EPOCH } from "../../dist/workflow/store.js";
@@ -176,7 +176,7 @@ async function receiveTest(fixtures, { wait = false, ordinal = 1, from = null, l
             : { sessionId: id, sessionKind: "agent", parentSessionId: null, deletedAt: null, isSystem: false, owner },
     };
     const duroxideClient = { enqueueEvent: async (...args) => { did.woken.push(args); } };
-    const report = await waitChatWorkflowTest({ store, catalog, duroxideClient, requests: true },
+    const report = await waitSessionWorkflowTest({ store, catalog, duroxideClient, requests: true },
         { testId: "bench-1", definitionId: "def-1", name: "watch", revision: 1 },
         { actor: { kind: "agent", sessionId: "chat" }, pollMs: 1, graceMs, waitMs: 2_000, sleep: async () => {} });
     return { did, report };
@@ -195,7 +195,7 @@ test("G1: a receive fixture is given as a real message (the run's input path), f
     assert.deepEqual(did.cancelled, []);
     assert.equal(did.woken.length, 1, "the run's controller is woken as for any message");
     assert.equal(report.status, "passed");
-    // From the receive's own sender (`from`), not the chat, when it names one.
+    // From the receive's own sender (`from`), not the session, when it names one.
     const named = await receiveTest([{ operation: "receive", state: "await_event", response: ok("success", message) }], { from: "reporter-1" });
     assert.equal(named.did.accepted[0].senderSessionId, "reporter-1");
 });
@@ -265,18 +265,18 @@ const reportHost = (nodes, interceptions, extra = {}) => ({ store: { listNodeExe
 const binding = tools => ({ policy: WORKFLOW_TOOL_POLICY, parentSessionId: "chat", owner: { provider: "test", subject: "ada" }, config: {},
     capabilities: { selections: [] }, tools: tools.map(name => ({ name, schemaHash: "h" })), sourceRevisions: {}, excludedTools: [], boundAgentFingerprint: "f" });
 
-test("G3: the report lists the answered calls of tools the chat lacks (its grant on the bench); none when it has them all", async () => {
+test("G3: the report lists the answered calls of tools the session lacks (its grant on the bench); none when it has them all", async () => {
     const nodes = [visitRow("poll", 1, { outcome: "ok", resultKind: "business" }), visitRow("done", 1, { nodeType: "terminal", outcome: "succeeded", resultKind: "business" })];
     const calls = ["read_build", "post_status", "post_status"].map((tool, index) => ({ interceptionId: `i-${index}`, nodeExecutionId: "nx-poll-1",
         operation: "tool.call", tool, arguments: {}, state: "responded", response: { disposition: "fixture" } }));
-    const withGrant = tools => chatTestReport(reportHost(nodes, calls, { catalog: { getSessionCreationConfig: async id => {
+    const withGrant = tools => definitionTestReport(reportHost(nodes, calls, { catalog: { getSessionCreationConfig: async id => {
         assert.equal(id, "bench-1");
         return tools === null ? {} : { workflowToolBinding: binding(tools) };
     } } }), BENCH, runOf());
     const lacking = await withGrant(["read_build"]);
-    assert.equal(lacking.status, "passed", "a test of a tool the chat lacks still passes");
+    assert.equal(lacking.status, "passed", "a test of a tool the session lacks still passes");
     assert.deepEqual(lacking.needsToolAtRunTime, [{ call: "tool call post_status in step poll", tool: "post_status" }]);
-    assert.match(lacking.message, /passed: it ended at done \(succeeded\)\. Its scripts call tools this chat does not have \(post_status\): the test answered them, but a run of this revision needs them\.$/);
+    assert.match(lacking.message, /passed: it ended at done \(succeeded\)\. Its scripts call tools this session does not have \(post_status\): the test answered them, but a run of this revision needs them\.$/);
     // Negative controls: a grant with both lists none; no grant at all lists every tool called (a grant that cannot be read: RLR-F5).
     assert.deepEqual((await withGrant(["read_build", "post_status"])).needsToolAtRunTime, []);
     assert.deepEqual((await withGrant(null)).needsToolAtRunTime.map(item => item.tool), ["read_build", "post_status"]);
@@ -286,7 +286,7 @@ test("RLR-F5: a grant the report cannot read or check is said so (needsToolAtRun
     const nodes = [visitRow("poll", 1, { outcome: "ok", resultKind: "business" }), visitRow("done", 1, { nodeType: "terminal", outcome: "succeeded", resultKind: "business" })];
     const calls = ["read_build", "post_status", "post_status"].map((tool, index) => ({ interceptionId: `i-${index}`, nodeExecutionId: "nx-poll-1",
         operation: "tool.call", tool, arguments: {}, state: "responded", response: { disposition: "fixture" } }));
-    const report = (catalog, interceptions = calls) => chatTestReport(reportHost(nodes, interceptions, catalog ? { catalog } : {}), BENCH, runOf());
+    const report = (catalog, interceptions = calls) => definitionTestReport(reportHost(nodes, interceptions, catalog ? { catalog } : {}), BENCH, runOf());
     const withGrant = tools => ({ getSessionCreationConfig: async () => ({ workflowToolBinding: binding(tools) }) });
     // Controls: fully granted (checked, nothing missing, the plain pass words) and a missing tool (named).
     const granted = await report(withGrant(["read_build", "post_status"]));
@@ -296,10 +296,10 @@ test("RLR-F5: a grant the report cannot read or check is said so (needsToolAtRun
     const lacking = await report(withGrant(["read_build"]));
     assert.deepEqual(lacking.needsToolAtRunTime, [{ call: "tool call post_status in step poll", tool: "post_status" }]);
     for (const [what, catalog, reason] of [
-        ["an invalid stored grant", { getSessionCreationConfig: async () => ({ workflowToolBinding: { policy: "?" } }) }, "the chat's tool grant, as the test keeps it, is not valid"],
-        ["a grant read that fails", { getSessionCreationConfig: async () => { throw new Error("connection reset by 10.0.0.7"); } }, "the chat's tool grant could not be read"],
-        ["a bench with no settings", { getSessionCreationConfig: async () => null }, "the chat's tool grant could not be read"],
-        ["a host that cannot read grants", null, "this host cannot read the chat's tool grant"],
+        ["an invalid stored grant", { getSessionCreationConfig: async () => ({ workflowToolBinding: { policy: "?" } }) }, "the session's tool grant, as the test keeps it, is not valid"],
+        ["a grant read that fails", { getSessionCreationConfig: async () => { throw new Error("connection reset by 10.0.0.7"); } }, "the session's tool grant could not be read"],
+        ["a bench with no settings", { getSessionCreationConfig: async () => null }, "the session's tool grant could not be read"],
+        ["a host that cannot read grants", null, "this host cannot read the session's tool grant"],
     ]) {
         const unchecked = await report(catalog);
         assert.equal(unchecked.status, "passed", `${what}: the run still ended as expected`);
@@ -307,7 +307,7 @@ test("RLR-F5: a grant the report cannot read or check is said so (needsToolAtRun
         assert.notDeepEqual(unchecked.needsToolAtRunTime, granted.needsToolAtRunTime, `${what}: never the fully granted test's empty list`);
         assert.equal(unchecked.needsToolAtRunTime, null, `${what}: unknown, not an empty list`);
         assert.deepEqual(unchecked.toolsUnchecked, { reason, tools: ["read_build", "post_status"] }, what);
-        assert.equal(unchecked.message, `${plain} It could not check whether this chat has the tools its scripts call (read_build, post_status): ${reason}. `
+        assert.equal(unchecked.message, `${plain} It could not check whether this session has the tools its scripts call (read_build, post_status): ${reason}. `
             + "The test answered those calls, but a run of this revision needs each of them; read this test again with workflow_definition "
             + "operation test and test_id bench-1 to check them.", what);
     }
@@ -336,12 +336,12 @@ states:
 
 test("G4: expect names a terminal state of the revision or an outcome; anything else is refused with what it may name", () => {
     const { ir } = compileWorkflow(ENDS_YAML);
-    assert.deepEqual(parseChatTestExpect("rejected", ir), { state: "rejected" });
-    assert.deepEqual(parseChatTestExpect("failed", ir), { state: "failed" }, "a terminal state's id wins over the outcome of that name");
-    assert.deepEqual(parseChatTestExpect("blocked", ir), { outcome: "blocked" });
-    assert.equal(parseChatTestExpect(undefined, ir), null);
+    assert.deepEqual(parseDefinitionTestExpect("rejected", ir), { state: "rejected" });
+    assert.deepEqual(parseDefinitionTestExpect("failed", ir), { state: "failed" }, "a terminal state's id wins over the outcome of that name");
+    assert.deepEqual(parseDefinitionTestExpect("blocked", ir), { outcome: "blocked" });
+    assert.equal(parseDefinitionTestExpect(undefined, ir), null);
     for (const value of ["check", "nowhere", "", 7, "x".repeat(65)]) {
-        assert.throws(() => parseChatTestExpect(value, ir), error => error.code === "WORKFLOW_COMMAND_INVALID"
+        assert.throws(() => parseDefinitionTestExpect(value, ir), error => error.code === "WORKFLOW_COMMAND_INVALID"
             && /a terminal state \(done, rejected, failed\) or an outcome \(succeeded, blocked, failed, cancelled\)\. Nothing was tested\.$/.test(error.message),
         String(value));
     }
@@ -350,7 +350,7 @@ test("G4: expect names a terminal state of the revision or an outcome; anything 
 test("G4: pass is the expected end (that state or outcome) with nothing unanswered or refused; without expect, outcome succeeded", async () => {
     const nodes = [visitRow("check", 1, { outcome: "bad", resultKind: "business" }), visitRow("rejected", 1, { nodeType: "terminal", outcome: "blocked", resultKind: "business" })];
     const blocked = runOf({ terminalOutcome: "blocked", terminalNodeId: "rejected" });
-    const report = expect => chatTestReport(reportHost(nodes, []), { ...BENCH, expect }, blocked);
+    const report = expect => definitionTestReport(reportHost(nodes, []), { ...BENCH, expect }, blocked);
     const asState = await report({ state: "rejected" });
     assert.equal(asState.status, "passed");
     assert.deepEqual(asState.expect, { state: "rejected" });
@@ -365,7 +365,7 @@ test("G4: pass is the expected end (that state or outcome) with nothing unanswer
     assert.equal((await report(undefined)).expect, null);
     // An unanswered call fails it, even at the expected end (here: a cancelled outcome is not a cancel by the test).
     const waiting = [{ interceptionId: "i-1", nodeExecutionId: "nx-check-1", operation: "tool.call", tool: "x", arguments: {}, state: "awaiting_parent", response: null }];
-    const cancelled = await chatTestReport(reportHost([visitRow("check", 1, { state: "pending" })], waiting), { ...BENCH, expect: { outcome: "cancelled" } },
+    const cancelled = await definitionTestReport(reportHost([visitRow("check", 1, { state: "pending" })], waiting), { ...BENCH, expect: { outcome: "cancelled" } },
         runOf({ status: "cancelled", terminalOutcome: null, terminalNodeId: null, terminalError: { code: "cancelled", message: "TEST_UNANSWERED: no prepared answer for the tool call x in step check." } }));
     assert.equal(cancelled.status, "failed");
 });
@@ -381,13 +381,13 @@ test("G4: the tool declares expect (bounded); a bad expect is refused before any
         assert.equal(refused.error.code, "WORKFLOW_COMMAND_INVALID", JSON.stringify(expect));
         assert.match(refused.error.message, /^expect must be a terminal state id or an outcome/);
     }
-    // The bench's creation config keeps it; chatTestBench reads it (and none when it has none).
+    // The bench's creation config keeps it; definitionTestBench reads it (and none when it has none).
     const catalog = config => ({ getSession: async id => ({ sessionId: id, parentSessionId: "chat", deletedAt: null, serviceKind: WORKFLOW_TEST_BENCH_KIND }),
         getSessionCreationConfig: async () => config });
-    const store = { chat: { readDefinition: async () => ({ name: "watch" }) } };
-    assert.deepEqual((await chatTestBench({ catalog: catalog({ agentTest: { definitionId: "def-1", revision: 1, expect: { state: "rejected" } } }), store }, "chat", "b"))
+    const store = { sessionDefinitions: { readDefinition: async () => ({ name: "watch" }) } };
+    assert.deepEqual((await definitionTestBench({ catalog: catalog({ agentTest: { definitionId: "def-1", revision: 1, expect: { state: "rejected" } } }), store }, "chat", "b"))
         .expect, { state: "rejected" });
-    assert.equal((await chatTestBench({ catalog: catalog({ agentTest: { definitionId: "def-1", revision: 1 } }), store }, "chat", "b")).expect, null);
+    assert.equal((await definitionTestBench({ catalog: catalog({ agentTest: { definitionId: "def-1", revision: 1 } }), store }, "chat", "b")).expect, null);
 });
 
 test("RLR-F6: a test bench's expect (and revision) is part of its creation: a replay with another is WORKFLOW_EXISTS before anything is stored", async () => {
@@ -473,7 +473,7 @@ test("G5: each step says the step and route it came by, its branch (a named bran
         visitRow("judge", 1, { nodeType: "agent", predecessorId: items, arrivalRoute: "joined", outcome: "again", resultKind: "business" }),
         visitRow("judge", 2, { nodeType: "agent", predecessorId: "nx-judge-1", arrivalRoute: "again" }),
     ];
-    const report = await chatTestReport({ store: { listNodeExecutions: async () => nodes, listInterceptions: async () => [],
+    const report = await definitionTestReport({ store: { listNodeExecutions: async () => nodes, listInterceptions: async () => [],
         readRevisionIr: async () => compiled.ir } }, BENCH, runOf({ status: "running", finishedAt: null }));
     const step = (id, visit = 1) => report.path.find(item => item.step === id && item.visit === visit);
     assert.equal(Object.hasOwn(step("views"), "enteredBy"), false, "the first step came from nowhere");
@@ -485,7 +485,7 @@ test("G5: each step says the step and route it came by, its branch (a named bran
     assert.ok(step("q").input.length === 161 && step("q").input.startsWith('{"text":"aaa') && step("q").input.endsWith("…"), step("q").input);
     assert.equal(Object.hasOwn(step("c"), "input"), false, "no input, no preview");
     // Without the revision (it cannot be read), a branch is still named by its index.
-    const blind = await chatTestReport(reportHost(nodes, []), BENCH, runOf({ status: "running", finishedAt: null }));
+    const blind = await definitionTestReport(reportHost(nodes, []), BENCH, runOf({ status: "running", finishedAt: null }));
     assert.deepEqual(blind.path.filter(item => item.branch).map(item => item.branch), ["item 1", "item 2", "item 2"]);
 });
 
@@ -494,7 +494,7 @@ test("G5: an unanswered call's fixture skeleton is exact: parsed and matched, it
     const input = { round: 2, notes: ["x"] };
     const judge = visitRow("judge", 2, { nodeType: "agent", state: "pending", input, inputSha256: sha(canonicalJson(input)) });
     const waiting = [{ interceptionId: "i-1", nodeExecutionId: judge.nodeExecutionId, operation: "agent", tool: null, arguments: null, state: "awaiting_parent", response: null }];
-    const report = await chatTestReport({ store: { listNodeExecutions: async () => [judge], listInterceptions: async () => waiting,
+    const report = await definitionTestReport({ store: { listNodeExecutions: async () => [judge], listInterceptions: async () => waiting,
         readRevisionIr: async () => compiled.ir } }, BENCH,
     runOf({ status: "cancelled", terminalOutcome: null, terminalNodeId: null, terminalError: { code: "cancelled", message: "TEST_UNANSWERED: no prepared answer for the agent step judge. x" } }));
     const skeleton = report.unanswered.fixture;
@@ -505,14 +505,14 @@ test("G5: an unanswered call's fixture skeleton is exact: parsed and matched, it
     assert.equal(matchTestFixture([parsed], effect(2)), parsed, "it answers the call it was made for");
     assert.equal(matchTestFixture([parsed], effect(1)), null, "and not another visit");
     // A tool call's skeleton carries the call's arguments (its script's visit only past the first); a large input is left out.
-    assert.deepEqual(chatTestFixtureSkeleton({ operation: "tool.call", tool: "read_build", arguments: { id: 1 } }, { nodeId: "poll", ordinal: 1, input: null }),
+    assert.deepEqual(definitionTestFixtureSkeleton({ operation: "tool.call", tool: "read_build", arguments: { id: 1 } }, { nodeId: "poll", ordinal: 1, input: null }),
         { operation: "tool.call", tool: "read_build", arguments: { id: 1 }, response: { kind: "success", value: "<what the tool returns>" } });
-    assert.equal(Object.hasOwn(chatTestFixtureSkeleton({ operation: "send" }, { nodeId: "s", ordinal: 1, input: { big: "y".repeat(3_000) } }), "arguments"), false);
-    assert.deepEqual(chatTestFixtureSkeleton({ operation: "request" }, { nodeId: "ask", ordinal: 3, input: null }).response.value,
+    assert.equal(Object.hasOwn(definitionTestFixtureSkeleton({ operation: "send" }, { nodeId: "s", ordinal: 1, input: { big: "y".repeat(3_000) } }), "arguments"), false);
+    assert.deepEqual(definitionTestFixtureSkeleton({ operation: "request" }, { nodeId: "ask", ordinal: 3, input: null }).response.value,
         { response: "<the answer, as its contract's response schema says>" });
 });
 
-// ─── What the chat reads: the tool, the guidance, the skills, the service's words ───
+// ─── What the session reads: the tool, the guidance, the skills, the service's words ───
 
 // As the skill loader reads it (skills.ts: a Windows checkout's CRLF line ends are LF).
 const skillText = name => fs.readFileSync(new URL(`../../plugins/workflow/skills/${name}/SKILL.md`, import.meta.url), "utf8").replace(/\r\n/g, "\n");

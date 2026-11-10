@@ -117,10 +117,10 @@ test("the seam stops at chat's floor instead of inflating the stored width", asy
     expect(pinned.canvas - released.canvas, "the canvas gives back width on the first drag back").toBeGreaterThan(50);
 });
 
-// of-03 on a chat: with the right block at the grid's cap (the session list keeps its width), chat is still a few pixels
-// over its floor. Neither a drag nor the arrow keys on the chat seam may grow the canvas over Diagnostics: the block cannot
+// of-03 on a session: with the right block at the grid's cap (the session list keeps its width), session is still a few pixels
+// over its floor. Neither a drag nor the arrow keys on the session seam may grow the canvas over Diagnostics: the block cannot
 // grow, so nothing moves, and Diagnostics keeps its width (it used to lose 16px a key, down to 0px).
-test("of-03: at the right block's cap, the chat seam does not grow the canvas over Diagnostics", async ({ page }) => {
+test("of-03: at the right block's cap, the session seam does not grow the canvas over Diagnostics", async ({ page }) => {
     await page.setViewportSize({ width: 1600, height: 900 });
     await page.goto(base);
     await page.locator(".ps-session-list-button").first().waitFor();

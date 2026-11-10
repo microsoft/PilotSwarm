@@ -8,7 +8,7 @@
  * - It is checked against the starter's catalog: a model it cannot use refuses the start, naming the node and the model.
  * - Stored as canonical JSON with the run; read back without throwing; the request digest is unchanged without one.
  * - Run again reuses the map of the Workflow it repeats unless the request gives its own (an empty map: none).
- * - At spawn: a chosen model wins; an unset node inherits model, reasoning effort AND context tier from its chat; a chosen
+ * - At spawn: a chosen model wins; an unset node inherits model, reasoning effort AND context tier from its session; a chosen
  *   model that cannot be resolved fails the node in words (no fallback), and another failure is not dressed up.
  * - The definition tool and spawn_workflow refuse a malformed map before anything is read or saved.
  *
@@ -27,7 +27,7 @@ import { PilotSwarmClient } from "../../dist/client.js";
 import { PilotSwarmManagementClient } from "../../dist/management-client.js";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { createWorkflowAgentNodeHost } from "../../dist/workflow/agent-host.js";
-import { startAgentModelsOf } from "../../dist/workflow/chat-definitions.js";
+import { startAgentModelsOf } from "../../dist/workflow/session-definitions.js";
 import { workflowDefinitionFromTool } from "../../dist/workflow/definition-tool.js";
 import { spawnWorkflowFromTool } from "../../dist/workflow/spawn.js";
 import { workflowCommandStatus } from "../../dist/workflow/human-commands.js";
@@ -113,18 +113,18 @@ test("checked against exactly the revision started: an unknown id or a node that
     assert.ok(named.diagnostics.some(item => item.code === "WORKFLOW_FIELD_UNKNOWN"), JSON.stringify(named.diagnostics));
 });
 
-test("checked against the owning chat's catalog: a model it cannot use refuses the start; a host without a checker refuses any map", async () => {
+test("checked against the owning session's catalog: a model it cannot use refuses the start; a host without a checker refuses any map", async () => {
     // Fail closed: no checker, no map (nothing without a map is refused).
     await requireUsableAgentModels(null, undefined, null);
     await assert.rejects(requireUsableAgentModels({ classify: { model: "a:b" } }, undefined, null),
-        error => error.code === "AGENT_MODEL_UNAVAILABLE" && error.message === "This host cannot check models against the owning chat's catalog, "
-            + "so it takes no agentModels. Leave them out so every agent node uses the chat's model.");
+        error => error.code === "AGENT_MODEL_UNAVAILABLE" && error.message === "This host cannot check models against the owning session's catalog, "
+            + "so it takes no agentModels. Leave them out so every agent node uses the session's model.");
     const asked = [];
     const check = async (choice, owner) => { asked.push([choice.model, owner?.subject ?? null]); return choice.model === "a:gone" ? "no provider serves it." : null; };
     await requireUsableAgentModels({ classify: { model: "a:b", reasoningEffort: "high" } }, check, { provider: "p", subject: "alice" });
     await assert.rejects(requireUsableAgentModels({ classify: { model: "a:b" }, review: { model: "a:gone", contextTier: "long_context" } }, check, null),
         error => error.code === "AGENT_MODEL_UNAVAILABLE" && error.message === "The model chosen for review, a:gone · long context, cannot be used "
-            + "with the owning chat's catalog: no provider serves it. Choose one from list_available_models, or leave the node out so it uses the chat's model.");
+            + "with the owning session's catalog: no provider serves it. Choose one from list_available_models, or leave the node out so it uses the session's model.");
     assert.deepEqual(asked, [["a:b", "alice"], ["a:b", null], ["a:gone", null]]);
 });
 
@@ -151,7 +151,7 @@ test("stored as canonical JSON with the run, read back without throwing; the dig
     assert.equal(workflowAgentModelWords({ model: "a:b" }), "a:b");
     assert.equal(workflowChosenModelsWords({ classify: { model: "azure-openai:gpt-5.6-terra", reasoningEffort: "low", contextTier: "long_context" },
         review: { model: "a:b" } }), "Agent nodes with a model chosen at start: classify: azure-openai:gpt-5.6-terra · low · long context; review: a:b; "
-        + "the others use this chat's model. ");
+        + "the others use this session's model. ");
     assert.equal(workflowChosenModelsWords(null), "");
 });
 
@@ -166,7 +166,7 @@ test("Run again reuses the map of the Workflow it repeats, unless the request gi
     assert.equal(await startAgentModelsOf({ store: untouchable("store") }, {}), null, "a start that is not Run again reads nothing");
 });
 
-/** An agent host over fake rows: chat P (model, effort, tier), Workflow W under it; createChild records or throws. */
+/** An agent host over fake rows: session P (model, effort, tier), Workflow W under it; createChild records or throws. */
 function agentHost(createChild) {
     const sessions = {
         P: { parentSessionId: null, owner: { provider: "test", subject: "alice" }, model: "azure:chat-model", reasoningEffort: "medium", contextTier: "long_context" },
@@ -186,9 +186,9 @@ const spawnRequest = (fields = {}) => ({
     deadlineAt: "2026-11-07T08:00:00.000Z", ...fields,
 });
 
-test("at spawn: an unset node inherits model, reasoning effort AND context tier from its chat; a chosen model wins, whole", async () => {
+test("at spawn: an unset node inherits model, reasoning effort AND context tier from its session; a chosen model wins, whole", async () => {
     const inherited = agentHost();
-    // Review OF7-R8: the spawn says what the visit's chat runs on, from its session row once made (none here: no row).
+    // Review OF7-R8: the spawn says what the visit's session runs on, from its session row once made (none here: no row).
     assert.deepEqual(await inherited.host.spawn(spawnRequest()), { spawned: true });
     assert.deepEqual([inherited.created[0].model, inherited.created[0].reasoningEffort, inherited.created[0].contextTier],
         ["azure:chat-model", "medium", "long_context"]);
@@ -196,10 +196,10 @@ test("at spawn: an unset node inherits model, reasoning effort AND context tier 
     await chosen.host.spawn(spawnRequest({ agentModel: { model: "anthropic:fast", reasoningEffort: "low" } }));
     assert.equal(chosen.created[0].model, "anthropic:fast");
     assert.equal(chosen.created[0].reasoningEffort, "low");
-    assert.equal(chosen.created[0].contextTier, undefined, "a choice without a tier takes the model's default, not the chat's");
+    assert.equal(chosen.created[0].contextTier, undefined, "a choice without a tier takes the model's default, not the session's");
 });
 
-test("review OF7-R8: a spawn reports what the visit's chat runs on, from its session row, and whether the start chose it", async () => {
+test("review OF7-R8: a spawn reports what the visit's session runs on, from its session row, and whether the start chose it", async () => {
     const rows = {
         P: { parentSessionId: null, owner: { provider: "test", subject: "alice" }, model: "azure:chat-model", reasoningEffort: "medium", contextTier: null },
         W: { parentSessionId: "P", owner: null, sessionKind: "workflow" },
@@ -211,7 +211,7 @@ test("review OF7-R8: a spawn reports what the visit's chat runs on, from its ses
         createChild: async spec => { rows[spec.sessionId] = { parentSessionId: "W", model: spec.model, reasoningEffort: spec.reasoningEffort ?? null, contextTier: "default" }; },
     });
     assert.deepEqual(await host.spawn(spawnRequest({ childSessionId: "c-1" })),
-        { spawned: true, used: { model: "azure:chat-model", reasoningEffort: "medium", contextTier: "default", source: "chat" } });
+        { spawned: true, used: { model: "azure:chat-model", reasoningEffort: "medium", contextTier: "default", source: "session" } });
     assert.deepEqual(await host.spawn(spawnRequest({ childSessionId: "c-2", agentModel: { model: "anthropic:fast", reasoningEffort: "low" } })),
         { spawned: true, used: { model: "anthropic:fast", reasoningEffort: "low", contextTier: "default", source: "start" } });
 });
@@ -252,7 +252,7 @@ test("at spawn: a chosen model that cannot be resolved fails the node in words (
     assert.deepEqual(answer, { refused: { code: "unavailable", message: "Node classify cannot start its agent: the model chosen at start, anthropic:gone · default context, "
         + "cannot be used now: Model 'anthropic:gone' is not in your catalog." } });
     assert.equal(unresolved.created.length, 1, "one try; nothing else is created");
-    // Without a choice the chat's model failing is not this rule's: it throws as before.
+    // Without a choice the session's model failing is not this rule's: it throws as before.
     const plain = agentHost(async () => { throw Object.assign(new Error("Model gone"), { code: "MODEL_UNRESOLVED" }); });
     await assert.rejects(plain.host.spawn(spawnRequest()), /Model gone/);
     const other = agentHost(async () => { throw Object.assign(new Error("database away"), { code: "ECONNRESET" }); });
@@ -305,16 +305,16 @@ test("review D3: run commands, test_advance, test_respond and recover refuse age
     }
 });
 
-test("review D7: a spawn says chosen at start only when the chat runs the chosen model; else it is the chat's", async () => {
+test("review D7: a spawn says chosen at start only when the session runs the chosen model; else it is the session's", async () => {
     const rows = {
         P: { parentSessionId: null, owner: { provider: "test", subject: "alice" }, model: "azure:chat-model" },
         W: { parentSessionId: "P", owner: null, sessionKind: "workflow" },
-        // A continued chat that was switched to another model since its first visit.
+        // A continued session that was switched to another model since its first visit.
         "c-1": { parentSessionId: "W", model: "azure:switched", reasoningEffort: null, contextTier: null },
     };
     const host = createWorkflowAgentNodeHost({ getSession: async id => rows[id] ?? null, resolveAgent: async () => null, createChild: async () => {} });
     assert.deepEqual((await host.spawn(spawnRequest({ childSessionId: "c-1", agentModel: { model: "anthropic:fast" } }))).used,
-        { model: "azure:switched", reasoningEffort: null, contextTier: null, source: "chat" });
+        { model: "azure:switched", reasoningEffort: null, contextTier: null, source: "session" });
 });
 
 /** A catalog with one model listing efforts and tiers, a shared provider and one only the system may use. */
@@ -336,7 +336,7 @@ test("review D6, OF7-R6: the worker's check resolves as the spawn does (never th
     const check = PilotSwarmClient.prototype._workflowAgentModelCheck.call(fake);
     const SYSTEM = { provider: "system", subject: "workflows" };
     assert.equal(await check({ model: "team:listed", reasoningEffort: "high", contextTier: "long_context" }, SYSTEM), null);
-    // Only the system may use sysonly; a node's chat is created as its owner (createSession), so it is refused here too.
+    // Only the system may use sysonly; a node's session is created as its owner (createSession), so it is refused here too.
     assert.match(await check({ model: "sysonly:listed" }, SYSTEM), /No usable provider serves model|cannot run model|sysonly/);
     assert.match(await check({ model: "team:listed", reasoningEffort: "max" }, SYSTEM), /does not offer reasoning effort 'max' \(it offers low, high\)/);
     // Without a model catalog it cannot check, so it refuses.

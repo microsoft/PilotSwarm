@@ -1,7 +1,7 @@
 /**
- * A workflow agent node chat's base instructions (owner feedback 2026-11-06, finding 8, "show the base prompts"): the
+ * A workflow agent node session's base instructions (owner feedback 2026-11-06, finding 8, "show the base prompts"): the
  * SDK's echo of the composed system prompt is recognised, its whole text is named by its sha256 and kept once per
- * distinct text as an artifact of its Workflow's session, so two visits (two chats, or one continued chat at two turns)
+ * distinct text as an artifact of its Workflow's session, so two visits (two sessions, or one continued session at two turns)
  * with the same instructions share one artifact; another text gets its own. The transcript keeps only the summary
  * (session-proxy summarizeSdkSystemPromptEchoEvent), which names where the whole text is.
  *
@@ -55,7 +55,7 @@ test("two visits with the same instructions share one artifact; another text get
     const workflow = `wf-${randomUUID()}`;
     const s = store();
     const ref = workflowBaseInstructionsRef(workflow, TEXT);
-    // Visit 1's chat and visit 2's chat (chat: new), or one continued chat at two turns: the same ref, one write.
+    // Visit 1's session and visit 2's session (session: new), or one continued session at two turns: the same ref, one write.
     assert.equal(await keepWorkflowBaseInstructions(s, ref, TEXT), true);
     assert.equal(await keepWorkflowBaseInstructions(s, workflowBaseInstructionsRef(workflow, TEXT), TEXT), false);
     assert.deepEqual(s.uploads, [{ sessionId: workflow, filename: ref.artifact, contentType: "text/markdown" }]);

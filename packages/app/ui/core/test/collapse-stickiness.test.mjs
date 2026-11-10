@@ -138,7 +138,7 @@ const OTHER_KID = { sessionId: "other-kid", title: "other child", parentSessionI
 const visibleIds = state => state.sessions.flat.map(entry => entry.sessionId);
 
 test("a FIRST child of the session you are looking at shows at once; a background row's still starts collapsed (flow-02)", () => {
-    // With no stored preference (the defaults) and with one: the chat being looked at starts a workflow, another chat a sub-agent.
+    // With no stored preference (the defaults) and with one: the session being looked at starts a workflow, another session a sub-agent.
     for (const stored of [null, [], ["other"]]) {
         let state = createInitialState({ mode: "web" });
         if (stored) state = appReducer(state, { type: "profileSettings/apply", settings: { collapsedSessionIds: stored } });
@@ -146,8 +146,8 @@ test("a FIRST child of the session you are looking at shows at once; a backgroun
         state = appReducer(state, { type: "sessions/selected", sessionId: "parent" });
         state = appReducer(state, { type: "sessions/loaded", sessions: [PARENT, OTHER, CHILD, OTHER_KID] });
         const label = JSON.stringify(stored);
-        assert.ok(!collapsed(state).includes("parent"), `the chat being looked at hid its new child (${label})`);
-        assert.ok(collapsed(state).includes("other"), `a background chat's new child spilled open (${label})`);
+        assert.ok(!collapsed(state).includes("parent"), `the session being looked at hid its new child (${label})`);
+        assert.ok(collapsed(state).includes("other"), `a background session's new child spilled open (${label})`);
         assert.ok(visibleIds(state).includes("kid") && !visibleIds(state).includes("other-kid"), `${label}: ${visibleIds(state)}`);
         // Later listings keep it open: the defaults are not re-applied over it.
         state = appReducer(state, { type: "sessions/loaded", sessions: [PARENT, OTHER, { ...CHILD, updatedAt: 400 }, OTHER_KID] });

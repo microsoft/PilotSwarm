@@ -20,28 +20,28 @@ describe("profile receipts (FU-20)", () => {
         await catalog.initialize();
         try {
             const principal = { provider: "test", subject: `receipts-${randomUUID()}` };
-            const chat = randomUUID();
+            const session = randomUUID();
             const other = randomUUID();
-            await catalog.createSession(chat, { owner: principal });
+            await catalog.createSession(session, { owner: principal });
             await catalog.createSession(other, { owner: principal });
             // Both devices read this.
-            const first = { themeId: "dark", canvasPrefs: { [chat]: { optedOut: false, lastViewedRev: 1, lastViewedDataRev: 0, lastViewedWorkflowAt: 1_000 } } };
+            const first = { themeId: "dark", canvasPrefs: { [session]: { optedOut: false, lastViewedRev: 1, lastViewedDataRev: 0, lastViewedWorkflowAt: 1_000 } } };
             await catalog.setUserProfileSettings(principal, first);
-            // Device A sees a failure (and a canvas revision) and saves; it also has an entry for another chat.
+            // Device A sees a failure (and a canvas revision) and saves; it also has an entry for another session.
             await catalog.setUserProfileSettings(principal, { themeId: "dark", canvasPrefs: {
-                [chat]: { optedOut: false, lastViewedRev: 4, lastViewedDataRev: 2, lastViewedWorkflowAt: 5_000 },
+                [session]: { optedOut: false, lastViewedRev: 4, lastViewedDataRev: 2, lastViewedWorkflowAt: 5_000 },
                 [other]: { optedOut: false, lastViewedRev: 3, lastViewedDataRev: 0 },
             } });
             // Device B, which read `first`, saves its whole profile with a new theme.
             const saved = await catalog.setUserProfileSettings(principal, { ...first, themeId: "light" });
             expect(saved.profileSettings.themeId).toBe("light");
-            expect(saved.profileSettings.canvasPrefs[chat]).toEqual({ optedOut: false, lastViewedRev: 4, lastViewedDataRev: 2, lastViewedWorkflowAt: 5_000 });
+            expect(saved.profileSettings.canvasPrefs[session]).toEqual({ optedOut: false, lastViewedRev: 4, lastViewedDataRev: 2, lastViewedWorkflowAt: 5_000 });
             expect(saved.profileSettings.canvasPrefs[other]).toEqual({ optedOut: false, lastViewedRev: 3, lastViewedDataRev: 0 });
-            // Once the other chat is deleted, a save that leaves its entry out drops it.
+            // Once the other session is deleted, a save that leaves its entry out drops it.
             await catalog.softDeleteSession(other);
             const after = await catalog.setUserProfileSettings(principal, { ...first, themeId: "light" });
             expect(after.profileSettings.canvasPrefs[other]).toBeUndefined();
-            expect(after.profileSettings.canvasPrefs[chat].lastViewedWorkflowAt).toBe(5_000);
+            expect(after.profileSettings.canvasPrefs[session].lastViewedWorkflowAt).toBe(5_000);
             // A write without canvasPrefs is stored as written (an older client).
             const plain = await catalog.setUserProfileSettings(principal, { themeId: "plain" });
             expect(plain.profileSettings).toEqual({ themeId: "plain" });

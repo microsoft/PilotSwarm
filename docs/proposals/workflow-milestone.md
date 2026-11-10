@@ -3,7 +3,7 @@
 > **As built (2026-11-10, owner decision: Workflow was deployed nowhere, so its versions and migrations were
 > collapsed).** Each Workflow orchestration has one version: `workflow-controller` 1.0.0 is the controller this
 > document calls 1.9.0 (the request controller); `workflow-effect`, `-notify` and `-send` 1.0.0 are its tagged
-> 1.1.0 orchestrations; `workflow-request`, `-agent` and `-chat-end` stay 1.0.0. Controller 1.8.0, the pre-release
+> 1.1.0 orchestrations; `workflow-request`, `-agent` and `-agent-session-end` stay 1.0.0. Controller 1.8.0, the pre-release
 > controllers 1.0.0 to 1.7.0, the untagged orchestrations and activities, and the `workflowRequests` and
 > `WorkflowHost.requests` switches are gone: every activity is `workflow.<name>` with the workflow-request tag.
 > The CMS migrations this document numbers 0088 to 0111 are one migration, 0088 (`migrations/workflow-0088.ts`), which
@@ -15,7 +15,7 @@ Status: **live** with session orchestration 1.0.83. Every worker registers
 the controller and the orchestrations it starts, and every new run starts at
 the one controller version (see the note above). The durable recipient intake ships switched off: no
 worker sets the `workflowIntake` capability, so a Workflow's messages to a
-chat use the session queue. The names
+session use the session queue. The names
 of the two workflow turn tools stay reserved, so packages and capabilities
 cannot export them ("The agent tools on a turn of a 1.9.0 worker" below).
 
@@ -133,7 +133,7 @@ review:
   Field errors leave the state pending (`OUTPUT_INVALID`, with
   `attemptsLeft`); the third invalid completion fails it `invalid_output`.
   A valid one decides the state (winner `agent`) and wakes the controller.
-  Final chat text never completes a state.
+  Final reply text never completes a state.
 - **Deadline and end.** Only the controller's elapse decides `timed_out`.
   When the controller collects an agent state's result it ends the child:
   `done` after the agent's own completion, `cancel` after anything else.
@@ -141,7 +141,7 @@ review:
   are ended too. The end is recorded once and sent while the child's
   session runs; a spawn that created the child after the end found no
   session sends it again.
-- **Child chat (R23).** `read_workflow` shows each agent state's
+- **Child session (R23).** `read_workflow` shows each agent state's
   `agent.childSessionId`, the session a click on the state opens, and its
   lifecycle (spawned, end, end sent).
 
@@ -722,7 +722,7 @@ the same agent child, branch, stop, test and pin fields. The shared UI
 
 - **Agent states.** The node shows its agent (name, package and version, or
   an inline prompt), outcomes and deadline, and, once its child exists, the
-  child session with a button that opens its actual chat (read-only for
+  child session with a button that opens its actual session (read-only for
   people; R23). The node text says that only the typed result completes
   the state.
 - **Parallel states.** The graph draws an edge from the parallel state to its
@@ -764,7 +764,7 @@ the same agent child, branch, stop, test and pin fields. The shared UI
   (nothing sent), a 409's reason and the re-read, and Pause by keyboard,
   at 1440 and 390 px; an unconfirmed pause sent again with the same
   operation id; the virtual clock's local refusal and one exact advance;
-  an agent state's read-only chat beside an ordinary one at 1440 and 390
+  an agent state's read-only session beside an ordinary one at 1440 and 390
   px; a failed access check that says so, with Retry (q18); a lost draft
   save kept and retried as the same `replace_definition`. They need a
   browser runtime; whether they ran is in the run receipts, not here.
@@ -1037,7 +1037,7 @@ Unfulfilled requirements (open, not waived; R26):
   virtual clock advances.
 
 **The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed
-state, read-only child chats"; T115).** On a workflow session, `w` (outside
+state, read-only child sessions"; T115).** On a workflow session, `w` (outside
 the prompt) opens it: the same projection the portal's workflow pane draws
 (`projectWorkflow`, or the legacy node views; `workflow-tui.js`), from the
 same reads (`ensureWorkflowDefinition`, which also reads the read model,
@@ -1050,7 +1050,7 @@ route, where a parallel state's branches start, and a transition inside a
 loop marked as one), the result of one visit (below), and for an agent
 state the child session of each occurrence, newest first. ↑↓ select a
 state, ←→ choose the run it shows, Tab chooses an occurrence, Enter opens
-that occurrence's actual chat (`loadSession`, as the portal's node details
+that occurrence's actual session (`loadSession`, as the portal's node details
 open it) and Esc closes. The runs are the portal's run picker options (the
 live run, then the workflow's runs; `workflowRunPickerModel`, now in
 ui-core and re-exported unchanged by the portal's panels), with the same
@@ -1669,7 +1669,7 @@ blocked (fenced), not migrated.
 
 The owner answered the open questions about the controls the design's mocks show. Deferred, with today's behaviour kept:
 no tests required before publishing, no second confirmation in the web publish review, no cancel of one step or
-request (Cancel acts on the whole workflow and asks first), no "go to the parent's chat" button (the session list
+request (Cancel acts on the whole workflow and asks first), no "go to the parent's session" button (the session list
 serves), no typed input into a running test, and no display of lineage, receipts or trusted senders. Built so far:
 
 - **The confirm box is a dialog (q17).** Every web confirm has the dialog role, is marked modal, is named by its title
@@ -1748,10 +1748,10 @@ serves), no typed input into a running test, and no display of lineage, receipts
 - **Send a test answer through the parent agent (q12, mock M18).** In a test run, a held call that waits for an
   answer offers "Ask the parent agent" in the portal's held-call list, and the answer form offers "Send to the parent
   agent instead" (the TUI's answer form: ctrl-p). Either sends an ordinary message to the workflow's parent session's
-  chat (`askWorkflowParent`, `workflowHeldCallQuestion`): which workflow and test run, which held call in which
+  session (`askWorkflowParent`, `workflowHeldCallQuestion`): which workflow and test run, which held call in which
   step, the answer the person suggests (from the form, checked as for sending it), and, for the agent, the exact
   `update_workflow` `test_respond` call that would give that answer. The parent decides and answers with its own tool;
-  nothing is sent to the test run, and people still cannot write to a step's own chat. Offered only for a workflow
+  nothing is sent to the test run, and people still cannot write to a step's own session. Offered only for a workflow
   with a parent session; the parent's own input rule still applies, and the server decides. The same helper
   (`workflowAskParentMessage`) serves the other "ask the parent agent" texts.
 - **Activity, why it ended, and the sessions under a step (q14, mocks M09, M14).** The portal's workflow view shows,
@@ -1761,10 +1761,10 @@ serves), no typed input into a running test, and no display of lineage, receipts
   session asked; a deleted workflow says so; a stopped run says its reason, who asked and how many steps the grace
   period cut off; a failed run gives its runtime error. A step's details say why its latest visit ended (its time
   limit, the run's cancel, stop or time limit, another branch's failure, its outcome, or a runtime error with its
-  message) and how its agent chat ended (`workflowVisitEnding`), with "Activity of this visit". An agent step lists
-  "Sessions under this step": every session its chat started, as loaded here, with its status and an "Open
+  message) and how its agent session ended (`workflowVisitEnding`), with "Activity of this visit". An agent step lists
+  "Sessions under this step": every session its session started, as loaded here, with its status and an "Open
   (read-only)" button (`workflowSessionSubtree`). The TUI shows the same in the details (the run's line, the visit's
-  line, the visit's last six events, and the sessions under the chosen chat, up to eight). Only what the events and
+  line, the visit's last six events, and the sessions under the chosen session, up to eight). Only what the events and
   the read record is shown: a response that arrives after its request timed out is not recorded as an event, so it is
   not listed.
 - **Branch results, and asking the parent agent about a step (q16, mocks M22 to M24).** A parallel step's details
@@ -1778,7 +1778,7 @@ serves), no typed input into a running test, and no display of lineage, receipts
   a workflow are written into its graph (a `request` to the parent, a route back to an earlier step); the authoring
   skill's section 12 says how. No control re-runs a finished step inside a live run: that would need a new runtime
   operation and a change to the formal model.
-- **The parent chat when a run ends (preview finding on d72dfadf).** A live run's end reaches its parent agent as one
+- **The parent session when a run ends (preview finding on d72dfadf).** A live run's end reaches its parent agent as one
   system message (`notifyParent`, `workflowParentNotification`). It used to say only that untrusted output
   arrived; gpt-5.6-terra (reasoning effort none) answered it with nothing, the Copilot CLI reported "No response was
   returned", and the session retried the same message twice (15 s, 30 s) before giving up, about 30k input tokens a

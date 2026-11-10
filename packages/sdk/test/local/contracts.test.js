@@ -711,7 +711,7 @@ async function testGenericSessionsInheritFrameworkDefaultToolNames(env) {
 
 // ─── Test: LLM Sees Exact Always-On Toolset ─────────────────────
 
-// Workflows on demand (owner 2026-11-08T16:55Z; ef41ef20): a new chat on a 1.0.83 turn, on a worker with durable
+// Workflows on demand (owner 2026-11-08T16:55Z; ef41ef20): a new session on a 1.0.83 turn, on a worker with durable
 // capability storage and no Workflow of its own, has Workflows off. It is declared enable_workflows in place of the
 // Workflow tools (spawn_workflow is declared nowhere since then), and its prompt carries the short paragraph, not the
 // guidance. The eval compares the model's list with the live metadata, which carries the CLI's own tools (bash, list_bash,
@@ -770,10 +770,10 @@ async function testLlmSeesExactAlwaysOnTools(env) {
             );
         }
         for (const toolName of EXPECTED_WORKFLOWS_OFF_TOOL_NAMES) {
-            assert(metadata1.includes(toolName), `a new chat with Workflows off should be declared ${toolName}`);
+            assert(metadata1.includes(toolName), `a new session with Workflows off should be declared ${toolName}`);
         }
         for (const toolName of WORKFLOW_TOOL_NAMES_ABSENT_WHILE_OFF) {
-            assert(!metadata1.includes(toolName), `a new chat with Workflows off should not be declared ${toolName}`);
+            assert(!metadata1.includes(toolName), `a new session with Workflows off should not be declared ${toolName}`);
         }
         assertEqual(
             JSON.stringify(canonicalizeToolNames(parseToolNameArray(response1))),

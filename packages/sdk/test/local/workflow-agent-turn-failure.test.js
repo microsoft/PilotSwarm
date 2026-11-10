@@ -1,16 +1,16 @@
 /**
- * PR 270 (owner decision): the report of a Workflow agent chat's failed turn (workflow/agent-turn-failure.ts) on
- * the Workflow controller with a test-double host (as workflow-agent-node.test.js and workflow-simplified-chat-continue.test.js).
- * The report is the activity session orchestration 1.0.83 makes when a turn of the chat fails for good; here the test
+ * PR 270 (owner decision): the report of a Workflow agent session's failed turn (workflow/agent-turn-failure.ts) on
+ * the Workflow controller with a test-double host (as workflow-agent-node.test.js and workflow-simplified-session-continue.test.js).
+ * The report is the activity session orchestration 1.0.83 makes when a turn of the session fails for good; here the test
  * calls it as that activity does (reportWorkflowAgentTurnFailure over the store and the durable client).
  *
- * - A visit's own chat (session: new) whose turn failed: the visit fails execution_failed (winner controller) long before
- *   its deadline, the controller is woken, its failure route runs and the chat is cancelled (formal WfAgent
+ * - A visit's own session (session: new) whose turn failed: the visit fails execution_failed (winner controller) long before
+ *   its deadline, the controller is woken, its failure route runs and the session is cancelled (formal WfAgent
  *   ChildFailsTerminally, ReportDecide; fix.agent-fail-decided). A repeated report decides nothing more (Inv_DecidedOnce).
  * - A late report, after the agent's own completion decided the visit, is a no-op (fix.agent-fail-safety).
- * - A continued chat (session: continue): the report decides only the visit its turn worked on (the visit its prompt
- *   names); the next visit goes to the same chat (no replacement), a stale report of the decided visit and a report that
- *   names no visit leave it pending, and it completes normally (WfContinuedChat TurnFails, ReportDecide own visit;
+ * - A continued session (session: continue): the report decides only the visit its turn worked on (the visit its prompt
+ *   names); the next visit goes to the same session (no replacement), a stale report of the decided visit and a report that
+ *   names no visit leave it pending, and it completes normally (WfContinuedSession TurnFails, ReportDecide own visit;
  *   fault.cc-report-binds-newest is what a report that bound the newest visit would do).
  *
  * The child sessions are test doubles (orchestrations that record their queues); turn Stops are recorded by a spy on the
@@ -25,7 +25,7 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { createWorkflow } from "../../src/workflow/service.ts";
 import { completeWorkflowNodeFromTool } from "../../src/workflow/agent-node-service.ts";
 import {
-    registerWorkflow, sessionQueueTransport, workflowAgentChatSessionId, workflowAgentChildSessionId, workflowAgentClientMessageId,
+    registerWorkflow, sessionQueueTransport, workflowAgentSessionId, workflowAgentChildSessionId, workflowAgentClientMessageId,
 } from "../../src/workflow/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { reportWorkflowAgentTurnFailure } from "../../src/workflow/agent-turn-failure.ts";
@@ -72,8 +72,8 @@ states:
   failed: { type: terminal, outcome: failed, output: "\${runtime.error}" }
 `;
 
-/** One agent state that continues its chat, visited again after its execution_failed (its own route) or on `again`. */
-const CHAT_YAML = `
+/** One agent state that continues its session, visited again after its execution_failed (its own route) or on `again`. */
+const SESSION_YAML = `
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: chatter, version: "1.0.0" }
@@ -102,7 +102,7 @@ function* recordingChild(ctx) {
     }
 }
 
-/** A worker-equivalent registration: a host double that creates a chat once and gives it each visit's prompt; a Stop spy. */
+/** A worker-equivalent registration: a host double that creates a session once and gives it each visit's prompt; a Stop spy. */
 async function harness(env) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
@@ -156,7 +156,7 @@ async function harness(env) {
     await runtime.start();
     return {
         catalog, store, client, spawns, stops, host: { catalog, store, duroxideClient: client },
-        /** The report, as the activity makes it for chat `sessionId`'s failed turn whose prompt ids are `clientMessageIds`. */
+        /** The report, as the activity makes it for session `sessionId`'s failed turn whose prompt ids are `clientMessageIds`. */
         report: (sessionId, clientMessageIds) => reportWorkflowAgentTurnFailure({ store, client }, { sessionId, clientMessageIds, cause: CAUSE }),
         async stop() {
             await runtime.shutdown(100);
@@ -183,17 +183,17 @@ const spawnedVisit = async (h, n) => {
     await until(async () => (await h.store.readAgentInvocation(request.nodeExecutionId))?.spawnedAt ?? null, `the spawn of visit ${n}`);
     return request;
 };
-async function messagesOf(h, chat) {
-    const status = await h.client.getStatus(`session-${chat}`);
+async function messagesOf(h, agentSession) {
+    const status = await h.client.getStatus(`session-${agentSession}`);
     return typeof status.customStatus === "string" && status.customStatus ? JSON.parse(status.customStatus) : [];
 }
-const commandsOf = async (h, chat) => (await messagesOf(h, chat)).filter(message => message?.type === "cmd");
-const completeAs = (h, chat, args) => completeWorkflowNodeFromTool(args, { callerSessionId: chat, store: h.store, client: h.client }).then(JSON.parse);
+const commandsOf = async (h, agentSession) => (await messagesOf(h, agentSession)).filter(message => message?.type === "cmd");
+const completeAs = (h, agentSession, args) => completeWorkflowNodeFromTool(args, { callerSessionId: agentSession, store: h.store, client: h.client }).then(JSON.parse);
 const eventsOf = async (h, workflowSessionId, type) => (await h.catalog.getSessionEvents(workflowSessionId, 0, 500))
     .filter(event => event.eventType === type).map(event => event.data);
 
-describe("a Workflow agent chat's failed turn decides its visit (PR 270)", () => {
-    it("a visit's own chat: the visit fails execution_failed before its deadline, the failure route runs and the chat is cancelled; a repeat decides nothing", { timeout: TIMEOUT }, async () => {
+describe("a Workflow agent session's failed turn decides its visit (PR 270)", () => {
+    it("a visit's own session: the visit fails execution_failed before its deadline, the failure route runs and the session is cancelled; a repeat decides nothing", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             const run = await started(h, REVIEW_YAML);
@@ -212,8 +212,8 @@ describe("a Workflow agent chat's failed turn decides its visit (PR 270)", () =>
             expect(nodes.map(node => [node.nodeId, node.outcome, node.winner])).toEqual([["review", "execution_failed", "controller"], ["failed", "failed", "controller"]]);
             expect(nodes[0]).toMatchObject({ resultKind: "runtime_error", error: { code: "execution_failed" } });
             expect(nodes[0].error.message).toContain("exceeded token rate limit");
-            // Inv_EndMatchesWinner: not the agent's own completion, so the chat is cancelled.
-            const [command] = await until(async () => { const cmds = await commandsOf(h, spawn.childSessionId); return cmds.length ? cmds : null; }, "the chat's end");
+            // Inv_EndMatchesWinner: not the agent's own completion, so the session is cancelled.
+            const [command] = await until(async () => { const cmds = await commandsOf(h, spawn.childSessionId); return cmds.length ? cmds : null; }, "the session's end");
             expect(command).toMatchObject({ type: "cmd", cmd: "cancel", id: `workflow-agent-end:${nodeExecutionId}`, requestedBy: run.workflowSessionId });
             expect(await eventsOf(h, run.workflowSessionId, "workflow.state_failed")).toContainEqual(expect.objectContaining({
                 nodeExecutionId, outcome: "execution_failed", childSessionId: spawn.childSessionId, cause: "agent_turn_failed",
@@ -222,7 +222,7 @@ describe("a Workflow agent chat's failed turn decides its visit (PR 270)", () =>
             // Inv_DecidedOnce: a repeated (or retried) report finds the visit decided and changes nothing.
             expect(await h.report(spawn.childSessionId, [spawn.clientMessageId])).toEqual({ decided: [], reason: "already_decided" });
             expect(await h.store.readNodeExecution(nodeExecutionId)).toMatchObject({ outcome: "execution_failed", winner: "controller" });
-            // A session that is no agent state's chat: nothing to decide.
+            // A session that is no agent state's session: nothing to decide.
             expect(await h.report(randomUUID(), [])).toEqual({ decided: [], reason: "not_a_step" });
         } finally {
             await h.stop();
@@ -239,41 +239,41 @@ describe("a Workflow agent chat's failed turn decides its visit (PR 270)", () =>
             expect(await h.report(spawn.childSessionId, [spawn.clientMessageId])).toEqual({ decided: [], reason: "already_decided" });
             expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded", terminalOutput: { verdict: "ok" } });
             expect(await h.store.readNodeExecution(spawn.nodeExecutionId)).toMatchObject({ outcome: "accepted", winner: "agent" });
-            const [command] = await until(async () => { const cmds = await commandsOf(h, spawn.childSessionId); return cmds.length ? cmds : null; }, "the chat's end");
+            const [command] = await until(async () => { const cmds = await commandsOf(h, spawn.childSessionId); return cmds.length ? cmds : null; }, "the session's end");
             expect(command).toMatchObject({ cmd: "done" });
         } finally {
             await h.stop();
         }
     });
 
-    it("a continued chat: the report decides only its own visit; the next visit reuses the chat and is untouched by a stale report", { timeout: TIMEOUT }, async () => {
+    it("a continued session: the report decides only its own visit; the next visit reuses the session and is untouched by a stale report", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const run = await started(h, CHAT_YAML);
-            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const run = await started(h, SESSION_YAML);
+            const agentSession = workflowAgentSessionId(run.runId, "talk");
             const first = await spawnedVisit(h, 1);
-            expect(first.childSessionId).toBe(chat);
+            expect(first.childSessionId).toBe(agentSession);
 
             // The first visit's turn failed for good: its visit fails execution_failed, and its own route visits the state again.
-            expect(await h.report(chat, [first.clientMessageId])).toEqual({ decided: [first.nodeExecutionId], reason: "decided" });
+            expect(await h.report(agentSession, [first.clientMessageId])).toEqual({ decided: [first.nodeExecutionId], reason: "decided" });
             const second = await spawnedVisit(h, 2);
             expect(await h.store.readNodeExecution(first.nodeExecutionId)).toMatchObject({ outcome: "execution_failed", winner: "controller" });
-            // The visit is ended by its turn's Stop, never the chat; the next visit goes to the SAME chat (no replacement).
-            expect(h.stops).toContainEqual(expect.objectContaining({ sessionId: chat, kind: "stop", requestId: `workflow-cycle-stop:${first.nodeExecutionId}` }));
-            expect(second.childSessionId).toBe(chat);
+            // The visit is ended by its turn's Stop, never the session; the next visit goes to the SAME session (no replacement).
+            expect(h.stops).toContainEqual(expect.objectContaining({ sessionId: agentSession, kind: "stop", requestId: `workflow-cycle-stop:${first.nodeExecutionId}` }));
+            expect(second.childSessionId).toBe(agentSession);
             expect(second.prompt).toMatch(/^\[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE 2\./);
-            expect(await eventsOf(h, run.workflowSessionId, "workflow.agent_chat_restarted")).toEqual([]);
-            expect(await commandsOf(h, chat)).toEqual([]);
+            expect(await eventsOf(h, run.workflowSessionId, "workflow.agent_session_restarted")).toEqual([]);
+            expect(await commandsOf(h, agentSession)).toEqual([]);
             expect(JSON.parse(second.prompt.split("\n")[1])).toMatchObject({ previousResult: { outcome: "execution_failed", resultKind: "runtime_error" } });
 
             // A stale report of the first visit, and a report whose turn names no visit (no recorded prompt names one here),
-            // leave the open second visit pending: a report never binds to the chat's newest visit.
-            expect(await h.report(chat, [first.clientMessageId])).toEqual({ decided: [], reason: "already_decided" });
-            expect(await h.report(chat, [])).toEqual({ decided: [], reason: "no_visit" });
+            // leave the open second visit pending: a report never binds to the session's newest visit.
+            expect(await h.report(agentSession, [first.clientMessageId])).toEqual({ decided: [], reason: "already_decided" });
+            expect(await h.report(agentSession, [])).toEqual({ decided: [], reason: "no_visit" });
             expect(await h.store.readNodeExecution(second.nodeExecutionId)).toMatchObject({ state: "pending" });
 
-            // The chat recovered: the second visit completes normally.
-            expect(await completeAs(h, chat, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
+            // The session recovered: the second visit completes normally.
+            expect(await completeAs(h, agentSession, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
                 .toMatchObject({ ok: true, outcome: "finish" });
             expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
             expect(h.spawns).toHaveLength(2);

@@ -2,7 +2,7 @@
  * A JSON Schema problem (Ajv's ErrorObject) in plain words: one clause that names the place and says what is wrong, with
  * no JSON and no parameter object, e.g. "model is required", "sessions needs at least 6 items", "items 1 and 2 of
  * sessions are the same", "topic needs at least 3 characters", "count must be a number". The one formatter for every
- * place a workflow schema problem is shown or returned: a Start that is refused (the Start dialog and the chat's
+ * place a workflow schema problem is shown or returned: a Start that is refused (the Start dialog and the session's
  * workflow_definition answer), a node's input or output that does not match, a response, a compiler diagnostic. No full
  * stop, as Ajv's own messages: callers join several with "; " and end the sentence.
  *

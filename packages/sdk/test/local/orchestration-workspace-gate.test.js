@@ -174,7 +174,7 @@ async function latestHandler() {
     return mod[`durableSessionOrchestration_${DURABLE_SESSION_LATEST_VERSION.replace(/\./g, "_")}`];
 }
 
-/** The frozen 1.0.82 handler: a live 1.0.82 chat replays on it until its next continue-as-new. */
+/** The frozen 1.0.82 handler: a live 1.0.82 session replays on it until its next continue-as-new. */
 async function frozenHandler() {
     const { durableSessionOrchestration_1_0_82: fn } = await import("../../src/orchestration_1_0_82/index.ts");
     return fn;

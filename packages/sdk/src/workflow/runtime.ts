@@ -66,7 +66,7 @@ import {
     workflowTestNoticePrompt, type WorkflowTestFixture,
 } from "./test-mode.js";
 import { randomUUID } from "node:crypto";
-import { workflowAgentChildSessionId, workflowAgentChatSessionId, workflowAgentChatContinues } from "./agent-ids.js";
+import { workflowAgentChildSessionId, workflowAgentSessionId, workflowAgentSessionContinues } from "./agent-ids.js";
 import { readStoredAgentModels, type WorkflowAgentModelChoice } from "./agent-models.js";
 import {
     ACTIVE_RUN_STATUSES,
@@ -255,8 +255,8 @@ export const WORKFLOW_ACTIVITIES = {
     agentSpawnFailed: "workflow.agentSpawnFailed",
     endAgent: "workflow.endAgent",
     endAgents: "workflow.endAgents",
-    endOwedChat: "workflow.endOwedChat",
-    endOwedChatLast: "workflow.endOwedChatLast",
+    endOwedAgentSession: "workflow.endOwedAgentSession",
+    endOwedAgentSessionLast: "workflow.endOwedAgentSessionLast",
     endBranch: "workflow.endBranch",
     cancelBranches: "workflow.cancelBranches",
     join: "workflow.join",
@@ -297,8 +297,8 @@ export function workflowAgentInstanceId(nodeExecutionId: string): string {
     return `wfa-${nodeExecutionId}`;
 }
 
-// The ids of agent chats (a visit's own, or one a state continues across its visits) are derived in agent-ids.ts.
-export { workflowAgentChildSessionId, workflowAgentChatSessionId, workflowAgentChatContinues };
+// The ids of agent sessions (a visit's own, or one a state continues across its visits) are derived in agent-ids.ts.
+export { workflowAgentChildSessionId, workflowAgentSessionId, workflowAgentSessionContinues };
 
 /** The client message id of an agent state's first prompt to its child, the same at every spawn attempt. */
 export function workflowAgentClientMessageId(workflowSessionId: string, runId: string, nodeExecutionId: string): string {
@@ -1965,11 +1965,11 @@ export function intakeCapableVersion(version: string | null | undefined): boolea
 }
 
 /** What a person reads when a request's responder still runs a session orchestration before the intake version. */
-export const WORKFLOW_PREVIOUS_VERSION_RESPONDER_WORDS = "This chat still runs the previous version and moves to the new one after its next "
+export const WORKFLOW_PREVIOUS_VERSION_RESPONDER_WORDS = "This session still runs the previous version and moves to the new one after its next "
     + "turn: send it a message, then start the Workflow again.";
 
 /**
- * Why a live responder cannot answer a request: one observed at a well-formed version before the intake version (a chat
+ * Why a live responder cannot answer a request: one observed at a well-formed version before the intake version (a session
  * still on the previous session orchestration) is told what to do instead; any other (no version read, or no response tool)
  * gets the requirement.
  */
@@ -1997,8 +1997,8 @@ const ENDED_SESSION_STATUSES: readonly string[] = ["NotFound", "Completed", "Fai
 export interface WorkflowRuntimeDeps {
     store: WorkflowStore;
     /**
-     * The session catalog. With turnControlAdd (a worker's), a visit of a state that continues its chat has its running
-     * turn stopped when the visit is decided (chat: continue; formal Q2); without it, the turn runs on and only binding
+     * The session catalog. With turnControlAdd (a worker's), a visit of a state that continues its session has its running
+     * turn stopped when the visit is decided (session: continue; formal Q2); without it, the turn runs on and only binding
      * by node execution id keeps its late answer from deciding the next visit.
      */
     catalog: Pick<SessionCatalog, "getSession" | "getSessionEvents"> & Partial<Pick<SessionCatalog, "turnControlAdd">>;
@@ -2016,7 +2016,7 @@ export interface WorkflowRuntimeDeps {
     authorizeParentNotification: (sessionId: string, parentSessionId: string) => Promise<boolean>;
     /**
      * Queue a message for the parent session. `{ delivered: false }` says the parent's session had already ended, so
-     * nothing was queued (adversarial review WFO-3); with `notStarted: true`, that its session has not started yet (a chat
+     * nothing was queued (adversarial review WFO-3); with `notStarted: true`, that its session has not started yet (a session
      * made without a first message; deployed check DS-2). Anything else is a delivery.
      */
     notifyParent: (parentSessionId: string, prompt: string, sender: { kind: "system"; display: string }, clientMessageId?: string)
@@ -2082,7 +2082,7 @@ export interface WorkflowAgentSpawnRequest {
     deadlineAt: string;
     /**
      * OF-S2-7: the model chosen at start for this node (the run's agent models, migration 0088); absent or null: the node
-     * inherits the owning chat's model, reasoning effort and context tier.
+     * inherits the owning session's model, reasoning effort and context tier.
      */
     agentModel?: WorkflowAgentModelChoice | null;
 }
@@ -2096,14 +2096,14 @@ export interface WorkflowAgentSpawnRequest {
  * throws, and the attempt is tried again.
  */
 /**
- * OF-S2-7 review OF7-R8: what a visit's agent chat runs on, read from its session row right after its spawn: its model,
- * reasoning effort and context tier, and whether the model was chosen at start ("start") or is the chat's ("chat").
+ * OF-S2-7 review OF7-R8: what a visit's agent session runs on, read from its session row right after its spawn: its model,
+ * reasoning effort and context tier, and whether the model was chosen at start ("start") or is the session's ("session").
  */
 export interface WorkflowAgentModelUsed {
     model: string;
     reasoningEffort: string | null;
     contextTier: string | null;
-    source: "start" | "chat";
+    source: "start" | "session";
 }
 
 export interface WorkflowAgentNodeHost {
@@ -2434,8 +2434,8 @@ export function describeWorkflowState(node: WorkflowIRNode): { [key: string]: Js
                     ...(node.invoke.agent.interface !== undefined
                         ? { interface: `${node.invoke.agent.interface.name}@${node.invoke.agent.interface.version}` } : {}) },
             timeoutSeconds: workflowBindingView(node.timeoutSeconds), outcomes: node.outcomes, next: node.next,
-            // Owner decision agent-node-continue-20261106: only a state that continues its chat says so.
-            ...(node.chat === "continue" ? { chat: "continue" } : {}),
+            // Owner decision agent-node-continue-20261106: only a state that continues its session says so.
+            ...(node.session === "continue" ? { session: "continue" } : {}),
             // FU-17: only a state that limits its tools says which ([] for none).
             ...(node.tools !== undefined ? { tools: [...node.tools] } : {}),
         };
@@ -2488,7 +2488,7 @@ export function describeWorkflowStates(ir: WorkflowIR): Array<{ [key: string]: J
 export interface WorkflowAgentEndClient {
     getStatus(instanceId: string): Promise<{ status: string }>;
     enqueueEvent(instanceId: string, queueName: string, data: string): Promise<void>;
-    /** Starts a continued chat's detached end retry (formal t3); absent on a client that cannot (a test double). */
+    /** Starts a continued session's detached end retry (formal t3); absent on a client that cannot (a test double). */
     startOrchestrationVersioned?(instanceId: string, orchestrationName: string, input: unknown, version: string): Promise<void>;
 }
 
@@ -2558,8 +2558,8 @@ export async function endWorkflowAgentChild(store: WorkflowStore, client: Workfl
     if (!node || node.nodeType !== "agent" || node.state !== "completed") return null;
     const { invocation } = await store.recordAgentEnd(nodeExecutionId, node.winner === "agent" ? "done" : "cancel");
     const end = invocation.endRequested ?? (node.winner === "agent" ? "done" : "cancel");
-    // chat: continue (owner decision agent-node-continue-20261106): a visit's end is not its chat's.
-    if (workflowAgentChatContinues(invocation)) return endContinuedVisit(store, client, invocation, node, end, options);
+    // session: continue (owner decision agent-node-continue-20261106): a visit's end is not its session's.
+    if (workflowAgentSessionContinues(invocation)) return endContinuedVisit(store, client, invocation, node, end, options);
     // A spawn that created the child after an end found no session sends the end again (afterSpawn), and only then: an end
     // already sent to a child that existed is never sent again (verification of WFO-2).
     if (invocation.endSentAt !== null && !(options.afterSpawn === true && invocation.endChildStatus === "NotFound")) return { end, sent: false };
@@ -2614,10 +2614,10 @@ export async function endWorkflowRunAgents(store: WorkflowStore, client: Workflo
         for (const invocation of page) {
             // WFO-2: an end marked sent when the child did not exist yet, after a spawn attempt began, is sent again: the
             // attempt may have created the child since (its record failed, so nothing else ends it).
-            // A continued chat's owed end is on its newest visit, whose own attempts may be none (RT-1): the list returns it only
-            // when one of the chat's visits began an attempt.
+            // A continued session's owed end is on its newest visit, whose own attempts may be none (RT-1): the list returns it only
+            // when one of the session's visits began an attempt.
             const recheck = invocation.endSentAt !== null && invocation.endChildStatus === "NotFound"
-                && (invocation.spawnAttempts > 0 || workflowAgentChatContinues(invocation));
+                && (invocation.spawnAttempts > 0 || workflowAgentSessionContinues(invocation));
             if (invocation.endSentAt !== null && !recheck) continue;
             try {
                 await endWorkflowAgentChild(store, client, invocation.nodeExecutionId, { ...(recheck ? { afterSpawn: true } : {}),
@@ -2641,13 +2641,13 @@ export async function endWorkflowRunAgents(store: WorkflowStore, client: Workflo
 
 /**
  * A run's end for its agent children (the controller's endAgents and a recover): the owed ends of its visits' own
- * children, exactly as before continue mode (endWorkflowRunAgents), then the chats that continued across its states'
- * visits (endWorkflowContinuedChats; owner decision agent-node-continue-20261106). A run with no `chat: continue`
- * state finds no such chat there. `stopTurn` stops the running turn of a visit whose end is sent now (review G5).
+ * children, exactly as before continue mode (endWorkflowRunAgents), then the sessions that continued across its states'
+ * visits (endWorkflowContinuedSessions; owner decision agent-node-continue-20261106). A run with no `session: continue`
+ * state finds no such session there. `stopTurn` stops the running turn of a visit whose end is sent now (review G5).
  */
-export async function endWorkflowRunChats(store: WorkflowStore, client: WorkflowAgentEndClient, runId: string,
+export async function endWorkflowRunAgentSessions(store: WorkflowStore, client: WorkflowAgentEndClient, runId: string,
     options: { stopTurn?: WorkflowAgentTurnStop } = {}): Promise<void> {
-    // Review G3: the continued chats are looked at even when a visit's own child could not be ended; then the call fails.
+    // Review G3: the continued sessions are looked at even when a visit's own child could not be ended; then the call fails.
     const errors: unknown[] = [];
     try {
         await endWorkflowRunAgents(store, client, runId, options);
@@ -2655,7 +2655,7 @@ export async function endWorkflowRunChats(store: WorkflowStore, client: Workflow
         errors.push(error);
     }
     try {
-        await endWorkflowContinuedChats(store, client, runId);
+        await endWorkflowContinuedSessions(store, client, runId);
     } catch (error) {
         errors.push(error);
     }
@@ -2663,14 +2663,14 @@ export async function endWorkflowRunChats(store: WorkflowStore, client: Workflow
     if (errors.length > 1) throw new Error(errors.map(error => workflowErrorMessage(error)).join(" "));
 }
 
-/** The child status a continued chat's visit end is settled with: no command to the chat, which stays open for the next visit. */
-export const WORKFLOW_AGENT_CHAT_CONTINUES = "ChatContinues";
-/** The child status of a continued chat's last visit once the chat itself was ended (its run ended, or a stop left it idle). */
-export const WORKFLOW_AGENT_CHAT_ENDED = "ChatEnded";
+/** The child status a continued session's visit end is settled with: no command to the session, which stays open for the next visit. */
+export const WORKFLOW_AGENT_SESSION_CONTINUES = "AgentSessionContinues";
+/** The child status of a continued session's last visit once the session itself was ended (its run ended, or a stop left it idle). */
+export const WORKFLOW_AGENT_SESSION_ENDED = "AgentSessionEnded";
 
 /**
- * Stop a chat's running turn (not the chat): a turn control Stop with a stable request id, so a repeat is the same Stop
- * (formal Q2). A chat with no turn running has nothing to stop. Absent: this worker cannot stop turns (a test's).
+ * Stop a session's running turn (not the session): a turn control Stop with a stable request id, so a repeat is the same Stop
+ * (formal Q2). A session with no turn running has nothing to stop. Absent: this worker cannot stop turns (a test's).
  */
 export type WorkflowAgentTurnStop = (childSessionId: string, reason: string, requestId: string) => Promise<void>;
 
@@ -2690,16 +2690,16 @@ export function workflowTurnStopOf(catalog: Partial<Pick<SessionCatalog, "turnCo
 }
 
 /**
- * A decided visit of a state that continues its chat (chat: continue; owner decision agent-node-continue-20261106;
+ * A decided visit of a state that continues its session (session: continue; owner decision agent-node-continue-20261106;
  * formal Q2 and Q5; the turn-to-visit fence, review RT-1..RT-3):
  * - the visit's turn is stopped if it still runs (a time limit, a cancel of the visit or of the run, the run's end, or the
- *   agent's own result that its turn goes on after; review G5: also when the run is no longer active), never the chat. The Stop names the visit (its request id); the chat's
+ *   agent's own result that its turn goes on after; review G5: also when the run is no longer active), never the session. The Stop names the visit (its request id); the session's
  *   worker applies it only to a turn of that visit, so a later visit's turn is never stopped by it, and a turn of this
  *   visit that starts later does not run (its visit is decided: the fence checked at turn start). A spawn that sent the
  *   prompt after the visit was decided (a stale send) asks again (afterSpawn);
- * - the visit's end is settled without a command (WORKFLOW_AGENT_CHAT_CONTINUES): the chat stays open for the next visit;
- * - when the run is stopping or has ended, the chat gets no more visits and is ended now (endContinuedChat), whichever
- *   of its visits this is: an older visit's late send can be the one that finds the chat open (review RT-1, t2).
+ * - the visit's end is settled without a command (WORKFLOW_AGENT_SESSION_CONTINUES): the session stays open for the next visit;
+ * - when the run is stopping or has ended, the session gets no more visits and is ended now (endContinuedSession), whichever
+ *   of its visits this is: an older visit's late send can be the one that finds the session open (review RT-1, t2).
  */
 async function endContinuedVisit(store: WorkflowStore, client: WorkflowAgentEndClient, invocation: WorkflowAgentInvocation,
     node: WorkflowNodeExecutionRow, end: "done" | "cancel", options: { afterSpawn?: boolean; stopTurn?: WorkflowAgentTurnStop })
@@ -2714,120 +2714,120 @@ async function endContinuedVisit(store: WorkflowStore, client: WorkflowAgentEndC
         turnStopped = true;
     }
     if (invocation.endSentAt === null) {
-        const { marked } = await store.markAgentEndSent(invocation.nodeExecutionId, WORKFLOW_AGENT_CHAT_CONTINUES);
-        // After the run ended, the chat's own end (below) says it: no line that it stays open.
+        const { marked } = await store.markAgentEndSent(invocation.nodeExecutionId, WORKFLOW_AGENT_SESSION_CONTINUES);
+        // After the run ended, the session's own end (below) says it: no line that it stays open.
         if (marked && active) {
             await store.recordSessionEvents(invocation.workflowSessionId, [{ eventType: "workflow.agent_cycle_ended", data: {
                 runId: invocation.runId, nodeExecutionId: invocation.nodeExecutionId, stateId: node.nodeId, childSessionId: invocation.childSessionId,
-                end, outcome: node.outcome, turnStopped, chat: "continue",
+                end, outcome: node.outcome, turnStopped, session: "continue",
             } }]);
         }
     }
     if (run !== null && (!active || Boolean(run.stop))) {
-        const chatEnd = await endContinuedChat(store, client, run, invocation.childSessionId);
-        if (chatEnd !== null) return chatEnd;
+        const agentSessionEnd = await endContinuedSession(store, client, run, invocation.childSessionId);
+        if (agentSessionEnd !== null) return agentSessionEnd;
     }
     return { end, sent: false };
 }
 
 /**
- * End one continued chat (chat: continue): its run ended, or is stopping and the chat is idle (its newest visit is
- * decided; formal Q5: an idle chat is not started work). The end is the newest visit's ("done" when its agent completed
- * it, else "cancel"), sent while the chat's session runs, once (its newest visit is marked WORKFLOW_AGENT_CHAT_ENDED),
- * with a stable id per chat. A chat whose newest visit is still running is left to finish (a stopping run's started
+ * End one continued session (session: continue): its run ended, or is stopping and the session is idle (its newest visit is
+ * decided; formal Q5: an idle session is not started work). The end is the newest visit's ("done" when its agent completed
+ * it, else "cancel"), sent while the session runs, once (its newest visit is marked WORKFLOW_AGENT_SESSION_ENDED),
+ * with a stable id per session. A session whose newest visit is still running is left to finish (a stopping run's started
  * work); the run's end ends it. Null when nothing was ended now.
  *
- * Review RT-1: a chat with no session yet, when any of its visits began a spawn attempt (that attempt may still create
- * it), keeps its end owed: its newest visit is marked NotFound, as a chat: new child's is, so the after-spawn and
- * after-send checks of every visit, the run's cleanup and recovery look again and end it once it exists. ChatEnded is
- * marked only after the end was sent, or when no attempt began (nothing can create the chat later).
+ * Review RT-1: a session with no session yet, when any of its visits began a spawn attempt (that attempt may still create
+ * it), keeps its end owed: its newest visit is marked NotFound, as a session: new child's is, so the after-spawn and
+ * after-send checks of every visit, the run's cleanup and recovery look again and end it once it exists. AgentSessionEnded is
+ * marked only after the end was sent, or when no attempt began (nothing can create the session later).
  */
-async function endContinuedChat(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string)
+async function endContinuedSession(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string)
     : Promise<{ end: "done" | "cancel"; sent: boolean } | null> {
-    const looked = await lookAtContinuedChat(store, client, run, childSessionId);
+    const looked = await lookAtContinuedSession(store, client, run, childSessionId);
     return looked.busy ? null : looked.result;
 }
 
 /**
- * endContinuedChat's look, saying whether it ran (`busy`: another looker held the chat's end lock past the wait). One
+ * endContinuedSession's look, saying whether it ran (`busy`: another looker held the session's end lock past the wait). One
  * looker at a time sends the end (formal t3): the look, the command and its mark are one critical section. A looker that
  * finds another holding it looks again later (the end stays owed until the holder marks it).
  */
-async function lookAtContinuedChat(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string)
+async function lookAtContinuedSession(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string)
     : Promise<{ busy: true } | { busy: false; result: { end: "done" | "cancel"; sent: boolean } | null }> {
-    if (typeof store.withChatEndLock !== "function") return { busy: false, result: await endContinuedChatLocked(store, client, run, childSessionId) };
-    const held = await store.withChatEndLock(childSessionId, () => endContinuedChatLocked(store, client, run, childSessionId),
-        { waitMs: WORKFLOW_CHAT_END_LOCK_WAIT_MS, pollMs: 100 });
+    if (typeof store.withAgentSessionEndLock !== "function") return { busy: false, result: await endContinuedSessionLocked(store, client, run, childSessionId) };
+    const held = await store.withAgentSessionEndLock(childSessionId, () => endContinuedSessionLocked(store, client, run, childSessionId),
+        { waitMs: WORKFLOW_AGENT_SESSION_END_LOCK_WAIT_MS, pollMs: 100 });
     return held.locked ? { busy: false, result: held.value } : { busy: true };
 }
 
-/** How long a looker waits for a continued chat's end lock before it leaves the end to the holder and looks again later. */
-const WORKFLOW_CHAT_END_LOCK_WAIT_MS = 2_000;
+/** How long a looker waits for a continued session's end lock before it leaves the end to the holder and looks again later. */
+const WORKFLOW_AGENT_SESSION_END_LOCK_WAIT_MS = 2_000;
 
-async function endContinuedChatLocked(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string)
+async function endContinuedSessionLocked(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string)
     : Promise<{ end: "done" | "cancel"; sent: boolean } | null> {
     const last = await store.readAgentInvocationByChild(childSessionId);
-    if (!last || last.endChildStatus === WORKFLOW_AGENT_CHAT_ENDED) return null;
+    if (!last || last.endChildStatus === WORKFLOW_AGENT_SESSION_ENDED) return null;
     const node = await store.readNodeExecution(last.nodeExecutionId);
     if (!node || node.state !== "completed") return null;
     const end = node.winner === "agent" ? "done" : "cancel";
     const sessionInstance = `session-${childSessionId}`;
     const status = (await client.getStatus(sessionInstance)).status;
     const sent = status !== "NotFound" && !TERMINAL_ORCHESTRATION_STATUSES.includes(status);
-    if (status === "NotFound" && await store.chatHasSpawnAttempt(childSessionId)) {
+    if (status === "NotFound" && await store.sessionHasSpawnAttempt(childSessionId)) {
         // Not created yet, but an attempt may still create it: the end stays owed (RT-1).
         await store.recordAgentEnd(last.nodeExecutionId, end);
-        const { marked } = await store.markContinuedChatEnded(last.nodeExecutionId, "NotFound");
+        const { marked } = await store.markContinuedSessionEnded(last.nodeExecutionId, "NotFound");
         if (marked) {
             await store.recordSessionEvents(last.workflowSessionId, [{ eventType: "workflow.agent_ended", data: {
                 runId: run.runId, nodeExecutionId: last.nodeExecutionId, stateId: node.nodeId, childSessionId, end, outcome: node.outcome,
-                sent: false, childStatus: status, chat: "continue",
+                sent: false, childStatus: status, session: "continue",
             } }]);
         }
         return { end, sent: false };
     }
     if (sent) {
-        const why = ACTIVE_RUN_STATUSES.includes(run.status) ? "is stopping, so this chat gets no more cycles" : `ended (${run.status})`;
+        const why = ACTIVE_RUN_STATUSES.includes(run.status) ? "is stopping, so this session gets no more cycles" : `ended (${run.status})`;
         // G1 residual: the Workflow's own end is marked on the session too, before its command (session-end-mark.ts).
         await store.recordSessionEvents(childSessionId, [{ eventType: SESSION_END_REQUESTED_EVENT,
-            data: { cmd: end, id: `workflow-agent-chat-end:${childSessionId}`, requestedBy: last.workflowSessionId } }]);
+            data: { cmd: end, id: `workflow-agent-session-end:${childSessionId}`, requestedBy: last.workflowSessionId } }]);
         await client.enqueueEvent(sessionInstance, "messages", JSON.stringify({
-            type: "cmd", cmd: end, id: `workflow-agent-chat-end:${childSessionId}`, requestedBy: last.workflowSessionId,
-            args: { reason: `The workflow run this chat served ${why}.` },
+            type: "cmd", cmd: end, id: `workflow-agent-session-end:${childSessionId}`, requestedBy: last.workflowSessionId,
+            args: { reason: `The workflow run this session served ${why}.` },
         }));
     }
     await store.recordAgentEnd(last.nodeExecutionId, end);
-    const { marked } = await store.markContinuedChatEnded(last.nodeExecutionId, WORKFLOW_AGENT_CHAT_ENDED);
+    const { marked } = await store.markContinuedSessionEnded(last.nodeExecutionId, WORKFLOW_AGENT_SESSION_ENDED);
     if (marked) {
         await store.recordSessionEvents(last.workflowSessionId, [{ eventType: "workflow.agent_ended", data: {
             runId: run.runId, nodeExecutionId: last.nodeExecutionId, stateId: node.nodeId, childSessionId, end, outcome: node.outcome,
-            sent, childStatus: status, chat: "continue",
+            sent, childStatus: status, session: "continue",
         } }]);
     }
     return { end, sent };
 }
 
 /**
- * End the continued chats of a run (chat: continue; owner decision agent-node-continue-20261106): every one when the
- * run has ended; only the idle ones while it is stopping (formal Q5); none while it runs. Each chat once
- * (endContinuedChat), and each on its own (review G3): a chat that cannot be ended now does not keep the others from
+ * End the continued sessions of a run (session: continue; owner decision agent-node-continue-20261106): every one when the
+ * run has ended; only the idle ones while it is stopping (formal Q5); none while it runs. Each session once
+ * (endContinuedSession), and each on its own (review G3): a session that cannot be ended now does not keep the others from
  * being ended; the call fails after them, so its activity (or the next recover) looks at it again.
  */
-export async function endWorkflowContinuedChats(store: WorkflowStore, client: WorkflowAgentEndClient, runId: string): Promise<void> {
+export async function endWorkflowContinuedSessions(store: WorkflowStore, client: WorkflowAgentEndClient, runId: string): Promise<void> {
     const run = await store.readRun(runId);
     if (!run || (ACTIVE_RUN_STATUSES.includes(run.status) && !run.stop)) return;
-    const chats = new Set<string>();
+    const agentSessions = new Set<string>();
     for (const invocation of await store.listAgentInvocations(runId, 10_000)) {
-        if (workflowAgentChatContinues(invocation)) chats.add(invocation.childSessionId);
+        if (workflowAgentSessionContinues(invocation)) agentSessions.add(invocation.childSessionId);
     }
     const failed: string[] = [];
-    for (const childSessionId of chats) {
+    for (const childSessionId of agentSessions) {
         try {
-            await endContinuedChat(store, client, run, childSessionId);
-            // Formal t3 (1): a chat whose end is still owed (created but not visible yet, or not created yet by an attempt in
+            await endContinuedSession(store, client, run, childSessionId);
+            // Formal t3 (1): a session whose end is still owed (created but not visible yet, or not created yet by an attempt in
             // flight) is looked at again by a detached retry, so the run's own end, and its notice to the parent after it,
             // never wait for it.
-            if (await continuedChatEndOwed(store, childSessionId)) await startContinuedChatEndRetry(client, run, childSessionId);
+            if (await continuedSessionEndOwed(store, childSessionId)) await startContinuedSessionEndRetry(client, run, childSessionId);
         } catch (error) {
             failed.push(`${childSessionId} (${redactThenClip(workflowErrorMessage(error), 300)})`);
         }
@@ -2839,87 +2839,87 @@ export async function endWorkflowContinuedChats(store: WorkflowStore, client: Wo
 }
 
 /**
- * Whether a continued chat's end is owed (review RT-1, formal t2b and t3): its newest visit was marked NotFound (the chat
- * had no session when its end was due) and some visit of the chat began a spawn attempt, which may have created it or
- * may still. Not spawnedAt: an attempt that crashed between creating the chat and recording it leaves that empty.
+ * Whether a continued session's end is owed (review RT-1, formal t2b and t3): its newest visit was marked NotFound (the session
+ * had no session when its end was due) and some visit of the session began a spawn attempt, which may have created it or
+ * may still. Not spawnedAt: an attempt that crashed between creating the session and recording it leaves that empty.
  */
-async function continuedChatEndOwed(store: WorkflowStore, childSessionId: string): Promise<boolean> {
+async function continuedSessionEndOwed(store: WorkflowStore, childSessionId: string): Promise<boolean> {
     const last = await store.readAgentInvocationByChild(childSessionId);
-    if (!last || !workflowAgentChatContinues(last) || last.endChildStatus !== "NotFound") return false;
-    return store.chatHasSpawnAttempt(childSessionId);
+    if (!last || !workflowAgentSessionContinues(last) || last.endChildStatus !== "NotFound") return false;
+    return store.sessionHasSpawnAttempt(childSessionId);
 }
 
 /**
- * Look again at a continued chat whose end is owed, and send the end once its session is visible (endContinuedChat).
+ * Look again at a continued session whose end is owed, and send the end once its session is visible (endContinuedSession).
  * `retry`: still owed after the look, fail, so the calling activity's retry schedule looks again (the spawn's after-send
- * and decided paths, the detached cleanup retry); without it (the last look of a schedule) report it. A chat whose end is
- * not owed is left alone. Never creates a chat or sends a visit's prompt.
+ * and decided paths, the detached cleanup retry); without it (the last look of a schedule) report it. A session whose end is
+ * not owed is left alone. Never creates a session or sends a visit's prompt.
  */
-export async function endOwedContinuedChat(store: WorkflowStore, client: WorkflowAgentEndClient, childSessionId: string,
+export async function endOwedContinuedSession(store: WorkflowStore, client: WorkflowAgentEndClient, childSessionId: string,
     options: { retry: boolean }): Promise<"not_owed" | "ended" | "still_owed" | "held_elsewhere"> {
-    if (!(await continuedChatEndOwed(store, childSessionId))) return "not_owed";
+    if (!(await continuedSessionEndOwed(store, childSessionId))) return "not_owed";
     const last = await store.readAgentInvocationByChild(childSessionId);
     const run = last ? await store.readRun(last.runId) : null;
     if (!run) return "not_owed";
-    const looked = await lookAtContinuedChat(store, client, run, childSessionId);
-    if (!(await continuedChatEndOwed(store, childSessionId))) return "ended";
+    const looked = await lookAtContinuedSession(store, client, run, childSessionId);
+    if (!(await continuedSessionEndOwed(store, childSessionId))) return "ended";
     if (options.retry) {
         throw new Error(looked.busy
-            ? `Another look holds the end of chat ${childSessionId}; the next attempt looks again.`
-            : `The end of chat ${childSessionId} is owed and its session is not visible yet; the next attempt looks again.`);
+            ? `Another look holds the end of session ${childSessionId}; the next attempt looks again.`
+            : `The end of session ${childSessionId} is owed and its session is not visible yet; the next attempt looks again.`);
     }
-    // A last look that could not take the lock (review O2): the holder looks, and sends the end once the chat is visible.
+    // A last look that could not take the lock (review O2): the holder looks, and sends the end once the session is visible.
     return looked.busy ? "held_elsewhere" : "still_owed";
 }
 
-/** A continued chat's detached end retry: one live at a time per chat, each a stable instance id (its number). */
-export const WORKFLOW_CHAT_END_NAME = "workflow-chat-end";
-export const WORKFLOW_CHAT_END_VERSION = "1.0.0";
-/** The most detached end retries one chat gets (each a schedule of about half an hour); after them, a recover only looks. */
-export const WORKFLOW_CHAT_END_RETRIES_MAX = 50;
-/** The instance id of a chat's `n`-th detached end retry (the first is `wfc-<chat>`). */
-export function workflowChatEndInstanceId(childSessionId: string, n = 1): string {
+/** A continued session's detached end retry: one live at a time per session, each a stable instance id (its number). */
+export const WORKFLOW_AGENT_SESSION_END_NAME = "workflow-agent-session-end";
+export const WORKFLOW_AGENT_SESSION_END_VERSION = "1.0.0";
+/** The most detached end retries one session gets (each a schedule of about half an hour); after them, a recover only looks. */
+export const WORKFLOW_AGENT_SESSION_END_RETRIES_MAX = 50;
+/** The instance id of a session's `n`-th detached end retry (the first is `wfc-<session>`). */
+export function workflowAgentSessionEndInstanceId(childSessionId: string, n = 1): string {
     return n <= 1 ? `wfc-${childSessionId}` : `wfc-${childSessionId}-${n}`;
 }
 
 /**
- * Start a detached end retry of a continued chat (WORKFLOW_CHAT_END_NAME), one live at a time (review O1): when one
+ * Start a detached end retry of a continued session (WORKFLOW_AGENT_SESSION_END_NAME), one live at a time (review O1): when one
  * is still running, nothing; when every earlier one has ended (its schedule ran out) and the end is still owed, the next
  * number. A client that cannot start orchestrations (a test double) starts nothing. A failed start is reported, not
  * thrown: the run's end has looked once, and a recover looks again and starts the next.
  */
-async function startContinuedChatEndRetry(client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string): Promise<void> {
+async function startContinuedSessionEndRetry(client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string): Promise<void> {
     if (typeof client.startOrchestrationVersioned !== "function") return;
     try {
-        for (let n = 1; n <= WORKFLOW_CHAT_END_RETRIES_MAX; n += 1) {
-            const instanceId = workflowChatEndInstanceId(childSessionId, n);
+        for (let n = 1; n <= WORKFLOW_AGENT_SESSION_END_RETRIES_MAX; n += 1) {
+            const instanceId = workflowAgentSessionEndInstanceId(childSessionId, n);
             const status = (await client.getStatus(instanceId)).status;
             if (status === "NotFound") {
-                await client.startOrchestrationVersioned(instanceId, WORKFLOW_CHAT_END_NAME, { runId: run.runId, childSessionId },
-                    WORKFLOW_CHAT_END_VERSION);
+                await client.startOrchestrationVersioned(instanceId, WORKFLOW_AGENT_SESSION_END_NAME, { runId: run.runId, childSessionId },
+                    WORKFLOW_AGENT_SESSION_END_VERSION);
                 return;
             }
             if (!TERMINAL_ORCHESTRATION_STATUSES.includes(status)) return;
         }
-        console.warn(`[workflow] run=${run.runId} chat=${childSessionId}: its ${WORKFLOW_CHAT_END_RETRIES_MAX} end retries ran out; a recover only looks`);
+        console.warn(`[workflow] run=${run.runId} session=${childSessionId}: its ${WORKFLOW_AGENT_SESSION_END_RETRIES_MAX} end retries ran out; a recover only looks`);
     } catch (error) {
-        console.warn(`[workflow] run=${run.runId} chat=${childSessionId}: its end retry did not start: ${workflowErrorMessage(error)}`);
+        console.warn(`[workflow] run=${run.runId} session=${childSessionId}: its end retry did not start: ${workflowErrorMessage(error)}`);
     }
 }
 
 /**
- * A continued chat's detached end retry (formal t3): the run's cleanup found the chat's end owed. It looks again on the
+ * A continued session's detached end retry (formal t3): the run's cleanup found the session's end owed. It looks again on the
  * run-ending writes' schedule (persistentlyTagged: each attempt storeTagged's 5 tries 1-8 s apart, then
  * WORKFLOW_FINALIZE_DELAYS_MS, 1 s to 10 min; about half an hour in all), which outlasts a session's visibility delay
  * (its orchestration's first turn: one dispatcher poll and one turn, normally well under a second, longer while the
- * database is slow); then the last look reports a chat that never became visible.
+ * database is slow); then the last look reports a session that never became visible.
  */
-export function* workflowChatEnd(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
-    const input = record(rawInput, "chat end input");
+export function* workflowAgentSessionEnd(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
+    const input = record(rawInput, "session end input");
     try {
-        yield* persistentlyTagged(ctx, WORKFLOW_ACTIVITIES.endOwedChat, input);
+        yield* persistentlyTagged(ctx, WORKFLOW_ACTIVITIES.endOwedAgentSession, input);
     } catch {
-        yield* storeTagged(ctx, WORKFLOW_ACTIVITIES.endOwedChatLast, input);
+        yield* storeTagged(ctx, WORKFLOW_ACTIVITIES.endOwedAgentSessionLast, input);
     }
     return null;
 }
@@ -2931,8 +2931,8 @@ export function* workflowChatEnd(ctx: OrchestrationContext, rawInput: unknown): 
  * DX-5): getting a connection, the SQL calls and the send have no time limit of their own.
  */
 export const WORKFLOW_NOTICE_DELIVERY_WAIT_MS = 15_000;
-/** Deployed check DS-2: the skip reason of a run's end notice kept as a note for its parent chat's first turn. */
-export const WORKFLOW_NOTICE_KEPT_AS_NOTE = "the chat has not started yet; kept as a note for its first turn";
+/** Deployed check DS-2: the skip reason of a run's end notice kept as a note for its parent session's first turn. */
+export const WORKFLOW_NOTICE_KEPT_AS_NOTE = "the session has not started yet; kept as a note for its first turn";
 const WORKFLOW_NOTICE_DELIVERY_POLL_MS = 200;
 const WORKFLOW_NOTICE_DELIVERY_RECENT_SECONDS = 60;
 const WORKFLOW_NOTICE_DELIVERY_QUERY_MS = 2_000;
@@ -2959,7 +2959,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
     runtime.registerOrchestrationVersioned(WORKFLOW_SEND_NAME, WORKFLOW_SEND_VERSION, workflowSend);
     runtime.registerOrchestrationVersioned(WORKFLOW_REQUEST_NAME, WORKFLOW_REQUEST_VERSION, workflowRequestDelivery);
     runtime.registerOrchestrationVersioned(WORKFLOW_AGENT_NAME, WORKFLOW_AGENT_VERSION, workflowAgentSpawn);
-    runtime.registerOrchestrationVersioned(WORKFLOW_CHAT_END_NAME, WORKFLOW_CHAT_END_VERSION, workflowChatEnd);
+    runtime.registerOrchestrationVersioned(WORKFLOW_AGENT_SESSION_END_NAME, WORKFLOW_AGENT_SESSION_END_VERSION, workflowAgentSessionEnd);
     /** Each activity under its tagged name (WORKFLOW_ACTIVITIES). */
     const register = (key: WorkflowActivityKey, handler: (actx: ActivityContext, rawInput: unknown) => Promise<unknown>) => {
         runtime.registerActivity(WORKFLOW_ACTIVITIES[key], handler);
@@ -2997,18 +2997,18 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
      * ended by its spawn when it finds the state decided. A cancel ends the
      * child's own descendants too (its graceful shutdown cascades).
      */
-    const stopChatTurn = workflowTurnStopOf(deps.catalog);
+    const stopAgentSessionTurn = workflowTurnStopOf(deps.catalog);
     const endAgentChild = (client: WorkflowAgentEndClient, nodeExecutionId: string, options: { afterSpawn?: boolean } = {}) =>
-        endWorkflowAgentChild(store, client, nodeExecutionId, { ...options, ...(stopChatTurn ? { stopTurn: stopChatTurn } : {}) });
+        endWorkflowAgentChild(store, client, nodeExecutionId, { ...options, ...(stopAgentSessionTurn ? { stopTurn: stopAgentSessionTurn } : {}) });
     const endRunAgents = (client: WorkflowAgentEndClient, runId: string): Promise<void> =>
-        endWorkflowRunChats(store, client, runId, stopChatTurn ? { stopTurn: stopChatTurn } : {});
+        endWorkflowRunAgentSessions(store, client, runId, stopAgentSessionTurn ? { stopTurn: stopAgentSessionTurn } : {});
     /**
-     * A later visit of a state that continues its chat (chat: continue; owner decision agent-node-continue-20261106): null
+     * A later visit of a state that continues its session (session: continue; owner decision agent-node-continue-20261106): null
      * for the state's first visit in the run; for a later one, its number among the state's visits, the previous visit's
      * result, the variables now with the keys changed since the previous visit was admitted (both from the run's KV
-     * revisions), and the earlier chat when this visit's is a new one (the earlier chat ended on its own).
+     * revisions), and the earlier session when this visit's is a new one (the earlier session ended on its own).
      */
-    const agentChatCycle = async (runId: string, invocation: WorkflowAgentInvocation, node: WorkflowNodeExecutionRow)
+    const agentSessionCycle = async (runId: string, invocation: WorkflowAgentInvocation, node: WorkflowNodeExecutionRow)
         : Promise<WorkflowAgentCycle | null> => {
         // The visits before this one, counted, and the one right before it (review RT-5: no cap on a run's visits).
         const { count: earlier, previous: last } = await store.readAgentVisitsBefore(runId, node.nodeId, invocation.nodeExecutionId);
@@ -3033,27 +3033,27 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             previous: previous ? { outcome: previous.outcome, resultKind: previous.resultKind, output: previous.hasOutput ? previous.output : null,
                 error: previous.resultKind === "runtime_error" ? previous.error : null } : null,
             variables: now, changedVariables: changed,
-            endedChatSessionId: last.childSessionId !== invocation.childSessionId ? last.childSessionId : null,
+            endedSessionId: last.childSessionId !== invocation.childSessionId ? last.childSessionId : null,
         };
     };
     /**
-     * The chat a new visit of a state that continues its chat goes to (chat: continue; owner decision
-     * agent-node-continue-20261106; formal Q4), chosen at its admission and frozen in its invocation: the chat of the
-     * state's previous visit in this run while that chat goes on (or was never created); the state's first chat for its
-     * first visit; and, when the previous chat ended on its own (deleted, failed, or ended by a person), a new chat whose
+     * The session a new visit of a state that continues its session goes to (session: continue; owner decision
+     * agent-node-continue-20261106; formal Q4), chosen at its admission and frozen in its invocation: the session of the
+     * state's previous visit in this run while that session goes on (or was never created); the state's first session for its
+     * first visit; and, when the previous session ended on its own (deleted, failed, or ended by a person), a new session whose
      * id also names this visit's number among the state's visits, so it is derived too.
      */
-    const continuedChatOf = async (client: WorkflowAgentEndClient | null, runId: string, stateId: string): Promise<string> => {
+    const continuedSessionOf = async (client: WorkflowAgentEndClient | null, runId: string, stateId: string): Promise<string> => {
         const { count: visits, previous: last } = await store.readAgentVisitsBefore(runId, stateId, null);
-        if (!last || !workflowAgentChatContinues(last)) return workflowAgentChatSessionId(runId, stateId);
-        const ended = (await chatEndedOnItsOwn(client, last)) !== null;
-        return ended ? workflowAgentChatSessionId(runId, stateId, visits + 1) : last.childSessionId;
+        if (!last || !workflowAgentSessionContinues(last)) return workflowAgentSessionId(runId, stateId);
+        const ended = (await agentSessionEndedOnItsOwn(client, last)) !== null;
+        return ended ? workflowAgentSessionId(runId, stateId, visits + 1) : last.childSessionId;
     };
     /**
-     * How the chat of `last` (a visit of a state that continues its chat) ended on its own, or null while it goes on or
-     * was never created: deleted, or ended (its session orchestration ended, or is gone after the chat was created).
+     * How the session of `last` (a visit of a state that continues its session) ended on its own, or null while it goes on or
+     * was never created: deleted, or ended (its session orchestration ended, or is gone after the session was created).
      */
-    const chatEndedOnItsOwn = async (client: WorkflowAgentEndClient | null, last: WorkflowAgentInvocation): Promise<"deleted" | "ended" | null> => {
+    const agentSessionEndedOnItsOwn = async (client: WorkflowAgentEndClient | null, last: WorkflowAgentInvocation): Promise<"deleted" | "ended" | null> => {
         // Review DRR-1: a deleted row, or an end's mark, means the session was created (by this visit's spawn, perhaps one
         // that stopped before recording it), whatever spawnedAt and its orchestration say: the next visit does not reuse it.
         const gone = await agentSessionGone(last.childSessionId, { client, workflowSessionId: last.workflowSessionId });
@@ -3084,17 +3084,17 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         return "ended";
     };
     /**
-     * Review G1: whether the chat a later visit's admission chose (the chat of the state's previous visit) ended on its
-     * own since (chatEndedOnItsOwn); null for a visit whose chat is not its previous visit's.
+     * Review G1: whether the session a later visit's admission chose (the session of the state's previous visit) ended on its
+     * own since (agentSessionEndedOnItsOwn); null for a visit whose session is not its previous visit's.
      */
-    const continuedChatGone = async (client: WorkflowAgentEndClient, runId: string, stateId: string, invocation: WorkflowAgentInvocation)
+    const continuedSessionGone = async (client: WorkflowAgentEndClient, runId: string, stateId: string, invocation: WorkflowAgentInvocation)
         : Promise<"deleted" | "ended" | null> => {
         const { previous } = await store.readAgentVisitsBefore(runId, stateId, invocation.nodeExecutionId);
         if (!previous || previous.childSessionId !== invocation.childSessionId) return null;
-        return chatEndedOnItsOwn(client, previous);
+        return agentSessionEndedOnItsOwn(client, previous);
     };
     /**
-     * Review G2: end the earlier visits of `invocation`'s chat whose end is not sent yet (endAgentChild: their turn's Stop,
+     * Review G2: end the earlier visits of `invocation`'s session whose end is not sent yet (endAgentChild: their turn's Stop,
      * then the visit's end). A visit that cannot be ended yet throws, and so fails the calling attempt.
      */
     const endEarlierVisitsOf = async (client: WorkflowAgentEndClient, runId: string, invocation: WorkflowAgentInvocation): Promise<void> => {
@@ -3143,7 +3143,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
     const noticeTestInterception = async (run: WorkflowRunRow, interception: WorkflowTestInterception, stateId: string): Promise<void> => {
         const definition = await store.readDefinition(run.workflowSessionId);
         if (!definition?.parentSessionId) return;
-        // Stage 2.2: an agent's test never wakes the chat: its waiting calls are failed by the test itself (chat-test.ts).
+        // Stage 2.2: an agent's test never wakes the session: its waiting calls are failed by the test itself (definition-test.ts).
         if (isWorkflowTestBench(await deps.catalog.getSession(run.workflowSessionId).catch(() => null))) return;
         try {
             if (!await deps.authorizeParentNotification(run.workflowSessionId, definition.parentSessionId)) return;
@@ -3549,9 +3549,9 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                             : current.mode === "test" && current.testAgentMode === "real" ? agentPinOf(current.testAgentPins, nodeId)
                             : definition?.publishedRevision === current.revision ? agentPinOf(definition.publishedAgentPins, nodeId) : null;
                         agent = {
-                            // chat: continue keeps one chat per run and state across the state's visits (owner decision
+                            // session: continue keeps one session per run and state across the state's visits (owner decision
                             // agent-node-continue-20261106); otherwise each visit has its own child.
-                            childSessionId: node.chat === "continue" ? await continuedChatOf(actx.getClient() ?? null, current.runId, nodeId)
+                            childSessionId: node.session === "continue" ? await continuedSessionOf(actx.getClient() ?? null, current.runId, nodeId)
                                 : workflowAgentChildSessionId(nodeExecutionId),
                             controllingSessionId: definition?.parentSessionId ?? null,
                             task: "prompt" in node.invoke ? { source: "prompt", prompt: node.invoke.prompt }
@@ -3766,12 +3766,12 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         // Also the run's accepted stop, read after the results, so a stop accepted before this read reaches the controller
         // with them (it routes none of them then). A stop is never withdrawn.
         const run = await runOf(runId);
-        // chat: continue (formal Q5): a stopping run's idle continued chats are not started work; they are ended at once.
+        // session: continue (formal Q5): a stopping run's idle continued sessions are not started work; they are ended at once.
         if (ACTIVE_RUN_STATUSES.includes(run.status) && Boolean(run.stop)) {
             const client = typeof actx?.getClient === "function" ? actx.getClient() : null;
             if (client) {
-                await endWorkflowContinuedChats(store, client, runId).catch(error =>
-                    actx.traceWarn?.(`[workflow] run=${runId} an idle agent chat was not ended yet: ${workflowErrorMessage(error)}`));
+                await endWorkflowContinuedSessions(store, client, runId).catch(error =>
+                    actx.traceWarn?.(`[workflow] run=${runId} an idle agent session was not ended yet: ${workflowErrorMessage(error)}`));
             }
         }
         // And whether the run is past its deadline, by its own clock: only a run with one says so.
@@ -3904,7 +3904,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
     const retireEndedTests = async (run: WorkflowRunRow): Promise<void> => {
         if (run.mode !== "test") return;
         try {
-            await store.chat.retireTestsAfterEnd(run.workflowSessionId);
+            await store.sessionDefinitions.retireTestsAfterEnd(run.workflowSessionId);
         } catch {
             // Best effort: the next test's start or end retires them.
         }
@@ -3942,7 +3942,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
     register("observeEnd", async (actx, rawInput) => {
         const run = await runOf(text(record(rawInput, "observe end input").runId, "runId"));
         // Review R3-GR1: the end is the deletion's only when the deletion is what ended the run; a deletion after another
-        // end (a cancel, a done, the chat's end, the controller's own end retried after a crash) keeps that end's notice.
+        // end (a cancel, a done, the session's end, the controller's own end retried after a crash) keeps that end's notice.
         const linkDeleted = (await store.readSessionLink(run.workflowSessionId))?.deleted !== false;
         const deleted = linkDeleted && (ACTIVE_RUN_STATUSES.includes(run.status) || runEndedByDeletion(run));
         if (!ACTIVE_RUN_STATUSES.includes(run.status)) {
@@ -3992,12 +3992,12 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
      * are off" (the workflow's notify_parent is false) or "parent is gone"
      * (its authority to be told is no longer there). A run the parent
      * itself ended, and a workflow without a parent, record nothing.
-     * Deployed check DS-2: a parent chat whose session has not started yet
-     * (made without a first message) keeps the notice as a chat note, which
+     * Deployed check DS-2: a parent session whose session has not started yet
+     * (made without a first message) keeps the notice as a session note, which
      * its first turn reads (consumed with that turn's success, as a
      * person's save note); the skip says so
      * (WORKFLOW_NOTICE_KEPT_AS_NOTE). Its first turn is not started for
-     * it: a person's action never makes the chat take a turn on its own.
+     * it: a person's action never makes the session take a turn on its own.
      *
      * One attempt at a time per run (WFO-4): the read, the attempt marker,
      * the enqueue and the record run under the run's notice lock. An attempt
@@ -4129,12 +4129,12 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             const delivery = (await deps.notifyParent(parentSessionId, notice, workflowRuntimeSender("ended"), clientMessageId)) as
                 { delivered?: boolean; notStarted?: boolean } | undefined;
             // WFO-3: the parent's session had ended before the notice was queued: this attempt did not tell it.
-            // DS-2: a parent chat that has not started yet keeps it as a note for its first turn, once.
+            // DS-2: a parent session that has not started yet keeps it as a note for its first turn, once.
             if (delivery?.delivered === false) {
                 if (delivery.notStarted === true) {
                     // Review R3-PA1: the note and its skip record are one write, so a retry never tells the parent again.
-                    await store.keepNoticeAsNote({ ownerSessionId: parentSessionId, definitionId: definition.chatDefinitionId ?? run.workflowSessionId,
-                        revision: definition.chatRevision ?? run.revision, text: notice,
+                    await store.keepNoticeAsNote({ ownerSessionId: parentSessionId, definitionId: definition.sessionDefinitionId ?? run.workflowSessionId,
+                        revision: definition.sessionRevision ?? run.revision, text: notice,
                         projection: { sessionId: run.workflowSessionId, events: [skipEvent(WORKFLOW_NOTICE_KEPT_AS_NOTE)] } });
                     return null;
                 }
@@ -4585,11 +4585,11 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         if (begun.action === "decided") {
             // An earlier attempt may have created the child and stopped before recording it: end it too.
             if (begun.invocation.spawnAttempts > 0) await endAgentChild(client, input.nodeExecutionId, { afterSpawn: true });
-            // Formal t3: a continued chat whose end is owed (some visit attempted a spawn) is looked at again on this
+            // Formal t3: a continued session whose end is owed (some visit attempted a spawn) is looked at again on this
             // activity's retry schedule until its session is visible, whatever spawnedAt says (a crash between creating
-            // the chat and recording it leaves it empty). Nothing is spawned or sent here.
-            if (workflowAgentChatContinues(begun.invocation)) {
-                await endOwedContinuedChat(store, client, begun.invocation.childSessionId, { retry: true });
+            // the session and recording it leaves it empty). Nothing is spawned or sent here.
+            if (workflowAgentSessionContinues(begun.invocation)) {
+                await endOwedContinuedSession(store, client, begun.invocation.childSessionId, { retry: true });
             }
             return { wake: false };
         }
@@ -4606,7 +4606,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             return { wake: true };
         };
         let cycle: WorkflowAgentCycle | null = null;
-        // OF-S2-7 review OF7-R8: the model, effort and tier this visit's chat runs on, as its session row says after the spawn.
+        // OF-S2-7 review OF7-R8: the model, effort and tier this visit's session runs on, as its session row says after the spawn.
         let used: WorkflowAgentModelUsed | null = null;
         if (begun.action === "spawn") {
             const host = deps.agentNodes;
@@ -4625,29 +4625,29 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 controllingSessionId: invocation.controllingSessionId, task: invocation.task, input: begun.node.input,
                 inputSchema: state.inputSchema, outputSchema: state.outputSchema, outcomes: invocation.outcomes, schemas, deadlineAt,
             };
-            // chat: continue (owner decision agent-node-continue-20261106): a later visit's prompt goes to the same chat as a
-            // new cycle, with what changed since the state's last visit; the first visit's prompt says the chat continues; a
-            // later visit whose earlier chat ended on its own starts a new chat, whose first prompt says so (formal Q4).
-            const continues = workflowAgentChatContinues(invocation);
-            cycle = continues ? await agentChatCycle(run.runId, invocation, begun.node) : null;
-            const restartFrom = cycle?.endedChatSessionId ?? null;
-            // Formal review of continue mode: a continued chat gets a visit's prompt, and a replacement chat is created, only
+            // session: continue (owner decision agent-node-continue-20261106): a later visit's prompt goes to the same session as a
+            // new cycle, with what changed since the state's last visit; the first visit's prompt says the session continues; a
+            // later visit whose earlier session ended on its own starts a new session, whose first prompt says so (formal Q4).
+            const continues = workflowAgentSessionContinues(invocation);
+            cycle = continues ? await agentSessionCycle(run.runId, invocation, begun.node) : null;
+            const restartFrom = cycle?.endedSessionId ?? null;
+            // Formal review of continue mode: a continued session gets a visit's prompt, and a replacement session is created, only
             // while the visit is open. A retried spawn of a visit whose result arrived meanwhile sends nothing and creates no
-            // new chat (so the log shows no "new chat" for a visit already done); the controller's collection ends the visit.
+            // new session (so the log shows no "new session" for a visit already done); the controller's collection ends the visit.
             if (continues && (await store.readNodeExecution(input.nodeExecutionId))?.state !== "pending") return { wake: false };
-            // Review G1: a later visit goes to the chat its admission chose (continuedChatOf). When a person deleted or ended
-            // that chat after the admission, its prompt would be dropped (an ended session reads no queue), and creating the
-            // chat again would bring a deleted session back. The visit fails unavailable now, decided as the admission
-            // decides an ended chat, and the state's next visit starts a new agent session.
+            // Review G1: a later visit goes to the session its admission chose (continuedSessionOf). When a person deleted or ended
+            // that session after the admission, its prompt would be dropped (an ended session reads no queue), and creating the
+            // session again would bring a deleted session back. The visit fails unavailable now, decided as the admission
+            // decides an ended session, and the state's next visit starts a new agent session.
             const nextCycle = continues ? " The next cycle of this step starts a new agent session." : "";
             if (continues && cycle !== null && restartFrom === null) {
-                const gone = await continuedChatGone(client, run.runId, begun.node.nodeId, invocation);
+                const gone = await continuedSessionGone(client, run.runId, begun.node.nodeId, invocation);
                 if (gone !== null) {
                     return fail({ ...runtimeError("unavailable", `The agent session ${invocation.childSessionId} that this step continues was ${gone} `
                         + `before this cycle's prompt was sent, so nothing was sent to it.${nextCycle}`,
                     { childSessionId: invocation.childSessionId }), winner: "controller" });
                 }
-                // Review G2: an earlier visit of this chat whose end was not sent (its turn's Stop failed past its retries) is
+                // Review G2: an earlier visit of this session whose end was not sent (its turn's Stop failed past its retries) is
                 // ended now, before this visit's prompt, which would otherwise wait behind that visit's turn. A failure fails
                 // this attempt, and the spawn's retries try again.
                 await endEarlierVisitsOf(client, run.runId, invocation);
@@ -4661,7 +4661,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     { childSessionId: invocation.childSessionId }), winner: "controller" });
                 }
             }
-            // A stored map that cannot be read fails the node in words; the node never silently takes the chat's model.
+            // A stored map that cannot be read fails the node in words; the node never silently takes the session's model.
             const stored = readStoredAgentModels(run.agentModels);
             if ("error" in stored) return fail({ ...runtimeError("invalid_input", stored.error), winner: "controller" });
             const agentModel = stored.models?.[state.id] ?? null;
@@ -4671,7 +4671,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 ...(agentModel ? { agentModel } : {}),
                 clientMessageId: workflowAgentClientMessageId(run.workflowSessionId, run.runId, input.nodeExecutionId),
                 prompt: cycle === null ? workflowAgentPrompt({ ...promptOf, continues })
-                    : restartFrom !== null ? workflowAgentPrompt({ ...promptOf, continues, restart: { ...cycle, endedChatSessionId: restartFrom } })
+                    : restartFrom !== null ? workflowAgentPrompt({ ...promptOf, continues, restart: { ...cycle, endedSessionId: restartFrom } })
                     : workflowAgentCyclePrompt({ ...promptOf, ...cycle }),
             });
             if ("refused" in spawned) {
@@ -4688,13 +4688,13 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             }
             used = spawned.used ?? null;
         }
-        const continued = workflowAgentChatContinues(begun.invocation);
-        const restarted = cycle !== null && cycle.endedChatSessionId ? { endedChatSessionId: cycle.endedChatSessionId, cycle: cycle.cycle } : null;
+        const continued = workflowAgentSessionContinues(begun.invocation);
+        const restarted = cycle !== null && cycle.endedSessionId ? { endedSessionId: cycle.endedSessionId, cycle: cycle.cycle } : null;
         const cycleNumber = cycle?.cycle ?? 1;
         await store.recordAgentSpawned(input.nodeExecutionId, invocation => ({
             sessionId: run.workflowSessionId,
             events: [
-                ...(restarted !== null ? [{ eventType: "workflow.agent_chat_restarted", data: {
+                ...(restarted !== null ? [{ eventType: "workflow.agent_session_restarted", data: {
                     runId: run.runId, nodeExecutionId: input.nodeExecutionId, stateId: begun.node.nodeId, childSessionId: invocation.childSessionId,
                     ...restarted,
                 } }] : []),
@@ -4702,18 +4702,18 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     runId: run.runId, nodeExecutionId: input.nodeExecutionId, stateId: begun.node.nodeId, childSessionId: invocation.childSessionId,
                     deadline: invocation.deadlineAt.toISOString(),
                     ...(used !== null ? { model: used as unknown as JsonValue } : {}),
-                    ...(continued ? { chat: "continue", cycle: cycleNumber } : {}),
+                    ...(continued ? { session: "continue", cycle: cycleNumber } : {}),
                 } },
             ],
             update: { touch: true },
         }));
         // A state decided while its child was being created: the controller's end may have found no session yet.
         await endAgentChild(client, input.nodeExecutionId, { afterSpawn: true });
-        // Review RT-1 and formal t3, the after-send check of a continued chat: the session the host just created may not be
-        // visible yet (its orchestration's first turn has not run, so it reads NotFound). While the chat's end is owed, this
-        // attempt fails, and every retry (the decided path above) looks again until the chat is visible and its end is
-        // sent; the last look is agentSpawnFailed's. A chat: new child keeps its path as at e696f2c6.
-        if (continued) await endOwedContinuedChat(store, client, begun.invocation.childSessionId, { retry: true });
+        // Review RT-1 and formal t3, the after-send check of a continued session: the session the host just created may not be
+        // visible yet (its orchestration's first turn has not run, so it reads NotFound). While the session's end is owed, this
+        // attempt fails, and every retry (the decided path above) looks again until the session is visible and its end is
+        // sent; the last look is agentSpawnFailed's. A session: new child keeps its path as at e696f2c6.
+        if (continued) await endOwedContinuedSession(store, client, begun.invocation.childSessionId, { retry: true });
         return { wake: false };
     });
 
@@ -4742,13 +4742,13 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         // that existed is not sent again (endWorkflowAgentChild).
         const invocation = await store.readAgentInvocation(input.nodeExecutionId);
         const client = actx.getClient();
-        if (invocation && (invocation.spawnAttempts > 0 || workflowAgentChatContinues(invocation)) && client) {
+        if (invocation && (invocation.spawnAttempts > 0 || workflowAgentSessionContinues(invocation)) && client) {
             try {
                 if (invocation.spawnAttempts > 0) await endAgentChild(client, input.nodeExecutionId, { afterSpawn: true });
-                // The last look of a continued chat whose end is still owed (formal t3); reported when it is still not visible.
-                if (workflowAgentChatContinues(invocation)) {
-                    await reportChatEndLastLook(run, invocation.childSessionId,
-                        await endOwedContinuedChat(store, client, invocation.childSessionId, { retry: false }));
+                // The last look of a continued session whose end is still owed (formal t3); reported when it is still not visible.
+                if (workflowAgentSessionContinues(invocation)) {
+                    await reportAgentSessionEndLastLook(run, invocation.childSessionId,
+                        await endOwedContinuedSession(store, client, invocation.childSessionId, { retry: false }));
                 }
             } catch (error) {
                 // A later run-end cleanup (endRunAgents) sends it again.
@@ -4774,11 +4774,11 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
     });
 
     /**
-     * The last look of a continued chat's owed end, when it is still owed: the chat never became visible within the
-     * schedule (its end stays owed until a recover, which starts another retry), or another look held the chat's end
+     * The last look of a continued session's owed end, when it is still owed: the session never became visible within the
+     * schedule (its end stays owed until a recover, which starts another retry), or another look held the session's end
      * (review O2: that looker sends it). On the newest visit, with its state, so the log names the node.
      */
-    const reportChatEndLastLook = async (run: WorkflowRunRow, childSessionId: string, result: string): Promise<void> => {
+    const reportAgentSessionEndLastLook = async (run: WorkflowRunRow, childSessionId: string, result: string): Promise<void> => {
         if (result !== "still_owed" && result !== "held_elsewhere") return;
         const last = await store.readAgentInvocationByChild(childSessionId);
         const node = last ? await store.readNodeExecution(last.nodeExecutionId) : null;
@@ -4786,27 +4786,27 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.agent_end_failed", data: {
             runId: run.runId, ...(last ? { nodeExecutionId: last.nodeExecutionId } : {}), ...(node ? { stateId: node.nodeId } : {}),
             childSessionId, reason: held ? "held_elsewhere" : "not_visible",
-            error: held ? "Another look holds this chat's end; it sends the end."
-                : "The chat's session never became visible, so its end was not sent; a recover looks again.",
+            error: held ? "Another look holds this session's end; it sends the end."
+                : "The session never became visible, so its end was not sent; a recover looks again.",
         } }]);
     };
 
-    /** A continued chat's detached end retry (workflowChatEnd): one look; still owed, it fails, so the schedule looks again. */
-    runtime.registerActivity(WORKFLOW_ACTIVITIES.endOwedChat, async (actx, rawInput) => {
-        const input = record(rawInput, "chat end input");
+    /** A continued session's detached end retry (workflowAgentSessionEnd): one look; still owed, it fails, so the schedule looks again. */
+    runtime.registerActivity(WORKFLOW_ACTIVITIES.endOwedAgentSession, async (actx, rawInput) => {
+        const input = record(rawInput, "session end input");
         const client = actx.getClient();
-        if (!client) throw new Error("A continued chat's end needs the durable client.");
-        return { result: await endOwedContinuedChat(store, client, text(input.childSessionId, "childSessionId"), { retry: true }) };
+        if (!client) throw new Error("A continued session's end needs the durable client.");
+        return { result: await endOwedContinuedSession(store, client, text(input.childSessionId, "childSessionId"), { retry: true }) };
     });
 
-    /** The detached end retry's last look: a chat still not visible is reported. */
-    runtime.registerActivity(WORKFLOW_ACTIVITIES.endOwedChatLast, async (actx, rawInput) => {
-        const input = record(rawInput, "chat end input");
+    /** The detached end retry's last look: a session still not visible is reported. */
+    runtime.registerActivity(WORKFLOW_ACTIVITIES.endOwedAgentSessionLast, async (actx, rawInput) => {
+        const input = record(rawInput, "session end input");
         const client = actx.getClient();
-        if (!client) throw new Error("A continued chat's end needs the durable client.");
+        if (!client) throw new Error("A continued session's end needs the durable client.");
         const childSessionId = text(input.childSessionId, "childSessionId");
-        const result = await endOwedContinuedChat(store, client, childSessionId, { retry: false });
-        await reportChatEndLastLook(await runOf(text(input.runId, "runId")), childSessionId, result);
+        const result = await endOwedContinuedSession(store, client, childSessionId, { retry: false });
+        await reportAgentSessionEndLastLook(await runOf(text(input.runId, "runId")), childSessionId, result);
         return { result };
     });
 
@@ -5328,7 +5328,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         const begun = await store.beginRequestDelivery(input.nodeExecutionId, {
             refused: refusals.refused,
             ended: ended ? refusals.at(endedRecipientResult(responder, status)) : null,
-            // A chat still on the previous version is told what to do instead (it moves to the new one after its next turn).
+            // A session still on the previous version is told what to do instead (it moves to the new one after its next turn).
             unsupported: capable ? null : refusals.at(runtimeError("unsupported_contract", unsupportedResponderMessage(responder, version),
                 { capability: "respond_tool", sessionId: responder })),
         });
@@ -5429,13 +5429,13 @@ export function workflowAgentPrompt(invocation: {
     workflowSessionId: string; runId: string; nodeExecutionId: string; stateId: string; controllingSessionId: string | null;
     task: WorkflowAgentTask; input: JsonValue; inputSchema: string | null; outputSchema: string | null; outcomes: string[];
     schemas: { [key: string]: JsonValue }; deadlineAt: string;
-    /** chat: continue — this chat stays open for the state's next visits in this run (owner decision agent-node-continue-20261106). */
+    /** session: continue — this session stays open for the state's next visits in this run (owner decision agent-node-continue-20261106). */
     continues?: boolean;
     /**
-     * chat: continue, a later visit whose state's earlier chat ended on its own (deleted, failed, or ended by a person): this
-     * new chat's first prompt says so and carries where the earlier cycles ended.
+     * session: continue, a later visit whose state's earlier session ended on its own (deleted, failed, or ended by a person): this
+     * new session's first prompt says so and carries where the earlier cycles ended.
      */
-    restart?: WorkflowAgentCycle & { endedChatSessionId: string };
+    restart?: WorkflowAgentCycle & { endedSessionId: string };
 }): string {
     const restart = invocation.continues === true && invocation.restart ? invocation.restart : null;
     const json = promptSafeJson({
@@ -5464,7 +5464,7 @@ export function workflowAgentPrompt(invocation: {
                 + `(this one's is ${invocation.nodeExecutionId}). The workflow ends this cycle at its deadline. `
                 + (restart
                     ? `This is cycle ${restart.cycle} of this state in this run. The agent session of its earlier cycles ended (session `
-                        + `${restart.endedChatSessionId}), so this is a new agent session and their work is not here: previousResult, `
+                        + `${restart.endedSessionId}), so this is a new agent session and their work is not here: previousResult, `
                         + "variables and changedVariables in the JSON say where they ended. "
                     : "")
             : "The workflow cancels this session at the deadline. ")
@@ -5473,20 +5473,20 @@ export function workflowAgentPrompt(invocation: {
 }
 
 /**
- * What a later visit of a state that continues its chat carries (agentChatCycle): its number among the state's visits in
+ * What a later visit of a state that continues its session carries (agentSessionCycle): its number among the state's visits in
  * the run, the previous visit's result, the variables now and the keys changed since the previous visit was admitted, and,
- * when the chat of the earlier visits ended on its own, that chat's session id (this visit starts a new chat).
+ * when the session of the earlier visits ended on its own, that session id (this visit starts a new session).
  */
 export interface WorkflowAgentCycle {
     cycle: number;
     previous: { outcome: string | null; resultKind: string | null; output: JsonValue; error: JsonValue } | null;
     variables: { [key: string]: JsonValue };
     changedVariables: string[];
-    endedChatSessionId?: string | null;
+    endedSessionId?: string | null;
 }
 
 /**
- * A later visit's prompt to a continued chat (chat: continue; owner decision agent-node-continue-20261106): it says
+ * A later visit's prompt to a continued session (session: continue; owner decision agent-node-continue-20261106): it says
  * plainly that this is cycle N of the same Workflow, then, as untrusted JSON on one line, this visit's node execution
  * (to give back with the completion), its input now, the variables now and the keys changed since the previous visit,
  * the previous visit's result, the outcomes, schemas and this visit's deadline; then the state's task again. The typed
@@ -5540,7 +5540,7 @@ export function workflowRequestPrompt(message: {
         + `${workflowUpdateShortId(message.runId)}) asks you to answer a ${say(message.contract)} request from step ${say(message.stateId)} by `
         + `${say(message.deadlineAt)}. Answer it once with the ${RESPOND_SESSION_REQUEST_TOOL} tool: request_id ${say(message.nodeExecutionId)}, an operation_id you choose `
         + "(repeat the same one to retry the same answer), and either response (a value that matches the first schema of responseSchemas) or "
-        + "decline ({ \"reason\": ... }). Chat text is not an answer. No notice follows if the request is cancelled.", json);
+        + "decline ({ \"reason\": ... }). Reply text is not an answer. No notice follows if the request is cancelled.", json);
 }
 
 /**

@@ -177,13 +177,13 @@ function inputHarness({ policies = { c1: DENIED, g1: DENIED, o1: ALLOWED }, apiM
 // Review UI-17: the server's reason first, then the short direction.
 const NOTE = `${REASON} To change this, message Root.`;
 
-// Review 19:27Z: never a session id; the chat that owns the Workflow by its name, when loaded.
+// Review 19:27Z: never a session id; the session that owns the Workflow by its name, when loaded.
 test("the read-only note: the server's reason, else one short fallback; never the controlling agent's id (ui-07)", () => {
     assert.equal(WORKFLOW_INPUT_DENIED_TEXT, "This session runs a node of a Workflow. People cannot send it prompts, answers or instructions. Message the parent agent instead.");
     assert.equal(workflowInputNoteText(null, "fb6e5d1e-d82d-4f3a-bf95-ca578b222530"), WORKFLOW_INPUT_DENIED_TEXT);
     assert.equal(workflowInputNoteText(REASON, null), REASON);
     assert.equal(workflowInputNoteText("", ""), WORKFLOW_INPUT_DENIED_TEXT);
-    // Workflow Simplified (spec 14 mock, 03 words): with the owning chat loaded, one plain line naming it.
+    // Workflow Simplified (spec 14 mock, 03 words): with the owning session loaded, one plain line naming it.
     // Review UI-17: the server's reason first, then the short direction; the short line alone only without a reason.
     assert.equal(workflowInputNoteText(REASON, "r1", "Stock check"), `${REASON} To change this, message Stock check.`);
     assert.equal(workflowInputNoteText(null, "r1", "Stock check"), "Read-only. To change this, message Stock check.");

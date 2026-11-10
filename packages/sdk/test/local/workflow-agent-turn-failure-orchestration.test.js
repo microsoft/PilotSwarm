@@ -1,5 +1,5 @@
 /**
- * PR 270 (owner decision): session orchestration 1.0.83 reports a Workflow agent chat's turn that fails for good
+ * PR 270 (owner decision): session orchestration 1.0.83 reports a Workflow agent session's turn that fails for good
  * (orchestration/workflow-turn-failure.ts), so the agent step fails execution_failed instead of waiting for its deadline.
  *
  * This drives the REAL latest generator (as orchestration-retry-exhaustion.test.js does) with the session and manager
@@ -9,14 +9,14 @@
  *
  * - The report is made once, at the terminal failure (retries spent, a credential failure, a non-retryable error), after
  *   the session row says error, with the failed turn's prompt ids; never while a retry is owed (attempts 1 and 2).
- * - A session that is not an agent chat (its id is not one) makes no report, so its history is unchanged.
+ * - A session that is not an agent session (its id is not one) makes no report, so its history is unchanged.
  * - A report whose activity fails stays owed: a continue-as-new carries it, the next execution makes it at its start,
  *   and while it still fails it is made again before the next turn; a turn that succeeds drops it.
  *
  * At 01caf109 no report is made at all, so every case here fails there.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { workflowAgentChatSessionId, workflowAgentChildSessionId } from "../../src/workflow/agent-ids.ts";
+import { workflowAgentSessionId, workflowAgentChildSessionId } from "../../src/workflow/agent-ids.ts";
 
 let mockSession;
 let mockManager;
@@ -29,9 +29,9 @@ vi.mock("../../src/session-proxy.js", () => ({
 const WF = "11111111-1111-4111-8111-111111111111";
 const RUN = "22222222-2222-4222-8222-222222222222";
 const NX = `nx-${"a1".repeat(20)}`;
-/** A visit's own chat (chat: new) and a continued chat: both are agent chats' ids (version 8). */
-const AGENT_CHAT = workflowAgentChildSessionId(NX);
-const CONTINUED_CHAT = workflowAgentChatSessionId(RUN, "talk");
+/** A visit's own session (session: new) and a continued session: both are agent sessions' ids (version 8). */
+const AGENT_SESSION = workflowAgentChildSessionId(NX);
+const CONTINUED_SESSION = workflowAgentSessionId(RUN, "talk");
 /** The visit's prompt id, as the controller's spawn sends it (workflowAgentClientMessageId). */
 const PROMPT_ID = `workflow:${WF}:${RUN}:agent:${NX}`;
 const REPORT = "manager.reportWorkflowAgentTurnFailure";
@@ -160,7 +160,7 @@ function drive(gen, harness, { maxSteps = 600 } = {}) {
 }
 
 const INPUT = (overrides = {}) => ({
-    sessionId: AGENT_CHAT,
+    sessionId: AGENT_SESSION,
     config: { model: "azure-openai:gpt-5.4-mini" },
     iteration: 0,
     isSystem: false,
@@ -182,11 +182,11 @@ async function exhaust(sessionId, { reportFails = false } = {}) {
     return attempts;
 }
 
-describe("a Workflow agent chat's failed turn is reported (orchestration 1.0.83, PR 270)", () => {
+describe("a Workflow agent session's failed turn is reported (orchestration 1.0.83, PR 270)", () => {
     beforeEach(() => { mockSession = null; mockManager = null; });
 
     it("retries spent: one report at the terminal failure, after the row says error, never while a retry is owed", async () => {
-        const [first, second, third] = await exhaust(AGENT_CHAT);
+        const [first, second, third] = await exhaust(AGENT_SESSION);
         // fault.or-report-on-retry: attempts 1 and 2 owe a retry (continue-as-new) and report nothing.
         expect(first.out.kind).toBe("continueAsNew");
         expect(second.out.kind).toBe("continueAsNew");
@@ -196,16 +196,16 @@ describe("a Workflow agent chat's failed turn is reported (orchestration 1.0.83,
         expect(second.out.input.workflowTurnFailure).toBeUndefined();
         // or.terminal-report: attempt 3 reports once, with the failed turn's prompt id and its cause, after the error row.
         expect(third.out.kind).not.toBe("continueAsNew");
-        expect(third.harness.reports).toEqual([{ sessionId: AGENT_CHAT, clientMessageIds: [PROMPT_ID], cause: expect.stringMatching(/^Failed after 3 attempts: .*exceeded token rate limit/) }]);
+        expect(third.harness.reports).toEqual([{ sessionId: AGENT_SESSION, clientMessageIds: [PROMPT_ID], cause: expect.stringMatching(/^Failed after 3 attempts: .*exceeded token rate limit/) }]);
         const errorWrite = third.harness.effects.lastIndexOf("manager.updateCmsState");
         expect(errorWrite).toBeGreaterThanOrEqual(0);
         expect(third.harness.effects.indexOf(REPORT)).toBeGreaterThan(errorWrite);
         expect(third.harness.effects.filter(effect => effect === REPORT)).toHaveLength(1);
     });
 
-    it("a continued chat reports too; a session that is not an agent chat reports nothing", async () => {
-        const [, , continued] = await exhaust(CONTINUED_CHAT);
-        expect(continued.harness.reports).toEqual([expect.objectContaining({ sessionId: CONTINUED_CHAT, clientMessageIds: [PROMPT_ID] })]);
+    it("a continued session reports too; a session that is not an agent session reports nothing", async () => {
+        const [, , continued] = await exhaust(CONTINUED_SESSION);
+        expect(continued.harness.reports).toEqual([expect.objectContaining({ sessionId: CONTINUED_SESSION, clientMessageIds: [PROMPT_ID] })]);
         const plain = await exhaust("exhaustion-test");
         for (const { harness } of plain) expect(harness.reports).toEqual([]);
     });
@@ -220,13 +220,13 @@ describe("a Workflow agent chat's failed turn is reported (orchestration 1.0.83,
             const out = drive(handler(harness.ctx, INPUT()), harness);
             expect(out.kind).not.toBe("continueAsNew");
             expect(harness.turns).toHaveLength(1);
-            expect(harness.reports).toEqual([{ sessionId: AGENT_CHAT, clientMessageIds: [PROMPT_ID], cause: expect.any(String) }]);
+            expect(harness.reports).toEqual([{ sessionId: AGENT_SESSION, clientMessageIds: [PROMPT_ID], cause: expect.any(String) }]);
             expect(harness.reports[0].cause).toContain(result.message.slice(0, 20));
         }
     });
 
     it("or.terminal-report-can: a report whose activity fails stays owed, rides continue-as-new, and is made at the next execution's start", async () => {
-        const [, , third] = await exhaust(AGENT_CHAT, { reportFails: true });
+        const [, , third] = await exhaust(AGENT_SESSION, { reportFails: true });
         expect(third.harness.reports).toHaveLength(1);
         // The execution's own continue-as-new carries it (versionedContinueAsNew), whatever input it builds.
         const { createInitialState, deriveOptions } = await import("../../src/orchestration/state.ts");
@@ -249,7 +249,7 @@ describe("a Workflow agent chat's failed turn is reported (orchestration 1.0.83,
         const handler = await latestHandler();
         const next = createHarness({ turnResults: [{ type: "completed", content: "ok" }] });
         drive(handler(next.ctx, input), next);
-        expect(next.reports).toEqual([{ sessionId: AGENT_CHAT, ...owed }]);
+        expect(next.reports).toEqual([{ sessionId: AGENT_SESSION, ...owed }]);
         expect(next.effects.indexOf(REPORT)).toBeLessThan(next.effects.indexOf("runTurn"));
     });
 

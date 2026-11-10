@@ -25,7 +25,7 @@ export const COMPLETE_WORKFLOW_NODE_TOOL_SPEC = {
         "Finish the workflow state this session runs, once, with a typed result. Give outcome (one of the state's outcomes) and output "
         + "(a JSON value that matches the state's output schema, when it has one), or error with code needs_input (you need a decision you "
         + "cannot get from the controlling parent agent) or execution_failed (you cannot do the task), and a message. operation_id is an id "
-        + "you choose: repeat the same call with it to retry, and you get the same receipt. Final chat text does not finish the state, and "
+        + "you choose: repeat the same call with it to retry, and you get the same receipt. Final reply text does not finish the state, and "
         + "nothing else does. Returns the receipt as JSON, or a refusal: OUTPUT_INVALID (field errors in problems; attemptsLeft more invalid "
         + "completions are taken), OUTPUT_ATTEMPTS_EXHAUSTED (the state failed invalid_output), NODE_EXPIRED (its deadline passed), "
         + "NODE_CLOSED (the workflow ended the state), COMPLETION_CONFLICT (it was completed with another result), OPERATION_CONFLICT "
@@ -95,7 +95,7 @@ export async function completeWorkflowNodeFromTool(args: Record<string, unknown>
     callerSessionId: string;
     store: Pick<WorkflowStore, "completeAgentNode">;
     client?: WorkflowAgentWakeClient | null;
-    /** A continued chat's turn visit (the turn-to-visit fence; review RT-3): only that visit may be completed in this turn. */
+    /** A continued session's turn visit (the turn-to-visit fence; review RT-3): only that visit may be completed in this turn. */
     turnVisit?: string | null;
 }): Promise<string> {
     try {

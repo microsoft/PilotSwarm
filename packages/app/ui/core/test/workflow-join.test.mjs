@@ -36,13 +36,13 @@ const states = [
 const graph = { revision: 1, initial: "fan", states };
 const literal = count => ({ count, sha256: "a".repeat(64) });
 const branch = index => ({ scopeId: `nx-fan-1#${index}`, branch: { parallelNodeExecutionId: "nx-fan-1", index } });
-const chat = childSessionId => ({ childSessionId, spawned: true, spawnAttempts: 1, end: null, endSent: false });
+const agentSession = childSessionId => ({ childSessionId, spawned: true, spawnAttempts: 1, end: null, endSent: false });
 /** Three reviewers: the first two branches are at their review, the third waits. */
 const running = () => projectWorkflow({ readModel: readModel({ graph,
     nodeExecutions: [
         row("fan", 1, "pending", { branches: 3 }),
         done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-b0", ...branch(0) }),
-        row("review", 1, "pending", { nodeExecutionId: "nx-review-b0", deadline: "2026-11-04T18:20:00.000Z", agent: chat("child-0"), ...branch(0) }),
+        row("review", 1, "pending", { nodeExecutionId: "nx-review-b0", deadline: "2026-11-04T18:20:00.000Z", agent: agentSession("child-0"), ...branch(0) }),
         done("prepare", 2, "ready", { nodeExecutionId: "nx-prepare-b1", ...branch(1) }),
         row("review", 2, "pending", { nodeExecutionId: "nx-review-b1", deadline: "2026-11-04T18:10:00.000Z", ...branch(1) }),
     ] }) });
@@ -98,7 +98,7 @@ test("the box and the bar as drawn: counts, state and rule; a click on the bar s
     assert.ok(quiet.includes(">For each item<") && !quiet.includes("ps-workflow-group-counts"), quiet);
 });
 
-test("a parallel step's details: For each, Branch steps, Branches with deadlines and agent chats, and its next steps from the join", () => {
+test("a parallel step's details: For each, Branch steps, Branches with deadlines and agent sessions, and its next steps from the join", () => {
     const opened = [];
     const html = details(running(), "fan", { openSession: id => opened.push(id) });
     for (const [label, value] of [["Items", "${input.reviewers}"], ["At a time", "2"], ["Join", "All must succeed"],
@@ -111,12 +111,12 @@ test("a parallel step's details: For each, Branch steps, Branches with deadlines
     assert.ok(html.includes("reviewed · Item ends · succeeded"), html);
     assert.match(html, /aria-label="Items"><h3>Items<\/h3><p[^>]*>0\/3 ok · 2 running · 1 waiting<\/p>/);
     // People read branches from 1; the data attributes keep the index from 0.
-    assert.match(html, /<tr data-branch="0" data-status="running"><td>1<\/td><td>review<\/td><td>running<\/td><td[^>]*>2026-11-04 18:20:00<\/td><td>—<\/td><td><button[^>]*data-action="open-branch-chat" data-session="child-0"[^>]*>Open<\/button><\/td><\/tr>/);
+    assert.match(html, /<tr data-branch="0" data-status="running"><td>1<\/td><td>review<\/td><td>running<\/td><td[^>]*>2026-11-04 18:20:00<\/td><td>—<\/td><td><button[^>]*data-action="open-branch-session" data-session="child-0"[^>]*>Open<\/button><\/td><\/tr>/);
     assert.match(html, /<tr data-branch="1" data-status="running"><td>2<\/td><td>review<\/td><td>running<\/td><td[^>]*>2026-11-04 18:10:00<\/td><td>—<\/td><td>—<\/td><\/tr>/);
     assert.match(html, /<tr data-branch="2" data-status="waiting"><td>3<\/td><td>—<\/td><td>waiting<\/td>/);
     assert.ok(html.includes("<h3>Next steps from the join</h3>"), html);
     assert.ok(html.includes("joined → pause") && html.includes("blocked → review_blocked"), html);
-    // Without a way to open sessions the chat is named, not offered.
+    // Without a way to open sessions the session is named, not offered.
     assert.match(details(running(), "fan"), />2026-11-04 18:20:00<\/td><td>—<\/td><td>child-0<\/td>/);
 });
 
@@ -136,13 +136,13 @@ test("a branch step's details show one branch's visit: the first running by defa
     assert.match(first, /<select class="ps-workflow-input" data-field="branch" disabled="">/);
     assert.match(first, /<option value="0" selected="">Item 1 · ● running<\/option><option value="1">Item 2 · ● running<\/option>/);
     assert.ok(first.includes("Item 1 of fan.") && first.includes("<span>Branch</span><strong>1</strong>"), first);
-    assert.ok(first.includes("2026-11-04 18:20:00 UTC") && first.includes("child-0"), "the first branch's deadline and its agent chat");
+    assert.ok(first.includes("2026-11-04 18:20:00 UTC") && first.includes("child-0"), "the first branch's deadline and its agent session");
     const chosen = [];
     const second = details(projection, "review", { branchIndex: 1, onBranch: index => chosen.push(index) });
     assert.match(second, /<select class="ps-workflow-input" data-field="branch">/);
     assert.match(second, /<option value="1" selected="">Item 2 · ● running<\/option>/);
     assert.ok(second.includes("Item 2 of fan.") && !second.includes("Item 1 of fan."), second);
-    assert.ok(second.includes("2026-11-04 18:10:00 UTC") && !second.includes("child-0"), "the second branch's deadline, and no agent chat yet");
+    assert.ok(second.includes("2026-11-04 18:10:00 UTC") && !second.includes("child-0"), "the second branch's deadline, and no agent session yet");
     // A step outside every branch has no picker.
     assert.ok(!details(projection, "pause").includes("data-field=\"branch\""));
 });

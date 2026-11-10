@@ -1,8 +1,8 @@
 /**
  * Deployed check DS-3: the Copilot runtime names a session from the first prompt it is sent and says so in a
- * session.title_changed event, which is recorded into the session's events. A chat's first turn after DS-2 carried
- * runtime notes before the person's words (a save note and a Workflow's end kept for a chat that had not started), so
- * the event named the chat "[SYSTEM: Alice Anderson saved dc-short revision 1.] ..." (TEST, seq 48167). It is recorded
+ * session.title_changed event, which is recorded into the session's events. A session's first turn after DS-2 carried
+ * runtime notes before the person's words (a save note and a Workflow's end kept for a session that had not started), so
+ * the event named the session "[SYSTEM: Alice Anderson saved dc-short revision 1.] ..." (TEST, seq 48167). It is recorded
  * with the person's own words instead, and not at all when there are none; any other name is recorded as it was. Nothing
  * reads this event as a session's title (the stored title comes from summarizeSession, which leaves notes out).
  *
@@ -18,11 +18,11 @@ import { SESSION_TITLE_EVENT_MAX, sessionTitleChangedForRecord, startsWithRuntim
 import { workflowParentNotification } from "../../dist/workflow/runtime.js";
 
 const SAVE_NOTE = "[SYSTEM: Alice Anderson saved dc-short revision 1.]";
-// A Workflow's end kept as the chat's note (DS-2), as the chat's first turn reads it: "[SYSTEM: <the end notice>]".
+// A Workflow's end kept as the session's note (DS-2), as the session's first turn reads it: "[SYSTEM: <the end notice>]".
 const NOTICE = workflowParentNotification({ sessionId: "wf-ds3", runId: "run-ds3-0001", name: "dc-short", version: "1.0.0",
     status: "completed", outcome: "succeeded", stateId: "done", failure: null }, JSON.stringify({ output: { items: ["a", "b"] } }));
 const NOTES = `${SAVE_NOTE}\n[SYSTEM: ${NOTICE}]`;
-const FIRST = "Hello. Reply in one line: did anything happen in this chat before this message?";
+const FIRST = "Hello. Reply in one line: did anything happen here before this message?";
 const titled = title => ({ eventType: "session.title_changed", data: { title } });
 
 test("a text's leading notes are removed; the person's own words remain", () => {
@@ -38,7 +38,7 @@ test("a text's leading notes are removed; the person's own words remain", () => 
     assert.equal(startsWithRuntimeNote("Plan [SYSTEM: x]"), false);
 });
 
-test("the runtime's name for a chat whose first turn carried notes is recorded as the person's words", () => {
+test("the runtime's name for a session whose first turn carried notes is recorded as the person's words", () => {
     // As TEST recorded it: the model's prompt, notes first, cut short by the runtime.
     const observed = titled(`${NOTES}\n\n${FIRST}`.slice(0, 300) + "...");
     const recorded = sessionTitleChangedForRecord(observed, FIRST);

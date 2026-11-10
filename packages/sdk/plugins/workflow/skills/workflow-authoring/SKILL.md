@@ -8,7 +8,7 @@ description: Load before you create, edit, publish or run a Workflow (pilotswarm
 A Workflow is a child session of yours that runs a state graph
 without model turns. Its controller runs exactly what the definition
 declares. You write the definition as YAML and save it with `workflow_definition`: it belongs to this
-chat and each save is a new revision. `start` makes a Workflow from a
+session and each save is a new revision. `start` makes a Workflow from a
 revision; the Workflow runs that revision, whatever is saved later.
 
 Call `load_skill` with name `workflow-reference` for every field of a state,
@@ -33,7 +33,7 @@ until it is started: do not describe it as a live result.
 | Judgment: investigate, review, write, decide | `agent` | a script that tries to reason |
 | A durable delay | `wait` | `sleep` or timers in a script |
 | A typed message from a session or a workflow, maybe with a time limit | `messaging`, `mode: receive` | a polling loop in a script |
-| A one-way typed message to a session or a workflow | `messaging`, `mode: send` | chat text |
+| A one-way typed message to a session or a workflow | `messaging`, `mode: send` | reply text |
 | A typed answer from a session before a deadline | `messaging`, `mode: request` | a send and a receive |
 | The same steps for each item of a list, then one join | `parallel` | many agent states copied by hand |
 | Different nodes at once (a prompt or a model for each branch), then one join | `parallel` with named `branches` | several Workflows |
@@ -114,8 +114,8 @@ not `${input.reason}`.
 ## 5. Write scripts
 
 ```js
-const prior = context.input;                  // the value that arrived
-const limit = context.kv.pollLimit ?? 12;     // KV, with a default
+const prior = context.input;               // the value that arrived
+const limit = context.kv.pollLimit ?? 12;  // KV, with a default
 const status = await callTool("get_build_status", { buildId: context.inputs.buildId });
 await setResult(status.state === "running" ? "running" : "finished", { status, limit });
 ```
@@ -286,7 +286,7 @@ decision itself into the graph:
   `ended`: the run ended; tell the user the result in one or two sentences
   (for a failure, its step and cause) and start no other run unless asked.
   `message`: use or relay it as the user asked. `request`: answer once
-  with `respond_session_request` before its deadline, never in chat.
+  with `respond_session_request` before its deadline, never as plain text.
 - For a status question, use `read_workflow` for that workflow (its run),
   not `list_sessions`.
 - If notifications are off (`definition.notifyOnCompletion` is false),

@@ -6,9 +6,9 @@
  * Workflow skill directory (worker.ts _loadSdkSkillDir) and passes it to the CLI as a skill directory. The CLI's `skill`
  * tool serves those directories and lists their skills in its own description (an <available_skills> block). So:
  *
- * - Workflows off in the chat: the CLI is not given the Workflow skill directory (session-manager.ts cliSkillDirectories):
- *   the `skill` tool lists no Workflow skill and does not serve one; the chat's paragraph names enable_workflows. Before,
- *   an off chat's `skill` tool listed all four Workflow skills and served them.
+ * - Workflows off in the session: the CLI is not given the Workflow skill directory (session-manager.ts cliSkillDirectories):
+ *   the `skill` tool lists no Workflow skill and does not serve one; the session's paragraph names enable_workflows. Before,
+ *   an off session's `skill` tool listed all four Workflow skills and served them.
  * - Workflows on: the `skill` tool lists them, and `skill` with skill `workflow-authoring` succeeds with the body
  *   ("# Workflow authoring"), as load_skill does.
  * - The deployed failure ("skill — name: workflow-authoring · Failed"): the `skill` tool takes `skill`, not `name`
@@ -36,12 +36,12 @@ const WORKFLOW_SKILLS = ["workflow-authoring", "workflow-patterns", "workflow-re
 const AUTHORING_HEADING = /^# Workflow authoring$/m;
 
 /**
- * A chat on a manager given the worker's skill directories (the Workflow skill directory and another deployment one), the
+ * A session on a manager given the worker's skill directories (the Workflow skill directory and another deployment one), the
  * real CLI and a scripted model that makes `calls` once per turn, then answers. Workflows are off until `on()`.
  */
 async function harness({ native }, run) {
     const home = mkdtempSync(join(tmpdir(), "ps-workflow-skills-cli-"));
-    // Another deployment skill directory, given in every chat: the rule takes out only the Workflow skill directories.
+    // Another deployment skill directory, given in every session: the rule takes out only the Workflow skill directories.
     const otherSkills = join(home, "deployment-skills");
     mkdirSync(join(otherSkills, "notes-helper"), { recursive: true });
     writeFileSync(join(otherSkills, "notes-helper", "SKILL.md"), "---\nname: notes-helper\ndescription: Keeps notes.\n---\n\n# Notes helper\n\nKeep notes.\n");
@@ -78,7 +78,7 @@ async function harness({ native }, run) {
     manager.setSessionCatalog(catalog);
     manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
     let index = 0;
-    /** One turn whose model makes `toolCalls` once: the chat's mode and Base Agent version, its `skill` tool, the completions. */
+    /** One turn whose model makes `toolCalls` once: the session's mode and Base Agent version, its `skill` tool, the completions. */
     const turn = async (toolCalls) => {
         calls = toolCalls;
         called = false;

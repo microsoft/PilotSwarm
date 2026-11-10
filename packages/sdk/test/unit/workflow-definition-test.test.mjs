@@ -1,22 +1,22 @@
 /**
- * Workflow Simplified stage 2.2, without a database: an agent's test of a revision, on request (chat-test.ts).
+ * Workflow Simplified stage 2.2, without a database: an agent's test of a revision, on request (definition-test.ts).
  * - Prepared answers: a fixture without arguments answers any call of its tool or state, but only when no fixture gives
  *   that call's exact arguments; stored fixtures keep it.
  * - The test call is refused before anything is read: without a name, with fixtures that are not prepared answers; a test
- *   id that is not this chat's test bench is TEST_NOT_FOUND.
+ *   id that is not this session's test bench is TEST_NOT_FOUND.
  * - The report: the path, each visit's outcome and output, the first error in words, a call it had no answer for, the calls
  *   answered, the virtual time its waits took; passed only when the run completed with outcome succeeded.
  * - The test bench is a service session (workflow-test) and the scripts gate says "Nothing was tested.".
- * The runs themselves (fixtures answering, the clock, the cancel, the hiding) are test/local/workflow-chat-test.test.js.
+ * The runs themselves (fixtures answering, the clock, the cancel, the hiding) are test/local/workflow-definition-test.test.js.
  *
- * Run: node --test test/unit/workflow-chat-test.test.mjs
+ * Run: node --test test/unit/workflow-definition-test.test.mjs
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { matchTestFixture, parseTestFixtures, storedTestFixtures } from "../../dist/workflow/test-mode.js";
 import { workflowDefinitionFromTool } from "../../dist/workflow/definition-tool.js";
-import { chatTestReport, testAnswerShapeWords, waitChatWorkflowTest, WORKFLOW_DEFINITION_TEST_WAIT_MS } from "../../dist/workflow/chat-test.js";
+import { definitionTestReport, testAnswerShapeWords, waitSessionWorkflowTest, WORKFLOW_DEFINITION_TEST_WAIT_MS } from "../../dist/workflow/definition-test.js";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { isWorkflowTestBench, WORKFLOW_TEST_BENCH_KIND } from "../../dist/workflow/test-bench.js";
 import { workflowScriptsDisabledText } from "../../dist/workflow/scripts-gate.js";
@@ -56,11 +56,11 @@ test("the test call is refused before anything is read: no name, fixtures that a
         assert.equal(refused.error.code, "WORKFLOW_COMMAND_INVALID", JSON.stringify(fixtures));
     }
     const catalog = {
-        getSession: async id => ({ sessionId: id, parentSessionId: id === "other-chat-bench" ? "other-chat" : "chat", deletedAt: null,
+        getSession: async id => ({ sessionId: id, parentSessionId: id === "other-owner-bench" ? "other-owner" : "chat", deletedAt: null,
             serviceKind: id === "plain" ? null : WORKFLOW_TEST_BENCH_KIND }),
         getSessionCreationConfig: async () => ({ agentTest: { definitionId: "def-1", revision: 2 } }),
     };
-    for (const testId of ["other-chat-bench", "plain"]) {
+    for (const testId of ["other-owner-bench", "plain"]) {
         const missing = await call({ operation: "test", test_id: testId }, { ...tester, catalog });
         assert.equal(missing.error.code, "TEST_NOT_FOUND", testId);
     }
@@ -96,11 +96,11 @@ test("the report of a passed test: its path, outputs, mocked answers and the vir
             state: "responded", response: { disposition: "fixture" } },
         { interceptionId: "i-2", nodeExecutionId: "nx-summarize-1", operation: "agent", tool: null, arguments: null, state: "responded", response: { disposition: "fixture" } },
     ];
-    // The chat has web_fetch (its grant, as the bench keeps it): the report checks it (RLR-F5: never assumed when unread).
+    // The session has web_fetch (its grant, as the bench keeps it): the report checks it (RLR-F5: never assumed when unread).
     const catalog = { getSessionCreationConfig: async () => ({ workflowToolBinding: { policy: WORKFLOW_TOOL_POLICY, parentSessionId: "chat",
         owner: { provider: "test", subject: "ada" }, config: {}, capabilities: { selections: [] }, tools: [{ name: "web_fetch", schemaHash: "h" }],
         sourceRevisions: {}, excludedTools: [], boundAgentFingerprint: "f" } }) };
-    const report = await chatTestReport({ store: reportStore(nodes, interceptions), catalog }, bench, run());
+    const report = await definitionTestReport({ store: reportStore(nodes, interceptions), catalog }, bench, run());
     assert.equal(report.status, "passed");
     assert.deepEqual(report.path.map(item => [item.step, item.outcome, item.mocked]),
         [["poll", "changed", false], ["summarize", "done", true], ["pause", "elapsed", false], ["done", "succeeded", false]]);
@@ -117,7 +117,7 @@ test("the report of a failed test names its first error in words, or the call it
     const stderr = `${"    at frame (file:///x.mjs:1:1)\n".repeat(30)}Error: Unknown model: gpt-imaginary`;
     const failedNodes = [visit("poll", 1, { outcome: "execution_failed", resultKind: "runtime_error",
         error: { code: "execution_failed", message: "m", details: { exitCode: 1, stderr } } }), visit("failed", 1, { outcome: "failed", resultKind: "business" })];
-    const failed = await chatTestReport({ store: reportStore(failedNodes, []) }, bench, run({ terminalOutcome: "failed", terminalNodeId: "failed" }));
+    const failed = await definitionTestReport({ store: reportStore(failedNodes, []) }, bench, run({ terminalOutcome: "failed", terminalNodeId: "failed" }));
     assert.equal(failed.status, "failed");
     assert.deepEqual(failed.firstError, { step: "poll", words: "the script stopped with an error: Unknown model: gpt-imaginary" });
     assert.match(failed.message, /failed: it ended completed \(failed\) after poll failed: the script stopped with an error: Unknown model: gpt-imaginary\.$/);
@@ -125,7 +125,7 @@ test("the report of a failed test names its first error in words, or the call it
     const waitingNodes = [visit("poll", 1, { state: "pending" })];
     const waiting = [{ interceptionId: "i-9", nodeExecutionId: "nx-poll-1", operation: "tool.call", tool: "read_build", arguments: { buildId: 7 },
         state: "awaiting_parent", response: null }];
-    const cancelled = await chatTestReport({ store: reportStore(waitingNodes, waiting) }, bench, run({ status: "cancelled", terminalOutcome: null, terminalNodeId: null,
+    const cancelled = await definitionTestReport({ store: reportStore(waitingNodes, waiting) }, bench, run({ status: "cancelled", terminalOutcome: null, terminalNodeId: null,
         terminalError: { code: "cancelled", message: "TEST_UNANSWERED: no prepared answer for the tool call read_build in step poll." } }));
     assert.equal(cancelled.status, "failed");
     const toolShape = 'A tool call\'s answer is { kind: "success", value: <what the tool returns> }. A failure is { kind: "error", value: '
@@ -137,11 +137,11 @@ test("the report of a failed test names its first error in words, or the call it
         + `Add a fixture for it (or fix the definition) and test again. ${toolShape}`);
     assert.deepEqual(cancelled.firstError, { step: "poll", words: `no prepared answer for the tool call read_build in step poll. ${toolShape}` });
 
-    const running = await chatTestReport({ store: reportStore(waitingNodes, []) }, bench, run({ status: "running", terminalOutcome: null, finishedAt: null }));
+    const running = await definitionTestReport({ store: reportStore(waitingNodes, []) }, bench, run({ status: "running", terminalOutcome: null, finishedAt: null }));
     assert.equal(running.status, "running");
     assert.match(running.message, /Read it again with workflow_definition operation test and test_id bench-1; do not start another test meanwhile\.$/);
     // A completed run whose outcome is not succeeded is a failed test.
-    assert.equal((await chatTestReport({ store: reportStore([], []) }, bench, run({ terminalOutcome: "blocked" }))).status, "failed");
+    assert.equal((await definitionTestReport({ store: reportStore([], []) }, bench, run({ terminalOutcome: "blocked" }))).status, "failed");
 });
 
 // Agent Smith 1.4.2 smoke (F-SM2): a prepared answer of the wrong shape was refused silently, and the test then said
@@ -186,7 +186,7 @@ test("F-SM2: a prepared answer of the wrong shape fails the test at once, saying
         listInterceptions: async () => [held],
     };
     // The grace is long: the refusal, not the grace, ends the test.
-    const report = await waitChatWorkflowTest({ store, catalog: {}, duroxideClient: {}, requests: true }, bench,
+    const report = await waitSessionWorkflowTest({ store, catalog: {}, duroxideClient: {}, requests: true }, bench,
         { actor: { kind: "agent", sessionId: "chat" }, pollMs: 1, graceMs: 600_000, waitMs: 60_000, sleep: async () => {} });
     const reason = "the prepared answer for the agent step classify was refused: Outcome 'finished' is not one of the state's outcomes. "
         + "An agent step's answer is { kind: \"success\", value: { outcome: \"done\", output: <its output, as its outputSchema says> } }. "
@@ -260,7 +260,7 @@ async function requestTest(fixtures) {
         listNodeExecutions: async () => [node],
         listInterceptions: async () => [held],
     };
-    const report = await waitChatWorkflowTest({ store, catalog: {}, duroxideClient: {}, requests: true }, bench,
+    const report = await waitSessionWorkflowTest({ store, catalog: {}, duroxideClient: {}, requests: true }, bench,
         { actor: { kind: "agent", sessionId: "chat" }, pollMs: 1, graceMs: 600_000, waitMs: 200, sleep: async () => {} });
     return { reasons, report };
 }

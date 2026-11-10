@@ -1,9 +1,9 @@
-// Workflow Simplified, terminal UI (spec 18: "Same model: chat plus a Workflow pane toggle, shared words"):
+// Workflow Simplified, terminal UI (spec 18: "Same model: session plus a Workflow pane toggle, shared words"):
 // - a Workflow row selects its session's chat, as in the portal; w then opens the Workflow pane for that Workflow, kept
-//   live while it is open (its own subscription), and Esc goes back to the chat;
-// - an agent node's chat opens its Workflow with that node selected; a chat opens its selected or newest Workflow; a
-//   chat with no Workflows says so;
-// - the pane says node, not step; an agent node's chat is read-only with one plain line naming the chat that owns it.
+//   live while it is open (its own subscription), and Esc goes back to the session;
+// - an agent node's session opens its Workflow with that node selected; a session opens its selected or newest Workflow; a
+//   session with no Workflows says so;
+// - the pane says node, not step; an agent node's session is read-only with one plain line naming the session that owns it.
 //
 // Run: node --test packages/app/ui/core/test/workflow-simplified-tui-pane.test.mjs
 import test from "node:test";
@@ -21,13 +21,13 @@ const states = [
     { id: "failed", type: "terminal", outcome: "failed" },
 ];
 const MODEL = readModel({ graph: { revision: 1, initial: "fetch", states }, revision: { name: "check-items" } });
-/** Stock check (r1) owns two Workflows of check-items (wf1, the older, and wf2); wf2's node review runs in chat c1; a1 has none. */
+/** Stock check (r1) owns two Workflows of check-items (wf1, the older, and wf2); wf2's node review runs in session c1; a1 has none. */
 const ROWS = [
     { sessionId: "r1", title: "Stock check", status: "idle", createdAt: 1 },
     { sessionId: "wf1", title: "Workflow: check-items", status: "completed", sessionKind: "workflow", parentSessionId: "r1", createdAt: 2 },
     { sessionId: "wf2", title: "Workflow: check-items", status: "running", sessionKind: "workflow", parentSessionId: "r1", createdAt: 3 },
     { sessionId: "c1", title: "Workflow step: review", status: "running", parentSessionId: "wf2", createdAt: 4 },
-    { sessionId: "a1", title: "Other chat", status: "idle", createdAt: 5 },
+    { sessionId: "a1", title: "Other session", status: "idle", createdAt: 5 },
 ];
 
 function harness() {
@@ -52,17 +52,17 @@ function harness() {
 const status = store => store.getState().ui.statusText;
 const modal = store => store.getState().ui.modal;
 
-test("a Workflow row keeps its session's chat; w opens that Workflow's pane, kept live while it is open, and Esc goes back to the chat", async () => {
+test("a Workflow row keeps its session's chat; w opens that Workflow's pane, kept live while it is open, and Esc goes back to the session", async () => {
     const { controller, store, subscriptions } = harness();
     store.dispatch({ type: "sessions/selected", sessionId: "wf1" });
-    assert.equal(store.getState().sessions.activeSessionId, "r1", "the chat stays in the middle");
+    assert.equal(store.getState().sessions.activeSessionId, "r1", "the session stays in the middle");
     assert.deepEqual(workflowPaneTarget(store.getState()), { workflowId: "wf1", nodeStateId: null });
     await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     assert.equal(modal(store).type, "workflowView");
     assert.equal(modal(store).sessionId, "wf1");
-    assert.equal(status(store), "Workflow — ↑↓ node · PgUp/PgDn details · Tab agent session · Enter open · Esc back to the chat");
+    assert.equal(status(store), "Workflow — ↑↓ node · PgUp/PgDn details · Tab agent session · Enter open · Esc back to the session");
     const view = selectWorkflowViewModal(store.getState(), 100, 40);
-    assert.match(view.detailsTitle, /^Node fetch — ↑↓ node · Tab agent session · Enter open · Esc back to the chat$/);
+    assert.match(view.detailsTitle, /^Node fetch — ↑↓ node · Tab agent session · Enter open · Esc back to the session$/);
     assert.ok(!/step/i.test(view.detailsTitle));
     assert.deepEqual(subscriptions.map(entry => [entry.sessionId, entry.closed]), [["wf1", false]], "the shown Workflow is kept live");
     await controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
@@ -71,7 +71,7 @@ test("a Workflow row keeps its session's chat; w opens that Workflow's pane, kep
     assert.deepEqual(subscriptions.map(entry => [entry.sessionId, entry.closed]), [["wf1", true]], "released when the pane closes");
 });
 
-test("a chat with no selected Workflow opens its newest; an agent node's chat opens its Workflow at that node; a chat with none says so", async () => {
+test("a session with no selected Workflow opens its newest; an agent node's session opens its Workflow at that node; a session with none says so", async () => {
     const { controller, store } = harness();
     store.dispatch({ type: "sessions/selected", sessionId: "r1" });
     assert.deepEqual(workflowPaneTarget(store.getState()), { workflowId: "wf2", nodeStateId: null });
@@ -86,10 +86,10 @@ test("a chat with no selected Workflow opens its newest; an agent node's chat op
     assert.equal(workflowPaneTarget(store.getState()), null);
     await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     assert.equal(modal(store), null);
-    assert.equal(status(store), "This chat has no Workflows yet");
+    assert.equal(status(store), "This session has no Workflows yet");
 });
 
-test("an agent node's chat is read-only with one plain line naming the chat that owns the Workflow", () => {
+test("an agent node's session is read-only with one plain line naming the session that owns the Workflow", () => {
     const { store } = harness();
     store.dispatch({ type: "ui/workflowInputPolicy", sessionId: "c1", policy: { canSendPrompt: false, canAnswer: false, canSteer: false,
         reason: "This session runs a step of a workflow.", workflowSessionId: "wf2", controllingSessionId: "r1" } });

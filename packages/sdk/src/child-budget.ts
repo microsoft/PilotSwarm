@@ -1,14 +1,14 @@
 /**
- * One budget of running children per chat (Workflow Simplified stage 2.4; stage 2 review S2RT-F3): a chat's running
+ * One budget of running children per session (Workflow Simplified stage 2.4; stage 2 review S2RT-F3): a session's running
  * sub-agents and its active Workflows share WORKFLOW_CHILD_BUDGET_MAX. spawn_agent (both its inline and its orchestrated
- * path) and a Workflow's Start count the same children, with the same rule, under an exclusive lock on the chat's row and
+ * path) and a Workflow's Start count the same children, with the same rule, under an exclusive lock on the session's row and
  * in the same transaction as the child's creation, so two creations at the same moment cannot both pass at 49.
  *
- * Counted, among the chat's direct children that are not deleted, system or service sessions (a test bench is a service
+ * Counted, among the session's direct children that are not deleted, system or service sessions (a test bench is a service
  * session):
  * - a sub-agent (any session that is not a Workflow) whose state is pending (made, not started yet) or running;
  * - a Workflow whose live run is admitted, running or paused;
- * - a Workflow a Start claimed and has not admitted yet (its creation records the chat's pin and it has no run): the claim
+ * - a Workflow a Start claimed and has not admitted yet (its creation records the session's pin and it has no run): the claim
  *   is its reservation, kept across an interrupted creation, and reused when the same operation goes on.
  */
 export const WORKFLOW_CHILD_BUDGET_MAX = 50;
@@ -20,7 +20,7 @@ export const CHILD_BUDGET_RUN_STATUSES: readonly string[] = ["admitted", "runnin
 export const CHILD_BUDGET_AGENT_STATES: readonly string[] = ["pending", "running"];
 
 /**
- * The count, as SQL over the quoted schema `s` (`"schema"`): $1 the chat, $2 a child to leave out (the one being made; ''
+ * The count, as SQL over the quoted schema `s` (`"schema"`): $1 the session, $2 a child to leave out (the one being made; ''
  * for none). Returns one row `{ n }`.
  */
 export function childBudgetCountSql(s: string): string {
@@ -30,13 +30,13 @@ export function childBudgetCountSql(s: string): string {
          OR (c.session_kind = 'workflow' AND (
               EXISTS (SELECT 1 FROM ${s}.workflow_runs r WHERE r.workflow_session_id = c.session_id AND r.mode = 'live'
                         AND r.status IN (${CHILD_BUDGET_RUN_STATUSES.map(status => `'${status}'`).join(", ")}))
-           OR (c.creation_config -> 'workflow' ? 'chatPin'
+           OR (c.creation_config -> 'workflow' ? 'sessionPin'
                AND NOT EXISTS (SELECT 1 FROM ${s}.workflow_runs r WHERE r.workflow_session_id = c.session_id)))))`;
 }
 
 /** The refusal's words, the same for spawn_agent and Start. */
 export function childBudgetWords(count: number, max: number = WORKFLOW_CHILD_BUDGET_MAX): string {
-    return `This chat already has ${count} running sub-agents and Workflows (max ${max}). Wait for some to end before starting another.`;
+    return `This session already has ${count} running sub-agents and Workflows (max ${max}). Wait for some to end before starting another.`;
 }
 
 /**

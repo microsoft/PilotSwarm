@@ -89,12 +89,12 @@ describe("Workflows always on: the management client and the client", () => {
             await h.catalog.createSession(C, { parentSessionId: W, owner });
             const person = { kind: "user", provider: owner.provider, subject: owner.subject, display: "Owner", relation: "owner" };
 
-            // The agent node's chat is refused to a person; the access check reads its lineage; the read works.
+            // The agent node's session is refused to a person; the access check reads its lineage; the read works.
             expect((await caught(() => on.sendMessage(C, "do something else", { sender: person })))?.code).toBe(WORKFLOW_HUMAN_INPUT_DENIED);
             expect(await on.getWorkflowInputPolicy(C)).toMatchObject({ canSendPrompt: false, workflowSessionId: W });
             expect((await on.readWorkflow(W)).definition).toBeTruthy();
             expect((await on.getWorkflowCapabilities()).enabled).toBe(true);
-            // The client: a person's prompt to the agent node's chat is refused too.
+            // The client: a person's prompt to the agent node's session is refused too.
             const session = await client.resumeSession(C);
             expect((await caught(() => session.send("hello")))?.code).toBe(WORKFLOW_HUMAN_INPUT_DENIED);
         } finally {
@@ -181,8 +181,8 @@ states:
         // run answered WORKFLOW_ERROR because this case had no host and the gate came after it).
         await intakeNativeCase(env, "workflows on, scripts off", script,
             { inlineClient: true, managerExtras: { workflowScriptsEnabled: false } }, async h => {
-                // The Workflow children under the chat other than the intake fixture's own (h.workflowSessionId, "Workflow: intake
-                // activity tests", which the fixture makes right after the chat, before any turn, for its activity tests): it is
+                // The Workflow children under the session other than the intake fixture's own (h.workflowSessionId, "Workflow: intake
+                // activity tests", which the fixture makes right after the session, before any turn, for its activity tests): it is
                 // not the turn's, so it is left out by id, as in the first case above. Each row's id and title show in a failure.
                 expect(h.workflowSessionId).toEqual(expect.any(String));
                 const strayChildren = async () => (await h.catalog.pool.query(
@@ -204,13 +204,13 @@ states:
                     expect(answer.error.message.endsWith(`Nothing was ${when}.`), seen[0][field]).toBe(true);
                 }
                 expect(seen[0].waits).not.toContain("WORKFLOW_SCRIPTS_DISABLED");
-                // Stage 2.1: spawn_workflow without start saves the chat's definition; nothing of the refused ones was saved.
+                // Stage 2.1: spawn_workflow without start saves the session's definition; nothing of the refused ones was saved.
                 expect(JSON.parse(seen[0].waits), seen[0].waits).toMatchObject({ ok: true, operation: "save", name: "waiting-probe", revision: 1 });
-                const definitions = await h.store.chat.listDefinitions(h.sessionId);
+                const definitions = await h.store.sessionDefinitions.listDefinitions(h.sessionId);
                 expect(definitions.map(item => item.name)).toEqual(["waiting-probe"]);
-                // A save without start creates no Workflow: none of the definition's, and no workflow child under the chat but the
+                // A save without start creates no Workflow: none of the definition's, and no workflow child under the session but the
                 // fixture's own (the refused spawns created none either).
-                const workflows = await h.store.chat.listWorkflows({ definitionId: definitions[0].definitionId });
+                const workflows = await h.store.sessionDefinitions.listWorkflows({ definitionId: definitions[0].definitionId });
                 expect(workflows, JSON.stringify(workflows)).toEqual([]);
                 const rows = await strayChildren();
                 expect(rows, JSON.stringify(rows)).toEqual([]);

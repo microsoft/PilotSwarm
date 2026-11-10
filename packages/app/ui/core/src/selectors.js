@@ -38,7 +38,7 @@ import {
 } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
 import { isWorkflowSession, WORKFLOW_SESSION_GLYPH } from "./workflow-sessions.js";
-import { isWorkflowChild, sessionGrowsWorkflows, WORKFLOW_OWNER_MARK_TITLE, workflowHighlightedSessionId, workflowNodeChatTitle, workflowRowTitle, workflowStateOf,
+import { isWorkflowChild, sessionGrowsWorkflows, WORKFLOW_OWNER_MARK_TITLE, workflowHighlightedSessionId, workflowNodeSessionTitle, workflowRowTitle, workflowStateOf,
 } from "./workflow-owner.js";
 import { selectWorkflowInputNote } from "./workflow-tui.js";
 import { matchesSessionError } from "./session-warning.js";
@@ -1121,8 +1121,8 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
             // chain mark tells them apart from agent sessions at a glance.
             prefixRuns.push({ text: `${WORKFLOW_SESSION_GLYPH} `, color: "magenta", bold: true, role: "sessionKind" });
         } else if (typeof session?.workflowRef === "string" && session.workflowRef) {
-            // Stage 2.3 (P2): a chat made from the new-session picker for a package's Workflow Definition wears the
-            // Workflow badge too, in the chat's colour: it is a conversation that runs that Workflow.
+            // Stage 2.3 (P2): a session made from the new-session picker for a package's Workflow Definition wears the
+            // Workflow badge too, in the session's colour: it is a conversation that runs that Workflow.
             prefixRuns.push({ text: `${WORKFLOW_SESSION_GLYPH} `, color: "cyan", bold: true, role: "sessionKind", workflowRef: session.workflowRef });
         }
     }
@@ -1146,13 +1146,13 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
     // "(guid)" — an empty, ugly line. For those, pull the meta (id · age ·
     // model) UP onto the main line so it carries information. Titled rows keep
     // the title on the line and expand id·age·model·ctx only when selected.
-    // Workflow Simplified (S2, S3): a Workflow reads `check-items #3`, an agent node's chat `summarize · agent`.
+    // Workflow Simplified (S2, S3): a Workflow reads `check-items #3`, an agent node's session `summarize · agent`.
     const workflowViews = state.ui?.workflowViews || {};
     const workflowRow = isWorkflowChild(session);
     const rawTitle = session?.isSystem
         ? canonicalSystemTitle(session, state.branding?.title || "PilotSwarm")
         : workflowRow ? workflowRowTitle(state.sessions?.byId || {}, session, workflowViews)
-            : workflowNodeChatTitle(state.sessions?.byId || {}, session) ?? buildSessionDisplayTitle(session, state.agentTitles);
+            : workflowNodeSessionTitle(state.sessions?.byId || {}, session) ?? buildSessionDisplayTitle(session, state.agentTitles);
     const workflowState = workflowRow ? workflowStateOf(session, workflowViews[session.sessionId] ?? null) : null;
     const hasRealTitle = Boolean(session?.isSystem || session?.isGroup || (rawTitle && rawTitle.trim()));
 
@@ -2094,14 +2094,14 @@ function buildLiveProgressState(session, history, chat = [], outboxItems = []) {
     return null;
 }
 
-/** A stored workflow test notice (a parent chat's "Workflow · test waiting" card). */
+/** A stored workflow test notice (a parent session's "Workflow · test waiting" card). */
 function isWorkflowTestNotice(item) {
     return item?.workflowUpdate?.type === "test_waiting";
 }
 
 /**
- * Review SF-D5: a chat shows a stored workflow test notice only while the server says workflow test mode is on
- * (state.ui.workflowTestMode); otherwise it is hidden, as test runs are. The same chat array when nothing is hidden.
+ * Review SF-D5: a session shows a stored workflow test notice only while the server says workflow test mode is on
+ * (state.ui.workflowTestMode); otherwise it is hidden, as test runs are. The same session array when nothing is hidden.
  */
 function withoutHiddenWorkflowTestNotices(state, chat) {
     if (state?.ui?.workflowTestMode === true || !chat.some(isWorkflowTestNotice)) return chat;
@@ -4046,7 +4046,7 @@ export function selectChatPaneChrome(state, options = {}) {
         mainColor,
     );
 
-    // OF-S2-5: the chat's title says it has grown Workflows, as its list row does.
+    // OF-S2-5: the session's title says it has grown Workflows, as its list row does.
     if (!session.isSystem && sessionGrowsWorkflows(state, session.sessionId)) title.push(workflowOwnerMarkRun());
 
     const activeEntry = sessionsFlat.find((entry) => entry.sessionId === session.sessionId);
@@ -7651,8 +7651,8 @@ export function selectModelPickerModal(state, maxWidth = 72) {
 
 /**
  * Stage 2.3 (P1, P2, D8): a package Workflow Definition's card in the picker's details: what it does, when to use it, its
- * inputs, how it ends, what it asks, its effects, and the model its chat uses (the one chosen, else your default; the
- * card's suggestion is shown), which its agent nodes use unless the chat chooses one at start (OF-S2-7), with the card's
+ * inputs, how it ends, what it asks, its effects, and the model its session uses (the one chosen, else your default; the
+ * card's suggestion is shown), which its agent nodes use unless the session chooses one at start (OF-S2-7), with the card's
  * model hints.
  */
 /** A package Workflow's inputs on its card (OF-S2-2 part 2: no parenthetical): "Inputs: repo · optional: branch". */
@@ -7686,11 +7686,11 @@ export function workflowPickerDetailsLines(item, chosenModel = null) {
         gray(`Ends: ${outcomes.length ? outcomes.map((outcome) => outcome.id).join(" · ") : "—"}`),
         ...(asks.length ? [gray(`Asks you: ${asks.map((ask) => ask.text).join("; ")}`)] : []),
         gray(`Model: ${chosenModel || "your default"}${item?.suggestedModel && item.suggestedModel !== chosenModel ? ` · its card suggests ${item.suggestedModel}` : ""}`),
-        // OF-S2-7: its agent nodes use that model unless the chat chooses one for a node at start; the card's hints say when.
-        ...(agentNodes.length || hints.length ? [gray("Its agent nodes use this model unless the chat chooses one for a node at start.")] : []),
+        // OF-S2-7: its agent nodes use that model unless the session chooses one for a node at start; the card's hints say when.
+        ...(agentNodes.length || hints.length ? [gray("Its agent nodes use this model unless the session chooses one for a node at start.")] : []),
         ...(hints.length ? [gray(`Model hints: ${hints.map((hint) => `${hint.id}: ${hint.text}`).join("; ")}`)] : []),
         gray(""),
-        gray("Creates a chat that runs this Workflow: it asks you for what it needs, then starts it."),
+        gray("Creates a session that runs this Workflow: it asks you for what it needs, then starts it."),
     ];
 }
 
@@ -7722,7 +7722,7 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
         }
 
         if (item?.kind === "workflow") {
-            // ◇ release-watch  release-tools 1.2.0: a package's Workflow Definition; choosing it makes a chat that runs it.
+            // ◇ release-watch  release-tools 1.2.0: a package's Workflow Definition; choosing it makes a session that runs it.
             const pkg = [item.packageTitle || item.packageName, item.packageSemver].filter(Boolean).join(" ");
             labelRuns = fitRuns([
                 { text: `${indent}${WORKFLOW_SESSION_GLYPH} `, color: "magenta", bold: true },
@@ -9911,7 +9911,7 @@ const KEYBINDING_HELP = [
         ["n / r", "new session / refresh"],
         ["a", "linked items — artifacts to download, links to open"],
         ["m", "cycle inspector tab"],
-        ["w", "Workflow pane for this chat: its selected Workflow, else its newest (↑↓ node · PgUp/PgDn details · Tab agent session · Enter open it · Esc back to the chat)"],
+        ["w", "Workflow pane for this session: its selected Workflow, else its newest (↑↓ node · PgUp/PgDn details · Tab agent session · Enter open it · Esc back to the session)"],
         ["p r s c  d", "workflow view: pause / resume / stop / cancel the shown run where the deployment takes people's workflow commands (stop and cancel ask first) · dismiss a notice"],
         ["v", "workflow view: the shown run's variables — set a name to a JSON value or remove one (Tab name/value · ↑↓ copy a listed one · Enter set · ctrl-r remove · Esc back)"],
         ["V", "workflow view: several of the shown run's variables in one update — Set a JSON object of names and values, Remove a JSON list of names; every other variable stays (Tab set/remove · Enter send, a removal asks first · Esc back)"],

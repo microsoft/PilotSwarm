@@ -1,5 +1,5 @@
 /**
- * A1 on every registry and server path (review SF-2). A session inside a Workflow (an agent node's chat and its
+ * A1 on every registry and server path (review SF-2). A session inside a Workflow (an agent node's session and its
  * sub-agents) gets no definition tools from the SDK (workflow-simplified-a1.test.mjs), and also:
  * - no MCP server's spawn_workflow or update_workflow (a person-mode update_workflow of the PilotSwarm MCP server, or
  *   any other): its CLI handle filters them out, and a call of one is refused where calls are permitted;
@@ -20,7 +20,7 @@ import {
 } from "../../dist/workflow/input-policy.js";
 import { refuseDefinitionFromInsideWorkflow, updateWorkflowForPerson, workflowCommandStatus } from "../../dist/workflow/human-commands.js";
 
-const ROOT = { childSessionId: "node-chat", nodeExecutionId: "nx-1", workflowSessionId: "W", controllingSessionId: "P", distance: 0 };
+const ROOT = { childSessionId: "node-owner", nodeExecutionId: "nx-1", workflowSessionId: "W", controllingSessionId: "P", distance: 0 };
 
 test("the MCP filters and the permission gate: any server's spawn_workflow and update_workflow, nothing else", () => {
     assert.deepEqual(workflowDefinitionMcpToolFilters(["pilotswarm", "github"]), [
@@ -74,14 +74,14 @@ test("a session inside a Workflow is offered no MCP definition tool and is refus
     const mcpUpdate = { kind: "mcp", serverName: "pilotswarm", toolName: "update_workflow", toolTitle: "Update Workflow", readOnly: false };
     const mcpRead = { kind: "mcp", serverName: "pilotswarm", toolName: "read_workflow", toolTitle: "Read Workflow", readOnly: true };
 
-    await manager.getOrCreate("node-chat", { toolNames: [], workflowInsideWorkflow: true }, { turnIndex: 0 });
+    await manager.getOrCreate("node-owner", { toolNames: [], workflowInsideWorkflow: true }, { turnIndex: 0 });
     const inside = configs.at(-1);
     assert.deepEqual(Object.keys(inside.mcpServers), ["pilotswarm"]);
     for (const filter of ["mcp:pilotswarm-update_workflow", "pilotswarm-update_workflow", "mcp:pilotswarm-spawn_workflow"]) {
         assert.ok(inside.excludedTools.includes(filter), filter);
     }
-    assert.deepEqual(await inside.onPermissionRequest(mcpUpdate, { sessionId: "node-chat" }), { kind: "reject", feedback: WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT });
-    assert.notEqual((await inside.onPermissionRequest(mcpRead, { sessionId: "node-chat" }))?.kind, "reject", "reading stays");
+    assert.deepEqual(await inside.onPermissionRequest(mcpUpdate, { sessionId: "node-owner" }), { kind: "reject", feedback: WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT });
+    assert.notEqual((await inside.onPermissionRequest(mcpRead, { sessionId: "node-owner" }))?.kind, "reject", "reading stays");
 
     await manager.getOrCreate("plain", { toolNames: [] }, { turnIndex: 0 });
     const outside = configs.at(-1);
@@ -89,7 +89,7 @@ test("a session inside a Workflow is offered no MCP definition tool and is refus
     assert.notEqual((await outside.onPermissionRequest(mcpUpdate, { sessionId: "plain" }))?.kind, "reject", "an ordinary session keeps them");
 });
 
-/** A host whose workflow "wf" exists; the lineage of "node-chat" is inside a Workflow, "chat" is not, "broken" cannot be read. */
+/** A host whose workflow "wf" exists; the lineage of "node-owner" is inside a Workflow, "session" is not, "broken" cannot be read. */
 function hostOf() {
     const reads = [];
     return {
@@ -101,7 +101,7 @@ function hostOf() {
                 readWorkflowLineage: async id => {
                     reads.push(["lineage", id]);
                     if (id === "broken") throw new Error("lineage unavailable");
-                    return id === "node-chat" ? { sessionId: id, level: 2, agentRoot: ROOT } : { sessionId: id, level: 1, agentRoot: null };
+                    return id === "node-owner" ? { sessionId: id, level: 2, agentRoot: ROOT } : { sessionId: id, level: 1, agentRoot: null };
                 },
             },
             duroxideClient: {},
@@ -119,15 +119,15 @@ test("a person's command that names a session inside a Workflow is refused a def
     for (const operation of ["replace_definition", "publish", "publish_and_start", "start"]) {
         const { host, reads } = hostOf();
         const failure = await failureOf(updateWorkflowForPerson({ operation, operation_id: "o-1" },
-            { host, workflowSessionId: "wf", actor: PERSON, originatingSessionId: "node-chat" }));
+            { host, workflowSessionId: "wf", actor: PERSON, originatingSessionId: "node-owner" }));
         assert.deepEqual(failure, { code: WORKFLOW_DEFINITION_TOOLS_REFUSED, message: WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT }, operation);
-        assert.deepEqual(reads, [["lineage", "node-chat"]], `${operation}: only the caller's lineage was read`);
+        assert.deepEqual(reads, [["lineage", "node-owner"]], `${operation}: only the caller's lineage was read`);
     }
     assert.equal(workflowCommandStatus(WORKFLOW_DEFINITION_TOOLS_REFUSED), 403);
     // A run or brake command from inside is not a definition operation; it goes on (here to the workflow's own checks).
     const { host } = hostOf();
     const pause = await failureOf(updateWorkflowForPerson({ operation: "pause", operation_id: "o-2" },
-        { host, workflowSessionId: "wf", actor: PERSON, originatingSessionId: "node-chat" }));
+        { host, workflowSessionId: "wf", actor: PERSON, originatingSessionId: "node-owner" }));
     assert.equal(pause.code, "WORKFLOW_NOT_FOUND");
     // A session outside every Workflow, and no session named: as before.
     for (const originatingSessionId of ["chat", undefined, null]) {

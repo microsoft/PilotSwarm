@@ -533,7 +533,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
             + "card workflows/<name>/card.md (front matter: name, description, whenToUse, inputs.example, outcomes for every terminal "
             + "state, asks for every request state, sends for every send state, effects, optional model, optional modelHints: an "
             + "agent node's id → { strength?, reasoning?, context?, note? }, the kind of model that node needs, never a model's name; "
-            + "then notes). An agent names the definitions its chat may start in its front matter: workflows: [<name>, <package>/<name>]. "
+            + "then notes). An agent names the definitions its session may start in its front matter: workflows: [<name>, <package>/<name>]. "
             + "Nothing is published until you call publish_agent_package.",
         parameters: {
             type: "object" as const,
@@ -697,7 +697,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                 const collisionWarnings = ((outcome as any)?.warnings ?? [])
                     .filter((w: any) => w?.code === "AGENT_NAME_COLLISION")
                     .map((w: any) => w.message);
-                // Workflow Simplified stage 2.3: the Workflow Definitions it ships, by the name a chat starts them with.
+                // Workflow Simplified stage 2.3: the Workflow Definitions it ships, by the name a session starts them with.
                 const workflows = (outcome.manifest?.workflows ?? []).map((item) => ({ name: `${outcome.name}/${item.name}`, description: item.description,
                     outcomes: Object.keys(item.interface?.outcomes ?? {}) }));
                 return {

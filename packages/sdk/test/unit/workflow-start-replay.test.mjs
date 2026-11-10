@@ -1,5 +1,5 @@
 /**
- * Stage 2 review S2RT-F5: a chat definition's Start is receipt-first. When its operation already made its Workflow (the
+ * Stage 2 review S2RT-F5: a session definition's Start is receipt-first. When its operation already made its Workflow (the
  * pin stored with it) or claimed it and was interrupted (the pin its claim records), it goes on with that definition and
  * revision, never with a default chosen again after a save; a request that names another one is refused
  * (OPERATION_CONFLICT). Without a database: the store and catalog record what they are asked.
@@ -8,19 +8,19 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { startChatWorkflowDefinition, storedStartPin, WORKFLOW_START_MAX_RUNNING_CHILDREN } from "../../dist/workflow/chat-definitions.js";
+import { startSessionWorkflowDefinition, storedStartPin, WORKFLOW_START_MAX_RUNNING_CHILDREN } from "../../dist/workflow/session-definitions.js";
 
 const ACTOR = { kind: "agent", sessionId: "chat" };
 const YAML = (seconds) => `apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: waiter, version: "1.0.0" }\ninitial: hold\n`
     + `states:\n  hold: { type: wait, seconds: ${seconds}, transition: { next: { elapsed: done } } }\n  done: { type: terminal, outcome: succeeded }\n`;
 
 /**
- * A chat with definition def-1 at revisions 1 (stored with the Workflow) and 2 (saved since); `pinnedBy` where the pin is.
+ * A session with definition def-1 at revisions 1 (stored with the Workflow) and 2 (saved since); `pinnedBy` where the pin is.
  * `yaml`: revision 1's YAML; `running`: the budget count, which excludes the Workflow named second (its own claim).
  */
 function hostWith(pinnedBy, { yaml = null, running = 0, requests = false } = {}) {
     const reads = [];
-    const chat = {
+    const sessionDefinitions = {
         readDefinition: async (id) => (id === "def-1" ? { definitionId: "def-1", ownerSessionId: "chat", name: "waiter", currentRevision: 2, deletedAt: null } : null),
         readRevision: async (id, revision) => { reads.push(["revision", revision]); return { definitionId: id, revision, valid: true,
             yaml: revision === 1 && yaml ? yaml : YAML(revision * 10) }; },
@@ -29,18 +29,18 @@ function hostWith(pinnedBy, { yaml = null, running = 0, requests = false } = {})
         runningChildren: async (_owner, exclude) => { reads.push(exclude === undefined ? ["budget"] : ["budget", "own claim excluded"]); return running; },
         nestingLevel: async () => 0,
     };
-    // PRS-002: these chats are in no Workflow (the definitions guard reads the lineage first).
-    const store = new Proxy({ chat, readWorkflowLineage: async () => null, readDefinition: async () => (pinnedBy === "row"
-        ? { workflowSessionId: "w", parentSessionId: "chat", state: "published", chatDefinitionId: "def-1", chatRevision: 1 } : null) },
+    // PRS-002: these sessions are in no Workflow (the definitions guard reads the lineage first).
+    const store = new Proxy({ sessionDefinitions, readWorkflowLineage: async () => null, readDefinition: async () => (pinnedBy === "row"
+        ? { workflowSessionId: "w", parentSessionId: "chat", state: "published", sessionDefinitionId: "def-1", sessionRevision: 1 } : null) },
     { get: (target, name) => { if (name in target) return target[name]; throw new Error(`store.${String(name)} was used`); } });
     const catalog = new Proxy({ getSessionCreationConfig: async () => (pinnedBy === "claim"
-        ? { workflow: { fingerprint: 1, requestSha256: "x", operationId: "start:op", chatPin: { definitionId: "def-1", revision: 1 } } } : null) },
+        ? { workflow: { fingerprint: 1, requestSha256: "x", operationId: "start:op", sessionPin: { definitionId: "def-1", revision: 1 } } } : null) },
     { get: (target, name) => { if (name in target) return target[name]; throw new Error(`catalog.${String(name)} was used`); } });
     return { host: { catalog, store, duroxideClient: {}, scripts: true, ...(requests ? { requests: true } : {}) }, reads };
 }
 
 const refusal = (promise) => promise.then(() => null, (error) => error);
-const start = (host, extra = {}) => refusal(startChatWorkflowDefinition(host, { ownerSessionId: "chat", definition: { definitionId: "def-1" }, inputs: {},
+const start = (host, extra = {}) => refusal(startSessionWorkflowDefinition(host, { ownerSessionId: "chat", definition: { definitionId: "def-1" }, inputs: {},
     actor: ACTOR, operationId: "op", binding: null, ...extra }));
 
 test("the pin of an operation that ran: from its Workflow's stored definition, else from its claim, else none", async () => {
@@ -80,19 +80,19 @@ test("a Start that has not run resolves the newest valid revision and counts the
 });
 
 // Review PRA-F2: a Start interrupted after its claim, before its Workflow was stored, is checked again as a first Start is.
-const CHAT_KEY_YAML = `apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: waiter, version: "1.0.0" }\ninitial: ask\n`
-    + `states:\n  ask:\n    type: agent\n    invoke: { prompt: "Say one thing." }\n    chat: new\n    timeoutSeconds: 600\n`
+const UNKNOWN_KEY_YAML = `apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: waiter, version: "1.0.0" }\ninitial: ask\n`
+    + `states:\n  ask:\n    type: agent\n    invoke: { prompt: "Say one thing." }\n    memory: new\n    timeoutSeconds: 600\n`
     + `    transition: { next: { said: done, failure: done } }\n  done: { type: terminal, outcome: succeeded }\n`;
 
 test("PRA-F2: a resumed claim whose revision no longer compiles is refused in Start's words, before the budget is read", async () => {
-    const claimed = hostWith("claim", { yaml: CHAT_KEY_YAML, requests: true });
+    const claimed = hostWith("claim", { yaml: UNKNOWN_KEY_YAML, requests: true });
     const error = await start(claimed.host);
     assert.equal(error?.code, "DEFINITION_INVALID", error?.message);
-    assert.match(error.message, /^Revision 1 of waiter does not compile in this version \(.*\): .*`chat` is now `session`.* Nothing was started\.$/);
+    assert.match(error.message, /^Revision 1 of waiter does not compile in this version \(.*\): .*'memory' is not a field of states\.ask.* Nothing was started\.$/);
     assert.deepEqual(claimed.reads, [["revision", 1]]);
 });
 
-test("PRA-F2: a resumed claim is refused when the chat's budget is full without it; its own claim alone never refuses it", async () => {
+test("PRA-F2: a resumed claim is refused when the session's budget is full without it; its own claim alone never refuses it", async () => {
     const full = hostWith("claim", { running: WORKFLOW_START_MAX_RUNNING_CHILDREN });
     const error = await start(full.host);
     assert.equal(error?.code, "CHILD_LIMIT", error?.message);

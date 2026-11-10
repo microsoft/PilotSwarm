@@ -1,6 +1,6 @@
 /**
- * Workflow authoring rules (2026-11-08, from chats that wrote Workflows):
- * - E1 loop re-entry: a route back to a state brings it the previous state's output (a chat's check_ci took a closed
+ * Workflow authoring rules (2026-11-08, from sessions that wrote Workflows):
+ * - E1 loop re-entry: a route back to a state brings it the previous state's output (a session's check_ci took a closed
  *   { checks } and gave { checks, ciState }; its wait passed that back, and the second visit failed "Input does not match
  *   node.check_ci.input"): map it with `input:`, or let the inputSchema take those fields.
  * - E2 KV: only the parent (vars, set_vars) and the person (Variables) set KV, never a state: read a key with a default

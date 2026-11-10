@@ -26,7 +26,7 @@
     "spawnAttempts": 1,
     "end": "done",
     "endSent": true,
-    "endChildStatus": "ChatContinues"
+    "endChildStatus": "AgentSessionContinues"
    },
    "outputPreview": "{\"fact\":\"PostgreSQL uses multiversion concurrency control (MVCC), allowing readers to avoid blocking writers in most transactions.\",\"round\":1}"
   },
@@ -53,7 +53,7 @@
     "spawnAttempts": 1,
     "end": "done",
     "endSent": true,
-    "endChildStatus": "ChatContinues"
+    "endChildStatus": "AgentSessionContinues"
    },
    "outputPreview": "{\"fact\":\"PostgreSQL supports extensible data types, operators, index methods, and procedural languages through its extension system.\",\"round\":2}"
   }
@@ -90,7 +90,7 @@
      },
      {
       "id": "fact",
-      "chat": "continue",
+      "session": "continue",
       "next": {
        "failure": "failed",
        "success": "check",
@@ -197,7 +197,7 @@
    "sessionId": "13bdaab5-5d1b-a4b3-744f-569bde5bd9bd",
    "eventType": "workflow.agent_spawned",
    "data": {
-    "chat": "continue",
+    "session": "continue",
     "cycle": 1,
     "runId": "c81cb7c8-4e36-4112-b1e9-7b34b4f30c76",
     "stateId": "fact",
@@ -231,7 +231,7 @@
    "eventType": "workflow.agent_cycle_ended",
    "data": {
     "end": "done",
-    "chat": "continue",
+    "session": "continue",
     "runId": "c81cb7c8-4e36-4112-b1e9-7b34b4f30c76",
     "outcome": "success",
     "stateId": "fact",
@@ -294,7 +294,7 @@
    "sessionId": "13bdaab5-5d1b-a4b3-744f-569bde5bd9bd",
    "eventType": "workflow.agent_spawned",
    "data": {
-    "chat": "continue",
+    "session": "continue",
     "cycle": 2,
     "runId": "c81cb7c8-4e36-4112-b1e9-7b34b4f30c76",
     "stateId": "fact",
@@ -328,7 +328,7 @@
    "eventType": "workflow.agent_cycle_ended",
    "data": {
     "end": "done",
-    "chat": "continue",
+    "session": "continue",
     "runId": "c81cb7c8-4e36-4112-b1e9-7b34b4f30c76",
     "outcome": "success",
     "stateId": "fact",
@@ -387,7 +387,7 @@
    "createdAt": "2026-11-06T17:03:18.402Z"
   }
  ],
- "chatEvents": [
+ "agentSessionEvents": [
   {
    "seq": 16302,
    "sessionId": "83f4ec7a-a1b1-8372-9f2c-c0a7b85d4430",

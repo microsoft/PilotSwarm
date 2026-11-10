@@ -10,7 +10,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { WorkflowDiagnostics } from "../../react/src/workflow-panels.js";
 import { WorkflowToolButton } from "../../react/src/workflow-tool-button.js";
-import { chatDefinitionFailure } from "../src/workflow-chat-definitions.js";
+import { sessionDefinitionFailure } from "../src/workflow-session-definitions.js";
 import { workflowShortTime } from "../src/workflow-words.js";
 
 const css = fs.readFileSync(new URL("../../../web/src/index.css", import.meta.url), "utf8");
@@ -60,9 +60,9 @@ test("UXFD-F15: a disabled tool button (Start…) stays focusable and says why; 
 
 test("UXFD-F14: the stale Save says the time as the info line does (workflowShortTime, no zone)", () => {
     const savedAt = new Date().toISOString();
-    const failure = chatDefinitionFailure(Object.assign(new Error("x"), { code: "REVISION_STALE", status: 409,
-        details: { currentRevision: 6, savedAt, savedBy: { kind: "chat" } } }));
-    assert.equal(failure.message, `Revision not saved: revision 6 was saved by the chat at ${workflowShortTime(savedAt)}. Reload to edit it.`);
+    const failure = sessionDefinitionFailure(Object.assign(new Error("x"), { code: "REVISION_STALE", status: 409,
+        details: { currentRevision: 6, savedAt, savedBy: { kind: "session" } } }));
+    assert.equal(failure.message, `Revision not saved: revision 6 was saved by the session at ${workflowShortTime(savedAt)}. Reload to edit it.`);
     assert.ok(!/ [A-Z]{2,5}\. Reload/.test(failure.message), failure.message);
 });
 

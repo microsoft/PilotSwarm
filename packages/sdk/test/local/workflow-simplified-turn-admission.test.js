@@ -1,6 +1,6 @@
 /**
  * Workflow Simplified, delta review of 5d687726 (RT-D1, RT-D3; formal t4b, design note + C1-C5): a continued workflow
- * chat's live turn control admits its controls (the turn-to-visit fence) on its own chain.
+ * session's live turn control admits its controls (the turn-to-visit fence) on its own chain.
  *
  * - RT-D1: a Stop is admitted and applied while an earlier steer's send has not returned: an own-visit Stop and a
  *   person's Stop abort at once; a stale Stop of another visit is dropped by admission and never queued or applied.

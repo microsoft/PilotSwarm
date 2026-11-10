@@ -1,5 +1,5 @@
 /**
- * Owner "No response" dump (2026-11-06): chat 726e9bfc got a workflow notice that says it needs no answer (a send
+ * Owner "No response" dump (2026-11-06): session 726e9bfc got a workflow notice that says it needs no answer (a send
  * state's message, WORKFLOW_UPDATE type message), the model answered nothing, and the runtime made that an error
  * ("No response was returned"), retried it after 15 s and 30 s, then waited for the person: 83 errors in 2 hours.
  * isQuietWorkflowNoticeTurn decides which turns end quietly instead (TurnOptions.quietEmptyAnswer, as F-C3's): a ROOT

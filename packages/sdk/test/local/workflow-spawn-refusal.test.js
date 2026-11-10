@@ -1,10 +1,10 @@
 /**
- * A refused start leaves nothing behind (preview finding, ux-capture-r5 on d72dfadf). A chat asked to publish and start a
+ * A refused start leaves nothing behind (preview finding, ux-capture-r5 on d72dfadf). A session asked to publish and start a
  * definition with compile errors; the refusal (DEFINITION_INVALID) came after the workflow's session row had been
  * claimed, so a pending "Workflow <id>" with no definition stayed in the person's list.
  *
  * Every refusal of the request itself now comes before the claim, as the admission design already did for inputs, vars
- * and agent pins. spawn_workflow is no longer declared (owner 2026-11-08T16:55Z); the chat uses workflow_definition, the
+ * and agent pins. spawn_workflow is no longer declared (owner 2026-11-08T16:55Z); the session uses workflow_definition, the
  * path a model has: a revision with errors is saved and cannot start (no Workflow row); the corrected next revision starts.
  *
  * A full worker (PostgreSQL, duroxide and the Copilot CLI) with the model scripted.
@@ -40,9 +40,9 @@ describe("a refused start leaves nothing behind", () => {
         const results = [];
         let afterRefusal = "not checked";
         let catalog = null;
-        let chatId = null;
+        let ownerSessionId = null;
         const workflowsOf = async () => (await catalog.pool.query(
-            `SELECT session_id FROM "${getEnv().cmsSchema}".sessions WHERE parent_session_id = $1 AND session_kind = 'workflow'`, [chatId])).rows.map(row => row.session_id);
+            `SELECT session_id FROM "${getEnv().cmsSchema}".sessions WHERE parent_session_id = $1 AND session_kind = 'workflow'`, [ownerSessionId])).rows.map(row => row.session_id);
         const respond = async (_body, position) => {
             if (!position.lastUserText.includes(PROMPT)) return { content: "ok" };
             if (position.step > 0) results[position.step - 1] = position.toolResults[0];
@@ -60,10 +60,10 @@ describe("a refused start leaves nothing behind", () => {
         };
         await withScriptedModel(getEnv(), { respond, worker: { workflowScripts: { enabled: true } } }, async ({ client, qualifiedModel }) => {
             catalog = client._catalog;
-            const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
-            chatId = chat.sessionId;
-            await turnWorkflowsOn(catalog, chatId);
-            expect(await chat.sendAndWait(PROMPT, TIMEOUT)).toBe("Started it.");
+            const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
+            ownerSessionId = session.sessionId;
+            await turnWorkflowsOn(catalog, ownerSessionId);
+            expect(await session.sendAndWait(PROMPT, TIMEOUT)).toBe("Started it.");
 
             const [saved, refused, corrected, started] = results.map(text => JSON.parse(text));
             expect(saved, JSON.stringify(saved)).toMatchObject({ ok: true, operation: "save", revision: 1, valid: false });
@@ -72,10 +72,10 @@ describe("a refused start leaves nothing behind", () => {
             expect(afterRefusal, "no Workflow row after the revision with errors").toEqual([]);
             expect(corrected, JSON.stringify(corrected)).toMatchObject({ ok: true, operation: "save", revision: 2, valid: true, definitionId: saved.definitionId });
             expect(started, JSON.stringify(started)).toMatchObject({ ok: true, operation: "start", revision: 2 });
-            // The one Workflow under the chat is the started one, pinned to revision 2.
+            // The one Workflow under the session is the started one, pinned to revision 2.
             const workflows = await workflowsOf();
             expect(workflows).toEqual([started.workflowId]);
-            expect((await catalog.workflowStore().chat.listWorkflows({ definitionId: saved.definitionId })).map(item => item.revision)).toEqual([2]);
+            expect((await catalog.workflowStore().sessionDefinitions.listWorkflows({ definitionId: saved.definitionId })).map(item => item.revision)).toEqual([2]);
         });
     });
 });

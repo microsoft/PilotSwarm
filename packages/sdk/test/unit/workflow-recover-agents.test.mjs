@@ -21,7 +21,7 @@ function fakeHost({ mode = "live", parent = "parent-1", childFails = false } = {
         readDefinition: async () => ({ parentSessionId: parent }),
         runNoticeRecorded: async () => false,
         listOwedAgentInvocations: async (_runId, after) => (after === null && invocation.endSentAt === null ? [{ ...invocation }] : []),
-        // A recover also ends the run's chats that continued across visits (chat: continue); this run's child is a visit's own.
+        // A recover also ends the run's sessions that continued across visits (session: continue); this run's child is a visit's own.
         listAgentInvocations: async () => [{ ...invocation }],
         readNodeExecution: async () => ({ nodeExecutionId: "nx-1", nodeType: "agent", state: "completed", winner: "controller", outcome: "cancelled", nodeId: "review" }),
         recordAgentEnd: async () => ({ invocation: { ...invocation } }),

@@ -1,16 +1,16 @@
 /**
- * Workflows on demand (owner 2026-11-08T16:55Z): a chat carries the Workflow tools and guidance only when they are on in it.
+ * Workflows on demand (owner 2026-11-08T16:55Z): a session carries the Workflow tools and guidance only when they are on in it.
  *
- * - Off (a chat's default on a 1.0.83 turn): a short paragraph and enable_workflows in place of the guidance and the
+ * - Off (a session's default on a 1.0.83 turn): a short paragraph and enable_workflows in place of the guidance and the
  *   Workflow tools; cron and cron_at point to enable_workflows.
- * - enable_workflows saves the chat's flag (with its capability state, revision-checked) and ends the turn; the turn's
+ * - enable_workflows saves the session's flag (with its capability state, revision-checked) and ends the turn; the turn's
  *   result carries the continuation, so the next turn starts at once, on a fresh binding, with the Workflow tools.
  * - On without asking: a saved flag; a lasting trigger (saved too); a trigger that could not be read (this turn only); a
- *   chat that owns a definition or a Workflow (saved; a chat that owns none is not read again); a session inside a
+ *   session that owns a definition or a Workflow (saved; a session that owns none is not read again); a session inside a
  *   Workflow; Agent Smith; a frozen 1.0.82 turn; a session manager without durable capability storage.
  * - None: the read-only tuner and service sessions get neither the paragraph nor enable_workflows.
- * - A chat whose Workflows are on demand keeps enable_workflows declared once they are on ("already on"): the CLI refuses
- *   a call of a tool it was not declared, which the chat shows as a Failed row (the deployed UX check).
+ * - A session whose Workflows are on demand keeps enable_workflows declared once they are on ("already on"): the CLI refuses
+ *   a call of a tool it was not declared, which the session shows as a Failed row (the deployed UX check).
  * - Review RLR-F3: a lasting trigger saves with enable_workflows' revision-checked retry; a save that does not commit
  *   keeps them on and pending, and a later plain turn saves the flag, keeping every other field.
  * - Review RLR-F4: enable_workflows and native-task admission share one fence: closed before the task list is read and
@@ -125,7 +125,7 @@ describe("Workflows on demand: declarations and instructions", () => {
         expect(f.opened.length).toBe(before + 1);
         expect(has(on.names, ["workflow_definition", "update_workflow", "read_workflow", "send_workflow_input", "respond_session_request"])).toBe(true);
         // Still declared, answered "already on": the CLI refuses a call of a tool it was not declared (a Failed row).
-        expect(described(on.tools, "enable_workflows")).toMatch(/already on in this chat/);
+        expect(described(on.tools, "enable_workflows")).toMatch(/already on in this session/);
         expect(on.prompt).toContain(inPrompt(WORKFLOW_SESSION_GUIDANCE.split("\n\n")[1]));
         expect(on.prompt).not.toContain(inPrompt(WORKFLOW_CONTEXT_STUB));
         for (const name of ["cron", "cron_at"]) expect(described(on.tools, name).endsWith(WORKFLOW_SCHEDULING_HINT)).toBe(true);
@@ -202,7 +202,7 @@ describe("Workflows on demand: declarations and instructions", () => {
         expect((await once.turn(1)).config.workflowContext).toBe("off");
     });
 
-    it("a chat that owns a definition or a Workflow turns them on and saves; one that owns none is not read again; a failed read is on", async () => {
+    it("a session that owns a definition or a Workflow turns them on and saves; one that owns none is not read again; a failed read is on", async () => {
         const owns = fixture();
         const yes = vi.fn(async () => true);
         expect((await owns.turn(0, { workflowContextOwnsCheck: yes })).config.workflowContext).toBe("on");
@@ -220,7 +220,7 @@ describe("Workflows on demand: declarations and instructions", () => {
         expect(broken).toHaveBeenCalledTimes(2);
     });
 
-    it("on without a save: inside a Workflow, an agent node's chat, a frozen 1.0.82 turn, no durable capability storage", async () => {
+    it("on without a save: inside a Workflow, an agent node's session, a frozen 1.0.82 turn, no durable capability storage", async () => {
         for (const extra of [{ workflowInsideWorkflow: true }, { workflowAgentChild: true }, { workflowMilestoneTurn: false }]) {
             const f = fixture();
             const t = await f.turn(0, extra);
@@ -240,8 +240,8 @@ describe("Workflows on demand: declarations and instructions", () => {
             expect(described(inside.tools, name)).not.toContain(WORKFLOW_SCHEDULING_HINT);
             expect(described(inside.tools, name)).not.toContain(WORKFLOW_SCHEDULING_HINT_OFF);
         }
-        const chat = await fixture().turn(0);
-        expect(chat.prompt).not.toContain(inPrompt(WORKFLOW_INSIDE_GUIDANCE));
+        const ownerSession = await fixture().turn(0);
+        expect(ownerSession.prompt).not.toContain(inPrompt(WORKFLOW_INSIDE_GUIDANCE));
     });
 
     it("Agent Smith has them on; the read-only tuner gets neither the paragraph nor enable_workflows", async () => {
@@ -323,7 +323,7 @@ describe("Workflows on demand: the CLI's skill directories (its own `skill` tool
         expect(given(tuner)).toEqual([OTHER]);
     });
 
-    it("the Workflow skill directories are part of a Base V1 chat's handle identity (V2's skill directories already are)", () => {
+    it("the Workflow skill directories are part of a Base V1 session's handle identity (V2's skill directories already are)", () => {
         const parts = { capabilityFingerprint: "cap", baseAgentPolicy: "v1", sdkSkillDirectories: [OTHER], boundAgentName: undefined,
             boundAgentSource: undefined, boundAgentCopy: undefined, mcpServers: {}, excludedTools: ["task"], tools: [{ name: "wait" }] };
         const off = buildBindingFingerprintInput(parts);
@@ -401,8 +401,8 @@ describe("enable_workflows in a turn", () => {
         expect(enable).toHaveBeenCalledOnce();
         expect(session.results[0]).toMatch(/^\{"workflows":"on"\}\n\[SYSTEM: enable_workflows acknowledged/);
         expect(session.results[1]).toMatch(/not executed.*previous control tool/i);
-        expect(result).toMatchObject({ type: "completed", content: "Workflows turned on in this chat." });
-        expect(result.forceContinuePrompt).toMatch(/^Workflows are now on in this chat/);
+        expect(result).toMatchObject({ type: "completed", content: "Workflows turned on in this session." });
+        expect(result.forceContinuePrompt).toMatch(/^Workflows are now on in this session/);
         expect(ENABLE_WORKFLOWS_TOOL_SPEC.description).toMatch(/continues your task/);
     });
 
@@ -412,7 +412,7 @@ describe("enable_workflows in a turn", () => {
         const managed = new ManagedSession("turn-session", session, { workflowContext: "on", capabilityServices: services(enable) });
         const result = await managed.runTurn("again");
         expect(enable).not.toHaveBeenCalled();
-        expect(session.results[0]).toMatch(/already on in this chat/);
+        expect(session.results[0]).toMatch(/already on in this session/);
         expect(result).toMatchObject({ type: "completed", content: "model tried to continue" });
         expect(result.forceContinuePrompt).toBeUndefined();
     });
@@ -449,7 +449,7 @@ describe("Workflows on demand: an automatic save that does not commit (review RL
             const f = fixture();
             f.state = SELECTION_STATE();
             const owns = vi.fn(async () => false);
-            // A plain turn: the chat owns no definition; that is kept.
+            // A plain turn: the session owns no definition; that is kept.
             expect((await f.turn(0, { workflowContextOwnsCheck: owns })).config.workflowContext).toBe("off");
             expect(owns).toHaveBeenCalledTimes(1);
             // The person saved a definition: its note is a lasting trigger. The save does not commit.
@@ -470,7 +470,7 @@ describe("Workflows on demand: an automatic save that does not commit (review RL
             expect(noted.config.workflowContext).toBe("on");
             expect(f.state.workflows).toBeUndefined();
             if (how !== "throws once") f.fault = null;
-            // The note was consumed with that turn: the next turn has no trigger, and the chat's cached "owns none" is gone.
+            // The note was consumed with that turn: the next turn has no trigger, and the session's cached "owns none" is gone.
             expect(f.manager.workflowContextOwnsNone.has("chat")).toBe(false);
             const plain = await f.turn(2, { workflowContextOwnsCheck: owns });
             expect(plain.config.workflowContext).toBe("on");
@@ -506,10 +506,10 @@ describe("Workflows on demand: an automatic save that does not commit (review RL
 
 describe("enable_workflows and native-task admission share one fence (review RLR-F4)", () => {
     const TASK = { toolName: "task", toolArgs: { name: "probe", agent_type: "swarm-task", mode: "sync", description: "Run the tests", prompt: "Run the tests" } };
-    // The native-task hook as the session manager wired it into the chat's CLI session (nativeSubagentHooks).
+    // The native-task hook as the session manager wired it into the session's CLI session (nativeSubagentHooks).
     const admit = (f, sessionId = "chat") => f.opened.at(-1).config.hooks.onPreToolUse({ ...TASK, sessionId, timestamp: new Date(), workingDirectory: "/" }, { sessionId });
     const admitted = decision => decision?.permissionDecision !== "deny" && decision?.modifiedArgs?.mode === "sync";
-    const chatSession = calls => {
+    const fakeSession = calls => {
         const holder = {};
         return { holder, handle: config => {
             const session = new TurnSession(calls);
@@ -520,7 +520,7 @@ describe("enable_workflows and native-task admission share one fence (review RLR
     };
 
     it("a task asked for while activation saves is refused, and after it; one flag write, one continuation, no task cancelled", async () => {
-        const { holder, handle } = chatSession([{ name: "enable_workflows" }]);
+        const { holder, handle } = fakeSession([{ name: "enable_workflows" }]);
         const f = fixture({ native: true, handle });
         await f.turn(0);
         const managed = f.manager.sessions.get("chat");
@@ -538,8 +538,8 @@ describe("enable_workflows and native-task admission share one fence (review RLR
         release();
         const result = await running;
         expect((await admit(f)).permissionDecision).toBe("deny");
-        expect(result).toMatchObject({ type: "completed", content: "Workflows turned on in this chat." });
-        expect(result.forceContinuePrompt).toMatch(/^Workflows are now on in this chat/);
+        expect(result).toMatchObject({ type: "completed", content: "Workflows turned on in this session." });
+        expect(result.forceContinuePrompt).toMatch(/^Workflows are now on in this session/);
         expect(result.queuedActions ?? []).toEqual([]);
         expect(f.saves).toHaveLength(1);
         expect(f.state.workflows).toBe(true);
@@ -550,7 +550,7 @@ describe("enable_workflows and native-task admission share one fence (review RLR
     });
 
     it("a task call already started (its admission may be in progress, the task not yet listed) refuses activation; the fence opens again", async () => {
-        const { holder, handle } = chatSession([
+        const { holder, handle } = fakeSession([
             { emit: ["tool.execution_start", { toolCallId: "task-1", toolName: "task", arguments: TASK.toolArgs }] },
             { name: "enable_workflows" },
         ]);

@@ -1,5 +1,5 @@
 /**
- * Turn control on the frozen orchestration 1.0.82, kept for the chats still on it (in-flight 1.0.82 histories replay
+ * Turn control on the frozen orchestration 1.0.82, kept for the sessions still on it (in-flight 1.0.82 histories replay
  * on 1.0.82 until their next continue-as-new). The same cases on 1.0.83, the latest, are in
  * turn-control-orchestration.test.js.
  */

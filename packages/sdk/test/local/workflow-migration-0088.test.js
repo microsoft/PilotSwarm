@@ -1,5 +1,5 @@
 /**
- * Migration 0088 (workflow), the one Workflow migration, on PostgreSQL:
+ * Migration 0088 (workflow), the Workflow schema migration (0089 then renames its owner-side objects), on PostgreSQL:
  * - A fresh create records 0088 once, and its steps run again change nothing (the catalog snapshot of
  *   helpers/schema-snapshot.js: relations, ordered live columns, constraints, indexes, functions, triggers, views,
  *   sequences, types, policies, comments, privileges and seeded rows).
@@ -31,7 +31,9 @@ describe("migration 0088: the Workflow schema in one migration", () => {
         const fresh = `wf0088_${tag}_fresh`;
         const query = (sql, params) => pool.query(sql, params);
         try {
-            await runMigrations(pool, fresh, CMS_MIGRATIONS(fresh), CMS_LOCK_SEED);
+            // Through 0088 only: migration 0089 then renames what 0088 made (workflow-migration-0089.test.js).
+            const through0088 = CMS_MIGRATIONS(fresh).filter(item => item.version <= "0088");
+            await runMigrations(pool, fresh, through0088, CMS_LOCK_SEED);
 
             const before = await schemaSnapshot(query, fresh);
             // Not vacuous: the Workflow tables, functions and both triggers on sessions are there.
@@ -43,7 +45,7 @@ describe("migration 0088: the Workflow schema in one migration", () => {
             const ledger = await pool.query(`SELECT version, name FROM "${fresh}".schema_migrations WHERE version > '0087' ORDER BY version`);
             expect(ledger.rows).toEqual([{ version: "0088", name: "workflow" }]);
             for (const step of workflowMigration(fresh)) await pool.query(step);
-            await runMigrations(pool, fresh, CMS_MIGRATIONS(fresh), CMS_LOCK_SEED);
+            await runMigrations(pool, fresh, through0088, CMS_LOCK_SEED);
             expect(snapshotDifferences(before, await schemaSnapshot(query, fresh))).toEqual({});
             expect((await pool.query(`SELECT count(*)::int AS n FROM "${fresh}".schema_migrations WHERE version > '0087'`)).rows[0].n).toBe(1);
         } finally {
@@ -83,15 +85,16 @@ describe("migration 0088: the Workflow schema in one migration", () => {
 
     it("an invalid leftover index: a blocked drop fails fast and 0088 stays unrecorded; the retry rebuilds it valid", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
-        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
-        await catalog.initialize();
         const direct = new pg.Pool({ connectionString: env.store, max: 3 });
-        const s = `"${env.cmsSchema}"`;
-        const index = `idx_${env.cmsSchema}_sessions_parent`;
-        const entry = CMS_MIGRATIONS(env.cmsSchema).find(item => item.version === "0088");
+        // A schema at 0088 (0089 renames what 0088 made, so 0088's steps run again only before it).
+        const schema = `wf0088_${randomUUID().replace(/-/g, "").slice(0, 12)}_leftover`;
+        await runMigrations(direct, schema, CMS_MIGRATIONS(schema).filter(item => item.version <= "0088"), CMS_LOCK_SEED);
+        const s = `"${schema}"`;
+        const index = `idx_${schema}_sessions_parent`;
+        const entry = CMS_MIGRATIONS(schema).find(item => item.version === "0088");
         const state = async () => (await direct.query(`SELECT i.indisvalid AS valid, i.indisunique AS unique FROM pg_index i
             JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2`,
-            [env.cmsSchema, index])).rows;
+            [schema, index])).rows;
         const recorded = async () => (await direct.query(`SELECT count(*)::int AS n FROM ${s}.schema_migrations WHERE version = '0088'`)).rows[0].n;
         const blocker = await direct.connect();
         try {
@@ -109,7 +112,7 @@ describe("migration 0088: the Workflow schema in one migration", () => {
             // Bounded here too: a step with no lock timeout would wait on the blocker for ever (then it is let go, so the
             // suite's teardown does not wait on it as well).
             const outcome = await Promise.race([
-                runMigrations(direct, env.cmsSchema, [entry], CMS_LOCK_SEED).then(() => "applied", error => error),
+                runMigrations(direct, schema, [entry], CMS_LOCK_SEED).then(() => "applied", error => error),
                 new Promise(resolve => setTimeout(() => resolve("still waiting on the lock after 15 s"), 15_000)),
             ]);
             if (typeof outcome === "string") await blocker.query("ROLLBACK");
@@ -119,14 +122,14 @@ describe("migration 0088: the Workflow schema in one migration", () => {
 
             // Nothing blocks: the retry drops the leftover, builds the index valid and records 0088 once.
             await blocker.query("COMMIT");
-            await runMigrations(direct, env.cmsSchema, [entry], CMS_LOCK_SEED);
+            await runMigrations(direct, schema, [entry], CMS_LOCK_SEED);
             expect(await state()).toEqual([{ valid: true, unique: false }]);
             expect(await recorded()).toBe(1);
         } finally {
             await blocker.query("ROLLBACK").catch(() => {});
             blocker.release();
+            await direct.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {});
             await direct.end();
-            await catalog.close();
         }
     });
 });

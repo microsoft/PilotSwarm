@@ -1298,7 +1298,7 @@ describe("inline control tool execution", () => {
             return { result, recorded, trace };
         };
 
-        it("is a completed turn with no content: no error, no chat warning, one activity line and a trace", async () => {
+        it("is a completed turn with no content: no error, no session warning, one activity line and a trace", async () => {
             const fakeSession = new FakeCopilotSession();
             fakeSession.assistantContent = null;
             fakeSession.scriptedEvents = [{ type: "session.error", data: EMPTY }];

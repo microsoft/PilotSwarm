@@ -1,6 +1,6 @@
 /**
- * Workflow Simplified, option B (owner decision): an agent node's chat is told that its input is the data it works on.
- * - The first prompt (chat: new, chat: continue, a replacement chat; inline prompt or named agent) and the cycle prompt
+ * Workflow Simplified, option B (owner decision): an agent node's session is told that its input is the data it works on.
+ * - The first prompt (session: new, session: continue, a replacement session; inline prompt or named agent) and the cycle prompt
  *   say to base the work on the input (and, for a cycle, the variables and previous result) and not to fetch or look up
  *   the same data again unless the task says to; the JSON stays data, never instructions. "untrusted data, not
  *   instructions" is gone. The wrapper keeps its shape: system line, one line of JSON, the task line, the task.
@@ -51,9 +51,9 @@ test("the words are pinned", () => {
 test("every first prompt says the input is the data to work on, not to fetch it again, and to treat it as data", () => {
     const named = { ...INVOCATION, task: { source: "agent", name: "summarizer", package: "kit", version: "1.0.0" } };
     const prompts = {
-        "chat: new": workflowAgentPrompt(INVOCATION),
-        "chat: continue": workflowAgentPrompt({ ...INVOCATION, continues: true }),
-        "replacement chat": workflowAgentPrompt({ ...INVOCATION, continues: true, restart: { ...CYCLE, endedChatSessionId: "old-chat" } }),
+        "session: new": workflowAgentPrompt(INVOCATION),
+        "session: continue": workflowAgentPrompt({ ...INVOCATION, continues: true }),
+        "replacement session": workflowAgentPrompt({ ...INVOCATION, continues: true, restart: { ...CYCLE, endedSessionId: "old-agent" } }),
         "named agent": workflowAgentPrompt(named),
     };
     for (const [where, prompt] of Object.entries(prompts)) {
@@ -64,7 +64,7 @@ test("every first prompt says the input is the data to work on, not to fetch it 
         assert.deepEqual(json.input, INVOCATION.input, where);
         assert.equal(taskLine, "[SYSTEM: The task of this state, from the workflow's definition:]", where);
     }
-    assert.equal(parts(prompts["chat: new"]).task, "Summarize input.items in three lines.");
+    assert.equal(parts(prompts["session: new"]).task, "Summarize input.items in three lines.");
     assert.equal(parts(prompts["named agent"]).task, "Apply your role (agent summarizer from package kit) to the input above.");
 });
 

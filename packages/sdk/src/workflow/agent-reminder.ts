@@ -31,7 +31,7 @@ import { COMPLETE_WORKFLOW_NODE_TOOL } from "./agent-node-service.js";
 
 /**
  * The text of a reminder (soft: a model that is still working continues). `cycle` is the open visit's node execution id
- * when the chat continues across the state's visits (owner decision agent-node-continue-20261106): its completion must
+ * when the session continues across the state's visits (owner decision agent-node-continue-20261106): its completion must
  * name it.
  */
 export function workflowAgentReminderText(stateId: string, cycle?: string): string {

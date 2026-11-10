@@ -81,10 +81,10 @@ test("the calm state is for an invalid latest revision while the parent agent wo
 });
 
 // Workflow Simplified: the Workflow tab's Definition view keeps H1. Its invalid line (07, D3: one line over the graph) is
-// calm while the chat that owns the definition is writing it, its errors folded; otherwise it is the error line. The
+// calm while the session that owns the definition is writing it, its errors folded; otherwise it is the error line. The
 // Notices button it used to have is removed (spec 17), so nothing here counts or tints a button. Selecting the Workflow
 // keeps its session's chat (09, S4); the tab is on its Definition view.
-test("while the chat writes the definition: one calm line, its errors folded; otherwise the error line over the graph (07 D3, H1)", () => {
+test("while the session writes the definition: one calm line, its errors folded; otherwise the error line over the graph (07 D3, H1)", () => {
     const tab = ({ controller, store }) => {
         const state = store.getState();
         const key = state.sessions.byId.wf?.parentSessionId && state.sessions.byId[state.sessions.byId.wf.parentSessionId] ? "agent-1" : "wf";
@@ -92,7 +92,7 @@ test("while the chat writes the definition: one calm line, its errors folded; ot
         return renderToStaticMarkup(React.createElement(WorkflowTab, { controller }));
     };
     const writing = mount(invalid(), "running");
-    assert.equal(writing.store.getState().sessions.activeSessionId, "agent-1", "the chat stays in the middle");
+    assert.equal(writing.store.getState().sessions.activeSessionId, "agent-1", "the session stays in the middle");
     const html = tab(writing);
     assert.match(html, /<p class="ps-wf-line is-quiet" role="status" data-drafting="true">Author is still writing this definition\. Revision 2 has 1 error so far\.<\/p>/);
     assert.match(html, /<details class="ps-wf-errors"><summary>Errors so far<\/summary>/);

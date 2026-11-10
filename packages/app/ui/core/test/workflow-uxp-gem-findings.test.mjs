@@ -1,7 +1,7 @@
 /**
  * UX lane findings UXP-GEM-02 to 06 (a phone in WebKit at 390 px, and every theme), as the stylesheet and the words say
  * them:
- * - UXP-GEM-04: on a phone the chat's YAML editor (ChatYamlEditor) caps its box at 55vh and keeps its bar at the top, as
+ * - UXP-GEM-04: on a phone the session's YAML editor (SessionYamlEditor) caps its box at 55vh and keeps its bar at the top, as
  *   the draft editor does (UXFD-F10 named only the draft editor).
  * - UXP-GEM-05: the marks under the YAML box say what the diagnostics list says, the code only in their tooltip; the line
  *   over an invalid revision ends with one full stop.
@@ -45,27 +45,27 @@ function declared(selector) {
 const pick = (values, names) => Object.fromEntries(names.map(name => [name, values[name]]));
 const words = html => html.replace(/<[^>]+>/g, "").replace(/&quot;/g, "\"").replace(/&#x27;/g, "'");
 
-test("UXP-GEM-04: on a phone the chat's YAML editor's box scrolls inside itself and its bar stays at the top, as the draft editor's", () => {
-    // The chat's editor: its bar, then the YAML box, each a child of .ps-wf-chat-editor (the box is the first element the
+test("UXP-GEM-04: on a phone the session's YAML editor's box scrolls inside itself and its bar stays at the top, as the draft editor's", () => {
+    // The session's editor: its bar, then the YAML box, each a child of .ps-wf-session-editor (the box is the first element the
     // YAML box component draws, not wrapped).
-    const chat = source("workflow-chat-tab.js");
-    assert.match(chat, /h\("div", \{ className: "ps-wf-chat-editor", "data-base-revision": draft\.base \},\n\s*h\("div", \{ className: "ps-wf-bar is-yaml" \},/);
-    assert.match(chat, /\n\s*h\(WorkflowYamlBox, \{ value: draft\.text \?\? "", marks, changed: draft\.dirty,/);
-    const drawn = renderToStaticMarkup(h("div", { className: "ps-wf-chat-editor" },
+    const sessionTab = source("workflow-session-tab.js");
+    assert.match(sessionTab, /h\("div", \{ className: "ps-wf-session-editor", "data-base-revision": draft\.base \},\n\s*h\("div", \{ className: "ps-wf-bar is-yaml" \},/);
+    assert.match(sessionTab, /\n\s*h\(WorkflowYamlBox, \{ value: draft\.text \?\? "", marks, changed: draft\.dirty,/);
+    const drawn = renderToStaticMarkup(h("div", { className: "ps-wf-session-editor" },
         h(WorkflowYamlBox, { value: "name: a\n", marks: { lines: [], unplaced: 0 }, changed: false, onChange: () => {} })));
-    assert.match(drawn, /^<div class="ps-wf-chat-editor"><div class="ps-workflow-yaml">/);
-    // The draft editor keeps its 55vh cap; the chat's editor fills its view instead (the next test).
+    assert.match(drawn, /^<div class="ps-wf-session-editor"><div class="ps-workflow-yaml">/);
+    // The draft editor keeps its 55vh cap; the session's editor fills its view instead (the next test).
     assert.deepEqual(pick(declared(".ps-wf-tab.is-phone .ps-workflow-draft-editor > .ps-workflow-yaml"), ["max-height", "overflow"]),
         { "max-height": "55vh", overflow: "auto" });
-    assert.equal(declared(".ps-wf-tab.is-phone .ps-wf-chat-editor > .ps-workflow-yaml").overflow, "auto");
-    for (const bar of [".ps-workflow-draft-editor > .ps-workflow-yaml-strip", ".ps-wf-chat-editor > .ps-wf-bar.is-yaml"]) {
+    assert.equal(declared(".ps-wf-tab.is-phone .ps-wf-session-editor > .ps-workflow-yaml").overflow, "auto");
+    for (const bar of [".ps-workflow-draft-editor > .ps-workflow-yaml-strip", ".ps-wf-session-editor > .ps-wf-bar.is-yaml"]) {
         assert.deepEqual(pick(declared(`.ps-wf-tab.is-phone ${bar}`), ["position", "top", "z-index", "background"]),
             { position: "sticky", top: "0", "z-index": "2", background: "var(--ps-surface)" }, bar);
     }
-    // Only a phone: no other rule caps the chat's box or holds its bar.
-    const chatRules = RULES.filter(rule => rule.selectors.some(one => one.includes(".ps-wf-chat-editor")));
-    assert.ok(chatRules.length >= 2 && chatRules.every(rule => rule.selectors.every(one => one.startsWith(".ps-wf-tab.is-phone "))),
-        JSON.stringify(chatRules.map(rule => rule.selectors)));
+    // Only a phone: no other rule caps the session's box or holds its bar.
+    const sessionRules = RULES.filter(rule => rule.selectors.some(one => one.includes(".ps-wf-session-editor")));
+    assert.ok(sessionRules.length >= 2 && sessionRules.every(rule => rule.selectors.every(one => one.startsWith(".ps-wf-tab.is-phone "))),
+        JSON.stringify(sessionRules.map(rule => rule.selectors)));
 });
 
 const DIAGNOSTICS = [
@@ -75,16 +75,16 @@ const DIAGNOSTICS = [
 ];
 
 // DEV at bfa03e9b (WebKit 390 px): the view's scroller (.ps-wf-yaml) is about 327 px under the tab's header lines, less than
-// 55vh, so a capped box still ran under the bar. On a phone the chat's editor fills the scroller and the box takes the rest.
-test("UXP-GEM-04: on a phone the chat's editor fills the YAML view; its bar and notes keep their height, the box takes the rest", () => {
-    const chat = source("workflow-chat-tab.js");
-    assert.match(chat, /mode === "yaml" \? h\("div", \{ className: "ps-wf-main ps-wf-yaml" \},\n\s*h\(ChatYamlPanel,/);
+// 55vh, so a capped box still ran under the bar. On a phone the session's editor fills the scroller and the box takes the rest.
+test("UXP-GEM-04: on a phone the session's editor fills the YAML view; its bar and notes keep their height, the box takes the rest", () => {
+    const sessionTab = source("workflow-session-tab.js");
+    assert.match(sessionTab, /mode === "yaml" \? h\("div", \{ className: "ps-wf-main ps-wf-yaml" \},\n\s*h\(SessionYamlPanel,/);
     assert.deepEqual(pick(declared(".ps-wf-yaml"), ["overflow", "flex-direction"]), { overflow: "auto", "flex-direction": "column" });
-    assert.deepEqual(pick(declared(".ps-wf-tab.is-phone .ps-wf-yaml > .ps-wf-chat-editor"), ["display", "flex-direction", "min-height"]),
+    assert.deepEqual(pick(declared(".ps-wf-tab.is-phone .ps-wf-yaml > .ps-wf-session-editor"), ["display", "flex-direction", "min-height"]),
         { display: "flex", "flex-direction": "column", "min-height": "0" });
-    assert.equal(declared(".ps-wf-tab.is-phone .ps-wf-chat-editor > :not(.ps-workflow-yaml):not(.ps-workflow-yaml-marks)").flex, "none");
+    assert.equal(declared(".ps-wf-tab.is-phone .ps-wf-session-editor > :not(.ps-workflow-yaml):not(.ps-workflow-yaml-marks)").flex, "none");
     // No viewport cap (it was taller than the view); at least 8 lines of the box's own font (line-height 1.45) and its padding.
-    assert.deepEqual(pick(declared(".ps-wf-tab.is-phone .ps-wf-chat-editor > .ps-workflow-yaml"), ["flex", "min-height", "max-height", "overflow"]),
+    assert.deepEqual(pick(declared(".ps-wf-tab.is-phone .ps-wf-session-editor > .ps-workflow-yaml"), ["flex", "min-height", "max-height", "overflow"]),
         { flex: "1 1 auto", "min-height": "calc(8 * 1.45em + 6px)", "max-height": "none", overflow: "auto" });
     assert.equal(declared(".ps-workflow-yaml")["line-height"], "1.45");
     // The list of marks under the box shrinks and scrolls too (at most 8em).
@@ -153,7 +153,7 @@ test("UXP-GEM-05: the line over an invalid revision ends with one full stop, nev
     assert.equal(revisionLine({ revision: { revision: 4, valid: false, diagnostics: [] } }).text, "Revision 4 not valid.");
     // The component draws the words revisionLine gives.
     assert.match(source("workflow-tab.js"), /const line = revisionLine\(workflowModel, \{ writing: ownerWorking, writer: ownerTitle \}\);/);
-    assert.match(source("workflow-chat-tab.js"), /const line = revisionLine\(model, \{ writing: /);
+    assert.match(source("workflow-session-tab.js"), /const line = revisionLine\(model, \{ writing: /);
 });
 
 test("UXP-GEM-03: a phone's state chip with its time cuts only the end of its label, never its start", () => {

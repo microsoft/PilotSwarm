@@ -7,7 +7,7 @@
  *   the tab is a white well (a result, a whole value, the variables), as the script's and samples' are, which the theme
  *   test measures its code colours on.
  * The rendered measure is in the browser specs: "FUI-F1" (workflow-tab.spec.mjs) and "OF-S2-8 contrast"
- * (workflow-chat-definitions.spec.mjs).
+ * (workflow-session-definitions.spec.mjs).
  *
  * Run: node --test ui/core/test/workflow-final-review-ui.test.mjs
  */

@@ -1,13 +1,13 @@
 /**
  * Named branches (owner decision 2026-11-08T00:35Z) on a REAL model: one parallel state with two named branches,
  * quick and careful, each with its own agent node mapped to its own model at start. Both run at once; each completes on
- * its own model and effort, never on the other's or the chat's; the join passes { quick: output, careful: output }.
+ * its own model and effort, never on the other's or the session's; the join passes { quick: output, careful: output }.
  * Local target only: a worker in this process on its own test
  * schemas and the model catalog of PS_MODEL_PROVIDERS_PATH.
  *
  * It spends model tokens, so it runs only when asked: PS_WORKFLOW_REAL_MODEL=run with PS_WORKFLOW_REAL_MODEL_REF
- * (the chat's provider:model). The branches' choices: PS_WORKFLOW_AGENT_MODEL_REF (quick) and PS_WORKFLOW_AGENT_MODEL_REF_2
- * (careful), two provider:model refs of the same catalog (default: the chat's model); PS_WORKFLOW_AGENT_MODEL_EFFORT (quick,
+ * (the session's provider:model). The branches' choices: PS_WORKFLOW_AGENT_MODEL_REF (quick) and PS_WORKFLOW_AGENT_MODEL_REF_2
+ * (careful), two provider:model refs of the same catalog (default: the session's model); PS_WORKFLOW_AGENT_MODEL_EFFORT (quick,
  * default low) and PS_WORKFLOW_AGENT_MODEL_EFFORT_2 (careful, default medium), so two choices of one model still differ.
  * Asked but unable to run, it fails as BLOCKED. One start, no retry. The receipt goes to PS_WORKFLOW_REAL_MODEL_RECEIPT
  * when set; a bounded summary is printed.
@@ -114,7 +114,7 @@ describe("named branches on a real model, two branches on two models (local targ
             throw new Error("BLOCKED: the two branches' choices are the same; give them two models or two efforts.");
         }
         const receipt = { test: "workflow-named-branches-real-model", startedAt: new Date().toISOString(),
-            chat: { model: plan.model.ref, effort: plan.effort ?? null },
+            session: { model: plan.model.ref, effort: plan.effort ?? null },
             chosen: { quick: branches.quick.choice, careful: branches.careful.choice }, run: null, children: {}, failures: [] };
         const fail = text => receipt.failures.push(text);
         const env = createTestEnv("wf-named-branches-real");
@@ -126,7 +126,7 @@ describe("named branches on a real model, two branches on two models (local targ
                 await withClient(env, { worker }, async (client) => {
                     const store = catalog.workflowStore();
                     // Each branch's agent node is its own state id, so each takes its own entry, checked against the owning
-                    // chat's catalog as a worker checks it.
+                    // session's catalog as a worker checks it.
                     const host = { catalog, store, duroxideClient: client._getDuroxideClient(),
                         checkAgentModel: client._workflowAgentModelCheck() };
                     const parent = randomUUID();

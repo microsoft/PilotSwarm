@@ -243,7 +243,7 @@ export function* runLoop(runtime: DurableSessionRuntime): Generator<any, string,
         }
     }
 
-    // PR 270: a Workflow agent chat's failed-turn report that a continue-as-new carried (its activity failed) is made
+    // PR 270: a Workflow agent session's failed-turn report that a continue-as-new carried (its activity failed) is made
     // again at the start of each execution (no yield when none is owed).
     yield* settleWorkflowTurnFailure(runtime);
 

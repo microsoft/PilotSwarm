@@ -1,6 +1,6 @@
 /**
  * Workflow Simplified, delta review of 5d687726 (RT-D2; formal t4b, design note + C2, C3): turn end with a visit fence,
- * against real PostgreSQL. A continued workflow chat's turn ends in one transaction: the session row's lock, then each
+ * against real PostgreSQL. A continued workflow session's turn ends in one transaction: the session row's lock, then each
  * open Stop that names another visit gets too_late (the classifier and insert live admission uses), then cms_turn_end.
  * - A Stop of another visit added after the live reader retired never turns this turn's error into stopped: the turn
  *   keeps its error (it is retried) and that Stop is too_late.
@@ -79,7 +79,7 @@ describe("RT-D2: turn end with a visit fence", () => {
         expect(await outcomes(person)).toEqual({ [theirs.seq]: "stopped", [foreign.seq]: "too_late" });
     }, TIMEOUT);
 
-    it("a continued chat that names no visit (null): every workflow Stop is too_late; a person's Stop applies", async () => {
+    it("a continued session that names no visit (null): every workflow Stop is too_late; a person's Stop applies", async () => {
         const s = await startedTurn();
         const workflowStop = await stopFor(s, `workflow-cycle-stop:${NX1}`);
         expect((await catalog.turnEnd(s, 5, 0, "error", [], { visitFence: { visit: null } })).stopped).toBe(false);

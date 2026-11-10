@@ -1,5 +1,5 @@
 /**
- * OF-S2-4 (owner, 2026-11-07T19:14Z): the first Workflow definition of a chat opens the Workflow panel (B), and every
+ * OF-S2-4 (owner, 2026-11-07T19:14Z): the first Workflow definition of a session opens the Workflow panel (B), and every
  * lifecycle change lights the Workflow button's dot while the panel is closed (C). Node visits, variable changes and
  * ordinary row updates do not.
  *
@@ -8,7 +8,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    appReducer, chatLifecycleStamp, createInitialState, createStore, workflowLifecycleAt, workflowLifecycleAtOf,
+    appReducer, sessionLifecycleStamp, createInitialState, createStore, workflowLifecycleAt, workflowLifecycleAtOf,
     workflowLifecycleChangedAt, workflowLifecycleKeys, workflowLifecycleNeedsAttention,
 } from "../src/index.js";
 
@@ -29,28 +29,28 @@ function storeWith(rows = []) {
 }
 const ui = store => store.getState().ui;
 
-test("B (one rule with d, review F1): in the chat, its first definition opens the panel, whatever its time; a page load onto it does too", () => {
+test("B (one rule with d, review F1): in the session, its first definition opens the panel, whatever its time; a page load onto it does too", () => {
     const store = storeWith();
     store.dispatch({ type: "profileSettings/apply", settings: {} });
     assert.equal(ui(store).canvasOpen, false);
-    store.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch: loaded([]) });
+    store.dispatch({ type: "ui/sessionDefinitions", ownerId: OWNER, patch: loaded([]) });
     assert.equal(ui(store).canvasOpen, false, "an empty list opens nothing");
     const seq = Number(ui(store).workflowAutoOpenSeq) || 0;
     const handSeq = Number(ui(store).workflowOpenSeq) || 0;
     // Its time is the server's and is never compared with this browser's clock (a skewed clock changes nothing).
-    store.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch: loaded([definition("watch", [{ createdAt: iso(NOW + 900_000) }])]) });
+    store.dispatch({ type: "ui/sessionDefinitions", ownerId: OWNER, patch: loaded([definition("watch", [{ createdAt: iso(NOW + 900_000) }])]) });
     assert.deepEqual([ui(store).canvasOpen, ui(store).rightPaneMode, ui(store).sidePaneTab], [true, "canvas", "workflow"]);
     // Review F7: the phone shows it by its own path (no canvas opt-out withdrawn, Budget left open), not a hand-opening's.
     assert.deepEqual([ui(store).workflowAutoOpenSeq, ui(store).workflowOpenSeq], [seq + 1, handSeq], "the phone brings its Workflow pane up");
     // Closed by the person, a second definition does not open it again.
     store.dispatch({ type: "ui/canvasOpen", open: false });
-    store.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch: loaded([definition("watch", [{ createdAt: iso(NOW) }]),
+    store.dispatch({ type: "ui/sessionDefinitions", ownerId: OWNER, patch: loaded([definition("watch", [{ createdAt: iso(NOW) }]),
         definition("digest", [{ createdAt: iso(NOW) }])]) });
     assert.equal(ui(store).canvasOpen, false);
     // A page load onto it: the first read lists the definition, its panel was never on screen: it opens.
     const reload = storeWith();
     reload.dispatch({ type: "profileSettings/apply", settings: {} });
-    reload.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch: loaded([definition("watch", [{ createdAt: iso(NOW - 900_000) }])]) });
+    reload.dispatch({ type: "ui/sessionDefinitions", ownerId: OWNER, patch: loaded([definition("watch", [{ createdAt: iso(NOW - 900_000) }])]) });
     assert.equal(ui(reload).canvasOpen, true);
 });
 
@@ -59,7 +59,7 @@ test("the first Workflow auto-open replaces Canvas; progress, attention and prof
     store.dispatch({ type: "profileSettings/apply", settings: {} });
     store.dispatch({ type: "canvas/flip", sessionId: OWNER, slot: 1 });
     assert.equal(ui(store).sidePaneTab, "canvas");
-    store.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER,
+    store.dispatch({ type: "ui/sessionDefinitions", ownerId: OWNER,
         patch: loaded([definition("watch", [{ createdAt: iso(NOW) }])]) });
     assert.equal(ui(store).sidePaneTab, "workflow");
 
@@ -67,7 +67,7 @@ test("the first Workflow auto-open replaces Canvas; progress, attention and prof
     store.dispatch({ type: "ui/workflowView", sessionId: "wf-1", view: {
         readModel: { workflowId: "wf-1", run: { runId: "r1", status: "running" }, executions: [] },
     } });
-    store.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER,
+    store.dispatch({ type: "ui/sessionDefinitions", ownerId: OWNER,
         patch: loaded([definition("watch", [{ createdAt: iso(NOW + 1_000) }])]) });
     assert.equal(ui(store).sidePaneTab, "canvas", "later Workflow updates do not replace Canvas");
     store.dispatch({ type: "ui/sidePaneTab", tab: "workflow" });
@@ -81,10 +81,10 @@ const VIEWED = NOW - 60_000;
 const row = (id, status, { createdAt = NOW - 3_600_000, updatedAt = NOW - 3_000_000 } = {}) => ({ sessionId: id, sessionKind: "workflow",
     title: "Workflow: watch", status, parentSessionId: OWNER, createdAt: iso(createdAt), updatedAt: iso(updatedAt) });
 
-/** A chat whose panel last showed at VIEWED, with one Workflow running since before it and one definition saved before it. */
+/** A session whose panel last showed at VIEWED, with one Workflow running since before it and one definition saved before it. */
 function viewedStore(rows = [row("wf-1", "running")]) {
     const store = storeWith(rows);
-    store.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch: loaded([definition("watch", [{ createdAt: iso(NOW - 3_700_000) }],
+    store.dispatch({ type: "ui/sessionDefinitions", ownerId: OWNER, patch: loaded([definition("watch", [{ createdAt: iso(NOW - 3_700_000) }],
         { workflows: [{ workflowSessionId: "wf-1", revision: 1, runStatus: "running", createdAt: iso(NOW - 3_600_000) }] })]) });
     store.dispatch({ type: "canvas/viewed", sessionId: OWNER, workflowAt: VIEWED });
     return store;
@@ -97,8 +97,8 @@ test("C: each lifecycle event lights the dot; opening the panel (its receipt) cl
     try {
         const baseline = viewedStore();
         assert.equal(dot(baseline), false, "nothing new since the panel showed");
-        const defs = store => store.getState().ui.chatDefinitions[OWNER].items;
-        const relist = (store, items) => store.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch: loaded(items) });
+        const defs = store => store.getState().ui.sessionDefinitions[OWNER].items;
+        const relist = (store, items) => store.dispatch({ type: "ui/sessionDefinitions", ownerId: OWNER, patch: loaded(items) });
         const cases = {
             "definition created": store => relist(store, [...defs(store), definition("digest", [{ createdAt: iso(NOW) }])]),
             "revision saved": store => relist(store, [{ ...defs(store)[0], currentRevision: 2,
@@ -171,13 +171,13 @@ test("C: a Workflow read before keeps its model while the panel is closed; its r
     assert.deepEqual(workflowLifecycleKeys(byId("running"), OWNER, { "wf-1": model("running") }), { "wf-1": "running" });
 });
 
-// OF-S2-4d (owner, 19:45Z): the panel opens once per chat, the first time it has a lifecycle change the person has not
-// seen: at once in the chat, else on arrival (a switch or a page load); never on unknown state.
+// OF-S2-4d (owner, 19:45Z): the panel opens once per session, the first time it has a lifecycle change the person has not
+// seen: at once in the session, else on arrival (a switch or a page load); never on unknown state.
 function arrivalStore({ profile = true, lastViewed = 0 } = {}) {
     const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "ui/sessionViewDevice", device: "desktop" });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: OWNER, title: "Release triage", updatedAt: iso(NOW - 3_600_000) },
-        { sessionId: "other", title: "Another chat", updatedAt: iso(NOW - 3_600_000) }] });
+        { sessionId: "other", title: "Another session", updatedAt: iso(NOW - 3_600_000) }] });
     if (profile) {
         store.dispatch({ type: "profileSettings/apply", settings: lastViewed ? { canvasPrefs: { [OWNER]: { lastViewedWorkflowAt: lastViewed } } } : {} });
     }
@@ -187,13 +187,13 @@ function arrivalStore({ profile = true, lastViewed = 0 } = {}) {
 const OLD_DEF = () => loaded([definition("watch", [{ createdAt: iso(NOW - 86_400_000) }])]);
 const isOpen = store => ui(store).canvasOpen === true && ui(store).sidePaneTab === "workflow";
 
-test("OF-S2-4d: arriving at a never-seen chat with a definition opens the panel once; switching back later does not", () => {
+test("OF-S2-4d: arriving at a never-seen session with a definition opens the panel once; switching back later does not", () => {
     const store = arrivalStore();
-    // The chat's definition was saved while the person was elsewhere (a day ago: no freshness limit on arrival).
+    // The session's definition was saved while the person was elsewhere (a day ago: no freshness limit on arrival).
     store.dispatch({ type: "sessions/selected", sessionId: OWNER });
     assert.equal(isOpen(store), false, "not before its definitions are read");
     const seq = Number(ui(store).workflowAutoOpenSeq) || 0;
-    store.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch: OLD_DEF() });
+    store.dispatch({ type: "ui/sessionDefinitions", ownerId: OWNER, patch: OLD_DEF() });
     assert.equal(isOpen(store), true, "opens on arrival");
     assert.equal(ui(store).workflowAutoOpenSeq, seq + 1, "the phone brings its Workflow pane up");
     // The panel shown writes its receipt; the person closes it, goes elsewhere and comes back: it stays closed.
@@ -201,22 +201,22 @@ test("OF-S2-4d: arriving at a never-seen chat with a definition opens the panel 
     store.dispatch({ type: "ui/canvasOpen", open: false });
     store.dispatch({ type: "sessions/selected", sessionId: "other" });
     store.dispatch({ type: "sessions/selected", sessionId: OWNER });
-    store.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch: { ...OLD_DEF(), at: NOW + 1 } });
+    store.dispatch({ type: "ui/sessionDefinitions", ownerId: OWNER, patch: { ...OLD_DEF(), at: NOW + 1 } });
     assert.equal(isOpen(store), false, "shown once: never again");
     // Even with no receipt in the store yet (it opened in this page), it does not open again.
     const again = arrivalStore();
     again.dispatch({ type: "sessions/selected", sessionId: OWNER });
-    again.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch: OLD_DEF() });
+    again.dispatch({ type: "ui/sessionDefinitions", ownerId: OWNER, patch: OLD_DEF() });
     again.dispatch({ type: "ui/canvasOpen", open: false });
     again.dispatch({ type: "sessions/selected", sessionId: "other" });
     again.dispatch({ type: "sessions/selected", sessionId: OWNER });
     assert.equal(isOpen(again), false, "once per page, whatever the receipt");
 });
 
-test("OF-S2-4d: never after a receipt, before the profile read, after a failed read, or for a chat with nothing", () => {
+test("OF-S2-4d: never after a receipt, before the profile read, after a failed read, or for a session with nothing", () => {
     const arrive = (store, patch = OLD_DEF()) => {
         store.dispatch({ type: "sessions/selected", sessionId: OWNER });
-        store.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch });
+        store.dispatch({ type: "ui/sessionDefinitions", ownerId: OWNER, patch });
         return isOpen(store);
     };
     assert.equal(arrive(arrivalStore({ lastViewed: NOW - 86_400_000 })), false, "the panel was on screen once (another device)");
@@ -228,34 +228,34 @@ test("OF-S2-4d: never after a receipt, before the profile read, after a failed r
     // Review F9: a failed read as the controller makes it, { error, failedAt } merged over the last good read's items.
     const failed = arrivalStore({ profile: false });
     failed.dispatch({ type: "sessions/selected", sessionId: OWNER });
-    failed.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch: OLD_DEF() });
-    failed.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch: { error: "boom", failedAt: NOW } });
-    assert.ok(Array.isArray(ui(failed).chatDefinitions[OWNER].items), "the old items stay");
+    failed.dispatch({ type: "ui/sessionDefinitions", ownerId: OWNER, patch: OLD_DEF() });
+    failed.dispatch({ type: "ui/sessionDefinitions", ownerId: OWNER, patch: { error: "boom", failedAt: NOW } });
+    assert.ok(Array.isArray(ui(failed).sessionDefinitions[OWNER].items), "the old items stay");
     failed.dispatch({ type: "profileSettings/apply", settings: {} });
     assert.equal(isOpen(failed), false, "a failed read decides nothing");
-    failed.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch: { ...OLD_DEF(), error: null } });
+    failed.dispatch({ type: "ui/sessionDefinitions", ownerId: OWNER, patch: { ...OLD_DEF(), error: null } });
     assert.equal(isOpen(failed), true, "a read that succeeds again decides");
-    assert.equal(arrive(arrivalStore(), loaded([])), false, "a chat with no definition and no Workflow");
+    assert.equal(arrive(arrivalStore(), loaded([])), false, "a session with no definition and no Workflow");
     // Full screen or zen stay as they are: zen on the canvas, the Workflow panel takes the column and zen stays.
     const zen = arrivalStore();
     zen.dispatch({ type: "sessions/selected", sessionId: OWNER });
     zen.dispatch({ type: "ui/canvasZen", on: true });
     zen.dispatch({ type: "ui/canvasMaximized", on: true });
     assert.notEqual(ui(zen).sidePaneTab, "workflow");
-    zen.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch: OLD_DEF() });
+    zen.dispatch({ type: "ui/sessionDefinitions", ownerId: OWNER, patch: OLD_DEF() });
     assert.deepEqual([isOpen(zen), ui(zen).canvasZen, ui(zen).canvasMaximized], [true, true, true]);
 });
 
-test("review F2: while an agent node's chat is the active session, the owner's Workflow keys are recorded and its panel decides", () => {
+test("review F2: while an agent node's session is the active session, the owner's Workflow keys are recorded and its panel decides", () => {
     const store = arrivalStore();
     store.dispatch({ type: "sessions/merged", session: row("wf-1", "running") });
-    store.dispatch({ type: "sessions/merged", session: { sessionId: "node-chat", title: "Workflow step: review", parentSessionId: "wf-1",
+    store.dispatch({ type: "sessions/merged", session: { sessionId: "node-owner", title: "Workflow step: review", parentSessionId: "wf-1",
         updatedAt: iso(NOW - 3_000_000) } });
     store.dispatch({ type: "canvas/viewed", sessionId: OWNER, workflowAt: VIEWED });
-    store.dispatch({ type: "sessions/selected", sessionId: "node-chat" });
-    assert.equal(store.getState().sessions.activeSessionId, "node-chat");
+    store.dispatch({ type: "sessions/selected", sessionId: "node-owner" });
+    assert.equal(store.getState().sessions.activeSessionId, "node-owner");
     assert.deepEqual(ui(store).workflowLifecycle?.[OWNER]?.keys, { "wf-1": "running" });
-    // The Workflow pauses while its node's chat is shown: recorded for the owner, so the dot it lights is that change.
+    // The Workflow pauses while its node's session is shown: recorded for the owner, so the dot it lights is that change.
     store.dispatch({ type: "sessions/merged", session: row("wf-1", "waiting", { updatedAt: NOW }) });
     assert.deepEqual(ui(store).workflowLifecycle[OWNER], { keys: { "wf-1": "paused" }, sources: { "wf-1": "row" }, waiting: {}, at: NOW });
 });
@@ -263,9 +263,9 @@ test("review F2: while an agent node's chat is the active session, the owner's W
 test("review F3, F4: a re-read follows statuses, never a row's update; a Workflow known only from the list is never dated by this browser", () => {
     const byId = (updatedAt, status = "running") => ({ [OWNER]: { sessionId: OWNER, status: "idle", updatedAt: iso(updatedAt) },
         "wf-1": row("wf-1", status, { updatedAt }) });
-    assert.equal(chatLifecycleStamp(byId(NOW), OWNER), chatLifecycleStamp(byId(NOW + 5_000), OWNER), "a node visit: no re-read");
-    assert.notEqual(chatLifecycleStamp(byId(NOW), OWNER), chatLifecycleStamp(byId(NOW, "waiting"), OWNER), "a pause: re-read");
-    assert.equal(chatLifecycleStamp({}, null), "");
+    assert.equal(sessionLifecycleStamp(byId(NOW), OWNER), sessionLifecycleStamp(byId(NOW + 5_000), OWNER), "a node visit: no re-read");
+    assert.notEqual(sessionLifecycleStamp(byId(NOW), OWNER), sessionLifecycleStamp(byId(NOW, "waiting"), OWNER), "a pause: re-read");
+    assert.equal(sessionLifecycleStamp({}, null), "");
     // A list-only Workflow whose key changes: no time (0), never Date.now().
     assert.equal(workflowLifecycleChangedAt({ "wf-9": "running" }, { "wf-9": "canceled" }, {}), 0);
 });
@@ -352,29 +352,29 @@ test("review F8: a Workflow waiting for an answer is dated when it was first see
     }
 });
 
-test("review F9: switching chats, an agent node's chat and a reload of a canceling Workflow light and open nothing; a fresh chat opens with no opt-in", () => {
+test("review F9: switching sessions, an agent node's session and a reload of a canceling Workflow light and open nothing; a fresh session opens with no opt-in", () => {
     const real = Date.now;
     Date.now = () => NOW;
     try {
-        // Switching to another chat and back is no lifecycle change.
+        // Switching to another session and back is no lifecycle change.
         const store = viewedStore();
         store.dispatch({ type: "sessions/loaded", sessions: [...Object.values(store.getState().sessions.byId),
-            { sessionId: "other", title: "Another chat", updatedAt: iso(NOW - 3_600_000) }] });
+            { sessionId: "other", title: "Another session", updatedAt: iso(NOW - 3_600_000) }] });
         store.dispatch({ type: "sessions/selected", sessionId: "other" });
         store.dispatch({ type: "sessions/selected", sessionId: OWNER });
-        assert.equal(dot(store), false, "a chat switch");
+        assert.equal(dot(store), false, "a session switch");
         assert.equal(ui(store).canvasOpen, false);
-        // An agent node's chat shown (the tab's owner is still the chat): no change, no panel.
-        store.dispatch({ type: "sessions/merged", session: { sessionId: "node-chat", title: "Workflow step: review", parentSessionId: "wf-1",
+        // An agent node's session shown (the tab's owner is still the session): no change, no panel.
+        store.dispatch({ type: "sessions/merged", session: { sessionId: "node-owner", title: "Workflow step: review", parentSessionId: "wf-1",
             updatedAt: iso(NOW) } });
         const autoSeq = Number(ui(store).workflowAutoOpenSeq) || 0;
-        store.dispatch({ type: "sessions/selected", sessionId: "node-chat" });
-        assert.equal(dot(store), false, "an agent node's chat");
-        assert.equal(Number(ui(store).workflowAutoOpenSeq) || 0, autoSeq, "nothing opens by itself (the chat's panel was on screen)");
-        // Workflows are always on: a never-seen chat with a definition opens with no opt-in.
+        store.dispatch({ type: "sessions/selected", sessionId: "node-owner" });
+        assert.equal(dot(store), false, "an agent node's session");
+        assert.equal(Number(ui(store).workflowAutoOpenSeq) || 0, autoSeq, "nothing opens by itself (the session's panel was on screen)");
+        // Workflows are always on: a never-seen session with a definition opens with no opt-in.
         const fresh = arrivalStore();
         fresh.dispatch({ type: "sessions/selected", sessionId: OWNER });
-        fresh.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER, patch: OLD_DEF() });
+        fresh.dispatch({ type: "ui/sessionDefinitions", ownerId: OWNER, patch: OLD_DEF() });
         assert.equal(isOpen(fresh), true, "always on");
     } finally {
         Date.now = real;

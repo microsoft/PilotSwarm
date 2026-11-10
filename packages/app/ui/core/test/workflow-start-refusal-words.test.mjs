@@ -1,5 +1,5 @@
 /**
- * UXFD (C): a refused Start reads in plain words, the same in the Start dialog and in the chat's answer. The server's
+ * UXFD (C): a refused Start reads in plain words, the same in the Start dialog and in the session's answer. The server's
  * schema problems (WORKFLOW_INPUT_INVALID's details, schema-words.ts in the SDK) name their place ("model is required");
  * the dialog shows "Start refused: <the problems, joined by '; '>", without the schema's name or any JSON.
  *
@@ -51,7 +51,7 @@ test("one problem, a type and an enum: each names its field", () => {
         "Start refused: extra is not a known field; mode must be one of the allowed values.");
 });
 
-test("the chat's start refusal (the workflow_definition answer) carries the same words as the dialog", () => {
+test("the session's start refusal (the workflow_definition answer) carries the same words as the dialog", () => {
     const { error, http } = refusal({ sessions: [], topic: "x" });
     const answer = JSON.parse(workflowToolErrorPayload(error));
     assert.equal(answer.ok, false);

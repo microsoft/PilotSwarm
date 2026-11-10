@@ -11,7 +11,7 @@ argument. `workflow-authoring` explains how to design a Workflow and
 
 ## workflow_definition
 
-This chat's definitions. Each has a name (its YAML's `metadata.name`) and
+This session's definitions. Each has a name (its YAML's `metadata.name`) and
 revisions 1, 2, 3: every save is a new revision, and a Workflow runs the
 revision it started with.
 
@@ -48,15 +48,15 @@ revision it started with.
   is stopped: ask the person whether to stop it.
 - `notify_on_completion`: leave it true when you must handle the result; use
   false when the person only needs to look at the Workflow.
-- `agent_models`: leave it out, so every agent node uses this chat's model,
+- `agent_models`: leave it out, so every agent node uses this session's model,
   reasoning effort and context. Give it only when the person asks for a
   model, or a package card's model hint for a node asks for a kind of model,
   reasoning or context. Map the agent node's id (its key under `states:`;
   one key covers every item of a For each) to `{ model, reasoning_effort?,
   context_tier? }`, with an exact `provider:model` from
   `list_available_models` and an effort or tier that model lists, and tell
-  the person what you chose. The model is checked against the owning chat's
-  catalog (its agent nodes spend as that chat's owner): an id that is not an
+  the person what you chose. The model is checked against the owning session's
+  catalog (its agent nodes spend as that session's owner): an id that is not an
   agent node of that revision, or a model, effort or tier the catalog does
   not have, refuses the start.
 
@@ -109,7 +109,7 @@ A fixture is `{ operation?, tool or state, arguments?, visit?, response:
 - { tool: post_status, arguments: { text: done }, response: { kind: success, value: "posted" } }
 ```
 
-A script's call of a tool this chat does not have is answered by its
+A script's call of a tool this session does not have is answered by its
 fixture too (no real call is made); the report lists it in
 `needsToolAtRunTime`: a run of the revision needs that tool. Without a
 fixture such a call fails as it would in a run. Control tools (such as
@@ -194,7 +194,7 @@ receive's `correlate` values), `run_id?` (default the live run),
 saved once per `operation_id`. A receive state that waits takes it now;
 otherwise it stays, in order, until a receive state takes it or its time
 passes, even if a receive elapsed first. You may send to the Workflows you
-created, and to your user's when your chat is that user's; a receive may
+created, and to your user's when your session is that user's; a receive may
 require a sender. The receipt: `messageId`, `requestSha256`,
 `payloadSha256`, `acceptedAt`, `expiresAt` and `claimedBy` (the receive
 state that took it, or null).
@@ -202,7 +202,7 @@ state that took it, or null).
 ## respond_session_request
 
 `request_id`, `operation_id`, and `response` or `decline: { reason }` (1 to
-2,000 characters). Answer once, before the deadline; chat text is not an
+2,000 characters). Answer once, before the deadline; reply text is not an
 answer. Refusals: `REQUEST_NOT_FOUND`, `REQUEST_EXPIRED`, `REQUEST_CLOSED`,
 `RESPONSE_CONFLICT` (another answer came first), `OPERATION_CONFLICT`,
 `RESPONSE_INVALID` and `OPERATION_LIMIT`.
@@ -228,4 +228,4 @@ execution_failed, message, details? }`.
 | `WORKFLOW_STORE_UNAVAILABLE` | The store cannot be reached or has no room now; try once more, then report the error as given. |
 | `AGENT_UNAVAILABLE` | Publication could not pin a named agent. |
 | `CONTRACT_MISMATCH` | The state is not exactly its agent's workflow interface; read `problems`. |
-| `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | `update_workflow` and `read_workflow` take only this chat's Workflows: those started from its definitions, by you or the person. A person changes theirs in the Workflow tab. |
+| `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | `update_workflow` and `read_workflow` take only this session's Workflows: those started from its definitions, by you or the person. A person changes theirs in the Workflow tab. |

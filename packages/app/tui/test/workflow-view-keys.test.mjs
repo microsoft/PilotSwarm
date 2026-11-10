@@ -1,4 +1,4 @@
-// The TUI's workflow view (design 02 "Portal/TUI: graph, observed state, read-only child chats"; T115): `w` opens it
+// The TUI's workflow view (design 02 "Portal/TUI: graph, observed state, read-only child sessions"; T115): `w` opens it
 // outside the prompt (the prompt keeps typing w), the shared Ink app draws it from the shared view model, `?` lists it,
 // and inside it p r s c send a person's run controls for the shown run, d dismisses their notice, v opens the shown
 // run's variables form, V the form for several of them in one update, e the YAML editor, S the Start form (no publish-only step), t
@@ -78,7 +78,7 @@ test("w opens the workflow view outside the prompt; the prompt and the admin con
     assert.ok(APP.indexOf("if (modal) {") < binding);
 });
 
-test("the shared Ink app draws the view: the states, the selected one's details and its agent chat", async () => {
+test("the shared Ink app draws the view: the states, the selected one's details and its agent session", async () => {
     const { controller, store, calls } = harness();
     assert.equal(render(store.getState()), "", "nothing is drawn while the view is closed");
     await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
@@ -86,9 +86,9 @@ test("the shared Ink app draws the view: the states, the selected one's details 
     assert.match(html, /data-title="Workflow: review-once · Running"/);
     assert.match(html, /▶ ● review\s+Agent · code-reviewer\s+Running · until its result/);
     assert.match(html, /○ done\s+End · succeeded/);
-    assert.match(html, /data-title="Node review — ↑↓ node · Tab agent session · Enter open · Esc back to the chat"/);
+    assert.match(html, /data-title="Node review — ↑↓ node · Tab agent session · Enter open · Esc back to the session"/);
     assert.match(html, /  accepted → done/);
-    // Stage 3 (review 19:27Z row 10): the chat by its visit, its state and its name; never its id.
+    // Stage 3 (review 19:27Z row 10): the session by its visit, its state and its name; never its id.
     assert.match(html, /▸ visit 1 · ● running · agent session not loaded/);
     assert.doesNotMatch(html, /child-1/);
     assert.match(html, /People can read these agent sessions; the server refuses their prompts, answers and instructions\./);
@@ -102,9 +102,9 @@ test("the help lists the Workflow pane, and no test keys (test mode hidden, spec
     const help = selectHelpModal(store.getState(), 120);
     assert.ok(help, "the help is open");
     const text = JSON.stringify(help);
-    assert.match(text, /Workflow pane for this chat: its selected Workflow, else its newest/);
+    assert.match(text, /Workflow pane for this session: its selected Workflow, else its newest/);
     assert.match(text, /↑↓ node/);
-    assert.match(text, /Esc back to the chat/);
+    assert.match(text, /Esc back to the session/);
     assert.match(text, /PgUp\/PgDn details/);
     assert.match(text, /p r s c  d/);
     assert.match(text, /workflow view: pause \/ resume \/ stop \/ cancel the shown run/);

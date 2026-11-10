@@ -18,7 +18,7 @@ const ROWS = [
     { sessionId: "r1", title: "Stock check", status: "idle", createdAt: 1 },
     { sessionId: "wf1", title: "Workflow: check-items", status: "completed", sessionKind: "workflow", parentSessionId: "r1", createdAt: 2 },
     { sessionId: "wf2", title: "Workflow: check-items", status: "running", sessionKind: "workflow", parentSessionId: "r1", createdAt: 3 },
-    { sessionId: "a1", title: "Other chat", status: "idle", createdAt: 5 },
+    { sessionId: "a1", title: "Other session", status: "idle", createdAt: 5 },
 ];
 
 /** A host as it starts today: no Workflows option at all. */
@@ -80,7 +80,7 @@ test("the terminal's w opens the Workflow view, and its help names the Workflow 
     await controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
     store.dispatch({ type: "ui/modal", modal: { type: "help" } });
     const text = selectHelpModal(store.getState()).rows.map(row => row.map(run => run.text).join("")).join("\n");
-    assert.match(text, /Workflow pane for this chat/);
+    assert.match(text, /Workflow pane for this session/);
     assert.match(text, /workflow view:/);
     assert.match(text, /new session \/ refresh/);
 });

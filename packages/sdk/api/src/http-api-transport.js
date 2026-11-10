@@ -270,51 +270,51 @@ export class HttpApiTransport {
         return this.api.call("updateWorkflow", { sessionId, command });
     }
 
-    /** Stage 2.1: a chat's Workflow Definitions (listChatWorkflowDefinitions, session:read). */
-    async listChatWorkflowDefinitions(sessionId, options = {}) {
-        return this.api.call("listChatWorkflowDefinitions", { sessionId, ...(options.includeDeleted === true ? { includeDeleted: true } : {}) });
+    /** Stage 2.1: a session's Workflow Definitions (listSessionWorkflowDefinitions, session:read). */
+    async listSessionWorkflowDefinitions(sessionId, options = {}) {
+        return this.api.call("listSessionWorkflowDefinitions", { sessionId, ...(options.includeDeleted === true ? { includeDeleted: true } : {}) });
     }
 
-    /** Stage 2.1: one definition with a revision's YAML, diagnostics and graph (readChatWorkflowDefinition, session:read). */
-    async readChatWorkflowDefinition(sessionId, ref = {}) {
-        return this.api.call("readChatWorkflowDefinition", { sessionId,
+    /** Stage 2.1: one definition with a revision's YAML, diagnostics and graph (readSessionWorkflowDefinition, session:read). */
+    async readSessionWorkflowDefinition(sessionId, ref = {}) {
+        return this.api.call("readSessionWorkflowDefinition", { sessionId,
             ...(ref.definitionId ? { definitionId: ref.definitionId } : {}), ...(ref.name ? { name: ref.name } : {}),
             ...(Number.isSafeInteger(ref.revision) ? { revision: ref.revision } : {}) });
     }
 
-    /** Stage 2.1: a person saves a revision (saveChatWorkflowDefinition, session:manage); the server stamps the caller. */
-    async saveChatWorkflowDefinition(sessionId, request) {
-        return this.api.call("saveChatWorkflowDefinition", { sessionId, ...request });
+    /** Stage 2.1: a person saves a revision (saveSessionWorkflowDefinition, session:manage); the server stamps the caller. */
+    async saveSessionWorkflowDefinition(sessionId, request) {
+        return this.api.call("saveSessionWorkflowDefinition", { sessionId, ...request });
     }
 
-    /** Stage 2.1: a person starts a Workflow from a revision (startChatWorkflowDefinition, session:manage). */
-    async startChatWorkflowDefinition(sessionId, request) {
-        return this.api.call("startChatWorkflowDefinition", { sessionId, ...request });
+    /** Stage 2.1: a person starts a Workflow from a revision (startSessionWorkflowDefinition, session:manage). */
+    async startSessionWorkflowDefinition(sessionId, request) {
+        return this.api.call("startSessionWorkflowDefinition", { sessionId, ...request });
     }
 
-    /** Stage 2.1: a person deletes a definition (deleteChatWorkflowDefinition, session:manage). */
-    async deleteChatWorkflowDefinition(sessionId, request) {
-        return this.api.call("deleteChatWorkflowDefinition", { sessionId, ...request });
+    /** Stage 2.1: a person deletes a definition (deleteSessionWorkflowDefinition, session:manage). */
+    async deleteSessionWorkflowDefinition(sessionId, request) {
+        return this.api.call("deleteSessionWorkflowDefinition", { sessionId, ...request });
     }
 
-    /** Stage 2.3: a person's Make a copy of a package's locked definition (copyChatWorkflowDefinition, session:manage). */
-    async copyChatWorkflowDefinition(sessionId, request) {
-        return this.api.call("copyChatWorkflowDefinition", { sessionId, ...request });
+    /** Stage 2.3: a person's Make a copy of a package's locked definition (copySessionWorkflowDefinition, session:manage). */
+    async copySessionWorkflowDefinition(sessionId, request) {
+        return this.api.call("copySessionWorkflowDefinition", { sessionId, ...request });
     }
 
-    /** Stage 2.3: a person takes a package's newer version for the next Workflow (updateChatWorkflowPackage, session:manage). */
-    async updateChatWorkflowPackage(sessionId, request) {
-        return this.api.call("updateChatWorkflowPackage", { sessionId, ...request });
+    /** Stage 2.3: a person takes a package's newer version for the next Workflow (updateSessionWorkflowPackage, session:manage). */
+    async updateSessionWorkflowPackage(sessionId, request) {
+        return this.api.call("updateSessionWorkflowPackage", { sessionId, ...request });
     }
 
-    /** Stage 2.3: the package Workflow Definitions the caller can make a chat for (listCreatableWorkflows). */
+    /** Stage 2.3: the package Workflow Definitions the caller can make a session for (listCreatableWorkflows). */
     async listCreatableWorkflows() {
         return this.api.call("listCreatableWorkflows");
     }
 
-    /** Stage 2.3: a chat made for a package's Workflow Definition (createWorkflowChat, session:create). */
-    async createWorkflowChat(ref, options = {}) {
-        return this.api.call("createWorkflowChat", { ref, ...options });
+    /** Stage 2.3: a session made for a package's Workflow Definition (createSessionForWorkflow, session:create). */
+    async createSessionForWorkflow(ref, options = {}) {
+        return this.api.call("createSessionForWorkflow", { ref, ...options });
     }
 
     async setSessionWorkspace(sessionId, input = {}, options = {}) {

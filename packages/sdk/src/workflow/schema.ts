@@ -440,7 +440,7 @@ function createAjv(): Ajv2020 {
 /**
  * Each problem as its place (a JSON pointer) and plain words that name the place and what is wrong
  * (schemaProblemWords): "sessions needs at least 6 items", "model is required". No JSON of Ajv's params: the message is
- * returned to the caller (a refused Start, in the Start dialog and the chat's answer alike), stored with the node and
+ * returned to the caller (a refused Start, in the Start dialog and the session's answer alike), stored with the node and
  * shown. It names no value a schema's author wrote for a const or an enum (adversarial review R2-SF-4); it still says what
  * is wrong ("must be one of the allowed values").
  */

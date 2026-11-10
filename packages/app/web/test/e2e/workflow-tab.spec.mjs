@@ -1,7 +1,7 @@
 // The Workflow tab in the portal, in a real browser (Workflow Simplified, stage 1; spec draft 3, sections 06 to 12, 16,
 // 17). Moved here from workflow-session.spec.mjs:
 //   - a link to a Workflow (`?session=<workflow>`) opens its session's chat in the middle and the Workflow in the right
-//     block's Workflow tab (S4, S8; on a phone, the Workflow pane over the chat); a Workflow whose session is not loaded
+//     block's Workflow tab (S4, S8; on a phone, the Workflow pane over the session); a Workflow whose session is not loaded
 //     shows the same tab in the middle;
 //   - the graph keeps every behaviour it had (topology, zoom and fit, the hand, moving steps and their saved places, late
 //     places, the For each box), with its Node, Log and Variables in the bottom panel (L5, W10);
@@ -93,11 +93,11 @@ const panelTab = (tab, name) => tab.getByRole("tablist", { name: "Workflow panel
 const bottomPanel = (tab, panel) => tab.locator(`.ps-wf-panel[data-panel="${panel}"]`);
 /** The Definition | Workflows switch of the Workflow tab: two icon toggles, the one shown pressed (owner, 2026-11-06T13:43Z). */
 const viewSwitch = (tab, name) => tab.getByRole("group", { name: "Definition or Workflows" }).getByRole("button", { name, exact: true });
-/** A phone's way from the Workflow pane back to the chat: the toolbar's Workflow button. */
+/** A phone's way from the Workflow pane back to the session: the toolbar's Workflow button. */
 async function hideWorkflowPane(page) {
     await page.getByRole("button", { name: /^Hide the Workflow tab/ }).click();
 }
-/** A phone's way from the chat to the Workflow pane. */
+/** A phone's way from the session to the Workflow pane. */
 async function showWorkflowPane(page) {
     await page.getByRole("button", { name: /^Workflow( —|$)/ }).click();
 }
@@ -127,7 +127,7 @@ async function routeApi(page, { onCreate, workflowEvents = WORKFLOW_EVENTS, onSo
         if (pathname.includes(`/sessions/${WORKFLOW_ID}/events`)) return answer(workflowEvents);
         if (pathname.includes(`/sessions/${CREATED_ID}/events`)) return answer([]);
         if (pathname.endsWith(`/sessions/${WORKFLOW_ID}`)) return answer({ ...sessions[1], events: [], messages: [] });
-        // The session that owns the Workflow: a link to the Workflow shows its chat (S4). Its own row, and a quiet chat.
+        // The session that owns the Workflow: a link to the Workflow shows its session (S4). Its own row, and a quiet session.
         if (pathname.includes(`/sessions/${AGENT_ID}/events`)) return answer([]);
         if (pathname.endsWith(`/sessions/${AGENT_ID}`)) return answer({ ...sessions[0], events: [], messages: [] });
         if (pathname.endsWith(`/sessions/${CREATED_ID}`)) {
@@ -483,7 +483,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
 // On a phone (12), the Workflow pane has the canvas's maximize toggle, exactly as the canvas has it (owner,
 // 2026-11-06T06:28Z; replaces batch 6 f-02): it covers the whole screen and Restore brings the pane back. A phone has no
 // canvas zen, so there is no zen entry here either. Its Log opens as a sheet with a visible way back (← Graph), and the
-// Workflow button takes the person back to the chat; a node's details are reachable (a tap selects, a second tap opens).
+// Workflow button takes the person back to the session; a node's details are reachable (a tap selects, a second tap opens).
 test("mobile: the Workflow pane maximizes and restores as the canvas does, has no zen entry or composer bar, and node details are reachable", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
@@ -578,9 +578,9 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
 }
 
 // of-03, on the Workflow tab (L6: the right block uses today's canvas widths, default 640 px, remembered per session): the
-// right block holding the Workflow tab resizes. The seam between the chat and the Workflow tab moves it at once while
+// right block holding the Workflow tab resizes. The seam between the session and the Workflow tab moves it at once while
 // dragging, and the width is remembered for the session across a reload (the profile store below keeps what the page
-// saves). The arrow keys move it by 24 pixels and stop at chat's floor without storing a width the screen cannot show, so
+// saves). The arrow keys move it by 24 pixels and stop at session's floor without storing a width the screen cannot show, so
 // the first key back moves it; a double-click puts it back at its opening width. With Diagnostics open too on a window too
 // narrow for both opening widths, the seam moves itself (the right block gives up the pixels) and Diagnostics keeps its
 // width. A Diagnostics column a narrower window squeezed out gets its width back first. The zen chat rail's seam resets
@@ -634,7 +634,7 @@ test("of-03: the Workflow tab's right block resizes by drag, keys and double-cli
     const pane = async () => Math.round((await rightBlock(page)).canvas ?? 0);
     await expect.poll(pane).toBe(640);
     const seam = page.getByRole("button", { name: "Resize the right column", exact: true });
-    // Both halves of the seam's grab band are the seam's, beside the chat and beside the Workflow tab.
+    // Both halves of the seam's grab band are the seam's, beside the session and beside the Workflow tab.
     const box = await seam.boundingBox();
     const hits = await page.evaluate(([cx, cy]) => [cx - 3, cx + 3]
         .map((px) => Boolean(document.elementFromPoint(px, cy)?.closest(".ps-column-resizer"))), [box.x + box.width / 2, box.y + box.height / 2]);
@@ -654,7 +654,7 @@ test("of-03: the Workflow tab's right block resizes by drag, keys and double-cli
     await expect.poll(pane).toBeLessThanOrEqual(768);
     await page.keyboard.press("ArrowLeft");
     await expect.poll(pane).toBeGreaterThanOrEqual(788);
-    // Growing by keys stops at chat's floor, and the first key back moves the pane at once: nothing hidden was stored.
+    // Growing by keys stops at session's floor, and the first key back moves the pane at once: nothing hidden was stored.
     for (let i = 0; i < 40; i += 1) await page.keyboard.press("ArrowLeft");
     const widest = await rightBlock(page);
     expect(widest.chat).toBeGreaterThanOrEqual(200);
@@ -666,7 +666,7 @@ test("of-03: the Workflow tab's right block resizes by drag, keys and double-cli
     await seam.dblclick();
     await expect.poll(pane).toBe(640);
 
-    // Remembered for the session whose chat is shown (L6): drag again, let the page save, reload, and the right block
+    // Remembered for the session whose session is shown (L6): drag again, let the page save, reload, and the right block
     // comes back at the dragged width, on the Workflow tab.
     await dragSeam(page, seam, -150);
     await expect.poll(pane).toBeGreaterThanOrEqual(788);
@@ -699,7 +699,7 @@ test("of-03: with Diagnostics open on a narrow window the seam beside the Workfl
     // The window cannot show both opening widths (640 + 320): the grid gives Diagnostics less than its own width.
     expect(before.diagnostics).toBeLessThan(318);
     const seam = page.getByRole("button", { name: "Resize the right column", exact: true });
-    // Chat is at its floor, so neither a drag toward the workflow nor the arrow keys widen the Workflow tab, and Diagnostics
+    // Session is at its floor, so neither a drag toward the workflow nor the arrow keys widen the Workflow tab, and Diagnostics
     // is never squeezed to make room (of-03-B: the canvas grew and Diagnostics went to 0 px).
     await dragSeam(page, seam, -150);
     await seam.focus();
@@ -728,7 +728,7 @@ test("of-03: Diagnostics squeezed by a narrower window gets its width back first
     await page.getByRole("button", { name: /Show diagnostics/i }).first().click();
     await expect.poll(async () => (await rightBlock(page)).diagnostics ?? 0).toBeGreaterThan(300);
     const seam = page.getByRole("button", { name: "Resize the right column", exact: true });
-    // The Workflow tab as wide as chat allows, then a narrower window: the grid squeezes Diagnostics out.
+    // The Workflow tab as wide as session allows, then a narrower window: the grid squeezes Diagnostics out.
     await seam.focus();
     for (let i = 0; i < 30; i += 1) await page.keyboard.press("ArrowLeft");
     await page.setViewportSize({ width: 1000, height: 800 });
@@ -826,7 +826,7 @@ test("a workflow's read model failure is shown beside its graph, and Retry reads
 // M16, M19; R17, R19, R26, R27; T116): the browser with a mocked backend (page.route stubs over the shared stub server), not
 // a deployed stack, no model. Run stop confirm, dismiss and refusal at 1440 and 390 pixels with a keyboard pause; an
 // unconfirmed pause retried with the same operation id; the virtual clock's checks and one exact advance; a workflow agent
-// state's chat read-only beside an ordinary one; a lost draft save kept and resent unchanged.
+// state's session read-only beside an ordinary one; a lost draft save kept and resent unchanged.
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "Workflow commands:" (from packages/app/web, after build).
 // The confirm modal's dialog role, modal marking, name, description and focus are asserted (owner decision q18 changed
 // what a failed access read shows: "Could not check…" with Retry instead of the ordinary composer; owner decision q17
@@ -1188,7 +1188,7 @@ test("Workflow commands: the workflow screen's edit boxes share one theme style 
 });
 
 // ------------------------------------------------------------------------------------------------------------
-// B4 — a workflow agent state's child chat is read-only in the rendered DOM with the server's reason; the ordinary
+// B4 — a workflow agent state's child session is read-only in the rendered DOM with the server's reason; the ordinary
 // agent session (positive control) keeps its prompt input; no prompt request is sent from the read-only one.
 // 1440 and 390.
 // Source: web-app.js SessionComposer / main composer: readOnly when access.canSendPrompt === false; text =
@@ -1199,10 +1199,10 @@ test("Workflow commands: the workflow screen's edit boxes share one theme style 
 // ------------------------------------------------------------------------------------------------------------
 const CHILD_ID = "99999999-2222-3333-4444-555555555555";
 const CHILD_REASON = "This session runs a step of a workflow. People cannot send it prompts, answers or instructions; message the workflow's parent agent instead.";
-// Review UI-17: the read-only note says the server's reason first, then the chat to message.
+// Review UI-17: the read-only note says the server's reason first, then the session to message.
 const CHILD_NOTE = new RegExp(`^${CHILD_REASON.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} To change this, message .+\\.$`);
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
-    test(`Workflow commands: a workflow agent state's chat is read-only with the server's reason; an ordinary chat is not, at ${viewport.width}px`, async ({ page }) => {
+    test(`Workflow commands: a workflow agent state's session is read-only with the server's reason; an ordinary session is not, at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
         const errors = [];
         page.on("pageerror", collectPageErrors(errors));
@@ -1235,7 +1235,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         // S7 (spec 14 mock): one plain line naming the session whose Workflow runs this node (its title, as loaded).
         await expect(readonly).toHaveText(CHILD_NOTE);
         await expect(page.locator(".ps-prompt-input")).toHaveCount(0);
-        await expect(page.locator(".ps-chat-composer.is-workflow")).toHaveCount(0); // a child chat is not a workflow session
+        await expect(page.locator(".ps-chat-composer.is-workflow")).toHaveCount(0); // a child session is not a workflow session
         await shot(page, `child-readonly-${viewport.width}`);
 
         // Positive control: the ordinary agent session in the same page keeps its prompt input.
@@ -1568,7 +1568,7 @@ async function routeWorkflowRevisions(page, model, yaml = PUBLISHED_YAML) {
     return reads;
 }
 /**
- * The chat the workflows belong to, opened by its id, not its title. With a Workflow row highlighted, a click selects
+ * The session the workflows belong to, opened by its id, not its title. With a Workflow row highlighted, a click selects
  * the session; on the selected session a click opens or folds its rows (as for sub-agents).
  */
 const openAgent = (page) => page.locator(`.ps-session-list-button[data-session-id="${AGENT_ID}"] .ps-session-row-content`).first().click();
@@ -1686,7 +1686,7 @@ test("r-2: a revision's YAML is read-only where it cannot change, and a person w
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const view = await openYaml();
     // Words (03, 17): the revision, no draft or published.
-    await expect(view).toContainText("Revision 1 · read-only. To change it, ask the chat.");
+    await expect(view).toContainText("Revision 1 · read-only. To change it, ask the session.");
     const box = view.getByRole("textbox", { name: "Workflow YAML", exact: true });
     await expect(box).toHaveValue(PUBLISHED_YAML);
     await expect(box).toHaveAttribute("readonly", "");
@@ -1744,7 +1744,7 @@ test("r-3: the Log fills the bottom panel, a node on the graph shows the Node pa
 // Zen and full screen on the Workflow tab, exactly as on the canvas (owner, 2026-11-06T06:28Z: "need the full screen and
 // zen mode buttons for the workflow tab as well, exact same behavior as the canvas"; replaces batch 6 f-02 and spec L1's
 // "no Zen or Full screen"). The buttons sit at the right end of the tab's header in both views. Zen: the session list
-// steps away and the chat is the rail. Full screen: the block covers chat and sessions, and its controls move into the
+// steps away and the session is the rail. Full screen: the block covers chat and sessions, and its controls move into the
 // toolbar (the tab switch, Zen to step down into zen, Restore). Canvas and Workflow share the mode: switching keeps it.
 // Escape steps down one rung; a reload keeps it.
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "zen and full screen" (from packages/app/web, after build).
@@ -1777,7 +1777,7 @@ test("zen and full screen: the Workflow tab has the canvas's buttons, keeps the 
     const fullBox = await head.getByRole("button", { name: "Full screen canvas", exact: true }).boundingBox();
     expect(fullBox.x + fullBox.width).toBeGreaterThan(headBox.x + headBox.width - 40);
 
-    // Zen: the chat becomes the 380 px rail beside the Workflow tab; the canvas keeps the mode, and so does the way back.
+    // Zen: the session becomes the 380 px rail beside the Workflow tab; the canvas keeps the mode, and so does the way back.
     await head.getByRole("button", { name: "Zen mode", exact: true }).click();
     await expect.poll(rail).toBe(380);
     await expect(head.getByRole("button", { name: "Leave zen mode", exact: true })).toBeVisible();
@@ -1877,7 +1877,7 @@ for (const width of [1440, 2000]) {
             expect(parseFloat(await exit.evaluate((element) => getComputedStyle(element).borderTopWidth))).toBeGreaterThan(0);
             expect(await exit.innerText()).toBe("");
             await exit.hover();
-            await expect(page.getByRole("tooltip")).toHaveText("Exit full screen — bring back the chat and the sessions");
+            await expect(page.getByRole("tooltip")).toHaveText("Exit full screen — bring back the session and the sessions");
             // The toolbar's slot keeps the canvas's controls too.
             await expect(page.locator("#ps-toolbar-canvas-slot").getByRole("button", { name: "Restore canvas", exact: true })).toBeVisible();
             if (from === "normal") await shot(page, `owner-1940-f7-full-screen-${width}`);
@@ -1973,13 +1973,13 @@ test("owner 19:40Z F8: zen, full screen and normal fit the graph again, until th
     expect(errors).toEqual([]);
 });
 
-// Owner, 2026-11-06T19:40Z (F9): "I asked the chat for another revision of the workflow, it supposedly built one, but i
-// can't find it anywhere". His chat called spawn_workflow with new YAML as a draft (the executor's read-only dump): a third
+// Owner, 2026-11-06T19:40Z (F9): "I asked the session for another revision of the workflow, it supposedly built one, but i
+// can't find it anywhere". His session called spawn_workflow with new YAML as a draft (the executor's read-only dump): a third
 // child of the name, version 1.1.0, its own revision 1, never started, beside #1 and #2 (1.0.0, running). His shape here:
 // the picker names the draft's version and says draft; the Definition view says its version, "draft · not started" and when
 // it was made; the Workflows view says a newer draft is not started yet, and Show it opens it.
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "owner 19:40Z F9" (from packages/app/web, after build).
-test("owner 19:40Z F9: a chat's new draft of a running definition is named, marked draft, and reachable from the Workflows view", async ({ page }) => {
+test("owner 19:40Z F9: a session's new draft of a running definition is named, marked draft, and reachable from the Workflows view", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
@@ -2202,7 +2202,7 @@ test("UI4-F1: a draft chosen in the picker stays shown through its new revisions
     const yamlOf = id => `apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: watch-flow, version: "${id === A ? "1.0.0" : "1.1.0"}" }\ninitial: poll\n`;
     const { rows } = await routeOwned(page, { models, yamlOf });
     rows.splice(0, rows.length, { ...OWNED_ROWS[0], status: "completed" }, { ...OWNED_ROWS[2], title: "Workflow: watch-flow", status: "pending" });
-    // B saved again (the chat or the person): its row changes, and the next read has the new revision and hash.
+    // B saved again (the session or the person): its row changes, and the next read has the new revision and hash.
     const revise = revision => {
         models[B] = draft(revision);
         rows[1] = { ...rows[1], updatedAt: Date.now() };
@@ -2500,7 +2500,7 @@ test("f-06: the graph is fitted once and keeps its view through the bottom panel
 
 // ------------------------------------------------------------------------------------------------------------
 // Batch 8 (d-1): the session details of a workflow show Title, ID, Owner, Workflow, Revision, Run, Started by, Steps,
-// Updated and Access (ten rows, the same box height as a chat's), not Model, Context, Cron or Agent. Started by is a link
+// Updated and Access (ten rows, the same box height as a session's), not Model, Context, Cron or Agent. Started by is a link
 // that selects the parent; a workflow a person started says "You" for its owner. Collapsed, the line shows the run, no
 // percentage. An agent session that runs a workflow's step shows "Step of" (a link to the workflow) instead of Cron.
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "d-1:" (from packages/app/web, after build).
@@ -2541,7 +2541,7 @@ test("d-1: a workflow's session details say what it runs, link its parent, and f
     await openDetails(page);
 
     // S4: a link to a Workflow selects its row and keeps its session's chat in the middle; the details describe the
-    // selected row, the Workflow: what it runs, in ten rows (a chat's box height), never a chat's Model, Context or Cron.
+    // selected row, the Workflow: what it runs, in ten rows (a session's box height), never a session's Model, Context or Cron.
     await expect.poll(() => detailLabels(page)).toEqual(["Title", "ID", "Owner", "Workflow", "Revision", "Run", "Started by", "Steps", "Updated", "Access"]);
     const chatHeight = Math.round((await page.locator(".ps-session-detail-box").boundingBox()).height);
     await shot(page, "d1-workflow-details-beside-chat");
@@ -3819,9 +3819,9 @@ test.describe("FUI-F1: a phone held sideways (844 x 390, touch)", () => {
 });
 
 // Review S2UI-F5: replaying a visit that ran in a branch shows THAT visit in Node details: the picker shows its branch and
-// Open the agent chat opens its own chat, although another branch of the same step was running at that moment.
+// Open the agent session opens its own session, although another branch of the same step was running at that moment.
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "S2UI-F5" (from packages/app/web, after build).
-test("S2UI-F5 replay: a replayed branch visit's Node details show its own branch and agent chat", async ({ page }) => {
+test("S2UI-F5 replay: a replayed branch visit's Node details show its own branch and agent session", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
@@ -3836,13 +3836,13 @@ test("S2UI-F5 replay: a replayed branch visit's Node details show its own branch
     const at = index => ({ scopeId: `nx-fan-1#${index}`, branch: { parallelNodeExecutionId: "nx-fan-1", index } });
     const row = (id, stateId, outcome, from, to, extra = {}) => ({ nodeExecutionId: id, stateId, ordinal: 1, state: "completed", outcome,
         resultKind: "business", winner: "controller", attempts: 0, kvRevision: 1, enteredAt: replayAt(from), endedAt: replayAt(to), ...extra });
-    // Branch 1's work runs 60-360 s in chat-a; branch 2's runs 120-300 s in chat-b: both run at 120 s.
+    // Branch 1's work runs 60-360 s in owner-a; branch 2's runs 120-300 s in owner-b: both run at 120 s.
     const model = { ...FIXTURE_READ_MODEL, graph: { revision: 1, initial: "fan", states },
         runs: [{ runId: "run-1", mode: "live", status: "completed", revision: 1, outcome: "succeeded" }],
         run: { ...FIXTURE_READ_MODEL.run, status: "completed", outcome: "succeeded", terminalState: "done", nodeExecutions: [
             row("nx-fan-1", "fan", "joined", 0, 600, { branches: 2 }),
-            row("nx-work-b0", "work", "ok", 60, 360, { agent: { childSessionId: "chat-a-0000", spawned: true }, ...at(0) }),
-            row("nx-work-b1", "work", "ok", 120, 300, { agent: { childSessionId: "chat-b-0000", spawned: true }, ...at(1) }),
+            row("nx-work-b0", "work", "ok", 60, 360, { agent: { childSessionId: "owner-a-0000", spawned: true }, ...at(0) }),
+            row("nx-work-b1", "work", "ok", 120, 300, { agent: { childSessionId: "owner-b-0000", spawned: true }, ...at(1) }),
             row("nx-end-b1", "end", "succeeded", 300, 300, at(1)),
             row("nx-end-b0", "end", "succeeded", 360, 360, at(0)),
             row("nx-done-1", "done", "succeeded", 600, 600),
@@ -3871,22 +3871,22 @@ test("S2UI-F5 replay: a replayed branch visit's Node details show its own branch
     await panelTab(main, "Node").click();
     const node = bottomPanel(main, "node");
     await expect(node.locator('select[data-field="branch"]')).toHaveValue("1");
-    await expect(node.locator('[data-action="open-agent-chat"]')).toHaveAttribute("data-session", "chat-b-0000");
-    // Branch 1's visit, one step back: its own branch and chat.
+    await expect(node.locator('[data-action="open-agent-session"]')).toHaveAttribute("data-session", "owner-b-0000");
+    // Branch 1's visit, one step back: its own branch and session.
     await replay.getByRole("button", { name: "Step back", exact: true }).click();
     await expect(words).toContainText("work visit 1 · item 1");
     await expect(node.locator('select[data-field="branch"]')).toHaveValue("0");
-    await expect(node.locator('[data-action="open-agent-chat"]')).toHaveAttribute("data-session", "chat-a-0000");
+    await expect(node.locator('[data-action="open-agent-session"]')).toHaveAttribute("data-session", "owner-a-0000");
     // A branch chosen while replaying holds until the replay moves; the replayed visit's branch is shown again after it.
     await replay.getByRole("button", { name: "Step on", exact: true }).click();
     await expect(words).toContainText("work visit 1 · item 2");
     await node.locator('select[data-field="branch"]').selectOption("0");
-    await expect(node.locator('[data-action="open-agent-chat"]')).toHaveAttribute("data-session", "chat-a-0000");
+    await expect(node.locator('[data-action="open-agent-session"]')).toHaveAttribute("data-session", "owner-a-0000");
     await replay.getByRole("button", { name: "Step back", exact: true }).click();
     await replay.getByRole("button", { name: "Step on", exact: true }).click();
     await expect(words).toContainText("work visit 1 · item 2");
     await expect(node.locator('select[data-field="branch"]')).toHaveValue("1");
-    await expect(node.locator('[data-action="open-agent-chat"]')).toHaveAttribute("data-session", "chat-b-0000");
+    await expect(node.locator('[data-action="open-agent-session"]')).toHaveAttribute("data-session", "owner-b-0000");
     expect(errors).toEqual([]);
 });
 
@@ -4198,7 +4198,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
 // session list shows `watch-flow #1` and `watch-flow #2` with their states and no row for report-flow; the Workflow button sits
 // between Canvas and Diagnostics and counts the failed Workflow until it is opened; the Workflow tab picks a definition,
 // switches between Definition and Workflows, opens a Workflow from its list and keeps the session's chat in the middle.
-// On a phone the Workflow pane lies over the chat, and Back closes its sheet first.
+// On a phone the Workflow pane lies over the session, and Back closes its sheet first.
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "layout:" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
 const OWNED = {
@@ -4225,7 +4225,7 @@ const OWNED_MODELS = {
 };
 /**
  * The session and its Workflows (OWNED_ROWS), with each Workflow's read model and events. Messages a person sends to the
- * session are recorded (`messages`: { prompt, options }), and `onMessage` may answer one (Run again: the chat starts
+ * session are recorded (`messages`: { prompt, options }), and `onMessage` may answer one (Run again: the session starts
  * another Workflow, here by adding its row to `rows`). `models` replaces OWNED_MODELS (each Workflow's read model).
  * `yamlOf(sessionId)`: a definitionRevision read answers that Workflow's YAML (Compare).
  */
@@ -4347,7 +4347,7 @@ test("layout: Workflow rows read 'name #n' with a state, an unstarted child has 
     // The Workflow panel is shown: no dot.
     await expect(page.getByRole("button", { name: "Hide the Workflow tab", exact: true })).toBeVisible();
     await expect(page.locator(".ps-toolbar .ps-canvas-badge")).toHaveCount(0);
-    // A Workflow row in the session list does the same: the chat stays, the tab shows #1.
+    // A Workflow row in the session list does the same: the session stays, the tab shows #1.
     await openSession(page, "watch-flow #1");
     await expect(main.getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.running);
     await expect(main.locator(".ps-wf-bar .ps-wf-state").first()).toHaveText("Running");
@@ -4967,11 +4967,11 @@ test("r3 C02 phone: a failed Workflow's failure is one line with Details beside 
     expect(errors).toEqual([]);
 });
 
-// Usability re-test r3, C09 at 1440: after a reload with a Workflow row selected under its chat, in zen, the Workflow showed
-// alone in the middle (no chat, no zen): the profile's stored row was applied before the session list answered and could
-// not be mapped to its chat. Once the list answers, the chat is selected with that row, in its own view (zen).
+// Usability re-test r3, C09 at 1440: after a reload with a Workflow row selected under its session, in zen, the Workflow showed
+// alone in the middle (no session, no zen): the profile's stored row was applied before the session list answered and could
+// not be mapped to its session. Once the list answers, the session is selected with that row, in its own view (zen).
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "r3 C09" (from packages/app/web, after build).
-test("r3 C09: a reload with a Workflow row selected and the session list late keeps the chat, the Workflow tab and zen", async ({ page }) => {
+test("r3 C09: a reload with a Workflow row selected and the session list late keeps the session, the Workflow tab and zen", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
@@ -4988,13 +4988,13 @@ test("r3 C09: a reload with a Workflow row selected and the session list late ke
     await page.goto(`http://127.0.0.1:${stub.port}/`);
     const main = workflowTab(page);
     await expect(main.getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.failed, { timeout: 15_000 });
-    // The chat is in the middle, the Workflow in the right block's tab, in zen.
+    // The session is in the middle, the Workflow in the right block's tab, in zen.
     await expect(page.locator(".ps-prompt-input").filter({ visible: true })).toBeVisible();
     await expect(main.locator(".ps-wf-tab-head").getByRole("button", { name: "Leave zen mode", exact: true })).toBeVisible();
     expect(errors).toEqual([]);
 });
 
-test("layout: on a phone the Workflow pane lies over the chat, a panel opens as a sheet, and Back closes the sheet first", async ({ page }) => {
+test("layout: on a phone the Workflow pane lies over the session, a panel opens as a sheet, and Back closes the sheet first", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
@@ -5010,7 +5010,7 @@ test("layout: on a phone the Workflow pane lies over the chat, a panel opens as 
     await page.evaluate(() => window.history.back());
     await expect(main.locator(".ps-wf-panel.is-sheet")).toHaveCount(0);
     await expect(main.getByRole("group", { name: "Workflow graph" })).toBeVisible();
-    // The toolbar's Workflow button puts the pane away: the chat is there, and the same button brings the pane back.
+    // The toolbar's Workflow button puts the pane away: the session is there, and the same button brings the pane back.
     await hideWorkflowPane(page);
     await expect(page.locator(".ps-wf-tab").filter({ visible: true })).toHaveCount(0);
     await expect(page.locator(".ps-prompt-input").filter({ visible: true })).toBeVisible();
@@ -5022,18 +5022,18 @@ test("layout: on a phone the Workflow pane lies over the chat, a panel opens as 
 // ------------------------------------------------------------------------------------------------------------
 // Run again (W8, in stage 1 after the owner's feedback of 2026-11-06): a started definition offers Start another…, in its
 // Workflows list and its Definition view. Its form asks for the inputs and sends the session's chat ONE ordinary message
-// naming the definition, the Workflow whose YAML it repeats and the new number; the chat starts it with the same YAML
+// naming the definition, the Workflow whose YAML it repeats and the new number; the session starts it with the same YAML
 // (no key or a new one, never renamed), so the new Workflow is listed under the same definition as #3 (O5). The
 // person's draft in the composer is not touched.
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "Run again" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
-test("Run again: Start another… asks the chat once to start the same definition, and the new Workflow is listed under it as #3", async ({ page }) => {
+test("Run again: Start another… asks the session once to start the same definition, and the new Workflow is listed under it as #3", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
     const another = "aaaaaaa4-2222-3333-4444-555555555555";
     const { messages } = await routeOwned(page, {
-        // The chat spawns the same YAML: a third child with the same name.
+        // The session spawns the same YAML: a third child with the same name.
         onMessage: (_body, rows) => rows.push({ sessionId: another, title: "Workflow: watch-flow", status: "running", sessionKind: "workflow",
             parentSessionId: AGENT_ID, createdAt: Date.now(), updatedAt: Date.now() }),
     });
@@ -5050,9 +5050,9 @@ test("Run again: Start another… asks the chat once to start the same definitio
     // Review UI-F4: this read gives no input schema and no inputs of #2: never "Takes no inputs", the same inputs instead.
     await expect(form.locator('[data-field="no-inputs"]')).toHaveCount(0);
     await expect(form.locator('[data-field="same-inputs"]')).toContainText("The same as #2.");
-    await expect(form).toContainText("The chat starts watch-flow #3 from the same definition.");
+    await expect(form).toContainText("The session starts watch-flow #3 from the same definition.");
     await shot(page, "run-again-form");
-    await form.getByRole("button", { name: "Ask the chat to start #3", exact: true }).click();
+    await form.getByRole("button", { name: "Ask the session to start #3", exact: true }).click();
     await expect(form).toHaveCount(0);
     await expect.poll(() => messages.length).toBe(1);
     const [{ prompt, options }] = messages;
@@ -5068,11 +5068,11 @@ test("Run again: Start another… asks the chat once to start the same definitio
     expect(prompt).toContain("Use the same inputs as before.");
     expect(prompt).not.toContain("It takes no inputs.");
     await expect(composer).toHaveValue("my own draft");
-    // The chat's new Workflow arrives with the next session-list read: #3, under the same definition.
+    // The session's new Workflow arrives with the next session-list read: #3, under the same definition.
     await viewSwitch(main, "Workflows").click();
     await expect(main.getByRole("table", { name: "Workflows of watch-flow" }).getByRole("button", { name: "Open watch-flow #3", exact: true }))
         .toBeVisible({ timeout: 15_000 });
-    // OF-S2-8: no "ask the chat" option, so one option per version.
+    // OF-S2-8: no "ask the session" option, so one option per version.
     await expect(main.getByRole("combobox", { name: "Workflow definition", exact: true }).locator("option")).toHaveCount(2);
     await shot(page, "run-again-listed");
     expect(messages).toHaveLength(1);
@@ -5159,7 +5159,7 @@ test("the right block stays on the Workflow tab through profile reads, and the p
     for (let poll = 0; poll < 3; poll++) {
         await page.waitForTimeout(5_500);
         await expect(page.locator(".ps-wf-tab").filter({ visible: true })).toHaveCount(1);
-        // What a person sees: the canvas text is nowhere on screen. The chat's canvas stays mounted beside the Workflow tab
+        // What a person sees: the canvas text is nowhere on screen. The session's canvas stays mounted beside the Workflow tab
         // (UI-6), parked out of the box that clips it, inert and hidden from assistive technology; Playwright's `visible`
         // ignores that clipping, so the check hit-tests the text's own point.
         expect(await shownOnScreen(page.getByText("Nothing on the canvas yet.", { exact: true }))).toBe(false);
@@ -5172,7 +5172,7 @@ test("the right block stays on the Workflow tab through profile reads, and the p
 
 // ------------------------------------------------------------------------------------------------------------
 // S4 (owner feedback 2026-11-06, "can't select the parent session once the workflow session is selected"): with a
-// Workflow row selected, a click on its session's row selects the session alone; the chat stays and the right block stays
+// Workflow row selected, a click on its session's row selects the session alone; the session stays and the right block stays
 // as it was.
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "selects the session alone" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
@@ -5193,7 +5193,7 @@ test("after a Workflow row, a click on its session's row selects the session alo
     await expect(ownerRow).toHaveAttribute("aria-selected", "true");
     await expect(workflowRow).not.toHaveClass(/is-selected/);
     await expect(page.locator(".ps-session-list-button.is-selected")).toHaveCount(1);
-    // The chat stays, and so does the right block with the Workflow it showed.
+    // The session stays, and so does the right block with the Workflow it showed.
     await expect(page.locator(".ps-prompt-input").filter({ visible: true })).toBeVisible();
     await expect(workflowTab(page).getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.running);
     // The Workflow row selects it again.
@@ -5597,9 +5597,9 @@ test("OF-S2-2: node cards are two crisp rows with their words in the tooltip; er
     await expect(node("send_joke")).toHaveAttribute("title", "send_joke · Send · DadJoke@1 · Done · sent, queued at recipient · Ran 3 times");
     await expect(node("send_joke")).toHaveAccessibleDescription("send_joke · Send · DadJoke@1 · Done · sent, queued at recipient · Ran 3 times");
     await expect(graph.getByRole("button", { name: "Inspect generate_joke", exact: true })).toHaveAttribute("title",
-        // OF-S2-7: an agent node's tooltip ends with the model it uses; with no spawn record for its visit, the chat's model
-        // as it is now (review OF7-R8, 786679ab line: "from the chat · now …").
-        "generate_joke · Agent · Done · generated · Ran 3 times · Model: from the chat · now test:test-model");
+        // OF-S2-7: an agent node's tooltip ends with the model it uses; with no spawn record for its visit, the session's model
+        // as it is now (review OF7-R8, 786679ab line: "from the session · now …").
+        "generate_joke · Agent · Done · generated · Ran 3 times · Model: from the session · now test:test-model");
     await expect(node("pause").locator(".ps-workflow-node-visits")).toHaveAttribute("title", "Ran 3 times");
     // The runtime-error routes: one red "✕ error" label, every outcome in its title and in its description.
     const error = graph.locator('.ps-workflow-edge[data-from="generate_joke"][data-to="done"]');
@@ -5620,28 +5620,28 @@ test("OF-S2-2: node cards are two crisp rows with their words in the tooltip; er
 
 // ------------------------------------------------------------------------------------------------------------
 // Findings 7 and 8 (owner feedback 2026-11-06): an agent node's Node panel says what it does, where it is now, how
-// often it ran, its last result in words, how its chat works and what its agent is told; its Log shows its chat, visit
-// by visit, newest first, with Prompt, Agent, Typed result and Workflow rows told apart. The chat is read with the
+// often it ran, its last result in words, how its session works and what its agent is told; its Log shows its session, visit
+// by visit, newest first, with Prompt, Agent, Typed result and Workflow rows told apart. The session is read with the
 // ordinary session history reads (its events route below). Screenshots: node-agent-1440, agent-log-1440.
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "agent node:" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
-// Its own id: WORKFLOW_ID is 77777777-…, and the chat's events must not answer for the Workflow's.
-const AGENT_CHAT = "abababab-2222-3333-4444-555555555555";
+// Its own id: WORKFLOW_ID is 77777777-…, and the session's events must not answer for the Workflow's.
+const AGENT_SESSION = "abababab-2222-3333-4444-555555555555";
 // The kept text, named by its sha256; the Log shows it only when the text it reads has that digest (review SF-4).
 const BASE_TEXT = "You are the GitHub Copilot CLI, a terminal assistant built by GitHub.\n\nThe whole composed text of the agent's base instructions.";
 const BASE_SHA = createHash("sha256").update(BASE_TEXT).digest("hex");
 const BASE_ARTIFACT = `base-instructions-${BASE_SHA.slice(0, 16)}.md`;
 const AGENT_STATES = [
     { id: "fact", type: "agent", invoke: { source: "prompt" }, about: { prompt: "Tell one new fact about PostgreSQL. Keep it to one sentence." },
-        timeoutSeconds: 90, outcomes: ["produced"], chat: "continue", next: { produced: "pause", timed_out: "pause" } },
+        timeoutSeconds: 90, outcomes: ["produced"], session: "continue", next: { produced: "pause", timed_out: "pause" } },
     { id: "pause", type: "wait", seconds: 30, outcomes: ["elapsed"], next: { elapsed: "fact" } },
 ];
 
 /**
- * The agent node fixture (findings 7 and 8): Workflow fact-loop whose agent node `fact` continues ONE chat (AGENT_CHAT)
- * across two visits; visit 1 ended with its typed result, visit 2 is at work. Routes its read model, events, the chat's
- * events and the kept base instructions. `done`: visit 2 has ended too (no visit at work, so no chat read repeats). It
- * returns `served`: how many of the chat's events its route answers with (all by default).
+ * The agent node fixture (findings 7 and 8): Workflow fact-loop whose agent node `fact` continues ONE session (AGENT_SESSION)
+ * across two visits; visit 1 ended with its typed result, visit 2 is at work. Routes its read model, events, the session's
+ * events and the kept base instructions. `done`: visit 2 has ended too (no visit at work, so no session read repeats). It
+ * returns `served`: how many of the session's events its route answers with (all by default).
  */
 async function routeAgentNode(page, { done = false } = {}) {
     const ago = seconds => new Date(Date.now() - seconds * 1000).toISOString();
@@ -5650,12 +5650,12 @@ async function routeAgentNode(page, { done = false } = {}) {
         { sessionId: WORKFLOW_ID, seq: 1, eventType: "workflow.started", createdAt: ago(120), data: { runId: "run-1", mode: "live", revision: 1,
             definitionHash: "hash-1", irSha256: "ir-1", name: "fact-loop", version: "1.0.0", initial: "fact", states: AGENT_STATES } },
         wf(2, "workflow.state_started", 110, { nodeExecutionId: "nx-fact-1", step: 1 }),
-        wf(3, "workflow.agent_spawned", 109, { nodeExecutionId: "nx-fact-1", childSessionId: AGENT_CHAT, chat: "continue", cycle: 1 }),
+        wf(3, "workflow.agent_spawned", 109, { nodeExecutionId: "nx-fact-1", childSessionId: AGENT_SESSION, session: "continue", cycle: 1 }),
         wf(4, "workflow.state_completed", 100, { nodeExecutionId: "nx-fact-1", step: 1, outcome: "produced" }),
         wf(5, "workflow.state_started", 30, { nodeExecutionId: "nx-fact-2", step: 2 }),
-        wf(6, "workflow.agent_spawned", 29, { nodeExecutionId: "nx-fact-2", childSessionId: AGENT_CHAT, chat: "continue", cycle: 2 }),
+        wf(6, "workflow.agent_spawned", 29, { nodeExecutionId: "nx-fact-2", childSessionId: AGENT_SESSION, session: "continue", cycle: 2 }),
     ];
-    const agent = { childSessionId: AGENT_CHAT, controllingSessionId: AGENT_ID, spawned: true, spawnAttempts: 1, end: null, endSent: false };
+    const agent = { childSessionId: AGENT_SESSION, controllingSessionId: AGENT_ID, spawned: true, spawnAttempts: 1, end: null, endSent: false };
     const model = { ...FIXTURE_WITH_CONTROLS, revision: { ...FIXTURE_READ_MODEL.revision, name: "fact-loop" }, graph: { revision: 1, initial: "fact", states: AGENT_STATES },
         run: { ...FIXTURE_READ_MODEL.run, nodeExecutions: [
             { nodeExecutionId: "nx-fact-2", stateId: "fact", ordinal: 2, state: done ? "completed" : "pending", outcome: done ? "produced" : null,
@@ -5667,10 +5667,10 @@ async function routeAgentNode(page, { done = false } = {}) {
         ] } };
     await routeWorkflow(page, { events, readModel: () => model, onCommand: (route, command) => accept(route, command) });
     // r4 C04: as session-proxy records it: a "[SYSTEM:" prompt is a system.message, with its client id and sender.
-    const prompt = (seq, nx, seconds, text) => ({ sessionId: AGENT_CHAT, seq, eventType: "system.message", createdAt: ago(seconds),
+    const prompt = (seq, nx, seconds, text) => ({ sessionId: AGENT_SESSION, seq, eventType: "system.message", createdAt: ago(seconds),
         data: { content: text, clientMessageIds: [`workflow:${WORKFLOW_ID}:run-1:agent:${nx}`],
             sender: { kind: "agent", sessionId: WORKFLOW_ID, display: "workflow node invocation" } } });
-    const said = (seq, eventType, seconds, data) => ({ sessionId: AGENT_CHAT, seq, eventType, createdAt: ago(seconds), data });
+    const said = (seq, eventType, seconds, data) => ({ sessionId: AGENT_SESSION, seq, eventType, createdAt: ago(seconds), data });
     const chat = [
         prompt(1, "nx-fact-1", 108, "[SYSTEM: WORKFLOW NODE INVOCATION.]\n{\"input\":null}\n[SYSTEM: The task of this state:]\nTell one new fact about PostgreSQL."),
         said(2, "system.message", 107, { content: "[SYSTEM: Copilot SDK rebuilt the full system prompt for model input. Full content omitted from CMS "
@@ -5687,7 +5687,7 @@ async function routeAgentNode(page, { done = false } = {}) {
     const served = { count: Infinity };
     await page.route("**/api/v1/**", async (route) => {
         const pathname = new URL(route.request().url()).pathname;
-        if (pathname.includes(`/sessions/${AGENT_CHAT}/events`)) return route.fulfill({ json: { ok: true, result: chat.slice(0, served.count) } });
+        if (pathname.includes(`/sessions/${AGENT_SESSION}/events`)) return route.fulfill({ json: { ok: true, result: chat.slice(0, served.count) } });
         if (pathname.endsWith(`/sessions/${WORKFLOW_ID}/artifacts/${BASE_ARTIFACT}/text`)) {
             return route.fulfill({ json: { ok: true, result: BASE_TEXT } });
         }
@@ -5696,7 +5696,7 @@ async function routeAgentNode(page, { done = false } = {}) {
     return served;
 }
 
-test("agent node: the Node panel says what it does and the Log shows its chat, visit by visit", async ({ page }) => {
+test("agent node: the Node panel says what it does and the Log shows its session, visit by visit", async ({ page }) => {
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
@@ -5711,7 +5711,7 @@ test("agent node: the Node panel says what it does and the Log shows its chat, v
     await expect(details.locator(NODE_NAME)).toHaveText("fact");
     await expect(details.locator("[data-node-what]")).toHaveText("Asks an agent: “Tell one new fact about PostgreSQL.”");
     await expect(details.locator('[data-fact="now"]')).toContainText("Running · since");
-    await expect(details.locator('[data-fact="chat"]')).toContainText("Same each visit");
+    await expect(details.locator('[data-fact="session"]')).toContainText("Same each visit");
     await expect(details.locator('[data-fact="result"] pre')).toHaveText("PostgreSQL keeps old row versions (MVCC).");
     await expect(details.getByText("Prompt", { exact: true })).toBeVisible();
     await expect(details.getByRole("button", { name: "Open agent session", exact: true })).toBeVisible();
@@ -5721,7 +5721,7 @@ test("agent node: the Node panel says what it does and the Log shows its chat, v
     // OF-S2-2 part 2: states in one word, counts as numbers, no sentence where a value goes, no zone on a time.
     await expect(details.locator('[data-fact="runs"]')).toHaveText(/^Visits\s*2\+?$/);
     for (const gone of ["Agent working", "Ran 2 times", "Visit 2", "loaded history", "If its time limit", "If it fails", "What the agent is told",
-        "Last result", "Continues the same chat", " UTC", "See all"]) {
+        "Last result", "Continues the same session", " UTC", "See all"]) {
         await expect(details, gone).not.toContainText(gone);
     }
     await expect(main.getByRole("tablist", { name: "Node detail views" })).toHaveCount(0);
@@ -5753,13 +5753,13 @@ test("agent node: the Node panel says what it does and the Log shows its chat, v
 });
 
 // ------------------------------------------------------------------------------------------------------------
-// The grant's missing capture (wfs-full-5d687726): a chat: continue node's Log is ONE chat across two visits. Both visits
-// are listed, newest first, cut at each visit's prompt; visit 2 says its chat continues from visit 1 (its base
-// instructions are the same as visit 1's, without their text), and its Workflow row says the same chat got visit 2.
+// The grant's missing capture (wfs-full-5d687726): a session: continue node's Log is ONE session across two visits. Both visits
+// are listed, newest first, cut at each visit's prompt; visit 2 says its session continues from visit 1 (its base
+// instructions are the same as visit 1's, without their text), and its Workflow row says the same session got visit 2.
 // Screenshot: agent-log-continue-1440 (both visits in view).
-// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "one chat across two visits" (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "one session across two visits" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
-test("agent node: a chat: continue node's Log shows one chat across two visits", async ({ page }) => {
+test("agent node: a session: continue node's Log shows one session across two visits", async ({ page }) => {
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 1100 });
     const errors = [];
@@ -5771,7 +5771,7 @@ test("agent node: a chat: continue node's Log shows one chat across two visits",
     await flowReady(graph);
     await graph.getByRole("button", { name: "Inspect fact", exact: true }).click();
     const details = nodeDetails(page);
-    await expect(details.locator('[data-fact="chat"]')).toContainText("Same each visit");
+    await expect(details.locator('[data-fact="session"]')).toContainText("Same each visit");
     await details.getByRole("button", { name: "Show 2 visits in Log", exact: true }).click();
     const log = bottomPanel(main, "log");
     // Room for both visits: the bottom panel grows by keyboard (16 px a press), the graph keeps its minimum.
@@ -5783,7 +5783,7 @@ test("agent node: a chat: continue node's Log shows one chat across two visits",
     const [second, first] = [visits.nth(0), visits.nth(1)];
     await expect(second.locator("h3")).toContainText(/^Visit 2 · /);
     await expect(first.locator("h3")).toContainText(/^Visit 1 · /);
-    // One chat, cut at each visit's prompt: each visit has its own prompt and its own agent rows.
+    // One session, cut at each visit's prompt: each visit has its own prompt and its own agent rows.
     // r4 C04: the prompts are recorded as system.message (live shape); each is its visit's Prompt, nothing is "Earlier".
     await expect(log.locator("[data-earlier]")).toHaveCount(0);
     await expect(first.locator('[data-kind="prompt"]').filter({ hasText: "WORKFLOW NODE INVOCATION.]" }).locator(".ps-wf-alog-label")).toHaveText("Prompt");
@@ -5793,30 +5793,30 @@ test("agent node: a chat: continue node's Log shows one chat across two visits",
     await expect(second.locator('[data-kind="prompt"]').filter({ hasText: "WORKFLOW NODE INVOCATION, CYCLE 2" })).toHaveCount(1);
     await expect(second.locator('[data-kind="agent"]')).toContainText("Looking for a fact I have not given yet.");
     await expect(first.locator('[data-kind="prompt"]').filter({ hasText: "CYCLE 2" })).toHaveCount(0);
-    // Visit 2 continues visit 1's chat: its base instructions are visit 1's, named, not repeated.
+    // Visit 2 continues visit 1's session: its base instructions are visit 1's, named, not repeated.
     await expect(second.locator('[data-carried-from="1"]')).toHaveText("Same as visit 1 · same agent session");
     await expect(first.locator(".ps-wf-alog-base summary")).toContainText("48,210 characters");
-    // The Workflow's own rows say the same chat got visit 2, in the Log's words (r4 C04: no node name, no raw id), the chat linked.
+    // The Workflow's own rows say the same session got visit 2, in the Log's words (r4 C04: no node name, no raw id), the session linked.
     await expect(second.locator('[data-kind="workflow"]').filter({ hasText: "Visit 2 · same agent session" })).toHaveCount(1);
     await expect(first.locator('[data-kind="workflow"]').filter({ hasText: "Agent session started" })).toHaveCount(1);
     await expect(log.locator('[data-kind="workflow"]').filter({ hasText: "abababab" })).toHaveCount(0);
-    await expect(first.locator('[data-kind="workflow"] [data-action="open-agent-chat"]')).toHaveAttribute("data-session", AGENT_CHAT);
+    await expect(first.locator('[data-kind="workflow"] [data-action="open-agent-session"]')).toHaveAttribute("data-session", AGENT_SESSION);
     await second.scrollIntoViewIfNeeded();
     await expect(second.locator("h3")).toBeInViewport();
     await shot(page, "agent-log-continue-1440");
     expect(errors).toEqual([]);
 });
 
-// r4 C04 (usability re-test on live data): the Log read its chats once (ensureSessionHistory without force) and again only
-// while a visit was at work, so a visit that ran while the Log was not shown had no chat lines when it was shown again.
+// r4 C04 (usability re-test on live data): the Log read its sessions once (ensureSessionHistory without force) and again only
+// while a visit was at work, so a visit that ran while the Log was not shown had no session lines when it was shown again.
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "r4 C04" (from packages/app/web, after build).
-test("agent node: r4 C04 the Log shown again reads the chat lines of a visit that ran while it was not shown", async ({ page }) => {
+test("agent node: r4 C04 the Log shown again reads the session lines of a visit that ran while it was not shown", async ({ page }) => {
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 1100 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
     const served = await routeAgentNode(page, { done: true });
-    served.count = 6; // visit 1's lines only: visit 2 has not run in the chat yet
+    served.count = 6; // visit 1's lines only: visit 2 has not run in the session yet
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = workflowTab(page);
     const graph = main.getByRole("group", { name: "Workflow graph" });

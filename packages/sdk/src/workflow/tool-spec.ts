@@ -7,7 +7,7 @@
 export const SPAWN_WORKFLOW_TOOL_SPEC = {
     description:
         "Kept for one release; prefer workflow_definition. The yaml (apiVersion pilotswarm.dev/v1) is saved as the next revision of "
-        + "this chat's definition its metadata.name names; with state: published and start: true that revision also starts. "
+        + "this session's definition its metadata.name names; with state: published and start: true that revision also starts. "
         + "key makes a repeated call return the same Workflow. Returns the Workflow's session id; its result arrives when it ends unless "
         + "notify_on_completion is false.",
     parameters: {

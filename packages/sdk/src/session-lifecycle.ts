@@ -504,7 +504,7 @@ export function savedControlCursor(result: unknown, turn: number): number {
 }
 
 /**
- * Review O-L1 (formal t4b, C1): the visit fence a continued workflow chat's turn read at turn start (T3), saved with its
+ * Review O-L1 (formal t4b, C1): the visit fence a continued workflow session's turn read at turn start (T3), saved with its
  * result, so a turn end that runs from the saved result (a retry after the save, or an adopted racing winner) fences with
  * exactly that visit, inherited included. Undefined when the result holds none for this turn: a turn without a fence,
  * or a result saved by an older build (the caller then reads the turn visit again).

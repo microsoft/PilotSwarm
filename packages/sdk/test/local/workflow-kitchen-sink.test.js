@@ -1,8 +1,8 @@
 /**
  * Stage 2.4 (PR 235 e50d2b74, ported to the runner): one synthetic Workflow, end to end on real workers (PostgreSQL,
- * duroxide, the Copilot CLI) with a scripted model as the chat. The chat saves it with workflow_definition and starts
+ * duroxide, the Copilot CLI) with a scripted model as the session. The session saves it with workflow_definition and starts
  * it; the run covers, with no model in the Workflow:
- * - script states with the chat's delegated tools (store_fact, then read_facts in a later step);
+ * - script states with the session's delegated tools (store_fact, then read_facts in a later step);
  * - a loop longer than one controller execution holds (WORKFLOW_ADMISSIONS_PER_EXECUTION), so the run continues as
  *   new at least once, and every state still runs exactly as often as the graph says;
  * - a script that exits non-zero, routed as execution_failed with its exit code and stderr; a script past its timeout,
@@ -123,11 +123,11 @@ describe("a synthetic Workflow end to end (stage 2.4: PR 235's kitchen sink on t
         await withScriptedModel(env, { respond, worker: { workflowScripts: { enabled: true } } }, async ({ client, model, qualifiedModel }) => {
             const mgmt = await createManagementClient(env);
             try {
-                const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
-                await turnWorkflowsOn(client._catalog, chat.sessionId);
-                await chat.sendAndWait(PROMPT, TIMEOUT);
+                const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
+                await turnWorkflowsOn(client._catalog, session.sessionId);
+                await session.sendAndWait(PROMPT, TIMEOUT);
                 const last = model.sessionRequests(PROMPT).find((record) => record.position.step === 2 && record.position.lastUserText.includes(PROMPT));
-                expect(last, "the chat reached its last step").toBeTruthy();
+                expect(last, "the session reached its last step").toBeTruthy();
                 const results = last.body.messages.filter((message) => message.role === "tool")
                     .map((message) => typeof message.content === "string" ? message.content : message.content.map((part) => part.text ?? "").join(""));
                 const [saved, started] = results.map((text) => JSON.parse(text));

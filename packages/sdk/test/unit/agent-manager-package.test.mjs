@@ -131,8 +131,8 @@ test("the prompt gives each step kind's test fixture shape and never follows a f
 });
 
 // OF-S2-7 (1.4.4): a definition never names a model; a card's model hints are kinds of model, never a provider or model name.
-test("the prompt: agent nodes use the starting chat's model; a card's modelHints are kinds, keyed by node id, never a model's name", () => {
-    assert.match(prompt, /a definition never names a model: every agent node uses the model of the\s+chat that starts it/);
+test("the prompt: agent nodes use the starting session's model; a card's modelHints are kinds, keyed by node id, never a model's name", () => {
+    assert.match(prompt, /a definition never names a model: every agent node uses the model of the\s+session that starts it/);
     assert.match(prompt, /`modelHints` entry for it, keyed by the node's id/);
     assert.match(prompt, /A hint is a kind, never a provider or model name/);
     // 1.4.5 (review OF7-R5): structured hints, an example, and the note's limit.
@@ -157,7 +157,7 @@ test("the prompt and the repair loop teach named branches, then the router patte
     assert.match(prompt, /forEach: \[\{ lane: quick \}, \{ lane: careful \}\]/);
 });
 
-// 1.4.11 (G-12/13, Workflows on demand): an ordinary chat has no Workflow tools until enable_workflows; Agent Smith's own
+// 1.4.11 (G-12/13, Workflows on demand): an ordinary session has no Workflow tools until enable_workflows; Agent Smith's own
 // session has them. Neither text says `test` is offered in every session, and each names the call that loads a skill.
 test("the prompt and the repair loop say where `test` is offered: where Workflows are on, turned on with enable_workflows", () => {
     const skill = fs.readFileSync(path.join(pkgDir, "skills/agent-repair-loop/SKILL.md"), "utf8");

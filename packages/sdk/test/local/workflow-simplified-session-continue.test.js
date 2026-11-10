@@ -1,17 +1,17 @@
 /**
- * Workflow Simplified: an agent node that continues its chat (owner decision agent-node-continue-20261106; the
- * parent's design verdict: YAML key `session: new | continue` (owner 2026-11-09T06:30Z renamed it from `chat`), and the formal
+ * Workflow Simplified: an agent node that continues its session (owner decision agent-node-continue-20261106; the
+ * parent's design verdict: YAML key `session: new | continue` (owner 2026-11-09T06:30Z renamed it from `session`), and the formal
  * answers Q1 to Q5).
  *
- * - The store: a child session is not unique among the visits (it is indexed); two visits share one chat; a completion
- *   of a continued chat binds ONLY by the node execution id it gives (none, or one that is not the chat's, is refused in
+ * - The store: a child session is not unique among the visits (it is indexed); two visits share one session; a completion
+ *   of a continued session binds ONLY by the node execution id it gives (none, or one that is not the session's, is refused in
  *   words; a late one binds to its own decided visit and is refused there,
  *   the open visit unaffected); a reminder binds to the open visit and names it.
- * - The controller with a test-double host (as workflow-agent-node.test.js): two visits go to ONE chat; the
+ * - The controller with a test-double host (as workflow-agent-node.test.js): two visits go to ONE session; the
  *   second prompt says cycle 2 with the variables now, which changed and the previous result; a visit's time limit stops
- *   its turn (a turn control Stop, never the chat) and the next visit runs; the chat is ended once, when the Workflow
- *   ends; a cancel ends it; a graceful stop ends an idle chat at once; a chat that ended on its own between visits is
- *   replaced by a new chat whose first prompt and the Workflow's log say so.
+ *   its turn (a turn control Stop, never the session) and the next visit runs; the session is ended once, when the Workflow
+ *   ends; a cancel ends it; a graceful stop ends an idle session at once; a session that ended on its own between visits is
+ *   replaced by a new session whose first prompt and the Workflow's log say so.
  *
  * The child session is a test double (an orchestration that records its queue); turn Stops are recorded by a spy on
  * the catalog's turn control. No model runs.
@@ -28,7 +28,7 @@ import { controlWorkflowRun, createWorkflow } from "../../src/workflow/service.t
 import { completeWorkflowNodeFromTool } from "../../src/workflow/agent-node-service.ts";
 import { readWorkflowView } from "../../src/workflow/tools.ts";
 import {
-    registerWorkflow, sessionQueueTransport, WORKFLOW_CONTROLLER_VERSION, workflowAgentChatSessionId, workflowAgentChildSessionId,
+    registerWorkflow, sessionQueueTransport, WORKFLOW_CONTROLLER_VERSION, workflowAgentSessionId, workflowAgentChildSessionId,
     workflowLiveControllerInstanceId,
 } from "../../src/workflow/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
@@ -41,7 +41,7 @@ import { recordSessionEndRequested } from "../../src/session-end-mark.ts";
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
-const ACTOR = { kind: "system", name: "workflow-simplified-chat-continue-test" };
+const ACTOR = { kind: "system", name: "workflow-simplified-session-continue-test" };
 const TASK = "Tell one new fact about PostgreSQL.";
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -57,10 +57,10 @@ async function until(check, label, timeoutMs = 60_000) {
 }
 
 /**
- * One agent node that continues its agent session, visited again after a wait until it says finish. `chat`: its `session`
+ * One agent node that continues its agent session, visited again after a wait until it says finish. `session`: its `session`
  * (null: nothing, the default; owner 2026-11-09T05:38Z: continue outside a parallel body).
  */
-const CHAT_YAML = ({ limit = "3600", wait = 1, chat = "continue" } = {}) => `
+const SESSION_YAML = ({ limit = "3600", wait = 1, agentSession = "continue" } = {}) => `
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: chatter, version: "1.0.0" }
@@ -70,7 +70,7 @@ states:
   talk:
     type: agent
     invoke: { prompt: "${TASK}" }
-${chat === null ? "" : `    session: ${chat}\n`}    timeoutSeconds: ${limit}
+${agentSession === null ? "" : `    session: ${agentSession}\n`}    timeoutSeconds: ${limit}
     transition: { next: { again: pause, finish: done, timed_out: pause, failure: failed } }
   pause: { type: wait, seconds: ${wait}, transition: { next: { elapsed: talk } } }
   done: { type: terminal, outcome: succeeded, output: "\${input}" }
@@ -168,14 +168,14 @@ describe("review DR2-002: Workflow agent session creates of one id take turns", 
 
 // ─── The store ────────────────────────────────────────────────
 
-describe("chat: continue in the store", () => {
-    it("a chat's visits are rows of one child session; a completion binds only by its node execution id; a reminder binds to the open visit", { timeout: TIMEOUT }, async () => {
+describe("session: continue in the store", () => {
+    it("a session's visits are rows of one child session; a completion binds only by its node execution id; a reminder binds to the open visit", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const direct = new pg.Pool({ connectionString: env.store, max: 2 });
         const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
         try {
             await catalog.initialize();
-            // child_session_id is not unique (a chat that continues has one row per visit), and is indexed.
+            // child_session_id is not unique (a session that continues has one row per visit), and is indexed.
             expect((await direct.query(
                 `SELECT count(*)::int AS n FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
                   WHERE n.nspname = $1 AND t.relname = 'workflow_agent_invocations' AND c.contype = 'u'`, [env.cmsSchema])).rows[0].n).toBe(0);
@@ -183,10 +183,10 @@ describe("chat: continue in the store", () => {
                 [env.cmsSchema])).rows).toHaveLength(1);
 
             const store = catalog.workflowStore();
-            const yaml = CHAT_YAML();
+            const yaml = SESSION_YAML();
             const compiled = compileWorkflow(yaml);
             expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
-            expect(compiled.ir.nodes.talk.chat).toBe("continue");
+            expect(compiled.ir.nodes.talk.session).toBe("continue");
             const parent = randomUUID();
             await catalog.createSession(parent, {});
             const workflowSessionId = randomUUID();
@@ -199,43 +199,43 @@ describe("chat: continue in the store", () => {
                 start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
                     inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_CONTROLLER_VERSION },
             });
-            const chat = workflowAgentChatSessionId(runId, "talk");
+            const agentSession = workflowAgentSessionId(runId, "talk");
             const admit = async (ordinal, predecessorId) => {
                 const nodeExecutionId = nodeExecutionIdFor(runId, "root", "talk", ordinal);
                 const admitted = await store.enterNode({
                     runId, nodeExecutionId, scopeId: "root", nodeId: "talk", ordinal, nodeType: "agent",
                     predecessorId, arrivalRoute: predecessorId ? "elapsed" : null, inputText: canonicalJson({ round: ordinal }), kvRevision: 1,
                     waitSeconds: null, immediate: null,
-                    agent: { childSessionId: chat, controllingSessionId: parent, task: { source: "prompt", prompt: TASK },
+                    agent: { childSessionId: agentSession, controllingSessionId: parent, task: { source: "prompt", prompt: TASK },
                         outcomes: ["again", "finish"], outputSchema: null, timeoutSeconds: 3600 },
                 });
                 expect(admitted).toMatchObject({ admitted: true, node: { state: "pending", nodeType: "agent" } });
                 return nodeExecutionId;
             };
             const first = await admit(1, null);
-            const refusal = call => store.completeAgentNode({ childSessionId: chat, operationId: randomUUID(), ...call });
-            // Q1: a continued chat's completion must name its cycle; one that is not this chat's is refused in words.
+            const refusal = call => store.completeAgentNode({ childSessionId: agentSession, operationId: randomUUID(), ...call });
+            // Q1: a continued session's completion must name its cycle; one that is not this session's is refused in words.
             await expect(refusal({ call: { outcome: "again", output: { fact: "one" } } }))
                 .rejects.toMatchObject({ code: "AGENT_NODE_NOT_FOUND", message: expect.stringContaining("give node_execution_id") });
             await expect(refusal({ call: { outcome: "again", output: null }, nodeExecutionId: "nx-not-mine" }))
-                .rejects.toMatchObject({ code: "AGENT_NODE_NOT_FOUND", message: expect.stringContaining("is not a cycle of this chat") });
-            expect(await store.completeAgentNode({ childSessionId: chat, operationId: "op-1", call: { outcome: "again", output: { fact: "one" } },
+                .rejects.toMatchObject({ code: "AGENT_NODE_NOT_FOUND", message: expect.stringContaining("is not a cycle of this session") });
+            expect(await store.completeAgentNode({ childSessionId: agentSession, operationId: "op-1", call: { outcome: "again", output: { fact: "one" } },
                 nodeExecutionId: first })).toMatchObject({ kind: "accepted", receipt: { nodeExecutionId: first, outcome: "again" } });
 
-            // The second visit is admitted to the same chat: both invocations name it (the UNIQUE is gone).
+            // The second visit is admitted to the same session: both invocations name it (the UNIQUE is gone).
             const second = await admit(2, first);
             expect((await store.listAgentInvocationsOfState(runId, "talk")).map(item => [item.nodeExecutionId, item.childSessionId]))
-                .toEqual([[first, chat], [second, chat]]);
-            expect((await store.readAgentInvocationByChild(chat)).nodeExecutionId).toBe(second);
-            // RT-4: a chat with two visits is one lineage row, not a cycle: level 2 (its sub-agent level 3, the workflow
+                .toEqual([[first, agentSession], [second, agentSession]]);
+            expect((await store.readAgentInvocationByChild(agentSession)).nodeExecutionId).toBe(second);
+            // RT-4: a session with two visits is one lineage row, not a cycle: level 2 (its sub-agent level 3, the workflow
             // nesting maximum), its agent root the open visit.
-            await catalog.createSession(chat, { parentSessionId: workflowSessionId });
+            await catalog.createSession(agentSession, { parentSessionId: workflowSessionId });
             const mini = randomUUID();
-            await catalog.createSession(mini, { parentSessionId: chat });
-            const root = { childSessionId: chat, nodeExecutionId: second, workflowSessionId, controllingSessionId: parent };
-            expect(await store.readWorkflowLineage(chat)).toEqual({ sessionId: chat, level: 2, agentRoot: { ...root, distance: 0 }, deleted: false });
+            await catalog.createSession(mini, { parentSessionId: agentSession });
+            const root = { childSessionId: agentSession, nodeExecutionId: second, workflowSessionId, controllingSessionId: parent };
+            expect(await store.readWorkflowLineage(agentSession)).toEqual({ sessionId: agentSession, level: 2, agentRoot: { ...root, distance: 0 }, deleted: false });
             expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 3, agentRoot: { ...root, distance: 1 }, deleted: false });
-            expect(spawnNesting(1, 2, await store.readWorkflowLineage(chat)))
+            expect(spawnNesting(1, 2, await store.readWorkflowLineage(agentSession)))
                 .toEqual({ childNestingLevel: 3, maxNestingLevel: WORKFLOW_MAX_DESCENDANT_LEVEL });
             // A real-agent test's scope (workflowTestAgentScope) is the agent root's visit: the open one, not the first.
 
@@ -259,66 +259,66 @@ describe("chat: continue in the store", () => {
             expect(await store.readAgentVisitsBefore(runId, "talk", "rt5-1001")).toEqual({ count: 0, previous: null });
 
             // RT-2/RT-3, the turn-to-visit fence: a turn's visit is the open one its prompt names, else the newest it names;
-            // a prompt that names none inherits the chat's newest recorded visit prompt; a session that does not continue a
-            // chat has none.
+            // a prompt that names none inherits the session's newest recorded visit prompt; a session that does not continue a
+            // session has none.
             const pid = nx => `workflow:${workflowSessionId}:${runId}:agent:${nx}`;
-            expect(await store.readTurnVisit(chat, [pid(second)])).toEqual({ nodeExecutionId: second, open: true, inherited: false });
-            expect(await store.readTurnVisit(chat, [pid(first)])).toEqual({ nodeExecutionId: first, open: false, inherited: false });
-            expect(await store.readTurnVisit(chat, [pid(first), pid(second)])).toEqual({ nodeExecutionId: second, open: true, inherited: false });
-            expect(await store.readTurnVisit(chat, [])).toEqual({ nodeExecutionId: null, open: false, inherited: true });
-            await catalog.recordEvents(chat, [{ eventType: "user.message", data: { content: "cycle 2", clientMessageIds: [pid(second)] } }]);
-            await catalog.recordEvents(chat, [{ eventType: "user.message", data: { content: "a sub-agent's update" } }]);
-            expect(await store.readTurnVisit(chat, ["some-other-id"])).toEqual({ nodeExecutionId: second, open: true, inherited: true });
+            expect(await store.readTurnVisit(agentSession, [pid(second)])).toEqual({ nodeExecutionId: second, open: true, inherited: false });
+            expect(await store.readTurnVisit(agentSession, [pid(first)])).toEqual({ nodeExecutionId: first, open: false, inherited: false });
+            expect(await store.readTurnVisit(agentSession, [pid(first), pid(second)])).toEqual({ nodeExecutionId: second, open: true, inherited: false });
+            expect(await store.readTurnVisit(agentSession, [])).toEqual({ nodeExecutionId: null, open: false, inherited: true });
+            await catalog.recordEvents(agentSession, [{ eventType: "user.message", data: { content: "cycle 2", clientMessageIds: [pid(second)] } }]);
+            await catalog.recordEvents(agentSession, [{ eventType: "user.message", data: { content: "a sub-agent's update" } }]);
+            expect(await store.readTurnVisit(agentSession, ["some-other-id"])).toEqual({ nodeExecutionId: second, open: true, inherited: true });
             expect(await store.readTurnVisit(mini, [pid(second)])).toBeNull();
             // A Stop's request id names its visit; the worker reads it by the Stop's position.
             const { rows: [stopRow] } = await direct.query(
                 `INSERT INTO "${env.cmsSchema}".session_events (session_id, event_type, data) VALUES ($1, 'user.stop', $2) RETURNING seq`,
-                [chat, JSON.stringify({ turn: 3, text: "cycle ended", requestId: `workflow-cycle-stop:${first}:sent` })]);
-            expect(await store.readControlRequestIds(chat, [Number(stopRow.seq), 999_999_999]))
+                [agentSession, JSON.stringify({ turn: 3, text: "cycle ended", requestId: `workflow-cycle-stop:${first}:sent` })]);
+            expect(await store.readControlRequestIds(agentSession, [Number(stopRow.seq), 999_999_999]))
                 .toEqual(new Map([[Number(stopRow.seq), `workflow-cycle-stop:${first}:sent`]]));
             // D3: a Stop that names another visit gets its outcome (too_late) at once, so a turn that then fails ends as an
             // error (it is retried), not as stopped by it. Without that, the open Stop turns the failure into a stop.
             const failsWith = async (turn, record) => {
-                expect(await catalog.turnStart(chat, turn, [], "worker-d3")).toMatchObject({ stopped: false });
-                const added = await catalog.turnControlAdd(chat, "stop", "cycle ended", `workflow-cycle-stop:${first}:${turn}`, null);
+                expect(await catalog.turnStart(agentSession, turn, [], "worker-d3")).toMatchObject({ stopped: false });
+                const added = await catalog.turnControlAdd(agentSession, "stop", "cycle ended", `workflow-cycle-stop:${first}:${turn}`, null);
                 expect(added).toMatchObject({ turn });
                 if (record) {
-                    expect(await store.recordStopNotForTurn(chat, added.seq, turn)).toEqual({ recorded: true });
-                    expect(await store.recordStopNotForTurn(chat, added.seq, turn), "once").toEqual({ recorded: false });
+                    expect(await store.recordStopNotForTurn(agentSession, added.seq, turn)).toEqual({ recorded: true });
+                    expect(await store.recordStopNotForTurn(agentSession, added.seq, turn), "once").toEqual({ recorded: false });
                 }
-                return (await catalog.turnEnd(chat, turn, 0, "error", [])).stopped;
+                return (await catalog.turnEnd(agentSession, turn, 0, "error", [])).stopped;
             };
             expect(await failsWith(5, true)).toBe(false);
             expect(await failsWith(6, false), "the open Stop would have turned the failure into a stop").toBe(true);
-            expect(await store.recordStopNotForTurn(chat, 999_999_999, 7), "no such Stop").toEqual({ recorded: false });
+            expect(await store.recordStopNotForTurn(agentSession, 999_999_999, 7), "no such Stop").toEqual({ recorded: false });
 
-            // RT-1: whether any visit of the chat began a spawn attempt.
-            expect(await store.chatHasSpawnAttempt(chat)).toBe(false);
+            // RT-1: whether any visit of the session began a spawn attempt.
+            expect(await store.sessionHasSpawnAttempt(agentSession)).toBe(false);
             expect((await store.beginAgentSpawn(second)).action).toBe("spawn");
-            expect(await store.chatHasSpawnAttempt(chat)).toBe(true);
+            expect(await store.sessionHasSpawnAttempt(agentSession)).toBe(true);
             // A late answer of the first visit binds to it, never to the open one, and is refused there.
-            expect(await store.completeAgentNode({ childSessionId: chat, operationId: "late-1", call: { outcome: "finish", output: { fact: "late" } },
+            expect(await store.completeAgentNode({ childSessionId: agentSession, operationId: "late-1", call: { outcome: "finish", output: { fact: "late" } },
                 nodeExecutionId: first })).toMatchObject({ kind: "refused", code: "COMPLETION_CONFLICT" });
             expect(await store.readNodeExecution(second)).toMatchObject({ state: "pending" });
             // A reminder binds to the reminded turn's own visit and names it (RT-3); a turn with no visit, or with a decided
             // one, is not reminded, whatever visit is open.
-            expect(await store.recordAgentReminder({ childSessionId: chat, turn: 7 })).toEqual({ recorded: false, reason: "no_visit" });
-            expect(await store.recordAgentReminder({ childSessionId: chat, turn: 7, visit: first })).toEqual({ recorded: false, reason: "decided" });
-            // The chat's sub-agent (RT-4's, above) is still at work: no reminder while it is (review D5).
-            expect(await store.recordAgentReminder({ childSessionId: chat, turn: 7, visit: second })).toEqual({ recorded: false, reason: "sub_agents" });
+            expect(await store.recordAgentReminder({ childSessionId: agentSession, turn: 7 })).toEqual({ recorded: false, reason: "no_visit" });
+            expect(await store.recordAgentReminder({ childSessionId: agentSession, turn: 7, visit: first })).toEqual({ recorded: false, reason: "decided" });
+            // The session's sub-agent (RT-4's, above) is still at work: no reminder while it is (review D5).
+            expect(await store.recordAgentReminder({ childSessionId: agentSession, turn: 7, visit: second })).toEqual({ recorded: false, reason: "sub_agents" });
             await catalog.updateSession(mini, { state: "completed" });
-            expect(await store.recordAgentReminder({ childSessionId: chat, turn: 7, visit: second }))
+            expect(await store.recordAgentReminder({ childSessionId: agentSession, turn: 7, visit: second }))
                 .toMatchObject({ recorded: true, nodeExecutionId: second, cycle: second, stateId: "talk", n: 1 });
             // A turn completes only its own visit (RT-3); a turn with no cycle prompt (null) completes none (D1).
-            await expect(store.completeAgentNode({ childSessionId: chat, operationId: "op-no-visit", call: { outcome: "finish", output: { fact: "x" } },
+            await expect(store.completeAgentNode({ childSessionId: agentSession, operationId: "op-no-visit", call: { outcome: "finish", output: { fact: "x" } },
                 nodeExecutionId: second, turnVisit: null }))
                 .rejects.toMatchObject({ code: "AGENT_NODE_NOT_FOUND", message: expect.stringContaining("This turn received no cycle prompt") });
-            await expect(store.completeAgentNode({ childSessionId: chat, operationId: "op-other-turn", call: { outcome: "finish", output: { fact: "x" } },
+            await expect(store.completeAgentNode({ childSessionId: agentSession, operationId: "op-other-turn", call: { outcome: "finish", output: { fact: "x" } },
                 nodeExecutionId: second, turnVisit: first }))
                 .rejects.toMatchObject({ code: "AGENT_NODE_NOT_FOUND", message: expect.stringContaining(`This turn works on cycle ${first}`) });
-            expect(await store.completeAgentNode({ childSessionId: chat, operationId: "op-2", call: { outcome: "finish", output: { fact: "two" } },
+            expect(await store.completeAgentNode({ childSessionId: agentSession, operationId: "op-2", call: { outcome: "finish", output: { fact: "two" } },
                 nodeExecutionId: second })).toMatchObject({ kind: "accepted", receipt: { nodeExecutionId: second, outcome: "finish" } });
-            expect(await store.recordAgentReminder({ childSessionId: chat, turn: 8, visit: second })).toMatchObject({ recorded: false, reason: "decided" });
+            expect(await store.recordAgentReminder({ childSessionId: agentSession, turn: 8, visit: second })).toMatchObject({ recorded: false, reason: "decided" });
             // With no visit open, the lineage's agent root is the newest visit, still one row.
             expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 3, agentRoot: { ...root, nodeExecutionId: second, distance: 1 }, deleted: false });
         } finally {
@@ -330,8 +330,8 @@ describe("chat: continue in the store", () => {
 
 // ─── The controller ───────────────────────────────────────────
 
-const CHILD = "test-chat-child";
-function* chatChild(ctx) {
+const CHILD = "test-agent-child";
+function* sessionChild(ctx) {
     const received = [];
     for (;;) {
         const raw = yield ctx.dequeueEvent("messages");
@@ -344,7 +344,7 @@ function* chatChild(ctx) {
 }
 
 /**
- * A worker-equivalent registration (as workflow-agent-node.test.js's harness). The host double creates a chat once
+ * A worker-equivalent registration (as workflow-agent-node.test.js's harness). The host double creates a session once
  * (its catalog row and its orchestration) and gives it each visit's prompt; the catalog's turn control is a spy that
  * records each Stop (the double runs no turns, so it answers no_turn).
  */
@@ -372,10 +372,10 @@ async function harness(env, { storeHooks = null, storeBefore = null, beforeCreat
     const runtime = new Runtime(provider, {
         dispatcherPollIntervalMs: 10, logLevel: "error", workerConcurrency: 8, workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
     });
-    runtime.registerOrchestrationVersioned(CHILD, "1.0.0", chatChild);
+    runtime.registerOrchestrationVersioned(CHILD, "1.0.0", sessionChild);
     const spawns = [];
     const stops = [];
-    // deferVisible: the host creates the chat (its catalog row) and reports it spawned, but its session's orchestration
+    // deferVisible: the host creates the session (its catalog row) and reports it spawned, but its session's orchestration
     // starts only when the test calls makeVisible (a session whose first turn has not run yet reads NotFound; formal t3).
     const unseen = new Map();
     // realHost (review DRR-1): the real host (agent-host.ts) over a child creator that does what the worker's does: the
@@ -400,11 +400,11 @@ async function harness(env, { storeHooks = null, storeBefore = null, beforeCreat
     const agentNodes = real ? { async spawn(request) { spawns.push(request); return real.spawn(request); } } : {
         async spawn(request) {
             spawns.push(request);
-            // A spawn that passed its open check and has not created the chat yet (a test holds it here).
+            // A spawn that passed its open check and has not created the session yet (a test holds it here).
             if (beforeCreate) await beforeCreate(request);
             const instanceId = `session-${request.childSessionId}`;
             const message = JSON.stringify({ prompt: request.prompt, clientMessageIds: [request.clientMessageId] });
-            // createAlways: as the real host (createChild through a client), the chat's catalog row is created on every
+            // createAlways: as the real host (createChild through a client), the session's catalog row is created on every
             // visit, which brings a soft-deleted row back (migration 0082's cms_create_session).
             if (createAlways) await catalog.createSession(request.childSessionId, {});
             if (deferVisible && (await client.getStatus(instanceId)).status === "NotFound") {
@@ -458,12 +458,12 @@ async function harness(env, { storeHooks = null, storeBefore = null, beforeCreat
     await runtime.start();
     return {
         catalog, store, client, spawns, stops, sentTo, host: { catalog, store, duroxideClient: client },
-        /** A deferred chat's session starts now, and gets the prompts it was sent while it was not visible. */
-        async makeVisible(chat) {
-            const instanceId = `session-${chat}`;
+        /** A deferred session's Copilot session starts now, and gets the prompts it was sent while it was not visible. */
+        async makeVisible(agentSession) {
+            const instanceId = `session-${agentSession}`;
             await client.startOrchestrationVersioned(instanceId, CHILD, {}, "1.0.0");
-            for (const message of unseen.get(chat) ?? []) await client.enqueueEvent(instanceId, "messages", message);
-            unseen.delete(chat);
+            for (const message of unseen.get(agentSession) ?? []) await client.enqueueEvent(instanceId, "messages", message);
+            unseen.delete(agentSession);
         },
         async stop() {
             await runtime.shutdown(100);
@@ -489,21 +489,21 @@ const ended = (h, runId) => until(async () => {
     return run && ["completed", "failed", "cancelled", "stopped"].includes(run.status) ? run : null;
 }, `run ${runId} to end`);
 
-async function chatMessages(h, chat) {
-    const status = await h.client.getStatus(`session-${chat}`);
+async function ownerMessages(h, agentSession) {
+    const status = await h.client.getStatus(`session-${agentSession}`);
     return typeof status.customStatus === "string" && status.customStatus ? JSON.parse(status.customStatus) : [];
 }
-const commandsOf = async (h, chat) => (await chatMessages(h, chat)).filter(message => message?.type === "cmd");
-const chatEnd = (h, chat) => until(async () => (await commandsOf(h, chat))[0] ?? null, `the end of chat ${chat}`, 30_000);
-/** What a test that waits for a chat's end saw when none came: the chat, its visits, the spawn's orchestration, the log. */
-async function chatEndDiagnosis(h, run, chat, nodeExecutionIds) {
+const commandsOf = async (h, agentSession) => (await ownerMessages(h, agentSession)).filter(message => message?.type === "cmd");
+const agentSessionEnd = (h, agentSession) => until(async () => (await commandsOf(h, agentSession))[0] ?? null, `the end of session ${agentSession}`, 30_000);
+/** What a test that waits for a session's end saw when none came: the session, its visits, the spawn's orchestration, the log. */
+async function agentSessionEndDiagnosis(h, run, agentSession, nodeExecutionIds) {
     const status = async instanceId => {
         const read = await h.client.getStatus(instanceId).catch(error => ({ status: `read failed: ${error?.message}` }));
         return { status: read.status, output: read.output ?? null, error: read.error ?? null };
     };
     const events = await h.catalog.getSessionEvents(run.workflowSessionId, 0, 500).catch(() => []);
     return JSON.stringify({
-        chat: await status(`session-${chat}`),
+        agentSession: await status(`session-${agentSession}`),
         spawns: await Promise.all(nodeExecutionIds.map(nx => status(`wfa-${nx}`))),
         visits: await Promise.all(nodeExecutionIds.map(async nx => {
             const invocation = await h.store.readAgentInvocation(nx);
@@ -516,12 +516,12 @@ async function chatEndDiagnosis(h, run, chat, nodeExecutionIds) {
             .map(event => [event.eventType, event.data?.childStatus ?? event.data?.error ?? null, event.data?.sent ?? null]),
     });
 }
-/** chatEnd, failing with chatEndDiagnosis when no end comes. */
-const chatEndOrDiagnose = async (h, run, chat, nodeExecutionIds) => {
+/** agentSessionEnd, failing with agentSessionEndDiagnosis when no end comes. */
+const agentSessionEndOrDiagnose = async (h, run, agentSession, nodeExecutionIds) => {
     try {
-        return await chatEnd(h, chat);
+        return await agentSessionEnd(h, agentSession);
     } catch (error) {
-        throw new Error(`${error.message}; diagnosis: ${await chatEndDiagnosis(h, run, chat, nodeExecutionIds)}`);
+        throw new Error(`${error.message}; diagnosis: ${await agentSessionEndDiagnosis(h, run, agentSession, nodeExecutionIds)}`);
     }
 };
 const visit = (h, n) => until(async () => (h.spawns.length >= n ? h.spawns[n - 1] : null), `visit ${n}`);
@@ -530,7 +530,7 @@ const spawnedVisit = async (h, n) => {
     await until(async () => (await h.store.readAgentInvocation(request.nodeExecutionId))?.spawnedAt ?? null, `the spawn of visit ${n}`);
     return request;
 };
-const completeAs = (h, chat, args) => completeWorkflowNodeFromTool(args, { callerSessionId: chat, store: h.store, client: h.client })
+const completeAs = (h, agentSession, args) => completeWorkflowNodeFromTool(args, { callerSessionId: agentSession, store: h.store, client: h.client })
     .then(text => JSON.parse(text));
 const eventsOf = async (h, workflowSessionId, type) => (await h.catalog.getSessionEvents(workflowSessionId, 0, 500))
     .filter(event => event.eventType === type).map(event => event.data);
@@ -564,26 +564,26 @@ states:
 
 // Owner 2026-11-09T05:38Z: an agent state that sets no session continues one agent session across its visits where it may (a
 // loop of the outer graph); inside a For each each item's visit has its own; an explicit `session: new` still gets one each visit.
-describe("the default chat mode on the controller", () => {
+describe("the default session mode on the controller", () => {
     it("a loop's agent state that sets no session keeps one agent session across its visits", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const run = await started(h, CHAT_YAML({ chat: null }));
-            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const run = await started(h, SESSION_YAML({ agentSession: null }));
+            const agentSession = workflowAgentSessionId(run.runId, "talk");
             const first = await spawnedVisit(h, 1);
-            expect(first.childSessionId).toBe(chat);
+            expect(first.childSessionId).toBe(agentSession);
             expect(first.prompt.split("\n")[0]).toContain("This agent session continues");
-            expect(await completeAs(h, chat, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
+            expect(await completeAs(h, agentSession, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
                 .toMatchObject({ ok: true, outcome: "again" });
             const second = await spawnedVisit(h, 2);
-            expect(second.childSessionId).toBe(chat);
+            expect(second.childSessionId).toBe(agentSession);
             expect(second.prompt).toMatch(/^\[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE 2\./);
-            expect(await completeAs(h, chat, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
+            expect(await completeAs(h, agentSession, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
                 .toMatchObject({ ok: true, outcome: "finish" });
             expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
-            expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => [data.childSessionId, data.chat, data.cycle]))
-                .toEqual([[chat, "continue", 1], [chat, "continue", 2]]);
-            expect((await readWorkflowView(h.store, run.workflowSessionId)).graph.states.find(state => state.id === "talk")).toMatchObject({ chat: "continue" });
+            expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => [data.childSessionId, data.session, data.cycle]))
+                .toEqual([[agentSession, "continue", 1], [agentSession, "continue", 2]]);
+            expect((await readWorkflowView(h.store, run.workflowSessionId)).graph.states.find(state => state.id === "talk")).toMatchObject({ session: "continue" });
         } finally {
             await h.stop();
         }
@@ -592,7 +592,7 @@ describe("the default chat mode on the controller", () => {
     it("an explicit session: new gets a new agent session each visit", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const run = await started(h, CHAT_YAML({ chat: "new" }));
+            const run = await started(h, SESSION_YAML({ agentSession: "new" }));
             const first = await spawnedVisit(h, 1);
             expect(first.childSessionId).toBe(workflowAgentChildSessionId(first.nodeExecutionId));
             expect(first.prompt.split("\n")[0]).not.toContain("This agent session continues");
@@ -602,8 +602,8 @@ describe("the default chat mode on the controller", () => {
             expect(second.childSessionId).not.toBe(first.childSessionId);
             expect(await completeAs(h, second.childSessionId, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2" })).toMatchObject({ ok: true });
             expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
-            expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => data.chat ?? null)).toEqual([null, null]);
-            expect((await readWorkflowView(h.store, run.workflowSessionId)).graph.states.find(state => state.id === "talk")).not.toHaveProperty("chat");
+            expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => data.session ?? null)).toEqual([null, null]);
+            expect((await readWorkflowView(h.store, run.workflowSessionId)).graph.states.find(state => state.id === "talk")).not.toHaveProperty("session");
         } finally {
             await h.stop();
         }
@@ -621,27 +621,27 @@ describe("the default chat mode on the controller", () => {
                     .toMatchObject({ ok: true, outcome: "said" });
             }
             expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
-            expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => data.chat ?? null)).toEqual([null, null]);
+            expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => data.session ?? null)).toEqual([null, null]);
         } finally {
             await h.stop();
         }
     });
 });
 
-describe("chat: continue on the controller", () => {
-    it("two visits share one chat; the second is cycle 2 with the variables now; a time limit stops the turn, not the chat; the chat ends once with the Workflow", { timeout: TIMEOUT }, async () => {
+describe("session: continue on the controller", () => {
+    it("two visits share one session; the second is cycle 2 with the variables now; a time limit stops the turn, not the session; the owner session ends once with the Workflow", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const run = await started(h, CHAT_YAML({ limit: `"\${kv.limit}"` }), { limit: 3 });
-            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const run = await started(h, SESSION_YAML({ limit: `"\${kv.limit}"` }), { limit: 3 });
+            const agentSession = workflowAgentSessionId(run.runId, "talk");
             const first = await spawnedVisit(h, 1);
-            expect(first.childSessionId).toBe(chat);
+            expect(first.childSessionId).toBe(agentSession);
             const [system1, json1] = first.prompt.split("\n");
             expect(system1).toContain("This agent session continues");
             expect(system1).toContain(`(this one's is ${first.nodeExecutionId})`);
             expect(JSON.parse(json1)).not.toHaveProperty("cycle");
             // Q1: without node_execution_id, the completion is refused in words and decides nothing.
-            expect(await completeAs(h, chat, { outcome: "again", output: { fact: "one" }, operation_id: "op-0" }))
+            expect(await completeAs(h, agentSession, { outcome: "again", output: { fact: "one" }, operation_id: "op-0" }))
                 .toMatchObject({ ok: false, error: { code: "AGENT_NODE_NOT_FOUND", message: expect.stringContaining("give node_execution_id") } });
             // The variables change before the first visit's 3-second time limit passes: the next visit reads them.
             await controlWorkflowRun(h.host, run.workflowSessionId,
@@ -649,7 +649,7 @@ describe("chat: continue on the controller", () => {
                 { actor: ACTOR, operationId: "vars-1" });
 
             const second = await spawnedVisit(h, 2);
-            expect(second.childSessionId).toBe(chat);
+            expect(second.childSessionId).toBe(agentSession);
             expect(second.nodeExecutionId).not.toBe(first.nodeExecutionId);
             const [system2, json2, taskLine2, task2] = second.prompt.split("\n");
             expect(system2).toMatch(/^\[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE 2\. This is cycle 2 of the same workflow state in this run/);
@@ -661,38 +661,38 @@ describe("chat: continue on the controller", () => {
             });
             expect(taskLine2).toContain("The task of this state");
             expect(task2).toBe(TASK);
-            // Q2: the first visit's time limit stopped its turn (a Stop), never the chat; both prompts reached the one chat.
-            expect(h.stops).toContainEqual(expect.objectContaining({ sessionId: chat, kind: "stop", requestId: `workflow-cycle-stop:${first.nodeExecutionId}` }));
+            // Q2: the first visit's time limit stopped its turn (a Stop), never the session; both prompts reached the one session.
+            expect(h.stops).toContainEqual(expect.objectContaining({ sessionId: agentSession, kind: "stop", requestId: `workflow-cycle-stop:${first.nodeExecutionId}` }));
             const prompts = await until(async () => {
-                const messages = await chatMessages(h, chat);
+                const messages = await ownerMessages(h, agentSession);
                 return messages.length >= 2 ? messages : null;
-            }, "both prompts in the chat");
+            }, "both prompts in the session");
             expect(prompts.map(message => message.prompt)).toEqual([first.prompt, second.prompt]);
-            expect(await commandsOf(h, chat)).toEqual([]);
+            expect(await commandsOf(h, agentSession)).toEqual([]);
 
             // A late answer of the first visit is refused; the second visit is unaffected.
-            expect(await completeAs(h, chat, { outcome: "finish", output: { fact: "late" }, operation_id: "late-1", node_execution_id: first.nodeExecutionId }))
+            expect(await completeAs(h, agentSession, { outcome: "finish", output: { fact: "late" }, operation_id: "late-1", node_execution_id: first.nodeExecutionId }))
                 .toMatchObject({ ok: false, error: { code: "NODE_CLOSED" } });
             expect(await h.store.readNodeExecution(second.nodeExecutionId)).toMatchObject({ state: "pending" });
-            expect(await completeAs(h, chat, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
+            expect(await completeAs(h, agentSession, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
                 .toMatchObject({ ok: true, nodeExecutionId: second.nodeExecutionId, outcome: "finish" });
             expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
 
-            // The chat is ended once, when the Workflow ends: done, by its last visit's own result.
-            expect(await chatEnd(h, chat)).toMatchObject({ type: "cmd", cmd: "done", id: `workflow-agent-chat-end:${chat}`, requestedBy: run.workflowSessionId });
+            // The session is ended once, when the Workflow ends: done, by its last visit's own result.
+            expect(await agentSessionEnd(h, agentSession)).toMatchObject({ type: "cmd", cmd: "done", id: `workflow-agent-session-end:${agentSession}`, requestedBy: run.workflowSessionId });
             await pause(1_000);
-            expect(await commandsOf(h, chat)).toHaveLength(1);
+            expect(await commandsOf(h, agentSession)).toHaveLength(1);
             expect(h.spawns).toHaveLength(2);
             expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_cycle_ended")).map(data => data.nodeExecutionId))
                 .toEqual([first.nodeExecutionId, second.nodeExecutionId]);
             expect(await eventsOf(h, run.workflowSessionId, "workflow.agent_ended"))
-                .toEqual([expect.objectContaining({ childSessionId: chat, end: "done", sent: true, chat: "continue" })]);
-            expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => [data.childSessionId, data.chat, data.cycle]))
-                .toEqual([[chat, "continue", 1], [chat, "continue", 2]]);
+                .toEqual([expect.objectContaining({ childSessionId: agentSession, end: "done", sent: true, session: "continue" })]);
+            expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => [data.childSessionId, data.session, data.cycle]))
+                .toEqual([[agentSession, "continue", 1], [agentSession, "continue", 2]]);
 
             // Finding 7: the read view says what the agent is told and when each visit started and ended (the Node panel's lines).
             const view = await readWorkflowView(h.store, run.workflowSessionId);
-            expect(view.graph.states.find(state => state.id === "talk")).toMatchObject({ type: "agent", chat: "continue", about: { prompt: TASK } });
+            expect(view.graph.states.find(state => state.id === "talk")).toMatchObject({ type: "agent", session: "continue", about: { prompt: TASK } });
             expect(view.graph.states.find(state => state.id === "pause")).not.toHaveProperty("about");
             for (const visit of view.run.nodeExecutions.filter(node => node.stateId === "talk")) {
                 expect(Number.isFinite(Date.parse(visit.enteredAt)), JSON.stringify(visit)).toBe(true);
@@ -719,7 +719,7 @@ describe("chat: continue on the controller", () => {
             },
         } });
         try {
-            const run = await started(h, CHAT_YAML({ limit: `"\${kv.limit}"` }), { limit: 3, keep: "x" });
+            const run = await started(h, SESSION_YAML({ limit: `"\${kv.limit}"` }), { limit: 3, keep: "x" });
             await spawnedVisit(h, 1);
             await controlWorkflowRun(h.host, run.workflowSessionId,
                 { operation: "set_vars", runId: null, set: { limit: 3600, topic: "postgres" }, delete: [], expectedKvRevision: 1 },
@@ -738,91 +738,91 @@ describe("chat: continue on the controller", () => {
         }
     });
 
-    it("a cancel ends the chat; a graceful stop ends an idle chat at once", { timeout: TIMEOUT }, async () => {
+    it("a cancel ends the session; a graceful stop ends an idle session at once", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            // A cancel while the chat is idle between visits: the chat ends with its last visit's result (done).
-            const idle = await started(h, CHAT_YAML({ wait: 600 }));
-            const idleChat = workflowAgentChatSessionId(idle.runId, "talk");
+            // A cancel while the session is idle between visits: the owner session ends with its last visit's result (done).
+            const idle = await started(h, SESSION_YAML({ wait: 600 }));
+            const idleSession = workflowAgentSessionId(idle.runId, "talk");
             const first = await spawnedVisit(h, 1);
-            expect(await completeAs(h, idleChat, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
+            expect(await completeAs(h, idleSession, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
                 .toMatchObject({ ok: true });
             await until(async () => (await h.store.listNodeExecutions(idle.runId)).some(node => node.nodeId === "pause"), "the wait between visits");
             await controlWorkflowRun(h.host, idle.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-1" });
             expect(await ended(h, idle.runId)).toMatchObject({ status: "cancelled" });
-            expect(await chatEnd(h, idleChat)).toMatchObject({ cmd: "done", id: `workflow-agent-chat-end:${idleChat}` });
+            expect(await agentSessionEnd(h, idleSession)).toMatchObject({ cmd: "done", id: `workflow-agent-session-end:${idleSession}` });
 
-            // A cancel while a visit runs: the visit loses to the cancel, and the chat is cancelled.
-            const busy = await started(h, CHAT_YAML());
-            const busyChat = workflowAgentChatSessionId(busy.runId, "talk");
+            // A cancel while a visit runs: the visit loses to the cancel, and the session is cancelled.
+            const busy = await started(h, SESSION_YAML());
+            const busySession = workflowAgentSessionId(busy.runId, "talk");
             const running = await spawnedVisit(h, 2);
-            expect(running.childSessionId).toBe(busyChat);
+            expect(running.childSessionId).toBe(busySession);
             await controlWorkflowRun(h.host, busy.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-2" });
             expect(await ended(h, busy.runId)).toMatchObject({ status: "cancelled" });
-            expect(await chatEnd(h, busyChat)).toMatchObject({ cmd: "cancel", id: `workflow-agent-chat-end:${busyChat}` });
+            expect(await agentSessionEnd(h, busySession)).toMatchObject({ cmd: "cancel", id: `workflow-agent-session-end:${busySession}` });
 
-            // Q5: a graceful stop with a long grace: the idle chat is not started work and is ended at once.
-            const stopping = await started(h, CHAT_YAML({ wait: 600 }));
-            const stoppingChat = workflowAgentChatSessionId(stopping.runId, "talk");
+            // Q5: a graceful stop with a long grace: the idle session is not started work and is ended at once.
+            const stopping = await started(h, SESSION_YAML({ wait: 600 }));
+            const stoppingSession = workflowAgentSessionId(stopping.runId, "talk");
             const third = await spawnedVisit(h, 3);
-            expect(third.childSessionId).toBe(stoppingChat);
-            expect(await completeAs(h, stoppingChat, { outcome: "again", output: { fact: "x" }, operation_id: "op-3", node_execution_id: third.nodeExecutionId }))
+            expect(third.childSessionId).toBe(stoppingSession);
+            expect(await completeAs(h, stoppingSession, { outcome: "again", output: { fact: "x" }, operation_id: "op-3", node_execution_id: third.nodeExecutionId }))
                 .toMatchObject({ ok: true });
             await until(async () => (await h.store.listNodeExecutions(stopping.runId)).some(node => node.nodeId === "pause"), "the wait between visits");
             const asked = Date.now();
             await controlWorkflowRun(h.host, stopping.workflowSessionId, { operation: "stop", runId: null, reason: "enough", graceSeconds: 300 },
                 { actor: ACTOR, operationId: "stop-1" });
-            expect(await chatEnd(h, stoppingChat)).toMatchObject({ cmd: "done", id: `workflow-agent-chat-end:${stoppingChat}` });
+            expect(await agentSessionEnd(h, stoppingSession)).toMatchObject({ cmd: "done", id: `workflow-agent-session-end:${stoppingSession}` });
             expect(Date.now() - asked).toBeLessThan(60_000);
             await controlWorkflowRun(h.host, stopping.workflowSessionId, { operation: "cancel", runId: null, reason: "done" }, { actor: ACTOR, operationId: "cancel-3" })
                 .catch(() => {});
             await ended(h, stopping.runId);
             await pause(1_000);
-            expect(await commandsOf(h, stoppingChat)).toHaveLength(1);
+            expect(await commandsOf(h, stoppingSession)).toHaveLength(1);
         } finally {
             await h.stop();
         }
     });
 
-    it("Q4: a chat that ended on its own between visits is replaced by a new chat; its first prompt and the log say so", { timeout: TIMEOUT }, async () => {
+    it("Q4: a session that ended on its own between visits is replaced by a new session; its first prompt and the log say so", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const run = await started(h, CHAT_YAML({ wait: 2 }));
-            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const run = await started(h, SESSION_YAML({ wait: 2 }));
+            const agentSession = workflowAgentSessionId(run.runId, "talk");
             const first = await spawnedVisit(h, 1);
-            // A person deletes the chat; then the visit's result arrives.
-            await h.catalog.softDeleteSession(chat);
-            expect(await completeAs(h, chat, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
+            // A person deletes the session; then the visit's result arrives.
+            await h.catalog.softDeleteSession(agentSession);
+            expect(await completeAs(h, agentSession, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
                 .toMatchObject({ ok: true });
             const second = await spawnedVisit(h, 2);
-            const replacement = workflowAgentChatSessionId(run.runId, "talk", 2);
+            const replacement = workflowAgentSessionId(run.runId, "talk", 2);
             expect(second.childSessionId).toBe(replacement);
-            expect(replacement).not.toBe(chat);
+            expect(replacement).not.toBe(agentSession);
             const [system2, json2] = second.prompt.split("\n");
             expect(system2).toContain("This agent session continues");
-            expect(system2).toContain(`The agent session of its earlier cycles ended (session ${chat})`);
+            expect(system2).toContain(`The agent session of its earlier cycles ended (session ${agentSession})`);
             expect(JSON.parse(json2)).toMatchObject({ cycle: 2, nodeExecutionId: second.nodeExecutionId, previousResult: { outcome: "again", output: { fact: "one" } } });
-            expect(await eventsOf(h, run.workflowSessionId, "workflow.agent_chat_restarted"))
-                .toEqual([expect.objectContaining({ endedChatSessionId: chat, childSessionId: replacement, cycle: 2, stateId: "talk" })]);
+            expect(await eventsOf(h, run.workflowSessionId, "workflow.agent_session_restarted"))
+                .toEqual([expect.objectContaining({ endedSessionId: agentSession, childSessionId: replacement, cycle: 2, stateId: "talk" })]);
             expect(await completeAs(h, replacement, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
                 .toMatchObject({ ok: true });
             expect(await ended(h, run.runId)).toMatchObject({ status: "completed" });
-            expect(await chatEnd(h, replacement)).toMatchObject({ cmd: "done", id: `workflow-agent-chat-end:${replacement}` });
+            expect(await agentSessionEnd(h, replacement)).toMatchObject({ cmd: "done", id: `workflow-agent-session-end:${replacement}` });
         } finally {
             await h.stop();
         }
     });
-    for (const [label, endChat, gone] of [
-        ["deleted", async (h, chat) => {
-            await h.catalog.softDeleteSession(chat);
-            await h.client.cancelInstance(`session-${chat}`, "deleted by a person");
+    for (const [label, endAgentSession, gone] of [
+        ["deleted", async (h, agentSession) => {
+            await h.catalog.softDeleteSession(agentSession);
+            await h.client.cancelInstance(`session-${agentSession}`, "deleted by a person");
         }, "deleted"],
-        ["ended", async (h, chat) => {
-            await h.client.cancelInstance(`session-${chat}`, "ended by a person");
+        ["ended", async (h, agentSession) => {
+            await h.client.cancelInstance(`session-${agentSession}`, "ended by a person");
         }, "ended"],
     ]) {
-        it(`G1: a chat ${label} by a person after the next visit's admission gets no prompt: the visit fails unavailable at once, and a deleted chat stays deleted`, { timeout: TIMEOUT }, async () => {
-            // Fault injection: the chat is deleted or ended as the second visit's spawn begins (after its admission chose it).
+        it(`G1: a session ${label} by a person after the next visit's admission gets no prompt: the visit fails unavailable at once, and a deleted session stays deleted`, { timeout: TIMEOUT }, async () => {
+            // Fault injection: the session is deleted or ended as the second visit's spawn begins (after its admission chose it).
             let beforeSpawn = null;
             const h = await harness(getEnv(), {
                 createAlways: true,
@@ -835,28 +835,28 @@ describe("chat: continue on the controller", () => {
                 } },
             });
             try {
-                const run = await started(h, CHAT_YAML());
-                const chat = workflowAgentChatSessionId(run.runId, "talk");
+                const run = await started(h, SESSION_YAML());
+                const agentSession = workflowAgentSessionId(run.runId, "talk");
                 const first = await spawnedVisit(h, 1);
                 let second = null;
                 beforeSpawn = async (nodeExecutionId) => {
                     second = nodeExecutionId;
-                    await endChat(h, chat);
-                    await until(async () => ["Completed", "Failed", "Terminated"].includes((await h.client.getStatus(`session-${chat}`)).status),
-                        "the chat's orchestration to end");
+                    await endAgentSession(h, agentSession);
+                    await until(async () => ["Completed", "Failed", "Terminated"].includes((await h.client.getStatus(`session-${agentSession}`)).status),
+                        "the session's orchestration to end");
                 };
-                expect(await completeAs(h, chat, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
+                expect(await completeAs(h, agentSession, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
                     .toMatchObject({ ok: true });
                 const asked = Date.now();
                 expect(await ended(h, run.runId)).toMatchObject({ status: "failed", terminalOutcome: "failed" });
                 expect(Date.now() - asked).toBeLessThan(30_000);
                 expect(second).not.toBeNull();
                 expect(await h.store.readNodeExecution(second)).toMatchObject({ state: "completed", outcome: "unavailable", winner: "controller",
-                    error: { code: "unavailable", message: expect.stringContaining(`The agent session ${chat} that this step continues was ${gone}`),
-                        details: { childSessionId: chat } } });
-                // Nothing was sent to it, and the host was not asked: a deleted chat is not brought back.
+                    error: { code: "unavailable", message: expect.stringContaining(`The agent session ${agentSession} that this step continues was ${gone}`),
+                        details: { childSessionId: agentSession } } });
+                // Nothing was sent to it, and the host was not asked: a deleted session is not brought back.
                 expect(h.spawns).toHaveLength(1);
-                expect(await h.store.isSessionDeleted(chat)).toBe(label === "deleted");
+                expect(await h.store.isSessionDeleted(agentSession)).toBe(label === "deleted");
                 expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => data.nodeExecutionId)).toEqual([first.nodeExecutionId]);
             } finally {
                 await h.stop();
@@ -873,29 +873,29 @@ describe("chat: continue on the controller", () => {
         const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema });
         await mgmt.start();
         try {
-            const run = await started(h, CHAT_YAML({ limit: `"\${kv.limit}"` }), { limit: 3 });
-            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const run = await started(h, SESSION_YAML({ limit: `"\${kv.limit}"` }), { limit: 3 });
+            const agentSession = workflowAgentSessionId(run.runId, "talk");
             const first = await spawnedVisit(h, 1);
-            expect(first.childSessionId).toBe(chat);
+            expect(first.childSessionId).toBe(agentSession);
             // The person ends it while its (first visit's) turn runs: the command is queued; the session still reads Running.
-            await mgmt.completeSession(chat, "ended by a person", { wait: false });
-            expect((await h.client.getStatus(`session-${chat}`)).status).toBe("Running");
-            expect((await h.catalog.getSessionEvents(chat, 0, 100, ["session.end_requested"])).map(event => event.data))
+            await mgmt.completeSession(agentSession, "ended by a person", { wait: false });
+            expect((await h.client.getStatus(`session-${agentSession}`)).status).toBe("Running");
+            expect((await h.catalog.getSessionEvents(agentSession, 0, 100, ["session.end_requested"])).map(event => event.data))
                 .toEqual([expect.objectContaining({ cmd: "done" })]);
             await controlWorkflowRun(h.host, run.workflowSessionId,
                 { operation: "set_vars", runId: null, set: { limit: 3600 }, delete: [], expectedKvRevision: 1 }, { actor: ACTOR, operationId: "vars-g1r" });
             // The first visit is decided by its time limit; the next visit goes to a new agent session.
             const second = await spawnedVisit(h, 2);
-            const replacement = workflowAgentChatSessionId(run.runId, "talk", 2);
+            const replacement = workflowAgentSessionId(run.runId, "talk", 2);
             expect(second.childSessionId).toBe(replacement);
             expect(await h.store.readNodeExecution(first.nodeExecutionId)).toMatchObject({ outcome: "timed_out" });
-            expect(await eventsOf(h, run.workflowSessionId, "workflow.agent_chat_restarted"))
-                .toEqual([expect.objectContaining({ endedChatSessionId: chat, childSessionId: replacement, cycle: 2 })]);
+            expect(await eventsOf(h, run.workflowSessionId, "workflow.agent_session_restarted"))
+                .toEqual([expect.objectContaining({ endedSessionId: agentSession, childSessionId: replacement, cycle: 2 })]);
             // Nothing more went to the ending session after its end; the next visit completes in the new one. Review DRR-2:
             // the Workflow carried the marked end too (its own id): a second end, which the session never reads, fails nothing.
-            const sent = await chatMessages(h, chat);
+            const sent = await ownerMessages(h, agentSession);
             expect(sent.map(message => message.prompt ?? message.cmd)).toEqual([first.prompt, "done", "done"]);
-            const mark = await h.store.readSessionEndMark(chat);
+            const mark = await h.store.readSessionEndMark(agentSession);
             expect(sent[2]).toMatchObject({ type: "cmd", cmd: "done", id: `workflow-mark-end:${mark.id}`, requestedBy: run.workflowSessionId,
                 args: { reason: "A person asked to end this session." } });
             expect(await completeAs(h, replacement, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
@@ -924,38 +924,38 @@ describe("chat: continue on the controller", () => {
             const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema });
             await mgmt.start();
             try {
-                const run = await started(h, CHAT_YAML());
-                const chat = workflowAgentChatSessionId(run.runId, "talk");
+                const run = await started(h, SESSION_YAML());
+                const agentSession = workflowAgentSessionId(run.runId, "talk");
                 const first = await spawnedVisit(h, 1);
                 gate = async spec => {
-                    expect(spec.sessionId).toBe(chat);
+                    expect(spec.sessionId).toBe(agentSession);
                     if (label === "deleted") {
-                        await h.catalog.softDeleteSession(chat);
-                        await h.client.cancelInstance(`session-${chat}`, "deleted by a person");
+                        await h.catalog.softDeleteSession(agentSession);
+                        await h.client.cancelInstance(`session-${agentSession}`, "deleted by a person");
                     } else {
-                        await mgmt.completeSession(chat, "ended by a person", { wait: false });
+                        await mgmt.completeSession(agentSession, "ended by a person", { wait: false });
                     }
                 };
-                expect(await completeAs(h, chat, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
+                expect(await completeAs(h, agentSession, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
                     .toMatchObject({ ok: true });
                 const asked = Date.now();
                 expect(await ended(h, run.runId)).toMatchObject({ status: "failed", terminalOutcome: "failed" });
                 expect(Date.now() - asked).toBeLessThan(30_000);
                 expect(gate).toBeNull();
                 const second = await visit(h, 2);
-                expect(second.childSessionId).toBe(chat);
+                expect(second.childSessionId).toBe(agentSession);
                 expect(await h.store.readNodeExecution(second.nodeExecutionId)).toMatchObject({ state: "completed", outcome: "unavailable", winner: "controller",
-                    error: { code: "unavailable", message: expect.stringContaining(`The agent session ${chat} of this step was`),
-                        details: { childSessionId: chat } } });
+                    error: { code: "unavailable", message: expect.stringContaining(`The agent session ${agentSession} of this step was`),
+                        details: { childSessionId: agentSession } } });
                 expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => data.nodeExecutionId)).toEqual([first.nodeExecutionId]);
                 if (label === "deleted") {
                     // The create refused the deleted session: it stays deleted, and nothing was sent to it.
-                    expect(await h.store.isSessionDeleted(chat)).toBe(true);
-                    expect((await chatMessages(h, chat)).filter(message => message.prompt).map(message => message.prompt)).toEqual([first.prompt]);
+                    expect(await h.store.isSessionDeleted(agentSession)).toBe(true);
+                    expect((await ownerMessages(h, agentSession)).filter(message => message.prompt).map(message => message.prompt)).toEqual([first.prompt]);
                 } else {
                     // The prompt went behind the end, which ends the session; the visit was decided as it was sent.
-                    expect(await h.store.isSessionDeleted(chat)).toBe(false);
-                    const sent = (await chatMessages(h, chat)).map(message => message.prompt ?? message.cmd);
+                    expect(await h.store.isSessionDeleted(agentSession)).toBe(false);
+                    const sent = (await ownerMessages(h, agentSession)).map(message => message.prompt ?? message.cmd);
                     expect(sent.slice(0, 3)).toEqual([first.prompt, "done", second.prompt]);
                 }
             } finally {
@@ -986,22 +986,22 @@ describe("chat: continue on the controller", () => {
                 await mgmt.deleteSession(spec.sessionId, "deleted by a person");
                 deleted = spec.sessionId;
             };
-            const run = await started(h, CHAT_YAML());
-            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const run = await started(h, SESSION_YAML());
+            const agentSession = workflowAgentSessionId(run.runId, "talk");
             expect(await ended(h, run.runId)).toMatchObject({ status: "failed", terminalOutcome: "failed" });
-            expect(deleted).toBe(chat);
+            expect(deleted).toBe(agentSession);
             const first = await visit(h, 1);
             expect(await h.store.readNodeExecution(first.nodeExecutionId)).toMatchObject({ state: "completed", outcome: "unavailable", winner: "controller",
-                error: { code: "unavailable", message: expect.stringContaining(`The agent session ${chat} of this step was deleted`) } });
-            expect(await h.store.isSessionDeleted(chat)).toBe(true);
+                error: { code: "unavailable", message: expect.stringContaining(`The agent session ${agentSession} of this step was deleted`) } });
+            expect(await h.store.isSessionDeleted(agentSession)).toBe(true);
             // The orchestration the send started is ended by the Workflow's carried delete.
             const status = await until(async () => {
-                const read = (await h.client.getStatus(`session-${chat}`)).status;
+                const read = (await h.client.getStatus(`session-${agentSession}`)).status;
                 return read !== "Running" ? read : null;
             }, "the deleted session's orchestration to end", 30_000);
             expect(["Completed", "Failed", "Terminated"]).toContain(status);
-            expect((await chatMessages(h, chat)).find(message => message.type === "cmd"))
-                .toMatchObject({ cmd: "delete", id: `workflow-deleted-end:${chat}`, requestedBy: run.workflowSessionId });
+            expect((await ownerMessages(h, agentSession)).find(message => message.type === "cmd"))
+                .toMatchObject({ cmd: "delete", id: `workflow-deleted-end:${agentSession}`, requestedBy: run.workflowSessionId });
         } finally {
             await mgmt.stop();
             await h.stop();
@@ -1043,24 +1043,24 @@ describe("chat: continue on the controller", () => {
         await mgmt.start();
         try {
             gate = async spec => { await mgmt.deleteSession(spec.sessionId, "deleted by a person"); };
-            const run = await started(h, CHAT_YAML());
-            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const run = await started(h, SESSION_YAML());
+            const agentSession = workflowAgentSessionId(run.runId, "talk");
             expect(await ended(h, run.runId)).toMatchObject({ status: "failed", terminalOutcome: "failed" });
             // The status read right after the send said NotFound.
-            expect(notFoundOnce.has(chat)).toBe(true);
+            expect(notFoundOnce.has(agentSession)).toBe(true);
             const first = await visit(h, 1);
             expect(await h.store.readNodeExecution(first.nodeExecutionId)).toMatchObject({ state: "completed", outcome: "unavailable", winner: "controller",
-                error: { code: "unavailable", message: expect.stringContaining(`The agent session ${chat} of this step was deleted`) } });
-            expect(await h.store.isSessionDeleted(chat)).toBe(true);
+                error: { code: "unavailable", message: expect.stringContaining(`The agent session ${agentSession} of this step was deleted`) } });
+            expect(await h.store.isSessionDeleted(agentSession)).toBe(true);
             // The carried delete reached the session, and its orchestration ended.
             const status = await until(async () => {
-                const read = (await h.client.getStatus(`session-${chat}`)).status;
+                const read = (await h.client.getStatus(`session-${agentSession}`)).status;
                 return read !== "Running" ? read : null;
             }, "the deleted session's orchestration to end", 30_000);
             expect(["Completed", "Failed", "Terminated"]).toContain(status);
-            const received = await h.client.getStatus(`session-${chat}`);
+            const received = await h.client.getStatus(`session-${agentSession}`);
             const messages = typeof received.customStatus === "string" && received.customStatus ? JSON.parse(received.customStatus) : [];
-            expect(messages.find(message => message.type === "cmd")).toMatchObject({ cmd: "delete", id: `workflow-deleted-end:${chat}`, requestedBy: run.workflowSessionId });
+            expect(messages.find(message => message.type === "cmd")).toMatchObject({ cmd: "delete", id: `workflow-deleted-end:${agentSession}`, requestedBy: run.workflowSessionId });
         } finally {
             await mgmt.stop();
             await h.stop();
@@ -1102,16 +1102,16 @@ describe("chat: continue on the controller", () => {
         try {
             // A real mark, as a person's cancel records it; its own command is not queued.
             gate = async spec => { await recordSessionEndRequested(h.catalog, spec.sessionId, { cmd: "cancel", id: "person-cancel-before-start" }); };
-            const run = await started(h, CHAT_YAML());
-            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const run = await started(h, SESSION_YAML());
+            const agentSession = workflowAgentSessionId(run.runId, "talk");
             expect(await ended(h, run.runId)).toMatchObject({ status: "failed", terminalOutcome: "failed" });
-            expect(notFoundOnce.has(chat)).toBe(true);
+            expect(notFoundOnce.has(agentSession)).toBe(true);
             const first = await visit(h, 1);
             expect(await h.store.readNodeExecution(first.nodeExecutionId)).toMatchObject({ state: "completed", outcome: "unavailable", winner: "controller",
-                error: { code: "unavailable", message: expect.stringContaining(`The agent session ${chat} of this step was ended`) } });
+                error: { code: "unavailable", message: expect.stringContaining(`The agent session ${agentSession} of this step was ended`) } });
             // The carried cancel reached the session, after its start and first prompt.
             const carried = await until(async () => {
-                const messages = await chatMessages(h, chat);
+                const messages = await ownerMessages(h, agentSession);
                 const at = messages.findIndex(message => message.type === "cmd" && message.id === "workflow-mark-end:person-cancel-before-start");
                 return at >= 0 ? { at, messages } : null;
             }, "the carried cancel", 30_000);
@@ -1140,15 +1140,15 @@ describe("chat: continue on the controller", () => {
                 throw new Error("the worker stopped before recording the spawn");
             } } });
             try {
-                const run = await started(h, CHAT_YAML());
-                const chat = workflowAgentChatSessionId(run.runId, "talk");
-                let target = chat;
+                const run = await started(h, SESSION_YAML());
+                const agentSession = workflowAgentSessionId(run.runId, "talk");
+                let target = agentSession;
                 if (which === "replacement") {
                     const first = await spawnedVisit(h, 1);
-                    await h.catalog.softDeleteSession(chat);
-                    expect(await completeAs(h, chat, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
+                    await h.catalog.softDeleteSession(agentSession);
+                    expect(await completeAs(h, agentSession, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
                         .toMatchObject({ ok: true });
-                    target = workflowAgentChatSessionId(run.runId, "talk", 2);
+                    target = workflowAgentSessionId(run.runId, "talk", 2);
                 }
                 expect(await ended(h, run.runId)).toMatchObject({ status: "failed", terminalOutcome: "failed" });
                 const visitOf = which === "first" ? 1 : 2;
@@ -1175,34 +1175,34 @@ describe("chat: continue on the controller", () => {
             const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema });
             await mgmt.start();
             try {
-                const run = await started(h, CHAT_YAML({ limit: `"\${kv.limit}"` }), { limit: 3 });
-                const chat = workflowAgentChatSessionId(run.runId, "talk");
+                const run = await started(h, SESSION_YAML({ limit: `"\${kv.limit}"` }), { limit: 3 });
+                const agentSession = workflowAgentSessionId(run.runId, "talk");
                 const first = await spawnedVisit(h, 1);
                 if (label === "the queue write throws") {
                     const enqueue = mgmt._duroxideClient.enqueueEvent;
                     mgmt._duroxideClient.enqueueEvent = async () => { throw new Error("the queue write failed"); };
                     try {
-                        await expect(mgmt.cancelSession(chat, "ended by a person")).rejects.toThrow(/the queue write failed/);
+                        await expect(mgmt.cancelSession(agentSession, "ended by a person")).rejects.toThrow(/the queue write failed/);
                     } finally {
                         mgmt._duroxideClient.enqueueEvent = enqueue;
                     }
                 } else {
-                    await recordSessionEndRequested(h.catalog, chat, { cmd: "cancel", id: "person-cancel-1" });
+                    await recordSessionEndRequested(h.catalog, agentSession, { cmd: "cancel", id: "person-cancel-1" });
                 }
-                const mark = await h.store.readSessionEndMark(chat);
+                const mark = await h.store.readSessionEndMark(agentSession);
                 expect(mark).toMatchObject({ cmd: "cancel", requestedBy: null });
                 // The asker's command never reached the session.
-                expect(await commandsOf(h, chat)).toEqual([]);
+                expect(await commandsOf(h, agentSession)).toEqual([]);
                 await controlWorkflowRun(h.host, run.workflowSessionId,
                     { operation: "set_vars", runId: null, set: { limit: 3600 }, delete: [], expectedKvRevision: 1 }, { actor: ACTOR, operationId: "vars-drr2" });
                 const second = await spawnedVisit(h, 2);
-                const replacement = workflowAgentChatSessionId(run.runId, "talk", 2);
+                const replacement = workflowAgentSessionId(run.runId, "talk", 2);
                 expect(second.childSessionId).toBe(replacement);
                 // The Workflow carried the marked end before it acted on the mark.
-                const carried = await chatEnd(h, chat);
+                const carried = await agentSessionEnd(h, agentSession);
                 expect(carried).toMatchObject({ type: "cmd", cmd: "cancel", id: `workflow-mark-end:${mark.id}`, requestedBy: run.workflowSessionId,
                     args: { reason: "A person asked to end this session." } });
-                expect((await chatMessages(h, chat)).filter(message => message.prompt).map(message => message.prompt)).toEqual([first.prompt]);
+                expect((await ownerMessages(h, agentSession)).filter(message => message.prompt).map(message => message.prompt)).toEqual([first.prompt]);
                 expect(await completeAs(h, replacement, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
                     .toMatchObject({ ok: true, outcome: "finish" });
                 expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
@@ -1231,24 +1231,24 @@ describe("chat: continue on the controller", () => {
             },
         });
         try {
-            const run = await started(h, CHAT_YAML({ limit: `"\${kv.limit}"` }), { limit: 2 });
-            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const run = await started(h, SESSION_YAML({ limit: `"\${kv.limit}"` }), { limit: 2 });
+            const agentSession = workflowAgentSessionId(run.runId, "talk");
             firstVisit = (await visit(h, 1)).nodeExecutionId;
             // The first visit is decided by its 2-second time limit; the next one has an hour.
             await controlWorkflowRun(h.host, run.workflowSessionId,
                 { operation: "set_vars", runId: null, set: { limit: 3600 }, delete: [], expectedKvRevision: 1 }, { actor: ACTOR, operationId: "vars-1" });
             const second = await spawnedVisit(h, 2);
-            expect(second.childSessionId).toBe(chat);
+            expect(second.childSessionId).toBe(agentSession);
             expect(failures).toBe(6);
             // The first visit's Stop was added, and its end marked sent, before the second visit's prompt was sent.
             expect(h.stops.filter(stop => stop.requestId === `workflow-cycle-stop:${firstVisit}`))
-                .toEqual([expect.objectContaining({ sessionId: chat, kind: "stop", spawnsBefore: 1 })]);
+                .toEqual([expect.objectContaining({ sessionId: agentSession, kind: "stop", spawnsBefore: 1 })]);
             expect(endSentAtSpawn.at(-1)).not.toBeNull();
-            expect(await h.store.readAgentInvocation(firstVisit)).toMatchObject({ endChildStatus: "ChatContinues" });
+            expect(await h.store.readAgentInvocation(firstVisit)).toMatchObject({ endChildStatus: "AgentSessionContinues" });
             expect(await h.store.readNodeExecution(firstVisit)).toMatchObject({ outcome: "timed_out" });
             // The second visit goes on: it is not timed out, and its agent's result decides it.
             expect(await h.store.readNodeExecution(second.nodeExecutionId)).toMatchObject({ state: "pending" });
-            expect(await completeAs(h, chat, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
+            expect(await completeAs(h, agentSession, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
                 .toMatchObject({ ok: true, outcome: "finish" });
             expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
         } finally {
@@ -1264,7 +1264,7 @@ describe("chat: continue on the controller", () => {
             const commandsAtStop = [];
             h = await harness(getEnv(), { beforeStop: async ({ sessionId }) => { commandsAtStop.push((await commandsOf(h, sessionId)).length); } });
             try {
-                const run = await started(h, CHAT_YAML({ chat: session }));
+                const run = await started(h, SESSION_YAML({ agentSession: session }));
                 const first = await spawnedVisit(h, 1);
                 const child = first.childSessionId;
                 await controlWorkflowRun(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-g5" });
@@ -1280,7 +1280,7 @@ describe("chat: continue on the controller", () => {
         });
     }
 
-    it("PRR-3: visits are ordered by their ordinals, not the database clock: with visit 2 admitted at an earlier time, it is cycle 2 after visit 1, and a graceful stop keeps the chat while visit 2 runs", { timeout: TIMEOUT }, async () => {
+    it("PRR-3: visits are ordered by their ordinals, not the database clock: with visit 2 admitted at an earlier time, it is cycle 2 after visit 1, and a graceful stop keeps the session while visit 2 runs", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const direct = new pg.Pool({ connectionString: env.store, max: 2 });
         let firstVisit = null;
@@ -1297,10 +1297,10 @@ describe("chat: continue on the controller", () => {
             } },
         });
         try {
-            const run = await started(h, CHAT_YAML());
-            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const run = await started(h, SESSION_YAML());
+            const agentSession = workflowAgentSessionId(run.runId, "talk");
             firstVisit = (await spawnedVisit(h, 1)).nodeExecutionId;
-            expect(await completeAs(h, chat, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: firstVisit }))
+            expect(await completeAs(h, agentSession, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: firstVisit }))
                 .toMatchObject({ ok: true });
             const second = await spawnedVisit(h, 2);
             expect(inverted).toBe(true);
@@ -1310,21 +1310,21 @@ describe("chat: continue on the controller", () => {
             const [system2, json2] = second.prompt.split("\n");
             expect(system2).toMatch(/^\[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE 2\./);
             expect(JSON.parse(json2)).toMatchObject({ cycle: 2, previousResult: { outcome: "again", output: { fact: "one" } } });
-            // The chat's newest visit is visit 2.
-            expect(await h.store.readAgentInvocationByChild(chat)).toMatchObject({ nodeExecutionId: second.nodeExecutionId });
+            // The session's newest visit is visit 2.
+            expect(await h.store.readAgentInvocationByChild(agentSession)).toMatchObject({ nodeExecutionId: second.nodeExecutionId });
             expect((await h.store.readAgentVisitsBefore(run.runId, "talk", null))).toMatchObject({ count: 2, previous: { nodeExecutionId: second.nodeExecutionId } });
-            // A graceful stop with visit 2 running: the chat is started work, so it is not ended.
+            // A graceful stop with visit 2 running: the session is started work, so it is not ended.
             await controlWorkflowRun(h.host, run.workflowSessionId, { operation: "stop", runId: null, reason: "enough", graceSeconds: 300 },
                 { actor: ACTOR, operationId: "stop-prr3" });
             await pause(3_000);
-            expect(await commandsOf(h, chat)).toEqual([]);
-            // Visit 2's own result ends it; then the chat is ended once.
-            expect(await completeAs(h, chat, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
+            expect(await commandsOf(h, agentSession)).toEqual([]);
+            // Visit 2's own result ends it; then the session is ended once.
+            expect(await completeAs(h, agentSession, { outcome: "finish", output: { fact: "two" }, operation_id: "op-2", node_execution_id: second.nodeExecutionId }))
                 .toMatchObject({ ok: true });
-            expect(await chatEnd(h, chat)).toMatchObject({ cmd: "done", id: `workflow-agent-chat-end:${chat}` });
+            expect(await agentSessionEnd(h, agentSession)).toMatchObject({ cmd: "done", id: `workflow-agent-session-end:${agentSession}` });
             await ended(h, run.runId);
             await pause(1_000);
-            expect(await commandsOf(h, chat)).toHaveLength(1);
+            expect(await commandsOf(h, agentSession)).toHaveLength(1);
         } finally {
             await h.stop();
             await direct.end();
@@ -1332,8 +1332,8 @@ describe("chat: continue on the controller", () => {
     });
 
     for (const [label, finish] of [
-        ["the run completes", async (h, run, chat, nx) => {
-            expect(await completeAs(h, chat, { outcome: "finish", output: { fact: "one" }, operation_id: "op-1", node_execution_id: nx }))
+        ["the run completes", async (h, run, agentSession, nx) => {
+            expect(await completeAs(h, agentSession, { outcome: "finish", output: { fact: "one" }, operation_id: "op-1", node_execution_id: nx }))
                 .toMatchObject({ ok: true });
             expect(await ended(h, run.runId)).toMatchObject({ status: "completed" });
             return "done";
@@ -1344,23 +1344,23 @@ describe("chat: continue on the controller", () => {
             return "cancel";
         }],
     ]) {
-        it(`RT-1: ${label} while a spawn that passed its check has not created the chat: the end stays owed, and the after-send check ends the chat once`, { timeout: TIMEOUT }, async () => {
+        it(`RT-1: ${label} while a spawn that passed its check has not created the session: the end stays owed, and the after-send check ends the session once`, { timeout: TIMEOUT }, async () => {
             let release;
             const held = new Promise(resolve => { release = resolve; });
             const h = await harness(getEnv(), { beforeCreate: () => held });
             try {
-                const run = await started(h, CHAT_YAML());
-                const chat = workflowAgentChatSessionId(run.runId, "talk");
+                const run = await started(h, SESSION_YAML());
+                const agentSession = workflowAgentSessionId(run.runId, "talk");
                 const first = await visit(h, 1);
-                const end = await finish(h, run, chat, first.nodeExecutionId);
-                // The run's cleanup found no chat, and an attempt that may still create it: the end is owed, not ChatEnded.
+                const end = await finish(h, run, agentSession, first.nodeExecutionId);
+                // The run's cleanup found no session, and an attempt that may still create it: the end is owed, not AgentSessionEnded.
                 await until(async () => (await h.store.readAgentInvocation(first.nodeExecutionId))?.endChildStatus === "NotFound", "the owed end");
-                expect((await h.client.getStatus(`session-${chat}`)).status).toBe("NotFound");
+                expect((await h.client.getStatus(`session-${agentSession}`)).status).toBe("NotFound");
                 release();
-                expect(await chatEndOrDiagnose(h, run, chat, [first.nodeExecutionId])).toMatchObject({ type: "cmd", cmd: end, id: `workflow-agent-chat-end:${chat}`, requestedBy: run.workflowSessionId });
-                await until(async () => (await h.store.readAgentInvocation(first.nodeExecutionId))?.endChildStatus === "ChatEnded", "the chat ended");
+                expect(await agentSessionEndOrDiagnose(h, run, agentSession, [first.nodeExecutionId])).toMatchObject({ type: "cmd", cmd: end, id: `workflow-agent-session-end:${agentSession}`, requestedBy: run.workflowSessionId });
+                await until(async () => (await h.store.readAgentInvocation(first.nodeExecutionId))?.endChildStatus === "AgentSessionEnded", "the owner session ended");
                 await pause(1_000);
-                expect(await commandsOf(h, chat)).toHaveLength(1);
+                expect(await commandsOf(h, agentSession)).toHaveLength(1);
                 expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_ended")).map(data => [data.sent, data.childStatus]))
                     .toEqual([[false, "NotFound"], [true, expect.any(String)]]);
             } finally {
@@ -1370,14 +1370,14 @@ describe("chat: continue on the controller", () => {
         });
     }
 
-    it("RT-1 (formal t2): an older visit's late send creates the chat after the run ended while the newest visit had no attempt: the chat is ended", { timeout: TIMEOUT }, async () => {
+    it("RT-1 (formal t2): an older visit's late send creates the session after the run ended while the newest visit had no attempt: the session is ended", { timeout: TIMEOUT }, async () => {
         let release;
         const held = new Promise(resolve => { release = resolve; });
         let h = null;
         let firstVisit = null;
         const secondVisit = [];
         h = await harness(getEnv(), {
-            // Visit 1's spawn passed its check and holds before it creates the chat.
+            // Visit 1's spawn passed its check and holds before it creates the session.
             beforeCreate: request => {
                 firstVisit ??= request.nodeExecutionId;
                 return request.nodeExecutionId === firstVisit ? held : undefined;
@@ -1396,10 +1396,10 @@ describe("chat: continue on the controller", () => {
             },
         });
         try {
-            const run = await started(h, CHAT_YAML({ limit: "1", wait: 1 }));
-            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const run = await started(h, SESSION_YAML({ limit: "1", wait: 1 }));
+            const agentSession = workflowAgentSessionId(run.runId, "talk");
             const first = await visit(h, 1);
-            // Visit 1 times out while its send is held; visit 2 is admitted to the same chat (never created yet).
+            // Visit 1 times out while its send is held; visit 2 is admitted to the same session (never created yet).
             await until(async () => (secondVisit.length > 0 ? secondVisit : null), "visit 2's spawn");
             expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
             // The run's cleanup (after the run's status) leaves the end owed on the newest visit, which began no attempt.
@@ -1410,14 +1410,14 @@ describe("chat: continue on the controller", () => {
                     return invocation?.endChildStatus === "NotFound" ? invocation : null;
                 }, "the owed end on the newest visit, as the test reads it");
             } catch (error) {
-                throw new Error(`${error.message}; diagnosis: ${await chatEndDiagnosis(h, run, chat, [first.nodeExecutionId, secondVisit[0]])}`);
+                throw new Error(`${error.message}; diagnosis: ${await agentSessionEndDiagnosis(h, run, agentSession, [first.nodeExecutionId, secondVisit[0]])}`);
             }
-            expect(newest).toMatchObject({ childSessionId: chat, spawnAttempts: 0, endChildStatus: "NotFound" });
-            // Visit 1's host now creates the chat; its after-send check finds the run ended and ends the chat.
+            expect(newest).toMatchObject({ childSessionId: agentSession, spawnAttempts: 0, endChildStatus: "NotFound" });
+            // Visit 1's host now creates the session; its after-send check finds the run ended and ends the session.
             release();
-            expect(await chatEndOrDiagnose(h, run, chat, [first.nodeExecutionId, secondVisit[0]])).toMatchObject({ type: "cmd", cmd: "cancel", id: `workflow-agent-chat-end:${chat}` });
+            expect(await agentSessionEndOrDiagnose(h, run, agentSession, [first.nodeExecutionId, secondVisit[0]])).toMatchObject({ type: "cmd", cmd: "cancel", id: `workflow-agent-session-end:${agentSession}` });
             await pause(1_000);
-            expect(await commandsOf(h, chat)).toHaveLength(1);
+            expect(await commandsOf(h, agentSession)).toHaveLength(1);
             expect(h.spawns.map(request => request.nodeExecutionId)).toEqual([first.nodeExecutionId]);
         } finally {
             release?.();
@@ -1425,16 +1425,16 @@ describe("chat: continue on the controller", () => {
         }
     });
 
-    // Formal t3 (pse/wfv2/formal/agent-visible): a chat the host created reads NotFound until its session's first turn has
-    // run. While a continued chat's end is owed, every looker keeps looking on its activity's retry schedule (the spawn's
-    // after-send and decided paths, the run cleanup's detached retry), and the end is sent once, when the chat is visible.
-    // `looks` counts the looks that found no session (markContinuedChatEnded with NotFound).
+    // Formal t3 (pse/wfv2/formal/agent-visible): a session the host created reads NotFound until its session's first turn has
+    // run. While a continued session's end is owed, every looker keeps looking on its activity's retry schedule (the spawn's
+    // after-send and decided paths, the run cleanup's detached retry), and the end is sent once, when the session is visible.
+    // `looks` counts the looks that found no session (markContinuedSessionEnded with NotFound).
     const visibleLater = (extra = {}) => {
         const counter = { looks: 0 };
         const options = {
             deferVisible: true,
             storeHooks: {
-                markContinuedChatEnded(result, args) {
+                markContinuedSessionEnded(result, args) {
                     if (args[1] === "NotFound") counter.looks += 1;
                     return result;
                 },
@@ -1444,39 +1444,39 @@ describe("chat: continue on the controller", () => {
         return { counter, options };
     };
     const status = async (h, instanceId) => (await h.client.getStatus(instanceId)).status;
-    const endOnce = async (h, run, chat, nx, end) => {
-        const command = await until(async () => (await commandsOf(h, chat))[0] ?? null, `the end of chat ${chat}`, 90_000)
-            .catch(async error => { throw new Error(`${error.message}; diagnosis: ${await chatEndDiagnosis(h, run, chat, [nx])}`); });
-        expect(command).toMatchObject({ type: "cmd", cmd: end, id: `workflow-agent-chat-end:${chat}`, requestedBy: run.workflowSessionId });
-        await until(async () => (await h.store.readAgentInvocationByChild(chat))?.endChildStatus === "ChatEnded", "the chat ended");
+    const endOnce = async (h, run, agentSession, nx, end) => {
+        const command = await until(async () => (await commandsOf(h, agentSession))[0] ?? null, `the end of session ${agentSession}`, 90_000)
+            .catch(async error => { throw new Error(`${error.message}; diagnosis: ${await agentSessionEndDiagnosis(h, run, agentSession, [nx])}`); });
+        expect(command).toMatchObject({ type: "cmd", cmd: end, id: `workflow-agent-session-end:${agentSession}`, requestedBy: run.workflowSessionId });
+        await until(async () => (await h.store.readAgentInvocationByChild(agentSession))?.endChildStatus === "AgentSessionEnded", "the owner session ended");
         await pause(3_000);
-        expect(await commandsOf(h, chat)).toHaveLength(1);
+        expect(await commandsOf(h, agentSession)).toHaveLength(1);
         expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_ended")).map(data => [data.sent, data.childStatus]))
             .toEqual([[false, "NotFound"], [true, expect.any(String)]]);
     };
 
-    it("formal t3: a chat that is NotFound for 3 looks after the run ended is ended once it is visible, by the spawn's after-send retries", { timeout: 180_000 }, async () => {
+    it("formal t3: a session that is NotFound for 3 looks after the run ended is ended once it is visible, by the spawn's after-send retries", { timeout: 180_000 }, async () => {
         let release;
         const held = new Promise(resolve => { release = resolve; });
         const { counter, options } = visibleLater({ beforeCreate: () => held });
         const h = await harness(getEnv(), options);
         try {
-            const run = await started(h, CHAT_YAML());
-            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const run = await started(h, SESSION_YAML());
+            const agentSession = workflowAgentSessionId(run.runId, "talk");
             const first = await visit(h, 1);
             await controlWorkflowRun(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-t3a" });
             expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
             await until(async () => (await h.store.readAgentInvocation(first.nodeExecutionId))?.endChildStatus === "NotFound", "the owed end");
-            // The host creates the chat; it is not visible yet. The looks go on, and the spawn keeps retrying.
+            // The host creates the session; it is not visible yet. The looks go on, and the spawn keeps retrying.
             const before = counter.looks;
             release();
             await until(async () => (await h.store.readAgentInvocation(first.nodeExecutionId))?.spawnedAt ?? null, "the spawn recorded");
             await until(async () => counter.looks >= before + 3 || null, "3 more looks that found no session", 60_000);
-            expect(await status(h, `session-${chat}`)).toBe("NotFound");
+            expect(await status(h, `session-${agentSession}`)).toBe("NotFound");
             expect(await status(h, `wfa-${first.nodeExecutionId}`)).toBe("Running");
-            expect(await commandsOf(h, chat)).toEqual([]);
-            await h.makeVisible(chat);
-            await endOnce(h, run, chat, first.nodeExecutionId, "cancel");
+            expect(await commandsOf(h, agentSession)).toEqual([]);
+            await h.makeVisible(agentSession);
+            await endOnce(h, run, agentSession, first.nodeExecutionId, "cancel");
             await until(async () => (await status(h, `wfa-${first.nodeExecutionId}`)) === "Completed" || null, "the spawn to end", 60_000);
             expect(h.spawns.map(request => request.nodeExecutionId)).toEqual([first.nodeExecutionId]);
         } finally {
@@ -1485,19 +1485,19 @@ describe("chat: continue on the controller", () => {
         }
     });
 
-    it("formal t3: a spawn that created the chat and crashed before recording it keeps looking (spawnedAt empty) until the chat is visible", { timeout: 180_000 }, async () => {
+    it("formal t3: a spawn that created the session and crashed before recording it keeps looking (spawnedAt empty) until the session is visible", { timeout: 180_000 }, async () => {
         let release;
         const held = new Promise(resolve => { release = resolve; });
         let crashed = 0;
         const { counter, options } = visibleLater({
             beforeCreate: () => held,
-            // The attempt created the chat, then stopped before it recorded the spawn (once).
+            // The attempt created the session, then stopped before it recorded the spawn (once).
             storeBefore: { async recordAgentSpawned() { if (crashed++ === 0) throw new Error("the worker stopped here"); } },
         });
         const h = await harness(getEnv(), options);
         try {
-            const run = await started(h, CHAT_YAML());
-            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const run = await started(h, SESSION_YAML());
+            const agentSession = workflowAgentSessionId(run.runId, "talk");
             const first = await visit(h, 1);
             await controlWorkflowRun(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-t3b" });
             expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
@@ -1509,10 +1509,10 @@ describe("chat: continue on the controller", () => {
             // The retried spawn found the visit decided, with an attempt and no spawnedAt: it is still looking, not done.
             expect(await h.store.readAgentInvocation(first.nodeExecutionId)).toMatchObject({ spawnAttempts: 1, spawnedAt: null, endChildStatus: "NotFound" });
             expect(await status(h, `wfa-${first.nodeExecutionId}`)).toBe("Running");
-            await h.makeVisible(chat);
-            await endOnce(h, run, chat, first.nodeExecutionId, "cancel");
+            await h.makeVisible(agentSession);
+            await endOnce(h, run, agentSession, first.nodeExecutionId, "cancel");
             await until(async () => (await status(h, `wfa-${first.nodeExecutionId}`)) === "Completed" || null, "the spawn to end", 60_000);
-            // No second chat and no prompt sent again.
+            // No second session and no prompt sent again.
             expect(h.spawns.map(request => request.nodeExecutionId)).toEqual([first.nodeExecutionId]);
         } finally {
             release?.();
@@ -1520,31 +1520,31 @@ describe("chat: continue on the controller", () => {
         }
     });
 
-    it("formal t3: a chat created while the run was live and not visible when the run ended is ended by the cleanup's detached retry", { timeout: 180_000 }, async () => {
+    it("formal t3: a session created while the run was live and not visible when the run ended is ended by the cleanup's detached retry", { timeout: 180_000 }, async () => {
         const { counter, options } = visibleLater();
         const h = await harness(getEnv(), options);
         try {
-            const run = await started(h, CHAT_YAML());
-            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const run = await started(h, SESSION_YAML());
+            const agentSession = workflowAgentSessionId(run.runId, "talk");
             const first = await spawnedVisit(h, 1);
             // The send finished while the run was live (nothing owed then): the spawn is done.
             await until(async () => (await status(h, `wfa-${first.nodeExecutionId}`)) === "Completed" || null, "the spawn to end");
             await controlWorkflowRun(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-t3c" });
             expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
             // The cleanup looked once and started its detached retry; the run's end did not wait for it.
-            await until(async () => (await status(h, `wfc-${chat}`)) === "Running" || null, "the detached end retry");
+            await until(async () => (await status(h, `wfc-${agentSession}`)) === "Running" || null, "the detached end retry");
             await until(async () => counter.looks >= 3 || null, "3 looks that found no session", 60_000);
-            expect(await status(h, `wfc-${chat}`)).toBe("Running");
-            expect(await commandsOf(h, chat)).toEqual([]);
-            await h.makeVisible(chat);
-            await endOnce(h, run, chat, first.nodeExecutionId, "cancel");
-            await until(async () => (await status(h, `wfc-${chat}`)) === "Completed" || null, "the detached retry to end", 60_000);
+            expect(await status(h, `wfc-${agentSession}`)).toBe("Running");
+            expect(await commandsOf(h, agentSession)).toEqual([]);
+            await h.makeVisible(agentSession);
+            await endOnce(h, run, agentSession, first.nodeExecutionId, "cancel");
+            await until(async () => (await status(h, `wfc-${agentSession}`)) === "Completed" || null, "the detached retry to end", 60_000);
         } finally {
             await h.stop();
         }
     });
 
-    it("formal review: a retried spawn of a visit whose result arrived creates no replacement chat and logs no new chat", { timeout: TIMEOUT }, async () => {
+    it("formal review: a retried spawn of a visit whose result arrived creates no replacement session and logs no new session", { timeout: TIMEOUT }, async () => {
         let h = null;
         let watched = null;
         const decided = [];
@@ -1561,21 +1561,21 @@ describe("chat: continue on the controller", () => {
             },
         } });
         try {
-            const run = await started(h, CHAT_YAML({ wait: 1 }));
+            const run = await started(h, SESSION_YAML({ wait: 1 }));
             watched = run.runId;
-            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const agentSession = workflowAgentSessionId(run.runId, "talk");
             const first = await spawnedVisit(h, 1);
-            // The chat ended on its own, so visit 2 is admitted to a replacement chat; its result arrives before its spawn sends.
-            await h.catalog.softDeleteSession(chat);
-            expect(await completeAs(h, chat, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
+            // The owner session ended on its own, so visit 2 is admitted to a replacement session; its result arrives before its spawn sends.
+            await h.catalog.softDeleteSession(agentSession);
+            expect(await completeAs(h, agentSession, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
                 .toMatchObject({ ok: true });
             expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
-            const replacement = workflowAgentChatSessionId(run.runId, "talk", 2);
+            const replacement = workflowAgentSessionId(run.runId, "talk", 2);
             expect(decided).toHaveLength(1);
             expect((await h.store.readAgentInvocation(decided[0])).childSessionId).toBe(replacement);
             expect(h.spawns).toHaveLength(1);
             expect((await h.client.getStatus(`session-${replacement}`)).status).toBe("NotFound");
-            expect(await eventsOf(h, run.workflowSessionId, "workflow.agent_chat_restarted")).toEqual([]);
+            expect(await eventsOf(h, run.workflowSessionId, "workflow.agent_session_restarted")).toEqual([]);
             expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => data.nodeExecutionId)).toEqual([first.nodeExecutionId]);
         } finally {
             await h.stop();

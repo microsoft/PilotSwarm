@@ -20,7 +20,7 @@ import type { WorkflowStore } from "./store.js";
  *   1.0.83 are routed with it, so a worker of an older image (which does not declare the tag) never fetches them.
  * - The intake activities (claim and settle) of orchestration 1.0.83, which the registry registers as the latest version.
  *   Its turn activities are registered by registerActivities (session-proxy.ts).
- * - The report of a Workflow agent chat's failed turn (agent-turn-failure.ts), which orchestration 1.0.83 schedules.
+ * - The report of a Workflow agent session's failed turn (agent-turn-failure.ts), which orchestration 1.0.83 schedules.
  * - The agent host of agent states (agent-host.ts): the child's definition from the registry-backed resolver over the
  *   agent registry and this worker's own agents (agent-resolver.ts), as the worker's publications pin them; the child
  *   created through a PilotSwarm client of the worker's own store, at the latest version (1.0.83), so that its turns can
@@ -65,7 +65,7 @@ function childSessionClient(options: PilotSwarmClientOptions, shared: WorkflowCh
         stop: () => client.stop(),
         createSession: ({ reasoningEffort, contextTier, ...config }) => client.createSession({
             ...config, ...(isReasoningEffort(reasoningEffort) ? { reasoningEffort } : {}),
-            // OF-S2-7: the chat's (or the chosen) context tier, when it names a known one.
+            // OF-S2-7: the session's (or the chosen) context tier, when it names a known one.
             ...(contextTier === "default" || contextTier === "long_context" ? { contextTier } : {}),
         }),
     };

@@ -21,7 +21,7 @@ import {
 } from "../src/workflow-view.js";
 import { layoutWorkflowGraphTB, WORKFLOW_ERROR_EDGE_LABEL } from "../src/workflow-graph-layout.js";
 import { WorkflowEdgeShape, WorkflowStepCard } from "../../react/src/workflow-graph.js";
-import { listedState } from "../../react/src/workflow-chat-tab.js";
+import { listedState } from "../../react/src/workflow-session-tab.js";
 import { done, readModel, row } from "./workflow-fixtures.mjs";
 
 process.env.TZ = "UTC";
@@ -124,8 +124,8 @@ test("the cards: two rows, no type word, no 'Done by its agent', 'in the loaded 
     }
     // The full words stay in the title (the tooltip, and the description screen readers read): the type and the state.
     assert.match(html.send_joke, /title="send_joke · Send · DadJoke@1 · Done · sent, queued at recipient · Ran 3 times"/);
-    // OF-S2-7: an agent node's title ends with the model it uses (its chat's, not loaded here).
-    assert.match(html.generate_joke, /title="generate_joke · Agent · Done · generated · Ran 3 times · Model: from the chat"/);
+    // OF-S2-7: an agent node's title ends with the model it uses (its session's, not loaded here).
+    assert.match(html.generate_joke, /title="generate_joke · Agent · Done · generated · Ran 3 times · Model: from the session"/);
     assert.match(html.generate_joke, /aria-label="Inspect generate_joke"/);
     assert.match(html.pause, /class="ps-workflow-node-visits" title="Ran 3 times"/);
 });

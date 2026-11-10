@@ -1,10 +1,10 @@
 /**
- * Workflow Simplified stage 2.1c, FU-17, on PostgreSQL: an agent node's tool limit reaches the turn of its chat.
+ * Workflow Simplified stage 2.1c, FU-17, on PostgreSQL: an agent node's tool limit reaches the turn of its session.
  * - store.readAgentToolLimit reads the limit of a visit's state from its run's own revision: [] for `tools: none`, the
  *   names for a list, null for a state without a limit or a visit that does not exist;
- * - on a real 1.0.83 turn (runTurnV5) of the state's chat, the config each turn gives the session manager carries the
+ * - on a real 1.0.83 turn (runTurnV5) of the state's session, the config each turn gives the session manager carries the
  *   limit (workflowToolLimit), from which it offers the Copilot session only those tools (unit test
- *   workflow-agent-tool-limit.test.mjs); a chat whose state sets no limit gets none.
+ *   workflow-agent-tool-limit.test.mjs); a session whose state sets no limit gets none.
  *
  * Run: npx vitest run test/local/workflow-agent-tool-limit.test.js
  */
@@ -83,7 +83,7 @@ describe("FU-17: an agent node's tool limit (store)", () => {
 
 describe("FU-17: an agent node's tool limit on a real 1.0.83 turn (runTurnV5, test-only switch)", () => {
     for (const [label, tools, expected] of [["tools: none", "none", []], ["a list", "[read_facts]", ["read_facts"]], ["no limit", undefined, null]]) {
-        it(`the chat of a state with ${label} is given ${expected === null ? "no limit" : "that limit"} in each turn's config`, { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
+        it(`the session of a state with ${label} is given ${expected === null ? "no limit" : "that limit"} in each turn's config`, { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
             const seen = [];
             const script = async (_call, _prompt, opts) => {
                 seen.push({ child: typeof opts.controlToolBridge?.completeWorkflowNode === "function" });

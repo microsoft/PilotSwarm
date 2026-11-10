@@ -957,13 +957,13 @@ owners/shares/ledgers. Rollback is an explicit operator change to
 
 The release that makes session orchestration 1.0.83 the default (the
 Workflow release) must not roll the workers. A worker of an earlier release
-does not have 1.0.83: when it picks up a 1.0.83 chat it gives the chat back
-and tries again, and after 10 tries the chat fails. Stop every worker,
+does not have 1.0.83: when it picks up a 1.0.83 session it gives the session back
+and tries again, and after 10 tries the session fails. Stop every worker,
 deploy, then start them:
 
 ```bash
 # 1. Stop every worker and wait until none runs. Start nothing of the new
-#    release that starts chats (portal, MCP server, TUI) before this ends.
+#    release that starts sessions (portal, MCP server, TUI) before this ends.
 kubectl scale deployment/copilot-runtime-worker -n copilot-runtime --replicas=0
 kubectl wait pod -n copilot-runtime -l app.kubernetes.io/component=worker --for=delete --timeout=10m
 
@@ -978,7 +978,7 @@ kubectl scale deployment/copilot-runtime-worker -n copilot-runtime --replicas=<c
 kubectl rollout status deployment/copilot-runtime-worker -n copilot-runtime
 ```
 
-Existing chats keep replaying on the frozen 1.0.82 and move to 1.0.83 at
+Existing sessions keep replaying on the frozen 1.0.82 and move to 1.0.83 at
 their next continue-as-new. For the GitOps path (Flux), see "Upgrading to
 this release: stop, deploy, start" in `deploy/scripts/README.md`.
 
@@ -987,7 +987,7 @@ this release: stop, deploy, start" in `deploy/scripts/README.md`.
 Use a rolling update only for a release that keeps the default session
 orchestration version. A release that changes it, such as the one that makes
 1.0.83 the default, is deployed by stop, deploy, start (above): during a
-rolling update an old worker can take a chat of the new version and fail it.
+rolling update an old worker can take a session of the new version and fail it.
 
 ```bash
 # Rebuild and push

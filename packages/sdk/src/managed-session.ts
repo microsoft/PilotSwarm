@@ -583,13 +583,13 @@ function extractAssistantMessageContent(event: any): string | undefined {
 }
 
 /**
- * enable_workflows where Workflows are already on, in a chat whose Workflows are on demand. Such a chat stays declared the
+ * enable_workflows where Workflows are already on, in a session whose Workflows are on demand. Such a session stays declared the
  * tool once they are on: a call of a tool the CLI was not declared is refused by the CLI itself ("Tool 'enable_workflows'
- * does not exist."), which the chat shows as a Failed enable_workflows row although Workflows are on. Declared, the call
+ * does not exist."), which the session shows as a Failed enable_workflows row although Workflows are on. Declared, the call
  * reaches the handler, which answers that they are already on and changes nothing.
  */
 const ENABLE_WORKFLOWS_ON_TOOL_SPEC = {
-    description: "Workflows are already on in this chat and their tools are declared; calling this changes nothing.",
+    description: "Workflows are already on in this session and their tools are declared; calling this changes nothing.",
     parameters: { type: "object", properties: {} },
 } as const;
 
@@ -1511,7 +1511,7 @@ export class ManagedSession {
             ...readWorkflowToolSpec({ ...workflowSpecs, updateWorkflow: opts?.workflowInsideWorkflow !== true }), handler: async () => "stub",
         });
         const sendWorkflowInputTool = defineTool("send_workflow_input", { ...SEND_WORKFLOW_INPUT_TOOL_SPEC, handler: async () => "stub" });
-        // Stage 2.1: the chat's definitions, with revisions (definition-tool.ts).
+        // Stage 2.1: the session's definitions, with revisions (definition-tool.ts).
         // Every turn's host runs a Workflow test, a frozen 1.0.82 turn's included.
         const workflowDefinitionTool = defineTool(WORKFLOW_DEFINITION_TOOL, {
             ...workflowDefinitionToolSpec(), handler: async () => "stub",
@@ -1524,9 +1524,9 @@ export class ManagedSession {
         // tool stays. spawn_workflow is no longer declared (owner 2026-11-08T16:55Z, ruling 18:12Z): workflow_definition
         // replaces it; its turn handler stays, so a stale call is still answered.
         const definitionTools = opts?.workflowInsideWorkflow === true ? [] : [workflowDefinitionTool, updateWorkflowTool];
-        // Workflows on demand (owner 2026-11-08T16:55Z): while they are off in the chat it is declared enable_workflows
+        // Workflows on demand (owner 2026-11-08T16:55Z): while they are off in the session it is declared enable_workflows
         // instead of the Workflow tools; `none` declares neither. The CLI refuses a call of a tool it was not declared, so a
-        // handler alone answers nothing: a chat whose Workflows are on demand (`workflowOnDemand`) keeps enable_workflows
+        // handler alone answers nothing: a session whose Workflows are on demand (`workflowOnDemand`) keeps enable_workflows
         // declared once they are on, whose call is answered "already on" (not a Failed row).
         const context = opts?.workflowContext ?? "on";
         const enableWorkflowsOn = context === "on" && opts?.workflowOnDemand === true
@@ -1948,7 +1948,7 @@ export class ManagedSession {
                 trace?.(`[runTurn] session=${this.sessionId} no step reminder: ${raced.verdict.reason}`);
                 return null;
             }
-            // chat: continue: the open cycle's node execution id, which the reminder names (owner decision agent-node-continue-20261106).
+            // session: continue: the open cycle's node execution id, which the reminder names (owner decision agent-node-continue-20261106).
             return { stateId: raced.verdict.stateId, n: raced.verdict.n, max: raced.verdict.max,
                 ...(raced.verdict.cycle ? { cycle: raced.verdict.cycle } : {}) };
         } finally {
@@ -3338,7 +3338,7 @@ export class ManagedSession {
                 try { return await controlBridge.readWorkflow(args ?? {}); } catch (error) { return workflowToolErrorPayload(error); }
             },
         });
-        // Stage 2.1: the chat's Workflow Definitions (definition-tool.ts): list, read, save and start. Refused inside a Workflow
+        // Stage 2.1: the session's Workflow Definitions (definition-tool.ts): list, read, save and start. Refused inside a Workflow
         // (A1), as the other definition tools are.
         // Every turn's host runs a Workflow test, a frozen 1.0.82 turn's included.
         const workflowDefinitionTool = defineTool(WORKFLOW_DEFINITION_TOOL, {
@@ -3350,9 +3350,9 @@ export class ManagedSession {
                 try { return await controlBridge.workflowDefinition(args ?? {}, { toolCallId: invocation?.toolCallId }); } catch (error) { return workflowToolErrorPayload(error); }
             },
         });
-        // Workflows on demand (owner 2026-11-08T16:55Z): enable_workflows saves the chat's flag and ends the turn; the next
+        // Workflows on demand (owner 2026-11-08T16:55Z): enable_workflows saves the session's flag and ends the turn; the next
         // turn starts at once with the Workflow tools and guidance (the use_package path: forceContinuePrompt). Idempotent:
-        // a chat that already has them is told so and nothing changes. Refused while native tasks run, as use_package is: the
+        // a session that already has them is told so and nothing changes. Refused while native tasks run, as use_package is: the
         // refresh would cancel their shells.
         // Review RLR-F4: activation and native-task admission share the turn-boundary fence. It is closed before the task list
         // is read and the flag saved, so no task is admitted meanwhile; a task call already started (its admission may be in
@@ -3363,7 +3363,7 @@ export class ManagedSession {
             handler: async () => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(ENABLE_WORKFLOWS_TOOL);
                 if ((this.config.workflowContext ?? "on") === "on") {
-                    return "Workflows are already on in this chat: use workflow_definition. Nothing changed.";
+                    return "Workflows are already on in this session: use workflow_definition. Nothing changed.";
                 }
                 const service = this.config.capabilityServices;
                 if (!service?.enableWorkflows) return "Error: Workflows cannot be turned on in this session.";
@@ -3380,8 +3380,8 @@ export class ManagedSession {
                     }
                     await service.enableWorkflows();
                     activated = true;
-                    turnState.pendingActions.push({ type: "completed", content: "Workflows turned on in this chat.",
-                        forceContinuePrompt: "Workflows are now on in this chat: the Workflow tools and guidance are loaded. Continue the "
+                    turnState.pendingActions.push({ type: "completed", content: "Workflows turned on in this session.",
+                        forceContinuePrompt: "Workflows are now on in this session: the Workflow tools and guidance are loaded. Continue the "
                             + "user's task; do not call enable_workflows again." });
                     return `${JSON.stringify({ workflows: "on" })}\n${acknowledgeTurnBoundary(ENABLE_WORKFLOWS_TOOL)}`;
                 } catch (error) {
@@ -4803,7 +4803,7 @@ export class ManagedSession {
         }
 
         // F-C3: a root session's system-only turn (a child digest or a wake) that the model answered with nothing is a
-        // completed turn with no content: no error status, no retry, no chat warning. The activity list shows one line
+        // completed turn with no content: no error status, no retry, no session warning. The activity list shows one line
         // (session.empty_answer), and the worker trace says so. The same for a root session's turn that answers only
         // workflow notices that say they need no answer (quietEmptyAnswerKind "workflow_notice", owner dump 2026-11-06).
         if (quietedEmptyAnswer !== null) {
@@ -4830,8 +4830,8 @@ export class ManagedSession {
 
         // Check if the SDK emitted a session.error — if so, treat as an error
         // even though session.idle fired (the SDK fires idle after retries exhaust).
-        // PR 270: a Workflow agent chat's turn (opts.sessionErrorEndsTurn) ends as an error even after text: a step whose
-        // chat's model failed must not end its turn "completed" in silence, so its retries and failure report apply.
+        // PR 270: a Workflow agent session's turn (opts.sessionErrorEndsTurn) ends as an error even after text: a step whose
+        // session's model failed must not end its turn "completed" in silence, so its retries and failure report apply.
         const sessionError = collectedEvents.find(e => e.eventType === "session.error");
         if (sessionError && (!finalContent || opts?.sessionErrorEndsTurn === true)) {
             const errData: any = sessionError.data ?? {};

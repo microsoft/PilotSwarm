@@ -149,7 +149,7 @@ test("(c) a 1.0.83 turn has the same text, with clock waits and revision tests",
         assert.ok(prompt.includes(workflowSessionGuidance(testMode, { scripts, clockWaits: true, requests: true })), `scripts ${scripts}`);
         const block = workflowBlock(prompt);
         assert.ok(block.includes("Test a revision only when the user asks"));
-        assert.ok(block.includes("`request`: answer it once with `respond_session_request` before its deadline, never in chat."));
+        assert.ok(block.includes("`request`: answer it once with `respond_session_request` before its deadline, never as plain text."));
         assert.match(block, /A wait state can wait until a clock time: `at: \{/);
         for (const [type, { named, yaml }] of Object.entries(STATE_TYPES)) {
             if (named.test(block)) assert.deepEqual(compileErrors(yaml), [], `scripts ${scripts}: ${type}`);

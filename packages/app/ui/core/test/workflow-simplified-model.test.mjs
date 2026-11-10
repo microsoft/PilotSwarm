@@ -3,7 +3,7 @@
  * workflow children; a started child is a Workflow, numbered within its definition (`check-items #3`) and grouped by
  * definition name (O5, display only); a child that has not started has no session-list row; each Workflow has its own
  * state in words (05, O8 "Canceled"); selecting a Workflow row selects its session's chat and shows the Workflow in that
- * session's Workflow tab (S4, S5, S8); an agent node's chat shows its Workflow with that node selected (S6); the
+ * session's Workflow tab (S4, S5, S8); an agent node's session shows its Workflow with that node selected (S6); the
  * Workflow button counts the Workflows that need the person (O6).
  *
  * Run: node --test test/workflow-simplified-model.test.mjs
@@ -13,20 +13,20 @@ import assert from "node:assert/strict";
 
 import { appReducer, createInitialState, selectSessionRows } from "../src/index.js";
 import {
-    selectWorkflowTabContext, workflowBadgeCount, workflowDefinitionsOf, workflowFailure, workflowFailureText, workflowHighlightedSessionId, workflowNodeChatTitle,
+    selectWorkflowTabContext, workflowBadgeCount, workflowDefinitionsOf, workflowFailure, workflowFailureText, workflowHighlightedSessionId, workflowNodeSessionTitle,
     workflowRowTitle, workflowSelectionTarget, workflowStarted, workflowStateOf, WORKFLOW_SIDE_TAB,
 } from "../src/workflow-owner.js";
 import { buildSessionTree } from "../src/session-tree.js";
 
 const OWNER = "owner-1";
 const at = n => 1_800_000_000_000 + n * 60_000;
-const chat = (sessionId, extra = {}) => ({ sessionId, title: "Stock check", status: "idle", createdAt: at(0), updatedAt: at(0), ...extra });
+const ownerSession = (sessionId, extra = {}) => ({ sessionId, title: "Stock check", status: "idle", createdAt: at(0), updatedAt: at(0), ...extra });
 const workflow = (sessionId, name, n, status = "completed", extra = {}) => ({
     sessionId, sessionKind: "workflow", title: `Workflow: ${name}`, status, parentSessionId: OWNER, createdAt: at(n), updatedAt: at(n), ...extra,
 });
 
 const SESSIONS = [
-    chat(OWNER),
+    ownerSession(OWNER),
     workflow("wf-1", "check-items", 1, "completed"),
     workflow("wf-2", "check-items", 2, "failed"),
     workflow("wf-3", "check-items", 3, "running"),
@@ -122,8 +122,8 @@ test("a session's definitions: its workflow children grouped by name, numbered o
     assert.equal(nightly.startable, true);
     assert.equal(workflowRowTitle(byId, byId["wf-2"]), "check-items #2");
     assert.equal(workflowRowTitle(byId, byId["wf-draft"]), "nightly-report");
-    assert.equal(workflowNodeChatTitle(byId, byId["agent-1"]), "summarize · agent");
-    assert.equal(workflowNodeChatTitle(byId, byId.other), null);
+    assert.equal(workflowNodeSessionTitle(byId, byId["agent-1"]), "summarize · agent");
+    assert.equal(workflowNodeSessionTitle(byId, byId.other), null);
     // The read model's revision name wins over the row title.
     const renamed = workflowDefinitionsOf(byId, OWNER, { "wf-1": { readModel: { ...liveModel(), revision: { revision: 1, valid: true, name: "old-name" } } } });
     assert.ok(renamed.some(item => item.name === "old-name" && item.workflows.length === 1));
@@ -173,7 +173,7 @@ test("selecting a Workflow row selects its session's chat and opens the Workflow
     assert.equal(workflowHighlightedSessionId(state.sessions), OWNER);
     assert.equal(selectWorkflowTabContext(state).workflowId, "wf-3");
     // Another session: its own Workflow tab.
-    state = appReducer(state, { type: "sessions/loaded", sessions: [...SESSIONS, chat("lonely", { title: "Release notes" })] });
+    state = appReducer(state, { type: "sessions/loaded", sessions: [...SESSIONS, ownerSession("lonely", { title: "Release notes" })] });
     state = appReducer(state, { type: "sessions/selected", sessionId: "lonely" });
     assert.deepEqual(selectWorkflowTabContext(state), { ownerId: "lonely", workflowId: null, nodeSessionId: null, nodeStateId: null });
 });
@@ -206,35 +206,35 @@ test("a link to a Workflow opens its session's chat with the Workflow shown (S8)
     assert.notEqual(plain.ui.sidePaneTab, WORKFLOW_SIDE_TAB);
 });
 
-test("an agent node's chat shows in the middle; the tab shows its Workflow with that node selected (S6)", () => {
+test("an agent node's session shows in the middle; the tab shows its Workflow with that node selected (S6)", () => {
     const state = appReducer(loaded(), { type: "sessions/selected", sessionId: "agent-1" });
     assert.equal(state.sessions.activeSessionId, "agent-1");
     assert.deepEqual(selectWorkflowTabContext(state), { ownerId: OWNER, workflowId: "wf-3", nodeSessionId: "agent-1", nodeStateId: "summarize" });
 });
 
-// Review UI-9: selecting an agent node's chat chooses its Workflow and node now, whatever node was selected before, and
+// Review UI-9: selecting an agent node's session chooses its Workflow and node now, whatever node was selected before, and
 // opens the Workflow tab when the right block was closed; a later click on the graph chooses again.
-test("selecting an agent node's chat selects that node in its Workflow and opens the Workflow tab", () => {
+test("selecting an agent node's session selects that node in its Workflow and opens the Workflow tab", () => {
     let state = appReducer(loaded(), { type: "ui/workflowView", sessionId: "wf-3", view: { selectedNodeId: "fetch" } });
     state = appReducer(state, { type: "ui/canvasOpen", open: false });
     assert.equal(state.ui.canvasOpen, false);
     state = appReducer(state, { type: "sessions/selected", sessionId: "agent-1" });
-    assert.equal(state.sessions.activeSessionId, "agent-1", "its chat is in the middle");
+    assert.equal(state.sessions.activeSessionId, "agent-1", "its session is in the middle");
     assert.equal(state.ui.workflowViews["wf-3"].selectedNodeId, "summarize", "the node, not the one chosen before");
     assert.equal(state.ui.canvasOpen, true);
     assert.equal(state.ui.sidePaneTab, "workflow");
-    assert.equal(Number(state.ui.workflowOpenSeq) || 0, 0, "the phone keeps showing the chat that was tapped");
+    assert.equal(Number(state.ui.workflowOpenSeq) || 0, 0, "the phone keeps showing the session that was tapped");
     // A click on the graph chooses again.
     state = appReducer(state, { type: "ui/workflowView", sessionId: "wf-3", view: { selectedNodeId: "fetch" } });
     assert.equal(state.ui.workflowViews["wf-3"].selectedNodeId, "fetch");
-    // An ordinary chat's selection changes nothing of it.
+    // An ordinary session's selection changes nothing of it.
     const other = appReducer(state, { type: "sessions/selected", sessionId: "other" });
     assert.equal(other.ui.workflowViews["wf-3"].selectedNodeId, "fetch");
 });
 
-// Review UI-D2: an agent chat's navigation shows its own Workflow's definition and the Workflows view, whatever definition
+// Review UI-D2: an agent session's navigation shows its own Workflow's definition and the Workflows view, whatever definition
 // or view was left chosen in the owner's Workflow tab; a later choice in the tab chooses again.
-test("UI-D2: selecting an agent node's chat shows its Workflow's definition, the Workflows view, that Workflow and node", () => {
+test("UI-D2: selecting an agent node's session shows its Workflow's definition, the Workflows view, that Workflow and node", () => {
     let state = loaded();
     // Left on the other definition's Definition view.
     state = appReducer(state, { type: "ui/workflowTab", ownerId: OWNER, patch: { view: "definition", definition: "nightly-report", workflowId: null } });
@@ -242,15 +242,15 @@ test("UI-D2: selecting an agent node's chat shows its Workflow's definition, the
     assert.deepEqual(state.ui.workflowTabs[OWNER], { view: "workflows", definition: "check-items", workflowId: "wf-3" });
     assert.equal(state.ui.workflowViews["wf-3"].selectedNodeId, "summarize");
     assert.deepEqual(selectWorkflowTabContext(state), { ownerId: OWNER, workflowId: "wf-3", nodeSessionId: "agent-1", nodeStateId: "summarize" });
-    assert.equal(Number(state.ui.workflowOpenSeq) || 0, 0, "the phone keeps showing the chat that was tapped");
+    assert.equal(Number(state.ui.workflowOpenSeq) || 0, 0, "the phone keeps showing the session that was tapped");
     // A later deliberate choice in the tab stands.
     state = appReducer(state, { type: "ui/workflowTab", ownerId: OWNER, patch: { view: "definition" } });
     assert.equal(state.ui.workflowTabs[OWNER].view, "definition");
-    // Selecting the chat again chooses again.
+    // Selecting the session again chooses again.
     state = appReducer(state, { type: "sessions/selected", sessionId: OWNER });
     state = appReducer(state, { type: "sessions/selected", sessionId: "agent-1" });
     assert.equal(state.ui.workflowTabs[OWNER].view, "workflows");
-    // An ordinary chat's selection leaves the tab as it is.
+    // An ordinary session's selection leaves the tab as it is.
     const other = appReducer(state, { type: "ui/workflowTab", ownerId: OWNER, patch: { view: "definition", definition: "nightly-report" } });
     const plain = appReducer(other, { type: "sessions/selected", sessionId: "other" });
     assert.deepEqual(plain.ui.workflowTabs[OWNER], other.ui.workflowTabs[OWNER]);

@@ -9,7 +9,7 @@ import { activeSessionIsWorkflowSession } from "../../react/src/web-app.js";
 
 const webApp = readFileSync(new URL("../../react/src/web-app.js", import.meta.url), "utf8");
 const workflowTab = readFileSync(new URL("../../react/src/workflow-tab.js", import.meta.url), "utf8");
-const chatTab = readFileSync(new URL("../../react/src/workflow-chat-tab.js", import.meta.url), "utf8");
+const sessionTab = readFileSync(new URL("../../react/src/workflow-session-tab.js", import.meta.url), "utf8");
 
 test("only a Workflow shown in the middle turns zen and full screen off; the Workflow tab keeps them", () => {
     const gate = /function activeSessionIsWorkflow\(state\) \{\n\s*return activeSessionIsWorkflowSession\(state\);\n\}/;
@@ -17,7 +17,7 @@ test("only a Workflow shown in the middle turns zen and full screen off; the Wor
     assert.doesNotMatch(webApp, /sidePaneTab === WORKFLOW_SIDE_TAB\);\n\}/, "the Workflow tab no longer turns them off");
     const state = (kind, tab) => ({ sessions: { activeSessionId: "s", byId: { s: { sessionId: "s", sessionKind: kind } } },
         ui: { canvasOpen: true, sidePaneTab: tab } });
-    assert.equal(activeSessionIsWorkflowSession(state(undefined, "workflow")), false, "the Workflow tab beside a chat");
+    assert.equal(activeSessionIsWorkflowSession(state(undefined, "workflow")), false, "the Workflow tab beside a session");
     assert.equal(activeSessionIsWorkflowSession(state("workflow", "canvas")), true, "a Workflow in the middle");
 });
 
@@ -31,17 +31,17 @@ test("the Workflow tab gets the canvas's own buttons, and the toolbar keeps full
     assert.match(webApp, /: maximized \? React\.createElement\(WorkflowToolButton, \{ label: "Exit full screen", glyph: "exit-full-screen"/);
     assert.match(webApp, /const header = onWorkflow && \(mobile \|\| !maximized\) \? null/, "full screen promotes the Workflow tab's controls too");
     assert.match(webApp, /def\.key === "canvas" \|\| def\.key === "workflow"/, "Canvas and Workflow switch without leaving full screen");
-    // Stage 2.1b: WorkflowTab hands its props to the tab on a chat's definitions or to the stage 1 tab; both take the mode
+    // Stage 2.1b: WorkflowTab hands its props to the tab on a session's definitions or to the stage 1 tab; both take the mode
     // buttons and the display mode, and put the buttons at the right end of their header.
     assert.match(workflowTab, /export function WorkflowTab\(props\) \{/);
-    assert.match(workflowTab, /return h\(ChatWorkflowTab, \{ \.\.\.props, context, definitions, listError: entry\?\.error \?\? null \}\);/);
+    assert.match(workflowTab, /return h\(SessionWorkflowTab, \{ \.\.\.props, context, definitions, listError: entry\?\.error \?\? null \}\);/);
     assert.match(workflowTab, /return h\(StageOneWorkflowTab, props\);/);
     assert.match(workflowTab, /function StageOneWorkflowTab\(\{ controller, mobile = false, modeButtons = null, displayMode = "normal" \}\)/);
-    assert.match(chatTab, /export function ChatWorkflowTab\(\{ controller, mobile = false, modeButtons = null, displayMode = "normal", context, definitions,/);
-    // OF-S2-8: the chat's header places them after the row, or on a phone's first line beside the definition (`modes`).
+    assert.match(sessionTab, /export function SessionWorkflowTab\(\{ controller, mobile = false, modeButtons = null, displayMode = "normal", context, definitions,/);
+    // OF-S2-8: the session's header places them after the row, or on a phone's first line beside the definition (`modes`).
     assert.match(workflowTab, /modeButtons \? h\("span", \{ className: "ps-wf-tab-modes" \}, modeButtons\) : null\),/);
-    assert.match(chatTab, /const modes = modeButtons \? h\("span", \{ className: "ps-wf-tab-modes" \}, modeButtons\) : null;/);
-    assert.match(chatTab, /wraps \? modes : null,\n\s*rest,\n\s*wraps \? null : modes\),/);
+    assert.match(sessionTab, /const modes = modeButtons \? h\("span", \{ className: "ps-wf-tab-modes" \}, modeButtons\) : null;/);
+    assert.match(sessionTab, /wraps \? modes : null,\n\s*rest,\n\s*wraps \? null : modes\),/);
     // The labels are the canvas's.
     for (const label of ['"aria-label": zenOn ? "Leave zen mode" : "Zen mode"', '"aria-label": "Full screen canvas"',
         '"aria-label": maximized ? "Restore canvas" : "Maximize canvas"']) {

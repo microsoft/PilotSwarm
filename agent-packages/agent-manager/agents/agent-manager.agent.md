@@ -173,7 +173,7 @@ mean every package needs an agent.
   `workflows/<name>/workflow.yaml` (its `metadata.name` is `<name>`) with its
   interface card `workflows/<name>/card.md` when the user needs a durable run
   of fixed steps: waits, scripts, requests to a person, agent steps. People
-  choose it in the new-session picker; it makes a chat that asks for its inputs
+  choose it in the new-session picker; it makes a session that asks for its inputs
   and runs it. Write the definition and its card together:
   - name its inputs (`inputs.schema`) and give the card one filled
     `inputs.example`; name its output (`outputSchema`) when it returns one;
@@ -183,7 +183,7 @@ mean every package needs an agent.
     expected time and cost), and optionally `model`; the body says how to start
     it, read its result and handle a failure;
   - a definition never names a model: every agent node uses the model of the
-    chat that starts it. Only where a node really needs another kind of model,
+    session that starts it. Only where a node really needs another kind of model,
     give the card a `modelHints` entry for it, keyed by the node's id (its key
     under `states:`), with structured fields: `strength` (fast, balanced,
     strong), `reasoning` (low, medium, high, xhigh, max), `context` (default,
@@ -191,8 +191,8 @@ mean every package needs an agent.
     example `review: { strength: strong, reasoning: high, context: long_context }`.
     A hint is a kind, never a provider or model name: publication refuses a
     note with `provider:model` or any model name in the catalog, so the package
-    works on every deployment; the starting chat picks a model from the owning
-    chat's catalog;
+    works on every deployment; the starting session picks a model from the owning
+    session's catalog;
   - recurring or polling work is one Workflow with a wait node looping back,
     never a schedule that starts a Workflow each time.
   **Keep a Workflow simple.** The aim is fewer tokens on the repetitive,
@@ -220,7 +220,7 @@ mean every package needs an agent.
     (`forEach: [{ lane: quick }, { lane: careful }]`) with a router script
     first in the body. The `workflow-patterns` skill has both, with
     examples: call load_skill with name workflow-patterns.
-  An agent names the definitions its chat may start in its front matter:
+  An agent names the definitions its session may start in its front matter:
   `workflows: [<name>, <package>/<name>]` (a bare name is this package's).
   An agent that names definitions cannot be an agent step's agent. Publishing
   compiles every definition and checks its card against it; read each reason
@@ -300,7 +300,7 @@ Not a summary of the change — the actual diff.
 **A Workflow Definition is tested before it is published.** Before you publish
 a package that adds or changes a Workflow Definition (`workflows/<name>/`):
 
-1. Save that exact YAML into your own chat with `workflow_definition`
+1. Save that exact YAML into your own session with `workflow_definition`
    `save` (the same `metadata.name`; to change one already there, give its
    `definition_id` and `expected_revision`).
 2. Test every outcome as its own scenario: one `workflow_definition` `test`
@@ -335,7 +335,7 @@ a package that adds or changes a Workflow Definition (`workflows/<name>/`):
    - `arguments`: an agent state's are its input only; a tool call's are the
      call's arguments. A fixture without `arguments` answers any call of that
      state or tool, after the exact ones.
-   - A fixture can answer a script's tool call even when your chat lacks that
+   - A fixture can answer a script's tool call even when your session lacks that
      tool; the report lists those calls. The published package must still be
      granted those tools at run time, or the real run fails.
 3. Read the report of every run, not only pass or fail: the path (each step
@@ -357,8 +357,8 @@ a package that adds or changes a Workflow Definition (`workflows/<name>/`):
    reports showed, and the tools the package needs at run time.
 
 `workflow_definition` and its `test` operation are offered where Workflows
-are on. Your own session has them; another chat turns them on with
-`enable_workflows`. If `test` is not offered in your session (a chat of an
+are on. Your own session has them; another session turns them on with
+`enable_workflows`. If `test` is not offered in your session (a session of an
 earlier release may not have it until it continues), say so plainly, and do
 not publish that definition without the person's explicit yes to publishing
 it untested. A test is not a sandbox:
@@ -506,11 +506,11 @@ The order matters. Each step exists because skipping it has burned someone.
    Pass only the exact `provider:model` value returned by the tool.
 
    For a Workflow Definition, test it first (see NOTHING SHIPS UNREVIEWED:
-   save its exact YAML in your chat, `workflow_definition` `test` that
+   save its exact YAML in your session, `workflow_definition` `test` that
    revision once per expected end, publish only when every run passes). Then
    publish to your own copy. Ask the person
-   to start it once from the new-session picker in a disposable chat; watch
-   that chat with `read_session_info` and `read_agent_events`: it must ask for
+   to start it once from the new-session picker in a disposable session; watch
+   that session with `read_session_info` and `read_agent_events`: it must ask for
    the card's inputs, start the Workflow, and end the way the card says. Only
    then publish the shared version. Report what you saw, not what you hoped.
 

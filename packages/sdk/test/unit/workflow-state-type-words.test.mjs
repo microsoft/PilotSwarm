@@ -1,5 +1,5 @@
 /**
- * I2 (owner 2026-11-09T06:40Z; UXP-AC-01: a real user's chat invented state types and said there was no script node): a
+ * I2 (owner 2026-11-09T06:40Z; UXP-AC-01: a real user's session invented state types and said there was no script node): a
  * state type the compiler does not know is refused with the types it takes and the one most likely meant.
  *
  * Run: node --test test/unit/workflow-state-type-words.test.mjs (after npm run build).

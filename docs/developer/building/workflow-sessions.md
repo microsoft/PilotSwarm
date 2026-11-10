@@ -1,17 +1,17 @@
 # Durable workflows
 
-A **Workflow** is a durable program that a chat hands work to. It runs a state
+A **Workflow** is a durable program that a session hands work to. It runs a state
 machine on PilotSwarm workers, without model turns, and it survives worker
 restarts. Use one for a finite procedure with clear steps: scripts, waits,
 typed messages, requests for an answer, agent steps and fan-out.
 
-- **Definitions.** A chat writes a **Workflow Definition** as YAML
+- **Definitions.** A session writes a **Workflow Definition** as YAML
   (`apiVersion: pilotswarm.dev/v1`, `kind: Workflow`) and saves it with
   its `workflow_definition` tool. Each save is a new revision that never
   changes. A person can also edit and save the YAML in the Workflow tab.
 - **Workflows.** **Start** makes a Workflow from one revision. The Workflow
-  runs that revision, whatever is saved later. A chat can start many
-  Workflows of one definition. When one ends, the chat gets a message, unless
+  runs that revision, whatever is saved later. A session can start many
+  Workflows of one definition. When one ends, the session gets a message, unless
   the start turned that off.
 - **States.** A definition names its **states**, the **initial** state, and
   the route that each **outcome** takes to the next state. Every run ends at
@@ -19,23 +19,23 @@ typed messages, requests for an answer, agent steps and fan-out.
 
 | Type | What it does |
 |---|---|
-| `script` | Runs a Node ES module on the worker. It calls the chat's permitted tools and reports an outcome. It can run more than once, so make it safe to repeat. |
+| `script` | Runs a Node ES module on the worker. It calls the session's permitted tools and reports an outcome. It can run more than once, so make it safe to repeat. |
 | `agent` | Runs an agent session for one task. Only the agent session's `complete_workflow_node` call, with a result that matches the state's schema, ends the step. |
 | `wait` | A durable timer: a number of seconds, or the next clock time (`at`). |
-| `messaging` | `send` a typed message, `receive` one (optionally with a time limit), or `request` a typed answer from a chat before a deadline. |
+| `messaging` | `send` a typed message, `receive` one (optionally with a time limit), or `request` a typed answer from a session before a deadline. |
 | `parallel` | Runs a body for each item of a list, or named branches, and joins the results. |
 | `terminal` | Ends the run: `succeeded`, `blocked`, `failed` or `cancelled`, with an optional output. |
 
-- **On demand per chat.** A chat that has never used a Workflow carries one
+- **On demand per session.** A session that has never used a Workflow carries one
   small tool, `enable_workflows`, instead of the Workflow tools. The model
   calls it when the person asks for a Workflow, or for a repeated check that
-  a script could do. See [Workflows on demand per chat](#workflows-on-demand-per-chat).
+  a script could do. See [Workflows on demand per session](#workflows-on-demand-per-session).
 - **Scripts** run as guarded child processes on the worker. An operator can
   turn them off. See [Scripts](#scripts).
-- **Tests.** When the person asks, a chat tests a revision with
+- **Tests.** When the person asks, a session tests a revision with
   `workflow_definition test`. Prepared answers (fixtures) stand in for tool
   calls, agent steps, sends and requests, and waits pass at once. Scripts run
-  for real. See [A definition belongs to the chat](#a-definition-belongs-to-the-chat-stage-21).
+  for real. See [A definition belongs to the session](#a-definition-belongs-to-the-session-stage-21).
 - **Packages** can ship Workflow Definitions with an interface card. See
   [A package's Workflow Definitions](#a-packages-workflow-definitions-stage-23).
 
@@ -49,7 +49,7 @@ Copilot dynamic workflows: [Workflows and GitHub Copilot](./workflows-and-github
 
 ## Sessions own their Workflows (stage 1)
 
-A session (a chat) owns its **Workflow Definitions** and its **Workflows**.
+A session (a session) owns its **Workflow Definitions** and its **Workflows**.
 A Workflow is one execution of one revision of a definition; underneath, it is
 still the workflow child session described here, and the engine is unchanged.
 The screens use one word per idea: **Session**, **Workflow Definition**,
@@ -72,29 +72,29 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   and is read-only: its note gives the server's reason, then `To change this,
   message <the session>.` (with no reason: `Read-only. To change this, message
   <the session>.`). The portal and the terminal show the same words.
-- **Selecting a Workflow row keeps the chat.** The session's chat stays in
+- **Selecting a Workflow row keeps the session.** The session's chat stays in
   the middle, and the right block switches to its **Workflow** tab on that
   Workflow. Selecting an agent node's agent session shows that session and its Workflow
   with the node selected. A link to a Workflow opens the same way.
 - **The Workflow tab** sits beside the Canvas in the right block (the
   **Workflow** button in the toolbar, between Canvas and Diagnostics; one of
   the two shows at a time). The Workflow panel opens by itself once per
-  chat, as a canvas's first draw does (desktop column and phone pane;
-  full screen and zen stay): when the chat has a definition or a Workflow
+  session, as a canvas's first draw does (desktop column and phone pane;
+  full screen and zen stay): when the session has a definition or a Workflow
   and its panel was never on screen (its receipt, `lastViewedWorkflowAt`,
-  merged across devices), at once in the chat (its first definition) or
+  merged across devices), at once in the session (its first definition) or
   when the person arrives at it (a switch or a page load). It decides only
-  after the profile and a successful read of the chat's definitions, and
+  after the profile and a successful read of the session's definitions, and
   compares no times. Once the panel was on screen, it never opens by
-  itself again for that chat. While the panel is not on
+  itself again for that session. While the panel is not on
   screen, the button's yellow dot says a
   lifecycle change happened since it last showed: a definition created, a
   revision saved, a definition deleted, a test started or finished, a
   Workflow started, paused, resumed, canceling, canceled, completed, failed
   or waiting for input (never a node visit or a variable change); opening
-  the panel clears it. The portal reads the active chat's definitions in the
+  the panel clears it. The portal reads the active session's definitions in the
   background for this while the panel is closed and the page is visible:
-  on arrival, when the chat's or its Workflows' statuses change, and at
+  on arrival, when the session's or its Workflows' statuses change, and at
   least every 30 s. The terminal has no Workflow panel or
   button, so it has neither. It toggles between **Definition** (the
   graph or the YAML of the newest revision, **Compare** for older ones,
@@ -105,7 +105,7 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   (it ends as Stopped) or **Cancel now** (it ends as Canceled); its close
   button says **Keep running**.
   The tab has the canvas's **Zen** and **Full screen** buttons at the right
-  end of its header, with the same behaviour: zen makes the chat a rail beside
+  end of its header, with the same behaviour: zen makes the session a rail beside
   the tab; full screen covers chat and sessions and moves the tab switch, Zen
   and Restore into the toolbar; Escape steps down one level. The canvas and
   the Workflow tab share the mode, so switching between them keeps it, and so
@@ -126,11 +126,11 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   **Start another…** in its Definition view and its Workflows list. Its form
   is filled with the inputs of the Workflow it repeats (the definition's
   newest), never with sample values; when the read cannot give them, it says
-  so and sends none, so the chat uses the same ones (**Give other inputs**
+  so and sends none, so the session uses the same ones (**Give other inputs**
   opens the fields, empty). A schema the form cannot draw as fields gets a
   JSON box. The form sends the session's chat one message: start another
   Workflow from this definition with the same YAML, unchanged (no key or a new
-  one; never renamed). The chat spawns it, and it is listed under the same
+  one; never renamed). The session spawns it, and it is listed under the same
   definition as the next number. The base guidance and the authoring skill
   tell an agent the same when a person asks in words.
 - **Nodes** show their type by icon, the start node, end rings, unreached
@@ -149,23 +149,19 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   has no tabs of its own; the Log has the runs. The read model gives each graph
   state its `about` (description, inline prompt) and each visit its
   `enteredAt` and `endedAt` for this.
-- **Agent sessions: `session: continue | new`** (owner 2026-11-09; the YAML
-  key was `chat` before 1.0.83 shipped, and `chat:` is now refused: "`chat` is
-  now `session`: write `session: continue` or `session: new`."). `continue`
+- **Agent sessions: `session: continue | new`** (owner 2026-11-09). `continue`
   (the default) keeps one agent session per run and state (its id derived
   from the run and the state): each later visit's prompt arrives in that
   session as cycle N, with the input, the variables now, which changed and the
   previous result. `new` gives each visit of an agent node a new agent
   session; inside a For each or a parallel branch it is the default and the
   only choice (`session: continue` is refused there). The compiler writes the
-  default into the IR (the stored field is still named `chat`: an agent state
-  outside a parallel state's body that does not set `session` compiles to
-  `chat: "continue"`; absent is `new`). A Start, Run again or test compiles
+  default into the IR (an agent state outside a parallel state's body that does
+  not set `session` compiles to `session: "continue"`; absent is `new`). A Start, Run again or test compiles
   the revision's YAML again, so a revision saved without the key before the
   default changed starts with `continue`, and the Definition view's graph is
   compiled the same way, so its **Agent session** line says what a Start
-  does. A revision saved with `chat:` does not compile now: it needs one save
-  with `session:`. Session lifecycle: every completion of a continued agent
+  does. Session lifecycle: every completion of a continued agent
   session must name its visit (`node_execution_id`); a missing or foreign id
   is refused. A decided visit stops the session's running turn, not the
   session; the session ends when the run ends, and a graceful stop ends an
@@ -230,16 +226,16 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   one line over the graph, the Workflow state, the Log) or went away. The
   older workflow screen (`workflow-workspace.js`) is no longer shown anywhere
   but still holds them in its code until stage 2 removes it.
-- **Phone (390 px):** the Workflow tab opens as a sheet over the chat; in a
+- **Phone (390 px):** the Workflow tab opens as a sheet over the session; in a
   panel, **← Graph** returns to the graph. A run's state keeps its words and
   its time ("Running · 2:45"): the Workflow picker shortens first, and when
   the row still cannot hold them, the run's buttons move to a line of their
   own. Fitting the graph keeps it clear of its zoom controls at the bottom.
-- **Terminal UI:** the same model. `w` opens the Workflow pane for the chat
+- **Terminal UI:** the same model. `w` opens the Workflow pane for the session
   (its selected Workflow, an agent session's own Workflow at that node, else
-  its newest Workflow); Esc goes back to the chat. In the session list, `c`,
+  its newest Workflow); Esc goes back to the session. In the session list, `c`,
   `d` and `D` act on the highlighted Workflow row (`c` and `d` open its
-  Stop, Cancel or Delete choices, `D` asks to delete it), never on the chat
+  Stop, Cancel or Delete choices, `D` asks to delete it), never on the session
   that owns it; the portal's keys do the same. In the Workflow pane, `S`
   opens the Start form for the revision shown (a definition being edited is
   saved and started in one step); publishing alone has no key.
@@ -261,36 +257,36 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   must decide on its own.
   Any other session may hand prescriptive work to a Workflow; the base
   guidance says so. Sessions inside a Workflow stop at level 3 below the
-  top-level chat, and each refusal says so in words.
+  top-level session, and each refusal says so in words.
 - **Test mode is hidden** (see [Test mode (hidden)](#test-mode-hidden)).
 
-## A definition belongs to the chat (stage 2.1)
+## A definition belongs to the session (stage 2.1)
 
-A chat owns named **Workflow Definitions**; each save is a new, immutable
-**revision** (1, 2, 3) that records who saved it (`by the chat`, `by <person>`)
+A session owns named **Workflow Definitions**; each save is a new, immutable
+**revision** (1, 2, 3) that records who saved it (`by the session`, `by <person>`)
 and the revision it was based on. A Workflow runs the revision it
-started with; a later save never changes it. The chat changes and starts its
+started with; a later save never changes it. The session changes and starts its
 definitions with its `workflow_definition` tool. `spawn_workflow` is no
 longer declared to a model; its handler stays one release for a stale call,
 mapped to save then start (a repeat with the same `key` and YAML is answered
 as before, and a corrected YAML under the same `key` saves the next revision
 and starts it).
-A Workflow that is a copy of a chat revision (each Workflow a Start makes) takes none of the stage 1 definition operations
-(`replace_definition`, `publish`, `publish_and_start`, `start`), from the chat
-or a person: they answer `PINNED_TO_CHAT_REVISION` (409) and change nothing. Change
+A Workflow that is a copy of a session revision (each Workflow a Start makes) takes none of the stage 1 definition operations
+(`replace_definition`, `publish`, `publish_and_start`, `start`), from the session
+or a person: they answer `PINNED_TO_SESSION_REVISION` (409) and change nothing. Change
 the definition with `workflow_definition save` (or YAML and Save in the
 Workflow tab), then Start that revision. An exact repeat of `spawn_workflow`
 (the same key and YAML) is answered from its save's receipt; after a crash
 between its save and its start, the repeat starts the revision that save made.
 
 Start keeps `spawn_agent`'s limits (stage 2.4): a Workflow is one level deeper
-than its chat, so a chat at the deepest level (2) starts none
-(`WORKFLOW_NESTING_LIMIT`). The chat's level is read from its stored lineage
-for every Start, a person's included. A chat's sub-agents (pending or
+than its session, so a session at the deepest level (2) starts none
+(`WORKFLOW_NESTING_LIMIT`). The session's level is read from its stored lineage
+for every Start, a person's included. A session's sub-agents (pending or
 running) and its active Workflows (a live run admitted, running or paused, or
 a Start claimed and not admitted yet) share one budget of 50 (`CHILD_LIMIT`,
 429). `spawn_agent` and Start count it with the same rule, under an exclusive
-lock on the chat, in the transaction that makes the child, so two at the same
+lock on the session, in the transaction that makes the child, so two at the same
 moment cannot both take the 50th place. Workflows are always on, so this
 budget always applies. System children are not counted, and a system child is
 created without the atomic budget; a calling system agent is not exempt: its
@@ -299,17 +295,17 @@ created without the atomic budget; a calling system agent is not exempt: its
 **Models of agent nodes (OF-S2-7).** A definition never names a model,
 reasoning effort or context tier (a `model` key stays `WORKFLOW_FIELD_UNKNOWN`),
 so a definition is portable across deployments. Each agent node of a Workflow
-uses the model, reasoning effort and context tier of the chat that owns it,
+uses the model, reasoning effort and context tier of the session that owns it,
 read at each spawn. Every start may instead map agent nodes to a model:
 `agent_models` on `workflow_definition start` (and a stale `spawn_workflow`), on
 `update_workflow` `start` and `publish_and_start` (an agent's tool and a
-person's command), `agentModels` on `startChatWorkflowDefinition` and the
+person's command), `agentModels` on `startSessionWorkflowDefinition` and the
 management start API, and on a real-agent test:
 `{ <node id>: { model: "provider:model", reasoningEffort?, contextTier? } }`.
 The key is the node's state id (its key under `states:`, unique across the
 Workflow; a node in a For each body is one key for all its items). The map is
-checked at start against exactly the revision started and the owning chat's
-catalog: the catalog of the owner of the chat that owns the Workflow, the
+checked at start against exactly the revision started and the owning session's
+catalog: the catalog of the owner of the session that owns the Workflow, the
 identity its agent nodes spend as, whoever starts it (a person, or an
 administrator starting another owner's Workflow). A key that is not a node of
 that revision, a node that is not an agent node, a setting that is not one
@@ -322,16 +318,16 @@ as `run.agentModels`; **Run again** reuses it, unless the start gives its
 own (an empty map clears it). When a chosen model cannot be used any more at
 spawn, that node fails in words; it never falls back to another model. A
 stored map that cannot be read fails the node in words too, never taking the
-chat's model. Each visit's spawn records what its agent session runs on
+session's model. Each visit's spawn records what its agent session runs on
 (`workflow.agent_spawned` `model`: model, effort, tier, chosen at start or
-from the chat). The Node panel and the node's tooltip show it
-(`Model: … · chosen at start` or `· from the chat`); before a visit has run,
-an inherited model reads `from the chat · now …`, the chat's current one.
+from the session). The Node panel and the node's tooltip show it
+(`Model: … · chosen at start` or `· from the session`); before a visit has run,
+an inherited model reads `from the session · now …`, the session's current one.
 The agent's Log shows the model each visit's agent session used (`Model now: …` when
-only the chat's current one is known), the TUI's node details have a
+only the session's current one is known), the TUI's node details have a
 `Model:` line, the start receipt names the chosen models, and a person's
 Start dialog lists what each agent node will use (a person does not choose
-models there; Run again reuses its Workflow's). A chat leaves the map out unless the person asks for a model or the
+models there; Run again reuses its Workflow's). A session leaves the map out unless the person asks for a model or the
 package card's `modelHints` ask for a kind of model for that node.
 
 A Start is receipt-first: the same operation again answers the Workflow it
@@ -365,26 +361,26 @@ with its `startedAt`, `endedAt`, `durationMs`, `ok` and, for a failure, its
 error in short words. A test run's calls are answered by fixtures and are not
 recorded this way.
 
-**The Workflow tab on a chat's definitions** (the portal, when the server
+**The Workflow tab on a session's definitions** (the portal, when the server
 lists them; a connection without them keeps the stage 1 grouping above):
 
 - The header's picker has one option per definition, by name. A deleted
   definition that still has Workflows is listed as `name · deleted`.
 - The **Definition** view picks a revision (`Revision 6 · newest · by the
-  chat · 09:41 · not valid · version 1.2.0`). A valid revision draws its
+  session · 09:41 · not valid · version 1.2.0`). A valid revision draws its
   graph; one with errors says why on one line and lists them.
 - **Start…** starts the revision shown, as Workflow `#n`. A revision with
   errors cannot start, and the button says so (and which revision can).
-- **YAML** edits the newest revision for the chat's owner or an admin, when
+- **YAML** edits the newest revision for the session's owner or an admin, when
   the deployment takes a person's workflow commands. **Save** makes the next
   revision and names the revision it edited. If another revision was saved
-  first, the save is refused: `Revision 6 was saved by the chat at 09:41.
+  first, the save is refused: `Revision 6 was saved by the session at 09:41.
   Reload to edit it. Nothing was saved.` (the time in your own clock).
   **Reload** shows the newest (the unsaved edit is replaced). A revision saved
   from another page is noticed when this page is shown again or takes focus:
   the editor then says a newer revision was saved, before you save. The saved
   revision's errors are marked in the
-  editor; a revision with errors is saved with them. The chat reads a note
+  editor; a revision with errors is saved with them. The session reads a note
   about a person's save on its next turn; the save does not wake it. An
   unsaved edit stays when you show another revision or view.
 - **Compare** shows any two revisions side by side.
@@ -395,7 +391,7 @@ lists them; a connection without them keeps the stage 1 grouping above):
   Workflow's own view says its revision and offers **Run again…**: a new
   Workflow from the same revision, filled with that Workflow's inputs when
   they can be read.
-- A person who can read the chat but not change it sees the graph, but no
+- A person who can read the session but not change it sees the graph, but no
   YAML, and the input schema and errors without what their author wrote; Start,
   Delete and Run again are off and say why.
 - **Timeline** (the replay of stage 2.4, FU-26, as a viewing mode). Every
@@ -459,7 +455,7 @@ lists them; a connection without them keeps the stage 1 grouping above):
     no lit transitions; its run views are unchanged.
 
 **An agent's test of a revision, on request (stage 2.2).** Testing is
-optional: the chat tests a revision only when the person asks (for example
+optional: the session tests a revision only when the person asks (for example
 "test it before you start it"); it never tests on its own, and Start never
 needs a test. People do not run tests themselves.
 
@@ -483,27 +479,27 @@ needs a test. People do not run tests themselves.
 - Scripts run for real (files, network); the report says so. Waits pass at
   once: whenever every open step only waits for its timer, the test's
   virtual clock moves to the next deadline.
-- The test bench is a workflow child of the chat marked as a service session
+- The test bench is a workflow child of the session marked as a service session
   (`service_kind` `workflow-test`). It is never a Workflow of the definition,
   never a session list row (the management client, the client, the agents'
-  `list_sessions` and the portal leave it out), and it never tells the chat
+  `list_sessions` and the portal leave it out), and it never tells the session
   anything: the report is the answer. A call waits up to 4 minutes (a turn
   with no event for 5 minutes is treated as lost), then answers with the
   test's id; `test` with `test_id` reads it again. A definition keeps its
   newest 5 ended tests: older ended ones are deleted when a test starts and
   again when one ends; a running test is never deleted.
-- A test lives only as long as its chat and its definition. A test is made
-  only while its chat is live and its definition is not deleted (checked
-  under their locks). When the chat ends (completed, canceled, failed) or is
+- A test lives only as long as its session and its definition. A test is made
+  only while its session is live and its definition is not deleted (checked
+  under their locks). When the owner session ends (completed, canceled, failed) or is
   deleted, or the definition is deleted, its running tests end canceled and
   their scripts stop (within the controller's 30-second check, as a live
   run's do); their reports stay.
 - The Definition view says `Last test · passed 17:42` (or `failed`, or
   `Test running`) beside the revision picker, only for a revision that was
-  tested (`revisions[].lastTest` of `listChatWorkflowDefinitions`).
+  tested (`revisions[].lastTest` of `listSessionWorkflowDefinitions`).
 - Every deployment runs tests. Every turn declares `test` (with `fixtures`
   and `test_id`) and its guidance teaches testing, a turn of a
-  previous-release chat still on 1.0.82 included: every turn's host runs
+  previous-release session still on 1.0.82 included: every turn's host runs
   Workflow tests.
   A revision with errors, one this version no longer compiles, or one with a
   script node where scripts are off, is refused (`Nothing was tested.`).
@@ -518,16 +514,16 @@ transcript. A workflow agent node's agent session still keeps the whole text, wi
 secrets hidden, as an artifact of its Workflow that only the Workflow's owner
 reads.
 
-The Web API reads are `listChatWorkflowDefinitions` and
-`readChatWorkflowDefinition` (a revision's YAML, diagnostics and graph, and
+The Web API reads are `listSessionWorkflowDefinitions` and
+`readSessionWorkflowDefinition` (a revision's YAML, diagnostics and graph, and
 whether the caller may change it); a person's changes are
-`saveChatWorkflowDefinition`, `startChatWorkflowDefinition` and
-`deleteChatWorkflowDefinition` (see the [API reference](../../api/reference.md)).
+`saveSessionWorkflowDefinition`, `startSessionWorkflowDefinition` and
+`deleteSessionWorkflowDefinition` (see the [API reference](../../api/reference.md)).
 
-**Known limits:** the terminal UI still groups a chat's Workflows by name, as
+**Known limits:** the terminal UI still groups a session's Workflows by name, as
 in stage 1, and has no revision picker, save or Compare; the MCP server has no
-definition tools. A person starts a Workflow of a chat's definition with no
-tool binding of the chat's, so its scripts' `callTool` finds no permitted
+definition tools. A person starts a Workflow of a session's definition with no
+tool binding of the session's, so its scripts' `callTool` finds no permitted
 tool.
 
 The rest of this page describes the workflow child underneath, its graph and
@@ -536,7 +532,7 @@ the workflow screen a Master of Agents panel still shows.
 A workflow session is a sibling of an agent session: it has a row in the
 session list (a connected-steps icon in the portal, `◇` in the terminal), an owner,
 sharing, and a transcript. In the portal, the session details under the list
-show a workflow's own rows instead of a chat's model, context, cron and agent:
+show a workflow's own rows instead of a session's model, context, cron and agent:
 **Workflow** (name and version), **Revision** (number, draft or published),
 **Run** (the live run's status and outcome, or "No run yet"), **Started by**
 (the parent agent's session, a link, or "You") and **Steps**; a value the
@@ -544,7 +540,7 @@ workflow screen has not read yet shows "—". Folded, the details line shows
 the run. An agent session that runs a workflow step shows **Step of** (the
 workflow, a link) instead of its cron.
 
-- The **live view** occupies the main pane instead of a chat conversation.
+- The **live view** occupies the main pane instead of a session conversation.
   The graph uses the immutable workflow definition and live execution state.
   It reads top to bottom: each step sits below the step that leads to it,
   sibling branches sit side by side, and the edge that closes a loop curves
@@ -573,7 +569,7 @@ workflow, a link) instead of its cron.
   phone, the side pane opens as a separate layer; return to Main to see the
   graph again. A workflow shown in the middle has no zen and no full screen:
   its side pane offers neither, and a workflow opened there while either is on
-  shows in the normal layout (the Workflow tab has both, as above). On a desktop, returning to a chat brings them back as you left them;
+  shows in the normal layout (the Workflow tab has both, as above). On a desktop, returning to a session brings them back as you left them;
   on a phone, opening a workflow leaves mobile zen. The worker's original canvas
   artifact remains available without changing running workflows.
 - The main pane stays still: a compact header (the name, the status,
@@ -622,31 +618,31 @@ A package can ship Workflow Definitions as top-level entries
   when to use it, its inputs, how it ends, what it asks, what the definition
   shows of its effects, checked from it (its script and agent steps), and the
   card's effects, labeled as its author's words).
-  Choosing one makes a chat for it, on the model chosen in the model step (else
+  Choosing one makes a session for it, on the model chosen in the model step (else
   your default; the card's suggestion is shown, never applied
-  unasked). Its agent nodes use that chat's model unless a start chooses one;
-  the details show the card's model hints, if any. That chat has the definition attached, its title is
+  unasked). Its agent nodes use that session's model unless a start chooses one;
+  the details show the card's model hints, if any. That session has the definition attached, its title is
   `<name> · <package>`, its instructions are the card and how to coordinate
   it, and its first message asks it to greet you and ask for the inputs it
   needs. The session list shows it with the Workflow badge. The definition
   attached is exactly the package version its instructions were written
   from: when another version became active meanwhile, or the package is gone,
-  no chat is made (`PACKAGE_VERSION_CHANGED`, `PACKAGE_WORKFLOW_NOT_FOUND`);
+  no session is made (`PACKAGE_VERSION_CHANGED`, `PACKAGE_WORKFLOW_NOT_FOUND`);
   choose it again.
-- **In a chat** a package's definition is named `<package>/<name>`. It is
+- **In a session** a package's definition is named `<package>/<name>`. It is
   attached at the package's version and **locked**: the Definition view says
   `From <package> <version> · locked`, its YAML is read-only, and **Make a
-  copy** saves its YAML as the chat's own, editable definition at revision 1
-  (the chat reads a note about it); the copy says what it was copied from
+  copy** saves its YAML as the session's own, editable definition at revision 1
+  (the session reads a note about it); the copy says what it was copied from
   (`Copied from <package>/<name> revision N (<package> <version>)`). When the package publishes a newer
   version, the view offers it: **Use it for the next Workflow** attaches it as
   the next revision; Workflows already started keep theirs. Newer means the
   same package with a greater version: an older active version (a rollback)
   or another package of the same name (your own copy that shadows a shared
   one) is not offered, and taking it is refused (`PACKAGE_NOT_NEWER`).
-- **The chat's tool** (`workflow_definition`): `list` shows under `canStart`
-  the package definitions this chat may start (those its agent's
-  `workflows:` names, and a coordinating chat's own), `card` reads one's card,
+- **The session's tool** (`workflow_definition`): `list` shows under `canStart`
+  the package definitions this session may start (those its agent's
+  `workflows:` names, and a coordinating session's own), `card` reads one's card,
   and `start` with its `<package>/<name>` attaches it the first time (`update:
   true`: the newer version) and starts exactly that revision. A save of one is
   refused (`DEFINITION_LOCKED`).
@@ -655,7 +651,7 @@ A package can ship Workflow Definitions as top-level entries
 
 ## Example
 
-Where Workflows are on in a chat, its instructions explain when to prefer a
+Where Workflows are on in a session, its instructions explain when to prefer a
 finite workflow over repeated parent model turns, when an ordinary agent is
 needed, and how to follow a run; the Workflow skills carry the details. The
 guidance never expands tool permissions or approval scope.
@@ -810,8 +806,8 @@ script can catch it.
   (`inputs`, `notify_on_completion?`) make the Workflow a **child** of the
   agent session; `start` returns at once. The agent receives the result as a
   message when the Workflow ends. A user can describe the steps in words; the
-  agent writes the YAML. In a chat where Workflows are off, the agent first
-  calls `enable_workflows` (see [Workflows on demand](#workflows-on-demand-per-chat)).
+  agent writes the YAML. In a session where Workflows are off, the agent first
+  calls `enable_workflows` (see [Workflows on demand](#workflows-on-demand-per-session)).
 - **On a schedule:** ask an agent to repeat it ("every night at 2, run ...").
   The agent makes one Workflow that loops through a wait state (a wait's `at`
   where clock waits run), and starts it once; it does not set `cron` or
@@ -822,13 +818,13 @@ script can catch it.
   which refused every call), and no generic tool set is substituted for a
   missing parent.
 - **`spawn_workflow`:** kept one release and no longer declared to models; a
-  stale call saves the YAML as the next revision of the chat's definition
+  stale call saves the YAML as the next revision of the session's definition
   and, with `state: published` and `start: true`, starts it, as
   `workflow_definition` does. Its YAML must say
   `apiVersion: pilotswarm.dev/v1`; any other document is refused with
   `WORKFLOW_API_VERSION`, and there is no converter.
 
-A workflow session does not accept chat messages, answers, steers or session
+A workflow session does not accept prompts, answers, steers or session
 messages (refused with `WORKFLOW_SESSION_NOT_CONVERSATIONAL` or a clear
 error) or regeneration (refused with `REGENERATE_UNSUPPORTED`); a stop request
 answers `no_active_turn`.
@@ -884,11 +880,11 @@ When a live run ends and its parent is not told, the workflow records
 are off` or `parent is gone`); Run activity and the terminal show it ("The
 parent agent was not told: notifications are off."). A run the parent ended
 itself records nothing. A parent whose session has ended is not sent the
-notice (`parent is gone`). A parent chat that has not started yet (made
+notice (`parent is gone`). A parent session that has not started yet (made
 without a first message, so it has no session orchestration) is not started
-for the notice: the notice is kept once as a chat note, which the chat's
+for the notice: the notice is kept once as a session note, which the session's
 first turn reads and which is consumed when that turn succeeds, as a person's
-save note is; the skip says `the chat has not started yet; kept as a note for
+save note is; the skip says `the session has not started yet; kept as a note for
 its first turn`. One attempt at a time tells the parent of a run's
 end: it holds the run's notice lock (a PostgreSQL advisory lock) while it
 reads, records `workflow.parent_notifying` just before it queues the notice,
@@ -968,10 +964,10 @@ Workflows need no setting (owner decisions, 2026-11-08): every worker, the
 portal, the MCP server and the terminal UI have them, with the full engine.
 Every worker serves session orchestration 1.0.83 (the latest version) and
 the Workflow controller (1.0.0), so every Workflow can use agent, parallel and
-request states, clock waits and a run deadline, every chat can test a revision,
+request states, clock waits and a run deadline, every session can test a revision,
 and a person can send workflow commands.
 
-- Where Workflows are on in a chat (below), it is declared
+- Where Workflows are on in a session (below), it is declared
   `workflow_definition`, `update_workflow`, `read_workflow` and
   `send_workflow_input` (and `respond_session_request` on a 1.0.83 turn), and
   its base instructions carry the Workflow guidance. `spawn_workflow` is no
@@ -986,8 +982,8 @@ and a person can send workflow commands.
   `workflow-reference` (every field) and `workflow-tools` (every tool
   argument). Every worker loads those and `workflow-patterns`;
   `workflow-testing` only with test mode. `load_skill` serves them to every
-  chat. The skills index lists them where Workflows are on in the chat (a
-  Base V1 chat's index, and Base V2's), and not while they are off.
+  session. The skills index lists them where Workflows are on in the session (a
+  Base V1 session's index, and Base V2's), and not while they are off.
 - The portal and the terminal UI always show the Workflow button, tab, pane,
   `w` key and Workflow rows.
 - MCP always registers `read_workflow` and `update_workflow`; the portal and
@@ -1023,10 +1019,10 @@ state; where clock waits run, `cron_at` says the same, with
 a wait state's `at`. Every rule of their default wording is kept. With scripts
 off, both keep main's wording.
 
-### Workflows on demand per chat
+### Workflows on demand per session
 
-A chat carries the Workflow tools and guidance only when Workflows are on in
-it (owner decision, 2026-11-08). They cost about 2,000 tokens; a chat that
+A session carries the Workflow tools and guidance only when Workflows are on in
+it (owner decision, 2026-11-08). They cost about 2,000 tokens; a session that
 never uses a Workflow carries a 350-character paragraph and one tool,
 `enable_workflows`, instead. cron and cron_at keep their default wording plus
 one sentence: with Workflows on, a fixed check a script can do belongs in one
@@ -1034,21 +1030,21 @@ Workflow's wait loop; with them off, call `enable_workflows` first.
 
 - **Turning them on.** The model calls `enable_workflows` when the user asks
   for a Workflow or for a repeated check a script could do. The flag is saved
-  with the chat's capability state (revision-checked, never cleared). The
+  with the session's capability state (revision-checked, never cleared). The
   turn ends at once, and the next turn starts automatically with the Workflow
   tools and guidance and continues the task: one extra model call and one
   prompt-cache miss. A call where they are on changes nothing. It is refused
   while native tasks run (as `use_package` is).
-- **On without asking.** A chat with a Workflow Definition or a Workflow
+- **On without asking.** A session with a Workflow Definition or a Workflow
   (for example one from an earlier release); a Workflow's message or request
-  that arrives; a person's saved definition; the coordinating chat of a
+  that arrives; a person's saved definition; the coordinating session of a
   package's Workflow. Each saves the flag. Also on, without saving: a session
-  inside a Workflow, Agent Smith, a turn of a chat still on orchestration
+  inside a Workflow, Agent Smith, a turn of a session still on orchestration
   1.0.82, and a turn where one of these could not be read.
 - **Never.** The read-only tuner and service sessions get neither the
   paragraph nor `enable_workflows`.
 - A deployment without durable capability storage (no session catalog) has
-  them on in every chat.
+  them on in every session.
 
 ### Test mode (hidden)
 
@@ -1073,7 +1069,7 @@ runs are kept but not shown: the workflow read (SDK, Web API, MCP) does not
 list them, and refuses a test run's id, as a run, a page cursor's run, an
 execution's or a variables revision's, exactly as it refuses an unknown run's.
 The MCP `read_workflow` description names no test part. The flag changes
-nothing else. A chat's revision test (`workflow_definition` `test`, stage 2.2)
+nothing else. A session's revision test (`workflow_definition` `test`, stage 2.2)
 does not need it: it runs on every deployment. The `workflow-testing`
 guide is kept apart from the authoring skills, in
 `packages/sdk/plugins/workflow/test-mode-skills`, so an agent reads it only
@@ -1299,7 +1295,7 @@ Isolation, in this version:
 ## Durability
 
 Each Workflow run has one durable controller orchestration
-(`workflow-controller`, version 1.0.0), separate from the chat's own
+(`workflow-controller`, version 1.0.0), separate from the session's own
 orchestration. The controller keeps the exact ids of the work it started in
 its own history. Each visit of a state, with its input, outcome and output, is
 a row in PostgreSQL. So a worker restart loses nothing: the controller goes on

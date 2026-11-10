@@ -61,7 +61,7 @@ test("an ordinary session's composer is unchanged, and it is never asked about; 
         assert.match(html, /<input/, sessionId);
         assert.match(html, /Type a message and press Enter/, sessionId);
     }
-    // Workflow Simplified (spec 09, S4; 18): selecting a Workflow row keeps its session's chat, so its composer is the chat's.
+    // Workflow Simplified (spec 09, S4; 18): selecting a Workflow row keeps its session's chat, so its composer is the session's.
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     assert.equal(store.getState().sessions.activeSessionId, "r1");
     assert.match(render(controller), /Type a message and press Enter/);

@@ -2,12 +2,12 @@
  * F-C3 (the deployment at 65932bfc): a root session's system-only turn (a buffered child digest, a wake) that the model
  * answers with nothing. The Copilot CLI reports such an answer as the error "No response was returned"; the session
  * then failed the turn, retried it after 15 s and 30 s, and went to error. Now such a turn of a ROOT session ends
- * completed with no content: no error, no retry, no chat warning. A person's prompt, a child session and every other
+ * completed with no content: no error, no retry, no session warning. A person's prompt, a child session and every other
  * error are unchanged.
  *
  * - isQuietSystemOnlyTurn: which turns qualify (the runTurn activity's TurnOptions.quietEmptyAnswer).
  * - The runTurn activity hands the flag to the model session only for such a turn.
- * - A full worker (PostgreSQL, duroxide and the Copilot CLI) with the model scripted: a root chat spawns a child; the
+ * - A full worker (PostgreSQL, duroxide and the Copilot CLI) with the model scripted: a root session spawns a child; the
  *   child's report reaches the root as a buffered digest, a system-only turn; the model answers it with nothing. One
  *   turn, completed; no session.error; the session idle; no retry.
  *

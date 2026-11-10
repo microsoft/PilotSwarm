@@ -800,7 +800,7 @@ async function harness(env, { host = true } = {}) {
             const instanceId = `session-${request.childSessionId}`;
             await client.startOrchestrationVersioned(instanceId, CHILD, {}, "1.0.0");
             await client.enqueueEvent(instanceId, "messages", JSON.stringify({ prompt: request.prompt, clientMessageIds: [request.clientMessageId] }));
-            // OF-S2-7 review OF7-R8: a host says what the visit's chat runs on (the real host reads its session row).
+            // OF-S2-7 review OF7-R8: a host says what the visit's session runs on (the real host reads its session row).
             return { spawned: true, ...(control.used ? { used: control.used(request) } : {}) };
         },
     };
@@ -888,9 +888,9 @@ describe("workflow agent states: the controller", () => {
             expect(task).toBe(TASK);
             await until(async () => (await h.store.readAgentInvocation(nodeExecutionId))?.spawnedAt ?? null, "the spawn to be recorded");
 
-            // Chat is not completion: the run waits. An invalid completion is answered with field errors; a valid one routes.
-            // A node execution id a visit's own chat gives is ignored, as at e696f2c6 (review RT-8): a stale one still binds
-            // to the chat's one state, which answers the invalid output.
+            // Session is not completion: the run waits. An invalid completion is answered with field errors; a valid one routes.
+            // A node execution id a visit's own session gives is ignored, as at e696f2c6 (review RT-8): a stale one still binds
+            // to the session's one state, which answers the invalid output.
             expect(await completeAs(h, spawn.childSessionId, { outcome: "accepted", output: { verdict: 5 }, operation_id: "op-0", node_execution_id: "nx-stale" }))
                 .toMatchObject({ ok: false, error: { code: "OUTPUT_INVALID", attemptsLeft: WORKFLOW_AGENT_MAX_INVALID_COMPLETIONS - 1 } });
             expect((await h.store.readRun(runId)).status).toBe("running");
@@ -1146,12 +1146,12 @@ describe("workflow agent states: the controller", () => {
     });
 
     // OF-S2-7 and its review (OF7-R8, the ruling on stored maps): the run's choice reaches the spawn of its node; the spawn's
-    // record says what the visit's chat runs on; a stored map that cannot be read fails the node in words, never inheriting.
+    // record says what the visit's session runs on; a stored map that cannot be read fails the node in words, never inheriting.
     it("OF-S2-7: a chosen model reaches the node's spawn and its record; a stored map that cannot be read fails the node in words", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             h.control.used = request => ({ model: request.agentModel?.model ?? "test:chat-model", reasoningEffort: request.agentModel?.reasoningEffort ?? null,
-                contextTier: "default", source: request.agentModel ? "start" : "chat" });
+                contextTier: "default", source: request.agentModel ? "start" : "session" });
             const chosen = await started(h, AGENT_YAML(), { review: { model: "test:fast", reasoningEffort: "low" } });
             const [spawn] = await until(async () => (h.spawns.length > 0 ? h.spawns : null), "the agent state's child");
             expect(spawn.agentModel).toEqual({ model: "test:fast", reasoningEffort: "low" });

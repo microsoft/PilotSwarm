@@ -1,13 +1,13 @@
 // A request whose responder still runs the previous session orchestration tells the person what to do instead
-// (release 1.0.83: the chat moves to the new version after its next turn).
+// (release 1.0.83: the session moves to the new version after its next turn).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { unsupportedResponderMessage, WORKFLOW_PREVIOUS_VERSION_RESPONDER_WORDS } from "../../dist/workflow/runtime.js";
 
-const WORDS = "This chat still runs the previous version and moves to the new one after its next turn: "
+const WORDS = "This session still runs the previous version and moves to the new one after its next turn: "
     + "send it a message, then start the Workflow again.";
 
-test("a responder on the previous version is told to send the chat a message and start the Workflow again", () => {
+test("a responder on the previous version is told to send the session a message and start the Workflow again", () => {
     assert.equal(WORKFLOW_PREVIOUS_VERSION_RESPONDER_WORDS, WORDS);
     for (const version of ["1.0.82", "1.0.0", "0.9.99"]) {
         assert.equal(unsupportedResponderMessage("s1", version), `Session s1 cannot answer a request yet. ${WORDS}`, version);

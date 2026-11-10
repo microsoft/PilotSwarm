@@ -1,14 +1,14 @@
 /**
  * Stage 2.2's real-model scenario (spec "Order of work": "asked to test: build, test, fix, start"), on a REAL model with
- * Workflows on and a worker that runs Workflow tests: every worker serves 1.0.83's request turns, and a chat starts at the
+ * Workflows on and a worker that runs Workflow tests: every worker serves 1.0.83's request turns, and a session starts at the
  * latest version (1.0.83); only a request turn can test (stage 2.5):
- * 1. the chat is asked to build a definition and to test it before starting it, with no prepared answers: it saves it and
+ * 1. the session is asked to build a definition and to test it before starting it, with no prepared answers: it saves it and
  *    tests it (workflow_definition test); the test fails, naming the tool call it had no answer for;
  * 2. it is asked to fix the test with a prepared answer for that call, test again, and start the revision once its test
  *    passes: a test of that revision passes, and a Workflow of that revision starts and ends.
  *
  * PASS: at least two tests of the definition, the first failed naming the read_facts call, a passed test of the revision
- * the Workflow runs, which ends completed; no test is a Workflow of the definition or a session list row; the chat got no
+ * the Workflow runs, which ends completed; no test is a Workflow of the definition or a session list row; the session got no
  * test notice. The model's answers and tool calls are recorded, not judged.
  *
  * It spends model tokens, so it runs only when asked: PS_WORKFLOW_REAL_MODEL=run with PS_WORKFLOW_REAL_MODEL_REF
@@ -17,7 +17,7 @@
  * BLOCKED. The receipt goes to PS_WORKFLOW_REAL_MODEL_RECEIPT when set; a summary is printed. Two asked turns.
  *
  *   PS_WORKFLOW_REAL_MODEL=run PS_WORKFLOW_REAL_MODEL_REF=<provider:model> \
- *     npx vitest run test/local/workflow-chat-test-real-model.test.js
+ *     npx vitest run test/local/workflow-definition-test-real-model.test.js
  */
 import { describe, it, expect } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -27,7 +27,7 @@ import { PilotSwarmManagementClient, withClient } from "../helpers/local-workers
 import { realModelPlan } from "../helpers/workflow-real-model.mjs";
 import { loadModelProviders } from "../../src/index.ts";
 
-const OWNER = { provider: "test", subject: "workflow-chat-test-real-model" };
+const OWNER = { provider: "test", subject: "workflow-definition-test-real-model" };
 const NAME = "fact-count";
 const TURN_MS = 360_000;
 const RUN_MS = 180_000;
@@ -67,29 +67,29 @@ describe("An agent's test of a revision, on request (stage 2.2), on a real model
     it(TITLE, { timeout: TEST_TIMEOUT }, async () => {
         if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
         if (plan.target !== "local") throw new Error("BLOCKED: this check runs on a local worker (PS_WORKFLOW_REAL_MODEL_TARGET=local).");
-        const receipt = { test: "workflow-chat-test-real-model", startedAt: new Date().toISOString(),
+        const receipt = { test: "workflow-definition-test-real-model", startedAt: new Date().toISOString(),
             model: { ref: plan.model.ref, effort: plan.effort ?? "the model's default" }, steps: {}, verdict: null };
-        const env = createTestEnv("workflow-chat-test-real-model");
+        const env = createTestEnv("workflow-definition-test-real-model");
         let mgmt = null;
         try {
-            // Stage 2.5: a test runs only on a workflow request turn (chat-test.ts requires host.requests), so the chat starts
-            // at the session version that has them, as a person's new chat does on TEST; a chat at the latest version has none.
+            // Stage 2.5: a test runs only on a workflow request turn (definition-test.ts requires host.requests), so the session starts
+            // at the session version that has them, as a person's new session does on TEST; a session at the latest version has none.
             const worker = { workflowScripts: { enabled: true }, logLevel: "warning" };
             await withClient(env, { worker }, async (client) => {
                 mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
                     factsSchema: env.factsSchema });
                 await mgmt.start();
                 const catalog = client._catalog;
-                const chatStore = catalog.workflowStore().chat;
+                const definitionStore = catalog.workflowStore().sessionDefinitions;
                 const store = catalog.workflowStore();
-                const chat = await client.createSession({ model: plan.model.ref, owner: OWNER, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });
-                const events = types => catalog.getSessionEvents(chat.sessionId, 0, 5_000, types);
+                const session = await client.createSession({ model: plan.model.ref, owner: OWNER, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });
+                const events = types => catalog.getSessionEvents(session.sessionId, 0, 5_000, types);
                 const toolCalls = async () => (await events(["tool.execution_start"])).map(event => String(event.data?.toolName ?? event.data?.name ?? ""));
-                const definition = async () => chatStore.readDefinitionByName(chat.sessionId, NAME);
-                const tests = async id => chatStore.listTests(chat.sessionId, id);
+                const definition = async () => definitionStore.readDefinitionByName(session.sessionId, NAME);
+                const tests = async id => definitionStore.listTests(session.sessionId, id);
 
                 // 1. Build and test, with no prepared answers: the test fails naming the call.
-                await chat.sendAndWait(ASK_BUILD_AND_TEST, TURN_MS);
+                await session.sendAndWait(ASK_BUILD_AND_TEST, TURN_MS);
                 const saved = await definition();
                 const firstTests = saved ? await tests(saved.definitionId) : [];
                 receipt.steps.buildAndTest = { toolCalls: await toolCalls(), revision: saved?.currentRevision ?? null,
@@ -101,13 +101,13 @@ describe("An agent's test of a revision, on request (stage 2.2), on a real model
                 const firstOpen = firstTest.runId ? (await store.listInterceptions(firstTest.runId, 50)).filter(item => item.state === "awaiting_parent") : [];
                 receipt.steps.buildAndTest.unanswered = firstOpen.map(item => item.tool ?? item.operation);
                 expect(firstOpen.map(item => item.tool), JSON.stringify(receipt)).toContain("read_facts");
-                expect((await chatStore.listWorkflows({ definitionId: saved.definitionId })), JSON.stringify(receipt)).toEqual([]);
+                expect((await definitionStore.listWorkflows({ definitionId: saved.definitionId })), JSON.stringify(receipt)).toEqual([]);
 
                 // 2. Fix the test (a prepared answer), test again, and start the revision that passed.
                 const before = (await toolCalls()).length;
-                await chat.sendAndWait(ASK_FIX_AND_START, TURN_MS);
+                await session.sendAndWait(ASK_FIX_AND_START, TURN_MS);
                 const allTests = await tests(saved.definitionId);
-                const workflows = await chatStore.listWorkflows({ definitionId: saved.definitionId });
+                const workflows = await definitionStore.listWorkflows({ definitionId: saved.definitionId });
                 receipt.steps.fixAndStart = { toolCalls: (await toolCalls()).slice(before),
                     tests: allTests.map(item => ({ revision: item.revision, verdict: item.verdict, status: item.status })),
                     workflows: workflows.map(item => ({ revision: item.revision, status: item.runStatus })) };
@@ -116,13 +116,13 @@ describe("An agent's test of a revision, on request (stage 2.2), on a real model
                 const started = workflows[0];
                 expect(allTests.some(item => item.revision === started.revision && item.verdict === "passed"), JSON.stringify(receipt)).toBe(true);
                 const ended = await until(async () => {
-                    const row = (await chatStore.listWorkflows({ definitionId: saved.definitionId })).find(item => item.workflowSessionId === started.workflowSessionId);
+                    const row = (await definitionStore.listWorkflows({ definitionId: saved.definitionId })).find(item => item.workflowSessionId === started.workflowSessionId);
                     return row && row.runStatus && !ACTIVE.has(row.runStatus) ? row : null;
                 }, "the Workflow ends", RUN_MS);
                 receipt.steps.fixAndStart.ended = ended.runStatus;
                 expect(ended.runStatus).toBe("completed");
 
-                // No test is a session list row, and the chat got no test notice.
+                // No test is a session list row, and the session got no test notice.
                 const listed = (await mgmt.listSessions()).map(row => row.sessionId);
                 for (const test of allTests) expect(listed).not.toContain(test.testId);
                 const messages = (await events(["user.message"])).map(event => String(event.data?.content ?? ""));
@@ -140,7 +140,7 @@ describe("An agent's test of a revision, on request (stage 2.2), on a real model
             throw error;
         } finally {
             receipt.endedAt = new Date().toISOString();
-            console.log(`[workflow-chat-test-real-model] ${JSON.stringify(receipt)}`);
+            console.log(`[workflow-definition-test-real-model] ${JSON.stringify(receipt)}`);
             const path = process.env.PS_WORKFLOW_REAL_MODEL_RECEIPT;
             if (path) {
                 mkdirSync(dirname(path), { recursive: true });

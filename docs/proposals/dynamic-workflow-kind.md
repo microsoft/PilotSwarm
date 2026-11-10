@@ -8,19 +8,19 @@ names the document type), and the code has no seam for a second engine.
 ## Summary
 
 PilotSwarm has one kind of durable Workflow today: a YAML state machine that
-a chat saves and starts, and that people follow as a graph. GitHub Copilot
+a session saves and starts, and that people follow as a graph. GitHub Copilot
 has dynamic workflows: JavaScript programs (`extension.mjs`) that run in a
 Copilot client. This proposal lays down a possible future plan to run such a
 program as a second **kind** of Workflow, durably, on PilotSwarm workers.
 
-- One Workflow concept, several kinds. People and chats see one thing:
+- One Workflow concept, several kinds. People and sessions see one thing:
   definitions with revisions, one run list, one Workflow tab, one tool set,
   one test bench and one end notice.
 - Today's visual (YAML state-machine) Workflows stay exactly as they are.
 - The dynamic kind is a **re-run host**. A new orchestration re-runs the
   author's `run(ctx)` under the script guard and feeds it a journal keyed the
   way Copilot keys it. Each pending `ctx.agent` call becomes an ordinary agent
-  step. Each `ctx.pause` becomes a request to the chat, plus a Resume button.
+  step. Each `ctx.pause` becomes a request to the session, plus a Resume button.
 - Rough size after PR 270: about 6 weeks for a first usable version, in
   three phases, plus optional extras.
 
@@ -44,7 +44,7 @@ The comparison with GitHub's workflow features is in
 ## Goals
 
 1. **One concept, several kinds.** A Workflow has a kind. Everything a
-   person or a chat touches is shared across kinds.
+   person or a session touches is shared across kinds.
 2. **No change to today's Workflows.** The YAML language, its compiler, its
    controller, its view and its tests stay as they are. Existing runs replay
    unchanged.
@@ -53,10 +53,10 @@ The comparison with GitHub's workflow features is in
    memoized. A failed agent call gives `null`. On resume, the workflow starts
    again from the top and reuses the journal [S15].
 4. **Server-side durability.** A dynamic run survives worker restarts,
-   waits for days, and resumes from the portal or the chat.
-5. **Visible agents.** Each agent call is a child chat that people can read,
+   waits for days, and resumes from the portal or the session.
+5. **Visible agents.** Each agent call is a child session that people can read,
    as agent steps are today.
-6. **Tests.** A chat can test a dynamic definition with prepared answers.
+6. **Tests.** A session can test a dynamic definition with prepared answers.
 
 ## Non-Goals
 
@@ -74,19 +74,19 @@ The comparison with GitHub's workflow features is in
 
 ### Durable Workflows today
 
-- A chat saves a definition with `workflow_definition save`. Each save is a
-  new revision (tables `workflow_chat_definitions` and
-  `workflow_chat_revisions`, migration 0107). Start makes a Workflow from one
+- A session saves a definition with `workflow_definition save`. Each save is a
+  new revision (tables `session_workflow_definitions` and
+  `session_workflow_revisions`, migration 0107). Start makes a Workflow from one
   revision.
 - The controller is one durable orchestration per run
   (`workflow-controller` 1.0.0 in `packages/sdk/src/workflow/runtime.ts`).
   Each visit of a state is a row in PostgreSQL. The run records the
   controller version it started at (`workflow_runs.controller_version`,
   migration 0100).
-- An agent state runs an ordinary child chat (`WorkflowAgentNodeHost`). The
-  chat finishes the state only with `complete_workflow_node` and a result
+- An agent state runs an ordinary child session (`WorkflowAgentNodeHost`). The
+  session finishes the state only with `complete_workflow_node` and a result
   that matches the state's schema. Three invalid completions fail the state.
-- A request state asks a chat for a typed answer before a deadline. The chat
+- A request state asks a session for a typed answer before a deadline. The session
   answers with `respond_session_request`.
 - `workflow_definition test` runs a revision with prepared answers
   (fixtures) on a hidden test bench.
@@ -123,12 +123,12 @@ All from public documentation, fetched 2026-11-08 [S12, S13, S14, S15]:
 
 | Concern | Where it lives today | Why every kind can use it |
 |---|---|---|
-| Definitions owned by a chat, with revisions | `workflow_chat_definitions`, `workflow_chat_revisions` (migration 0107) | Only the `yaml` and `ir` columns are language-specific. Identity, revision chain, validity and diagnostics are not. |
+| Definitions owned by a session, with revisions | `session_workflow_definitions`, `session_workflow_revisions` (migration 0107) | Only the `yaml` and `ir` columns are language-specific. Identity, revision chain, validity and diagnostics are not. |
 | Runs | `workflow_runs` (migration 0088) | A run of any kind is one durable orchestration at one version, with inputs, a status and an end. |
 | Run status | admitted, running, paused, completed, failed, cancelled, stopped (`store.ts`) | Copilot's statuses map onto it: `error` to failed, `halted` to a run that shows `needsRecovery`, the rest by name. |
-| End notice to the chat | `notify_on_completion` | Copilot's `notifyOnComplete` is the same idea [S15]. |
-| Agent steps as child chats | `WorkflowAgentNodeHost`, `complete_workflow_node` | `ctx.agent` needs exactly this: a child, a typed result, correction turns and a model choice. |
-| Requests | `request-service.ts`, `respond_session_request` | `ctx.pause` is a request to the chat plus a Resume control. |
+| End notice to the session | `notify_on_completion` | Copilot's `notifyOnComplete` is the same idea [S15]. |
+| Agent steps as child sessions | `WorkflowAgentNodeHost`, `complete_workflow_node` | `ctx.agent` needs exactly this: a child, a typed result, correction turns and a model choice. |
+| Requests | `request-service.ts`, `respond_session_request` | `ctx.pause` is a request to the session plus a Resume control. |
 | Tools | `workflow_definition`, `update_workflow`, `read_workflow`, `send_workflow_input` | Only the `yaml` argument of `save` names a language. |
 | Workflow tab shell | `WorkflowRunView` in `packages/app/ui/react/src/workflow-tab.js` | The header, run picker, Stop dialog, Log, Revisions and Test panels are not shape-specific. Only the graph pane and Node panel are. |
 | Events | `workflow.started`, `workflow.state_*`, `workflow.agent_spawned`, `workflow.paused`, `workflow.completed` and others | The Log is built from them, and a dynamic run can emit the same names. |
@@ -261,8 +261,8 @@ replays the author's code. It replays only its own loop:
 3. The attempt ends when `run()` returns (the run is done), or when only
    pending agent calls and pauses are left (the attempt reports them).
 4. If the run is done, the host ends it through the shared end path and
-   tells the chat.
-5. Otherwise the host starts a child chat for each new pending agent call,
+   tells the session.
+5. Otherwise the host starts a child session for each new pending agent call,
    then waits durably for any child result, a Resume, the deadline, a cancel
    or a stop.
 6. It writes the results into the journal and runs the next attempt.
@@ -300,18 +300,18 @@ For each pending `ctx.agent` call, the host writes the same rows the
 controller writes for an agent state: a node execution and an agent
 invocation. Then today's code does the rest, unchanged:
 
-- The child chat starts through the existing agent orchestration, with a
-  stable id, so a retry after a crash finds the same chat.
+- The child session starts through the existing agent orchestration, with a
+  stable id, so a retry after a crash finds the same session.
 - The child finishes with `complete_workflow_node`. Its output is checked
   against the call's schema. After three invalid completions the author gets
   `null`. Copilot sends up to two correction turns [S15]; the docs must say
   that PilotSwarm takes one more.
 - The call's `model`, `reasoningEffort` and `contextTier` are checked
-  against the owning chat's model catalog. A refused model fails the attempt
+  against the owning session's model catalog. A refused model fails the attempt
   in words. It never silently becomes `null`.
 - A named custom agent (`agent`) resolves and is pinned as package agents
   are today.
-- The Log, the read-only agent chat, the end of children when the run ends,
+- The Log, the read-only agent session, the end of children when the run ends,
   and the nesting rule all work because the rows exist.
 
 Copilot accepts a JSON Schema subset and treats `oneOf` as `anyOf` [S15].
@@ -320,12 +320,12 @@ to `anyOf` and keep the rest strict.
 
 #### A pause becomes a request plus a Resume button
 
-- `ctx.pause(key)` becomes a request to the owning chat with a fixed
+- `ctx.pause(key)` becomes a request to the owning session with a fixed
   contract (for example `DynamicPause@1`). Its payload is the key, the
   phases and the latest progress lines. It has no request deadline of its
   own; the run deadline still applies.
 - The portal shows "Paused at `<key>`" with **Resume**.
-- Resume comes either from the chat's `respond_session_request` or from
+- Resume comes either from the session's `respond_session_request` or from
   `update_workflow resume`. Both write `pause:<key>` to the journal and wake
   the host.
 - An outside pause (Copilot's `session.workflow.pause`) is today's `pause`
@@ -363,7 +363,7 @@ to `anyOf` and keep the rest strict.
 **Shared with every kind:** the header (name, version, revision, validity,
 hash), the status, the run picker, Pause, Stop and Cancel with the one Stop
 dialog, the Log, the Revisions compare (sources side by side), the Test
-panel, the session-list row and the read-only agent chat.
+panel, the session-list row and the read-only agent session.
 
 **The Phases pane (dynamic kind only).**
 
@@ -371,9 +371,9 @@ panel, the session-list row and the read-only agent chat.
 |---|---|
 | Phase strip | `meta.phases` in order, the current one marked. A phase that `ctx.phase` sets but `meta` does not declare is added, with a quiet warning. |
 | Progress | `ctx.log` lines, newest first, each with its phase; repeats collapse. |
-| Agents | One card per agent call: label, state (pending, running, done, `null`), model, deadline and "Open the agent's chat". A count such as "3 running, 5 waiting". |
+| Agents | One card per agent call: label, state (pending, running, done, `null`), model, deadline and "Open the agent's session". A count such as "3 running, 5 waiting". |
 | Journal | Step keys with size, the round that wrote each and a "replayed on resume" mark. A value opens where the Node panel is today. |
-| Paused card | "Paused at `review-ready` since 14:02" with **Resume**, and the chat's answer when one came. |
+| Paused card | "Paused at `review-ready` since 14:02" with **Resume**, and the session's answer when one came. |
 
 There is no Variables panel; `ctx.args` shows read-only with the run's
 inputs. `read_workflow` returns `kind: "dynamic"`, `graph: null` and a
@@ -398,7 +398,7 @@ fixtures:
 - `state` names the agent call's `label` (a `*` matches a prefix) or the
   pause key.
 - The attempt runs with the same stub. The endpoint answers pending agent
-  calls and pauses from fixtures instead of starting chats. `ctx.step`
+  calls and pauses from fixtures instead of starting sessions. `ctx.step`
   producers run for real, as scripts do. So a test exercises the author's
   real control flow and the real journal rule.
 - A call with no prepared answer fails the test and names the call, as
@@ -414,11 +414,11 @@ fixtures:
 |---|---|---|
 | Third-party JavaScript on a worker | The script guard in `packages/sdk/src/workflow/runner.ts`: Node `--permission` with file access only in its own folder, no child processes, worker threads or native addons; only `PATH` and locale variables from the worker's environment; its own process group, killed on stop | Run attempts only on workers with a dedicated tag (a worker carries at most five tags in `duroxide`). Never load `node_modules` beyond the stub. |
 | Network | The guard does not limit the network. The shipped worker templates deny the instance metadata address. | Keep it. Document that credentials never reach the code. |
-| Tool access | Scripts call the chat's permitted tools, minus control tools (`packages/sdk/src/workflow/tool-policy.ts`) | The same policy per attempt; call counts carry across a run's rounds. |
+| Tool access | Scripts call the session's permitted tools, minus control tools (`packages/sdk/src/workflow/tool-policy.ts`) | The same policy per attempt; call counts carry across a run's rounds. |
 | The extension's own session | — | `ctx.session` refuses everything except a few read-only calls. `ctx.workflow` rejects. `ctx.signal` fires on cancel or stop. |
 | Prompts | A child's first prompt is sent as the workflow, never as a person; inline prompts are at most 32 KB | The same for `ctx.agent` prompts. |
-| Package trust | Cards are checked against the definition at publication; package agents are pinned | A package may carry `workflow.mjs` only when the deployment allows the dynamic kind. Publication records the source hash. The card says the kind, so a chat knows it starts code. |
-| Resource abuse | A 30-day run deadline, the child budget per chat | A platform cap on total agent calls, the journal and progress caps, the 3,600-second attempt cap. |
+| Package trust | Cards are checked against the definition at publication; package agents are pinned | A package may carry `workflow.mjs` only when the deployment allows the dynamic kind. Publication records the source hash. The card says the kind, so a session knows it starts code. |
+| Resource abuse | A 30-day run deadline, the child budget per session | A platform cap on total agent calls, the journal and progress caps, the 3,600-second attempt cap. |
 | Secrets in stored text | Redaction before storage (`redact.ts`) | The same for journal values and progress lines. |
 
 The Copilot API is experimental [S15]. The shim should check in a small
@@ -429,7 +429,7 @@ A unit test fails when the shim exposes a name that is not in the fixture.
 ### 8. Formal verification (TLA+)
 
 **Reuse.** `docs/formal/workflow/` already models run lifecycle and
-early cancel, session commands, agent children and the chat's queue, and the
+early cancel, session commands, agent children and the session's queue, and the
 request exchange. They apply unchanged, because the host uses the same rows
 and commands.
 
@@ -455,7 +455,7 @@ send and fork-join, which this kind does not use.
 | Alternative | Why not |
 |---|---|
 | **Compile `.mjs` into the YAML graph.** One engine. | It covers only a subset of JavaScript. Memoization, `null` on failure, per-call models, computed prompts, more than 64 items and parallel inside a pipeline are lost. It drifts silently from Copilot, and people debug a graph they did not write. It may come back later as an optional assistant ("turn this run into a graph"), not as an engine. |
-| **Client-side only.** Import and export files. | It gives up what PilotSwarm adds: durability on the server for days, resume from the portal, agents as chats. Useful only as a bridge if this plan is not funded. |
+| **Client-side only.** Import and export files. | It gives up what PilotSwarm adds: durability on the server for days, resume from the portal, agents as sessions. Useful only as a bridge if this plan is not funded. |
 | **Run `run()` as the orchestration itself.** | Orchestrations must be deterministic generators. Copilot code is `async` and not deterministic. Copilot keys its journal by name, not by position. |
 | **Keep the journal in the orchestration's key-value store.** | At most 150 keys of 64 KB each. A real run's journal is larger. |
 | **Add a kind field or seam to PR 270.** | PR 270 should stay focused. Every change here can be added later: new columns with defaults, a new orchestration name, a new optional argument. Renaming `yaml` would break the skills and prompts that use it. |
@@ -481,18 +481,18 @@ scoped to this kind.
 
 ## Open questions
 
-1. Should `ctx.agent` children show in the session list as read-only chats,
+1. Should `ctx.agent` children show in the session list as read-only sessions,
    as agent steps do today, or stay hidden, as Copilot hides them? The
    proposal says visible.
 2. Should agent results be checked against strict JSON Schema 2020-12 (with
    `oneOf` rewritten to `anyOf`), or against Copilot's exact subset?
 3. Does the first version need `maxAiCredits`, or may it refuse it in words
    until the meter exists?
-4. Should `ctx.pause` be a request to the chat plus a portal Resume, or a
-   portal Resume only? The proposal says both, because the chat owns the
+4. Should `ctx.pause` be a request to the session plus a portal Resume, or a
+   portal Resume only? The proposal says both, because the session owns the
    run.
-5. May packages carry `workflow.mjs` from the start, or only chat-written
-   code first? The proposal says chat-written first, packages in phase 3
+5. May packages carry `workflow.mjs` from the start, or only session-written
+   code first? The proposal says session-written first, packages in phase 3
    behind a deployment switch.
 6. Should a run stopped at a limit be resumable with raised limits, as in
    Copilot? That means a paused end with a reason, not `failed`.

@@ -1,21 +1,21 @@
 /**
- * An agent's test of a revision (chat-test.ts), gaps G1-G5, on PostgreSQL with the controller on a native runtime: one
+ * An agent's test of a revision (definition-test.ts), gaps G1-G5, on PostgreSQL with the controller on a native runtime: one
  * definition that waits for a build event (a receive with no deadline), judges it (an agent step) and, to go again, polls
- * with a script (a granted tool and one the chat lacks) and waits for the next event.
- * - G1: receive fixtures give the receive its message on each visit, as a real message (the run's inbox, from the chat);
+ * with a script (a granted tool and one the session lacks) and waits for the next event.
+ * - G1: receive fixtures give the receive its message on each visit, as a real message (the run's inbox, from the session);
  *   without one for a visit the test fails TEST_STUCK, naming the receive fixture to add (with its visit).
  * - G2: per-visit fixtures answer the receive and the agent step differently on each visit; a visit-1 answer does not
  *   answer visit 2 (the test fails at once naming judge, visit 2, with its exact input).
- * - G3: a script's call of a tool the chat lacks (or of any tool, with no grant at all) is answered by its fixture, and the
+ * - G3: a script's call of a tool the session lacks (or of any tool, with no grant at all) is answered by its fixture, and the
  *   report says a run needs that tool; without a fixture the call fails as a live one would; a control tool is refused
  *   even with a fixture.
  * - G4: expect done passes there; expect failed (another state) fails; the bench keeps it. RLR-F6: expect is part of the
  *   test's identity: the same call (operation id) with another expect is refused (WORKFLOW_EXISTS, no new run), and with
  *   the same one (or none, both times) is the same test, run and stored expect, whose report a later test_id read repeats.
- * - RLR-F5: a report whose chat grant cannot be read says its tools were not checked (needsToolAtRunTime null).
+ * - RLR-F5: a report whose session grant cannot be read says its tools were not checked (needsToolAtRunTime null).
  * - G5: the path gives each step's predecessor and route and its input.
  *
- * Run: npx vitest run test/local/workflow-chat-test-gaps.test.js
+ * Run: npx vitest run test/local/workflow-definition-test-gaps.test.js
  */
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
@@ -23,7 +23,7 @@ import { randomUUID } from "node:crypto";
 import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { registerWorkflow, sessionQueueTransport } from "../../src/workflow/runtime.ts";
-import { saveChatWorkflowDefinition } from "../../src/workflow/chat-definitions.ts";
+import { saveSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 import { readWorkflowToolBinding, WORKFLOW_TOOL_POLICY } from "../../src/workflow/tool-policy.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
@@ -32,7 +32,7 @@ const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("du
 const getEnv = useSuiteEnv(import.meta.url);
 // CI run 114: limits and bounds grow with the database the suite runs on (test/helpers/time-scale.js).
 const TIMEOUT = testTime.ms(240_000);
-const OWNER = { provider: "test", subject: "workflow-chat-test-gaps" };
+const OWNER = { provider: "test", subject: "workflow-definition-test-gaps" };
 
 const yamlOf = doc => JSON.stringify(doc, null, 2);
 const LOOP = {
@@ -74,8 +74,8 @@ const F = {
 };
 const ALL_FIXTURES = Object.values(F);
 
-/** The chat's grant: read_build only (post_status is a tool the chat lacks). */
-const grant = chat => ({ policy: WORKFLOW_TOOL_POLICY, parentSessionId: chat, owner: OWNER, config: {}, capabilities: { selections: [] },
+/** The session's grant: read_build only (post_status is a tool the session lacks). */
+const grant = session => ({ policy: WORKFLOW_TOOL_POLICY, parentSessionId: session, owner: OWNER, config: {}, capabilities: { selections: [] },
     tools: [{ name: "read_build", schemaHash: "h" }], sourceRevisions: {}, excludedTools: [], boundAgentFingerprint: "test" });
 
 async function harness(env) {
@@ -92,7 +92,7 @@ async function harness(env) {
         registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
     }, {
         store, catalog, enabled: () => true,
-        // As a worker reads it: the Workflow's own creation config (the bench keeps the chat's grant).
+        // As a worker reads it: the Workflow's own creation config (the bench keeps the session's grant).
         resolveToolBinding: async sessionId => readWorkflowToolBinding((await catalog.getSessionCreationConfig(sessionId))?.workflowToolBinding),
         openToolExecutor: async () => { throw new Error("A test run never opens the live tool executor."); },
         authorizeParentNotification: async () => true,
@@ -104,21 +104,21 @@ async function harness(env) {
     });
     await runtime.start();
     const host = { catalog, store, duroxideClient: client, scripts: true };
-    const chat = randomUUID();
-    await catalog.createSession(chat, { owner: OWNER });
+    const session = randomUUID();
+    await catalog.createSession(session, { owner: OWNER });
     for (const doc of [LOOP, CONTROL]) {
-        const saved = (await saveChatWorkflowDefinition(host, { ownerSessionId: chat, name: doc.metadata.name, yaml: yamlOf(doc), expected: null,
-            actor: { kind: "chat", sessionId: chat }, operationId: `save-${randomUUID()}`, by: "chat" })).receipt;
+        const saved = (await saveSessionWorkflowDefinition(host, { ownerSessionId: session, name: doc.metadata.name, yaml: yamlOf(doc), expected: null,
+            actor: { kind: "session", sessionId: session }, operationId: `save-${randomUUID()}`, by: "session" })).receipt;
         expect(saved.valid, JSON.stringify(saved.diagnostics)).toBe(true);
     }
-    // `granted: false`: a chat with no tool grant at all (the bench has none). `toolCallId`: a repeat of one call (its operation id).
+    // `granted: false`: a session with no tool grant at all (the bench has none). `toolCallId`: a repeat of one call (its operation id).
     // `on`: another host (a catalog that reads otherwise).
     const tool = (args, { granted = true, toolCallId = randomUUID(), on = host } = {}) => workflowDefinitionFromTool({ name: "loop-watch", operation: "test", ...args },
-        { callerSessionId: chat, host: on, toolCallId, owner: OWNER, binding: async () => granted ? grant(chat) : null,
+        { callerSessionId: session, host: on, toolCallId, owner: OWNER, binding: async () => granted ? grant(session) : null,
             testWait: { waitMs: 120_000, pollMs: 50, graceMs: 10_000 } })
         .then(text => JSON.parse(text));
     return {
-        catalog, store, chat, tool, host,
+        catalog, store, session, tool, host,
         async stop() {
             await runtime.shutdown(100);
             await catalog.close();
@@ -126,14 +126,14 @@ async function harness(env) {
     };
 }
 
-describe("an agent's test of a revision: receive fixtures, visits, tools the chat lacks, the expected end, the report (G1-G5)", () => {
+describe("an agent's test of a revision: receive fixtures, visits, tools the session lacks, the expected end, the report (G1-G5)", () => {
     it("runs a loop to its expected end with per-visit messages and answers; tells which tools a run needs", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             const report = await h.tool({ fixtures: ALL_FIXTURES, expect: "done" });
             expect(report, JSON.stringify(report)).toMatchObject({ status: "passed", expect: { state: "done" },
                 run: { status: "completed", outcome: "succeeded", terminalState: "done" }, unanswered: null, refused: null });
-            expect(report.message).toMatch(/passed: it ended at done \(succeeded\), as expected\. Its scripts call tools this chat does not have \(post_status\)/);
+            expect(report.message).toMatch(/passed: it ended at done \(succeeded\), as expected\. Its scripts call tools this session does not have \(post_status\)/);
             // G1 + G2: each visit of the receive got its own message; the agent step answered "again", then "finish".
             expect(report.path.map(item => [item.step, item.visit, item.outcome])).toEqual([
                 ["await_event", 1, "received"], ["judge", 1, "again"], ["poll", 1, "ok"], ["await_event", 2, "received"], ["judge", 2, "finish"],
@@ -146,13 +146,13 @@ describe("an agent's test of a revision: receive fixtures, visits, tools the cha
             expect(step("poll").enteredBy).toEqual({ step: "judge", route: "again" });
             expect(step("judge", 2).enteredBy).toEqual({ step: "await_event", route: "received" });
             expect(step("judge", 2).input).toBe('{"buildId":7,"state":"succeeded"}');
-            // G3: post_status was answered by its fixture (no real call); the chat lacks it, so a run needs it.
+            // G3: post_status was answered by its fixture (no real call); the session lacks it, so a run needs it.
             expect(report.needsToolAtRunTime).toEqual([{ call: "tool call post_status in step poll", tool: "post_status" }]);
             expect(report.answeredCalls).toContainEqual({ call: "tool call post_status in step poll", by: "prepared answer" });
-            // G1: the messages went through the run's inbox, from the chat (the receive's sender), once per visit.
+            // G1: the messages went through the run's inbox, from the session (the receive's sender), once per visit.
             const inbox = await h.store.listInbox(report.runId);
             expect(inbox.map(item => [item.senderSessionId, item.contract, item.payload.state, item.consumedBy !== null])).toEqual([
-                [h.chat, "BuildEvent@1", "running", true], [h.chat, "BuildEvent@1", "succeeded", true]]);
+                [h.session, "BuildEvent@1", "running", true], [h.session, "BuildEvent@1", "succeeded", true]]);
             expect(inbox.every(item => item.operationId.startsWith("test-receive:"))).toBe(true);
             // G4: the bench keeps what it expects.
             expect((await h.catalog.getSessionCreationConfig(report.testId)).agentTest.expect).toEqual({ state: "done" });
@@ -162,9 +162,9 @@ describe("an agent's test of a revision: receive fixtures, visits, tools the cha
                 : typeof target[name] === "function" ? target[name].bind(target) : target[name] });
             const unchecked = await h.tool({ test_id: report.testId }, { on: { ...h.host, catalog: invalidGrant } });
             expect(unchecked, JSON.stringify(unchecked)).toMatchObject({ status: "passed", runId: report.runId, needsToolAtRunTime: null,
-                toolsUnchecked: { reason: "the chat's tool grant, as the test keeps it, is not valid", tools: ["read_build", "post_status"] } });
+                toolsUnchecked: { reason: "the session's tool grant, as the test keeps it, is not valid", tools: ["read_build", "post_status"] } });
             expect(unchecked.message).not.toBe(report.message);
-            expect(unchecked.message).toMatch(/could not check whether this chat has the tools its scripts call \(read_build, post_status\)/);
+            expect(unchecked.message).toMatch(/could not check whether this session has the tools its scripts call \(read_build, post_status\)/);
             expect(await h.tool({ test_id: report.testId })).toEqual(report);
 
             // G4 negative control: the same run, expecting another end, fails.
@@ -178,7 +178,7 @@ describe("an agent's test of a revision: receive fixtures, visits, tools the cha
         }
     });
 
-    it("fails naming what is missing: a visit's message (TEST_STUCK), a visit's answer, a tool the chat lacks; a control tool is refused", { timeout: TIMEOUT }, async () => {
+    it("fails naming what is missing: a visit's message (TEST_STUCK), a visit's answer, a tool the session lacks; a control tool is refused", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             // G1 + G2: no message for the receive's second visit (event1 is for visit 1 only).
@@ -191,7 +191,7 @@ describe("an agent's test of a revision: receive fixtures, visits, tools the cha
             expect(judged, JSON.stringify(judged)).toMatchObject({ status: "failed", unanswered: { call: "agent step judge",
                 fixture: { operation: "agent", state: "judge", arguments: { buildId: 7, state: "succeeded" }, visit: 2 } } });
             expect(judged.tookSeconds).toBeLessThan(testTime.seconds(10));
-            // G3: no fixture for the tool the chat lacks: the call fails as a live one would (no real call).
+            // G3: no fixture for the tool the session lacks: the call fails as a live one would (no real call).
             const lacking = await h.tool({ fixtures: ALL_FIXTURES.filter(item => item !== F.postStatus), expect: "done" });
             expect(lacking, JSON.stringify(lacking)).toMatchObject({ status: "failed", run: { terminalState: "failed" }, firstError: { step: "poll" } });
             expect(JSON.stringify(lacking.firstError.words)).toMatch(/post_status/);

@@ -158,9 +158,9 @@ export function workflowAgentTask(node) {
         : "Inline prompt";
 }
 
-/** An agent state's chat mode in words (owner decision agent-node-continue-20261106), the same in the portal and the TUI. */
-export function workflowAgentChatMode(node) {
-    return node?.chat === "continue" ? "Same each visit" : "New each visit";
+/** An agent state's session mode in words (owner decision agent-node-continue-20261106), the same in the portal and the TUI. */
+export function workflowAgentSessionMode(node) {
+    return node?.session === "continue" ? "Same each visit" : "New each visit";
 }
 
 /**
@@ -524,7 +524,7 @@ function normalizeRun(raw, older = null) {
         terminalState: raw.terminalState ?? null, output: raw.output ?? null, error: raw.error ?? null,
         kvRevision: raw.kvRevision, kv: raw.kv, nodeExecutions: rows.nodeExecutions, inbox: rows.inbox, outbox: rows.outbox,
         history: runHistoryOf(raw, older, rows),
-        // OF-S2-7: the agent node models its start chose, by state id (absent: every agent node uses its chat's), and whether the
+        // OF-S2-7: the agent node models its start chose, by state id (absent: every agent node uses its session's), and whether the
         // stored choices cannot be read (the read says so; its nodes then fail at spawn in words).
         agentModels: isRecord(raw.agentModels) ? raw.agentModels : null,
         agentModelsUnreadable: raw.agentModelsUnreadable === true,
@@ -987,7 +987,7 @@ export function describeWorkflowExecution(node, execution, sessionName = null) {
         else if (execution.outcome === "responded") lines.push(`${who} answered.`);
         else if (execution.outcome === "declined") lines.push(`${who} declined the request.`);
     } else if (kind === "agent") {
-        // Its agent chat (open, who may write) is shown once, beside the node: the portal's Agent session, the terminal's Agent chats.
+        // Its agent session (open, who may write) is shown once, beside the node: the portal's Agent session, the terminal's Agent sessions.
         if (pending) lines.push("Only the agent's result completes this node; its messages in the agent session do not.");
     } else if (kind === "parallel" && Array.isArray(node.namedBranches)) {
         // Named branches, each from its own first node.
@@ -1217,9 +1217,9 @@ function nodeView(node, executions, context) {
     // Every loaded visit, newest first: older history a person loaded reaches any visit of the state.
     const history = [...list].reverse();
     const binding = workflowAgentBinding(node, context.pins);
-    // OF-S2-7: an agent node's model (chosen at start, or from the chat), for its Node panel, its tooltip and the TUI.
+    // OF-S2-7: an agent node's model (chosen at start, or from the session), for its Node panel, its tooltip and the TUI.
     const shownVisit = pending || latestDone;
-    const model = kind === "agent" ? workflowAgentModel(isRecord(context.agentModels?.[node.id]) ? context.agentModels[node.id] : null, context.chatModel,
+    const model = kind === "agent" ? workflowAgentModel(isRecord(context.agentModels?.[node.id]) ? context.agentModels[node.id] : null, context.sessionModel,
         typeof shownVisit?.id === "string" ? context.spawnedModels?.get(shownVisit.id) ?? null : null,
         { unreadable: context.agentModelsUnreadable === true }) : null;
     const view = {
@@ -1282,7 +1282,7 @@ function agentPinSource(shared, run, bound, active) {
  * (epoch milliseconds) decides only whether a waiting reply has expired.
  */
 export function projectWorkflow({ definition = null, readModel = null, workflowModel = null, selectedRunId = null, events = [], readModelAfterSeq = null,
-    olderHistory = null, now = Date.now(), asOf = null, sessionName = null, chatModel = null } = {}) {
+    olderHistory = null, now = Date.now(), asOf = null, sessionName = null, sessionModel = null } = {}) {
     const model = readModel ? projectWorkflowReadModel(readModel, { older: olderHistory, now }) : null;
     const wide = model || !workflowModel ? null : projectWorkflowReadModel(workflowModel, { now });
     // The workflow-wide source: the selection's own model, else another selection's model that projects.
@@ -1354,10 +1354,10 @@ export function projectWorkflow({ definition = null, readModel = null, workflowM
         // Every open row is listed (R2-UI-7): the branches running now are all known even when older history is not loaded.
         openComplete: Boolean(run && bound && run.history.openComplete),
         pins: agentPinSource(shared, run, bound, active),
-        // OF-S2-7: what each agent node uses: the shown run's choice for it, else the model of the chat that owns the Workflow.
-        agentModels: bound && run && isRecord(run.agentModels) ? run.agentModels : null, chatModel,
+        // OF-S2-7: what each agent node uses: the shown run's choice for it, else the model of the session that owns the Workflow.
+        agentModels: bound && run && isRecord(run.agentModels) ? run.agentModels : null, sessionModel,
         agentModelsUnreadable: Boolean(bound && run?.agentModelsUnreadable),
-        // OF7-R8: what each visit's chat ran on, recorded with its spawn.
+        // OF7-R8: what each visit's session ran on, recorded with its spawn.
         spawnedModels: bound && runId ? workflowSpawnedModels(events, runId) : new Map() };
     // Each parallel state's branches as the loaded executions show them (mock M21 active and queued counts, M22 a blocked join).
     context.branchProgress = workflowBranchProgress(executions, active?.states || []);
@@ -2134,26 +2134,26 @@ const WORKFLOW_EVENT_TEXT = {
     },
     "workflow.state_cancelled": { short: data => ({ text: `⊘ ${nodeOf(data)} canceled`, level: "warning" }) },
     "workflow.agent_spawned": {
-        // chat: continue (owner decision agent-node-continue-20261106): a later visit's prompt goes to the same chat.
+        // session: continue (owner decision agent-node-continue-20261106): a later visit's prompt goes to the same session.
         // Review 18:45Z: the agent node Log's own words, with the node first; no raw session id.
-        short: data => ({ text: (data.chat === "continue" && Number.isSafeInteger(data.cycle) && data.cycle > 1
+        short: data => ({ text: (data.session === "continue" && Number.isSafeInteger(data.cycle) && data.cycle > 1
             ? `${nodeOf(data)} · visit ${data.cycle} · same agent session` : `${nodeOf(data)} · agent session started`)
             + `${text(data.deadline) ? ` · limit ${logTime(data.deadline)}` : ""}` }),
     },
     "workflow.agent_ended": {
         short: data => ({ text: `${nodeOf(data)} · agent session ended${workflowAgentEndText(data.end) ? ` · ${workflowAgentEndText(data.end)}` : ""}`
-            + (data.chat === "continue" ? " · no more visits" : "") }),
+            + (data.session === "continue" ? " · no more visits" : "") }),
     },
     "workflow.agent_cycle_ended": {
         short: data => ({ text: `${nodeOf(data)} · visit ended · agent session kept for the next visit`
             + (data.turnStopped === true ? " · turn stopped" : "") }),
     },
-    "workflow.agent_chat_restarted": {
+    "workflow.agent_session_restarted": {
         // Review 18:45Z: the same words as the agent node Log's line, after the node.
         short: data => ({ text: `${nodeOf(data)} · ${Number.isSafeInteger(data.cycle) ? `visit ${data.cycle}` : "this visit"} · new agent session`
             + " · the earlier one had ended", level: "warning" }),
     },
-    // A continued chat's owed end (formal t3): its last look found the chat never seen, or another look holding its end (O2).
+    // A continued session's owed end (formal t3): its last look found the session never seen, or another look holding its end (O2).
     "workflow.agent_end_failed": {
         short: data => (data.reason === "held_elsewhere"
             ? { text: `${nodeOf(data)} · agent session ending` }
@@ -2161,7 +2161,7 @@ const WORKFLOW_EVENT_TEXT = {
                 ? { text: `${nodeOf(data)} · agent session not found, so it was not ended · checked again later`, level: "warning" }
                 : { text: `${nodeOf(data)} · ending the agent session failed · trying again`, level: "warning" }),
     },
-    // Owner decision Q2: the agent chat ended its turn without finishing its step, and was reminded to finish it.
+    // Owner decision Q2: the agent session ended its turn without finishing its step, and was reminded to finish it.
     "workflow.agent_reminded": {
         short: data => ({ text: `${nodeOf(data)} · reminded to finish`
             + `${Number.isSafeInteger(data.n) && Number.isSafeInteger(data.max) ? ` · ${data.n}/${data.max}` : ""}` }),
@@ -2482,7 +2482,7 @@ const NAMED_VISIT_WINNERS = {
 
 /**
  * Why one visit of a step ended (owner decision q14; mock M14): its time limit, the run's cancellation, stop or time
- * limit, another branch's failure, its outcome, or a runtime error with its message; for an agent step, how its chat was
+ * limit, another branch's failure, its outcome, or a runtime error with its message; for an agent step, how its session was
  * ended. { why, detail, agent, text }, or null for a visit that has not ended. Pure.
  */
 export function workflowVisitEnding(execution) {
@@ -2504,14 +2504,14 @@ export function workflowVisitEnding(execution) {
     return { why, detail, agent, text: `${/[.!?]$/.test(said) ? said : `${said}.`}${agent ? ` ${agent}` : ""}` };
 }
 
-/** How an agent step's chat ended, in the words every screen uses: "cancelled" or "its result was taken"; null for none. Pure. */
+/** How an agent step's session ended, in the words every screen uses: "cancelled" or "its result was taken"; null for none. Pure. */
 export function workflowAgentEndText(end) {
     return end === "cancel" ? "canceled" : end === "done" ? "result taken" : null;
 }
 
 /**
- * The sessions under a step (owner decision q14; mock M14 "View owned subtree"): its agent chat (`rootId`) and every
- * session started under it, from the session rows loaded (`byId`), each with its title, status and depth (the chat 0),
+ * The sessions under a step (owner decision q14; mock M14 "View owned subtree"): its agent session (`rootId`) and every
+ * session started under it, from the session rows loaded (`byId`), each with its title, status and depth (the session 0),
  * in tree order; at most `limit`. Sessions not loaded here are not shown. Pure.
  */
 export function workflowSessionSubtree(byId, rootId, limit = 50) {
@@ -2541,7 +2541,7 @@ export function workflowSessionSubtree(byId, rootId, limit = 50) {
  * Each branch of one visit of a parallel step (owner decision q16; mocks M22 "JOIN BLOCKED k / n", M23 "Inspect
  * conflict", M24 "Inspect evidence"): by branch, how it stands, its last step, its outcome, a short result and, for a
  * branch that did not succeed, why; owner batch 7 (H2): its current step's deadline and, when that step is an agent
- * step, its agent chat (`agent`, the chat's session id). Owner decision join-k-of-n: how it stands is running, queued,
+ * step, its agent session (`agent`, the session id). Owner decision join-k-of-n: how it stands is running, queued,
  * succeeded, succeeded after the time limit (J1b: it did not count), failed (it ended without success), cancelled at
  * time limit (the parallel step's own time limit), cancelled after the join (a join of the first k had its successes),
  * cancelled (another branch failed under failFast), finished before the time limit, before the join, before the join
@@ -2625,7 +2625,7 @@ export function workflowBranchEvidence(executions, states, parallel, complete = 
         const preview = typeof last.outputPreview === "string" && last.outputPreview && last.outputPreview !== "null" ? clipped(last.outputPreview, 160) : null;
         rows.push({ index, status, step: last.stateId, outcome: last.outcome ?? null,
             result: preview, why, deadline: pending && typeof pending.deadline === "string" && pending.deadline ? pending.deadline : null,
-            // Its agent chat, once created (as the step's Agent session opens it).
+            // Its agent session, once created (as the step's Agent session opens it).
             agent: isRecord(last.agent) && last.agent.spawned === true && typeof last.agent.childSessionId === "string" && last.agent.childSessionId
                 ? last.agent.childSessionId : null });
     }
@@ -2780,7 +2780,7 @@ export function workflowReadModelView(view = {}) {
 const detailText = value => (typeof value === "string" && value.trim() ? value.trim() : null);
 
 /**
- * What the session details box shows for a workflow session (batch 8, d-1) instead of a chat's model, context, cron and
+ * What the session details box shows for a workflow session (batch 8, d-1) instead of a session's model, context, cron and
  * agent rows: from what the portal already holds, the session row and, once the workflow screen has read them, the
  * workflow's view (its last read model, else its definition). Nothing is fetched for it. Each value is a string, or null
  * when it is not loaded (the box shows "—"):
@@ -2861,7 +2861,7 @@ export function selectWorkflowViewSnapshot(state) {
 
 /**
  * The same parts for one workflow session, active or not (Workflow Simplified: a session's Workflow tab shows its
- * Workflows while the session's own chat is the active session). Pure.
+ * Workflows while the session's own session is the active session). Pure.
  */
 export function selectWorkflowViewSnapshotFor(state, workflowSessionId) {
     const sessionId = typeof workflowSessionId === "string" && workflowSessionId ? workflowSessionId : null;

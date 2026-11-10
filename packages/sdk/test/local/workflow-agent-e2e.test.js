@@ -6,7 +6,7 @@
  * definition, then starts it and sets cron in the same turn; each Workflow runs
  * as the agent's child and its end wakes the agent; the cron fires, the agent
  * starts another and stops the schedule. spawn_workflow is no longer declared
- * (owner 2026-11-08T16:55Z): these use workflow_definition, in chats with
+ * (owner 2026-11-08T16:55Z): these use workflow_definition, in sessions with
  * Workflows on (turned on before the first prompt; Workflows on demand).
  */
 import { describe, it, expect } from "vitest";
@@ -275,7 +275,7 @@ states:
     });
 
     // Workflows are always on (owner 2026-11-08T08:03Z): a worker started without any Workflow setting offers the workflow
-    // tools where Workflows are on in the chat (on demand, owner 16:55Z), script workflows on or off (a definition with a script node is refused at save and Start where they are off;
+    // tools where Workflows are on in the session (on demand, owner 16:55Z), script workflows on or off (a definition with a script node is refused at save and Start where they are off;
     // scripts-gate.ts).
     for (const [label, worker] of [
         ["script workflows off", { workflowScripts: { enabled: false } }],
@@ -285,7 +285,7 @@ states:
             const env = getEnv();
             {
                 await withScriptedModel(env, { respond: () => ({ content: "ok" }), worker }, async ({ client, model, qualifiedModel }) => {
-                    // Workflows on demand: a new chat is offered enable_workflows; with Workflows on, the Workflow tools.
+                    // Workflows on demand: a new session is offered enable_workflows; with Workflows on, the Workflow tools.
                     const fresh = await client.createSession({ model: qualifiedModel, owner: OWNER });
                     await fresh.sendAndWait("which tools are offered here", TIMEOUT);
                     const offered = model.sessionRequests("which tools are offered here")[0].body.tools.map((tool) => tool?.function?.name);
@@ -302,7 +302,7 @@ states:
                     }
                     expect(names).not.toContain("spawn_workflow");
                     // Kept declared once they are on, answered "already on" (a call of an undeclared tool is a Failed row).
-                    expect(listed.find((tool) => tool?.function?.name === "enable_workflows")?.function?.description).toMatch(/already on in this chat/);
+                    expect(listed.find((tool) => tool?.function?.name === "enable_workflows")?.function?.description).toMatch(/already on in this session/);
                 });
             }
         });

@@ -312,7 +312,7 @@ const proseWorkflow = (timeoutSeconds) => JSON.stringify({
 /** The start of the in-turn reminder the step's child gets (Q2, agent-reminder.ts). */
 const REMINDER = "Reminder from the workflow: step 'summarize' is still open.";
 
-/** Start a published prose-step workflow's live run under a new parent chat, as a host's tools would. */
+/** Start a published prose-step workflow's live run under a new parent session, as a host's tools would. */
 async function startProseStep(catalog, store, duroxide, timeoutSeconds) {
     const parent = randomUUID();
     await catalog.createSession(parent, { owner: OWNER });

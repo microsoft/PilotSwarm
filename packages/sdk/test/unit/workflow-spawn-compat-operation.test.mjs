@@ -29,8 +29,8 @@ async function saveOperation(args, toolCallId = "call-1") {
     const seen = [];
     const host = {
         catalog: {}, duroxideClient: {},
-        // PRS-002: this chat is in no Workflow (the definitions guard reads the lineage first).
-        store: { readWorkflowLineage: async () => null, chat: {
+        // PRS-002: this session is in no Workflow (the definitions guard reads the lineage first).
+        store: { readWorkflowLineage: async () => null, sessionDefinitions: {
             // Code check G2: the compat path reads its save receipt by operation id first; none here.
             readStoredOperation: async () => null,
             readDefinitionByName: async () => null,
@@ -38,7 +38,7 @@ async function saveOperation(args, toolCallId = "call-1") {
         } },
     };
     const answer = await spawnWorkflowFromTool(args, { toolCallId }, {
-        parentSessionId: "chat-1", enabled: () => true, resolveOwner: async () => null,
+        parentSessionId: "owner-1", enabled: () => true, resolveOwner: async () => null,
         captureToolBinding: async () => ({}), workflowHost: async () => host,
     });
     assert.equal(seen.length, 1, answer);

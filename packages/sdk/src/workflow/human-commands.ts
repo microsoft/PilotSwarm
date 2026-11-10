@@ -87,7 +87,7 @@ export function workflowCapabilities(options: { read: boolean; commands: { testM
         apiVersion: WORKFLOW_API_VERSION,
         read: options.read === true,
         // Review SF-D5: the server's word that workflow test mode is on, only then, so a client shows stored test notices (a
-        // parent chat's "test waiting" card) only while it is; absent: hidden.
+        // parent session's "test waiting" card) only while it is; absent: hidden.
         ...(resolveWorkflowTestMode(commands?.testMode) ? { testMode: true } : {}),
         create: false,
         input: false,
@@ -131,9 +131,9 @@ export async function workflowCommandsForPerson(
     const [lineage, run, definition] = await Promise.all([store.readWorkflowLineage(workflowSessionId), options.runId ? store.readRun(options.runId) : null,
         typeof store.readDefinition === "function" ? store.readDefinition(workflowSessionId) : null]);
     const root = lineage?.agentRoot ?? null;
-    // Code check G1: a copy of a chat revision takes no stage 1 definition operation (the store refuses each, PINNED_TO_CHAT_REVISION);
-    // it is changed by saving a revision of its definition and started by a chat Start.
-    const pinned = typeof definition?.chatDefinitionId === "string";
+    // Code check G1: a copy of a session revision takes no stage 1 definition operation (the store refuses each, PINNED_TO_SESSION_REVISION);
+    // it is changed by saving a revision of its definition and started by a session Start.
+    const pinned = typeof definition?.sessionDefinitionId === "string";
     // of-06: only a draft is tested. A published workflow offers no new test; the answers and clock of a test run that
     // began while it was a draft stay offered, so that run can finish.
     const operations = (root ? WORKFLOW_HUMAN_BRAKE_OPERATIONS.filter(operation => offered.includes(operation)) : offered)
@@ -154,8 +154,8 @@ export async function workflowCommandsForPerson(
 }
 
 const NOT_FOUND = new Set(["WORKFLOW_NOT_FOUND", "WORKFLOW_DELETED", "RUN_NOT_FOUND", "NODE_NOT_FOUND", "INTERCEPTION_NOT_FOUND", "AGENT_NODE_NOT_FOUND",
-    // Stage 2.1: a chat's Workflow Definitions.
-    "DEFINITION_NOT_FOUND", "REVISION_NOT_FOUND", "CHAT_NOT_FOUND",
+    // Stage 2.1: a session's Workflow Definitions.
+    "DEFINITION_NOT_FOUND", "REVISION_NOT_FOUND", "SESSION_NOT_FOUND",
     // Stage 2.3: a package's Workflow Definition.
     "PACKAGE_WORKFLOW_NOT_FOUND"]);
 const INVALID = new Set(["WORKFLOW_COMMAND_INVALID", "WORKFLOW_YAML_INVALID", "WORKFLOW_YAML_TOO_LARGE", "INPUT_INVALID", "WORKFLOW_NAME_MISMATCH",

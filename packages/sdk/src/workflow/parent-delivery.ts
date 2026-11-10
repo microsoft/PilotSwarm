@@ -18,9 +18,9 @@ const ENDED_PARENT_STATUSES = ["Completed", "Failed", "Terminated"];
 
 /**
  * The worker's parent delivery over `client` (the Workflow runtime's notifyParent). Deployed check DS-2: a parent with
- * no session orchestration (a chat made without a first message starts its orchestration only with that message) is not
- * delivered to, and says `notStarted`: the caller may keep the message for that chat's first turn (a run's end notice
- * keeps it as a chat note); an ended one is not delivered to.
+ * no session orchestration (a session made without a first message starts its orchestration only with that message) is not
+ * delivered to, and says `notStarted`: the caller may keep the message for that session's first turn (a run's end notice
+ * keeps it as a session note); an ended one is not delivered to.
  */
 export function workflowParentNotifier(client: WorkflowParentQueue) {
     return async (parentSessionId: string, prompt: string, sender: { kind: "system"; display: string }, clientMessageId?: string)

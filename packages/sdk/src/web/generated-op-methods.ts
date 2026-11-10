@@ -18,17 +18,16 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "completeSession",
     "completeSessionGroup",
     "copyArtifact",
-    "copyChatWorkflowDefinition",
+    "copySessionWorkflowDefinition",
     "createMotd",
     "createMyProvider",
     "createProvider",
     "createSession",
     "createSessionForAgent",
+    "createSessionForWorkflow",
     "createSessionGroup",
-    "createWorkflowChat",
     "deleteAgentPackage",
     "deleteArtifact",
-    "deleteChatWorkflowDefinition",
     "deleteFact",
     "deleteGraphEdge",
     "deleteGraphNamespace",
@@ -38,6 +37,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "deleteProvider",
     "deleteSession",
     "deleteSessionGroup",
+    "deleteSessionWorkflowDefinition",
     "dismissMotd",
     "downloadArtifact",
     "exportExecutionHistory",
@@ -112,7 +112,6 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listAgentWorkerState",
     "listArtifacts",
     "listAuthzAudit",
-    "listChatWorkflowDefinitions",
     "listChildOutcomes",
     "listCreatableAgents",
     "listCreatableWorkflows",
@@ -129,6 +128,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listSessions",
     "listSessionShares",
     "listSessionsPage",
+    "listSessionWorkflowDefinitions",
     "listSessionWorkspaceFolders",
     "listWorkers",
     "moveSessionsToGroup",
@@ -137,8 +137,8 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "pruneDeletedSummaries",
     "readArtifactBase64",
     "readCanvasKv",
-    "readChatWorkflowDefinition",
     "readFacts",
+    "readSessionWorkflowDefinition",
     "readWorkflow",
     "regenerateSession",
     "removeCanvasShareLink",
@@ -151,7 +151,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "retrySessionWorkspace",
     "revokeAgentPackageEditor",
     "revokeSessionShare",
-    "saveChatWorkflowDefinition",
+    "saveSessionWorkflowDefinition",
     "searchFacts",
     "searchGraphEdges",
     "searchGraphNodes",
@@ -182,17 +182,17 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "setSystemSessionModel",
     "setUserFeatureFlag",
     "similarFacts",
-    "startChatWorkflowDefinition",
     "startFactsEmbedder",
+    "startSessionWorkflowDefinition",
     "steerSessionTurn",
     "stopFactsEmbedder",
     "stopSessionTurn",
     "storeFact",
     "unsetMyFeatureFlag",
     "unsetUserFeatureFlag",
-    "updateChatWorkflowPackage",
     "updateMyProviderCredential",
     "updateSessionGroup",
+    "updateSessionWorkflowPackage",
     "updateSharedProviderCredential",
     "updateWorkflow",
     "uploadAgentPackage",
@@ -313,10 +313,10 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Stage 2.3: a person's Make a copy of a package's locked Workflow Definition in a chat (every deployment takes a person's workflow commands; 501 only from a client created without them): its revision (default the newest) is saved as the chat's own, editable definition at revision 1, named as its YAML names it; the chat reads a note about it on its next turn. A name the chat already has refuses it (409 DEFINITION_EXISTS). Owner or admin.
+     * Stage 2.3: a person's Make a copy of a package's locked Workflow Definition in a session (every deployment takes a person's workflow commands; 501 only from a client created without them): its revision (default the newest) is saved as the session's own, editable definition at revision 1, named as its YAML names it; the session reads a note about it on its next turn. A name the session already has refuses it (409 DEFINITION_EXISTS). Owner or admin.
      * @remarks `POST /sessions/:sessionId/workflow-definitions/copy` — access: `session:manage`
      */
-    copyChatWorkflowDefinition(params: {
+    copySessionWorkflowDefinition(params: {
         sessionId: string;
         definitionId?: any;
         revision?: any;
@@ -394,24 +394,24 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Create a session group.
-     * @remarks `POST /management/session-groups` — access: `authed`
-     */
-    createSessionGroup(params: {
-        input?: any;
-    }): Promise<any>;
-
-    /**
-     * Stage 2.3: make a chat for a package's Workflow Definition (ref, <package>/<name>): a session (model: default the deployment's) with the definition attached and locked at the package's version, instructions to coordinate it from its interface card, and a first message that asks the chat to greet the person and ask for the inputs it needs. 404 PACKAGE_WORKFLOW_NOT_FOUND for a definition the caller cannot use.
+     * Stage 2.3: make a session for a package's Workflow Definition (ref, <package>/<name>): a session (model: default the deployment's) with the definition attached and locked at the package's version, instructions to coordinate it from its interface card, and a first message that asks the session to greet the person and ask for the inputs it needs. 404 PACKAGE_WORKFLOW_NOT_FOUND for a definition the caller cannot use.
      * @remarks `POST /sessions/for-workflow` — access: `session:create`
      */
-    createWorkflowChat(params: {
+    createSessionForWorkflow(params: {
         ref?: any;
         model?: any;
         reasoningEffort?: any;
         contextTier?: any;
         groupId?: any;
         visibility?: any;
+    }): Promise<any>;
+
+    /**
+     * Create a session group.
+     * @remarks `POST /management/session-groups` — access: `authed`
+     */
+    createSessionGroup(params: {
+        input?: any;
     }): Promise<any>;
 
     /**
@@ -432,16 +432,6 @@ export interface ManagementOps {
     deleteArtifact(params: {
         sessionId: string;
         filename: string;
-    }): Promise<any>;
-
-    /**
-     * A person deletes a chat's Workflow Definition (501 only from a client created without a person's workflow commands). Refused while one of its Workflows is running (409 DEFINITION_IN_USE, naming them). Its revisions stay, so a finished Workflow keeps its copy. Owner or admin.
-     * @remarks `POST /sessions/:sessionId/workflow-definitions/delete` — access: `session:manage`
-     */
-    deleteChatWorkflowDefinition(params: {
-        sessionId: string;
-        definitionId?: any;
-        operationId?: any;
     }): Promise<any>;
 
     /**
@@ -518,6 +508,16 @@ export interface ManagementOps {
      */
     deleteSessionGroup(params: {
         groupId: string;
+    }): Promise<any>;
+
+    /**
+     * A person deletes a session's Workflow Definition (501 only from a client created without a person's workflow commands). Refused while one of its Workflows is running (409 DEFINITION_IN_USE, naming them). Its revisions stay, so a finished Workflow keeps its copy. Owner or admin.
+     * @remarks `POST /sessions/:sessionId/workflow-definitions/delete` — access: `session:manage`
+     */
+    deleteSessionWorkflowDefinition(params: {
+        sessionId: string;
+        definitionId?: any;
+        operationId?: any;
     }): Promise<any>;
 
     /**
@@ -1135,15 +1135,6 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * A chat's Workflow Definitions: each with its definitionId, name, current and newest valid revision, its revisions (number, valid, version, who saved it and when; no YAML) and the Workflows started from it (their revision and run status). includeDeleted (JSON true) lists deleted ones too. 404 NOT_FOUND unless the session is readable; CHAT_NOT_FOUND for a Workflow session.
-     * @remarks `GET /sessions/:sessionId/workflow-definitions` — access: `session:read`
-     */
-    listChatWorkflowDefinitions(params: {
-        sessionId: string;
-        includeDeleted?: any;
-    }): Promise<any>;
-
-    /**
      * Child outcomes recorded under a parent session.
      * @remarks `GET /management/sessions/:parentSessionId/child-outcomes` — access: `session:read`
      */
@@ -1158,7 +1149,7 @@ export interface ManagementOps {
     listCreatableAgents(params?: Record<string, never>): Promise<any>;
 
     /**
-     * Stage 2.3: the package Workflow Definitions the caller can make a chat for (the new-session picker's Workflows group): each with its reference (<package>/<name>), package, version, its card's words (description, when to use it, inputs, how it ends, what it asks) and its suggested model.
+     * Stage 2.3: the package Workflow Definitions the caller can make a session for (the new-session picker's Workflows group): each with its reference (<package>/<name>), package, version, its card's words (description, when to use it, inputs, how it ends, what it asks) and its suggested model.
      * @remarks `GET /workflow-definitions/catalog` — access: `authed`
      */
     listCreatableWorkflows(params?: Record<string, never>): Promise<any>;
@@ -1263,6 +1254,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * A session's Workflow Definitions: each with its definitionId, name, current and newest valid revision, its revisions (number, valid, version, who saved it and when; no YAML) and the Workflows started from it (their revision and run status). includeDeleted (JSON true) lists deleted ones too. 404 NOT_FOUND unless the session is readable; SESSION_NOT_FOUND for a Workflow session.
+     * @remarks `GET /sessions/:sessionId/workflow-definitions` — access: `session:read`
+     */
+    listSessionWorkflowDefinitions(params: {
+        sessionId: string;
+        includeDeleted?: any;
+    }): Promise<any>;
+
+    /**
      * The session's folders for the Workspace pane (working folder, then extra folders), whether this deployment serves each one, the file size limit, the names of the roots this deployment serves (roots), and whether the Workspace tab may show git (git). The session's owner only.
      * @remarks `GET /management/sessions/:sessionId/workspace/folders` — access: `session:files`
      */
@@ -1338,17 +1338,6 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * One of a chat's Workflow Definitions, by definitionId (deleted ones too) or by name (its live one), with a revision's YAML, diagnostics and graph (null for a revision with errors) (revision, a JSON integer; default the newest); personCommands says whether the deployment takes a person's save, start and delete, and viewer whether this caller may send them. A caller who may not gets no YAML, and the input schema and diagnostics without what their author wrote. 404 DEFINITION_NOT_FOUND or REVISION_NOT_FOUND.
-     * @remarks `GET /sessions/:sessionId/workflow-definition` — access: `session:read`
-     */
-    readChatWorkflowDefinition(params: {
-        sessionId: string;
-        definitionId?: string;
-        name?: string;
-        revision?: any;
-    }): Promise<any>;
-
-    /**
      * Read facts (ReadFactsQuery params).
      * @remarks `GET /facts` — access: `facts:read`
      */
@@ -1360,6 +1349,17 @@ export interface ManagementOps {
         agentId?: string;
         limit?: number;
         scope?: string;
+    }): Promise<any>;
+
+    /**
+     * One of a session's Workflow Definitions, by definitionId (deleted ones too) or by name (its live one), with a revision's YAML, diagnostics and graph (null for a revision with errors) (revision, a JSON integer; default the newest); personCommands says whether the deployment takes a person's save, start and delete, and viewer whether this caller may send them. A caller who may not gets no YAML, and the input schema and diagnostics without what their author wrote. 404 DEFINITION_NOT_FOUND or REVISION_NOT_FOUND.
+     * @remarks `GET /sessions/:sessionId/workflow-definition` — access: `session:read`
+     */
+    readSessionWorkflowDefinition(params: {
+        sessionId: string;
+        definitionId?: string;
+        name?: string;
+        revision?: any;
     }): Promise<any>;
 
     /**
@@ -1484,10 +1484,10 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * A person saves the next revision of a chat's Workflow Definition (every deployment takes a person's workflow commands; 501 WORKFLOW_COMMANDS_UNAVAILABLE only from a client created without them). definitionId and expectedRevision name the revision the edit was based on; without them, the first save of name. A newer revision saved meanwhile refuses it (409 REVISION_STALE, with who saved it and when); a deleted definition 409 DEFINITION_DELETED; a revision with errors is saved with them. The chat reads a note about it on its next turn; nothing wakes it. Owner or admin; operationId makes a retry return its first receipt.
+     * A person saves the next revision of a session's Workflow Definition (every deployment takes a person's workflow commands; 501 WORKFLOW_COMMANDS_UNAVAILABLE only from a client created without them). definitionId and expectedRevision name the revision the edit was based on; without them, the first save of name. A newer revision saved meanwhile refuses it (409 REVISION_STALE, with who saved it and when); a deleted definition 409 DEFINITION_DELETED; a revision with errors is saved with them. The session reads a note about it on its next turn; nothing wakes it. Owner or admin; operationId makes a retry return its first receipt.
      * @remarks `POST /sessions/:sessionId/workflow-definitions/save` — access: `session:manage`
      */
-    saveChatWorkflowDefinition(params: {
+    saveSessionWorkflowDefinition(params: {
         sessionId: string;
         name?: any;
         yaml?: any;
@@ -1798,10 +1798,19 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * A person starts a new Workflow from a revision of a chat's Workflow Definition (501 only from a client created without a person's workflow commands): revision, default the newest valid one; runAgainOf, a Workflow of this definition whose revision is started again (with its agent node models unless agentModels is given); agentModels (OF-S2-7), optional: agent node id (its key under states:) to { model: provider:model, reasoningEffort?, contextTier? }, checked against that revision and the owning chat's catalog (the agent nodes spend as that chat's owner, whoever starts it), an effort or tier being one the model lists (400 AGENT_MODELS_INVALID, 422 AGENT_MODEL_UNAVAILABLE); an empty map clears Run again's choices; without it every agent node uses the chat's model. Refused for a chat that has ended (409 CHAT_NOT_LIVE), a deleted definition (409 DEFINITION_DELETED) or a revision with errors (422 DEFINITION_INVALID). Owner or admin; operationId names the new Workflow, so a retry returns it.
+     * Start the durable embedder loop. [enhanced, admin]
+     * @remarks `POST /facts/embedder/start` — access: `fleet:admin` (admin)
+     */
+    startFactsEmbedder(params: {
+        intervalSeconds?: any;
+        batch?: any;
+    }): Promise<any>;
+
+    /**
+     * A person starts a new Workflow from a revision of a session's Workflow Definition (501 only from a client created without a person's workflow commands): revision, default the newest valid one; runAgainOf, a Workflow of this definition whose revision is started again (with its agent node models unless agentModels is given); agentModels (OF-S2-7), optional: agent node id (its key under states:) to { model: provider:model, reasoningEffort?, contextTier? }, checked against that revision and the owning session's catalog (the agent nodes spend as that session's owner, whoever starts it), an effort or tier being one the model lists (400 AGENT_MODELS_INVALID, 422 AGENT_MODEL_UNAVAILABLE); an empty map clears Run again's choices; without it every agent node uses the session's model. Refused for a session that has ended (409 SESSION_NOT_LIVE), a deleted definition (409 DEFINITION_DELETED) or a revision with errors (422 DEFINITION_INVALID). Owner or admin; operationId names the new Workflow, so a retry returns it.
      * @remarks `POST /sessions/:sessionId/workflow-definitions/start` — access: `session:manage`
      */
-    startChatWorkflowDefinition(params: {
+    startSessionWorkflowDefinition(params: {
         sessionId: string;
         definitionId?: any;
         revision?: any;
@@ -1811,15 +1820,6 @@ export interface ManagementOps {
         notifyParent?: any;
         operationId?: any;
         agentModels?: any;
-    }): Promise<any>;
-
-    /**
-     * Start the durable embedder loop. [enhanced, admin]
-     * @remarks `POST /facts/embedder/start` — access: `fleet:admin` (admin)
-     */
-    startFactsEmbedder(params: {
-        intervalSeconds?: any;
-        batch?: any;
     }): Promise<any>;
 
     /**
@@ -1878,16 +1878,6 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Stage 2.3: a person takes the package's newer version of a locked Workflow Definition for the chat's next Workflow (501 only from a client created without a person's workflow commands): it becomes the definition's next revision; running Workflows keep theirs. Owner or admin.
-     * @remarks `POST /sessions/:sessionId/workflow-definitions/update-package` — access: `session:manage`
-     */
-    updateChatWorkflowPackage(params: {
-        sessionId: string;
-        definitionId?: any;
-        operationId?: any;
-    }): Promise<any>;
-
-    /**
      * Replace the credential on one of your own personal providers without changing its name, defaults, or usage history.
      * @remarks `PUT /me/providers/:name/credential` — access: `authed`
      */
@@ -1903,6 +1893,16 @@ export interface ManagementOps {
     updateSessionGroup(params: {
         groupId: string;
         patch?: any;
+    }): Promise<any>;
+
+    /**
+     * Stage 2.3: a person takes the package's newer version of a locked Workflow Definition for the session's next Workflow (501 only from a client created without a person's workflow commands): it becomes the definition's next revision; running Workflows keep theirs. Owner or admin.
+     * @remarks `POST /sessions/:sessionId/workflow-definitions/update-package` — access: `session:manage`
+     */
+    updateSessionWorkflowPackage(params: {
+        sessionId: string;
+        definitionId?: any;
+        operationId?: any;
     }): Promise<any>;
 
     /**
@@ -2010,17 +2010,16 @@ export function createManagementOps(
         completeSession: (params: Record<string, unknown> = {}) => callOp("completeSession", params),
         completeSessionGroup: (params: Record<string, unknown> = {}) => callOp("completeSessionGroup", params),
         copyArtifact: (params: Record<string, unknown> = {}) => callOp("copyArtifact", params),
-        copyChatWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("copyChatWorkflowDefinition", params),
+        copySessionWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("copySessionWorkflowDefinition", params),
         createMotd: (params: Record<string, unknown> = {}) => callOp("createMotd", params),
         createMyProvider: (params: Record<string, unknown> = {}) => callOp("createMyProvider", params),
         createProvider: (params: Record<string, unknown> = {}) => callOp("createProvider", params),
         createSession: (params: Record<string, unknown> = {}) => callOp("createSession", params),
         createSessionForAgent: (params: Record<string, unknown> = {}) => callOp("createSessionForAgent", params),
+        createSessionForWorkflow: (params: Record<string, unknown> = {}) => callOp("createSessionForWorkflow", params),
         createSessionGroup: (params: Record<string, unknown> = {}) => callOp("createSessionGroup", params),
-        createWorkflowChat: (params: Record<string, unknown> = {}) => callOp("createWorkflowChat", params),
         deleteAgentPackage: (params: Record<string, unknown> = {}) => callOp("deleteAgentPackage", params),
         deleteArtifact: (params: Record<string, unknown> = {}) => callOp("deleteArtifact", params),
-        deleteChatWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("deleteChatWorkflowDefinition", params),
         deleteFact: (params: Record<string, unknown> = {}) => callOp("deleteFact", params),
         deleteGraphEdge: (params: Record<string, unknown> = {}) => callOp("deleteGraphEdge", params),
         deleteGraphNamespace: (params: Record<string, unknown> = {}) => callOp("deleteGraphNamespace", params),
@@ -2030,6 +2029,7 @@ export function createManagementOps(
         deleteProvider: (params: Record<string, unknown> = {}) => callOp("deleteProvider", params),
         deleteSession: (params: Record<string, unknown> = {}) => callOp("deleteSession", params),
         deleteSessionGroup: (params: Record<string, unknown> = {}) => callOp("deleteSessionGroup", params),
+        deleteSessionWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("deleteSessionWorkflowDefinition", params),
         dismissMotd: (params: Record<string, unknown> = {}) => callOp("dismissMotd", params),
         downloadArtifact: (params: Record<string, unknown> = {}) => callOp("downloadArtifact", params),
         exportExecutionHistory: (params: Record<string, unknown> = {}) => callOp("exportExecutionHistory", params),
@@ -2104,7 +2104,6 @@ export function createManagementOps(
         listAgentWorkerState: (params: Record<string, unknown> = {}) => callOp("listAgentWorkerState", params),
         listArtifacts: (params: Record<string, unknown> = {}) => callOp("listArtifacts", params),
         listAuthzAudit: (params: Record<string, unknown> = {}) => callOp("listAuthzAudit", params),
-        listChatWorkflowDefinitions: (params: Record<string, unknown> = {}) => callOp("listChatWorkflowDefinitions", params),
         listChildOutcomes: (params: Record<string, unknown> = {}) => callOp("listChildOutcomes", params),
         listCreatableAgents: (params: Record<string, unknown> = {}) => callOp("listCreatableAgents", params),
         listCreatableWorkflows: (params: Record<string, unknown> = {}) => callOp("listCreatableWorkflows", params),
@@ -2121,6 +2120,7 @@ export function createManagementOps(
         listSessions: (params: Record<string, unknown> = {}) => callOp("listSessions", params),
         listSessionShares: (params: Record<string, unknown> = {}) => callOp("listSessionShares", params),
         listSessionsPage: (params: Record<string, unknown> = {}) => callOp("listSessionsPage", params),
+        listSessionWorkflowDefinitions: (params: Record<string, unknown> = {}) => callOp("listSessionWorkflowDefinitions", params),
         listSessionWorkspaceFolders: (params: Record<string, unknown> = {}) => callOp("listSessionWorkspaceFolders", params),
         listWorkers: (params: Record<string, unknown> = {}) => callOp("listWorkers", params),
         moveSessionsToGroup: (params: Record<string, unknown> = {}) => callOp("moveSessionsToGroup", params),
@@ -2129,8 +2129,8 @@ export function createManagementOps(
         pruneDeletedSummaries: (params: Record<string, unknown> = {}) => callOp("pruneDeletedSummaries", params),
         readArtifactBase64: (params: Record<string, unknown> = {}) => callOp("readArtifactBase64", params),
         readCanvasKv: (params: Record<string, unknown> = {}) => callOp("readCanvasKv", params),
-        readChatWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("readChatWorkflowDefinition", params),
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),
+        readSessionWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("readSessionWorkflowDefinition", params),
         readWorkflow: (params: Record<string, unknown> = {}) => callOp("readWorkflow", params),
         regenerateSession: (params: Record<string, unknown> = {}) => callOp("regenerateSession", params),
         removeCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("removeCanvasShareLink", params),
@@ -2143,7 +2143,7 @@ export function createManagementOps(
         retrySessionWorkspace: (params: Record<string, unknown> = {}) => callOp("retrySessionWorkspace", params),
         revokeAgentPackageEditor: (params: Record<string, unknown> = {}) => callOp("revokeAgentPackageEditor", params),
         revokeSessionShare: (params: Record<string, unknown> = {}) => callOp("revokeSessionShare", params),
-        saveChatWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("saveChatWorkflowDefinition", params),
+        saveSessionWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("saveSessionWorkflowDefinition", params),
         searchFacts: (params: Record<string, unknown> = {}) => callOp("searchFacts", params),
         searchGraphEdges: (params: Record<string, unknown> = {}) => callOp("searchGraphEdges", params),
         searchGraphNodes: (params: Record<string, unknown> = {}) => callOp("searchGraphNodes", params),
@@ -2174,17 +2174,17 @@ export function createManagementOps(
         setSystemSessionModel: (params: Record<string, unknown> = {}) => callOp("setSystemSessionModel", params),
         setUserFeatureFlag: (params: Record<string, unknown> = {}) => callOp("setUserFeatureFlag", params),
         similarFacts: (params: Record<string, unknown> = {}) => callOp("similarFacts", params),
-        startChatWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("startChatWorkflowDefinition", params),
         startFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("startFactsEmbedder", params),
+        startSessionWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("startSessionWorkflowDefinition", params),
         steerSessionTurn: (params: Record<string, unknown> = {}) => callOp("steerSessionTurn", params),
         stopFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("stopFactsEmbedder", params),
         stopSessionTurn: (params: Record<string, unknown> = {}) => callOp("stopSessionTurn", params),
         storeFact: (params: Record<string, unknown> = {}) => callOp("storeFact", params),
         unsetMyFeatureFlag: (params: Record<string, unknown> = {}) => callOp("unsetMyFeatureFlag", params),
         unsetUserFeatureFlag: (params: Record<string, unknown> = {}) => callOp("unsetUserFeatureFlag", params),
-        updateChatWorkflowPackage: (params: Record<string, unknown> = {}) => callOp("updateChatWorkflowPackage", params),
         updateMyProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateMyProviderCredential", params),
         updateSessionGroup: (params: Record<string, unknown> = {}) => callOp("updateSessionGroup", params),
+        updateSessionWorkflowPackage: (params: Record<string, unknown> = {}) => callOp("updateSessionWorkflowPackage", params),
         updateSharedProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateSharedProviderCredential", params),
         updateWorkflow: (params: Record<string, unknown> = {}) => callOp("updateWorkflow", params),
         uploadAgentPackage: (params: Record<string, unknown> = {}) => callOp("uploadAgentPackage", params),

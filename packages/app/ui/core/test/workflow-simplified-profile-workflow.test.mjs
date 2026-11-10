@@ -1,6 +1,6 @@
 /**
- * Workflow Simplified, review UI-8: a profile that saved a Workflow selected under its chat (activeSessionId: the
- * Workflow's id) selects that chat with the Workflow row on reload, as a click on the row does; a saved plain session
+ * Workflow Simplified, review UI-8: a profile that saved a Workflow selected under its session (activeSessionId: the
+ * Workflow's id) selects that session with the Workflow row on reload, as a click on the row does; a saved plain session
  * selects itself, as before.
  *
  * Run: node --test ui/core/test/workflow-simplified-profile-workflow.test.mjs
@@ -17,7 +17,7 @@ const SESSIONS = [
 ];
 const loaded = () => appReducer(createInitialState({ mode: "api" }), { type: "sessions/loaded", sessions: SESSIONS });
 
-test("a saved Workflow selection selects its chat with the Workflow row", () => {
+test("a saved Workflow selection selects its session with the Workflow row", () => {
     const state = appReducer(loaded(), { type: "profileSettings/apply", settings: { activeSessionId: "wf-1" } });
     assert.equal(state.sessions.activeSessionId, OWNER);
     assert.equal(state.sessions.workflowRowId, "wf-1");

@@ -6,7 +6,7 @@
  * - a node canceled when a stop's time to finish ended: the Workflow "was canceled after started nodes finished", never
  *   "was stopped";
  * - the graph checks say "node", never "step" (in workflow-view.test.mjs);
- * - a stale save begins "Revision not saved:" (in workflow-chat-definitions.test.mjs), and the refusals of a save, delete,
+ * - a stale save begins "Revision not saved:" (in workflow-session-definitions.test.mjs), and the refusals of a save, delete,
  *   copy, update and start begin with what was not done ("Delete refused:", "Copy refused:", "Update refused:",
  *   "Start refused:").
  *

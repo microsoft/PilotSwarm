@@ -660,8 +660,8 @@ export interface AgentPackageManifest {
         // pins (workflow/package-interface.ts).
         workflowInterface?: WorkflowInterfaceExport;
         // Workflow Simplified stage 2.3 (P4): the Workflow Definitions this
-        // agent's chat may start, as its front matter names them. Rides the
-        // manifest so a chat bound to the agent knows them from the registry.
+        // agent's session may start, as its front matter names them. Rides the
+        // manifest so a session bound to the agent knows them from the registry.
         workflows?: string[];
     }>;
     skills: Array<{ name: string; description?: string }>;
@@ -930,7 +930,7 @@ export async function validateAgentPackageDir(
     // Workflow Definitions (Workflow Simplified stage 2.3; P1, P7): each
     // workflows/<name>/ holds workflow.yaml and its interface card card.md.
     // Publishing compiles every definition with every node type and checks
-    // its card against it, so a chat can trust the card it reads.
+    // its card against it, so a session can trust the card it reads.
     const workflowsDir = path.join(rootDir, "workflows");
     const workflowExports: AgentPackageWorkflowExport[] = [];
     const workflowIrs = new Map<string, WorkflowIR>();
@@ -1009,7 +1009,7 @@ export async function validateAgentPackageDir(
 
     // Agent ↔ Workflow Definition cross-checks. A bare name an agent's
     // workflows list gives must be one of this package's definitions (P4;
-    // another package's is checked when a chat starts it). A2 inside the
+    // another package's is checked when a session starts it). A2 inside the
     // package: an agent step may not use one of this package's agents that
     // names definitions.
     const ownPackageName = typeof pluginJson?.name === "string" ? pluginJson.name : null;

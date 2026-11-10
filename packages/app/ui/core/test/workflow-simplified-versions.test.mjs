@@ -38,7 +38,7 @@ const started = (workflowId, runId, semver, status, outcome) => ({
 const T0 = Date.parse("2026-11-06T23:30:00.000Z");
 /** An entry's key: its version and the definition it holds (the fixtures' definitionHash). */
 const KEY = version => `${version}\u001fh-${version}`;
-// His shape: #1 1.0.0 (Canceled) and #2 1.1.0 (Completed), both children of the chat.
+// His shape: #1 1.0.0 (Canceled) and #2 1.1.0 (Completed), both children of the session.
 function harness({ more = [] } = {}) {
     const store = createStore(appReducer, createInitialState({ mode: "api" }));
     const row = (sessionId, status, createdAt) => ({ sessionId, sessionKind: "workflow", title: `Workflow: ${NAME}`, status, parentSessionId: "chat",
@@ -119,7 +119,7 @@ test("the picker lists each version; the Definition view follows the chosen one,
     assert.deepEqual(definitionOptions(newest), [
         { value: NAME, selected: true, words: `${NAME} · 1.1.0` },
         { value: `${NAME}\u001f${KEY("1.0.0")}`, selected: false, words: `${NAME} · 1.0.0` },
-    ], "OF-S2-8: no option asks the chat for a new definition");
+    ], "OF-S2-8: no option asks the session for a new definition");
     assert.match(newest, /data-version="1\.1\.0"/);
     assert.match(newest, /data-definition-child="wf-2"/);
     assert.match(text(newest), /Revision 1 · 1\.1\.0 /);
@@ -130,7 +130,7 @@ test("the picker lists each version; the Definition view follows the chosen one,
     assert.match(chosen, /data-definition-child="wf-1"/);
     assert.match(text(chosen), /Revision 1 · 1\.0\.0 /);
     assert.ok(!chosen.includes("show-newest"), "the newest of its version");
-    // Start another… repeats the version shown: the Definition view's child is the one the chat is asked about.
+    // Start another… repeats the version shown: the Definition view's child is the one the session is asked about.
     assert.match(chosen, /data-action="start-another"/);
 });
 

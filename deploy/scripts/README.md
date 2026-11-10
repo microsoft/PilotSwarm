@@ -523,10 +523,10 @@ cluster has no network policy engine, must block worker pods from
 
 Do not roll the workers for this release. Stop every worker, deploy, then
 start them. A worker of an earlier release does not have session
-orchestration 1.0.83: when it picks up a 1.0.83 chat it gives the chat back
-and tries again, and after 10 tries the chat fails. Duroxide does not route
+orchestration 1.0.83: when it picks up a 1.0.83 session it gives the session back
+and tries again, and after 10 tries the session fails. Duroxide does not route
 an orchestration by its version, so during a rolling update an old worker can
-take a 1.0.83 chat.
+take a 1.0.83 session.
 
 1. Stop Flux from restarting the old workers, and stop them, with `kubectl`
    and `flux` pointed at the cluster. The Flux Kustomization is
@@ -540,8 +540,8 @@ take a 1.0.83 chat.
    ```
 
    A worker drains its turns when it stops (up to its termination grace
-   period). Run nothing of this release that starts chats (the portal, the
-   MCP server, a terminal UI) before this step ends: it starts new chats at
+   period). Run nothing of this release that starts sessions (the portal, the
+   MCP server, a terminal UI) before this step ends: it starts new sessions at
    1.0.83.
 2. Build and publish the worker without its rollout step, then let Flux apply
    it. Flux applies the manifests with their replica count, so this starts the
@@ -557,7 +557,7 @@ take a 1.0.83 chat.
    release's.
 3. Deploy the portal: `npm run deploy -- portal <env>`.
 
-Existing chats keep replaying on the frozen 1.0.82 and move to 1.0.83 at
+Existing sessions keep replaying on the frozen 1.0.82 and move to 1.0.83 at
 their next continue-as-new, which carries their queued prompts, pending child
 updates, notices and model. As for every release, run one image per database
 and leave no old workers in another namespace. For a deployment with plain

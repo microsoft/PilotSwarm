@@ -11,7 +11,7 @@
 - Every instruction to load a Workflow skill says to call load_skill with its
   name.
 - The `test` operation is described as offered where Workflows are on (Agent
-  Smith's own session has them; another chat turns them on with
+  Smith's own session has them; another session turns them on with
   `enable_workflows`), no longer as offered in every session.
 
 ## 1.4.10
@@ -20,7 +20,7 @@
 
 - Every deployment runs the full Workflow engine (owner 2026-11-08T15:30Z):
   `workflow_definition` and its `test` operation are offered in every current
-  session. The untested-publish fallback is for a chat of an earlier release
+  session. The untested-publish fallback is for a session of an earlier release
   that has not continued yet.
 
 ## 1.4.9
@@ -75,7 +75,7 @@
 ### Changed
 
 - Models of agent nodes (OF-S2-7): a definition never names a model, and every
-  agent node uses the model of the chat that starts it. A card may give
+  agent node uses the model of the session that starts it. A card may give
   `modelHints` for a node that really needs another kind of model: words for
   the kind of model, reasoning or context, keyed by the node's id, never a
   provider or model name, so the package works on every deployment.
@@ -110,7 +110,7 @@
 ### Changed
 
 - A Workflow Definition is tested before its package is published: save that
-  exact YAML in your own chat, run `workflow_definition` `test` on that
+  exact YAML in your own session, run `workflow_definition` `test` on that
   revision, read the report, and publish only on a pass (on a fail: fix, save,
   test again). The request to publish counts as the request for the test. The
   result goes with the publish plan; without the test operation, say so and
@@ -122,9 +122,9 @@
 
 - Write Workflow Definitions as package entries: `workflows/<name>/workflow.yaml`
   with its interface card `card.md`, named inputs and outputs, and a wait loop
-  for recurring work. An agent names the definitions its chat may start.
+  for recurring work. An agent names the definitions its session may start.
 - Verify a Workflow Definition by starting it once from the new-session picker
-  in a disposable chat before the shared publish.
+  in a disposable session before the shared publish.
 
 ### Changed
 

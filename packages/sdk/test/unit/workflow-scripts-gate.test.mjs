@@ -16,7 +16,7 @@ import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { createWorkflow, applyWorkflowUpdate } from "../../dist/workflow/service.js";
 import { spawnWorkflowFromTool } from "../../dist/workflow/spawn.js";
 import { workflowDefinitionFromTool } from "../../dist/workflow/definition-tool.js";
-import { startChatWorkflowDefinition } from "../../dist/workflow/chat-definitions.js";
+import { startSessionWorkflowDefinition } from "../../dist/workflow/session-definitions.js";
 import * as sdk from "../../dist/index.js";
 
 const SCRIPT_YAML = `
@@ -149,11 +149,11 @@ test("an unknown PILOTSWARM_WORKFLOW_SCRIPTS value keeps scripts on, with one wa
     sdk.resetWorkflowScriptsWarning();
 });
 
-// d52e5ed2 (executor diagnosis 2): the chat's save and start paths captured the chat's tool binding before the scripts gate,
+// d52e5ed2 (executor diagnosis 2): the session's save and start paths captured the session's tool binding before the scripts gate,
 // so a host whose session manager could not capture one answered WORKFLOW_ERROR instead of the gate's refusal. The gate
 // now decides first: before the binding is captured, the owner read or the store read (a start reads only the revision it
 // gates).
-test("d52e5ed2: the scripts gate decides before the chat's tool binding, its owner or its store on spawn_workflow and workflow_definition", async () => {
+test("d52e5ed2: the scripts gate decides before the session's tool binding, its owner or its store on spawn_workflow and workflow_definition", async () => {
     const never = what => async () => { throw new Error(`${what} must not be reached`); };
     const host = { catalog: untouchable("catalog"), store: untouchable("store"), duroxideClient: untouchable("duroxide"), scripts: false };
     const deps = { parentSessionId: "chat", enabled: () => false, resolveOwner: never("resolveOwner"),
@@ -170,47 +170,47 @@ test("d52e5ed2: the scripts gate decides before the chat's tool binding, its own
     // Without a script node the call goes on (here to a store that throws its own error).
     const waits = JSON.parse(await workflowDefinitionFromTool({ operation: "save", name: "waiter", yaml: WAIT_YAML },
         { callerSessionId: "chat", host, toolCallId: "call-3", owner: null, binding: never("binding") }));
-    assert.match(String(waits.error?.message), /store\.chat was used/);
+    assert.match(String(waits.error?.message), /store\.sessionDefinitions was used/);
 });
 
-test("d52e5ed2: a chat definition's Start gates the revision it would start before the binding is captured or anything is written", async () => {
+test("d52e5ed2: a session definition's Start gates the revision it would start before the binding is captured or anything is written", async () => {
     const compiled = compileWorkflow(SCRIPT_YAML);
-    const chat = {
+    const sessionDefinitions = {
         readDefinition: async () => ({ definitionId: "def-1", ownerSessionId: "chat", name: "poller", currentRevision: 1, deletedAt: null }),
         readRevision: async () => ({ definitionId: "def-1", revision: 1, valid: true, irSha256: compiled.irSha256, yaml: SCRIPT_YAML }),
         readRevisionIr: async () => compiled.ir,
         newestValidRevision: async () => 1,
         listWorkflows: async () => [],
-        // Stage 2.4: Start's limits read the chat's running children and (S2RT-F4) its stored nesting level after the gate.
+        // Stage 2.4: Start's limits read the session's running children and (S2RT-F4) its stored nesting level after the gate.
         runningChildren: async () => 0,
         nestingLevel: async () => 0,
     };
-    // Its chat definitions read, and whether this start's Workflow exists (none); anything else of the store (what creating
+    // Its session definitions read, and whether this start's Workflow exists (none); anything else of the store (what creating
     // the Workflow would use) fails the test.
-    const store = new Proxy({ chat, readDefinition: async () => null, readWorkflowLineage: async () => null },
+    const store = new Proxy({ sessionDefinitions, readDefinition: async () => null, readWorkflowLineage: async () => null },
         { get: (target, name) => { if (name in target) return target[name]; throw new Error(`store.${String(name)} was used`); } });
     const host = { catalog: claimReadsOnly(), store, duroxideClient: untouchable("duroxide"), scripts: false };
     let captured = 0;
-    const error = await refusal(startChatWorkflowDefinition(host, { ownerSessionId: "chat", definition: { definitionId: "def-1" }, inputs: {}, actor: ACTOR,
+    const error = await refusal(startSessionWorkflowDefinition(host, { ownerSessionId: "chat", definition: { definitionId: "def-1" }, inputs: {}, actor: ACTOR,
         operationId: "op-start", binding: async () => { captured += 1; return null; } }));
     assert.equal(error?.code, WORKFLOW_SCRIPTS_DISABLED, error?.message);
     assert.match(error.message, /Nothing was started\.$/);
     assert.equal(captured, 0);
     // A host that runs scripts captures the binding, then goes on to create the Workflow (here a store that throws).
-    const on = await refusal(startChatWorkflowDefinition({ ...host, scripts: true }, { ownerSessionId: "chat", definition: { definitionId: "def-1" },
+    const on = await refusal(startSessionWorkflowDefinition({ ...host, scripts: true }, { ownerSessionId: "chat", definition: { definitionId: "def-1" },
         inputs: {}, actor: ACTOR, operationId: "op-start-2", binding: async () => { captured += 1; return null; } }));
     assert.equal(captured, 1);
     assert.match(String(on?.message), /was used$/);
 });
 
 // Stage 2.4 (PR 235 2b893906): Start keeps spawn_agent's limits, after the scripts gate and before the binding is captured or
-// anything is made: a chat at the deepest level starts no Workflow, and a chat with 50 running children (sub-agents and
+// anything is made: a session at the deepest level starts no Workflow, and a session with 50 running children (sub-agents and
 // active Workflows) starts no more. A repeat of a start that made its Workflow is not refused by it.
 test("stage 2.4: Start keeps spawn_agent's depth limit and its budget of 50 running children", async () => {
     const compiled = compileWorkflow(WAIT_YAML);
     let running = 0;
     let made = null;
-    const chat = {
+    const sessionDefinitions = {
         readDefinition: async () => ({ definitionId: "def-1", ownerSessionId: "chat", name: "waiter", currentRevision: 1, deletedAt: null }),
         readRevision: async () => ({ definitionId: "def-1", revision: 1, valid: true, irSha256: compiled.irSha256, yaml: WAIT_YAML }),
         newestValidRevision: async () => 1,
@@ -219,36 +219,36 @@ test("stage 2.4: Start keeps spawn_agent's depth limit and its budget of 50 runn
         nestingLevel: async () => level,
     };
     let level = 0;
-    const store = new Proxy({ chat, readDefinition: async () => made, readWorkflowLineage: async () => null },
+    const store = new Proxy({ sessionDefinitions, readDefinition: async () => made, readWorkflowLineage: async () => null },
         { get: (target, name) => { if (name in target) return target[name]; throw new Error(`store.${String(name)} was used`); } });
     const host = { catalog: claimReadsOnly(), store, duroxideClient: untouchable("duroxide"), scripts: true };
     let captured = 0;
-    const start = (extra = {}) => refusal(startChatWorkflowDefinition(host, { ownerSessionId: "chat", definition: { definitionId: "def-1" }, inputs: {},
+    const start = (extra = {}) => refusal(startSessionWorkflowDefinition(host, { ownerSessionId: "chat", definition: { definitionId: "def-1" }, inputs: {},
         actor: ACTOR, operationId: "op-limit", binding: async () => { captured += 1; return null; }, ...extra }));
     const deep = await start({ nestingLevel: 2 });
     assert.equal(deep?.code, "WORKFLOW_NESTING_LIMIT");
-    assert.match(deep.message, /^This chat is at nesting level 2 \(max 2\), .* Nothing was started\.$/);
+    assert.match(deep.message, /^This session is at nesting level 2 \(max 2\), .* Nothing was started\.$/);
     running = 50;
     const full = await start({ nestingLevel: 1 });
     assert.equal(full?.code, "CHILD_LIMIT");
-    assert.match(full.message, /^This chat already has 50 running sub-agents and Workflows \(max 50\)\. .* Nothing was started\.$/);
+    assert.match(full.message, /^This session already has 50 running sub-agents and Workflows \(max 50\)\. .* Nothing was started\.$/);
     assert.equal(captured, 0, "refused before the binding is captured");
-    // A level-1 chat with 49 running children goes on (to the store that throws here).
+    // A level-1 session with 49 running children goes on (to the store that throws here).
     running = 49;
     assert.match(String((await start({ nestingLevel: 1 }))?.message), /was used$/);
     assert.equal(captured, 1);
-    // S2RT-F4: the chat's own stored level counts when the caller gives none (a person's Start), and when it gives less.
+    // S2RT-F4: the session's own stored level counts when the caller gives none (a person's Start), and when it gives less.
     running = 0;
     level = 2;
     for (const given of [{}, { nestingLevel: 0 }, { nestingLevel: null }]) {
         const stored = await start(given);
         assert.equal(stored?.code, "WORKFLOW_NESTING_LIMIT", JSON.stringify(given));
-        assert.match(stored.message, /^This chat is at nesting level 2 \(max 2\)/);
+        assert.match(stored.message, /^This session is at nesting level 2 \(max 2\)/);
     }
     level = 0;
     // A repeat of a start whose Workflow exists is answered as before, whatever the budget now (S2RT-F5: from its pin).
     running = 50;
-    made = { workflowSessionId: "w", state: "published", chatDefinitionId: "def-1", chatRevision: 1 };
+    made = { workflowSessionId: "w", state: "published", sessionDefinitionId: "def-1", sessionRevision: 1 };
     assert.match(String((await start({ nestingLevel: 1 }))?.message), /was used$/);
 });
 

@@ -26,8 +26,8 @@ import {
     parallelBranchStates, parallelSuccesses, parallelTimeoutResult, parallelVerdict, parseBranchScope, type BranchCancelReason, type ParallelBranchState,
     type ParallelCommit,
 } from "./parallel.js";
-import { ChatDefinitionStore, requireBenchLiveLocked, requireChatStartLocked } from "./chat-definition-store.js";
-import { workflowAgentChatContinues } from "./agent-ids.js";
+import { SessionDefinitionStore, requireBenchLiveLocked, requireSessionStartLocked } from "./session-definition-store.js";
+import { workflowAgentSessionContinues } from "./agent-ids.js";
 
 /**
  * PostgreSQL persistence for workflow (tables from migration 0088).
@@ -178,12 +178,12 @@ export interface WorkflowDefinitionRow {
      */
     publishedAgentPins: JsonValue;
     /**
-     * Stage 2.1 (migration 0088): the chat definition and revision this Workflow is a copy of; null for a Workflow that is
-     * not one (its chat was deleted, or it has no name). A pinned Workflow takes none of the stage 1 definition operations
-     * (requireNotChatPinned).
+     * Stage 2.1 (migration 0088): the session definition and revision this Workflow is a copy of; null for a Workflow that is
+     * not one (its session was deleted, or it has no name). A pinned Workflow takes none of the stage 1 definition operations
+     * (requireNotSessionPinned).
      */
-    chatDefinitionId: string | null;
-    chatRevision: number | null;
+    sessionDefinitionId: string | null;
+    sessionRevision: number | null;
 }
 
 export interface WorkflowRevisionRow {
@@ -249,7 +249,7 @@ export interface WorkflowRunRow {
      * OF-S2-7: the agent nodes' models chosen at start (migration 0088; agent-models.ts), as stored: the text of an object of
      * agent node ids to { model, reasoningEffort?, contextTier? }, read with readStoredAgentModels where it is used (a spawn,
      * Run again, a read). Kept as text (DEV at fed7e7ac): a stored value that does not parse never makes reading the run fail.
-     * Null for a run started without any (each node uses the chat's).
+     * Null for a run started without any (each node uses the session's).
      */
     agentModels: string | null;
 }
@@ -464,28 +464,28 @@ function definitionFrom(row: Row): WorkflowDefinitionRow {
         publishedYamlSha256: strOrNull(row, "published_yaml_sha256"), publishedIrSha256: strOrNull(row, "published_ir_sha256"),
         notifyParent: bool(row, "notify_parent"), createdAt: date(row, "created_at"), updatedAt: date(row, "updated_at"),
         publishedAt: dateOrNull(row, "published_at"), publishedAgentPins: jsonOrNull(row, "published_agent_pins"),
-        chatDefinitionId: strOrNull(row, "chat_definition_id"), chatRevision: intOrNull(row, "chat_revision"),
+        sessionDefinitionId: strOrNull(row, "session_definition_id"), sessionRevision: intOrNull(row, "session_revision"),
     };
 }
 
-/** The refusal of a stage 1 definition operation on a Workflow that is a copy of a chat revision (requireNotChatPinned). */
-export const PINNED_TO_CHAT_REVISION = "PINNED_TO_CHAT_REVISION";
+/** The refusal of a stage 1 definition operation on a Workflow that is a copy of a session revision (requireNotSessionPinned). */
+export const PINNED_TO_SESSION_REVISION = "PINNED_TO_SESSION_REVISION";
 
 /**
- * Code check G1 (stage 2.1, R1/R4/R6): a Workflow that is a copy of a chat revision (a stage 1 child migration 0088
+ * Code check G1 (stage 2.1, R1/R4/R6): a Workflow that is a copy of a session revision (a stage 1 child migration 0088
  * pinned, or one a Start made) takes none of the stage 1 definition operations (replace_definition, publish,
- * publish_and_start, start). Its copy never changes, and it is started only by a chat Start, which checks the chat, the
- * definition and the revision under their locks (requireChatStartLocked). Checked in the store, under the definition's
+ * publish_and_start, start). Its copy never changes, and it is started only by a session Start, which checks the session, the
+ * definition and the revision under their locks (requireSessionStartLocked). Checked in the store, under the definition's
  * lock, so no caller can skip it; a stored receipt of the same operation is answered before it.
  */
-function requireNotChatPinned(definition: WorkflowDefinitionRow, operation: string): void {
-    if (definition.chatDefinitionId === null) return;
-    const revision = definition.chatRevision !== null ? `revision ${definition.chatRevision}` : "a revision";
-    throw new WorkflowStoreError(PINNED_TO_CHAT_REVISION,
-        `This Workflow is a copy of ${revision} of its chat's Workflow Definition: ${operation} does not change, publish or start it. `
+function requireNotSessionPinned(definition: WorkflowDefinitionRow, operation: string): void {
+    if (definition.sessionDefinitionId === null) return;
+    const revision = definition.sessionRevision !== null ? `revision ${definition.sessionRevision}` : "a revision";
+    throw new WorkflowStoreError(PINNED_TO_SESSION_REVISION,
+        `This Workflow is a copy of ${revision} of its session's Workflow Definition: ${operation} does not change, publish or start it. `
         + "To change it, save a new revision with workflow_definition save (or YAML and Save in the Workflow tab), then Start that revision. "
         + "Nothing was changed.",
-        { definitionId: definition.chatDefinitionId, revision: definition.chatRevision, operation });
+        { definitionId: definition.sessionDefinitionId, revision: definition.sessionRevision, operation });
 }
 
 function revisionFrom(row: Row): WorkflowRevisionRow {
@@ -789,8 +789,8 @@ export type WorkflowAgentReminderRecord =
     | { recorded: false; reason: "not_a_step" | "decided" | "expired" | "sub_agents" | "spent" | "no_visit" };
 
 /**
- * The visit a turn of a chat that continues works for (review RT-1..RT-3, the turn-to-visit fence; readTurnVisit):
- * `nodeExecutionId` (null: the chat has no recorded visit prompt), whether that visit is still open (pending), and
+ * The visit a turn of a session that continues works for (review RT-1..RT-3, the turn-to-visit fence; readTurnVisit):
+ * `nodeExecutionId` (null: the session has no recorded visit prompt), whether that visit is still open (pending), and
  * whether it was inherited from an earlier turn's prompt (a turn a timer or a sub-agent's update started).
  */
 export interface WorkflowTurnVisit {
@@ -807,7 +807,7 @@ export function workflowVisitOfPromptId(clientMessageId: unknown): string | null
     return /^nx-[0-9a-f]{1,64}$/.test(id) ? id : null;
 }
 
-/** The visit a continued chat's turn Stop names (`workflow-cycle-stop:<nx>`, with `:sent` after a late send), or null. Pure. */
+/** The visit a continued session's turn Stop names (`workflow-cycle-stop:<nx>`, with `:sent` after a late send), or null. Pure. */
 export function workflowVisitOfStopRequestId(requestId: unknown): string | null {
     if (typeof requestId !== "string") return null;
     const found = /^workflow-cycle-stop:(nx-[0-9a-f]{1,64})(?::sent)?$/.exec(requestId);
@@ -1815,12 +1815,12 @@ export const WORKFLOW_REVISION_LIMITS = Object.freeze({ maxRevisions: 1_000, max
 export class WorkflowStore {
     /** The revision limits this store applies (WORKFLOW_REVISION_LIMITS); a test may lower them. */
     revisionLimits: { maxRevisions: number; maxYamlBytes: number } = WORKFLOW_REVISION_LIMITS;
-    private chatStore: ChatDefinitionStore | null = null;
+    private definitionStore: SessionDefinitionStore | null = null;
 
-    /** Stage 2.1: the chat-owned Workflow Definitions (migration 0088), on this store's pool and schema. */
-    get chat(): ChatDefinitionStore {
-        if (!this.chatStore) this.chatStore = new ChatDefinitionStore(this.pool, this.schema);
-        return this.chatStore;
+    /** Stage 2.1: the session-owned Workflow Definitions (migration 0088), on this store's pool and schema. */
+    get sessionDefinitions(): SessionDefinitionStore {
+        if (!this.definitionStore) this.definitionStore = new SessionDefinitionStore(this.pool, this.schema);
+        return this.definitionStore;
     }
     private readonly t: {
         definitions: string; revisions: string; operations: string; runs: string; nodes: string; kvRevisions: string; inbox: string; outbox: string;
@@ -1869,7 +1869,7 @@ export class WorkflowStore {
      * after both locks are held: an input's acceptance and a receive's
      * admission decide here, not on an earlier read. The session rows are
      * locked before any definition, run or node row, the workflow's own
-     * parent chat first, any other pair in ascending session id order
+     * parent session first, any other pair in ascending session id order
      * (sessionPairLockOrder): the workflow's FOR NO KEY UPDATE (as lockLiveSession), the
      * sender's FOR SHARE. A soft delete of the sender (an update of its row)
      * that committed before the lock is read; one that did not waits until
@@ -1898,14 +1898,14 @@ export class WorkflowStore {
     /**
      * The locks and reads of lockInputSessions, without a rule applied: the
      * workflow's session row FOR NO KEY UPDATE and the other session's FOR
-     * SHARE (its own parent chat first, else ascending session id order:
+     * SHARE (its own parent session first, else ascending session id order:
      * sessionPairLockOrder) before any definition, run or node row; then both sessions with their owners in one statement, and
      * the workflow's definition parent. A row the locks did not find is null.
      */
     private async lockSessionPair(client: PoolClient, workflowSessionId: string, otherSessionId: string)
         : Promise<{ workflow: AuthoritySession | null; other: AuthoritySession | null; definition: { parentSessionId: string | null } | null }> {
         const locked = new Set<string>();
-        // S2RT-F2: a Workflow and its own parent chat are locked chat first, as the chat-ended trigger and a Start lock
+        // S2RT-F2: a Workflow and its own parent session are locked session first, as the owner-session-ended trigger and a Start lock
         // them; any other pair in ascending id order. The parent is read unlocked: a session's parent never changes.
         const parentRow = await client.query(`SELECT parent_session_id FROM ${this.t.sessions} WHERE session_id = $1`, [workflowSessionId]);
         const parentId = parentRow.rows[0]?.parent_session_id ?? null;
@@ -2524,19 +2524,19 @@ export class WorkflowStore {
          * first and is not checked.
          */
         versionGuard?: Parameters<WorkflowStore["requireVersionFree"]>[0] | null;
-        /** Stage 2.1: the chat revision this Workflow starts (chat-definition-store.ts, requireChatStartLocked). */
-        chatPin?: { ownerSessionId: string; definitionId: string; revision: number } | null;
+        /** Stage 2.1: the session revision this Workflow starts (session-definition-store.ts, requireSessionStartLocked). */
+        sessionPin?: { ownerSessionId: string; definitionId: string; revision: number } | null;
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
         requireStoredYamlWithinLimit(input.yaml);
         requirePublishable(input.compiled, input.publish || Boolean(input.start));
         if (input.start && !input.publish) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "Starting a live run requires publication.");
         return this.transaction(async client => {
-            if (input.chatPin) {
-                // Stage 2.1 (Q3): a replay of a stored Start is answered first (its chat may have ended since); otherwise the
-                // chat, the definition and the revision are checked under their locks, before this Workflow's own rows.
+            if (input.sessionPin) {
+                // Stage 2.1 (Q3): a replay of a stored Start is answered first (its session may have ended since); otherwise the
+                // session, the definition and the revision are checked under their locks, before this Workflow's own rows.
                 const replay = await this.priorReceipt(client, input.workflowSessionId, input.operationId, "create", input.requestSha256);
                 if (replay) return { receipt: replay, replayed: true };
-                await requireChatStartLocked(client, this.schema, input.chatPin, input.compiled.yamlSha256);
+                await requireSessionStartLocked(client, this.schema, input.sessionPin, input.compiled.yamlSha256);
             }
             await this.requireLiveSession(client, input.workflowSessionId);
             const created = await client.query(
@@ -2554,9 +2554,9 @@ export class WorkflowStore {
                 throw new WorkflowStoreError("WORKFLOW_EXISTS", `Workflow ${input.workflowSessionId} already exists with a different creation request.`);
             }
             if (input.versionGuard) await this.requireVersionFreeLocked(client, input.versionGuard);
-            if (input.chatPin) {
-                await client.query(`UPDATE ${this.t.definitions} SET chat_definition_id = $2, chat_revision = $3 WHERE workflow_session_id = $1`,
-                    [input.workflowSessionId, input.chatPin.definitionId, input.chatPin.revision]);
+            if (input.sessionPin) {
+                await client.query(`UPDATE ${this.t.definitions} SET session_definition_id = $2, session_revision = $3 WHERE workflow_session_id = $1`,
+                    [input.workflowSessionId, input.sessionPin.definitionId, input.sessionPin.revision]);
             }
             await this.insertRevision(client, input.workflowSessionId, 1, input.yaml, input.compiled, input.actor);
             let definition = await this.lockDefinition(client, input.workflowSessionId);
@@ -2603,7 +2603,7 @@ export class WorkflowStore {
             const prior = await this.priorReceipt(client, input.workflowSessionId, input.operationId, "replace_definition", input.requestSha256);
             if (prior) return { receipt: prior, replayed: true };
             assertNotDeleted(definition);
-            requireNotChatPinned(definition, "replace_definition");
+            requireNotSessionPinned(definition, "replace_definition");
             if (definition.state === "published") {
                 throw new WorkflowStoreError("DEFINITION_IMMUTABLE", "A published definition cannot change; create a new workflow child for a new version.",
                     { publishedRevision: definition.publishedRevision });
@@ -2660,7 +2660,7 @@ export class WorkflowStore {
             const prior = await this.priorReceipt(client, input.workflowSessionId, input.operationId, kind, input.requestSha256);
             if (prior) return { receipt: prior, replayed: true };
             assertNotDeleted(definition);
-            requireNotChatPinned(definition, kind);
+            requireNotSessionPinned(definition, kind);
             if (definition.state === "published") {
                 throw new WorkflowStoreError("DEFINITION_IMMUTABLE", "This workflow is already published.", { publishedRevision: definition.publishedRevision });
             }
@@ -2720,7 +2720,7 @@ export class WorkflowStore {
             const prior = await this.priorReceipt(client, input.workflowSessionId, input.operationId, "start", input.requestSha256);
             if (prior) return { receipt: prior, replayed: true };
             assertNotDeleted(definition);
-            requireNotChatPinned(definition, "start");
+            requireNotSessionPinned(definition, "start");
             if (definition.state !== "published" || definition.publishedRevision === null) {
                 throw new WorkflowStoreError("NOT_PUBLISHED", "Publish the exact reviewed revision before starting its live run.");
             }
@@ -3186,18 +3186,18 @@ export class WorkflowStore {
     }
 
     /**
-     * Run `work` while this attempt holds a continued chat's end lock (chat: continue; review RT-1, formal t3): the look
-     * at the chat, the end command and the mark that it was sent are one critical section, so the lookers that may
+     * Run `work` while this attempt holds a continued session's end lock (session: continue; review RT-1, formal t3): the look
+     * at the session, the end command and the mark that it was sent are one critical section, so the lookers that may
      * meet (the spawn's after-send and decided-path retries, the run's cleanup and its detached retry, a recover) send
-     * the end once. The same lock as withRunNoticeLock, on the chat's id: `{ locked: false }` when another looker holds
+     * the end once. The same lock as withRunNoticeLock, on the session's id: `{ locked: false }` when another looker holds
      * it past `waitMs`.
      */
-    async withChatEndLock<T>(childSessionId: string, work: () => Promise<T>, wait: { waitMs?: number; pollMs?: number } = {})
+    async withAgentSessionEndLock<T>(childSessionId: string, work: () => Promise<T>, wait: { waitMs?: number; pollMs?: number } = {})
         : Promise<{ locked: true; value: T } | { locked: false }> {
-        return this.withSessionAdvisoryLock(`${this.schema}:workflow-chat-end:${childSessionId}`, work, wait);
+        return this.withSessionAdvisoryLock(`${this.schema}:workflow-agent-session-end:${childSessionId}`, work, wait);
     }
 
-    /** withRunNoticeLock's and withChatEndLock's lock: a session-level advisory lock on `key`, as described there. */
+    /** withRunNoticeLock's and withAgentSessionEndLock's lock: a session-level advisory lock on `key`, as described there. */
     private async withSessionAdvisoryLock<T>(key: string, work: () => Promise<T>, wait: { waitMs?: number; pollMs?: number })
         : Promise<{ locked: true; value: T } | { locked: false }> {
         const pool = this.options.noticeLockPool ? await this.options.noticeLockPool() : this.pool;
@@ -3286,14 +3286,14 @@ export class WorkflowStore {
     }
 
     /**
-     * Review R3-PA1 (formal parent.r3-told-twice): a run's end notice kept as a note for a parent chat that has not
+     * Review R3-PA1 (formal parent.r3-told-twice): a run's end notice kept as a note for a parent session that has not
      * started (deployed check DS-2) and its skip record, in one transaction. A failure between the two wrote neither,
      * so a retry never finds the note without its skip and tells the parent a second time.
      */
     async keepNoticeAsNote(input: { ownerSessionId: string; definitionId: string; revision: number; text: string; projection: SessionProjection })
         : Promise<void> {
         await this.transaction(async client => {
-            await this.chat.keepNoteIn(client, input.ownerSessionId, input.definitionId, input.revision, input.text);
+            await this.sessionDefinitions.keepNoteIn(client, input.ownerSessionId, input.definitionId, input.revision, input.text);
             await this.project(client, input.projection);
         });
     }
@@ -3385,10 +3385,10 @@ export class WorkflowStore {
      * Lock one run's row FOR UPDATE.
      *
      * The lock-order rule (stage 2 review S2RT-F2; lock-order check O2): every writer of a Workflow's runs or nodes holds
-     * that Workflow's session row first (lockLiveSession, lockSessionPair, or the chat-ended trigger of migration 0088,
-     * which locks the chat's Workflow sessions in id order before their runs). The global order is: a chat's row, its
-     * definition's row, the Workflow session rows (a chat before its own Workflows, otherwise ascending id), the Workflow's
-     * definition row, its run rows (in id order), its node rows. The cascades of the chat-ended and deletion triggers change nodes and runs
+     * that Workflow's session row first (lockLiveSession, lockSessionPair, or the owner-session-ended trigger of migration 0088,
+     * which locks the session's Workflow sessions in id order before their runs). The global order is: a session's row, its
+     * definition's row, the Workflow session rows (a session before its own Workflows, otherwise ascending id), the Workflow's
+     * definition row, its run rows (in id order), its node rows. The cascades of the owner-session-ended and deletion triggers change nodes and runs
      * without ordering them among themselves; that is safe only because the session row they hold serializes every other
      * writer of those rows. A new path that writes runs or nodes without the Workflow's session row reopens S2RT-F2.
      */
@@ -5885,7 +5885,7 @@ export class WorkflowStore {
                        : "NULL::text AS node_execution_id, NULL::text AS workflow_session_id, NULL::text AS controlling_session_id"}
               FROM lineage
               ${withInvocations ? `LEFT JOIN LATERAL (
-                  -- One row per lineage session (review RT-4): a chat that continues has one invocation per visit, and
+                  -- One row per lineage session (review RT-4): a session that continues has one invocation per visit, and
                   -- a join of them all repeated the session (read as a cycle). Its open visit, else its newest.
                   SELECT i.node_execution_id, i.workflow_session_id, i.controlling_session_id
                     FROM ${this.t.agentInvocations} i LEFT JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
@@ -5943,7 +5943,7 @@ export class WorkflowStore {
     }
 
     /**
-     * The newest invocation whose child agent session is `childSessionId` (a chat that continues has one per visit), or
+     * The newest invocation whose child agent session is `childSessionId` (a session that continues has one per visit), or
      * null. Newest by the visit's ordinal (review PRR-3: the database clock can step back between two visits), then time.
      */
     async readAgentInvocationByChild(childSessionId: string): Promise<WorkflowAgentInvocation | null> {
@@ -5991,18 +5991,18 @@ export class WorkflowStore {
     }
 
     /**
-     * The turn visit of a chat that continues (the turn-to-visit fence; review RT-2, RT-3): the visit whose prompt the
-     * turn received. `promptClientMessageIds` are the turn's prompt ids: among the visits they name that are this chat's,
+     * The turn visit of a session that continues (the turn-to-visit fence; review RT-2, RT-3): the visit whose prompt the
+     * turn received. `promptClientMessageIds` are the turn's prompt ids: among the visits they name that are this session's,
      * the open one, else the newest. A turn whose prompt names none of them (a timer, a sub-agent's update) inherits the
-     * visit of this chat's newest recorded prompt that names one. Null when the session is not a chat that continues (no
-     * invocation, or a visit's own chat: chat: new is untouched).
+     * visit of this session's newest recorded prompt that names one. Null when the session is not a session that continues (no
+     * invocation, or a visit's own session: session: new is untouched).
      */
     async readTurnVisit(childSessionId: string, promptClientMessageIds: readonly string[]): Promise<WorkflowTurnVisit | null> {
         if (!storableId(childSessionId)) return null;
         const { rows: any } = await this.pool.query(
             `SELECT node_execution_id FROM ${this.t.agentInvocations} WHERE child_session_id = $1 ORDER BY created_at DESC, node_execution_id DESC LIMIT 1`,
             [childSessionId]);
-        if (!any[0] || !workflowAgentChatContinues({ nodeExecutionId: str(any[0], "node_execution_id"), childSessionId })) return null;
+        if (!any[0] || !workflowAgentSessionContinues({ nodeExecutionId: str(any[0], "node_execution_id"), childSessionId })) return null;
         const visitsOf = async (ids: readonly string[]): Promise<{ id: string; open: boolean } | null> => {
             if (ids.length === 0) return null;
             const { rows } = await this.pool.query(
@@ -6013,7 +6013,7 @@ export class WorkflowStore {
         };
         const own = await visitsOf(promptClientMessageIds.map(workflowVisitOfPromptId).filter((id): id is string => id !== null));
         if (own) return { nodeExecutionId: own.id, open: own.open, inherited: false };
-        // Inherited: the newest recorded prompt of this chat that names a visit.
+        // Inherited: the newest recorded prompt of this session that names a visit.
         const { rows: prompts } = await this.pool.query(
             `SELECT e.data->'clientMessageIds' AS ids FROM ${this.t.sessionEvents} e
               WHERE e.session_id = $1 AND e.event_type IN ('user.message', 'system.message')
@@ -6038,7 +6038,7 @@ export class WorkflowStore {
     }
 
     /**
-     * A Stop of a continued chat's turn that names another visit (the turn-to-visit fence; formal deviation D3): its outcome
+     * A Stop of a continued session's turn that names another visit (the turn-to-visit fence; formal deviation D3): its outcome
      * is recorded now as too_late, under the session row's lock as turn end takes it, so it is no longer open on the turn.
      * Left open, a turn that then fails would be ended as stopped by it (cms_turn_end), and its crash retry would not run.
      * Once only: a Stop that already has an outcome keeps it. Returns whether this call recorded it.
@@ -6052,12 +6052,12 @@ export class WorkflowStore {
     }
 
     /**
-     * Whether any visit of chat `childSessionId` began a spawn attempt (review RT-1, t2): such an attempt may still create
-     * the chat, so a run's end that finds no chat leaves its end owed. beginAgentSpawn records each attempt in the
+     * Whether any visit of session `childSessionId` began a spawn attempt (review RT-1, t2): such an attempt may still create
+     * the session, so a run's end that finds no session leaves its end owed. beginAgentSpawn records each attempt in the
      * transaction that checks its node is pending, under the workflow session's lock, and a run's end decides its pending
-     * nodes under that lock: no attempt here after the run ended means no chat is created later.
+     * nodes under that lock: no attempt here after the run ended means no session is created later.
      */
-    async chatHasSpawnAttempt(childSessionId: string): Promise<boolean> {
+    async sessionHasSpawnAttempt(childSessionId: string): Promise<boolean> {
         if (!storableId(childSessionId)) return false;
         const { rows } = await this.pool.query(
             `SELECT EXISTS (SELECT 1 FROM ${this.t.agentInvocations} WHERE child_session_id = $1 AND spawn_attempts > 0) AS attempted`, [childSessionId]);
@@ -6066,9 +6066,9 @@ export class WorkflowStore {
 
     /**
      * The visits of a run's state `stateId` before visit `beforeNodeExecutionId` (every visit, when null), in the order
-     * they were admitted (their ordinals; review PRR-3: not the database clock, which can step back): how many there are, and the last of them (null when none). A state that continues its chat
+     * they were admitted (their ordinals; review PRR-3: not the database clock, which can step back): how many there are, and the last of them (null when none). A state that continues its session
      * (owner decision agent-node-continue-20261106) numbers a visit's cycle and finds its previous visit, and chooses a
-     * new visit's chat, from this. Counted in the store, not read and capped (review RT-5): a run may admit up to
+     * new visit's session, from this. Counted in the store, not read and capped (review RT-5): a run may admit up to
      * WORKFLOW_MAX_NODE_EXECUTIONS visits.
      */
     async readAgentVisitsBefore(runId: string, stateId: string, beforeNodeExecutionId: string | null)
@@ -6097,10 +6097,10 @@ export class WorkflowStore {
 
     /**
      * The invocation a completion by `childSessionId` binds to (owner decision agent-node-continue-20261106; formal
-     * cmp.ac-bind-current): a visit's own chat binds to its one invocation, and a node execution id it gives is ignored (as
-     * at e696f2c6; review RT-8); a chat that continues across a state's visits binds ONLY by the node execution id it gives, which must be one
-     * of that chat's visits. Never by "the newest": a late answer of a visit that ended must not decide the next one (it
-     * binds to its own, decided visit and is refused there). Null: not a workflow agent state's chat. A continued chat's
+     * cmp.ac-bind-current): a visit's own session binds to its one invocation, and a node execution id it gives is ignored (as
+     * at e696f2c6; review RT-8); a session that continues across a state's visits binds ONLY by the node execution id it gives, which must be one
+     * of that session's visits. Never by "the newest": a late answer of a visit that ended must not decide the next one (it
+     * binds to its own, decided visit and is refused there). Null: not a workflow agent state's session. A continued session's
      * call without the id, or with one that is not its own, is refused in words, nothing written.
      */
     private async agentInvocationOfCompletion(client: PoolClient, childSessionId: string, nodeExecutionId: string | undefined,
@@ -6112,10 +6112,10 @@ export class WorkflowStore {
         if (!rows[0]) return null;
         const newest = str(rows[0], "node_execution_id");
         const named = nodeExecutionId === undefined ? null : jsonbSafeText(nodeExecutionId, 200);
-        // A visit's own chat (chat: new) binds to its one invocation, exactly as at e696f2c6 (review RT-8): a node execution
+        // A visit's own session (session: new) binds to its one invocation, exactly as at e696f2c6 (review RT-8): a node execution
         // id it gives is ignored, as the tool wrapper there dropped it.
-        if (!workflowAgentChatContinues({ nodeExecutionId: newest, childSessionId })) return rows[0];
-        // A turn of a continued chat that received no cycle prompt (null: none recorded in the chat yet) completes none
+        if (!workflowAgentSessionContinues({ nodeExecutionId: newest, childSessionId })) return rows[0];
+        // A turn of a continued session that received no cycle prompt (null: none recorded in the session yet) completes none
         // (formal deviation D1, as its reminder: no_visit).
         if (turnVisit === null) {
             throw new WorkflowStoreError("AGENT_NODE_NOT_FOUND", "This turn received no cycle prompt, so it finishes no cycle; "
@@ -6128,7 +6128,7 @@ export class WorkflowStore {
         const { rows: own } = !storableId(nodeExecutionId) ? { rows: [] as Row[] } : await client.query(
             `SELECT ${columns} FROM ${this.t.agentInvocations} WHERE child_session_id = $1 AND node_execution_id = $2`, [childSessionId, nodeExecutionId]);
         if (!own[0]) {
-            throw new WorkflowStoreError("AGENT_NODE_NOT_FOUND", `node_execution_id ${named} is not a cycle of this chat; give the id in this cycle's prompt.`);
+            throw new WorkflowStoreError("AGENT_NODE_NOT_FOUND", `node_execution_id ${named} is not a cycle of this session; give the id in this cycle's prompt.`);
         }
         // The turn-to-visit fence (review RT-3): a turn completes only the visit whose prompt it received.
         if (typeof turnVisit === "string" && nodeExecutionId !== turnVisit) {
@@ -6156,15 +6156,15 @@ export class WorkflowStore {
         if (!storableId(input.childSessionId) || !Number.isSafeInteger(input.turn) || input.turn < 0) return { recorded: false, reason: "not_a_step" };
         const max = input.max ?? WORKFLOW_AGENT_MAX_REMINDERS;
         return this.transaction(async client => {
-            // A chat that continues across a state's visits (owner decision agent-node-continue-20261106) is reminded only of
+            // A session that continues across a state's visits (owner decision agent-node-continue-20261106) is reminded only of
             // its turn's own visit (`visit`: the visit whose prompt the reminded turn received; review RT-3), checked below
-            // like any step, never of the chat's open or newest visit: a turn with no visit of its own gets no reminder.
-            // A visit's own chat (chat: new) is reminded of its one invocation, as before.
+            // like any step, never of the session's open or newest visit: a turn with no visit of its own gets no reminder.
+            // A visit's own session (session: new) is reminded of its one invocation, as before.
             const { rows: newest } = await client.query(
                 `SELECT node_execution_id, workflow_session_id, run_id FROM ${this.t.agentInvocations}
                   WHERE child_session_id = $1 ORDER BY created_at DESC, node_execution_id DESC LIMIT 1`, [input.childSessionId]);
             if (!newest[0]) return { recorded: false, reason: "not_a_step" } as const;
-            const continued = workflowAgentChatContinues({ nodeExecutionId: str(newest[0], "node_execution_id"), childSessionId: input.childSessionId });
+            const continued = workflowAgentSessionContinues({ nodeExecutionId: str(newest[0], "node_execution_id"), childSessionId: input.childSessionId });
             let found = newest;
             if (continued) {
                 if (typeof input.visit !== "string" || !storableId(input.visit)) return { recorded: false, reason: "no_visit" } as const;
@@ -6232,7 +6232,7 @@ export class WorkflowStore {
         const { rows } = await this.pool.query(
             `SELECT i.* FROM ${this.t.agentInvocations} i
               WHERE i.run_id = $1 AND (i.end_sent_at IS NULL OR (i.end_child_status = 'NotFound' AND (i.spawn_attempts > 0
-                    -- A continued chat's end is owed on its newest visit when any of its visits began a spawn (review RT-1).
+                    -- A continued session's end is owed on its newest visit when any of its visits began a spawn (review RT-1).
                     OR EXISTS (SELECT 1 FROM ${this.t.agentInvocations} o WHERE o.child_session_id = i.child_session_id AND o.spawn_attempts > 0))))
                 AND ($2::text IS NULL OR i.node_execution_id > $2)
               ORDER BY i.node_execution_id LIMIT $3`, [runId, afterNodeExecutionId, limit]);
@@ -6321,11 +6321,11 @@ export class WorkflowStore {
     }
 
     /**
-     * A chat that continues across a state's visits (owner decision agent-node-continue-20261106) was ended: its newest
-     * visit `nodeExecutionId`, whose end is recorded, is marked with `childStatus` (the runtime's ChatEnded), once;
+     * A session that continues across a state's visits (owner decision agent-node-continue-20261106) was ended: its newest
+     * visit `nodeExecutionId`, whose end is recorded, is marked with `childStatus` (the runtime's AgentSessionEnded), once;
      * `marked` false when it was already. Its sent time is kept when it had one.
      */
-    async markContinuedChatEnded(nodeExecutionId: string, childStatus: string): Promise<{ marked: boolean }> {
+    async markContinuedSessionEnded(nodeExecutionId: string, childStatus: string): Promise<{ marked: boolean }> {
         const { rows } = await this.pool.query(
             `UPDATE ${this.t.agentInvocations} SET end_sent_at = coalesce(end_sent_at, clock_timestamp()), end_child_status = $2
               WHERE node_execution_id = $1 AND end_requested IS NOT NULL AND end_child_status IS DISTINCT FROM $2 RETURNING node_execution_id`,
@@ -6421,7 +6421,7 @@ export class WorkflowStore {
      *    (OUTPUT_INVALID), until the WORKFLOW_AGENT_MAX_INVALID_COMPLETIONS
      *    one, which fails the state invalid_output (OUTPUT_ATTEMPTS_EXHAUSTED).
      * 5. A valid result decides the state (winner agent, completed at the
-     *    reading), with its receipt and events; final chat is never a result.
+     *    reading), with its receipt and events; final session is never a result.
      *
      * The caller wakes the run's controller after the commit (a hint; its
      * backstop collection finds the result too).
@@ -7238,7 +7238,7 @@ export class WorkflowStore {
         operationId: string;
         requestSha256: string;
         start: RunAdmission;
-        /** S2RT-F6: a chat's hidden test bench: its chat and definition are checked under their locks before its own rows. */
+        /** S2RT-F6: a session's hidden test bench: its session and definition are checked under their locks before its own rows. */
         bench?: { ownerSessionId: string; definitionId: string } | null;
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
         if (input.start.mode !== "test") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "A test admission must be a test run.");
@@ -7793,8 +7793,8 @@ function assertNotDeleted(definition: WorkflowDefinitionRow): void {
 }
 
 /**
- * S2RT-F2: the order in which a Workflow's session and another session are locked: its own parent chat first (the order of
- * the chat-ended trigger and of a Start: the chat, then its Workflows), any other session in ascending id order. Pure.
+ * S2RT-F2: the order in which a Workflow's session and another session are locked: its own parent session first (the order of
+ * the owner-session-ended trigger and of a Start: the session, then its Workflows), any other session in ascending id order. Pure.
  */
 export function sessionPairLockOrder(workflowSessionId: string, otherSessionId: string, parentSessionId: string | null): string[] {
     if (workflowSessionId === otherSessionId) return [workflowSessionId];

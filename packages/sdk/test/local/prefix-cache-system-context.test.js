@@ -17,7 +17,7 @@
  * Each pin was verified red against the 1.0.70 behaviour.
  *
  * These cases drive 1.0.83, the latest, where a failed turn's retry is owed in the continue-as-new input's
- * `ownedRetry` (prompt, bootstrap flag, count) rather than in its `prompt`. The frozen 1.0.82 copy, for the chats
+ * `ownedRetry` (prompt, bootstrap flag, count) rather than in its `prompt`. The frozen 1.0.82 copy, for the sessions
  * still on it, is prefix-cache-system-context-1-0-82.test.js.
  */
 

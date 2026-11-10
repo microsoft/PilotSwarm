@@ -7,10 +7,10 @@
  *   the interface it matched.
  * - A package ships workflows/<name>/{workflow.yaml, card.md}: the validator compiles each with every node type, checks
  *   its card, and exports both in the manifest; a manifest layout stages a declared directory to workflows/<basename>/.
- * - An agent names the definitions its chat may start (workflows:, list or inline): a bare name must be in its own
+ * - An agent names the definitions its session may start (workflows:, list or inline): a bare name must be in its own
  *   package; a malformed reference is refused. A2: an agent step may not use one of the package's agents that names
  *   definitions.
- * - References and the coordinating chat's instructions (P3).
+ * - References and the coordinating session's instructions (P3).
  *
  * Run: node --test test/unit/workflow-package-card.test.mjs (after npm run build).
  */
@@ -24,7 +24,7 @@ import {
     workflowCardMismatches, workflowCardWords, workflowEffectFacts, workflowEffectFactsWords, workflowModelHintWords, workflowPackageRef, WORKFLOW_CARD_MAX_BYTES,
     WORKFLOW_OLD_MODEL_HINTS_NOTE,
 } from "../../dist/workflow/package-card.js";
-import { manifestWorkflows } from "../../dist/workflow/chat-packages.js";
+import { manifestWorkflows } from "../../dist/workflow/session-packages.js";
 import { catalogModelNames, ModelProviderRegistry } from "../../dist/model-providers.js";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { validateAgentPackageDir } from "../../dist/agent-package-format.js";
@@ -81,12 +81,12 @@ outcomes:
   clear: The train finished without a blocker.
   blocked: A blocker was found, or the note was not approved.
   failed: The Workflow could not check the train.
-output: Nothing; the chat reads the notes it sent.
+output: Nothing; the session reads the notes it sent.
 asks:
   approve_note: Whether to post the blocker note; yes posts it, no ends the Workflow blocked.
 sends:
   progress: A note when it starts checking; no answer needed.
-effects: No scripts; one message and one request to its chat. Ends within an hour.
+effects: No scripts; one message and one request to its session. Ends within an hour.
 model: azure-openai:gpt-5.6-terra
 ---
 Start it with the train's name. When it asks, ask the person whether to post the note.
@@ -124,7 +124,7 @@ test("card.md is parsed into its fields and notes; every problem is reported and
     assert.equal(card.description, "Watches a release train and reports blockers.");
     assert.deepEqual(card.inputs, { example: { train: "M70", intervalMinutes: 30 }, schema: null });
     assert.deepEqual(Object.keys(card.outcomes), ["clear", "blocked", "failed"]);
-    assert.deepEqual(card.output, { about: "Nothing; the chat reads the notes it sent.", schema: null });
+    assert.deepEqual(card.output, { about: "Nothing; the session reads the notes it sent.", schema: null });
     assert.equal(card.model, "azure-openai:gpt-5.6-terra");
     assert.equal(card.notes, "Start it with the train's name. When it asks, ask the person whether to post the note.");
     // CRLF reads the same.
@@ -192,13 +192,13 @@ test("references: <package>/<name>, or a bare name in the referrer's own package
     assert.equal(workflowPackageRef("release-tools", "release-watch"), "release-tools/release-watch");
 });
 
-test("the card's words and the coordinating chat's instructions (P3) name the definition, its inputs and how it ends", () => {
+test("the card's words and the coordinating session's instructions (P3) name the definition, its inputs and how it ends", () => {
     const ir = compiled(RELEASE_WATCH_YAML);
     const { card } = parseWorkflowCard(RELEASE_WATCH_CARD);
     const face = workflowCardInterface(ir);
     const words = workflowCardWords("release-tools/release-watch", "1.2.0", card, face);
     for (const want of ["release-tools/release-watch 1.2.0: Watches a release train", "Example inputs: {\"train\":\"M70\",\"intervalMinutes\":30}",
-        "clear (succeeded): The train finished", "It asks this chat: approve_note", "It sends this chat: progress",
+        "clear (succeeded): The train finished", "It asks this session: approve_note", "It sends this session: progress",
         "Effects (the author's words): No scripts", "Notes:\nStart it"]) {
         assert.ok(words.includes(want), want);
     }
@@ -286,7 +286,7 @@ test("an agent's workflows: a bare name must be one of its package's definitions
     const malformed = await validateAgentPackageDir(writePackage(t, { ...BASE,
         "agents/release-watcher.agent.md": AGENT("release-watcher", "workflows:\n  - Ops Kit/x\n") }), { skipSyntaxCheck: true });
     assert.deepEqual(codes(malformed), ["invalid_workflow_ref"]);
-    // Another package's definition is checked when a chat starts it, not here.
+    // Another package's definition is checked when a session starts it, not here.
     const other = await validateAgentPackageDir(writePackage(t, { ...BASE,
         "agents/release-watcher.agent.md": AGENT("release-watcher", "workflows: [other-kit/thing]\n") }), { skipSyntaxCheck: true });
     assert.deepEqual(other.errors, []);
@@ -389,12 +389,12 @@ test("S2SF-F4: the checked facts of a definition (scripts, agent steps), in word
     const ir = compiled(SCRIPT_YAML("poller"));
     assert.deepEqual(workflowEffectFacts(ir), { scripts: ["poll"], agents: ["ask"] });
     assert.equal(workflowEffectFactsWords(workflowEffectFacts(ir)), "Checked from the definition: it runs scripts (step poll). A script runs code on a "
-        + "worker: it can reach the network, and use the tools of the chat that starts it, which can read and write files and run processes. "
+        + "worker: it can reach the network, and use the tools of the session that starts it, which can read and write files and run processes. "
         + "It has agent steps (ask): each one asks a model.");
     const none = workflowEffectFacts(compiled(WAIT_YAML("x")));
     assert.deepEqual(none, { scripts: [], agents: [] });
     assert.equal(workflowEffectFactsWords(none), "Checked from the definition: it runs no scripts and has no agent steps.");
-    // The card's words and the coordinating chat's instructions say both: the checked facts, and the effects as the author's words.
+    // The card's words and the coordinating session's instructions say both: the checked facts, and the effects as the author's words.
     const { card } = parseWorkflowCard(SCRIPT_CARD("poller", "Reads one status page."));
     const face = workflowCardInterface(ir);
     const facts = workflowEffectFacts(ir);
@@ -494,10 +494,10 @@ test("OF-S2-7 review OF7-R5: model hints are structured fields for agent nodes; 
     const exported = { name: "triage", version: "1.0.0", yamlSha256: "y", irSha256: "i", cardDigest: "d", interface: {},
         card: { ...JSON.parse(JSON.stringify(plain)), modelHints: { classify: "fast" } } };
     assert.deepEqual(manifestWorkflows({ workflows: [exported] }).map(item => [item.name, Object.hasOwn(item.card, "modelHints")]), [["triage", false]]);
-    // The words a chat reads: the hints, and that every other agent node uses the starting chat's model.
+    // The words a session reads: the hints, and that every other agent node uses the starting session's model.
     const words = workflowCardWords("ops/triage", "1.0.0", card, workflowCardInterface(ir));
-    assert.match(words, /\nModel hints \(by agent node\): classify: fast model · low reasoning · long context · one short label\. For a node with a hint, choose a model that fits it from list_available_models \(the owning chat's catalog\) and give it in agent_models at start; every other agent node uses the model of the chat that starts it\.(\n|$)/);
-    assert.match(workflowCardWords("ops/triage", "1.0.0", plain, null), /\nModels: its agent nodes use the model of the chat that starts it; no node asks for another\./);
+    assert.match(words, /\nModel hints \(by agent node\): classify: fast model · low reasoning · long context · one short label\. For a node with a hint, choose a model that fits it from list_available_models \(the owning session's catalog\) and give it in agent_models at start; every other agent node uses the model of the session that starts it\.(\n|$)/);
+    assert.match(workflowCardWords("ops/triage", "1.0.0", plain, null), /\nModels: its agent nodes use the model of the session that starts it; no node asks for another\./);
     assert.match(coordinatingInstructions("ops/triage", "1.0.0", card, null),
         /Leave agent_models out unless the person asks for a model, or a model hint above asks for a kind of model: then choose from list_available_models and say what you chose\./);
 });

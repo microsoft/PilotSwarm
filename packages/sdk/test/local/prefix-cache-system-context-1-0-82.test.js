@@ -16,7 +16,7 @@
  *
  * Each pin was verified red against the 1.0.70 behaviour.
  *
- * These cases drive the frozen 1.0.82, kept for the chats still on it (in-flight 1.0.82 histories replay on 1.0.82
+ * These cases drive the frozen 1.0.82, kept for the sessions still on it (in-flight 1.0.82 histories replay on 1.0.82
  * until their next continue-as-new). The same cases on 1.0.83, the latest, are in prefix-cache-system-context.test.js.
  */
 

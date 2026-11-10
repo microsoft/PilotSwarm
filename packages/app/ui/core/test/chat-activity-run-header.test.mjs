@@ -1,5 +1,5 @@
 /**
- * The header of a grouped run of tool calls in the chat ("3 tool calls · latest: enable_workflows · Done"). A failed
+ * The header of a grouped run of tool calls in the session ("3 tool calls · latest: enable_workflows · Done"). A failed
  * state must never sit beside the name of a call that succeeded: a group in which an earlier call (the CLI's `skill`)
  * failed and the latest (enable_workflows) succeeded read "latest: enable_workflows … Failed".
  *

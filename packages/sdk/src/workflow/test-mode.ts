@@ -53,7 +53,7 @@ export interface WorkflowTestResponse {
 
 /**
  * What a fixture answers: an intercepted effect (WORKFLOW_TEST_OPERATIONS), or, in an agent's test of a revision only
- * (chat-test.ts), `receive`: a message the test delivers to a receive state before its clock moves on (G1).
+ * (definition-test.ts), `receive`: a message the test delivers to a receive state before its clock moves on (G1).
  */
 export type WorkflowTestFixtureOperation = WorkflowTestOperation | "receive";
 
@@ -115,7 +115,7 @@ export function parseTestResponse(value: unknown, path = "response"): WorkflowTe
  * its operation, tool or state and the hash of its arguments' canonical JSON. Stage 2.2 (an agent's test): a fixture
  * without `arguments` answers any call of its tool or state, but only when no fixture gives that call's exact arguments.
  * G2: `visit` (1 to 10000) answers only that visit of its state. G1: `receive` (options.receive: an agent's test only,
- * chat-test.ts) is a receive state's message, given as the response's value; it takes no arguments.
+ * definition-test.ts) is a receive state's message, given as the response's value; it takes no arguments.
  */
 export function parseTestFixtures(value: unknown, options: { receive?: boolean } = {}): WorkflowTestFixture[] {
     if (value === undefined || value === null) return [];

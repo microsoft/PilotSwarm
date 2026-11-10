@@ -1,5 +1,5 @@
 /**
- * SEMVER_REUSED (owner revision dump 2, 2026-11-06): a chat reused 1.1.3 for 4 different YAMLs of one definition. One
+ * SEMVER_REUSED (owner revision dump 2, 2026-11-06): a session reused 1.1.3 for 4 different YAMLs of one definition. One
  * metadata.name and version is one definition among the Workflows of one session: spawn_workflow and a draft's
  * replace_definition (an agent's or a person's) refuse a version that another live Workflow of the same parent has with
  * other YAML, or is being created with. The check runs inside the claim's transaction under a lock on (parent, name), so
@@ -159,7 +159,7 @@ test("createWorkflow skips the check unless asked, without a parent, and for a c
 test("a replay of a creation that named no owner is compared with the owner it inherited from its parent", async () => {
     const compiled = compileWorkflow(YAML("1.1.3"));
     const owner = { provider: "test", subject: "ada" };
-    // The stored claim of the same request (its owner inherited from "chat"), so the replay continues to the definition.
+    // The stored claim of the same request (its owner inherited from "session"), so the replay continues to the definition.
     const marker = createHost();
     await refusal(createWorkflow(marker.host, request({ refuseVersionReuse: true })));
     const stored = marker.calls.claims[0].opts.creationConfig;

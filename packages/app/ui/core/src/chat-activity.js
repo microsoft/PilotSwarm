@@ -94,7 +94,7 @@ export function chatCallLine(item) {
 }
 
 /**
- * The header of a group of calls in the chat (one collapsed run of tool or agent calls): what it counts, the latest
+ * The header of a group of calls in the session (one collapsed run of tool or agent calls): what it counts, the latest
  * call's name, and its state. A failed state is never shown beside the name of a call that succeeded: a group of more
  * than one call in which some failed says how many ("1 of 3 failed"), whichever call came last; a single failed call
  * says "Failed". While the latest call runs it says "Working"; when none failed, "Done". `failedNames` lists the names

@@ -1,7 +1,7 @@
-// The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed state, read-only child chats"; T115):
+// The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed state, read-only child sessions"; T115):
 // states in graph order with the observed state, the selected state's details and transitions (a loop marked as
 // one, a parallel state's branch start, a runtime-error route), an agent state's child session for each of its
-// occurrences, opened as its actual chat. It reads what the portal's pane reads and sends nothing.
+// occurrences, opened as its actual session. It reads what the portal's pane reads and sends nothing.
 //
 // Run: node --test packages/app/ui/core/test/workflow-tui-view.test.mjs
 import test from "node:test";
@@ -85,7 +85,7 @@ test("the states come in graph order: a loop is one layer, a parallel state's br
     assert.deepEqual(workflowGraphOrder(null), []);
 });
 
-test("w opens the view on the pending agent state: its state, transitions with the loop marked, and the chat of each occurrence", async () => {
+test("w opens the view on the pending agent state: its state, transitions with the loop marked, and the session of each occurrence", async () => {
     const { controller, store, calls } = harness();
     await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     await settle();
@@ -116,7 +116,7 @@ test("w opens the view on the pending agent state: its state, transitions with t
     assert.ok(details.includes("  ✕ limit → failed"), details.join("\n"));
     assert.ok(!details.some(line => line.includes("runtime error route")));
     assert.ok(details.includes("Agent sessions · Tab choose · Enter open:"));
-    // Review 19:27Z (row 10): each chat by its visit, its state in marks and words, and its name (never its id).
+    // Review 19:27Z (row 10): each session by its visit, its state in marks and words, and its name (never its id).
     assert.ok(details.includes("▸ visit 3 · ● running · agent session not loaded"), details.join("\n"));
     assert.ok(details.includes("  visit 1 · ✓ rework · agent session not loaded"), details.join("\n"));
     assert.ok(!details.some(line => /child-r/.test(line)), "no session id");
@@ -197,7 +197,7 @@ test("two parallel steps: each is followed by its branch steps and its join line
     assert.ok(["done", "failed"].includes(id) && row === 8, `past the second join line: ${id} at ${row}`);
 });
 
-test("Tab chooses an occurrence and Enter opens that occurrence's actual chat; nothing is sent", async () => {
+test("Tab chooses an occurrence and Enter opens that occurrence's actual session; nothing is sent", async () => {
     const { controller, store, calls, opened } = harness();
     await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     await controller.handleCommand(UI_COMMANDS.MODAL_PANE_NEXT);
@@ -217,7 +217,7 @@ test("Tab chooses an occurrence and Enter opens that occurrence's actual chat; n
     assert.deepEqual(calls.filter(call => WRITES.test(call[0])), []);
 });
 
-test("a state without an agent chat keeps the view open; another kind of session gets a status line, not the view", async () => {
+test("a state without an agent session keeps the view open; another kind of session gets a status line, not the view", async () => {
     const { controller, store, opened } = harness();
     await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     await controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
@@ -232,8 +232,8 @@ test("a state without an agent chat keeps the view open; another kind of session
     store.dispatch({ type: "sessions/selected", sessionId: "a1" });
     await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     assert.equal(store.getState().ui.modal, null);
-    // Workflow Simplified (18): w opens the chat's Workflow pane; a chat with no Workflows says so.
-    assert.equal(store.getState().ui.statusText, "This chat has no Workflows yet");
+    // Workflow Simplified (18): w opens the session's Workflow pane; a session with no Workflows says so.
+    assert.equal(store.getState().ui.statusText, "This session has no Workflows yet");
 });
 
 test("an agent state whose child is not listed yet says so; a read failure and an empty view are reported, not hidden", async () => {

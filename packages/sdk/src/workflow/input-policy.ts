@@ -48,7 +48,7 @@ const ACTION_WORDS: Record<WorkflowHumanInputAction, string> = {
 export const WORKFLOW_MAX_DESCENDANT_LEVEL = 3;
 
 /**
- * A1 (Workflow Simplified, spec 14; owner decision E4): sessions inside a Workflow (an agent node's chat and its
+ * A1 (Workflow Simplified, spec 14; owner decision E4): sessions inside a Workflow (an agent node's session and its
  * sub-agents: any session in an agent state's subtree) get no definition tools, and the server refuses the calls too.
  * Ordinary sub-agents outside every Workflow keep them (O3). The tools that create or change a definition:
  */
@@ -59,7 +59,7 @@ export const WORKFLOW_DEFINITION_TOOLS_REFUSED = "WORKFLOW_DEFINITION_TOOLS_REFU
 
 /** The A1 refusal, in words (spec 14 mock: "Sessions inside a Workflow cannot create definitions."). */
 export const WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT = "Sessions inside a Workflow cannot create or change workflow definitions. "
-    + "Do this work with your other tools; the chat that owns the Workflow changes its definition.";
+    + "Do this work with your other tools; the session that owns the Workflow changes its definition.";
 
 /** Whether a session, by its stored lineage, is inside a Workflow and so gets no definition tools (A1). */
 export function workflowDefinitionToolsRefused(lineage: WorkflowLineage | null | undefined): boolean {
@@ -107,7 +107,7 @@ export function workflowDefinitionToolsRefusal(): string {
  */
 export function spawnNestingRefusal(level: number, max: number, insideWorkflow: boolean): string {
     return insideWorkflow
-        ? `[SYSTEM: spawn_agent failed — this session runs inside a Workflow at level ${level} (the top-level chat is level 0), `
+        ? `[SYSTEM: spawn_agent failed — this session runs inside a Workflow at level ${level} (the top-level session is level 0), `
             + `and sessions inside a Workflow stop at level ${max}. A sub-agent would be at level ${level + 1}. Do this work yourself.]`
         : `[SYSTEM: spawn_agent failed — you are already at nesting level ${level} (max ${max}). `
             + `Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]`;

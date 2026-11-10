@@ -30,7 +30,7 @@ function standIn({ failNodes = false, fail = null } = {}) {
                 { nodeId: "hold", ordinal: 1, nodeType: "wait", state: "pending", outcome: null, resultKind: null, winner: null, error: null },
             ] : [];
         },
-        chat: {
+        session: {
             listDefinitions: async () => {
                 if (fail?.definitions) throw new Error(fail.definitions);
                 return [{ definitionId: "def-1", name: "counter" }];
@@ -49,7 +49,7 @@ function standIn({ failNodes = false, fail = null } = {}) {
 
 describe("the real-model receipt's Workflow evidence", () => {
     it("records each revision's YAML (secrets hidden, cut at 8 KB) and diagnostics, and each run's and node execution's end with its error", async () => {
-        const evidence = await realModelWorkflowEvidence(standIn(), "chat-1");
+        const evidence = await realModelWorkflowEvidence(standIn(), "owner-1");
         const text = JSON.stringify(evidence);
         expect(text).not.toContain("abcdefghijklmnopqrstuvwxyz0123456789");
         const [first, second] = evidence.revisions;
@@ -72,9 +72,9 @@ describe("the real-model receipt's Workflow evidence", () => {
     });
 
     it("records a read that fails instead of throwing", async () => {
-        const evidence = await realModelWorkflowEvidence(standIn({ failNodes: true }), "chat-1");
+        const evidence = await realModelWorkflowEvidence(standIn({ failNodes: true }), "owner-1");
         expect(evidence.workflows[0].runs[0].nodes).toBe("unreadable: the node executions could not be read");
-        const none = await realModelWorkflowEvidence({ workflowStore: () => { throw new Error("no workflow store"); } }, "chat-1");
+        const none = await realModelWorkflowEvidence({ workflowStore: () => { throw new Error("no workflow store"); } }, "owner-1");
         expect(none).toEqual({ revisions: [], workflows: [], tests: [], error: "unreadable: no workflow store" });
     });
 
@@ -89,7 +89,7 @@ describe("the real-model receipt's Workflow evidence", () => {
         expect(messages[1].indexOf("abcdefghij")).toBe(283);
         const secrets = ["abcdefghijklmnopqrstuvwxyz0123456789", "abcdefghijklmnop", "tok-abcdefghijklmnopqrstuvwx", "evidence-pass-0123456789", "evidence-pass"];
         for (const fail of messages.flatMap(message => [{ nodes: message }, { runs: message }, { revision: message }, { definitions: message }])) {
-            const text = JSON.stringify(await realModelWorkflowEvidence(standIn({ fail }), "chat-1"));
+            const text = JSON.stringify(await realModelWorkflowEvidence(standIn({ fail }), "owner-1"));
             expect(text, JSON.stringify(Object.keys(fail))).toContain("unreadable: could not read:");
             for (const secret of secrets) expect(text, `${Object.keys(fail)[0]}: ${secret}`).not.toContain(secret);
         }

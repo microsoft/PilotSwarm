@@ -70,7 +70,7 @@ test("a stopping run says what may still settle; a stopped run is ended, and the
     assert.match(picker.options[0].title, / · Canceled/);
 });
 
-test("an agent state's node names its child session and opens its actual chat; a branch state names its branch", () => {
+test("an agent state's node names its child session and opens its actual session; a branch state names its branch", () => {
     const model = readModel({ graph, nodeExecutions: [
         row("review", 1, "pending", { agent: { childSessionId: "child-1", spawned: true, spawnAttempts: 1, end: null, endSent: false },
             deadline: "2026-11-02T10:10:00.000Z" }),
@@ -79,7 +79,7 @@ test("an agent state's node names its child session and opens its actual chat; a
     const review = byId(projection, "review");
     assert.equal(review.stateLabel, "Running · until its result");
     assert.deepEqual(review.current.agent, { childSessionId: "child-1", spawned: true, spawnAttempts: 1, end: null, endSent: false });
-    // flow-07: the chat's id and who may write to it are said once, in Agent session; the description only says how the step completes.
+    // flow-07: the session's id and who may write to it are said once, in Agent session; the description only says how the step completes.
     assert.ok(!review.description.some(line => line.includes("child-1")), review.description.join("\n"));
     const opened = [];
     const html = renderToStaticMarkup(React.createElement(WorkflowNodeContent, {
@@ -93,7 +93,7 @@ test("an agent state's node names its child session and opens its actual chat; a
     // Deadline at reads like the activity list, not raw ISO.
     assert.ok(html.includes("2026-11-02 10:10:00 UTC") && !html.includes("2026-11-02T10:10:00"), html);
 
-    // Mock M14 / ui-02: the chat's own block uses plain labels, and an ended chat says how, in the activity list's words.
+    // Mock M14 / ui-02: the session's own block uses plain labels, and an ended session says how, in the activity list's words.
     const ended = projectWorkflow({ readModel: readModel({ graph, nodeExecutions: [done("review", 1, "accepted",
         { agent: { childSessionId: "child-1", spawned: true, spawnAttempts: 1, end: "done", endSent: true } })] }) });
     const endedHtml = renderToStaticMarkup(React.createElement(WorkflowNodeContent, {
@@ -193,9 +193,9 @@ function elementsOf(node, predicate, found = []) {
 }
 
 // The portal's node Details as controls, not only as text (accounting rows 34, 35, 48, 49, 76): a transition button selects
-// its target state; an agent state's child button opens exactly that child's chat; the outcomes, the parallel manifest and
+// its target state; an agent state's child button opens exactly that child's session; the outcomes, the parallel manifest and
 // join rows are shown.
-test("the portal's Details: a transition selects its state, the agent child opens its own chat, outcomes and a parallel state's rows are shown", () => {
+test("the portal's Details: a transition selects its state, the agent child opens its own session, outcomes and a parallel state's rows are shown", () => {
     const projection = projectWorkflow({ readModel: readModel({ graph, nodeExecutions: [
         row("review", 1, "pending", { agent: { childSessionId: "child-1", spawned: true, spawnAttempts: 1, end: null, endSent: false } }),
     ] }) });
@@ -203,14 +203,14 @@ test("the portal's Details: a transition selects its state, the agent child open
     const selected = [];
     const opened = [];
     const tree = WorkflowNodeContent({ tab: "details", selected: review, nodes: projection.nodes, select: id => selected.push(id), openSession: id => opened.push(id) });
-    // The child-chat button shares the transition buttons' look (class), so each is picked by its own marker.
+    // The child-session button shares the transition buttons' look (class), so each is picked by its own marker.
     const transitions = elementsOf(tree, element => element.type === "button" && element.props.className === "ps-workflow-transition"
         && element.props["data-action"] === undefined);
     assert.deepEqual(transitions.map(button => button.props.disabled), [false, false], "both targets are states of this graph");
     for (const button of transitions) button.props.onClick();
     assert.deepEqual(selected, ["fan", "failed"], "each transition selects exactly its target");
     assert.deepEqual(opened, [], "no transition opens a session");
-    const child = elementsOf(tree, element => element.type === "button" && element.props["data-action"] === "open-agent-chat");
+    const child = elementsOf(tree, element => element.type === "button" && element.props["data-action"] === "open-agent-session");
     assert.equal(child.length, 1);
     assert.equal(child[0].props.children, "Open the agent session (read-only)");
     child[0].props.onClick();

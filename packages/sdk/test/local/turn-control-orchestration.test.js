@@ -1,6 +1,6 @@
 /**
  * Turn control on orchestration 1.0.83, the latest: late steers, carried wakes, Stop, retries and their client message
- * ids and turn keys, and converted queued messages. The frozen 1.0.82 copy, for the chats still on it, is
+ * ids and turn keys, and converted queued messages. The frozen 1.0.82 copy, for the sessions still on it, is
  * turn-control-orchestration-1-0-82.test.js. 1.0.83 differs in two ways these cases follow: every rebuilt session proxy
  * routes through the V5 contract (workflow-intake-v1), and a failed turn's retry is owed in the continue-as-new input's
  * `ownedRetry` (its prompt, ids, sender, images, count and thrown key), which decide dispatches first, rather than in

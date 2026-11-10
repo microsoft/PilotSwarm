@@ -25,7 +25,7 @@ function capture(controller, moa) {
         artifactFilename: separator >= 0 ? artifact.slice(separator + 1) : null,
         artifactFullscreen: fullscreenShown,
         mobilePane: controller.mobileView?.get() || null,
-        // Review UI-8: a Workflow selected under its chat is its own view, as is the right block's tab.
+        // Review UI-8: a Workflow selected under its session is its own view, as is the right block's tab.
         workflowRowId: workflowRowOf(s), sidePaneTab: s.ui.sidePaneTab,
         // Review UI-D3: the Workflow tab's context (the Workflow it shows, its definition and view), apart from the row.
         workflowTab: workflowTabOf(s),
@@ -37,7 +37,7 @@ function workflowTabOf(state) {
     const tab = ownerId ? state.ui.workflowTabs?.[ownerId] : null;
     return tab ? { ownerId, workflowId: tab.workflowId ?? null, definition: tab.definition ?? null, view: tab.view ?? null } : null;
 }
-/** The Workflow row selected under the active chat, or null. */
+/** The Workflow row selected under the active session, or null. */
 function workflowRowOf(state) {
     const id = workflowHighlightedSessionId(state.sessions);
     return id && id !== state.sessions.activeSessionId ? id : null;
@@ -174,7 +174,7 @@ export function useViewNavigation(controller, moa) {
         controller.openWorkspace();
         controller.dispatch({ type: "files/pane", open: false });
         controller.dispatch({ type: "files/fullscreen", fullscreen: false });
-        // Review UI-8: a Workflow view selects that Workflow (its chat in the middle, the Workflow in the right block).
+        // Review UI-8: a Workflow view selects that Workflow (its session in the middle, the Workflow in the right block).
         const target = view.workflowRowId && controller.getState().sessions.byId[view.workflowRowId] ? view.workflowRowId : view.sessionId;
         if (target) {
             controller.loadSession(target).catch(unavailable);

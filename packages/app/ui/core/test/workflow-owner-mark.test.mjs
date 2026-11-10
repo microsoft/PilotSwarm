@@ -1,7 +1,7 @@
 /**
  * OF-S2-5 (owner, 2026-11-07T20:58Z: "The subagent sessions did grow workflows but the icon doesn't show it. Need to
  * workflow icon next to the session title if the session has grown a workflow."): a session, a sub-agent too, that has
- * grown Workflows wears the Workflow mark beside its title, in its list row at every depth and in the chat's title, with
+ * grown Workflows wears the Workflow mark beside its title, in its list row at every depth and in the session's title, with
  * the words "Has Workflows" (Workflows are always on, so no switch hides it). It grows them by the server's row flag (it owns a live
  * Workflow Definition), by its definitions read here, or by its Workflow children. The mark is gray and after the title,
  * where a Workflow row's own mark is magenta and before it.
@@ -21,7 +21,7 @@ function loaded({ sessions = [], definitions = null } = {}) {
     state = appReducer(state, { type: "sessions/loaded", sessions: [ROOT, ...sessions] });
     // The sub-agent rows show (a parent's children start collapsed).
     for (const id of ["root-1", "sub-children"]) state = appReducer(state, { type: "sessions/expand", sessionId: id });
-    if (definitions) state = appReducer(state, { type: "ui/chatDefinitions", ownerId: definitions.ownerId, patch: { items: definitions.items, at: 1 } });
+    if (definitions) state = appReducer(state, { type: "ui/sessionDefinitions", ownerId: definitions.ownerId, patch: { items: definitions.items, at: 1 } });
     return state;
 }
 
@@ -77,7 +77,7 @@ test("list rows: a Workflow row keeps its own magenta mark before its title and 
     assert.equal(kind?.color, "magenta");
 });
 
-test("chat title: the sub-agent's chat says it has grown Workflows; neither does not", () => {
+test("session title: the sub-agent's session says it has grown Workflows; neither does not", () => {
     for (const id of ["sub-flag", "sub-children", "sub-loaded"]) {
         const chrome = selectChatPaneChrome({ ...everything(), sessions: { ...everything().sessions, activeSessionId: id } });
         const mark = markOf(chrome.title);

@@ -29,11 +29,11 @@ export interface WorkflowToolBinding {
 }
 
 /**
- * The refusal when the calling chat has no live tool context on this worker to hand to a workflow (no warm session, or
+ * The refusal when the calling session has no live tool context on this worker to hand to a workflow (no warm session, or
  * none recorded for it). spawn_workflow answers it with this code and these words, which an agent can relay as they are.
  */
 export const WORKFLOW_PARENT_CONTEXT_UNAVAILABLE = "WORKFLOW_PARENT_CONTEXT_UNAVAILABLE" as const;
-export const WORKFLOW_PARENT_CONTEXT_UNAVAILABLE_MESSAGE = "The workflow was not created: this chat's tools were not ready to hand to a "
+export const WORKFLOW_PARENT_CONTEXT_UNAVAILABLE_MESSAGE = "The workflow was not created: this session's tools were not ready to hand to a "
     + "workflow. Nothing was started. Call spawn_workflow again; if it is refused again, tell the user.";
 
 /** The coded error captureWorkflowToolBinding throws when the parent's tool context is not available. */

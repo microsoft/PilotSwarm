@@ -21,7 +21,7 @@ export interface SpawnWorkflowDeps {
     /** Workflow persistence and dispatch (definitions, revisions, runs). Absent: every document is refused. */
     workflowHost?: () => Promise<WorkflowToolHost>;
     /**
-     * A1 (Workflow Simplified, spec 14): whether the calling session is inside a Workflow (an agent node's chat or one
+     * A1 (Workflow Simplified, spec 14): whether the calling session is inside a Workflow (an agent node's session or one
      * of its sub-agents), by its stored lineage; then every spawn_workflow is refused, in words. Absent: never refused.
      */
     definitionToolsRefused?: () => Promise<boolean>;
@@ -53,8 +53,8 @@ export async function spawnWorkflowFromTool(
         if (!deps.workflowHost) return JSON.stringify({ ok: false, error: { code: "WORKFLOW_UNAVAILABLE", message: "This worker cannot store Workflows." } });
         const slug = typeof args.key === "string" && args.key.trim() ? `key:${args.key.trim()}` : `call:${call?.toolCallId ?? ""}`;
         if (slug === "call:") return JSON.stringify({ ok: false, error: { code: "WORKFLOW_COMMAND_INVALID", message: "spawn_workflow needs a key or a tool call id." } });
-        // Stage 2.1 (D2): spawn_workflow saves a revision of the chat's definition of this name and, with start, starts
-        // that revision (definition-tool.ts). The scripts gate decides first there (d52e5ed2); the chat's owner and tool
+        // Stage 2.1 (D2): spawn_workflow saves a revision of the session's definition of this name and, with start, starts
+        // that revision (definition-tool.ts). The scripts gate decides first there (d52e5ed2); the session's owner and tool
         // binding are read after it, and only for a start.
         // The operation is the key (or the call) and the YAML (aa5bb84a run, coordinator 07:1xZ): an exact repeat is
         // answered from its receipt, and a corrected YAML under the same key is a new save (the next revision) and a new

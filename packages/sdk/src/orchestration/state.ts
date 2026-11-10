@@ -285,7 +285,7 @@ export interface DurableSessionState {
      */
     intakeArrivalPending: boolean;
     /**
-     * 1.0.83 (PR 270, in place): the report owed for a Workflow agent chat's turn that failed for good
+     * 1.0.83 (PR 270, in place): the report owed for a Workflow agent session's turn that failed for good
      * (workflow-turn-failure.ts): null when none is owed. Carried by every continue-as-new while owed.
      */
     workflowTurnFailure: WorkflowTurnFailureReport | null;

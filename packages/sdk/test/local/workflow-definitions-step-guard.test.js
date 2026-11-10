@@ -2,8 +2,8 @@
  * Review PRS-002 (security review of a00f9c32): a session that runs a Workflow's agent step, or a descendant of one,
  * takes no person's definition change. Its owner's direct management calls (save, start, copy, a package's update,
  * delete) and the service's test are refused with the human-input refusal (WORKFLOW_HUMAN_INPUT_DENIED, 403), and no
- * definition, revision or note is written; reads still answer. The ordinary controlling chat still saves.
- * (The HTTP save route is covered in packages/app/web/test/workflow-chat-definitions-runtime.test.mjs.)
+ * definition, revision or note is written; reads still answer. The ordinary controlling session still saves.
+ * (The HTTP save route is covered in packages/app/web/test/workflow-session-definitions-runtime.test.mjs.)
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -13,7 +13,7 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { canonicalJson } from "../../src/workflow/json.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
-import { startChatWorkflowTest } from "../../src/workflow/chat-test.ts";
+import { startSessionWorkflowTest } from "../../src/workflow/definition-test.ts";
 import { WORKFLOW_CONTROLLER_VERSION, workflowAgentChildSessionId, workflowLiveControllerInstanceId } from "../../src/workflow/runtime.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
@@ -43,21 +43,21 @@ states:
   done: { type: terminal, outcome: succeeded }
 `;
 
-/** A chat whose Workflow's agent step runs in its own session (`step`), and a session below it (`below`). */
+/** A session whose Workflow's agent step runs in its own session (`step`), and a session below it (`below`). */
 async function stepFixture(env) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
-    const chat = randomUUID();
-    await catalog.createSession(chat, { owner: OWNER });
+    const ownerSession = randomUUID();
+    await catalog.createSession(ownerSession, { owner: OWNER });
     const workflowSessionId = randomUUID();
     const runId = randomUUID();
     const compiled = compileWorkflow(STEP_YAML);
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
-    expect((await catalog.createWorkflowSession(workflowSessionId, { parentSessionId: chat, owner: OWNER,
+    expect((await catalog.createWorkflowSession(workflowSessionId, { parentSessionId: ownerSession, owner: OWNER,
         creationConfig: { workflow: { requestSha256: "step-guard" } } })).created).toBe(true);
     await store.createDefinition({
-        workflowSessionId, parentSessionId: chat, notifyParent: false, yaml: STEP_YAML, compiled, actor: { kind: "system", name: "step-guard-test" },
+        workflowSessionId, parentSessionId: ownerSession, notifyParent: false, yaml: STEP_YAML, compiled, actor: { kind: "system", name: "step-guard-test" },
         operationId: "create", requestSha256: "step-guard", publish: true, title: "Workflow: stepper",
         start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId), inputsText: "{}", kvText: "{}",
             testAgentMode: null, controllerVersion: WORKFLOW_CONTROLLER_VERSION },
@@ -67,18 +67,18 @@ async function stepFixture(env) {
     expect(await store.enterNode({
         runId, nodeExecutionId, scopeId: "root", nodeId: "talk", ordinal: 1, nodeType: "agent", predecessorId: null, arrivalRoute: null,
         inputText: canonicalJson({}), kvRevision: 1, waitSeconds: null, immediate: null,
-        agent: { childSessionId: step, controllingSessionId: chat, task: { source: "prompt", prompt: "Say one thing." }, outcomes: ["said"],
+        agent: { childSessionId: step, controllingSessionId: ownerSession, task: { source: "prompt", prompt: "Say one thing." }, outcomes: ["said"],
             outputSchema: null, timeoutSeconds: 600 },
     })).toMatchObject({ admitted: true });
     await catalog.createSession(step, { parentSessionId: workflowSessionId, owner: OWNER });
     const below = randomUUID();
     await catalog.createSession(below, { parentSessionId: step, owner: OWNER });
-    expect((await store.readWorkflowLineage(step))?.agentRoot).toMatchObject({ workflowSessionId, controllingSessionId: chat });
-    return { catalog, store, chat, step, below, workflowSessionId };
+    expect((await store.readWorkflowLineage(step))?.agentRoot).toMatchObject({ workflowSessionId, controllingSessionId: ownerSession });
+    return { catalog, store, ownerSession, step, below, workflowSessionId };
 }
 
-describe("a chat's Workflow Definitions change only outside a Workflow (PRS-002)", () => {
-    it("refuses its owner's save, start, copy, update, delete and test for an agent step's session and one below it; nothing is written; reads answer; the controlling chat saves", { timeout: TIMEOUT }, async () => {
+describe("a session's Workflow Definitions change only outside a Workflow (PRS-002)", () => {
+    it("refuses its owner's save, start, copy, update, delete and test for an agent step's session and one below it; nothing is written; reads answer; the controlling session saves", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const f = await stepFixture(env);
         const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
@@ -87,12 +87,12 @@ describe("a chat's Workflow Definitions change only outside a Workflow (PRS-002)
         try {
             for (const session of [f.step, f.below]) {
                 const refusals = [
-                    () => mgmt.saveChatWorkflowDefinition(session, { name: "waiter", yaml: SAVED_YAML, operationId: `save-${session}` }, { principal: PERSON }),
-                    () => mgmt.startChatWorkflowDefinition(session, { definitionId: "def-any", operationId: `start-${session}` }, { principal: PERSON }),
-                    () => mgmt.copyChatWorkflowDefinition(session, { definitionId: "def-any", operationId: `copy-${session}` }, { principal: PERSON }),
-                    () => mgmt.updateChatWorkflowPackage(session, { definitionId: "def-any", operationId: `update-${session}` }, { principal: PERSON }),
-                    () => mgmt.deleteChatWorkflowDefinition(session, { definitionId: "def-any", operationId: `delete-${session}` }, { principal: PERSON }),
-                    () => startChatWorkflowTest({ catalog: f.catalog, store: f.store, duroxideClient: null }, {
+                    () => mgmt.saveSessionWorkflowDefinition(session, { name: "waiter", yaml: SAVED_YAML, operationId: `save-${session}` }, { principal: PERSON }),
+                    () => mgmt.startSessionWorkflowDefinition(session, { definitionId: "def-any", operationId: `start-${session}` }, { principal: PERSON }),
+                    () => mgmt.copySessionWorkflowDefinition(session, { definitionId: "def-any", operationId: `copy-${session}` }, { principal: PERSON }),
+                    () => mgmt.updateSessionWorkflowPackage(session, { definitionId: "def-any", operationId: `update-${session}` }, { principal: PERSON }),
+                    () => mgmt.deleteSessionWorkflowDefinition(session, { definitionId: "def-any", operationId: `delete-${session}` }, { principal: PERSON }),
+                    () => startSessionWorkflowTest({ catalog: f.catalog, store: f.store, duroxideClient: null }, {
                         ownerSessionId: session, definition: { name: "waiter" }, inputs: {}, fixtures: [], operationId: `test-${session}`,
                         actor: { kind: "agent", sessionId: session }, owner: async () => OWNER, binding: async () => null }),
                 ];
@@ -102,15 +102,15 @@ describe("a chat's Workflow Definitions change only outside a Workflow (PRS-002)
                     expect(error.message).toContain(`runs a step of workflow ${f.workflowSessionId}: people cannot save, start, test, copy, update or delete its Workflow Definitions.`);
                     if (index < 5) expect(error.status, `#${index}`).toBe(403);
                 }
-                expect(await f.store.chat.listDefinitions(session, { includeDeleted: true })).toEqual([]);
-                expect(await f.store.chat.pendingNotes(session)).toEqual([]);
+                expect(await f.store.sessionDefinitions.listDefinitions(session, { includeDeleted: true })).toEqual([]);
+                expect(await f.store.sessionDefinitions.pendingNotes(session)).toEqual([]);
                 // Reads still answer.
-                expect(await mgmt.listChatWorkflowDefinitions(session)).toEqual([]);
+                expect(await mgmt.listSessionWorkflowDefinitions(session)).toEqual([]);
             }
-            // Control: the chat that controls the Workflow saves, and its note is pending for its next turn.
-            const saved = await mgmt.saveChatWorkflowDefinition(f.chat, { name: "waiter", yaml: SAVED_YAML, operationId: "save-chat" }, { principal: PERSON });
+            // Control: the session that controls the Workflow saves, and its note is pending for its next turn.
+            const saved = await mgmt.saveSessionWorkflowDefinition(f.ownerSession, { name: "waiter", yaml: SAVED_YAML, operationId: "save-owner" }, { principal: PERSON });
             expect(saved).toMatchObject({ name: "waiter", revision: 1, valid: true });
-            expect(await f.store.chat.pendingNotes(f.chat)).toHaveLength(1);
+            expect(await f.store.sessionDefinitions.pendingNotes(f.ownerSession)).toHaveLength(1);
         } finally {
             await mgmt.stop();
             await f.catalog.close();

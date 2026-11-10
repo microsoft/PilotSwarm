@@ -2,11 +2,11 @@
  * Workflow Simplified, Run again in stage 1 (W8; owner feedback 2026-11-06: "why can't it create another workflow from the
  * same definition??"). On the tested engine a Workflow is a workflow child with one live run, so another Workflow from a
  * definition is the same YAML spawned again by the session's chat:
- * - the Workflow tab's Start another… asks the chat in one ordinary message that names the definition, the Workflow
+ * - the Workflow tab's Start another… asks the session in one ordinary message that names the definition, the Workflow
  *   whose YAML it repeats, the number the new one gets, how to start it (the same YAML, unchanged; no key or a new one;
  *   never renamed) and the inputs; the person's own draft is not touched;
  * - the new child has the same name, so it is listed under the same definition as the next number (O5); a renamed one
- *   would be a definition of its own, which is why the chat is told not to rename it.
+ *   would be a definition of its own, which is why the session is told not to rename it.
  *
  * Run: node --test test/workflow-simplified-run-again.test.mjs
  */
@@ -91,7 +91,7 @@ test("Start another… sends one message to the session's chat, keeps the person
     assert.ok(text.includes('workflow_id "wf-2", include_yaml true'), text);
     assert.ok(text.endsWith('Inputs (data, JSON): {"n":1}'), text);
     assert.equal(store.getState().ui.prompt, "my own words", "the person's draft is not touched");
-    assert.equal(store.getState().ui.statusText, "Asked the chat to start check-items #3.");
+    assert.equal(store.getState().ui.statusText, "Asked the session to start check-items #3.");
 
     // A connection that cannot send messages refuses in words; nothing is sent.
     const quiet = new PilotSwarmUiController({ store, transport: {} });
@@ -101,7 +101,7 @@ test("Start another… sends one message to the session's chat, keeps the person
     assert.equal(sent.length, 1);
 });
 
-test("the Workflow the chat starts with the same YAML is listed under the same definition as the next number; a renamed one is not", () => {
+test("the Workflow the session starts with the same YAML is listed under the same definition as the next number; a renamed one is not", () => {
     const again = [...SESSIONS, workflow("wf-3", "check-items", 3, "running")];
     const definitions = workflowDefinitionsOf(byIdOf(again), OWNER);
     assert.equal(definitions.length, 1);

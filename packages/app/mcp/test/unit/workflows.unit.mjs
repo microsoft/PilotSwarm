@@ -90,11 +90,11 @@ for (const [error, expected] of [
     const calls = [];
     const updateWorkflow = async (sessionId, command, ...rest) => { calls.push(rest); return { ok: true }; };
     const loose = toolsWith({ workflowCommands: true, mgmt: { updateWorkflow } }).get("update_workflow");
-    await loose({ session_id: SID, command: { operation: "publish", operation_id: "o-1" }, originating_session_id: "node-chat" });
-    const bound = toolsWith({ workflowCommands: true, originatingSessionId: "bound-chat", mgmt: { updateWorkflow } }).get("update_workflow");
+    await loose({ session_id: SID, command: { operation: "publish", operation_id: "o-1" }, originating_session_id: "node-owner" });
+    const bound = toolsWith({ workflowCommands: true, originatingSessionId: "bound-owner", mgmt: { updateWorkflow } }).get("update_workflow");
     await bound({ session_id: SID, command: { operation: "publish", operation_id: "o-2" } });
     await bound({ session_id: SID, command: { operation: "publish", operation_id: "o-3" }, originating_session_id: "other" });
-    assert.deepEqual(calls, [[{ originatingSessionId: "node-chat" }], [{ originatingSessionId: "bound-chat" }], [{ originatingSessionId: "bound-chat" }]]);
+    assert.deepEqual(calls, [[{ originatingSessionId: "node-owner" }], [{ originatingSessionId: "bound-owner" }], [{ originatingSessionId: "bound-owner" }]]);
     const { originatingSessionIdFromEnv } = await import("../../dist/src/context.js");
     assert.equal(originatingSessionIdFromEnv({}), null);
     assert.equal(originatingSessionIdFromEnv({ PILOTSWARM_ORIGINATING_SESSION_ID: "  " }), null);

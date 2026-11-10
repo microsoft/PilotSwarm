@@ -96,7 +96,7 @@ test("agent tool: with test mode off, a 1.0.83 turn is declared stop and no test
     assert.ok(read.description.startsWith(READ_WORKFLOW_TOOL_SPEC.description));
     assert.ok(!/\btest|held call/i.test(read.description), read.description);
     assert.ok(!/held call/.test(read.parameters.properties.limit.description));
-    for (const field of ["a run's stop", "each agent step's chat", "run.pages", "limit and cursor"]) {
+    for (const field of ["a run's stop", "each agent step's session", "run.pages", "limit and cursor"]) {
         assert.ok(read.description.includes(field), field);
     }
     assert.deepEqual(Object.keys(read.parameters.properties), Object.keys(READ_WORKFLOW_MILESTONE_TOOL_SPEC.parameters.properties));

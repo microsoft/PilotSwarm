@@ -168,8 +168,8 @@ export interface SessionRow {
     /** The session this service session serves (regen: the regenerating session). */
     serviceOf: string | null;
     /**
-     * Workflow Simplified stage 2.3 (P2): the `<package>/<name>` of the package Workflow Definition this chat was made for
-     * from the new-session picker (a coordinating chat), shown with the Workflow badge; null otherwise.
+     * Workflow Simplified stage 2.3 (P2): the `<package>/<name>` of the package Workflow Definition this session was made for
+     * from the new-session picker (a coordinating session), shown with the Workflow badge; null otherwise.
      */
     workflowRef?: string | null;
     /** Agent definition ID (e.g. "sweeper"). Links session to its agent config. */
@@ -1816,7 +1816,7 @@ export class PgSessionCatalog implements SessionCatalog {
     }
 
     /**
-     * S2RT-F3: the chat's running children as the shared budget counts them (child-budget.ts), outside any transaction: a
+     * S2RT-F3: the session's running children as the shared budget counts them (child-budget.ts), outside any transaction: a
      * quick answer before a creation, which checks again under its lock. `excluding`: a child not to count.
      */
     async countBudgetChildren(parentSessionId: string, excluding = ""): Promise<number> {
@@ -2221,7 +2221,7 @@ export class PgSessionCatalog implements SessionCatalog {
 
     /**
      * Closes controls after the save and records carried-steer disposition idempotently. With a visit fence (a continued
-     * workflow chat's turn; review RT-D2), one transaction: the session row's lock first (the lock cms_turn_end and
+     * workflow session's turn; review RT-D2), one transaction: the session row's lock first (the lock cms_turn_end and
      * cms_turn_control_add take, in the same order), then each open Stop of the turn that names another visit gets its
      * too_late outcome (the classifier and insert live admission uses), then cms_turn_end. A Stop added after the live
      * reader retired is classified under the same lock as the result is decided, so another visit's Stop never makes this
@@ -2778,7 +2778,7 @@ export class PgSessionCatalog implements SessionCatalog {
         if (ids.length === 0) return new Set();
         const { rows } = await this.pool.query(
             `SELECT DISTINCT owner_session_id
-             FROM "${this.sql.schema}".workflow_chat_definitions
+             FROM "${this.sql.schema}".session_workflow_definitions
              WHERE owner_session_id = ANY($1) AND deleted_at IS NULL`,
             [ids],
         );

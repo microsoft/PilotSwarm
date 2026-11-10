@@ -3,7 +3,7 @@
  * command is sent (TLA+ case limit.cc-g1-end-during-turn). The command waits in the session's queue while one of its turns
  * runs, and the session's orchestration reads Running until that turn ends; this mark says the end was asked meanwhile.
  * A Workflow step that continues its agent session reads it (WorkflowStore.sessionEndRequested): such a session gets no
- * further visit, the next visit starting a new agent session or failing unavailable at once (runtime.ts chatEndedOnItsOwn).
+ * further visit, the next visit starting a new agent session or failing unavailable at once (runtime.ts agentSessionEndedOnItsOwn).
  *
  * It is a catalog session event (session_events), not durable orchestration history: recording it changes no replay. The
  * transcript and activity views show no row for it (ui/core history.js): the end itself already shows there.

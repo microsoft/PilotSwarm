@@ -226,8 +226,8 @@ test("a waiting interception has an Answer button that opens its form; the clock
 });
 
 // Owner decision q12 (mock M18): a person may send a held call's answer to the workflow's parent agent instead, as an
-// ordinary message in the parent's chat with the suggested answer; the parent answers with its own tool. People still
-// cannot write to a step's chat. The workflow, the test run, the call and its step are workflow data, never the person's
+// ordinary message in the parent's session with the suggested answer; the parent answers with its own tool. People still
+// cannot write to a step's session. The workflow, the test run, the call and its step are workflow data, never the person's
 // words (adversarial review R2-SF-3).
 const ABOUT_CALL = "About workflow session wf: a call held in its test run waits for an answer (the workflow data below says which call).";
 const QUESTION = [
@@ -273,7 +273,7 @@ test("q12: the message to the parent agent names the workflow, the test run, the
     assert.equal(workflowParentSessionId({ s: { sessionKind: "chat", parentSessionId: "p" } }, "s"), null);
     assert.equal(workflowParentSessionId({ wf: { sessionKind: "workflow", parentSessionId: null } }, "wf"), null);
     assert.equal(workflowAskParentSent("4f9d2c1e-0000-0000-0000-000000000000"),
-        "Sent to the parent agent's chat. It answers with its own tools; open its chat from the session list.");
+        "Sent to the parent agent's session. It answers with its own tools; open its session from the session list.");
 });
 
 function asking({ parent = "parent-1", sendMessage } = {}) {
@@ -286,7 +286,7 @@ function asking({ parent = "parent-1", sendMessage } = {}) {
     return { controller: new PilotSwarmUiController({ store, transport }), store, sent };
 }
 
-test("q12: the controller sends the question to the parent's chat as an ordinary message, and says why when it cannot", async () => {
+test("q12: the controller sends the question to the parent's session as an ordinary message, and says why when it cannot", async () => {
     const h = asking();
     const response = { kind: "success", value: { outcome: "accepted", output: null } };
     const result = await h.controller.askParentAboutHeldCall("wf", { runId: RUN, interceptionId: AGENT, response });
@@ -321,7 +321,7 @@ test("q12: a held call that waits offers 'Ask the parent agent', and the answer 
     assert.equal([...html.matchAll(/data-action="ask-parent"/g)].length, 1, "only the call that waits");
     assert.match(html, /<tr data-interception="nx-review-1\/agent">.*data-action="ask-parent"[^>]*>Ask the parent agent<\/button>/);
     const open = withParent({ readModel: testModel(), answeringInterceptionId: AGENT });
-    assert.match(open, /data-action="ask-parent" title="Send this answer to the parent agent&#x27;s chat as a suggestion; it answers the call with its own tools\.">Send to the parent agent instead<\/button>/);
+    assert.match(open, /data-action="ask-parent" title="Send this answer to the parent agent&#x27;s session as a suggestion; it answers the call with its own tools\.">Send to the parent agent instead<\/button>/);
     // Without a parent nothing is offered.
     const plain = main(mount({ readModel: testModel(), answeringInterceptionId: AGENT }));
     assert.ok(!plain.includes("data-action=\"ask-parent\""));

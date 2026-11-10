@@ -3,7 +3,7 @@
 > **As built (2026-11-10, owner decision: Workflow was deployed nowhere, so its versions and migrations were
 > collapsed).** Each Workflow orchestration has one version: `workflow-controller` 1.0.0 is the controller this
 > document calls 1.9.0 (the request controller); `workflow-effect`, `-notify` and `-send` 1.0.0 are its tagged
-> 1.1.0 orchestrations; `workflow-request`, `-agent` and `-chat-end` stay 1.0.0. Controller 1.8.0, the pre-release
+> 1.1.0 orchestrations; `workflow-request`, `-agent` and `-agent-session-end` stay 1.0.0. Controller 1.8.0, the pre-release
 > controllers 1.0.0 to 1.7.0, the untagged orchestrations and activities, and the `workflowRequests` and
 > `WorkflowHost.requests` switches are gone: every activity is `workflow.<name>` with the workflow-request tag.
 > The CMS migrations this document numbers 0088 to 0111 are one migration, 0088 (`migrations/workflow-0088.ts`), which

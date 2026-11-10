@@ -3,7 +3,7 @@
  * Workflow failed, or reached an input wait, while no Workflow panel showed it. The dot read a cached model that said
  * Running, and nothing read that model again while the panel was closed: the catalog read refreshed the row only.
  * - A row that ended after its model was read wins over a model whose run has not ended.
- * - Each catalog refresh reads again the models of the active chat's Workflows that are still running, or whose row
+ * - Each catalog refresh reads again the models of the active session's Workflows that are still running, or whose row
  *   changed after their model was read (an input wait shows only in the model).
  *
  * Run: node --test ui/core/test/workflow-simplified-attention-fresh.test.mjs

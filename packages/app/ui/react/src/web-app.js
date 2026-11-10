@@ -15,7 +15,7 @@ import {
     normalizeWorkflowPanelHeights, normalizeWorkflowPanelWidths, WORKFLOW_SIDE_TAB, selectWorkflowTabContext, workflowHighlightedSessionId, shownSidePaneTab,
     workflowTabButtonTip,
 } from "../../core/src/workflow-owner.js";
-import { WORKFLOW_LIFECYCLE_READ_MS, chatLifecycleStamp, workflowDefinitionsReadDelay, workflowLifecycleNeedsAttention } from "../../core/src/workflow-lifecycle.js";
+import { WORKFLOW_LIFECYCLE_READ_MS, sessionLifecycleStamp, workflowDefinitionsReadDelay, workflowLifecycleNeedsAttention } from "../../core/src/workflow-lifecycle.js";
 import { normalizeSidePaneTab } from "../../core/src/state.js";
 import { ModalDialog, focusGivenBack } from "./modal-dialog.js";
 import { WorkflowInputWait, workflowInputWait } from "./workflow-input-wait.js";
@@ -544,7 +544,7 @@ function profileViewState(root) {
         ...root.ui, ...root.ui.layout,
         ownerFilter: root.sessions.ownerFilter, pinnedIds: root.sessions.pinnedIds,
         manualOrder: root.sessions.manualOrder, sessionSortMode: root.sessions.sortMode, sessionUsedAt: root.sessions.usedAt, collapsedSessionIds: root.sessions.collapsedIds,
-        // Review UI-8: a Workflow selected under its chat is saved as the selection (a reload selects it again).
+        // Review UI-8: a Workflow selected under its session is saved as the selection (a reload selects it again).
         activeSessionId: workflowHighlightedSessionId(root.sessions), canvasPrefs: root.canvas?.prefs,
     };
 }
@@ -858,9 +858,9 @@ const PORTAL_COLUMN_KEY_STEP_PX = 24;
 
 /**
  * The right block's columns as they are ON SCREEN, as pixel deltas from each column's opening width (of-03), and how
- * far the block may still grow: what chat can give before it reaches its floor.
+ * far the block may still grow: what session can give before it reaches its floor.
  *
- * A stored width can be larger than the width shown. The grid caps the right block at the window minus chat's floor,
+ * A stored width can be larger than the width shown. The grid caps the right block at the window minus session's floor,
  * and with both columns open diagnostics only gets what the canvas's fixed width leaves; so a narrower window, a wide
  * sessions column, a key press past the cap, or opening both columns on a small screen leaves the stored widths ahead
  * of the screen. The seams used to start from the stored widths: the seam a person dragged then did not move until the
@@ -870,8 +870,8 @@ const PORTAL_COLUMN_KEY_STEP_PX = 24;
  * canvas narrows, instead of the squeeze being remembered.
  *
  * How far the block may still grow is what the grid's cap on it leaves (the workspace minus the resizer track and the
- * reserve beside it: the session list, its 32px and chat's floor, data-right-reserve), and never more than chat can
- * give. Chat alone was not enough: the session list keeps its width (0.8.9), so with the cap reached chat is still a
+ * reserve beside it: the session list, its 32px and session's floor, data-right-reserve), and never more than session can
+ * give. Session alone was not enough: the session list keeps its width (0.8.9), so with the cap reached session is still a
  * few pixels over its floor, and each drag or key grew the canvas by them while the block could not grow: Diagnostics
  * paid, down to 0px with its toggle still on (of-03).
  */
@@ -1777,7 +1777,7 @@ function Runs({ runs, theme }) {
                     "data-workflow-owner": "true" }, React.createElement(WorkflowGlyph, { decorative: true }));
             }
             if (run?.role === "sessionKind") {
-                // Stage 2.3: a chat made for a package's Workflow Definition says which one.
+                // Stage 2.3: a session made for a package's Workflow Definition says which one.
                 return React.createElement("span", { key: index, style, className: `ps-workflow-kind${run.workflowRef ? " is-coordinating" : ""}`,
                     ...(run.workflowRef ? { title: `Runs the Workflow ${run.workflowRef}`, "data-workflow-ref": run.workflowRef } : {}) },
                     React.createElement(WorkflowGlyph));
@@ -5779,8 +5779,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // state from its read model. Same trap again: omit them and every row computes as if neither existed.
         workflowRowId: state.sessions.workflowRowId ?? null,
         workflowViews: state.ui.workflowViews,
-        // OF-S2-5: the chats' definitions read here. Same trap again: without them the "Has Workflows" mark never drew.
-        chatDefinitions: state.ui.chatDefinitions,
+        // OF-S2-5: the sessions' definitions read here. Same trap again: without them the "Has Workflows" mark never drew.
+        sessionDefinitions: state.ui.sessionDefinitions,
         // Agent display titles order a named agent session's title (the
         // person's title first). Same trap again: leave it out and every
         // "DeepWiki Code Explorer: <title>" row keeps the agent name first.
@@ -5810,7 +5810,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             listDeselected: viewState.listDeselected,
             workflowRowId: viewState.workflowRowId,
         },
-        ui: { workflowViews: viewState.workflowViews, chatDefinitions: viewState.chatDefinitions },
+        ui: { workflowViews: viewState.workflowViews, sessionDefinitions: viewState.sessionDefinitions },
         auth: viewState.auth,
         connection: {
             mode: viewState.connectionMode,
@@ -5826,7 +5826,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         },
         budget: { paused: viewState.budgetPaused },
         agentTitles: viewState.agentTitles,
-    }), [viewState.activeSessionId, viewState.workflowRowId, viewState.workflowViews, viewState.chatDefinitions, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.sortMode, viewState.sortSnapshot, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat, viewState.agentTitles]);
+    }), [viewState.activeSessionId, viewState.workflowRowId, viewState.workflowViews, viewState.sessionDefinitions, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.sortMode, viewState.sortSnapshot, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat, viewState.agentTitles]);
     // Hold the previous rows when a poll produced identical output.
     const rows = useStableValue(computedRows);
     const searchScrollRef = React.useRef({ top: 0, left: 0, restore: false });
@@ -6399,8 +6399,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // leave the list looking permanently deselected, so re-arm directly
         // rather than re-running selection and disturbing chat scroll memory.
         if (row.chatOwner) {
-            // Workflow Simplified (S4): the session whose chat is on screen while one of its Workflow rows is selected.
-            // Clicking it selects the session itself: the Workflow row's highlight goes, the chat stays, and the right
+            // Workflow Simplified (S4): the session whose session is on screen while one of its Workflow rows is selected.
+            // Clicking it selects the session itself: the Workflow row's highlight goes, the session stays, and the right
             // block stays as the person left it (owner feedback 2026-11-06, "can't select the parent session").
             ctl.loadSession(row.sessionId).catch(() => {});
         } else if (row.sessionId === current.activeSessionId) {
@@ -7473,8 +7473,8 @@ function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix =
 /**
  * Why a session in a workflow agent state's subtree has no composer (design 03 human-input denial), in the terminal's
  * words (workflowInputNoteText): the reason the server reports first (review UI-17), then `To change this, message
- * <the chat that owns the Workflow>.` when that chat is loaded (with no reason, `Read-only. To change this, message
- * <that chat>.`), else the controlling agent's session by its short id. Text only.
+ * <the session that owns the Workflow>.` when that session is loaded (with no reason, `Read-only. To change this, message
+ * <that session>.`), else the controlling agent's session by its short id. Text only.
  */
 function workflowInputNote(access, byId = null) {
     const controlling = access?.workflowInput?.controllingSessionId;
@@ -7677,8 +7677,8 @@ function ChatReadingControl({ reading, onChange }) {
 }
 
 /**
- * Whether a Workflow is shown in the middle instead of a chat (its session is not loaded, so the Workflow itself is the
- * active session). That screen has no zen or full screen: there is no chat to make a rail of. The Workflow tab in the
+ * Whether a Workflow is shown in the middle instead of a session (its session is not loaded, so the Workflow itself is the
+ * active session). That screen has no zen or full screen: there is no session to make a rail of. The Workflow tab in the
  * right block has both, exactly as the canvas does (owner, 2026-11-06T06:28Z; replaces batch 6 f-02 and spec L1's "no
  * Zen or Full screen").
  */
@@ -7688,14 +7688,14 @@ function activeSessionIsWorkflow(state) {
 
 /**
  * Whether the active session itself is a workflow (its session is not loaded, so it shows in the middle). The Workflow
- * tab beside an ordinary chat is not (review UI-6): that chat's canvas stays mounted, parked, with its page state.
+ * tab beside an ordinary session is not (review UI-6): that session's canvas stays mounted, parked, with its page state.
  */
 export function activeSessionIsWorkflowSession(state) {
     return state?.sessions?.byId?.[state?.sessions?.activeSessionId]?.sessionKind === "workflow";
 }
 
 /**
- * The middle column (Workflow Simplified, 06): always a chat. A Workflow row selects the chat of the session that owns it
+ * The middle column (Workflow Simplified, 06): always a session. A Workflow row selects the session of the session that owns it
  * (its Workflow shows in the right block's Workflow tab), so the active session is a workflow only when that session is
  * not loaded; the Workflow tab then shows it here. A Master of Agents panel that holds a Workflow shows the same Workflow
  * tab (spec 18: one screen for a Workflow everywhere; the old workflow screen, with its Notices and Publish review, is
@@ -7748,8 +7748,8 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
             activeInputPolicy: activeSessionId ? state.ui.workflowInputPolicies?.[activeSessionId] || null : null,
             // Review SF-D5: stored workflow test notices show only while the server says test mode is on.
             workflowTestMode: state.ui.workflowTestMode === true,
-            // OF-S2-5: the chat's title says when it has grown Workflows (its definitions read here).
-            activeChatDefinitions: activeSessionId ? state.ui.chatDefinitions?.[activeSessionId] ?? null : null,
+            // OF-S2-5: the session's title says when it has grown Workflows (its definitions read here).
+            activeSessionDefinitions: activeSessionId ? state.ui.sessionDefinitions?.[activeSessionId] ?? null : null,
             // Whether it may be in a workflow agent state's subtree: its composer then waits for the server (q18).
             activeMayBeWorkflowStep: activeSessionId ? workflowInputPolicyApplies(state, activeSessionId) : false,
             activeSessionIsGroup: Boolean(activeSessionId && state.sessions.byId[activeSessionId]?.isGroup),
@@ -7792,14 +7792,14 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
         ui: {
             inspectorTab: viewState.inspectorTab,
             workflowTestMode: viewState.workflowTestMode,
-            ...(viewState.activeSessionId && viewState.activeChatDefinitions
-                ? { chatDefinitions: { [viewState.activeSessionId]: viewState.activeChatDefinitions } } : {}),
+            ...(viewState.activeSessionId && viewState.activeSessionDefinitions
+                ? { sessionDefinitions: { [viewState.activeSessionId]: viewState.activeSessionDefinitions } } : {}),
             ...(viewState.activeSessionId && viewState.activeInputPolicy
                 ? { workflowInputPolicies: { [viewState.activeSessionId]: viewState.activeInputPolicy } } : {}),
         },
     }), [
         logHistory,
-        viewState.activeChatDefinitions,
+        viewState.activeSessionDefinitions,
         viewState.activeSessionId,
         viewState.activeOutbox,
         viewState.activeInputPolicy,
@@ -9561,7 +9561,7 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     const folded = foldable && !pillOpen;
     // Zen and full screen, one set for the canvas and the Workflow tab (owner, 2026-11-06T06:28Z: "exact same behavior as
     // the canvas"). Both use the same stored flags, so switching between the canvas and the Workflow tab keeps the mode.
-    // Zen: sessions step away, chat becomes a rail, this block is the workbench.
+    // Zen: sessions step away, session becomes a rail, this block is the workbench.
     const zenButton = () => React.createElement("button", {
         type: "button",
         className: `ps-artifact-pane-btn${zenOn ? " is-active" : ""}`,
@@ -9672,7 +9672,7 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                         "aria-label": "Share canvas",
                     }, React.createElement(CanvasLinkGlyph))
                     : null,
-                // Zen: the mode for "the work happens on the canvas, chat is
+                // Zen: the mode for "the work happens on the canvas, session is
                 // for steering". Full screen hides this whole bar and promotes
                 // the rev and the way back into the portal header.
                 zenButton(),
@@ -11500,25 +11500,25 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, pr
 }
 
 /**
- * OF-S2-4 (C): while the Workflow panel is not on screen, the Workflow tab's chat's definitions are read in the background,
- * so a definition made, a revision saved or a test run lights the Workflow button's dot: on arriving at the chat, when the
- * chat's status or its Workflows' statuses change (chatLifecycleStamp, review F3: never for a mere row update; at most one
+ * OF-S2-4 (C): while the Workflow panel is not on screen, the Workflow tab's session's definitions are read in the background,
+ * so a definition made, a revision saved or a test run lights the Workflow button's dot: on arriving at the session, when the
+ * session's status or its Workflows' statuses change (sessionLifecycleStamp, review F3: never for a mere row update; at most one
  * read every 5 s), and every WORKFLOW_LIFECYCLE_READ_MS. Never while the page is hidden; once when it is shown again. The
  * panel, when shown, reads them itself.
  */
 function useWorkflowLifecycleReads(controller, active) {
     const ownerId = useControllerSelector(controller, (s) => selectWorkflowTabContext(s).ownerId);
-    const stamp = useControllerSelector(controller, (s) => (ownerId ? chatLifecycleStamp(s.sessions.byId, ownerId) : ""));
+    const stamp = useControllerSelector(controller, (s) => (ownerId ? sessionLifecycleStamp(s.sessions.byId, ownerId) : ""));
     const lastReadRef = React.useRef({ ownerId: null, at: 0 });
     const read = React.useCallback(() => {
-        if (!ownerId || typeof controller.ensureChatWorkflowDefinitions !== "function") return;
+        if (!ownerId || typeof controller.ensureSessionWorkflowDefinitions !== "function") return;
         if (typeof document !== "undefined" && document.hidden) return;
         lastReadRef.current = { ownerId, at: Date.now() };
-        Promise.resolve(controller.ensureChatWorkflowDefinitions(ownerId, { force: true })).catch(() => {});
+        Promise.resolve(controller.ensureSessionWorkflowDefinitions(ownerId, { force: true })).catch(() => {});
     }, [controller, ownerId]);
     React.useEffect(() => {
         if (!active || !ownerId) return undefined;
-        // OF-S2-4d: arriving at a chat reads it once the selection settles (its panel may open on arrival), not per key while
+        // OF-S2-4d: arriving at a session reads it once the selection settles (its panel may open on arrival), not per key while
         // the list is moved through; its own changes at most every 5 s.
         const timer = setTimeout(read, workflowDefinitionsReadDelay(ownerId, lastReadRef.current, SESSION_NAV_SETTLE_MS));
         return () => clearTimeout(timer);
@@ -11631,7 +11631,7 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
     // failed) changed since the Workflow panel last showed it; showing the panel clears it.
     const workflowSide = useControllerSelector(controller, (s) => shownSidePaneTab(s) === WORKFLOW_SIDE_TAB);
     const workflowTabOpen = workflowSide && (mobile ? canvasPaneOpen : canvasView.mode === "canvas" && !artifactReaderOpen);
-    // OF-S2-4 (C): the dot is every lifecycle change of the chat's definitions and Workflows (workflow-lifecycle.js).
+    // OF-S2-4 (C): the dot is every lifecycle change of the session's definitions and Workflows (workflow-lifecycle.js).
     const workflowAttention = useControllerSelector(controller, (s) => workflowLifecycleNeedsAttention(s, selectWorkflowTabContext(s).ownerId)) && !workflowTabOpen;
     useWorkflowLifecycleReads(controller, !workflowTabOpen);
 
@@ -12350,7 +12350,7 @@ function ZenRailResizeHandle({ controller, sessionId, railPx = PORTAL_ZEN_RAIL_D
     return React.createElement("button", {
         type: "button",
         className: `ps-column-resizer${dragging ? " is-dragging" : ""}`,
-        title: "Drag to resize chat against the canvas (remembered for this session). Double-click to reset.",
+        title: "Drag to resize session against the canvas (remembered for this session). Double-click to reset.",
         "aria-label": "Resize the zen chat rail",
         onPointerDown: (event) => {
             if (event.button !== 0) return;
@@ -12382,7 +12382,7 @@ function ZenRailResizeHandle({ controller, sessionId, railPx = PORTAL_ZEN_RAIL_D
  * Every drag and key press starts from the widths on screen and stores them
  * for both columns first (of-03, see measureRightBlock), so the seam moves
  * at once and moves itself, never the seam between canvas and diagnostics.
- * It grows the block until chat reaches its floor; a drag that leaves the
+ * It grows the block until session reaches its floor; a drag that leaves the
  * column narrower than the snap width closes it on release; the keyboard
  * stops at the snap width instead, so the focused seam stays on screen.
  * Double-click resets.
@@ -17518,7 +17518,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         if (mobileCanvasOpen) { closeMobileCanvas(); return; }
         openMobileCanvas();
     }, [mobileCanvasOpen, closeMobileCanvas, openMobileCanvas]);
-    // Workflow Simplified (12): the Workflow pane replaces the chat, as the canvas does. The canvas layer shows it while the
+    // Workflow Simplified (12): the Workflow pane replaces the session, as the canvas does. The canvas layer shows it while the
     // side pane is on its Workflow tab; the Workflow button opens it there, or closes it when it shows.
     const toggleMobileWorkflow = React.useCallback(() => {
         const onWorkflowTab = shownSidePaneTab(controller.getState()) === WORKFLOW_SIDE_TAB;
@@ -17535,7 +17535,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         if (mobile && !state.adminVisible) openMobileCanvas();
     }, [workflowOpenSeq, mobile, state.adminVisible, openMobileCanvas]);
     // OF-S2-4d, review F7: a Workflow panel that opens by itself shows on the phone without the hand-opening path's effects:
-    // it does not withdraw the chat's canvas opt-out, and it never closes Budget or the admin console (it waits behind them).
+    // it does not withdraw the session's canvas opt-out, and it never closes Budget or the admin console (it waits behind them).
     const workflowAutoOpenSeq = useControllerSelector(controller, (s) => Number(s?.ui?.workflowAutoOpenSeq) || 0);
     const budgetOpen = useControllerSelector(controller, (s) => Boolean(s?.ui?.budgetOpen));
     const workflowAutoOpenSeqRef = React.useRef(workflowAutoOpenSeq);
@@ -17899,7 +17899,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     //
     // A Workflow shown in the middle (its session is the active one) has
     // neither full screen nor zen: while one is, both read as off and it shows
-    // in the normal layout. The stored flags are untouched, so a chat brings
+    // in the normal layout. The stored flags are untouched, so a session brings
     // them back as the person left them. The Workflow tab in the right block
     // has both, as the canvas does, on the same flags: switching between the
     // two keeps the mode.

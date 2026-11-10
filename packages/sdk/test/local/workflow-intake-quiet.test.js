@@ -61,7 +61,7 @@ function turnControlCatalog({ end = { stopped: false, late: [] } } = {}) {
 
 /**
  * A workflow store whose admission gives `answer` to every ask. Every 1.0.83 turn reads its session's Workflow lineage
- * first (session-proxy executeTurnBody; the real store's readWorkflowLineage): this chat is in no Workflow.
+ * first (session-proxy executeTurnBody; the real store's readWorkflowLineage): this session is in no Workflow.
  */
 function admissionStore(answer) {
     const calls = [];

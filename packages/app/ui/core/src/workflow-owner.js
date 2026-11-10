@@ -9,8 +9,8 @@
  *   Workflow tab);
  * - children with the same definition name in one session form one **definition** (O5, display only; no stored data
  *   changes).
- * The session that owns them stays the chat in the middle. Selecting a Workflow row selects its session's chat and
- * shows that Workflow in the session's Workflow tab (S4); selecting an agent node's chat shows its Workflow there with
+ * The session that owns them stays the session in the middle. Selecting a Workflow row selects its session's chat and
+ * shows that Workflow in the session's Workflow tab (S4); selecting an agent node's session shows its Workflow there with
  * the node selected (S6).
  *
  * Every function here is pure. Words are display-only: stored names and run statuses stay as they are (O8: the stored
@@ -37,7 +37,7 @@ export function sessionGrowsWorkflows(state, sessionId) {
     const session = isRecord(byId) && Object.hasOwn(byId, sessionId) ? byId[sessionId] : null;
     if (!isRecord(session) || session.isGroup || isWorkflowChild(session)) return false;
     if (session.hasWorkflowDefinitions === true) return true;
-    const entry = state?.ui?.chatDefinitions?.[sessionId];
+    const entry = state?.ui?.sessionDefinitions?.[sessionId];
     if (isRecord(entry) && Array.isArray(entry.items) && entry.items.some(item => isRecord(item) && !item.deletedAt)) return true;
     return workflowChildrenOf(byId, sessionId).length > 0;
 }
@@ -472,7 +472,7 @@ function computeDefinitions(byId, ownerId, views) {
 /**
  * Owner, 2026-11-06T19:40Z (F9): a workflow child's definition facts from its read model, { version, state, revision }:
  * its metadata.version ("1.1.0"), "draft" or "published", and its current revision; each null until it is read. In stage 1
- * a chat's "another revision" is often a new child (spawn_workflow with new YAML under the same name): its revision is 1
+ * a session's "another revision" is often a new child (spawn_workflow with new YAML under the same name): its revision is 1
  * again, so the version and whether it has started are what tell it apart.
  */
 export function workflowChildDefinitionFacts(view) {
@@ -833,13 +833,13 @@ export function workflowRowTitle(byId, session, views = {}) {
  * The message that asks the session's chat to start another Workflow from a definition (Run again, W8; owner feedback
  * 2026-11-06). On the tested engine a Workflow is a workflow child with one live run, so another Workflow is the same
  * YAML spawned again; the new child has the same name and is listed under the same definition (O5). The message names
- * the definition, the Workflow whose YAML it repeats (`fromSessionId`, its full id so the chat can read the YAML), the
+ * the definition, the Workflow whose YAML it repeats (`fromSessionId`, its full id so the session can read the YAML), the
  * number the new one gets, how to start it (workflow_definition start by that name; never saved, changed or renamed;
- * spawn_workflow is no longer offered to the chat) and the inputs. `inputs` and `vars` are JSON objects or undefined; `noInputs`: the definition's contract takes no inputs. Pure.
+ * spawn_workflow is no longer offered to the session) and the inputs. `inputs` and `vars` are JSON objects or undefined; `noInputs`: the definition's contract takes no inputs. Pure.
  *
  * Review SF-6: a definition's name is its author's text, and the inputs and variables are the form's. So the name, the
  * version and the ids are JSON strings, said once; the inputs and variables are JSON; all of them are marked as data,
- * not instructions; and the chat is told to start only that one Workflow.
+ * not instructions; and the session is told to start only that one Workflow.
  */
 export function workflowStartAnotherText({ name, version = null, fromSessionId = null, fromNumber = null, nextNumber = null, inputs, vars,
     noInputs = false } = {}) {
@@ -865,8 +865,8 @@ export function workflowStartAnotherText({ name, version = null, fromSessionId =
 }
 
 /**
- * The nearest workflow child that holds a session (an agent node's chat and its sub-agents, S3/S6), as
- * { workflowId, nodeSessionId: the agent node's own chat }, or null for a session outside every workflow. Bounded.
+ * The nearest workflow child that holds a session (an agent node's session and its sub-agents, S3/S6), as
+ * { workflowId, nodeSessionId: the agent node's own session }, or null for a session outside every workflow. Bounded.
  */
 export function workflowAncestorOf(byId, sessionId, limit = 8) {
     let child = byId?.[sessionId] ?? null;
@@ -882,23 +882,23 @@ export function workflowAncestorOf(byId, sessionId, limit = 8) {
     return null;
 }
 
-/** The graph state an agent node's chat runs (S6): from the engine's "Workflow step: <state>" title. */
-export function workflowNodeStateOfChat(session) {
+/** The graph state an agent node's session runs (S6): from the engine's "Workflow step: <state>" title. */
+export function workflowNodeStateOfSession(session) {
     const match = /^Workflow step:\s*(.+)$/u.exec(String(session?.title ?? "").trim());
     return match ? match[1].trim() : null;
 }
 
-/** An agent node's chat row text (S3): `summarize · agent`; null for any other session. */
-export function workflowNodeChatTitle(byId, session) {
+/** An agent node's session row text (S3): `summarize · agent`; null for any other session. */
+export function workflowNodeSessionTitle(byId, session) {
     const parent = byId?.[session?.parentSessionId] ?? null;
     if (!isWorkflowChild(parent)) return null;
-    const state = workflowNodeStateOfChat(session);
+    const state = workflowNodeStateOfSession(session);
     return state ? `${state} · agent` : null;
 }
 
 /**
  * Where a selection of `sessionId` lands (S4, S8): a workflow child whose owner session is loaded selects that session's
- * chat and shows the child in its Workflow tab: { ownerId, workflowId }. Null for anything else (it selects itself).
+ * session and shows the child in its Workflow tab: { ownerId, workflowId }. Null for anything else (it selects itself).
  */
 export function workflowSelectionTarget(byId, sessionId) {
     const session = byId?.[sessionId] ?? null;
@@ -911,7 +911,7 @@ export function workflowSelectionTarget(byId, sessionId) {
  * The Workflow tab's context for the active session (09, the table "Row selected"):
  * - a session: its own definitions; the Workflow shown is the selected Workflow row of it, else the one its tab last
  *   showed (S5);
- * - an agent node's chat (or its sub-agent): its Workflow, with that node selected (S6);
+ * - an agent node's session (or its sub-agent): its Workflow, with that node selected (S6);
  * - a workflow child whose owner is not loaded (it stays active itself): that child.
  * Returns { ownerId, workflowId, nodeSessionId, nodeStateId } (each a string or null). Pure; returns primitives so a
  * caller compares the fields.
@@ -925,9 +925,9 @@ export function selectWorkflowTabContext(state) {
     if (isWorkflowChild(active)) return { ...none, ownerId: workflowOwnerId(active), workflowId: activeId };
     const ancestor = workflowAncestorOf(byId, activeId);
     if (ancestor) {
-        const nodeChat = byId[ancestor.nodeSessionId];
+        const nodeSession = byId[ancestor.nodeSessionId];
         return { ownerId: workflowOwnerId(byId[ancestor.workflowId]), workflowId: ancestor.workflowId, nodeSessionId: ancestor.nodeSessionId,
-            nodeStateId: workflowNodeStateOfChat(nodeChat) };
+            nodeStateId: workflowNodeStateOfSession(nodeSession) };
     }
     const focus = state?.sessions?.workflowRowId ?? null;
     const focused = focus && byId[focus] && workflowOwnerId(byId[focus]) === activeId ? focus : null;
@@ -943,11 +943,11 @@ export function workflowTabContextEqual(a, b) {
 }
 
 /**
- * What the terminal UI's Workflow pane opens (18: the chat plus a Workflow pane toggle, the portal's model): the
- * Workflow the active session's Workflow tab shows (selectWorkflowTabContext: a selected Workflow row of this chat, the
- * one its tab last showed, an agent node chat's own Workflow with that node, or a workflow child that is active itself),
- * else this chat's newest started Workflow, else its newest definition. { workflowId, nodeStateId } or null when the
- * chat has none. Pure.
+ * What the terminal UI's Workflow pane opens (18: the session plus a Workflow pane toggle, the portal's model): the
+ * Workflow the active session's Workflow tab shows (selectWorkflowTabContext: a selected Workflow row of this session, the
+ * one its tab last showed, an agent node session's own Workflow with that node, or a workflow child that is active itself),
+ * else this session's newest started Workflow, else its newest definition. { workflowId, nodeStateId } or null when the
+ * session has none. Pure.
  */
 export function workflowPaneTarget(state) {
     const context = selectWorkflowTabContext(state);
@@ -1113,7 +1113,7 @@ export function workflowTabButtonTip(kind, { name = null, number = null, revisio
         case "definition": return "the definition's graph";
         case "workflows": return "every Workflow started from this definition";
         case "start": return `start Workflow${which} from this definition`;
-        case "start-another": return `ask the chat to start ${text(name) ?? "this definition"}${which} from this definition`;
+        case "start-another": return `ask the session to start ${text(name) ?? "this definition"}${which} from this definition`;
         case "yaml": return "show the definition's YAML instead of its graph";
         case "compare": return "compare the definition's versions and revisions";
         case "pause": return "no new node starts; started nodes finish";
@@ -1122,7 +1122,7 @@ export function workflowTabButtonTip(kind, { name = null, number = null, revisio
         case "save": return Number.isSafeInteger(revision) ? `save as a new revision after revision ${revision}` : "save as a new revision";
         case "discard": return "go back to the saved revision";
         // Owner, 2026-11-06T19:40Z (F7): full screen's way out, where Full screen was pressed.
-        case "exit-full-screen": return "bring back the chat and the sessions";
+        case "exit-full-screen": return "bring back the session and the sessions";
         default: return null;
     }
 }

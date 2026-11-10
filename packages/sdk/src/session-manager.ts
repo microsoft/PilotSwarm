@@ -422,7 +422,7 @@ export interface WorkspaceFingerprintPart {
  */
 /**
  * FU-17: the only tools a session in the subtree of an agent state that limits its tools is offered (the Copilot session's
- * availableTools): the state's list, and for the state's own chat complete_workflow_node; null when no state limits it.
+ * availableTools): the state's list, and for the state's own session complete_workflow_node; null when no state limits it.
  */
 export function workflowAgentToolAllowlist(config: { workflowToolLimit?: string[]; workflowAgentChild?: boolean }): string[] | null {
     if (!Array.isArray(config.workflowToolLimit)) return null;
@@ -470,8 +470,8 @@ export function buildBindingFingerprintInput(parts: {
         excludedTools: parts.excludedTools,
         tools: parts.tools,
         ...(parts.availableTools ? { availableTools: parts.availableTools } : {}),
-        // A Base V1 chat's skill directories are not otherwise in its identity (V2's sdkSkillDirectories are): turning
-        // Workflows on gives the CLI the Workflow skill directory, so the chat needs a fresh handle.
+        // A Base V1 session's skill directories are not otherwise in its identity (V2's sdkSkillDirectories are): turning
+        // Workflows on gives the CLI the Workflow skill directory, so the session needs a fresh handle.
         ...(parts.workflowSkillDirectories?.length ? { workflowSkillDirectories: parts.workflowSkillDirectories } : {}),
         ...(parts.workspace ? {
             workspace: {
@@ -490,11 +490,11 @@ export function isWorkflowSkillDirectory(dir: string): boolean {
 }
 
 /**
- * The skill directories a chat's CLI is given. The CLI's built-in `skill` tool serves them, and its declaration lists
+ * The skill directories a session's CLI is given. The CLI's built-in `skill` tool serves them, and its declaration lists
  * their skills (an <available_skills> block in its description; Copilot CLI 1.0.83). Every worker loads the Workflow skill
- * directories, so they reach the CLI only where Workflows are on in the chat, as PilotSwarm's skills indexes list the
- * Workflow skills only there. Off, the chat's paragraph names enable_workflows instead; the read-only tuner has none.
- * load_skill and search_capabilities find the Workflow skills in every chat (capability sources).
+ * directories, so they reach the CLI only where Workflows are on in the session, as PilotSwarm's skills indexes list the
+ * Workflow skills only there. Off, the session's paragraph names enable_workflows instead; the read-only tuner has none.
+ * load_skill and search_capabilities find the Workflow skills in every session (capability sources).
  */
 export function cliSkillDirectories(dirs: readonly string[], workflowContext: WorkflowContextMode): string[] {
     return workflowContext === "on" ? [...dirs] : dirs.filter(dir => !isWorkflowSkillDirectory(dir));
@@ -503,7 +503,7 @@ export function cliSkillDirectories(dirs: readonly string[], workflowContext: Wo
 /**
  * The CLI's built-in `skill` tool takes the skill's name as `skill` (Copilot CLI 1.0.83: {"skill": string}, required).
  * PilotSwarm's load_skill takes `name`, and the Workflow guidance says "call `load_skill` with name `workflow-authoring`":
- * a model that called `skill` with `name` was refused by the CLI ('"skill": Required', a Failed row in the chat). The
+ * a model that called `skill` with `name` was refused by the CLI ('"skill": Required', a Failed row in the session). The
  * pre-tool hook runs before the CLI checks the arguments, so such a call is given its name as `skill`. A call that has
  * `skill`, any other tool's call, and a call an earlier hook denies are unchanged.
  */
@@ -2540,7 +2540,7 @@ export class SessionManager {
         // whole purpose is to change agents — so the strip applies only to the
         // legacy id, and dies with it.
         const isTunerSession = effectiveSerializableConfig.agentIdentity === "agent-tuner";
-        // The chat's durable capability state: package selections, loads by path and its Workflows flag. Read once, before
+        // The session's durable capability state: package selections, loads by path and its Workflows flag. Read once, before
         // the declarations, which depend on the flag (Workflows on demand).
         const readState = async (): Promise<CapabilityState> => this.sessionCatalog?.getSessionCapabilities
             ? this.sessionCatalog.getSessionCapabilities(options?.workflowTools?.parentSessionId ?? sessionId) : { revision: 0, selections: [] };
@@ -2606,8 +2606,8 @@ export class SessionManager {
             ...(config.workflowAgentChild === true ? { workflowAgentChild: true } : {}),
             ...(config.workflowInsideWorkflow === true ? { workflowInsideWorkflow: true } : {}),
             workflowContext,
-            // A chat whose Workflows are on demand keeps enable_workflows declared once they are on, so a later call is
-            // answered "already on" instead of the CLI's "does not exist" (a Failed row in the chat).
+            // A session whose Workflows are on demand keeps enable_workflows declared once they are on, so a later call is
+            // answered "already on" instead of the CLI's "does not exist" (a Failed row in the session).
             ...(workflowDecision.onDemand ? { workflowOnDemand: true } : {}),
         })
             // Workflows are always on (owner 2026-11-08T08:03Z): every other session is declared the workflow tools. Script nodes
@@ -2796,7 +2796,7 @@ export class SessionManager {
                 }
                 throw new Error("Capability revision conflict; try again");
             },
-            // Workflows on demand: enable_workflows saves the chat's flag; the next turn declares the Workflow tools.
+            // Workflows on demand: enable_workflows saves the session's flag; the next turn declares the Workflow tools.
             enableWorkflows: async () => {
                 if (isServiceSession || isTunerSession) throw new Error("Workflows are unavailable in this restricted session");
                 const saved = await this._saveWorkflowsOn(sessionId, readState);
@@ -2861,7 +2861,7 @@ export class SessionManager {
         // the prompt callback must not repeat an inspect/role database lookup.
         const v2Owner = catalogRow?.isSystem || (nativeOwner?.provider === SYSTEM_USER_PRINCIPAL.provider
             && nativeOwner?.subject === SYSTEM_USER_PRINCIPAL.subject) ? null : nativeOwner;
-        // The Workflow skills are listed only where Workflows are on in the chat (the coordinator's on-demand rule); load_skill
+        // The Workflow skills are listed only where Workflows are on in the session (the coordinator's on-demand rule); load_skill
         // and search_capabilities find them either way.
         const v2Inventory = config.baseAgentPolicy?.version === "v2"
             ? ownedAndStaticCapabilityInventory(getSources(), v2Owner, { includeUnlisted: workflowContext === "on" }) : undefined;
@@ -2888,7 +2888,7 @@ export class SessionManager {
         ])];
         // A child of a system session can be non-system yet retain the system
         // principal; use the same filtered owner as the V2 index and catalog.
-        // The Workflow skill directories only where Workflows are on in the chat (cliSkillDirectories).
+        // The Workflow skill directories only where Workflows are on in the session (cliSkillDirectories).
         const sdkSkillDirectories = cliSkillDirectories(config.baseAgentPolicy?.version === "v2"
             ? this.workerDefaults.getBaseV2SkillDirectories?.(v2Owner) ?? []
             : this.workerDefaults.skillDirectories ?? [], workflowContext);
@@ -2938,7 +2938,7 @@ export class SessionManager {
             : repoAdoption?.skillDirectories ?? [];
         const sessionSkillDirectories = [...sdkSkillDirectories, ...adoptedSkillDirectories];
         const v2InventoryFingerprint = v2Inventory ? capabilityHash(v2Inventory) : undefined;
-        // FU-17: an agent state that limits its tools offers this session only those (the state's own chat also keeps
+        // FU-17: an agent state that limits its tools offers this session only those (the state's own session also keeps
         // complete_workflow_node, how it finishes the state).
         const agentToolAllowlist = workflowAgentToolAllowlist(config);
         const nativeLimit = nativeWorkflowToolLimit(config.workflowToolLimit);
@@ -5056,20 +5056,20 @@ export class SessionManager {
     }
 
     /**
-     * Chats whose owns-check found no Workflow Definition and no Workflow on this worker: not read again (Workflows on demand),
-     * until a lasting trigger comes (review RLR-F3: the chat may own one since).
+     * Sessions whose owns-check found no Workflow Definition and no Workflow on this worker: not read again (Workflows on demand),
+     * until a lasting trigger comes (review RLR-F3: the session may own one since).
      */
     private readonly workflowContextOwnsNone = new Set<string>();
 
     /**
-     * Review RLR-F3: chats a lasting trigger turned Workflows on in whose flag is not saved yet (the save failed or lost
+     * Review RLR-F3: sessions a lasting trigger turned Workflows on in whose flag is not saved yet (the save failed or lost
      * every revision check). Each later turn on this worker keeps them on and saves again, without another trigger, until
      * the flag is saved; the trigger itself (a note, a message) may be gone by then.
      */
     private readonly workflowContextPendingOn = new Set<string>();
 
     /**
-     * Workflows on demand: save the chat's flag with its capability state, revision-checked; on a lost check the state is
+     * Workflows on demand: save the session's flag with its capability state, revision-checked; on a lost check the state is
      * read again and the flag set on it (at most three tries), so every other field (selections, receipts, loads) is kept as
      * the latest writer left it. `first`, when given, is the state already read for this turn (the first try uses it).
      * enable_workflows and a lasting trigger both save through here.
@@ -5088,24 +5088,24 @@ export class SessionManager {
     }
 
     /**
-     * This turn's Workflow context (owner 2026-11-08T16:55Z: Workflows load per chat, only when needed).
+     * This turn's Workflow context (owner 2026-11-08T16:55Z: Workflows load per session, only when needed).
      *
      * - `none`: the read-only tuner and service sessions (no stub, no tools).
      * - `on`: a frozen 1.0.82 turn (until its continue-as-new); a session manager without durable capability storage (enable_workflows
      *   could not save); a Workflow's own capture; a session inside a Workflow; Agent Smith (it writes Workflows); and, on
-     *   demand, the chat's saved flag; a trigger from the runTurn activity; a chat that owns a Workflow Definition or a
-     *   Workflow (a chat from before this release). A lasting trigger and an owned Workflow also save the flag, with the
+     *   demand, the session's saved flag; a trigger from the runTurn activity; a session that owns a Workflow Definition or a
+     *   Workflow (a session from before this release). A lasting trigger and an owned Workflow also save the flag, with the
      *   same revision-checked retry as enable_workflows (review RLR-F3). A save that does not commit leaves them on and
      *   pending: every later turn on this worker keeps them on and saves again, until the flag is saved.
-     * - `off`: every other chat.
+     * - `off`: every other session.
      *
-     * `onDemand`: the chat's context follows its flag and triggers (the rule above after its fixed cases), so it is declared
+     * `onDemand`: the session's context follows its flag and triggers (the rule above after its fixed cases), so it is declared
      * enable_workflows whether they are on or off.
      */
     /**
      * Review LOCK-1: _workflowContextMode's answer when it needs no read or save: the tuner and service sessions (none), a
      * Workflow's own capture, a frozen 1.0.82 turn, and a session manager without durable capability storage (on, not on
-     * demand). Null when the chat's flag and triggers decide (the async path). Synchronous, so a standalone manager reaches
+     * demand). Null when the session's flag and triggers decide (the async path). Synchronous, so a standalone manager reaches
      * the SDK resume in as many microtasks as before the Workflow context existed.
      */
     private _workflowContextModeFixed(config: ManagedSessionConfig, flags: { restricted: boolean; workflowTools: boolean })
@@ -5231,7 +5231,7 @@ export class SessionManager {
         sessionOwnerKey: string | null = null,
         boundAgentCopy: AgentCopyEntry | null = resolveBoundAgentCopy(this.workerDefaults, config, sessionOwnerKey) ?? null,
     ): SystemMessageConfig | undefined {
-        // A Base V1 chat with Workflows on lists the Workflow skills in its skills index (Base V2's rule: unlisted while off).
+        // A Base V1 session with Workflows on lists the Workflow skills in its skills index (Base V2's rule: unlisted while off).
         const legacyBase = this.workerDefaults.frameworkBasePrompt ?? this.workerDefaults.systemMessage;
         const base = baseAgentInstructions(config.baseAgentPolicy, (config.workflowContext ?? "on") === "on"
             ? withWorkflowSkillsListed(legacyBase, this.workerDefaults.skills ?? []) : legacyBase);
@@ -5241,7 +5241,7 @@ export class SessionManager {
         // carries the Workflow guidance, trimmed to its rules; the details are in the Workflow skills (owner 16:55Z). A 1.0.83
         // turn (a workflow request turn) is told of clock waits and respond_session_request; every turn can test a
         // revision. A session inside a Workflow gets WORKFLOW_INSIDE_GUIDANCE.
-        // Workflows on demand (owner 16:55Z): while they are off in the chat, a short paragraph that names enable_workflows
+        // Workflows on demand (owner 16:55Z): while they are off in the session, a short paragraph that names enable_workflows
         // stands in the guidance's place; the read-only tuner and service sessions get neither.
         const requestTurn = config.workflowMilestoneTurn === true;
         const workflowContext = config.workflowContext ?? "on";

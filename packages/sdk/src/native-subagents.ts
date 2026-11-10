@@ -128,7 +128,7 @@ agent's policy for whether the user must explicitly request durable delegation.`
 /**
  * Stage 2 review S2RT-F1: the tools a native worker may use in the subtree of a Workflow agent state that limits its tools
  * (FU-17): the state's list, as the agent sees each name (an MCP tool also as `server/tool` or `server-tool`), never the
- * state chat's own complete_workflow_node. null when no state limits it.
+ * state session's own complete_workflow_node. null when no state limits it.
  */
 export class NativeWorkflowToolLimit {
     private readonly names: Set<string>;

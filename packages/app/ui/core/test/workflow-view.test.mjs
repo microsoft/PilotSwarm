@@ -96,8 +96,8 @@ test("wait, receive and send states say what they wait for or did, and never cla
     const received = projectWorkflow({ definition, events: [completed("await_ack", 1, "received", '{"ok":true}', { messageId: "m1", contract: "Ack@1", senderSessionId: "parent-1" })] });
     assert.equal(byId(received, "await_ack").description[0], "Received Ack@1.");
     const named = projectWorkflow({ definition, events: [completed("await_ack", 1, "received", '{"ok":true}', { messageId: "m1", contract: "Ack@1", senderSessionId: "parent-1" })],
-        sessionName: id => (id === "parent-1" ? "Release chat" : null) });
-    assert.equal(byId(named, "await_ack").description[0], "Received Ack@1 from Release chat.");
+        sessionName: id => (id === "parent-1" ? "Release session" : null) });
+    assert.equal(byId(named, "await_ack").description[0], "Received Ack@1 from Release session.");
 });
 
 test("a request state is shown only when the read model carries it, with its own responded and declined results", () => {

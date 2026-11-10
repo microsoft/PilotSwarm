@@ -27,6 +27,6 @@ export * from "./moa.js";
 export * from "./workflow-sessions.js";
 export * from "./workflow-tui.js";
 export * from "./workflow-owner.js";
-export * from "./workflow-chat-definitions.js";
+export * from "./workflow-session-definitions.js";
 export * from "./workflow-lifecycle.js";
 export * from "./workflow-error-words.js";

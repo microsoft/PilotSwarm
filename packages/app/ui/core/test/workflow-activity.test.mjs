@@ -5,8 +5,8 @@
  *     names them, for one run and, in a step's details, one visit
  *   - a run that ended says why (completed, failed, cancelled with its reason and who asked, deleted, stopped with what
  *     the time to finish cut off); a visit that ended says why (its time limit, the run's cancel or stop, its outcome, a
- *     runtime error with its message) and how its agent chat ended
- *   - an agent step lists the sessions its chat started, as loaded, each openable read-only
+ *     runtime error with its message) and how its agent session ended
+ *   - an agent step lists the sessions its session started, as loaded, each openable read-only
  *
  * Run: node --test test/workflow-activity.test.mjs
  */
@@ -86,7 +86,7 @@ test("the activity lists who did what, newest first, for one run and one visit",
     assert.equal(one("workflow.state_failed", { stateId: "poll", effectStatus: "Failed", resultKind: "runtime_error" }), "✕ poll · error: the action Failed");
 });
 
-test("Q2: a step's reminder has a line in the workflow's activity and in the agent chat's activity", () => {
+test("Q2: a step's reminder has a line in the workflow's activity and in the agent session's activity", () => {
     const reminded = event(1, "workflow.agent_reminded", { nodeExecutionId: "nx-review-1", stateId: "review", childSessionId: "child-1", turn: 2, n: 1, max: 3 });
     assert.equal(workflowActivity([reminded], { runId: RUN })[0].what, "review · reminded to finish · 1/3");
     // In the step's details, for its visit only.
@@ -94,7 +94,7 @@ test("Q2: a step's reminder has a line in the workflow's activity and in the age
     assert.equal(workflowActivity([reminded], { runId: RUN, nodeExecutionId: "nx-other" }).length, 0);
     // Words (Workflow Simplified 03): a node, not a step.
     assert.equal(workflowEventText("workflow.agent_reminded", {}, "short").text, "A node · reminded to finish");
-    // The agent chat's own activity: the reminder it got inside its turn, one gray line.
+    // The agent session's own activity: the reminder it got inside its turn, one gray line.
     const { activity, chat } = buildHistoryModel([{ seq: 7, sessionId: "child-1", eventType: "runtime.workflow_step_reminded", createdAt: at(7),
         data: { stateId: "review", n: 2, max: 3, sessionId: "child-1" } }]);
     assert.equal(activity.length, 1);
@@ -132,14 +132,14 @@ test("D-R1: the activity line of a skipped run-end notice says when an earlier a
 
 // Review 19:27Z (rows 18 to 20): the kind of cancel in the line, who asked by name (never an id), the one short time; a
 // reason that is only a state word is left out.
-const NAMES = id => ({ "parent-1234567890": "Release chat" })[id] ?? null;
+const NAMES = id => ({ "parent-1234567890": "Release session" })[id] ?? null;
 
 test("a run that ended says why: completed, failed, cancelled with its reason and who asked, deleted, stopped", () => {
     assert.equal(workflowRunEnding({ runId: RUN, status: "running" }, EVENTS), null);
     const envelope = JSON.stringify({ code: "cancelled", message: "No longer needed", details: { command: "cancel", requestedBy: "parent-1234567890" } });
     assert.deepEqual(workflowRunEnding({ runId: RUN, status: "cancelled", error: envelope }, EVENTS, NAMES), {
-        status: "cancelled", why: "Canceled at once: No longer needed", who: "Release chat", at: "2026-11-03 08:06:00",
-        text: "Why it ended: Canceled at once: No longer needed · by Release chat · 2026-11-03 08:06:00" });
+        status: "cancelled", why: "Canceled at once: No longer needed", who: "Release session", at: "2026-11-03 08:06:00",
+        text: "Why it ended: Canceled at once: No longer needed · by Release session · 2026-11-03 08:06:00" });
     assert.equal(workflowRunEnding({ runId: RUN, status: "cancelled", error: envelope }, EVENTS).who, null, "no name loaded: nobody named, never an id");
     assert.equal(workflowRunEnding({ runId: RUN, status: "cancelled" }, [event(1, "workflow.cancelled", { command: "delete", deleted: true })]).why,
         "Canceled · deleted");
@@ -158,7 +158,7 @@ test("a run that ended says why: completed, failed, cancelled with its reason an
         + "· by Alice · 2026-11-03 08:02:00");
 });
 
-test("a visit that ended says why, and how its agent chat ended", () => {
+test("a visit that ended says why, and how its agent session ended", () => {
     assert.equal(workflowVisitEnding({ status: "pending" }), null);
     assert.equal(workflowVisitEnding({ status: "completed", outcome: "timed_out", resultKind: "runtime_error", winner: "controller",
         errorPreview: JSON.stringify({ code: "timed_out", message: "The agent did not finish in 600 s." }), agent: { end: "cancel" } }).text,
@@ -181,7 +181,7 @@ const SESSIONS = {
     other: { sessionId: "other", title: "Other", status: "idle", parentSessionId: "parent" },
 };
 
-test("the sessions under a step are its agent chat and every session started under it, in tree order", () => {
+test("the sessions under a step are its agent session and every session started under it, in tree order", () => {
     assert.deepEqual(workflowSessionSubtree(SESSIONS, "child"), [
         { sessionId: "child", title: "Workflow step: review", status: "idle", depth: 0 },
         { sessionId: "helper", title: "Helper", status: "running", depth: 1 },
@@ -201,7 +201,7 @@ const cancelledModel = () => readModel({
 test("the portal says why the run ended and lists its activity; a step's details say why its visit ended, with that visit's activity", () => {
     const projected = projectWorkflow({ readModel: cancelledModel(), events: EVENTS });
     assert.equal(projected.ending.text, "Why it ended: Canceled at once: No longer needed · 2026-11-03 08:06:00");
-    assert.equal(projectWorkflow({ readModel: cancelledModel(), events: EVENTS, sessionName: NAMES }).ending.who, "Release chat");
+    assert.equal(projectWorkflow({ readModel: cancelledModel(), events: EVENTS, sessionName: NAMES }).ending.who, "Release session");
     assert.equal(projectWorkflow({ readModel: readModel(), events: EVENTS }).ending, null, "a running run has none");
 
     const html = renderToStaticMarkup(React.createElement(WorkflowRunActivity, { ending: projected.ending, events: EVENTS, runId: RUN }));
@@ -218,7 +218,7 @@ test("the portal says why the run ended and lists its activity; a step's details
     assert.match(details, /<summary>Activity of this visit \(2\)<\/summary>/);
 });
 
-test("an agent step lists the sessions its chat started, each openable read-only", () => {
+test("an agent step lists the sessions its session started, each openable read-only", () => {
     const states = [{ id: "review", type: "agent", invoke: { source: "prompt" }, outcomes: ["accepted"], next: { accepted: "done" } },
         { id: "done", type: "terminal", outcome: "succeeded" }];
     const model = readModel({ graph: { revision: 1, initial: "review", states },
@@ -231,14 +231,14 @@ test("an agent step lists the sessions its chat started, each openable read-only
     assert.match(html, /aria-label="Sessions under this step"><h3>Sessions under this step \(2\)<\/h3>/);
     assert.match(html, /<li data-session="helper"[^>]*>Helper · running<button[^>]*data-action="open-session"[^>]*>Open \(read-only\)<\/button><\/li>/);
     assert.match(html, /<li data-session="nested"[^>]*>nested · completed/);
-    // Only the transition buttons and the agent's own chat use the transition class; the session buttons do not.
+    // Only the transition buttons and the agent's own session use the transition class; the session buttons do not.
     assert.equal([...html.matchAll(/class="ps-workflow-transition"/g)].length, 2);
 });
 
-test("the TUI says why the run and the visit shown ended, lists that visit's activity and the sessions under an agent chat", () => {
+test("the TUI says why the run and the visit shown ended, lists that visit's activity and the sessions under an agent session", () => {
     const store = createStore(appReducer, createInitialState({ mode: "local" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-flow", status: "cancelled", sessionKind: "workflow" },
-        { sessionId: "parent-1234567890", title: "Release chat", status: "idle" }] });
+        { sessionId: "parent-1234567890", title: "Release session", status: "idle" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel(EVENTS) });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: cancelledModel(), readModelRunId: null } });
@@ -247,7 +247,7 @@ test("the TUI says why the run and the visit shown ended, lists that visit's act
     const lines = selectWorkflowViewModal(store.getState(), 160, 80).detailsLines.map(line => line.text.trim());
     const text = lines.join(" ");
     // Review 19:27Z (row 20): who asked, by the session's name.
-    assert.ok(text.includes("Why it ended: Canceled at once: No longer needed · by Release chat · 2026-11-03 08:06:00"), lines.join("\n"));
+    assert.ok(text.includes("Why it ended: Canceled at once: No longer needed · by Release session · 2026-11-03 08:06:00"), lines.join("\n"));
     assert.ok(!text.includes("parent-1"), "never the session's id");
     assert.ok(lines.includes("Why it ended: The Workflow was canceled while it ran."), lines.join("\n"));
     assert.ok(lines.includes("Activity of this visit · newest first:"), lines.join("\n"));

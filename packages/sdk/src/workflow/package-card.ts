@@ -7,9 +7,9 @@ import { workflowResolvedInputsSchema } from "./resolved-schema.js";
 /**
  * A Workflow Definition's interface card (Workflow Simplified stage 2.3; spec "Packages and Agent Smith": P1, P3, P7 and
  * the card table). A package ships each definition as `workflows/<name>/workflow.yaml` with `workflows/<name>/card.md`:
- * YAML front matter, then a markdown body (its notes). A coordinating chat, or any chat that may start the definition,
+ * YAML front matter, then a markdown body (its notes). A coordinating session, or any session that may start the definition,
  * reads the card to learn what the Workflow does, what it needs and how it can end, as a canvas app's manifest tells a
- * chat what the app is.
+ * session what the app is.
  *
  *     ---
  *     name: release-watch
@@ -39,7 +39,7 @@ import { workflowResolvedInputsSchema } from "./resolved-schema.js";
  * schemas; each `modelHints` key is one of its agent nodes (OF-S2-7, review OF7-R5: the kind of model that node needs, as
  * structured fields, { strength?: fast | balanced | strong, reasoning?: low | medium | high | xhigh | max, context?: default |
  * long_context, note?: at most 120 characters }, never a provider or model name, so the package works on any deployment; a
- * chat that starts it picks a model from the owning chat's catalog for that node only when the hint asks). A note naming a
+ * session that starts it picks a model from the owning session's catalog for that node only when the hint asks). A note naming a
  * provider:model, or a model the publisher's catalog has, is refused at publication. The digest covers the card as parsed.
  */
 
@@ -69,7 +69,7 @@ export function parseWorkflowPackageRef(ref: unknown, ownPackage: string | null 
     return { packageName, name };
 }
 
-/** `<package>/<name>`: how a chat names a package definition attached to it (D7; a chat's own names have no slash). */
+/** `<package>/<name>`: how a session names a package definition attached to it (D7; a session's own names have no slash). */
 export function workflowPackageRef(packageName: string, name: string): string {
     return `${packageName}/${name}`;
 }
@@ -224,12 +224,12 @@ export function workflowEffectFacts(ir: WorkflowIR): WorkflowEffectFacts {
     return { scripts: scripts.sort(), agents: agents.sort() };
 }
 
-/** The checked facts in words, as the picker and a chat read them. */
+/** The checked facts in words, as the picker and a session read them. */
 export function workflowEffectFactsWords(facts: WorkflowEffectFacts): string {
     const steps = (ids: string[]) => ids.slice(0, 8).join(", ") + (ids.length > 8 ? ` and ${ids.length - 8} more` : "");
     const scripts = facts.scripts.length
         ? `it runs scripts (${facts.scripts.length === 1 ? "step" : "steps"} ${steps(facts.scripts)}). A script runs code on a worker: it can reach the `
-            + "network, and use the tools of the chat that starts it, which can read and write files and run processes"
+            + "network, and use the tools of the session that starts it, which can read and write files and run processes"
         : "it runs no scripts";
     const agents = facts.agents.length
         ? `${facts.scripts.length ? ". It" : "; it"} has agent steps (${steps(facts.agents)}): each one asks a model`
@@ -428,7 +428,7 @@ export function workflowCardDigest(card: WorkflowCard, face: WorkflowCardInterfa
 
 /** The note a card gets when its stored model hints are in an older form (review D5): they are left out, the Workflow stays. */
 export const WORKFLOW_OLD_MODEL_HINTS_NOTE = "This card's model hints are in an older form, so they are not shown: its agent nodes use the "
-    + "model of the chat that starts it. Publish the package again to give them as strength, reasoning, context and note.";
+    + "model of the session that starts it. Publish the package again to give them as strength, reasoning, context and note.";
 
 /** A card record as the manifest keeps it, checked again; null when it is not well formed. */
 export function readWorkflowCard(value: unknown): WorkflowCard | null {
@@ -465,7 +465,7 @@ function compact(value: JsonValue | null, limit = 1_500): string {
 }
 
 /**
- * The card as a chat reads it: what the Workflow does, what it needs and how it ends. `facts` (S2SF-F4): what the
+ * The card as a session reads it: what the Workflow does, what it needs and how it ends. `facts` (S2SF-F4): what the
  * definition itself shows of its effects, said whatever the card says; the card's effects are labeled as its author's words.
  */
 export function workflowCardWords(ref: string, semver: string | null, card: WorkflowCard, face: WorkflowCardInterface | null,
@@ -479,37 +479,37 @@ export function workflowCardWords(ref: string, semver: string | null, card: Work
     lines.push(`It ends: ${ends.join("; ")}`);
     if (card.output.about) lines.push(`Output: ${card.output.about}`);
     if (face?.outputSchema != null) lines.push(`Output (JSON Schema): ${compact(face.outputSchema)}`);
-    if (Object.keys(card.asks).length) lines.push(`It asks this chat: ${Object.entries(card.asks).map(([id, words]) => `${id}: ${words}`).join("; ")}`);
-    if (Object.keys(card.sends).length) lines.push(`It sends this chat: ${Object.entries(card.sends).map(([id, words]) => `${id}: ${words}`).join("; ")}`);
+    if (Object.keys(card.asks).length) lines.push(`It asks this session: ${Object.entries(card.asks).map(([id, words]) => `${id}: ${words}`).join("; ")}`);
+    if (Object.keys(card.sends).length) lines.push(`It sends this session: ${Object.entries(card.sends).map(([id, words]) => `${id}: ${words}`).join("; ")}`);
     if (facts) lines.push(workflowEffectFactsWords(facts));
     lines.push(`Effects (the author's words): ${card.effects}`);
-    // OF-S2-7: what the author says some agent nodes need; every other agent node uses the starting chat's model.
+    // OF-S2-7: what the author says some agent nodes need; every other agent node uses the starting session's model.
     lines.push(workflowCardModelHintsWords(card));
     if (card.notes) lines.push(`Notes:\n${card.notes}`);
     return lines.join("\n");
 }
 
 /**
- * OF-S2-7: a card's model hints as a chat reads them, and what to do with them (its agent nodes use the starting chat's
+ * OF-S2-7: a card's model hints as a session reads them, and what to do with them (its agent nodes use the starting session's
  * model unless a start chooses one).
  */
 export function workflowCardModelHintsWords(card: Pick<WorkflowCard, "modelHints">): string {
     const hints = Object.entries(card.modelHints ?? {});
-    if (!hints.length) return "Models: its agent nodes use the model of the chat that starts it; no node asks for another.";
+    if (!hints.length) return "Models: its agent nodes use the model of the session that starts it; no node asks for another.";
     return `Model hints (by agent node): ${hints.map(([id, hint]) => `${id}: ${workflowModelHintWords(hint)}`).join("; ")}. For a node with a hint, `
-        + "choose a model that fits it from list_available_models (the owning chat's catalog) and give it in agent_models at start; every other "
-        + "agent node uses the model of the chat that starts it.";
+        + "choose a model that fits it from list_available_models (the owning session's catalog) and give it in agent_models at start; every other "
+        + "agent node uses the model of the session that starts it.";
 }
 
 /**
- * P3: the coordinating chat's instructions. A chat made from the new-session picker for a package definition has that
+ * P3: the coordinating session's instructions. A session made from the new-session picker for a package definition has that
  * definition attached, locked, and these instructions: read the card; learn its inputs and outputs; ask the person for a
  * missing input; start it; answer its requests; report its result.
  */
 export function coordinatingInstructions(ref: string, semver: string, card: WorkflowCard, face: WorkflowCardInterface | null,
     facts: WorkflowEffectFacts | null = null): string {
     return [
-        `This chat coordinates one Workflow Definition: ${ref} (package version ${semver}). It is attached to this chat and locked: `
+        `This session coordinates one Workflow Definition: ${ref} (package version ${semver}). It is attached to this session and locked: `
             + "nobody changes it here. A person can make an editable copy of it in the Workflow tab.",
         "Its interface card:",
         workflowCardWords(ref, semver, card, face, facts),

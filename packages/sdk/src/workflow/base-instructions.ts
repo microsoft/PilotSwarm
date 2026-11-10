@@ -2,11 +2,11 @@ import { createHash } from "node:crypto";
 import { redactWorkflowSecrets } from "./redact.js";
 
 /**
- * A workflow agent node chat's base instructions (owner feedback 2026-11-06, finding 8: the agent node's Log shows "the
+ * A workflow agent node session's base instructions (owner feedback 2026-11-06, finding 8: the agent node's Log shows "the
  * base prompts"). The SDK echoes the full system prompt it composed for the model as a `system.message`; the runtime
  * records only a short summary of it in the transcript (session-proxy summarizeSdkSystemPromptEchoEvent: its length
- * and a snippet). For the chat of a workflow agent node, the whole text is kept too: once per distinct text (its
- * sha256), as an artifact of its Workflow's session, so every visit of the node (a new chat each visit, or one chat
+ * and a snippet). For the session of a workflow agent node, the whole text is kept too: once per distinct text (its
+ * sha256), as an artifact of its Workflow's session, so every visit of the node (a new session each visit, or one session
  * that continues) and every node with the same instructions share one copy. The summary event names it
  * (`baseInstructions`), and the Log reads it when a person opens the row. No schema change: artifacts are the
  * existing blob store.

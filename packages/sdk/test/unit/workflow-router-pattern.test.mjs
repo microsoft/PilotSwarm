@@ -5,7 +5,7 @@
  * lane (its own state id, so its own agent_models entry), and one item end whose output names the lane.
  *
  * It lives in its own on-demand skill, workflow-patterns (at most 8 KiB), so the authoring skill every Workflow-authoring
- * chat loads stays under 20 KiB (OF-S2-6: fewer tokens). The authoring skill, the base guidance and Agent Smith point to it.
+ * session loads stays under 20 KiB (OF-S2-6: fewer tokens). The authoring skill, the base guidance and Agent Smith point to it.
  *
  * Named branches (slice 3): the same need is now taught as one parallel state with named branches, first, with its
  * own complete example (two-views); the router pattern stays as the older form, for branches that come from a list.
@@ -54,7 +54,7 @@ test("workflow-patterns is an on-demand skill of its own, at most 8 KiB, that th
     assert.ok(Buffer.byteLength(patterns.prompt, "utf8") <= 8 * 1024, `${Buffer.byteLength(patterns.prompt, "utf8")} bytes`);
     // Its index card says when to load it.
     assert.match(patterns.description, /^Load when one Workflow must run different nodes in its branches at the same time/);
-    // The section and its example moved: the skills every authoring chat loads stay under 20 KiB.
+    // The section and its example moved: the skills every authoring session loads stay under 20 KiB.
     for (const name of ["workflow-authoring", "workflow-reference"]) {
         const skill = loaded.find(item => item.name === name);
         assert.ok(Buffer.byteLength(skill.prompt, "utf8") <= 20 * 1024, `${name}: ${Buffer.byteLength(skill.prompt, "utf8")} bytes`);

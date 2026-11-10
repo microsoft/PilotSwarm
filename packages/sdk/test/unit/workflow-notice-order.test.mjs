@@ -17,7 +17,7 @@ const RUN = { runId: "run-1", workflowSessionId: "wf-1", mode: "live", status: "
  * The notifier activity over a fake store. `lock` is the run's notice lock: by default an in-memory one (an attempt that
  * finds it held gets { locked: false }); `recorded` answers runNoticeRecorded, in order of the calls.
  */
-function harness({ inFlight = () => 0, waitMs, delivered, notStarted = false, chatDefinition = null, attempted = false, authorized = true,
+function harness({ inFlight = () => 0, waitMs, delivered, notStarted = false, sessionDefinition = null, attempted = false, authorized = true,
     notifyParent = true, recorded = () => false, notifyGate = null, lock = null, lockWaitMs } = {}) {
     const activities = new Map();
     const log = [];
@@ -26,10 +26,10 @@ function harness({ inFlight = () => 0, waitMs, delivered, notStarted = false, ch
     let recordedCalls = 0;
     const store = {
         readRun: async () => RUN,
-        readDefinition: async () => ({ parentSessionId: PARENT, notifyParent, chatDefinitionId: chatDefinition?.id ?? null,
-            chatRevision: chatDefinition?.revision ?? null }),
-        // Deployed check DS-2: the chat's notes (a notice kept for a chat that has not started yet).
-        chat: { keepNote: async (...args) => { log.push(["note", ...args]); } },
+        readDefinition: async () => ({ parentSessionId: PARENT, notifyParent, sessionDefinitionId: sessionDefinition?.id ?? null,
+            sessionRevision: sessionDefinition?.revision ?? null }),
+        // Deployed check DS-2: the session's notes (a notice kept for a session that has not started yet).
+        sessionDefinitions: { keepNote: async (...args) => { log.push(["note", ...args]); } },
         // R3-PA1: the note and its skip record, one write.
         keepNoticeAsNote: async ({ ownerSessionId, definitionId, revision, text, projection }) => {
             log.push(["note", ownerSessionId, definitionId, revision, text]);
@@ -144,10 +144,10 @@ test("WFO-3: a parent whose session had ended is recorded as not told", async ()
     }
 });
 
-// Deployed check DS-2: a parent chat made without a first message has no session orchestration yet; the run's end is kept
-// as a note its first turn reads (the chat is not woken), and the skip says so. An ended parent is still "parent is gone".
-test("DS-2: a parent chat that has not started yet keeps the run's end as a note for its first turn", async () => {
-    const kept = harness({ delivered: false, notStarted: true, chatDefinition: { id: "def-1", revision: 2 } });
+// Deployed check DS-2: a parent session made without a first message has no session orchestration yet; the run's end is kept
+// as a note its first turn reads (the session is not woken), and the skip says so. An ended parent is still "parent is gone".
+test("DS-2: a parent session that has not started yet keeps the run's end as a note for its first turn", async () => {
+    const kept = harness({ delivered: false, notStarted: true, sessionDefinition: { id: "def-1", revision: 2 } });
     await kept.notify();
     const notes = kept.log.filter(entry => entry[0] === "note");
     assert.equal(notes.length, 1);
@@ -156,8 +156,8 @@ test("DS-2: a parent chat that has not started yet keeps the run's end as a note
     const events = kept.log.filter(entry => entry[0] === "event");
     assert.deepEqual(events.map(entry => entry[1]), ["workflow.parent_notifying", "workflow.parent_notification_skipped"]);
     assert.deepEqual(events[1][2], { runId: "run-1", reason: WORKFLOW_NOTICE_KEPT_AS_NOTE });
-    assert.equal(WORKFLOW_NOTICE_KEPT_AS_NOTE, "the chat has not started yet; kept as a note for its first turn");
-    // A Workflow that is no copy of a chat definition: the note names the Workflow and its run's revision.
+    assert.equal(WORKFLOW_NOTICE_KEPT_AS_NOTE, "the session has not started yet; kept as a note for its first turn");
+    // A Workflow that is no copy of a session definition: the note names the Workflow and its run's revision.
     const plain = harness({ delivered: false, notStarted: true });
     await plain.notify();
     assert.deepEqual(plain.log.find(entry => entry[0] === "note").slice(1, 4), [PARENT, "wf-1", 1]);

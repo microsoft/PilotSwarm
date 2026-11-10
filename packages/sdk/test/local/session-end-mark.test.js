@@ -1,9 +1,9 @@
 /**
  * G1 residual: a done or cancel is marked on its session (session.end_requested) only when the command is sent. A refused
- * command marks nothing: a system session (SYSTEM_SESSION_PROTECTED), a chat with an active Workflow (R4, 409), and a
+ * command marks nothing: a system session (SYSTEM_SESSION_PROTECTED), a session with an active Workflow (R4, 409), and a
  * session with no live orchestration (nothing could be queued). A session whose orchestration runs gets the mark before
  * its command. (A reader of a shared session is refused by the portal's session:manage gate before the management client
- * is called: workflow-chat-definitions-runtime and the session route tests.)
+ * is called: workflow-session-definitions-runtime and the session route tests.)
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -61,16 +61,16 @@ describe("an end's mark is recorded only when its command is sent (G1 residual)"
             await expect(mgmt.cancelSession(system, "no")).rejects.toMatchObject({ code: "SYSTEM_SESSION_PROTECTED" });
             expect(await marks(system)).toEqual([]);
 
-            // A chat with an active Workflow (R4): its completion is refused, no mark.
-            const chat = randomUUID();
-            await catalog.createSession(chat, { owner: OWNER });
+            // A session with an active Workflow (R4): its completion is refused, no mark.
+            const session = randomUUID();
+            await catalog.createSession(session, { owner: OWNER });
             const host = { catalog, store: catalog.workflowStore(), duroxideClient: { startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "Running" }),
                 enqueueEvent: async () => {} } };
-            const created = await createWorkflow(host, { workflowSessionId: randomUUID(), parentSessionId: chat, owner: OWNER, yaml: HOLD,
+            const created = await createWorkflow(host, { workflowSessionId: randomUUID(), parentSessionId: session, owner: OWNER, yaml: HOLD,
                 actor: { kind: "system", name: "end-mark-test" }, operationId: "start", start: { inputs: {} } });
             expect(created.receipt.valid).toBe(true);
-            await expect(mgmt.completeSession(chat, "no", { wait: false })).rejects.toMatchObject({ status: 409 });
-            expect(await marks(chat)).toEqual([]);
+            await expect(mgmt.completeSession(session, "no", { wait: false })).rejects.toMatchObject({ status: 409 });
+            expect(await marks(session)).toEqual([]);
 
             // No live orchestration: nothing can be queued, no mark.
             const idle = randomUUID();

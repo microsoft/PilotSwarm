@@ -49,7 +49,7 @@ export interface WorkflowAgentHostSessionRow {
     isSystem?: boolean;
     model?: string | null;
     reasoningEffort?: string | null;
-    /** OF-S2-7: the chat's context tier, which an agent node it owns inherits with its model and reasoning effort. */
+    /** OF-S2-7: the session's context tier, which an agent node it owns inherits with its model and reasoning effort. */
     contextTier?: string | null;
     sessionKind?: string | null;
 }
@@ -146,13 +146,13 @@ export function createWorkflowAgentNodeHost(deps: WorkflowAgentHostDeps): Workfl
             const level = workflowLevel + 1;
             if (level > WORKFLOW_MAX_DESCENDANT_LEVEL) {
                 // Spec 14 (stage 1 keeps the limit and says each refusal in words).
-                return { refused: { code: "forbidden" as const, message: `Node ${request.stateId} cannot start its agent: its chat would be at `
-                    + `level ${level} (the top-level chat is level 0), and sessions inside a Workflow stop at level ${WORKFLOW_MAX_DESCENDANT_LEVEL}. `
+                return { refused: { code: "forbidden" as const, message: `Node ${request.stateId} cannot start its agent: its session would be at `
+                    + `level ${level} (the top-level session is level 0), and sessions inside a Workflow stop at level ${WORKFLOW_MAX_DESCENDANT_LEVEL}. `
                     + "Start this Workflow from a session nearer the top." } };
             }
             const owner = await resolveEffectiveSpawnOwner(id => deps.getSession(id), request.workflowSessionId);
             const controlling = request.controllingSessionId ? await deps.getSession(request.controllingSessionId) : null;
-            // OF-S2-7: a model chosen at start for this node; else the owning chat's model, reasoning effort AND context tier.
+            // OF-S2-7: a model chosen at start for this node; else the owning session's model, reasoning effort AND context tier.
             const chosen = request.agentModel ?? null;
             const spec: WorkflowAgentChildSpec = {
                 sessionId: request.childSessionId, parentSessionId: request.workflowSessionId, nestingLevel: level,
@@ -228,13 +228,13 @@ export function createWorkflowAgentNodeHost(deps: WorkflowAgentHostDeps): Workfl
                 }
                 throw error;
             }
-            // OF7-R8: what this visit's chat runs on, as its session row says now that it is made (best effort: none when unread).
-            // Review D7: "chosen at start" only when the chat runs the model the start chose (a continued chat may have been
-            // switched since); else it is the chat's.
+            // OF7-R8: what this visit's session runs on, as its session row says now that it is made (best effort: none when unread).
+            // Review D7: "chosen at start" only when the session runs the model the start chose (a continued session may have been
+            // switched since); else it is the session's.
             const made = await deps.getSession(request.childSessionId).catch(() => null);
             const used: WorkflowAgentModelUsed | null = typeof made?.model === "string" && made.model
                 ? { model: made.model, reasoningEffort: made.reasoningEffort ?? null, contextTier: made.contextTier ?? null,
-                    source: chosen && made.model === chosen.model ? "start" : "chat" }
+                    source: chosen && made.model === chosen.model ? "start" : "session" }
                 : null;
             return { spawned: true as const, ...(used ? { used } : {}) };
         },

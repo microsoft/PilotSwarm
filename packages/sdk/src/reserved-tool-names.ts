@@ -102,7 +102,7 @@ export const WORKFLOW_TURN_TOOL_NAMES = ["respond_session_request", "complete_wo
 
 /**
  * The Workflow tools a turn always has handlers for, declared or not: spawn_workflow is no longer declared (its handler
- * answers a stale call), and the others are declared only where Workflows are on in the chat. Reserved whatever a session
+ * answers a stale call), and the others are declared only where Workflows are on in the session. Reserved whatever a session
  * declares, so no package or capability tool takes one of their names.
  */
 export const WORKFLOW_TOOL_NAMES = ["enable_workflows", "workflow_definition", "spawn_workflow", "update_workflow", "read_workflow",

@@ -1,7 +1,7 @@
 /**
- * Orchestration 1.0.83 (changed in place; PR 270): the report of a Workflow agent chat's failed turn
+ * Orchestration 1.0.83 (changed in place; PR 270): the report of a Workflow agent session's failed turn
  * (workflow/agent-turn-failure.ts). A turn that fails for good (its retries spent, a non-retryable error, a
- * credential failure) of a session that has an agent chat's id owes one report, made at once, before the session idles.
+ * credential failure) of a session that has an agent session's id owes one report, made at once, before the session idles.
  * The report decides every visit the turn worked on that is still pending (execution_failed) and wakes the Workflow.
  *
  * - Owed only at a turn's terminal failure: never while its retry is owed (a retry's continue-as-new owes none), and
@@ -10,8 +10,8 @@
  * - Made at once; when its activity fails, it stays owed (state.workflowTurnFailure), every continue-as-new carries it
  *   (lifecycle.ts versionedContinueAsNew), and it is made again at the start of each execution (runtime.ts runLoop) and
  *   before the next turn (turn.ts processPrompt), until it is made.
- * - A turn that succeeds drops an owed report (turn.ts handleTurnResult): the chat recovered, so its visit goes on.
- * - A session without an agent chat's id owes nothing and makes no report: its history is unchanged.
+ * - A turn that succeeds drops an owed report (turn.ts handleTurnResult): the session recovered, so its visit goes on.
+ * - A session without an agent session's id owes nothing and makes no report: its history is unchanged.
  */
 import { isWorkflowAgentSessionIdShape } from "../workflow/agent-ids.js";
 import type { DurableSessionRuntime } from "./state.js";
@@ -38,7 +38,7 @@ export function restoreWorkflowTurnFailure(raw: unknown): WorkflowTurnFailureRep
 
 /**
  * A turn of this session failed for good (turn.ts: its retries spent, a non-retryable error, a credential failure, a lost
- * connection with no durable handoff). A session with an agent chat's id owes the report and makes it now.
+ * connection with no durable handoff). A session with an agent session's id owes the report and makes it now.
  */
 export function* oweWorkflowTurnFailure(runtime: DurableSessionRuntime, clientMessageIds: string[] | undefined, cause: string): Generator<any, void, any> {
     if (!isWorkflowAgentSessionIdShape(runtime.input.sessionId)) return;
@@ -65,7 +65,7 @@ export function* settleWorkflowTurnFailure(runtime: DurableSessionRuntime): Gene
     }
 }
 
-/** A turn that succeeded: the chat recovered, so an owed report is dropped (no report after a success). */
+/** A turn that succeeded: the session recovered, so an owed report is dropped (no report after a success). */
 export function dropWorkflowTurnFailure(runtime: DurableSessionRuntime): void {
     if (runtime.state.workflowTurnFailure) {
         runtime.state.workflowTurnFailure = null;

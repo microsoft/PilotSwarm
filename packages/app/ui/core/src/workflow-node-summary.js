@@ -1,12 +1,12 @@
 /**
  * The Node panel's summary (owner feedback 2026-11-06, finding 7: "There isn't much useful information in this box. I
  * don't know what I'm looking at."): what a node does in one sentence, where it is now in one line, how often it ran,
- * its last result as readable text, what an agent node's agent is told and how its chat works, and where each outcome
+ * its last result as readable text, what an agent node's agent is told and how its session works, and where each outcome
  * goes in words. One model for the portal and the TUI; plain words, no engine words ("runtime error route"), and no fact
  * said twice. Pure: `now` only decides whether a time shows its date.
  */
 import { shortSessionId } from "./formatting.js";
-import { formatSeconds, workflowAgentChatMode, workflowAgentTask, workflowAgentTools, workflowAgentToolsTitle, workflowRouteKind } from "./workflow-view.js";
+import { formatSeconds, workflowAgentSessionMode, workflowAgentTask, workflowAgentTools, workflowAgentToolsTitle, workflowRouteKind } from "./workflow-view.js";
 import { workflowErrorParts, workflowErrorLeavesOut, workflowServerErrorWords } from "./workflow-error-words.js";
 import { workflowAskAnswerWords, workflowDuration, workflowErrorRouteWords, workflowFailureDetail, workflowOutcomeWord, workflowRunsText, workflowShortTime } from "./workflow-words.js";
 
@@ -197,7 +197,7 @@ function noResultText(node, execution, ended) {
     return typeof node.parallel === "string" && node.runs ? "No result yet" : null;
 }
 
-/** Its agent chat: the one the shown visit uses, else the latest visit's. */
+/** Its agent session: the one the shown visit uses, else the latest visit's. */
 function chatOf(node, execution) {
     if (execution?.agent?.childSessionId) return execution.agent.childSessionId;
     const visits = (Array.isArray(node?.executions) ? node.executions : []).filter(item => item?.agent?.childSessionId);
@@ -230,14 +230,14 @@ export function workflowNodeNext(node) {
 export function workflowNodeSummary(node, { execution = node?.current ?? null, ended = undefined, now = Date.now() } = {}) {
     if (!node) return null;
     const agent = node.kind === "agent" ? {
-        chatMode: workflowAgentChatMode(node),
+        sessionMode: workflowAgentSessionMode(node),
         tools: workflowAgentTools(node),
         toolsTitle: workflowAgentToolsTitle(node),
         told: node.invoke?.source === "agent" ? null : text(node.about?.prompt),
         toldWords: node.invoke?.source === "agent"
             ? `Agent ${workflowAgentTask(node)} follows its own instructions, with the node's input.` : null,
-        chatSessionId: chatOf(node, execution),
-        // OF-S2-7: the model it uses ("azure:gpt-5 · low reasoning · chosen at start", or "… · from the chat").
+        sessionId: chatOf(node, execution),
+        // OF-S2-7: the model it uses ("azure:gpt-5 · low reasoning · chosen at start", or "… · from the session").
         model: node.model?.value ?? null,
     } : null;
     return {

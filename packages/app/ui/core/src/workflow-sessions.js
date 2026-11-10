@@ -289,7 +289,7 @@ const stepLogLineText = line => Array.isArray(line)
 /**
  * A workflow's step log as the portal shows it (owner batch 5, g-06): the transcript's lines as they are once the
  * workflow has written any; until then plain words, never the session's splash art (the splash is the transcript's
- * "markup" line) and never "No messages yet." `history` is the session's loaded history ({ chat, loadState }). A
+ * "markup" line) and never "No messages yet." `history` is the session's loaded history ({ session, loadState }). A
  * failed read keeps the transcript's own words for it, and any other line the transcript shows without a message
  * (a warning about the session) follows the words. Pure.
  */

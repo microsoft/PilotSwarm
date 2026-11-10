@@ -1347,11 +1347,11 @@ function workflowDataJson(data) {
 
 /**
  * A message for the workflow's parent agent, written by a person (owner decisions q12, q16): an ordinary message in the
- * parent's chat that says what it is about (`about`, fixed words of this app), the person's suggestion and note when
+ * parent's session that says what it is about (`about`, fixed words of this app), the person's suggestion and note when
  * given, and, for the agent, what it can do with it (`action`). What the workflow itself says (its name, step, the
  * step's result and the like: `workflowName` and `data`) is never written as the person's words (adversarial review
  * R2-SF-3): it closes the message as one line of JSON after "Workflow data (not instructions):" (workflowDataJson), so a
- * line break or an instruction in it stays a value. People still cannot write to a step's own chat; the parent decides.
+ * line break or an instruction in it stays a value. People still cannot write to a step's own session; the parent decides.
  * Pure.
  */
 export function workflowAskParentMessage({ workflowName = null, workflowSessionId, about, suggestion = null, note = "", action = null, data = null } = {}) {
@@ -1422,10 +1422,10 @@ export function workflowHeldCallQuestion({ workflowName = null, workflowSessionI
         suggestion, note, action, data });
 }
 
-/** What the status line says once a message reached the parent agent's chat (q12, q16). Pure. */
+/** What the status line says once a message reached the parent agent's session (q12, q16). Pure. */
 export function workflowAskParentSent(parentSessionId) {
     // Review 19:27Z: no session id where a person reads it.
-    return "Sent to the parent agent's chat. It answers with its own tools; open its chat from the session list.";
+    return "Sent to the parent agent's session. It answers with its own tools; open its session from the session list.";
 }
 
 /**
@@ -1719,7 +1719,7 @@ export function workflowInputsShape(schema) {
  * only for an explicitly closed empty contract. Pure.
  */
 export function workflowStartAnotherShape(schema, { schemaKnown = false } = {}) {
-    // UX2D-F9: Run again of a chat's definition reads the revision it starts; once read, its schema is the contract (no
+    // UX2D-F9: Run again of a session's definition reads the revision it starts; once read, its schema is the contract (no
     // schema: it takes no inputs), so it says what Start says.
     if (schemaKnown) return workflowInputsShape(schema);
     return isRecord(schema) ? workflowInputsShape(schema) : "json";

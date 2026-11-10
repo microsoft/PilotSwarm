@@ -25,7 +25,7 @@ lifecycle rule in:
 |---|---|---|
 | Durable session orchestration | `packages/sdk/src/orchestration.ts`, `packages/sdk/src/orchestration/`, frozen `orchestration_*.ts` / `orchestration_*/`, `orchestration-registry.ts`, and the durable contracts of their activities | `docs/formal/session-orchestration/` |
 | Session hydration and dehydration | the dehydrate, hydrate and checkpoint activities and the snapshot commit in `packages/sdk/src/session-proxy.ts` and `session-manager.ts`; the orchestration's dehydrate and rehydrate paths (the hydration section of `orchestration/lifecycle.ts`); `shouldRehydrate` timers; rehydration messages carried across continue-as-new; the blob and session-store contracts they rely on | `docs/formal/session-orchestration/` (the rehydration notice, timers and the snapshot step); add a module there, or a new folder for a larger change |
-| Workflow controller and store | `packages/sdk/src/workflow/runtime.ts`, `store.ts`, `parallel.ts`, run admission in `service.ts`, the test-run (chat-test) path and the agent-host spawn path | `docs/formal/workflow/**` |
+| Workflow controller and store | `packages/sdk/src/workflow/runtime.ts`, `store.ts`, `parallel.ts`, run admission in `service.ts`, the test-run (definition-test) path and the agent-host spawn path | `docs/formal/workflow/**` |
 
 A new orchestration version always needs this skill (see the "New orchestration version"
 step in `.github/copilot-instructions.md`). Pure UI, docs, prompts and logging changes that

@@ -63,7 +63,7 @@ function throwIfAborted(signal: AbortSignal | undefined, message: string): void 
 /** A workflow session runs a workflow graph; it has no conversation to send to. */
 function workflowNotConversationalError(sessionId: string): Error {
     return Object.assign(
-        new Error(`Session ${sessionId.slice(0, 8)} is a workflow session; it runs a workflow graph and does not accept chat messages.`),
+        new Error(`Session ${sessionId.slice(0, 8)} is a workflow session; it runs a workflow graph and does not accept prompts.`),
         { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL", status: 409 },
     );
 }
@@ -712,10 +712,10 @@ export class PilotSwarmClient {
     }
 
     /**
-     * @internal OF-S2-7: whether `owner`, the owner of the chat that owns a Workflow (its agent nodes spend as them), may use an
+     * @internal OF-S2-7: whether `owner`, the owner of the session that owns a Workflow (its agent nodes spend as them), may use an
      * agent node's chosen model, as a session created for them would resolve it (their eligible providers), with an explicit
      * effort or tier the model lists (OF7-R6): null when they may, else the reason in words. A client that reads no model
-     * catalog cannot check, so it refuses (fail closed). Review D6: resolved exactly as the node's spawn resolves its chat
+     * catalog cannot check, so it refuses (fail closed). Review D6: resolved exactly as the node's spawn resolves its session
      * (createSession: the owner's eligible providers, never the system's), so a choice that passes here does not fail there.
      */
     _workflowAgentModelCheck(): (choice: { model: string; reasoningEffort?: string; contextTier?: string }, owner: SessionOwnerInfo | null) => Promise<string | null> {
@@ -1095,7 +1095,7 @@ export class PilotSwarmClient {
 
     /**
      * @internal Test-only: start this client's new sessions at a registered older version instead of the latest, as a
-     * session of an earlier release runs (an upgrade test: a 1.0.82 chat that continues as new into 1.0.83). Products never
+     * session of an earlier release runs (an upgrade test: a 1.0.82 session that continues as new into 1.0.83). Products never
      * call it: new sessions start at the latest version. A started session keeps its version until its continue-as-new.
      */
     _startSessionsAt(version: string): void {

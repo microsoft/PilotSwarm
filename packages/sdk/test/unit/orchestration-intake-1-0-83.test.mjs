@@ -244,7 +244,7 @@ const TURN_CHANGED_82 = [
     "                yield* projectNonRetryableTurnFailure(runtime, result.message);",
 ];
 /**
- * PR 270 (owner decision, changed in place): a Workflow agent chat's turn that fails for good owes a report
+ * PR 270 (owner decision, changed in place): a Workflow agent session's turn that fails for good owes a report
  * (workflow-turn-failure.ts), made at each terminal failure, made again before the next turn while owed, and dropped by a
  * turn that succeeds.
  */
@@ -408,7 +408,7 @@ test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change 
             + 'import { settleWorkflowTurnFailure } from "./workflow-turn-failure.js";\n')
         // PR 270: a failed-turn report a continue-as-new carried is made again at each execution's start.
         .replace("    while (true) {\n        state.loopIteration++;\n",
-            "    // PR 270: a Workflow agent chat's failed-turn report that a continue-as-new carried (its activity failed) is made\n"
+            "    // PR 270: a Workflow agent session's failed-turn report that a continue-as-new carried (its activity failed) is made\n"
             + "    // again at the start of each execution (no yield when none is owed).\n"
             + "    yield* settleWorkflowTurnFailure(runtime);\n\n"
             + "    while (true) {\n        state.loopIteration++;\n")

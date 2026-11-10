@@ -1,6 +1,6 @@
 /**
- * of-01 (owner feedback, preview 18:16Z): spawn_workflow was refused in the first turn after a chat's tools or model
- * changed ("A live parent tool context is required to admit a workflow."). getOrCreate recorded the chat's workflow
+ * of-01 (owner feedback, preview 18:16Z): spawn_workflow was refused in the first turn after a session's tools or model
+ * changed ("A live parent tool context is required to admit a workflow."). getOrCreate recorded the session's workflow
  * parent context before its warm-session branch; the turn-0 reset, the epoch start and a rebind (a model switch, a
  * capability selection such as use_package) forgot the warm session and that record with it, and the new
  * ManagedSession was stored without it. Every path that stores a ManagedSession now records it.
@@ -8,7 +8,7 @@
  * - SessionManager's real getOrCreate with a fake Copilot client (as capability-session-lifecycle does): after
  *   use_package, a model switch, an epoch start and a turn-0 reset of a warm session, the parent context is there and
  *   captureWorkflowToolBinding binds; with no warm session it refuses with WORKFLOW_PARENT_CONTEXT_UNAVAILABLE.
- * - A real worker (PostgreSQL, duroxide, the Copilot CLI, scripted model): the chat switches model with
+ * - A real worker (PostgreSQL, duroxide, the Copilot CLI, scripted model): the session switches model with
  *   set_session_model, and spawn_workflow in the first turn on the new model is admitted.
  *
  * Run: npx vitest run test/local/workflow-parent-context.test.js
@@ -44,7 +44,7 @@ function fixture() {
     const dir = mkdtempSync(join(tmpdir(), "ps-workflow-parent-context-"));
     const source = packageSource();
     let state = { revision: 0, selections: [] };
-    const row = { sessionId: "parent-context-chat", owner, isSystem: false, parentSessionId: null, rootSessionId: "parent-context-chat" };
+    const row = { sessionId: "parent-context-session", owner, isSystem: false, parentSessionId: null, rootSessionId: "parent-context-session" };
     const catalog = {
         getSession: async id => (id === row.sessionId ? row : null),
         getUserRole: async () => ({ role: "user", seenAt: new Date() }),
@@ -84,7 +84,7 @@ function fixture() {
     };
 }
 
-/** The chat can hand its tools to a workflow: its parent context is recorded and a binding is captured. */
+/** The session can hand its tools to a workflow: its parent context is recorded and a binding is captured. */
 async function expectBindable(h) {
     expect(h.manager.workflowParentConfigs.has(h.id), "the workflow parent context is recorded").toBe(true);
     const { binding, error } = await h.capture();
@@ -93,7 +93,7 @@ async function expectBindable(h) {
     expect(binding).toMatchObject({ policy: "node-parent-tools-v1", parentSessionId: h.id });
 }
 
-describe("a chat keeps its workflow parent context through every path that makes its Copilot session (of-01)", () => {
+describe("a session keeps its workflow parent context through every path that makes its Copilot session (of-01)", () => {
     it("after use_package (a capability selection rebinds the session)", async () => {
         const h = fixture();
         const first = await h.turn(0);
@@ -141,7 +141,7 @@ describe("a chat keeps its workflow parent context through every path that makes
         await h.manager.dropWarmSession(h.id);
         const { error } = await h.capture();
         expect(error?.code).toBe(CODE);
-        expect(error.message).toBe("The workflow was not created: this chat's tools were not ready to hand to a workflow. "
+        expect(error.message).toBe("The workflow was not created: this session's tools were not ready to hand to a workflow. "
             + "Nothing was started. Call spawn_workflow again; if it is refused again, tell the user.");
     });
 });
@@ -149,7 +149,7 @@ describe("a chat keeps its workflow parent context through every path that makes
 // ── A real worker ───────────────────────────────────────────────────────────────────────────────────────────────
 
 const TIMEOUT = 240_000;
-const CHAT_OWNER = { provider: "test", subject: "workflow-parent-context-owner" };
+const SESSION_OWNER = { provider: "test", subject: "workflow-parent-context-owner" };
 const SECOND_MODEL = "fixture-model-b";
 const SWITCH = "Switch to the second model, then create the draft workflow.";
 const YAML = `
@@ -176,9 +176,9 @@ async function until(check, label, timeoutMs = 150_000) {
 }
 
 describe("a definition saved in the first turn after a model switch, on a real worker (of-01)", () => {
-    // Stage 2.1: a save makes revision 1 of the chat's definition (no Workflow row). spawn_workflow is no longer declared
-    // (owner 2026-11-08T16:55Z): workflow_definition carries the same parent context; the chat has Workflows on.
-    it("is admitted: the chat's definition is saved and no refusal is recorded", { timeout: TIMEOUT }, async () => {
+    // Stage 2.1: a save makes revision 1 of the session's definition (no Workflow row). spawn_workflow is no longer declared
+    // (owner 2026-11-08T16:55Z): workflow_definition carries the same parent context; the session has Workflows on.
+    it("is admitted: the session's definition is saved and no refusal is recorded", { timeout: TIMEOUT }, async () => {
         let spawnCalled = false;
         const respond = (body, position) => {
             // The first request on the second model is the first turn after the rebind: it creates the workflow there.
@@ -196,14 +196,14 @@ describe("a definition saved in the first turn after a model switch, on a real w
         };
         await withScriptedModel(getEnv(), { respond, extraModels: [SECOND_MODEL], worker: { workflowScripts: { enabled: true } } },
             async ({ client, qualifiedModel }) => {
-                const chat = await client.createSession({ model: qualifiedModel, owner: CHAT_OWNER });
-                await turnWorkflowsOn(client._catalog, chat.sessionId);
-                await chat.send(SWITCH);
+                const session = await client.createSession({ model: qualifiedModel, owner: SESSION_OWNER });
+                await turnWorkflowsOn(client._catalog, session.sessionId);
+                await session.send(SWITCH);
                 const store = client._catalog.workflowStore();
-                const saved = await until(async () => (await store.chat.listDefinitions(chat.sessionId))[0] ?? null, "the chat's definition");
-                expect(saved).toMatchObject({ ownerSessionId: chat.sessionId, currentRevision: 1 });
+                const saved = await until(async () => (await store.sessionDefinitions.listDefinitions(session.sessionId))[0] ?? null, "the session's definition");
+                expect(saved).toMatchObject({ ownerSessionId: session.sessionId, currentRevision: 1 });
                 expect(spawnCalled).toBe(true);
-                const results = await client._catalog.getSessionEvents(chat.sessionId, 0, 500, ["tool.execution_complete"]);
+                const results = await client._catalog.getSessionEvents(session.sessionId, 0, 500, ["tool.execution_complete"]);
                 expect(JSON.stringify(results)).not.toContain(CODE);
                 expect(JSON.stringify(results)).not.toContain("workflow_definition failed");
             });

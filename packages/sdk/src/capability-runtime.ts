@@ -16,7 +16,7 @@ export interface CapabilityServices {
     use(args: PackageRequest): Promise<{ changed: boolean; revision: number }>;
     /** Section 4.12: save or drop an agent or skill loaded by path. */
     saveWorkspaceLoad?(change: { add: import("./capability-catalog.js").WorkspaceLoad } | { remove: { kind: "agent" | "skill"; name: string } }): Promise<{ loads: import("./capability-catalog.js").WorkspaceLoad[] }>;
-    /** Turn Workflows on in this chat (enable_workflows): saved with the session; `changed` false when they already were. */
+    /** Turn Workflows on in this session (enable_workflows): saved with the session; `changed` false when they already were. */
     enableWorkflows?(): Promise<{ changed: boolean; revision: number }>;
 }
 export const CAPABILITY_TOOL_SPECS = {
@@ -86,7 +86,7 @@ export function nextCapabilityState(state: CapabilityState, sourceId: string, ar
     const changed = capabilityHash(selections) !== capabilityHash(state.selections);
     return { changed, state: { revision: state.revision + 1, selections,
         requests: [...(state.requests ?? []), { id: args.request_id, hash }].slice(-64),
-        // Agents and skills loaded by path stay (section 4.12), and so does the chat's Workflows flag.
+        // Agents and skills loaded by path stay (section 4.12), and so does the session's Workflows flag.
         ...(state.loads?.length ? { loads: state.loads } : {}),
         ...(state.workflows === true ? { workflows: true as const } : {}) } };
 }

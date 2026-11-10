@@ -1,14 +1,14 @@
 /**
  * UXP-AD-01 (owner 2026-11-09T03:25Z): read_workflow's run.lastControl, on the real PostgreSQL store, through the
- * read_workflow and update_workflow tool adapters a chat calls and the run command service a person's command takes:
+ * read_workflow and update_workflow tool adapters a session calls and the run command service a person's command takes:
  * - a run with no control action has none;
  * - a pause by the reading session ("this session"), then a resume by a person ("a person", with the name the portal knows them
- *   by; never their sign-in identity), as on TEST: the chat paused, the person resumed from the portal;
+ *   by; never their sign-in identity), as on TEST: the session paused, the person resumed from the portal;
  * - variables set by another session ("another session", its id); a system's pause ("system", its name);
  * - a graceful stop and a cancel, with their reasons as stored: secrets hidden, cut at 500 characters (and "…");
  * - a "done" ends a run but is no control action;
  * - review PRA-F3: the management client's readWorkflow (the Web API's and MCP's read) has it too, with no reading session:
- *   the chat's own action reads "another session" with its id.
+ *   the session's own action reads "another session" with its id.
  * Nothing here runs a controller: the runs are admitted and never begin (the store's commands apply to them as they are).
  */
 import { describe, it, expect } from "vitest";
@@ -45,22 +45,22 @@ function fakeDuroxide() {
     };
 }
 
-/** A chat and its Workflow with one live run, admitted (at the Workflow controller, so it can be stopped). */
-async function chatWorkflow(env, label) {
+/** A session and its Workflow with one live run, admitted (at the Workflow controller, so it can be stopped). */
+async function sessionWorkflow(env, label) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
     const owner = { provider: "test", subject: `${label}-${randomUUID()}` };
-    const chat = randomUUID();
-    await catalog.createSession(chat, { owner });
+    const session = randomUUID();
+    await catalog.createSession(session, { owner });
     const workflowSessionId = randomUUID();
     const runId = randomUUID();
     const compiled = compileWorkflow(YAML);
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
-    expect((await catalog.createWorkflowSession(workflowSessionId, { parentSessionId: chat, owner,
+    expect((await catalog.createWorkflowSession(workflowSessionId, { parentSessionId: session, owner,
         creationConfig: { workflow: { requestSha256: label } } })).created).toBe(true);
     await store.createDefinition({
-        workflowSessionId, parentSessionId: chat, notifyParent: false, yaml: YAML, compiled, actor: { kind: "system", name: `${label}-test` },
+        workflowSessionId, parentSessionId: session, notifyParent: false, yaml: YAML, compiled, actor: { kind: "system", name: `${label}-test` },
         operationId: "create", requestSha256: label, publish: true, title: `Workflow: ${label}`,
         start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId), inputsText: "{}", kvText: "{}",
             testAgentMode: null, controllerVersion: WORKFLOW_CONTROLLER_VERSION },
@@ -68,12 +68,12 @@ async function chatWorkflow(env, label) {
     const duroxideClient = fakeDuroxide();
     const host = { catalog, store, duroxideClient };
     const read = async () => {
-        const view = JSON.parse(await readWorkflowFromTool({ workflow_id: workflowSessionId }, { callerSessionId: chat, host }));
+        const view = JSON.parse(await readWorkflowFromTool({ workflow_id: workflowSessionId }, { callerSessionId: session, host }));
         expect(view.ok, JSON.stringify(view)).toBe(true);
         return view.run;
     };
-    const asChat = async args => {
-        const done = JSON.parse(await updateWorkflowFromTool({ workflow_id: workflowSessionId, ...args }, { callerSessionId: chat, host }));
+    const asSession = async args => {
+        const done = JSON.parse(await updateWorkflowFromTool({ workflow_id: workflowSessionId, ...args }, { callerSessionId: session, host }));
         expect(done.ok, JSON.stringify(done)).toBe(true);
         return done;
     };
@@ -81,7 +81,7 @@ async function chatWorkflow(env, label) {
         { actor, operationId: `${command.operation}-${randomUUID()}` });
     /** The data of the run's newest event of this type, as stored. */
     const stored = async eventType => (await catalog.getSessionEvents(workflowSessionId, 0, 1_000, [eventType])).at(-1)?.data ?? null;
-    return { catalog, store, chat, owner, workflowSessionId, runId, host, read, asChat, command, stored, env };
+    return { catalog, store, session, owner, workflowSessionId, runId, host, read, asSession, command, stored, env };
 }
 
 /** The users table's display name for a person (as the portal's sign-in records it). */
@@ -94,13 +94,13 @@ const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 describe("read_workflow run.lastControl (UXP-AD-01)", () => {
     it("is absent without a control action; a pause by this session, then a person's resume, reads as the person's resume", { timeout: TIMEOUT }, async () => {
-        const h = await chatWorkflow(getEnv(), "pause-resume");
+        const h = await sessionWorkflow(getEnv(), "pause-resume");
         const before = await h.read();
         expect(before.status).toBe("admitted");
         expect(before).not.toHaveProperty("lastControl");
 
-        // The chat pauses its run on the person's request.
-        await h.asChat({ operation: "pause", operation_id: "chat-pause", reason: "The person asked me to pause it." });
+        // The session pauses its run on the person's request.
+        await h.asSession({ operation: "pause", operation_id: "owner-pause", reason: "The person asked me to pause it." });
         const paused = await h.read();
         expect(paused.status).toBe("paused");
         expect(paused.lastControl).toEqual({ operation: "pause", by: "this session", at: expect.stringMatching(ISO),
@@ -123,7 +123,7 @@ describe("read_workflow run.lastControl (UXP-AD-01)", () => {
     });
 
     it("names another session that set variables, a system that paused, and a person without a portal name", { timeout: TIMEOUT }, async () => {
-        const h = await chatWorkflow(getEnv(), "others");
+        const h = await sessionWorkflow(getEnv(), "others");
         const other = randomUUID();
         await h.command({ kind: "agent", sessionId: other }, { operation: "set_vars", set: { mode: "fast" }, delete: [], expectedKvRevision: 1 });
         expect((await h.read()).lastControl).toEqual({ operation: "set_vars", by: "another session", sessionId: other, at: expect.stringMatching(ISO) });
@@ -140,7 +140,7 @@ describe("read_workflow run.lastControl (UXP-AD-01)", () => {
     });
 
     it("reads a stop and a cancel with their reasons as stored: secrets hidden, cut at 500 characters", { timeout: TIMEOUT }, async () => {
-        const stopping = await chatWorkflow(getEnv(), "stop");
+        const stopping = await sessionWorkflow(getEnv(), "stop");
         const person = { kind: "user", provider: "test-idp", subject: `subject-${randomUUID()}` };
         const long = `Stop it: Bearer s3cr3tT0kenValue123 ${"x".repeat(700)}`;
         await stopping.command(person, { operation: "stop", reason: long, graceSeconds: 30 });
@@ -153,20 +153,20 @@ describe("read_workflow run.lastControl (UXP-AD-01)", () => {
         expect(stop.reason).not.toContain("s3cr3tT0kenValue123");
         expect(stop.reason.startsWith("Stop it: Bearer ")).toBe(true);
 
-        // A cancel by the chat (update_workflow takes a reason of at most 500 characters): its secret hidden as stored.
-        const cancelling = await chatWorkflow(getEnv(), "cancel");
-        await cancelling.asChat({ operation: "cancel", operation_id: "chat-cancel", reason: "The person said stop; token=abcdefgh12345 was in the log." });
+        // A cancel by the session (update_workflow takes a reason of at most 500 characters): its secret hidden as stored.
+        const cancelling = await sessionWorkflow(getEnv(), "cancel");
+        await cancelling.asSession({ operation: "cancel", operation_id: "owner-cancel", reason: "The person said stop; token=abcdefgh12345 was in the log." });
         const run = await cancelling.read();
         expect(run.status).toBe("cancelled");
         const storedCancel = await cancelling.stored("workflow.cancelled");
-        expect(storedCancel.actor).toEqual({ kind: "agent", sessionId: cancelling.chat });
+        expect(storedCancel.actor).toEqual({ kind: "agent", sessionId: cancelling.session });
         expect(run.lastControl).toEqual({ operation: "cancel", by: "this session", at: expect.stringMatching(ISO), reason: storedCancel.reason });
         expect(run.lastControl.reason).not.toContain("abcdefgh12345");
         expect(run.lastControl.reason.startsWith("The person said stop; token=")).toBe(true);
     });
 
     it("reads a person's cancel without a reason by the reason the run stored; a parent's \"done\" is no control action", { timeout: TIMEOUT }, async () => {
-        const h = await chatWorkflow(getEnv(), "person-cancel");
+        const h = await sessionWorkflow(getEnv(), "person-cancel");
         const person = { kind: "user", provider: "test-idp", subject: `subject-${randomUUID()}` };
         await nameThePerson(h.catalog, h.env, person, "Grace Hopper");
         await h.command(person, { operation: "cancel" });
@@ -174,10 +174,10 @@ describe("read_workflow run.lastControl (UXP-AD-01)", () => {
             reason: "Cancelled by a person" });
 
         // A parent's done (its session command) ends the run cancelled, but is not a control action: a pause stays the latest.
-        const done = await chatWorkflow(getEnv(), "done");
-        await done.asChat({ operation: "pause", operation_id: "chat-pause" });
+        const done = await sessionWorkflow(getEnv(), "done");
+        await done.asSession({ operation: "pause", operation_id: "owner-pause" });
         await done.store.recordSessionCommand({ workflowSessionId: done.workflowSessionId, operationId: "parent-done", requestSha256: "done",
-            command: "done", reason: "Stopped", requestedBy: done.chat });
+            command: "done", reason: "Stopped", requestedBy: done.session });
         const ended = await done.read();
         expect(ended.status).toBe("cancelled");
         expect((await done.stored("workflow.cancelled")).command).toBe("done");
@@ -185,14 +185,14 @@ describe("read_workflow run.lastControl (UXP-AD-01)", () => {
     });
 
     it("PRA-F3: the management client's read (the Web API's and MCP's) has lastControl too, read by no session", { timeout: TIMEOUT }, async () => {
-        const h = await chatWorkflow(getEnv(), "mgmt-read");
+        const h = await sessionWorkflow(getEnv(), "mgmt-read");
         const mgmt = await createManagementClient(h.env);
         try {
             expect((await mgmt.readWorkflow(h.workflowSessionId)).run).not.toHaveProperty("lastControl");
-            await h.asChat({ operation: "pause", operation_id: "chat-pause", reason: "The person asked me to pause it." });
-            expect((await mgmt.readWorkflow(h.workflowSessionId)).run.lastControl).toEqual({ operation: "pause", by: "another session", sessionId: h.chat,
+            await h.asSession({ operation: "pause", operation_id: "owner-pause", reason: "The person asked me to pause it." });
+            expect((await mgmt.readWorkflow(h.workflowSessionId)).run.lastControl).toEqual({ operation: "pause", by: "another session", sessionId: h.session,
                 at: expect.stringMatching(ISO), reason: "The person asked me to pause it." });
-            // The chat's own read still says it was this session.
+            // The session's own read still says it was this session.
             expect((await h.read()).lastControl).toMatchObject({ operation: "pause", by: "this session" });
             const person = { kind: "user", provider: "test-idp", subject: `subject-${randomUUID()}` };
             await nameThePerson(h.catalog, h.env, person, "Ada Lovelace");

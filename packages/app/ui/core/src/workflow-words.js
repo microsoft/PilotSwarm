@@ -209,13 +209,13 @@ export function workflowSessionModel(session) {
 
 /**
  * OF-S2-7: what each agent node of a graph (its states, nested bodies listed too) will use, for the Start dialog (the person
- * does not choose here: a start of theirs uses the chat's model, Run again its Workflow's choices): [{ id, text }], text
- * "classify: <model words> · chosen at start" or "… · from the chat". Empty without agent nodes. Pure.
+ * does not choose here: a start of theirs uses the session's model, Run again its Workflow's choices): [{ id, text }], text
+ * "classify: <model words> · chosen at start" or "… · from the session". Empty without agent nodes. Pure.
  */
-export function workflowStartModels(states, { chosen = null, chat = null } = {}) {
+export function workflowStartModels(states, { chosen = null, sessionModel = null } = {}) {
     const picked = id => (chosen && typeof chosen === "object" && chosen[id] && typeof chosen[id] === "object" ? chosen[id] : null);
     return (Array.isArray(states) ? states : []).filter(state => state?.type === "agent" && typeof state.id === "string")
-        .map(state => ({ id: state.id, text: `${state.id}: ${workflowAgentModel(picked(state.id), chat).value}` }));
+        .map(state => ({ id: state.id, text: `${state.id}: ${workflowAgentModel(picked(state.id), sessionModel).value}` }));
 }
 
 /**
@@ -240,33 +240,33 @@ export function workflowModelFromKey(key) {
 }
 
 /**
- * OF-S2-7: the model an agent node uses. `used` (review OF7-R8: what the shown visit's chat ran on, recorded with its spawn:
+ * OF-S2-7: the model an agent node uses. `used` (review OF7-R8: what the shown visit's session ran on, recorded with its spawn:
  * { model, reasoningEffort, contextTier, source }) is the evidence; without it, the one the start chose (`chosen`, the
- * run's agentModels entry), else its chat's as it is now (`chat`, workflowSessionModel of the chat that owns the Workflow;
- * null when that chat is not loaded). { source: "start" | "chat", words, value, text, now }: value "azure:gpt-5 · low
- * reasoning · chosen at start" or "… · from the chat", "from the chat · now …" when only the chat's current model is known,
- * "from the chat" when not even that; text "Model: " and the value. `unreadable` (DEV at fed7e7ac): the run's stored choices
- * cannot be read, so without a visit's record it says that, never the chat's model. Pure.
+ * run's agentModels entry), else its session's as it is now (`session`, workflowSessionModel of the session that owns the Workflow;
+ * null when that session is not loaded). { source: "start" | "session", words, value, text, now }: value "azure:gpt-5 · low
+ * reasoning · chosen at start" or "… · from the session", "from the session · now …" when only the session's current model is known,
+ * "from the session" when not even that; text "Model: " and the value. `unreadable` (DEV at fed7e7ac): the run's stored choices
+ * cannot be read, so without a visit's record it says that, never the session's model. Pure.
  */
-export function workflowAgentModel(chosen, chat = null, used = null, { unreadable = false } = {}) {
+export function workflowAgentModel(chosen, sessionModel = null, used = null, { unreadable = false } = {}) {
     const ran = workflowModelWords(used);
     if (!ran && unreadable) {
         return { source: "start", words: null, value: "model choices cannot be read", text: "Model: model choices cannot be read", now: false };
     }
     if (ran) {
-        const source = used.source === "start" ? "start" : "chat";
-        const value = `${ran} · ${source === "start" ? "chosen at start" : "from the chat"}`;
+        const source = used.source === "start" ? "start" : "session";
+        const value = `${ran} · ${source === "start" ? "chosen at start" : "from the session"}`;
         return { source, words: ran, value, text: `Model: ${value}`, now: false };
     }
     const picked = workflowModelWords(chosen);
     if (picked) return { source: "start", words: picked, value: `${picked} · chosen at start`, text: `Model: ${picked} · chosen at start`, now: false };
-    const inherited = workflowModelWords(chat);
-    const value = inherited ? `from the chat · now ${inherited}` : "from the chat";
-    return { source: "chat", words: inherited, value, text: `Model: ${value}`, now: Boolean(inherited) };
+    const inherited = workflowModelWords(sessionModel);
+    const value = inherited ? `from the session · now ${inherited}` : "from the session";
+    return { source: "session", words: inherited, value, text: `Model: ${value}`, now: Boolean(inherited) };
 }
 
 /**
- * OF-S2-7 review OF7-R8: what each visit's agent chat ran on, from the Workflow's `workflow.agent_spawned` events (of run
+ * OF-S2-7 review OF7-R8: what each visit's agent session ran on, from the Workflow's `workflow.agent_spawned` events (of run
  * `runId` when given): node execution id → { model, reasoningEffort, contextTier, source }. Pure.
  */
 export function workflowSpawnedModels(events, runId = null) {
@@ -277,7 +277,7 @@ export function workflowSpawnedModels(events, runId = null) {
         const model = data.model;
         if (model && typeof model === "object" && typeof model.model === "string" && model.model) {
             out.set(data.nodeExecutionId, { model: model.model, reasoningEffort: model.reasoningEffort ?? null, contextTier: model.contextTier ?? null,
-                source: model.source === "start" ? "start" : "chat" });
+                source: model.source === "start" ? "start" : "session" });
         }
     }
     return out;

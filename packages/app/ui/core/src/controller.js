@@ -81,7 +81,7 @@ import {
     selectWorkflowTabContext, workflowActiveChildIds, workflowAttentionChildIds, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowHighlightedSessionId, workflowNumberOf, workflowOwnerId,
     workflowPaneTarget, workflowRowTitle, workflowSelectionTarget, workflowStartAnotherText, workflowStateOf,
 } from "./workflow-owner.js";
-import { chatDefinitionFailure, chatDefinitionReadKey } from "./workflow-chat-definitions.js";
+import { sessionDefinitionFailure, sessionDefinitionReadKey } from "./workflow-session-definitions.js";
 import { getTheme, listThemes } from "./themes/index.js";
 
 function preserveNativeTaskProgress(history, current, sessionId) {
@@ -1177,7 +1177,7 @@ export function buildAgentPickerItems(catalog = [], opts = {}) {
     }
 
     // Stage 2.3 (P1, P2): the packages' Workflow Definitions, after the agents, by name (or package, then name). Choosing
-    // one makes a chat that runs it. They are not counted in "most used": that counts agents.
+    // one makes a session that runs it. They are not counted in "most used": that counts agents.
     const workflows = (Array.isArray(workflowItems) ? workflowItems : []).filter((item) => item?.kind === "workflow");
     const workflowRows = terms
         ? workflows.map((item) => ({ item, score: scoreAgentMatch(item, terms) })).filter((row) => row.score >= 0)
@@ -6338,7 +6338,7 @@ export class PilotSwarmUiController {
         // MoA panel controllers run no catalog loop: a panel reads the
         // viewer's steering decision when it loads its session.
         void this.refreshSteeringFeature();
-        // Workflow Simplified (S4): a Workflow row loads the chat of the session that owns it; the reducer maps the
+        // Workflow Simplified (S4): a Workflow row loads the session of the session that owns it; the reducer maps the
         // selection (the Workflow shows in that session's Workflow tab). Choosing the session itself again clears the row;
         // `keepWorkflowRow` loads the selected session without choosing it again (the list's own reload of the selection,
         // after a link to a Workflow mapped it to its session).
@@ -6637,7 +6637,7 @@ export class PilotSwarmUiController {
      * read of that Workflow (ensureWorkflowReadModel); nothing is awaited. `ids` reads those Workflows instead.
      */
     /**
-     * Review UI2-F1: read again the models of the active chat's Workflows that the Workflow button's dot depends on
+     * Review UI2-F1: read again the models of the active session's Workflows that the Workflow button's dot depends on
      * (workflowAttentionChildIds: those still running, and those whose row changed after their model was read), whether
      * or not a Workflow panel shows them. Each read is the shared one, and an unchanged Workflow's is skipped. Never throws.
      */
@@ -8170,8 +8170,8 @@ export class PilotSwarmUiController {
 
     /**
      * Workflow: send a person's message to the workflow's parent agent (owner decisions q12, q16): an ordinary message
-     * in the parent's chat (`text`, built by workflowAskParentMessage), which the parent answers with its own tools.
-     * People still cannot write to a step's own chat. Refused before anything is sent for a session that is not a
+     * in the parent's session (`text`, built by workflowAskParentMessage), which the parent answers with its own tools.
+     * People still cannot write to a step's own session. Refused before anything is sent for a session that is not a
      * workflow, a workflow with no parent, an empty message, or a parent whose input policy refuses a person; the server
      * decides again. Never throws.
      */
@@ -8199,7 +8199,7 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Workflow Simplified, Run again (W8; owner feedback 2026-11-06): ask the chat of the session that owns workflow child
+     * Workflow Simplified, Run again (W8; owner feedback 2026-11-06): ask the session of the session that owns workflow child
      * `sessionId` to start another Workflow from its definition, as an ordinary message (workflowStartAnotherText): the
      * same YAML spawned again, no key or a new one, never renamed. The new child has the same name, so it is listed under
      * the same definition (O5). The person's own draft in the composer is not touched. `inputs` and `vars` are JSON
@@ -8218,28 +8218,28 @@ export class PilotSwarmUiController {
         const text = workflowStartAnotherText({ name, version: model?.definition?.semver ?? null, fromSessionId: sessionId,
             fromNumber: workflowNumberOf(byId, sessionId, views), nextNumber, inputs, vars, noInputs: noInputs === true });
         const result = await this.askWorkflowParent(sessionId, text);
-        if (result.ok) this.dispatch({ type: "ui/status", text: `Asked the chat to start ${name} #${nextNumber}.` });
+        if (result.ok) this.dispatch({ type: "ui/status", text: `Asked the session to start ${name} #${nextNumber}.` });
         return result;
     }
 
     /**
-     * Stage 2.1b: read a chat's Workflow Definitions (listChatWorkflowDefinitions; deleted ones too, so a finished
-     * Workflow of a deleted definition stays reachable) into ui.chatDefinitions[ownerId] ({ items, at, error, unsupported }).
-     * One read at a time per chat; an ask while one is in flight reads once more after it. A connection without the
+     * Stage 2.1b: read a session's Workflow Definitions (listSessionWorkflowDefinitions; deleted ones too, so a finished
+     * Workflow of a deleted definition stays reachable) into ui.sessionDefinitions[ownerId] ({ items, at, error, unsupported }).
+     * One read at a time per session; an ask while one is in flight reads once more after it. A connection without the
      * operation, or an answer that is not a list, leaves the tab on the stage 1 grouping (`unsupported`); a failure keeps
      * the last list and says why. Never throws.
      */
-    async ensureChatWorkflowDefinitions(ownerId, _options = {}) {
+    async ensureSessionWorkflowDefinitions(ownerId, _options = {}) {
         if (!ownerId) return null;
         const session = this.getState().sessions.byId[ownerId];
         if (!session || session.isGroup || session.sessionKind === "workflow") return null;
-        if (typeof this.transport?.listChatWorkflowDefinitions !== "function") {
-            this.dispatch({ type: "ui/chatDefinitions", ownerId, patch: { unsupported: true } });
+        if (typeof this.transport?.listSessionWorkflowDefinitions !== "function") {
+            this.dispatch({ type: "ui/sessionDefinitions", ownerId, patch: { unsupported: true } });
             return null;
         }
-        if (!this._chatDefinitionLists) this._chatDefinitionLists = new Map();
-        const entry = this._chatDefinitionLists.get(ownerId) || { inFlight: null, again: false };
-        this._chatDefinitionLists.set(ownerId, entry);
+        if (!this._sessionDefinitionLists) this._sessionDefinitionLists = new Map();
+        const entry = this._sessionDefinitionLists.get(ownerId) || { inFlight: null, again: false };
+        this._sessionDefinitionLists.set(ownerId, entry);
         if (entry.inFlight) {
             entry.again = true;
             return entry.inFlight;
@@ -8247,44 +8247,44 @@ export class PilotSwarmUiController {
         const load = async () => {
             let patch;
             try {
-                const items = await this.transport.listChatWorkflowDefinitions(ownerId, { includeDeleted: true });
+                const items = await this.transport.listSessionWorkflowDefinitions(ownerId, { includeDeleted: true });
                 patch = Array.isArray(items) ? { items, at: Date.now(), error: null, unsupported: false } : { unsupported: true, error: null, at: Date.now() };
             } catch (error) {
                 patch = { error: String(error?.message || error || "The definitions could not be read."), failedAt: Date.now() };
             }
             entry.inFlight = null;
-            this.dispatch({ type: "ui/chatDefinitions", ownerId, patch });
+            this.dispatch({ type: "ui/sessionDefinitions", ownerId, patch });
             if (entry.again) {
                 entry.again = false;
-                await this.ensureChatWorkflowDefinitions(ownerId, { force: true });
+                await this.ensureSessionWorkflowDefinitions(ownerId, { force: true });
             }
-            return this.getState().ui.chatDefinitions?.[ownerId] ?? null;
+            return this.getState().ui.sessionDefinitions?.[ownerId] ?? null;
         };
         entry.inFlight = Promise.resolve().then(load);
         return entry.inFlight;
     }
 
     /**
-     * Stage 2.1b: read one revision of a chat's definition (its YAML when this caller may change it, its diagnostics, its
-     * graph, and whether this caller may save, start and delete) into ui.chatDefinitionReads[ownerId]. A revision never
+     * Stage 2.1b: read one revision of a session's definition (its YAML when this caller may change it, its diagnostics, its
+     * graph, and whether this caller may save, start and delete) into ui.sessionDefinitionReads[ownerId]. A revision never
      * changes once saved, so a read that succeeded is kept; one that failed is read again when asked. Never throws.
      */
-    async readChatWorkflowRevision(ownerId, definitionId, revision, { force = false } = {}) {
+    async readSessionWorkflowRevision(ownerId, definitionId, revision, { force = false } = {}) {
         if (!ownerId || !definitionId || !Number.isSafeInteger(revision) || revision < 1) return null;
-        if (typeof this.transport?.readChatWorkflowDefinition !== "function") return null;
-        const key = chatDefinitionReadKey(definitionId, revision);
-        const current = this.getState().ui.chatDefinitionReads?.[ownerId]?.[key] ?? null;
+        if (typeof this.transport?.readSessionWorkflowDefinition !== "function") return null;
+        const key = sessionDefinitionReadKey(definitionId, revision);
+        const current = this.getState().ui.sessionDefinitionReads?.[ownerId]?.[key] ?? null;
         if (!force && current && (current.phase === "ready" || current.phase === "loading")) return current;
-        this.dispatch({ type: "ui/chatDefinitionRead", ownerId, key, entry: { phase: "loading", value: current?.value ?? null, error: null } });
+        this.dispatch({ type: "ui/sessionDefinitionRead", ownerId, key, entry: { phase: "loading", value: current?.value ?? null, error: null } });
         let entry;
         try {
-            const value = await this.transport.readChatWorkflowDefinition(ownerId, { definitionId, revision });
+            const value = await this.transport.readSessionWorkflowDefinition(ownerId, { definitionId, revision });
             entry = value && typeof value === "object" && value.revision && typeof value.revision === "object"
                 ? { phase: "ready", value, error: null } : { phase: "failed", value: null, error: "The revision's data has an unknown format." };
         } catch (error) {
             entry = { phase: "failed", value: null, error: String(error?.message || error || "The revision could not be read.").slice(0, 500) };
         }
-        this.dispatch({ type: "ui/chatDefinitionRead", ownerId, key, entry });
+        this.dispatch({ type: "ui/sessionDefinitionRead", ownerId, key, entry });
         return entry;
     }
 
@@ -8292,46 +8292,46 @@ export class PilotSwarmUiController {
      * One operation id per intent (stage 2.1b): a request sent again after no answer came reuses its id, so the server
      * answers with the first receipt instead of doing it twice; an answered one (done or refused) frees it.
      */
-    _chatDefinitionOperation(kind, ownerId, request) {
-        if (!this._chatDefinitionOperations) this._chatDefinitionOperations = new Map();
+    _sessionDefinitionOperation(kind, ownerId, request) {
+        if (!this._sessionDefinitionOperations) this._sessionDefinitionOperations = new Map();
         const key = `${kind}:${ownerId}:${JSON.stringify(request)}`;
-        let id = this._chatDefinitionOperations.get(key);
-        if (!id) this._chatDefinitionOperations.set(key, id = `ui-${kind}-${this._newTurnControlRequestId()}`);
+        let id = this._sessionDefinitionOperations.get(key);
+        if (!id) this._sessionDefinitionOperations.set(key, id = `ui-${kind}-${this._newTurnControlRequestId()}`);
         return { key, id };
     }
 
-    async _sendChatDefinitionOperation(kind, ownerId, request, send) {
-        const methods = { save: "saveChatWorkflowDefinition", start: "startChatWorkflowDefinition", delete: "deleteChatWorkflowDefinition",
+    async _sendSessionDefinitionOperation(kind, ownerId, request, send) {
+        const methods = { save: "saveSessionWorkflowDefinition", start: "startSessionWorkflowDefinition", delete: "deleteSessionWorkflowDefinition",
             // Stage 2.3: Make a copy, and a package's newer version for the next Workflow.
-            copy: "copyChatWorkflowDefinition", update: "updateChatWorkflowPackage" };
+            copy: "copySessionWorkflowDefinition", update: "updateSessionWorkflowPackage" };
         if (!ownerId || typeof this.transport?.[methods[kind]] !== "function") {
             return { ok: false, phase: "failed", code: null, stale: null, message: "This connection cannot change Workflow Definitions." };
         }
-        const operation = this._chatDefinitionOperation(kind, ownerId, request);
+        const operation = this._sessionDefinitionOperation(kind, ownerId, request);
         try {
             const receipt = await send(operation.id);
-            this._chatDefinitionOperations.delete(operation.key);
+            this._sessionDefinitionOperations.delete(operation.key);
             return { ok: true, receipt };
         } catch (error) {
-            const failure = chatDefinitionFailure(error);
-            if (failure.phase !== "unconfirmed") this._chatDefinitionOperations.delete(operation.key);
+            const failure = sessionDefinitionFailure(error);
+            if (failure.phase !== "unconfirmed") this._sessionDefinitionOperations.delete(operation.key);
             return { ok: false, ...failure, error };
         } finally {
             // The list is read again before the answer is returned, so what a caller shows next is the server's.
-            await this.ensureChatWorkflowDefinitions(ownerId, { force: true }).catch(() => {});
+            await this.ensureSessionWorkflowDefinitions(ownerId, { force: true }).catch(() => {});
         }
     }
 
     /**
-     * Stage 2.1b (E2-1..E2-5): a person saves the YAML as the next revision of a chat's definition, based on the revision
+     * Stage 2.1b (E2-1..E2-5): a person saves the YAML as the next revision of a session's definition, based on the revision
      * they edited (`definitionId`, `expectedRevision`; neither for a first save of `name`). A newer revision saved
      * meanwhile refuses it, in words that say who saved it and when (REVISION_STALE: `stale` is that revision). A revision
      * with errors is saved with them. { ok, receipt } or { ok: false, phase, code, message, stale }. Never throws.
      */
-    async saveChatWorkflowDefinition(ownerId, { definitionId = null, name, yaml, expectedRevision = null } = {}) {
+    async saveSessionWorkflowDefinition(ownerId, { definitionId = null, name, yaml, expectedRevision = null } = {}) {
         const request = { name, yaml, definitionId: definitionId ?? null, expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null };
-        const result = await this._sendChatDefinitionOperation("save", ownerId, request,
-            operationId => this.transport.saveChatWorkflowDefinition(ownerId, { ...request, operationId }));
+        const result = await this._sendSessionDefinitionOperation("save", ownerId, request,
+            operationId => this.transport.saveSessionWorkflowDefinition(ownerId, { ...request, operationId }));
         if (result.ok) {
             const receipt = result.receipt ?? {};
             this.dispatch({ type: "ui/status", text: `Saved ${receipt.name ?? name} revision ${receipt.revision ?? "?"}`
@@ -8341,15 +8341,15 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Stage 2.1b (Q10): a person starts a new Workflow from a revision of a chat's definition; Run again (`runAgainOf`)
+     * Stage 2.1b (Q10): a person starts a new Workflow from a revision of a session's definition; Run again (`runAgainOf`)
      * starts the revision of the Workflow it repeats. { ok, receipt: { workflowId, revision, … } } or a failure as
-     * saveChatWorkflowDefinition's. The new Workflow's row is read at once. Never throws.
+     * saveSessionWorkflowDefinition's. The new Workflow's row is read at once. Never throws.
      */
-    async startChatWorkflowDefinition(ownerId, { definitionId, revision = null, runAgainOf = null, inputs = {}, vars = null } = {}) {
+    async startSessionWorkflowDefinition(ownerId, { definitionId, revision = null, runAgainOf = null, inputs = {}, vars = null } = {}) {
         const request = { definitionId, revision: Number.isSafeInteger(revision) ? revision : null, runAgainOf: runAgainOf ?? null,
             inputs: inputs ?? {}, vars: vars ?? null };
-        const result = await this._sendChatDefinitionOperation("start", ownerId, request,
-            operationId => this.transport.startChatWorkflowDefinition(ownerId, { ...request, operationId }));
+        const result = await this._sendSessionDefinitionOperation("start", ownerId, request,
+            operationId => this.transport.startSessionWorkflowDefinition(ownerId, { ...request, operationId }));
         if (result.ok) {
             const receipt = result.receipt ?? {};
             this.dispatch({ type: "ui/status", text: `Started ${receipt.name ?? "the Workflow"} from revision ${receipt.revision ?? "?"}.` });
@@ -8360,15 +8360,15 @@ export class PilotSwarmUiController {
 
     /**
      * Stage 2.3 (E2-7, P5): a person's Make a copy of a package's locked definition: its revision (default the newest) is
-     * saved as the chat's own, editable definition at revision 1, named as its YAML names it. { ok, receipt } or a failure
-     * as saveChatWorkflowDefinition's. Never throws.
+     * saved as the session's own, editable definition at revision 1, named as its YAML names it. { ok, receipt } or a failure
+     * as saveSessionWorkflowDefinition's. Never throws.
      */
-    async copyChatWorkflowDefinition(ownerId, { definitionId, revision = null } = {}) {
+    async copySessionWorkflowDefinition(ownerId, { definitionId, revision = null } = {}) {
         const request = { definitionId, revision: Number.isSafeInteger(revision) ? revision : null };
-        const result = await this._sendChatDefinitionOperation("copy", ownerId, request,
-            operationId => this.transport.copyChatWorkflowDefinition(ownerId, { ...request, operationId }));
+        const result = await this._sendSessionDefinitionOperation("copy", ownerId, request,
+            operationId => this.transport.copySessionWorkflowDefinition(ownerId, { ...request, operationId }));
         if (result.ok) {
-            this.dispatch({ type: "ui/status", text: `Made ${result.receipt?.name ?? "a copy"}, an editable copy at revision ${result.receipt?.revision ?? 1}. The chat is told on its next turn.` });
+            this.dispatch({ type: "ui/status", text: `Made ${result.receipt?.name ?? "a copy"}, an editable copy at revision ${result.receipt?.revision ?? 1}. The session is told on its next turn.` });
         }
         return result;
     }
@@ -8377,21 +8377,21 @@ export class PilotSwarmUiController {
      * Stage 2.3 (P6): a person takes the package's newer version of a locked definition for the next Workflow; it becomes
      * the definition's next revision, and a running Workflow keeps its own. Never throws.
      */
-    async updateChatWorkflowPackage(ownerId, { definitionId } = {}) {
+    async updateSessionWorkflowPackage(ownerId, { definitionId } = {}) {
         const request = { definitionId };
-        const result = await this._sendChatDefinitionOperation("update", ownerId, request,
-            operationId => this.transport.updateChatWorkflowPackage(ownerId, { ...request, operationId }));
+        const result = await this._sendSessionDefinitionOperation("update", ownerId, request,
+            operationId => this.transport.updateSessionWorkflowPackage(ownerId, { ...request, operationId }));
         if (result.ok) {
             this.dispatch({ type: "ui/status", text: `The next Workflow of ${result.receipt?.name ?? "it"} starts version ${result.receipt?.package?.semver ?? "the newer one"}.` });
         }
         return result;
     }
 
-    /** Stage 2.1b (Q8, R6): a person deletes a chat's definition; refused while one of its Workflows runs. Never throws. */
-    async deleteChatWorkflowDefinition(ownerId, { definitionId } = {}) {
+    /** Stage 2.1b (Q8, R6): a person deletes a session's definition; refused while one of its Workflows runs. Never throws. */
+    async deleteSessionWorkflowDefinition(ownerId, { definitionId } = {}) {
         const request = { definitionId };
-        const result = await this._sendChatDefinitionOperation("delete", ownerId, request,
-            operationId => this.transport.deleteChatWorkflowDefinition(ownerId, { ...request, operationId }));
+        const result = await this._sendSessionDefinitionOperation("delete", ownerId, request,
+            operationId => this.transport.deleteSessionWorkflowDefinition(ownerId, { ...request, operationId }));
         if (result.ok) this.dispatch({ type: "ui/status", text: `Deleted ${result.receipt?.name ?? "the definition"}. Its finished Workflows keep their copies.` });
         return result;
     }
@@ -9108,13 +9108,13 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Stage 2.3 (P2, P3, D8): make a chat for a package's Workflow Definition (`ref`, <package>/<name>): the server attaches
-     * the definition, locked, gives the chat its card and how to coordinate it, and asks it to greet the person and ask for
+     * Stage 2.3 (P2, P3, D8): make a session for a package's Workflow Definition (`ref`, <package>/<name>): the server attaches
+     * the definition, locked, gives the session its card and how to coordinate it, and asks it to greet the person and ask for
      * the inputs it needs. The model is the one chosen (else the deployment's default). Never throws: a refusal is a status.
      */
-    async createWorkflowChat(ref, options = {}) {
-        if (typeof this.transport.createWorkflowChat !== "function") {
-            this.dispatch({ type: "ui/status", text: "This connection cannot make a chat for a Workflow." });
+    async createSessionForWorkflow(ref, options = {}) {
+        if (typeof this.transport.createSessionForWorkflow !== "function") {
+            this.dispatch({ type: "ui/status", text: "This connection cannot make a session for a Workflow." });
             return null;
         }
         try {
@@ -9125,12 +9125,12 @@ export class PilotSwarmUiController {
                 ...(options.groupId ? { groupId: options.groupId } : {}),
                 ...(options.visibility ? { visibility: options.visibility } : {}),
             });
-            const created = await this.transport.createWorkflowChat(ref, requestOptions);
+            const created = await this.transport.createSessionForWorkflow(ref, requestOptions);
             await this.placeCreatedSessionInGroup(created, requestOptions.groupId ?? null);
             await this.openCreatedSession(created, requestOptions);
             return created;
         } catch (error) {
-            this.dispatch({ type: "ui/status", text: error?.message || String(error) || "The chat for the Workflow could not be made." });
+            this.dispatch({ type: "ui/status", text: error?.message || String(error) || "The session for the Workflow could not be made." });
             return null;
         }
     }
@@ -10306,7 +10306,7 @@ export class PilotSwarmUiController {
 
     /**
      * Workflow sessions: open the read-only workflow view (TUI; design 02
-     * "Portal/TUI: graph, observed state, read-only child chats"; T115) for
+     * "Portal/TUI: graph, observed state, read-only child sessions"; T115) for
      * the active session: its states in graph order, the selected state's
      * details and an agent state's child sessions (workflow-tui.js). It asks
      * for the same reads the portal's workflow pane makes
@@ -10315,12 +10315,12 @@ export class PilotSwarmUiController {
      */
     openWorkflowViewModal() {
         const state = this.getState();
-        // Workflow Simplified (18): the terminal UI keeps the chat and opens a Workflow pane for it, as the portal's Workflow
-        // tab does: the Workflow the chat's tab would show (a selected Workflow row of this chat, an agent node chat's own
-        // Workflow with that node selected), else the chat's newest Workflow. A workflow that is active itself opens itself.
+        // Workflow Simplified (18): the terminal UI keeps the session and opens a Workflow pane for it, as the portal's Workflow
+        // tab does: the Workflow the session's tab would show (a selected Workflow row of this session, an agent node session's own
+        // Workflow with that node selected), else the session's newest Workflow. A workflow that is active itself opens itself.
         const target = workflowPaneTarget(state);
         if (!target) {
-            this.dispatch({ type: "ui/status", text: state.sessions.activeSessionId ? "This chat has no Workflows yet" : "No session is selected" });
+            this.dispatch({ type: "ui/status", text: state.sessions.activeSessionId ? "This session has no Workflows yet" : "No session is selected" });
             return;
         }
         const sessionId = target.workflowId;
@@ -10335,7 +10335,7 @@ export class PilotSwarmUiController {
             type: "ui/modal",
             modal: { type: "workflowView", sessionId, selectedNodeId, occurrenceIndex: 0, previousFocus: state.ui.focusRegion },
         });
-        this.dispatch({ type: "ui/status", text: "Workflow — ↑↓ node · PgUp/PgDn details · Tab agent session · Enter open · Esc back to the chat" });
+        this.dispatch({ type: "ui/status", text: "Workflow — ↑↓ node · PgUp/PgDn details · Tab agent session · Enter open · Esc back to the session" });
     }
 
     /** Stop keeping the Workflow pane's Workflow live (openWorkflowViewModal), if it was. */
@@ -10345,7 +10345,7 @@ export class PilotSwarmUiController {
         if (typeof release === "function") release();
     }
 
-    /** The workflow view: select the state `delta` rows away, in graph order (clamped), and its newest agent chat. */
+    /** The workflow view: select the state `delta` rows away, in graph order (clamped), and its newest agent session. */
     moveWorkflowViewSelection(delta) {
         const selection = selectWorkflowViewSelection(this.getState());
         if (!selection || selection.nodes.length === 0) return;
@@ -10539,8 +10539,8 @@ export class PilotSwarmUiController {
 
     /**
      * The workflow view: open the chosen occurrence's child session, the
-     * agent's actual chat (T115), as the portal's node details open it
-     * (loadSession). It changes nothing: people can read the chat, and the
+     * agent's actual session (T115), as the portal's node details open it
+     * (loadSession). It changes nothing: people can read the session, and the
      * server refuses their prompts, answers and steers to it. A state without
      * a child session keeps the view open with a status line.
      */
@@ -11373,8 +11373,8 @@ export class PilotSwarmUiController {
 
     /**
      * Workflow Simplified, review UI-1: the Workflow row the session list's actions target. A Workflow row selected under
-     * its chat keeps the chat active (the chat stays in the middle) and is highlighted; the Terminate button, and the
-     * shortcuts c, d and D in the portal and the terminal UI, then act on that Workflow, never on its chat. Null when no
+     * its session keeps the session active (the session stays in the middle) and is highlighted; the Terminate button, and the
+     * shortcuts c, d and D in the portal and the terminal UI, then act on that Workflow, never on its session. Null when no
      * Workflow row is highlighted, or in select mode (its selection is the target).
      */
     highlightedWorkflowRow(state = this.getState()) {
@@ -11485,7 +11485,7 @@ export class PilotSwarmUiController {
                 modal: {
                     type: "confirm",
                     title: "Delete Workflow",
-                    message: `Delete ${name}? Its graph, its log and its agent chats are removed. This cannot be undone.`,
+                    message: `Delete ${name}? Its graph, its log and its agent sessions are removed. This cannot be undone.`,
                     confirmLabel: "Delete",
                     action: "deleteWorkflow",
                     sessionId,
@@ -12335,10 +12335,10 @@ export class PilotSwarmUiController {
                 await this.createSession(sessionOptions);
                 return;
             }
-            // Stage 2.3 (P2, D8): a package's Workflow Definition: a chat that runs it, on the model chosen in the model step
+            // Stage 2.3 (P2, D8): a package's Workflow Definition: a session that runs it, on the model chosen in the model step
             // (else the deployment's default; the card's suggestion is shown, never applied unasked).
             if (item.kind === "workflow") {
-                await this.createWorkflowChat(item.ref, sessionOptions);
+                await this.createSessionForWorkflow(item.ref, sessionOptions);
                 return;
             }
             await this.createSessionForAgent(item.agentName, {
@@ -13018,11 +13018,11 @@ export class PilotSwarmUiController {
         // A Workflow row selects its session's chat (S4): the reducer maps it; choosing the session again clears the row.
         const sessions = this.getState().sessions;
         const target = workflowSelectionTarget(sessions.byId, sessionId);
-        const chatId = target ? target.ownerId : sessionId;
+        const ownerSessionId = target ? target.ownerId : sessionId;
         const rowChanged = target ? sessions.workflowRowId !== sessionId : Boolean(sessions.workflowRowId);
-        if (sessions.activeSessionId !== chatId || rowChanged) {
+        if (sessions.activeSessionId !== ownerSessionId || rowChanged) {
             this.dispatch({ type: "sessions/selected", sessionId });
-            if (sessions.activeSessionId !== chatId) {
+            if (sessions.activeSessionId !== ownerSessionId) {
                 // Same per-session reset loadSession does, so the sequence tab does
                 // not show another session's turn while the fetch is pending.
                 this.dispatch({ type: "ui/sequenceExpandedTurns", turns: [] });
@@ -13767,7 +13767,7 @@ export class PilotSwarmUiController {
             return;
         }
 
-        // UI-1: a highlighted Workflow row is acted on as a Workflow, never through its chat.
+        // UI-1: a highlighted Workflow row is acted on as a Workflow, never through its session.
         if (await this.workflowRowShortcut("cancel", { confirmed })) return;
         const sessionId = state.sessions.activeSessionId;
         if (!sessionId) return;
@@ -14658,7 +14658,7 @@ export class PilotSwarmUiController {
             await this.refreshSessions();
             return;
         }
-        // UI-1: a highlighted Workflow row is acted on as a Workflow, never through its chat.
+        // UI-1: a highlighted Workflow row is acted on as a Workflow, never through its session.
         if (await this.workflowRowShortcut("done", { confirmed })) return;
         const sessionId = this.getState().sessions.activeSessionId;
         if (!sessionId) return;
@@ -14786,7 +14786,7 @@ export class PilotSwarmUiController {
             await this.refreshSessions();
             return;
         }
-        // UI-1: a highlighted Workflow row is acted on as a Workflow, never through its chat.
+        // UI-1: a highlighted Workflow row is acted on as a Workflow, never through its session.
         if (await this.workflowRowShortcut("delete", { confirmed })) return;
         const sessionId = state.sessions.activeSessionId;
         if (!sessionId) return;

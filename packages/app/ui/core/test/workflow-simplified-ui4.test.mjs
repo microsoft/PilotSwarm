@@ -133,7 +133,7 @@ test("UI4-F1: a chosen child that is deleted shows the newest and says so, never
 test("UI4-F2: selecting A's row after Show it on B clears B; the picker and the Definition view are A's (click or keyboard: one action)", () => {
     for (const select of [
         h => h.store.dispatch({ type: "sessions/selected", sessionId: "chat", workflowRowId: "wf-1" }),
-        // A Workflow's own id selected (a link, the keyboard on its row): mapped to its chat with the Workflow row.
+        // A Workflow's own id selected (a link, the keyboard on its row): mapped to its session with the Workflow row.
         h => h.store.dispatch({ type: "sessions/selected", sessionId: "wf-1" }),
     ]) {
         const h = harness([["wf-1", "completed", modelOf("wf-1", "1.0.0")], ["wf-2", "pending", modelOf("wf-2", "1.1.0", { draft: true })]]);

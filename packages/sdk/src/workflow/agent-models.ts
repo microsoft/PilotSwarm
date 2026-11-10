@@ -7,11 +7,11 @@
  * key under `states:`, unique across the Workflow, bodies included; an agent node in a For each body is one key for all
  * its items) to { model: "provider:model", reasoningEffort?, contextTier? }. It is checked at start against exactly the
  * revision being started (an unknown id or a node that is not an agent is refused in words, never ignored) and against the
- * owning chat's model catalog (review OF7-R1: the catalog of the identity that spends, the owner of the chat that owns the
+ * owning session's model catalog (review OF7-R1: the catalog of the identity that spends, the owner of the session that owns the
  * Workflow, never the caller's); an explicit effort or tier must be one the chosen model lists (OF7-R6). A host that cannot
  * check a model refuses a map (fail closed). The map is stored with the run (migration 0088) and read at each spawn; a
  * stored map that cannot be read fails the node in words, it never inherits silently. A node the map leaves out inherits
- * model, reasoning effort and context tier from the chat that owns the Workflow.
+ * model, reasoning effort and context tier from the session that owns the Workflow.
  */
 import type { SessionOwnerInfo } from "../types.js";
 import type { WorkflowIR } from "./compiler.js";
@@ -25,7 +25,7 @@ export type WorkflowAgentModelContextTier = typeof WORKFLOW_AGENT_MODEL_CONTEXT_
 
 /** One agent node's model, as a start chose it. */
 export interface WorkflowAgentModelChoice {
-    /** An exact provider:model from the owning chat's catalog (list_available_models). */
+    /** An exact provider:model from the owning session's catalog (list_available_models). */
     model: string;
     reasoningEffort?: WorkflowAgentModelEffort;
     contextTier?: WorkflowAgentModelContextTier;
@@ -35,7 +35,7 @@ export interface WorkflowAgentModelChoice {
 export type WorkflowAgentModels = { [stateId: string]: WorkflowAgentModelChoice };
 
 /**
- * Whether `owner` (the owner of the chat that owns the Workflow: its agent nodes spend as them) may use `choice` (their
+ * Whether `owner` (the owner of the session that owns the Workflow: its agent nodes spend as them) may use `choice` (their
  * catalog: an eligible provider serves the model, and an explicit effort or tier is one that model lists): null when they
  * may, else the reason in words. A host without one refuses every map (requireUsableAgentModels).
  */
@@ -108,7 +108,7 @@ export function requireAgentModelsForRevision(models: WorkflowAgentModels | null
 }
 
 /**
- * Every choice is usable by `owner`, the owner of the chat that owns the Workflow (`check`, the host's catalog), else the
+ * Every choice is usable by `owner`, the owner of the session that owns the Workflow (`check`, the host's catalog), else the
  * start is refused in words (AGENT_MODEL_UNAVAILABLE), naming the node and the model. A host without a checker refuses a
  * map at all (fail closed: a choice is never left to the spawn to find out).
  */
@@ -116,14 +116,14 @@ export async function requireUsableAgentModels(models: WorkflowAgentModels | nul
     owner: SessionOwnerInfo | null): Promise<void> {
     if (!models) return;
     if (!check) {
-        throw new WorkflowStoreError("AGENT_MODEL_UNAVAILABLE", "This host cannot check models against the owning chat's catalog, so it takes "
-            + "no agentModels. Leave them out so every agent node uses the chat's model.");
+        throw new WorkflowStoreError("AGENT_MODEL_UNAVAILABLE", "This host cannot check models against the owning session's catalog, so it takes "
+            + "no agentModels. Leave them out so every agent node uses the session's model.");
     }
     for (const [key, choice] of Object.entries(models)) {
         const reason = await check(choice, owner);
         if (reason) {
             throw new WorkflowStoreError("AGENT_MODEL_UNAVAILABLE", `The model chosen for ${key}, ${workflowAgentModelWords(choice)}, cannot be used `
-                + `with the owning chat's catalog: ${reason} Choose one from list_available_models, or leave the node out so it uses the chat's model.`);
+                + `with the owning session's catalog: ${reason} Choose one from list_available_models, or leave the node out so it uses the session's model.`);
         }
     }
 }
@@ -172,9 +172,9 @@ export function workflowAgentModelWords(choice: WorkflowAgentModelChoice): strin
 
 /**
  * A start's chosen agent node models in words, for the start receipt: "Agent nodes with a model chosen at start: classify:
- * azure:gpt-5 · low · long context; the others use this chat's model. " (empty without any).
+ * azure:gpt-5 · low · long context; the others use this session's model. " (empty without any).
  */
 export function workflowChosenModelsWords(models: WorkflowAgentModels | null | undefined): string {
     const chosen = models ? Object.entries(models).map(([id, choice]) => `${id}: ${workflowAgentModelWords(choice)}`) : [];
-    return chosen.length ? `Agent nodes with a model chosen at start: ${chosen.join("; ")}; the others use this chat's model. ` : "";
+    return chosen.length ? `Agent nodes with a model chosen at start: ${chosen.join("; ")}; the others use this session's model. ` : "";
 }

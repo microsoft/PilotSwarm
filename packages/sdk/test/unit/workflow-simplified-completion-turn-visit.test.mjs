@@ -1,7 +1,7 @@
 /**
- * Formal deviation D1: complete_workflow_node passes the turn visit to the store as it is: a continued chat's turn visit,
+ * Formal deviation D1: complete_workflow_node passes the turn visit to the store as it is: a continued session's turn visit,
  * or null for such a turn that received no cycle prompt (the store then refuses, as the reminder does: no_visit); and
- * nothing for every other caller (chat: new, or a call outside a turn), whose binding is unchanged.
+ * nothing for every other caller (session: new, or a call outside a turn), whose binding is unchanged.
  *
  * Run: node --test test/unit/workflow-simplified-completion-turn-visit.test.mjs
  */

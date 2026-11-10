@@ -1,6 +1,6 @@
 /**
  * Review PRA-F4 and PRA-F5 (adversarial review of a00f9c32): the docs say what the code does.
- * - The API reference's rows for createSession, createSessionForAgent, startChatWorkflowDefinition and updateWorkflow name
+ * - The API reference's rows for createSession, createSessionForAgent, startSessionWorkflowDefinition and updateWorkflow name
  *   every parameter protocol.js declares for them (the reference says its tables are generated from that file).
  * - The configuration reference lists the Workflow test-mode and shutdown variables the PR points readers to.
  * - Two stale statements are gone: a 1.0.82 turn does declare `test`, and workflow publication is on in every deployment.
@@ -16,7 +16,7 @@ const doc = (path) => fs.readFileSync(new URL(`../../../../docs/${path}`, import
 
 test("PRA-F5: the reference rows of the four operations the review named list every parameter protocol.js declares", () => {
     const reference = doc("api/reference.md");
-    for (const name of ["createSession", "createSessionForAgent", "startChatWorkflowDefinition", "updateWorkflow"]) {
+    for (const name of ["createSession", "createSessionForAgent", "startSessionWorkflowDefinition", "updateWorkflow"]) {
         const operation = OPERATIONS.find(op => op.name === name);
         assert.ok(operation, name);
         const row = reference.split("\n").find(line => line.startsWith(`| ${name} | `));

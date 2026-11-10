@@ -27,7 +27,7 @@ vi.mock("../../src/session-proxy.js", () => ({
  */
 class ActivationSession {
     constructor(calls = 1) { this.calls = calls; }
-    sessionId = "activation-chat";
+    sessionId = "activation-owner";
     registeredTools = [];
     catchAll = [];
     listeners = new Map();
@@ -166,14 +166,14 @@ function durableContext() {
 describe("enable_workflows with prompts that arrive during activation (review coverage gap)", () => {
     for (const calls of [1, 2]) it(`the continuation runs once, then the person's prompt and the agent's prompt, each once, in order${calls > 1 ? " (enable_workflows twice in one response)" : ""}`, async () => {
         const { result: activation, enableWorkflows, session } = await activationTurnResult(calls);
-        expect(activation.forceContinuePrompt).toMatch(/^Workflows are now on in this chat/);
+        expect(activation.forceContinuePrompt).toMatch(/^Workflows are now on in this session/);
         // Another session's message, as send_session_message enqueues it (its sender stamped).
         resetSessionMessageRateLimitsForTests();
         const agentMessages = [];
         await sendInternalSessionMessage({
-            catalog: { getSession: async id => ({ sessionId: id, title: id === "peer" ? "Peer chat" : "This chat", state: "running" }) },
+            catalog: { getSession: async id => ({ sessionId: id, title: id === "peer" ? "Peer session" : "This session", state: "running" }) },
             duroxideClient: { enqueueEvent: async (_i, _q, payload) => { agentMessages.push(JSON.parse(payload)); }, getStatus: async () => ({ status: "Running" }) },
-        }, { fromSessionId: "peer", toSessionId: "activation-chat", subject: "status", body: "AGENT-WORDS from the peer chat" });
+        }, { fromSessionId: "peer", toSessionId: "activation-owner", subject: "status", body: "AGENT-WORDS from the peer session" });
         expect(agentMessages).toHaveLength(1);
 
         const d = durableContext();
@@ -182,7 +182,7 @@ describe("enable_workflows with prompts that arrive during activation (review co
             d.messages.push({ prompt: "PERSON-WORDS: also check the deploy", clientMessageIds: ["person-1"] }, agentMessages[0]);
             return activation;
         });
-        const first = d.execution({ sessionId: "activation-chat", config: {}, iteration: 0, isSystem: false, blobEnabled: false,
+        const first = d.execution({ sessionId: "activation-owner", config: {}, iteration: 0, isSystem: false, blobEnabled: false,
             prompt: "watch the build every minute", clientMessageIds: ["person-0"] });
         expect(first.parked).toBe("can");
         expect(d.turns).toHaveLength(1);
@@ -195,12 +195,12 @@ describe("enable_workflows with prompts that arrive during activation (review co
         const prompts = d.turns.slice(1).map(args => String(args[0]));
         expect(prompts).toHaveLength(3);
         const count = text => prompts.filter(prompt => prompt.includes(text)).length;
-        expect(count("Workflows are now on in this chat")).toBe(1);
+        expect(count("Workflows are now on in this session")).toBe(1);
         expect(count("PERSON-WORDS")).toBe(1);
         expect(count("AGENT-WORDS")).toBe(1);
         const at = text => prompts.findIndex(prompt => prompt.includes(text));
-        expect(at("Workflows are now on in this chat")).toBe(0);
-        expect(at("PERSON-WORDS")).toBeGreaterThan(at("Workflows are now on in this chat"));
+        expect(at("Workflows are now on in this session")).toBe(0);
+        expect(at("PERSON-WORDS")).toBeGreaterThan(at("Workflows are now on in this session"));
         expect(at("AGENT-WORDS")).toBeGreaterThan(at("PERSON-WORDS"));
         // FU-9: the person's words and the other session's message are two turns.
         expect(prompts[at("PERSON-WORDS")]).not.toContain("AGENT-WORDS");

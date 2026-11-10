@@ -1131,13 +1131,13 @@ export class NodeSdkTransport {
         return this.mgmt.readWorkflow(sessionId, options);
     }
 
-    /** Stage 2.1: a chat's Workflow Definitions (list, read; a person's save, start and delete with its principal). */
-    async listChatWorkflowDefinitions(sessionId, options = {}) {
-        return this.mgmt.listChatWorkflowDefinitions(sessionId, options);
+    /** Stage 2.1: a session's Workflow Definitions (list, read; a person's save, start and delete with its principal). */
+    async listSessionWorkflowDefinitions(sessionId, options = {}) {
+        return this.mgmt.listSessionWorkflowDefinitions(sessionId, options);
     }
 
-    async readChatWorkflowDefinition(sessionId, ref = {}) {
-        return this.mgmt.readChatWorkflowDefinition(sessionId, ref);
+    async readSessionWorkflowDefinition(sessionId, ref = {}) {
+        return this.mgmt.readSessionWorkflowDefinition(sessionId, ref);
     }
 
     _definitionPrincipal(options) {
@@ -1146,43 +1146,43 @@ export class NodeSdkTransport {
                 ? { provider: this.currentUser.provider, subject: this.currentUser.subject, displayName: this.currentUser.displayName ?? null } : null;
     }
 
-    async saveChatWorkflowDefinition(sessionId, request, options = {}) {
-        return this.mgmt.saveChatWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
+    async saveSessionWorkflowDefinition(sessionId, request, options = {}) {
+        return this.mgmt.saveSessionWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
     }
 
-    async startChatWorkflowDefinition(sessionId, request, options = {}) {
-        return this.mgmt.startChatWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
+    async startSessionWorkflowDefinition(sessionId, request, options = {}) {
+        return this.mgmt.startSessionWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
     }
 
-    async deleteChatWorkflowDefinition(sessionId, request, options = {}) {
-        return this.mgmt.deleteChatWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
+    async deleteSessionWorkflowDefinition(sessionId, request, options = {}) {
+        return this.mgmt.deleteSessionWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
     }
 
     /** Stage 2.3: a person's Make a copy of a package's locked definition, and taking a package's newer version. */
-    async copyChatWorkflowDefinition(sessionId, request, options = {}) {
-        return this.mgmt.copyChatWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
+    async copySessionWorkflowDefinition(sessionId, request, options = {}) {
+        return this.mgmt.copySessionWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
     }
 
-    async updateChatWorkflowPackage(sessionId, request, options = {}) {
-        return this.mgmt.updateChatWorkflowPackage(sessionId, request, { principal: this._definitionPrincipal(options) });
+    async updateSessionWorkflowPackage(sessionId, request, options = {}) {
+        return this.mgmt.updateSessionWorkflowPackage(sessionId, request, { principal: this._definitionPrincipal(options) });
     }
 
-    /** Stage 2.3 (P1): the package Workflow Definitions `viewer` can make a chat for (the picker's Workflows group). */
+    /** Stage 2.3 (P1): the package Workflow Definitions `viewer` can make a session for (the picker's Workflows group). */
     async listCreatableWorkflows(viewer = null) {
         const who = viewer ?? (this.currentUser?.provider && this.currentUser?.subject ? this.currentUser : null);
         return this.mgmt.listCreatableWorkflows(who ? { provider: who.provider, subject: who.subject } : null);
     }
 
     /**
-     * Stage 2.3 (P2, P3, D8): a chat made for a package's Workflow Definition: a session with the coordinating
+     * Stage 2.3 (P2, P3, D8): a session made for a package's Workflow Definition: a session with the coordinating
      * instructions (its card and how to run it), the definition attached and locked at the package's version, its title
-     * naming it, and a first message (a system kickoff) that asks the chat to greet the person and ask for the inputs it
+     * naming it, and a first message (a system kickoff) that asks the session to greet the person and ask for the inputs it
      * needs. The model is the one asked for, else the deployment's default (the picker offers the card's suggestion).
      */
-    async createWorkflowChat(ref, { model, reasoningEffort, contextTier, owner, groupId, visibility } = {}) {
+    async createSessionForWorkflow(ref, { model, reasoningEffort, contextTier, owner, groupId, visibility } = {}) {
         const viewer = owner ?? (this.currentUser?.provider && this.currentUser?.subject ? this.currentUser : null);
         const principal = viewer ? { provider: viewer.provider, subject: viewer.subject, displayName: viewer.displayName ?? viewer.email ?? null } : null;
-        const prepared = await this.mgmt.prepareWorkflowChat(ref, principal);
+        const prepared = await this.mgmt.prepareSessionForWorkflow(ref, principal);
         const session = await this.client.createSession({
             ...(model ? { model } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
@@ -1194,10 +1194,10 @@ export class NodeSdkTransport {
         });
         this.sessionHandles.set(session.sessionId, session);
         // Stage 2 review S2SF-F3: the attach takes exactly the package version the instructions were written from. When that
-        // version is no longer the active one (or the package is gone), nothing is attached and the chat, which has had no
-        // turn, is deleted: no chat is left whose instructions describe another version than the one it would run.
+        // version is no longer the active one (or the package is gone), nothing is attached and the session, which has had no
+        // turn, is deleted: no session is left whose instructions describe another version than the one it would run.
         try {
-            await this.mgmt.attachChatWorkflowPackage(session.sessionId, { ref: prepared.ref, operationId: `workflow-chat:${session.sessionId}`,
+            await this.mgmt.attachSessionWorkflowPackage(session.sessionId, { ref: prepared.ref, operationId: `session-for-workflow:${session.sessionId}`,
                 coordinating: true, title: prepared.title, packageId: prepared.packageId, sha256: prepared.sha256 }, { principal });
         } catch (error) {
             this.sessionHandles.delete(session.sessionId);

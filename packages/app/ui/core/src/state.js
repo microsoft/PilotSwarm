@@ -472,7 +472,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // (normalizeWorkflowInputPolicy; read by the TUI's composer). Per session; absent until read.
             workflowInputPolicies: {},
             // Review SF-D5: whether the server says workflow test mode is on (its bootstrap's workflows.testMode); only
-            // then does a chat show a stored "Workflow · test waiting" card. Off until the server says so.
+            // then does a session show a stored "Workflow · test waiting" card. Off until the server says so.
             workflowTestMode: false,
             // That read in flight ("checking") or failed ("failed"), per session; absent otherwise (owner decision q18).
             workflowInputChecks: {},
@@ -583,7 +583,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // the chat/inspector panes keep showing the session.
             listDeselected: false,
             // Workflow Simplified (S4): the Workflow row selected in the list. The active session is then the session that
-            // owns it (its chat stays in the middle), and the list highlights this row.
+            // owns it (its session stays in the middle), and the list highlights this row.
             workflowRowId: null,
             orderById: {},
             nextOrderOrdinal: 0,

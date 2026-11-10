@@ -1,10 +1,10 @@
 /**
  * Workflow Simplified A1 (spec 14; owner decision E4), on real PostgreSQL: sessions inside a Workflow (an agent node's
- * chat and its sub-agents) get no definition tools, and the server refuses the calls too.
+ * session and its sub-agents) get no definition tools, and the server refuses the calls too.
  *
  * - The stored lineage decides (sessionInsideWorkflow, which the turn's bridge reads whatever its worker runs): an agent
- *   state's own child and that child's sub-agent are inside the Workflow; the chat that started the Workflow, the
- *   Workflow session itself and an ordinary sub-agent of that chat are not (O3: ordinary sub-agents keep the tools).
+ *   state's own child and that child's sub-agent are inside the Workflow; the session that started the Workflow, the
+ *   Workflow session itself and an ordinary sub-agent of that session are not (O3: ordinary sub-agents keep the tools).
  * - spawn_workflow refuses inside a Workflow in words (the tools' JSON refusal with its code), for any document, before
  *   anything is made; outside it reaches its own checks.
  * - The model is not declared update_workflow or workflow_definition inside a Workflow (spawn_workflow nowhere); every other
@@ -61,7 +61,7 @@ states:
 /** A document in another format: refused for its apiVersion outside a Workflow. */
 const OTHER_FORMAT = "apiVersion: example.com/other\nkind: Workflow\nmetadata: { name: x, version: 1.0.0 }\n";
 
-/** The chat P, its Workflow W with agent state `review` admitted for child C, C's sub-agent G, and P's ordinary sub-agent S. */
+/** The session P, its Workflow W with agent state `review` admitted for child C, C's sub-agent G, and P's ordinary sub-agent S. */
 async function lineageOf(catalog) {
     const store = catalog.workflowStore();
     const parent = randomUUID();
@@ -145,7 +145,7 @@ describe("Workflow Simplified A1: no definition tools inside a Workflow", () => 
     });
 
     it("the model is declared no definition tools inside a Workflow; every other tool stays", () => {
-        // Stage 2.1: workflow_definition (the chat's own definitions) is a definition tool too, so A1 refuses it inside a Workflow.
+        // Stage 2.1: workflow_definition (the session's own definitions) is a definition tool too, so A1 refuses it inside a Workflow.
         expect([...WORKFLOW_DEFINITION_TOOLS]).toEqual(["spawn_workflow", "update_workflow", "workflow_definition"]);
         const names = defs => defs.map(def => def.name);
         for (const opts of [{}, { workflowMilestone: true }, { workflowMilestone: true, workflowAgentChild: true }]) {

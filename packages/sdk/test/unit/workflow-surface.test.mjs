@@ -27,8 +27,8 @@ import {
     WORKFLOW_REQUEST_VERSION,
     WORKFLOW_AGENT_NAME,
     WORKFLOW_AGENT_VERSION,
-    WORKFLOW_CHAT_END_NAME,
-    WORKFLOW_CHAT_END_VERSION,
+    WORKFLOW_AGENT_SESSION_END_NAME,
+    WORKFLOW_AGENT_SESSION_END_VERSION,
     WORKFLOW_ACTIVITIES,
 } from "../../dist/workflow/runtime.js";
 
@@ -108,7 +108,7 @@ test("workflow registers exactly one version of each orchestration, and each act
         [WORKFLOW_SEND_NAME, WORKFLOW_SEND_VERSION],
         [WORKFLOW_REQUEST_NAME, WORKFLOW_REQUEST_VERSION],
         [WORKFLOW_AGENT_NAME, WORKFLOW_AGENT_VERSION],
-        [WORKFLOW_CHAT_END_NAME, WORKFLOW_CHAT_END_VERSION],
+        [WORKFLOW_AGENT_SESSION_END_NAME, WORKFLOW_AGENT_SESSION_END_VERSION],
     ]);
     assert.ok(registered.every((entry) => entry.version === "1.0.0"), "every orchestration is at 1.0.0");
     assert.equal(registered.find((entry) => entry.name === WORKFLOW_CONTROLLER_NAME).fn, workflowController);
@@ -173,16 +173,16 @@ test("spawn_workflow refuses any other apiVersion, naming the one it takes, and 
     }
 });
 
-test("a chat without a live tool context gets a coded refusal in plain words (of-01)", async () => {
+test("a session without a live tool context gets a coded refusal in plain words (of-01)", async () => {
     const lost = () => Object.assign(new Error("ignored"), { code: "WORKFLOW_PARENT_CONTEXT_UNAVAILABLE" });
     // A save and start: the scripts gate needs the host first (d52e5ed2); the binding is captured next, before the store is
-    // read, so nothing is saved for a chat whose tools are not ready.
+    // read, so nothing is saved for a session whose tools are not ready.
     const store = new Proxy({}, { get: (_target, name) => { throw new Error(`the store must not be read (${String(name)})`); } });
     const deps = spawnDeps({ captureToolBinding: async () => { throw lost(); }, workflowHost: async () => ({ scripts: true, store }) });
     const answer = JSON.parse(await spawnWorkflowFromTool({ yaml: WORKFLOW_YAML, state: "published", start: true }, { toolCallId: "p2" }, deps));
     assert.equal(answer.ok, false);
     assert.equal(answer.error.code, "WORKFLOW_PARENT_CONTEXT_UNAVAILABLE");
-    assert.match(answer.error.message, /^The workflow was not created: this chat's tools were not ready/);
+    assert.match(answer.error.message, /^The workflow was not created: this session's tools were not ready/);
 });
 
 // Adversarial review R2-SF-4: spawn_workflow's failure never carries the error's own text: it is the workflow tools' coded

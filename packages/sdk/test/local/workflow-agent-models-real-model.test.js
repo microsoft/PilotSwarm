@@ -1,13 +1,13 @@
 /**
- * OF-S2-7 on a REAL model: one agent node mapped to a model at start completes on that model, while the chat that owns
+ * OF-S2-7 on a REAL model: one agent node mapped to a model at start completes on that model, while the session that owns
  * the Workflow is on its own model and effort (an unset node would inherit those). Local target only: a worker in this
  * process on its own test schemas and the model catalog of
  * PS_MODEL_PROVIDERS_PATH.
  *
  * It spends model tokens, so it runs only when asked: PS_WORKFLOW_REAL_MODEL=run with PS_WORKFLOW_REAL_MODEL_REF
- * (the chat's provider:model). The node's choice: PS_WORKFLOW_AGENT_MODEL_REF (another provider:model from the same
- * catalog; default the chat's model) and PS_WORKFLOW_AGENT_MODEL_EFFORT (default low, so a choice of the same model still
- * differs from the chat's default effort). Asked but unable to run, it fails as BLOCKED. One start, no retry. The receipt
+ * (the session's provider:model). The node's choice: PS_WORKFLOW_AGENT_MODEL_REF (another provider:model from the same
+ * catalog; default the session's model) and PS_WORKFLOW_AGENT_MODEL_EFFORT (default low, so a choice of the same model still
+ * differs from the session's default effort). Asked but unable to run, it fails as BLOCKED. One start, no retry. The receipt
  * goes to PS_WORKFLOW_REAL_MODEL_RECEIPT when set; a bounded summary is printed.
  *
  *   PS_WORKFLOW_REAL_MODEL=run PS_WORKFLOW_REAL_MODEL_REF=<provider:model> PS_WORKFLOW_AGENT_MODEL_REF=<provider:model> \
@@ -63,7 +63,7 @@ async function poll(check, timeoutMs, everyMs = 2_000) {
 }
 
 const plan = realModelPlan(process.env, { registry: catalogOrNull(), githubToken: process.env.GITHUB_TOKEN ?? null });
-const TITLE = "an agent node mapped to a model at start completes on that model, not on its chat's";
+const TITLE = "an agent node mapped to a model at start completes on that model, not on its session's";
 
 /** The node's choice, checked against the local catalog: { choice, model } or { blocked }. */
 function nodeChoice() {
@@ -90,7 +90,7 @@ describe("OF-S2-7: per-node models on a real model (local target)", () => {
         if (plan.target !== "local") throw new Error("BLOCKED: this test runs on the local target only (PS_WORKFLOW_REAL_MODEL_TARGET=local).");
         const node = nodeChoice();
         if (node.blocked) throw new Error(`BLOCKED: ${node.blocked}`);
-        const receipt = { test: "workflow-agent-models-real-model", startedAt: new Date().toISOString(), chat: { model: plan.model.ref, effort: plan.effort ?? null },
+        const receipt = { test: "workflow-agent-models-real-model", startedAt: new Date().toISOString(), session: { model: plan.model.ref, effort: plan.effort ?? null },
             chosen: node.choice, run: null, child: null, failures: [] };
         const fail = text => receipt.failures.push(text);
         const env = createTestEnv("wf-agent-models-real");
@@ -101,7 +101,7 @@ describe("OF-S2-7: per-node models on a real model (local target)", () => {
                 const worker = { workerPool: "default", logLevel: "warning" };
                 await withClient(env, { worker }, async (client) => {
                     const store = catalog.workflowStore();
-                    // Review OF7-R1: the start's choice is checked as a worker checks it, against the owning chat's catalog.
+                    // Review OF7-R1: the start's choice is checked as a worker checks it, against the owning session's catalog.
                     const host = { catalog, store, duroxideClient: client._getDuroxideClient(),
                         checkAgentModel: client._workflowAgentModelCheck() };
                     const parent = randomUUID();

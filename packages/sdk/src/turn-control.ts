@@ -74,7 +74,7 @@ export interface LiveTurnControlOptions {
     /** Best-effort durable record of a confirmed steer (session.steer_confirmed). */
     record?: (eventType: string, data: Record<string, unknown>) => Promise<void>;
     /**
-     * The controls this turn takes, from those taken from the CMS (all, when absent). A continued workflow chat's turn
+     * The controls this turn takes, from those taken from the CMS (all, when absent). A continued workflow session's turn
      * keeps only the Stops that name its own visit, and every other control (the turn-to-visit fence; review RT-2). A
      * dropped control is still taken (`sent` moves past it) and is labelled by turn end as it would be.
      */
@@ -95,7 +95,7 @@ export interface LiveTurnControlOptions {
  * labels them not delivered). Once the turn is retired, or its run ended,
  * nothing more is sent and no confirmation moves the cursor.
  *
- * Review RT-D1: admission (a continued chat's turn-to-visit fence) runs on its own chain, in position order, never behind
+ * Review RT-D1: admission (a continued session's turn-to-visit fence) runs on its own chain, in position order, never behind
  * a steer's send: a Stop is applied as soon as it is admitted. It can still wait for an earlier batch's admission (its
  * request-id read), never for a send. Review RT-F2: that read has a finite number of CMS retry attempts and delays, each
  * subject to its query finishing; no elapsed-time bound is claimed (a query that never answers holds the chain).

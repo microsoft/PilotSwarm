@@ -1,5 +1,5 @@
 // The Node panel says what you are looking at (owner feedback 2026-11-06, finding 7): what the node does in one sentence,
-// Now and Runs in one line each, the last result as readable text, an agent node's chat and what its agent is told, and
+// Now and Runs in one line each, the last result as readable text, an agent node's session and what its agent is told, and
 // Next in words, one line per outcome, with what happens when it fails. No Details / Output / History tabs inside the
 // panel's tab, and no engine words ("runtime error route"). One model (workflowNodeSummary) for the portal and the TUI.
 //
@@ -20,29 +20,29 @@ process.env.TZ = "UTC";
 const NOW = Date.parse("2026-11-06T17:45:00.000Z");
 const at = clock => `2026-11-06T${clock}.000Z`;
 
-const AGENT = { id: "fact", type: "agent", invoke: { source: "prompt" }, timeoutSeconds: 93, outcomes: ["produced"], chat: "continue",
-    next: { produced: "relay_to_chat", timed_out: "relay_to_chat" },
+const AGENT = { id: "fact", type: "agent", invoke: { source: "prompt" }, timeoutSeconds: 93, outcomes: ["produced"], session: "continue",
+    next: { produced: "relay_to_session", timed_out: "relay_to_session" },
     about: { prompt: "Tell one new fact about PostgreSQL. Keep it short.\nUse the variables." } };
 const graph = { revision: 1, initial: "fact", states: [
     AGENT,
-    { id: "relay_to_chat", type: "messaging", mode: "send", contract: "Fact@1", recipient: "parent", outcomes: ["sent"], next: { sent: "pause", failure: "failed" } },
+    { id: "relay_to_session", type: "messaging", mode: "send", contract: "Fact@1", recipient: "parent", outcomes: ["sent"], next: { sent: "pause", failure: "failed" } },
     { id: "pause", type: "wait", seconds: 30, outcomes: ["elapsed"], next: { elapsed: "fact" } },
     { id: "failed", type: "terminal", outcome: "failed" },
 ] };
 const agent = id => ({ childSessionId: id, controllingSessionId: "parent", spawned: true, spawnAttempts: 1, end: null, endSent: false });
 const model = readModel({ graph, nodeExecutions: [
     done("fact", 1, "produced", { winner: "agent", enteredAt: at("17:40:01"), endedAt: at("17:40:04"), outputPreview: "{\"fact\":\"PostgreSQL has MVCC.\"}",
-        agent: agent("chat-1") }),
+        agent: agent("owner-1") }),
     done("fact", 2, "produced", { winner: "agent", enteredAt: at("17:42:01"), endedAt: at("17:42:05"), outputPreview: "{\"fact\":\"VACUUM frees dead rows.\"}",
-        agent: agent("chat-1") }),
-    row("fact", 3, "pending", { enteredAt: at("17:43:01"), deadline: at("17:44:34"), agent: agent("chat-1") }),
+        agent: agent("owner-1") }),
+    row("fact", 3, "pending", { enteredAt: at("17:43:01"), deadline: at("17:44:34"), agent: agent("owner-1") }),
 ] });
 const nodeOf = (id, from = model) => projectWorkflow({ readModel: from }).nodes.find(node => node.id === id);
 
 test("what it does, in one sentence: the description, else from the prompt or the node's kind", () => {
     assert.equal(workflowNodeWhat(nodeOf("fact")), "Asks an agent: “Tell one new fact about PostgreSQL.”");
     assert.equal(workflowNodeWhat({ ...nodeOf("fact"), about: { description: "Finds one fact.", prompt: "x" } }), "Finds one fact.");
-    assert.equal(workflowNodeWhat(nodeOf("relay_to_chat")), "Sends a Fact@1 message to the parent session.");
+    assert.equal(workflowNodeWhat(nodeOf("relay_to_session")), "Sends a Fact@1 message to the parent session.");
     assert.equal(workflowNodeWhat(nodeOf("pause")), "Waits 30 s.");
     assert.equal(workflowNodeWhat(nodeOf("failed")), "Ends the Workflow: failed.");
     const named = { id: "review", kind: "agent", type: "agent", invoke: { source: "agent", name: "code-reviewer", package: "review-kit", version: "1.2.0" } };
@@ -66,8 +66,8 @@ test("Now, Runs and the last result say where the node is, how often it ran and 
     // The last result is the latest ended visit's own value, as text: the fact, not only "produced".
     const summary = workflowNodeSummary(node, { now: NOW });
     assert.deepEqual({ label: summary.result.label, text: summary.result.text }, { label: "Result", text: "VACUUM frees dead rows." });
-    assert.equal(summary.agent.chatMode, "Same each visit");
-    assert.equal(summary.agent.chatSessionId, "chat-1");
+    assert.equal(summary.agent.sessionMode, "Same each visit");
+    assert.equal(summary.agent.sessionId, "owner-1");
     assert.equal(summary.agent.told, "Tell one new fact about PostgreSQL. Keep it short.\nUse the variables.");
     // Failures and cancels in words.
     const failed = { status: "completed", resultKind: "runtime_error", outcome: "execution_failed", endedAt: at("17:44:00"),
@@ -99,25 +99,25 @@ test("a result preview reads as text: a single text field as itself, plain field
 test("Next says where each outcome goes in words, and what happens when it fails with no route for it", () => {
     assert.deepEqual(workflowNodeNext(nodeOf("fact")), {
         lines: [
-            { label: "produced", target: "relay_to_chat", kind: "outcome", text: "produced → relay_to_chat" },
-            { label: "timed_out", target: "relay_to_chat", kind: "error", text: "✕ limit → relay_to_chat" },
+            { label: "produced", target: "relay_to_session", kind: "outcome", text: "produced → relay_to_session" },
+            { label: "timed_out", target: "relay_to_session", kind: "error", text: "✕ limit → relay_to_session" },
         ],
         failure: "✕ other errors → Workflow fails",
     });
-    assert.equal(workflowNodeNext(nodeOf("relay_to_chat")).failure, null, "a failure route takes every error");
+    assert.equal(workflowNodeNext(nodeOf("relay_to_session")).failure, null, "a failure route takes every error");
     assert.equal(workflowNodeNext(nodeOf("pause")).failure, "✕ error → Workflow fails");
     assert.equal(workflowNodeNext({ ...nodeOf("pause"), parallel: "fan" }).failure, "✕ error → item ends");
     assert.deepEqual(workflowNodeNext(nodeOf("failed")), { lines: [], failure: null });
 });
 
-test("the portal's Node panel: one view, in words, with the agent's prompt folded and its chat one click away", () => {
+test("the portal's Node panel: one view, in words, with the agent's prompt folded and its session one click away", () => {
     const projection = projectWorkflow({ readModel: model });
     const selected = projection.nodes.find(node => node.id === "fact");
     const html = renderToStaticMarkup(React.createElement(WorkflowNodeSummary, { selected, nodes: projection.nodes, select: () => {},
         openSession: () => {}, runId: projection.runId }));
     for (const words of ["Asks an agent: “Tell one new fact about PostgreSQL.”", "Now", "Running · since ", "17:43:01", "Visits", "<strong>3</strong>",
         "Result", "VACUUM frees dead rows.", "Agent session", "Same each visit", "Prompt", "Open agent session",
-        "produced → relay_to_chat", "✕ limit → relay_to_chat", "✕ other errors → Workflow fails"]) {
+        "produced → relay_to_session", "✕ limit → relay_to_session", "✕ other errors → Workflow fails"]) {
         assert.ok(html.includes(words), words);
     }
     for (const gone of ["runtime error route", "Node detail views", "Last outcome", "Deadline at", "Inline prompt", ">Runs<", "Visit 3", "UTC",

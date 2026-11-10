@@ -348,48 +348,48 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("readWorkflow", { ...options, sessionId });
     }
 
-    /** Stage 2.1: a chat's Workflow Definitions (listChatWorkflowDefinitions, session:read). */
-    async listChatWorkflowDefinitions(chatSessionId: string, options: { includeDeleted?: boolean } = {}): Promise<any> {
-        return this._api.call("listChatWorkflowDefinitions", { sessionId: chatSessionId, ...(options.includeDeleted ? { includeDeleted: true } : {}) });
+    /** Stage 2.1: a session's Workflow Definitions (listSessionWorkflowDefinitions, session:read). */
+    async listSessionWorkflowDefinitions(ownerSessionId: string, options: { includeDeleted?: boolean } = {}): Promise<any> {
+        return this._api.call("listSessionWorkflowDefinitions", { sessionId: ownerSessionId, ...(options.includeDeleted ? { includeDeleted: true } : {}) });
     }
 
-    /** Stage 2.1: one of a chat's Workflow Definitions with a revision's YAML (readChatWorkflowDefinition, session:read). */
-    async readChatWorkflowDefinition(chatSessionId: string, ref: { definitionId?: string | null; name?: string | null; revision?: number | null }): Promise<any> {
-        return this._api.call("readChatWorkflowDefinition", { sessionId: chatSessionId, ...(ref.definitionId ? { definitionId: ref.definitionId } : {}),
+    /** Stage 2.1: one of a session's Workflow Definitions with a revision's YAML (readSessionWorkflowDefinition, session:read). */
+    async readSessionWorkflowDefinition(ownerSessionId: string, ref: { definitionId?: string | null; name?: string | null; revision?: number | null }): Promise<any> {
+        return this._api.call("readSessionWorkflowDefinition", { sessionId: ownerSessionId, ...(ref.definitionId ? { definitionId: ref.definitionId } : {}),
             ...(ref.name ? { name: ref.name } : {}), ...(ref.revision != null ? { revision: ref.revision } : {}) });
     }
 
-    /** Stage 2.1: a person saves a revision (saveChatWorkflowDefinition, session:manage); the server stamps the caller. */
-    async saveChatWorkflowDefinition(chatSessionId: string, request: { name: string; yaml: string; definitionId?: string | null; expectedRevision?: number | null;
+    /** Stage 2.1: a person saves a revision (saveSessionWorkflowDefinition, session:manage); the server stamps the caller. */
+    async saveSessionWorkflowDefinition(ownerSessionId: string, request: { name: string; yaml: string; definitionId?: string | null; expectedRevision?: number | null;
         operationId: string }, _options: Record<string, unknown> = {}): Promise<any> {
-        return this._api.call("saveChatWorkflowDefinition", { sessionId: chatSessionId, ...request });
+        return this._api.call("saveSessionWorkflowDefinition", { sessionId: ownerSessionId, ...request });
     }
 
-    /** Stage 2.1: a person starts a Workflow from a revision (startChatWorkflowDefinition, session:manage). */
-    async startChatWorkflowDefinition(chatSessionId: string, request: { definitionId: string; revision?: number | null; runAgainOf?: string | null; agentModels?: unknown;
+    /** Stage 2.1: a person starts a Workflow from a revision (startSessionWorkflowDefinition, session:manage). */
+    async startSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; revision?: number | null; runAgainOf?: string | null; agentModels?: unknown;
         inputs?: unknown; vars?: Record<string, unknown> | null; notifyParent?: boolean; operationId: string }, _options: Record<string, unknown> = {}): Promise<any> {
-        return this._api.call("startChatWorkflowDefinition", { sessionId: chatSessionId, ...request });
+        return this._api.call("startSessionWorkflowDefinition", { sessionId: ownerSessionId, ...request });
     }
 
-    /** Stage 2.1: a person deletes a definition (deleteChatWorkflowDefinition, session:manage). */
-    async deleteChatWorkflowDefinition(chatSessionId: string, request: { definitionId: string; operationId: string }, _options: Record<string, unknown> = {}): Promise<any> {
-        return this._api.call("deleteChatWorkflowDefinition", { sessionId: chatSessionId, ...request });
+    /** Stage 2.1: a person deletes a definition (deleteSessionWorkflowDefinition, session:manage). */
+    async deleteSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; operationId: string }, _options: Record<string, unknown> = {}): Promise<any> {
+        return this._api.call("deleteSessionWorkflowDefinition", { sessionId: ownerSessionId, ...request });
     }
 
-    /** Stage 2.3: the package Workflow Definitions the caller can make a chat for (listCreatableWorkflows); the server scopes them. */
+    /** Stage 2.3: the package Workflow Definitions the caller can make a session for (listCreatableWorkflows); the server scopes them. */
     async listCreatableWorkflows(_viewer?: unknown): Promise<any> {
         return this._api.call("listCreatableWorkflows", {});
     }
 
-    /** Stage 2.3: a person attaches a package's newer version for the next Workflow (updateChatWorkflowPackage, session:manage). */
-    async updateChatWorkflowPackage(chatSessionId: string, request: { definitionId: string; operationId: string }, _options: Record<string, unknown> = {}): Promise<any> {
-        return this._api.call("updateChatWorkflowPackage", { sessionId: chatSessionId, ...request });
+    /** Stage 2.3: a person attaches a package's newer version for the next Workflow (updateSessionWorkflowPackage, session:manage). */
+    async updateSessionWorkflowPackage(ownerSessionId: string, request: { definitionId: string; operationId: string }, _options: Record<string, unknown> = {}): Promise<any> {
+        return this._api.call("updateSessionWorkflowPackage", { sessionId: ownerSessionId, ...request });
     }
 
-    /** Stage 2.3: a person's Make a copy of a package's definition (copyChatWorkflowDefinition, session:manage). */
-    async copyChatWorkflowDefinition(chatSessionId: string, request: { definitionId: string; revision?: number | null; operationId: string },
+    /** Stage 2.3: a person's Make a copy of a package's definition (copySessionWorkflowDefinition, session:manage). */
+    async copySessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; revision?: number | null; operationId: string },
         _options: Record<string, unknown> = {}): Promise<any> {
-        return this._api.call("copyChatWorkflowDefinition", { sessionId: chatSessionId, ...request });
+        return this._api.call("copySessionWorkflowDefinition", { sessionId: ownerSessionId, ...request });
     }
 
     /**
@@ -1069,12 +1069,12 @@ export class WebPilotSwarmManagementClient {
         throw webModeUnsupported("getModelCredentialStatus", "credential checks happen server-side");
     }
 
-    prepareWorkflowChat(): never {
-        throw webModeUnsupported("prepareWorkflowChat", "createWorkflowChat makes a package Workflow's chat server-side");
+    prepareSessionForWorkflow(): never {
+        throw webModeUnsupported("prepareSessionForWorkflow", "createSessionForWorkflow makes a package Workflow's session server-side");
     }
 
-    attachChatWorkflowPackage(): never {
-        throw webModeUnsupported("attachChatWorkflowPackage", "createWorkflowChat attaches the definition server-side; a chat attaches one when it starts it");
+    attachSessionWorkflowPackage(): never {
+        throw webModeUnsupported("attachSessionWorkflowPackage", "createSessionForWorkflow attaches the definition server-side; a session attaches one when it starts it");
     }
 }
 

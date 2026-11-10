@@ -1,11 +1,11 @@
 /**
- * Definitions-lens findings (TEST rehearsal at 2422c33e, UXFD-F1 to F4): a chat saved `inputs.topic` with `required: true`
+ * Definitions-lens findings (TEST rehearsal at 2422c33e, UXFD-F1 to F4): a session saved `inputs.topic` with `required: true`
  * and `required: [topic]` (version 1 and 2 shapes mixed), got "Map keys must be unique" at line 11 and saved the same mistake
  * again. And a TEST check at 27b2eaef: asked in prose, the model picked the CLI's own "skill" tool, not load_skill.
  *
  * - F2: a duplicated key names the key and both lines.
- * - F3: nothing a 1.0.83 chat sees teaches the version 1 `inputs` form (`<input>: { type, required: true }`).
- * - F4: the guidance a chat sees once Workflows are on has a stop rule for the same error, and workflow_definition's
+ * - F3: nothing a 1.0.83 session sees teaches the version 1 `inputs` form (`<input>: { type, required: true }`).
+ * - F4: the guidance a session sees once Workflows are on has a stop rule for the same error, and workflow_definition's
  *   description has a short `inputs: { schema: … }` example, which compiles.
  * - Every text that tells the model to load a Workflow skill names the load_skill tool.
  *
@@ -48,8 +48,8 @@ test("UXFD-F2: a duplicated key names the key and both lines", () => {
     assert.ok(other.diagnostics.some(item => item.code === "WORKFLOW_YAML_INVALID" && !item.message.startsWith("Duplicate key")));
 });
 
-/** Every text a 1.0.83 chat with Workflows on sees about Workflows: guidance, declarations and the skills it can load. */
-function chatTexts() {
+/** Every text a 1.0.83 session with Workflows on sees about Workflows: guidance, declarations and the skills it can load. */
+function sessionTexts() {
     const texts = [];
     for (const testMode of [false, true]) {
         for (const tests of [false, true]) texts.push([`guidance testMode=${testMode} tests=${tests}`, workflowSessionGuidance(testMode, { scripts: true, clockWaits: tests, tests })]);
@@ -66,8 +66,8 @@ function chatTexts() {
     return texts;
 }
 
-test("UXFD-F3: no text a 1.0.83 chat sees teaches the version 1 inputs form; spawn_workflow is not declared", () => {
-    for (const [where, text] of chatTexts()) {
+test("UXFD-F3: no text a 1.0.83 session sees teaches the version 1 inputs form; spawn_workflow is not declared", () => {
+    for (const [where, text] of sessionTexts()) {
         assert.ok(!/required: true/.test(text), `${where} teaches required: true`);
     }
     for (const opts of [{ workflowMilestone: true }, {}]) {
@@ -92,7 +92,7 @@ test("UXFD-F4: the guidance has a stop rule for a repeated error, and workflow_d
 });
 
 test("TEST at 27b2eaef: every text that tells the model to load a Workflow skill names the load_skill tool", () => {
-    for (const [where, text] of chatTexts()) {
+    for (const [where, text] of sessionTexts()) {
         const flat = text.replace(/\s+/g, " ");
         // "load the `workflow-authoring` skill", "Load `workflow-reference`", "Load the workflow-tools skill": the bare verb.
         assert.ok(!/\b[Ll]oad (the )?`?workflow-(authoring|reference|tools|patterns|testing)`?( skill)?\b/.test(flat), `${where}: ${flat.match(/.{0,40}[Ll]oad (the )?`?workflow-.{0,40}/)?.[0]}`);

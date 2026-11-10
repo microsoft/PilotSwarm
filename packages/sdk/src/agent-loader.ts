@@ -165,9 +165,9 @@ export interface AgentConfig {
      */
     supportsDirectStart?: boolean;
     /**
-     * Workflow Simplified stage 2.3 (P4): the Workflow Definitions this agent's chat may start, by package and name
-     * (`ops-kit/incident-digest`), or by name alone for one in the agent's own package. Its chat reads their cards and
-     * starts them with workflow_definition. A loader that does not know the field drops it, and the chat then cannot
+     * Workflow Simplified stage 2.3 (P4): the Workflow Definitions this agent's session may start, by package and name
+     * (`ops-kit/incident-digest`), or by name alone for one in the agent's own package. Its session reads their cards and
+     * starts them with workflow_definition. A loader that does not know the field drops it, and the session then cannot
      * start them (fail closed). An agent that names definitions may not be used by a Workflow's agent step (A2).
      */
     workflows?: string[];

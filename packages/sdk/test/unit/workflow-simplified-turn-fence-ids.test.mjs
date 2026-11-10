@@ -1,6 +1,6 @@
 /**
  * The turn-to-visit fence's two ids (review RT-2, RT-3): a visit's prompt id names its node execution
- * (`workflow:<wf>:<run>:agent:<nx>`), and a continued chat's turn Stop names its visit by its request id
+ * (`workflow:<wf>:<run>:agent:<nx>`), and a continued session's turn Stop names its visit by its request id
  * (`workflow-cycle-stop:<nx>`, with `:sent` after a late send). Anything else names no visit.
  *
  * Run: node --test test/unit/workflow-simplified-turn-fence-ids.test.mjs

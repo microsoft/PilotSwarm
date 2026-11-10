@@ -2,7 +2,7 @@
 //   - the session list marks them apart from agent sessions
 //   - their transcript is an execution log built from workflow.* events
 //   - an agent starts them; the new-session chooser offers no workflow start
-//   - they never take chat input or a regeneration
+//   - they never take session input or a regeneration
 import test from "node:test";
 import assert from "node:assert/strict";
 import {

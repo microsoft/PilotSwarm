@@ -41,10 +41,10 @@ describe("workflow: one name and version is one definition among a session's Wor
         await catalog.initialize();
         try {
             const host = { catalog, store: catalog.workflowStore(), duroxideClient: {} };
-            const chat = randomUUID();
-            const otherChat = randomUUID();
-            await catalog.createSession(chat, { owner: PERSON });
-            await catalog.createSession(otherChat, { owner: PERSON });
+            const session = randomUUID();
+            const otherSession = randomUUID();
+            await catalog.createSession(session, { owner: PERSON });
+            await catalog.createSession(otherSession, { owner: PERSON });
             const create = (parentSessionId, yaml, extra = {}) => {
                 const workflowSessionId = extra.workflowSessionId ?? randomUUID();
                 return createWorkflow(host, { workflowSessionId, parentSessionId, yaml, actor: ACTOR, operationId: extra.operationId ?? `create-${workflowSessionId}`,
@@ -53,36 +53,36 @@ describe("workflow: one name and version is one definition among a session's Wor
 
             // 1.1.3 published, then the same YAML again: another Workflow of the same definition.
             const firstId = randomUUID();
-            const first = await create(chat, YAML("1.1.3"), { workflowSessionId: firstId, operationId: "create-first", publish: true });
+            const first = await create(session, YAML("1.1.3"), { workflowSessionId: firstId, operationId: "create-first", publish: true });
             expect(first.receipt).toMatchObject({ state: "published", revision: 1 });
-            await create(chat, YAML("1.1.3"), { publish: true });
+            await create(session, YAML("1.1.3"), { publish: true });
             // YAML that compiles to the same definition (a comment) is the same definition.
-            const commented = await create(chat, `${YAML("1.1.3")}# the same monitor\n`, { publish: true });
+            const commented = await create(session, `${YAML("1.1.3")}# the same monitor\n`, { publish: true });
             expect(commented.receipt.yamlSha256).not.toBe(first.receipt.yamlSha256);
 
             // Other YAML at 1.1.3: refused, naming the newest Workflow that has it; nothing is written.
             const refusedId = randomUUID();
-            const refused = await refusedWith(create(chat, YAML("1.1.3", 30), { workflowSessionId: refusedId, publish: true }), "SEMVER_REUSED");
+            const refused = await refusedWith(create(session, YAML("1.1.3", 30), { workflowSessionId: refusedId, publish: true }), "SEMVER_REUSED");
             expect(refused.details).toMatchObject({ name: "hacker-news-database-scan", version: "1.1.3", workflowId: commented.receipt.workflowSessionId,
                 state: "published", revision: 1 });
             expect(refused.message).toMatch(/A published version never changes: raise metadata\.version and spawn the change as a draft\. Nothing was saved\.$/);
             expect(await catalog.getSession(refusedId)).toBeNull();
             expect(await host.store.readDefinition(refusedId)).toBeNull();
             // The corrected request may use the same id.
-            const raised = await create(chat, YAML("1.1.4", 30), { workflowSessionId: refusedId });
+            const raised = await create(session, YAML("1.1.4", 30), { workflowSessionId: refusedId });
             expect(raised.receipt).toMatchObject({ state: "draft", revision: 1, valid: true });
 
-            // Another chat's Workflows are not this chat's; without the request's flag nothing is checked.
-            await create(otherChat, YAML("1.1.3", 30));
-            await create(chat, YAML("1.1.3", 45), { guard: false });
+            // Another session's Workflows are not this session's; without the request's flag nothing is checked.
+            await create(otherSession, YAML("1.1.3", 30));
+            await create(session, YAML("1.1.3", 45), { guard: false });
 
             // A replay of a stored creation is answered from its receipt, whatever was created since.
-            const replay = await create(chat, YAML("1.1.3"), { workflowSessionId: firstId, operationId: "create-first", publish: true });
+            const replay = await create(session, YAML("1.1.3"), { workflowSessionId: firstId, operationId: "create-first", publish: true });
             expect(replay.replayed).toBe(true);
 
             // Drafts count: other YAML at a draft's version is refused with the way to change that draft.
-            const draft = await create(chat, YAML("1.2.0"));
-            const toDraft = await refusedWith(create(chat, YAML("1.2.0", 30)), "SEMVER_REUSED");
+            const draft = await create(session, YAML("1.2.0"));
+            const toDraft = await refusedWith(create(session, YAML("1.2.0", 30)), "SEMVER_REUSED");
             expect(toDraft.details).toMatchObject({ workflowId: draft.receipt.workflowSessionId, state: "draft", revision: 1 });
             expect(toDraft.message).toMatch(/To change that draft, use update_workflow replace_definition on it; for a new definition, raise metadata\.version\./);
             // The draft itself changes in place (it is the only 1.2.0 Workflow).
@@ -91,7 +91,7 @@ describe("workflow: one name and version is one definition among a session's Wor
             expect(edited.receipt).toMatchObject({ state: "draft", revision: 2 });
 
             // A second draft of 1.2.0 with the same YAML, changed to other YAML: refused, and it keeps its revision.
-            const twin = await create(chat, YAML("1.2.0", 30));
+            const twin = await create(session, YAML("1.2.0", 30));
             const replaced = await refusedWith(applyWorkflowUpdate(host, twin.receipt.workflowSessionId,
                 { operation: "replace_definition", yaml: YAML("1.2.0", 90), expectedRevision: 1 },
                 { actor: ACTOR, operationId: "edit-twin", refuseVersionReuse: true }), "SEMVER_REUSED");
@@ -112,14 +112,14 @@ describe("workflow: one name and version is one definition among a session's Wor
         await catalog.initialize();
         try {
             const host = { catalog, store: catalog.workflowStore(), duroxideClient: {} };
-            const spawn = (chat, id, yaml, operationId = `create-${id}`) => createWorkflow(host, { workflowSessionId: id, parentSessionId: chat, owner: PERSON,
+            const spawn = (session, id, yaml, operationId = `create-${id}`) => createWorkflow(host, { workflowSessionId: id, parentSessionId: session, owner: PERSON,
                 yaml, actor: ACTOR, operationId, publish: true, refuseVersionReuse: true });
             for (let round = 0; round < 5; round += 1) {
-                const chat = randomUUID();
-                await catalog.createSession(chat, { owner: PERSON });
+                const session = randomUUID();
+                await catalog.createSession(session, { owner: PERSON });
                 const ids = [randomUUID(), randomUUID()];
                 const yamls = [YAML("2.0.0", 30), YAML("2.0.0", 45)];
-                const results = await Promise.allSettled([spawn(chat, ids[0], yamls[0]), spawn(chat, ids[1], yamls[1])]);
+                const results = await Promise.allSettled([spawn(session, ids[0], yamls[0]), spawn(session, ids[1], yamls[1])]);
                 const won = results.findIndex(result => result.status === "fulfilled");
                 const lost = results.findIndex(result => result.status === "rejected");
                 expect(results.map(result => result.status).sort(), `round ${round}: ${JSON.stringify(results.map(result => result.reason?.message ?? null))}`)
@@ -129,11 +129,11 @@ describe("workflow: one name and version is one definition among a session's Wor
                 // The refused one bound nothing: no row, no definition, and its corrected request may use the same id.
                 expect(await catalog.getSession(ids[lost])).toBeNull();
                 expect(await host.store.readDefinition(ids[lost])).toBeNull();
-                const corrected = await spawn(chat, ids[lost], YAML("2.0.1", 45), `corrected-${ids[lost]}`);
+                const corrected = await spawn(session, ids[lost], YAML("2.0.1", 45), `corrected-${ids[lost]}`);
                 expect(corrected.receipt).toMatchObject({ state: "published", revision: 1 });
                 // The winner's YAML twice at the same moment: more Workflows of the same definition, both created.
                 const same = [randomUUID(), randomUUID()];
-                const both = await Promise.allSettled(same.map(id => spawn(chat, id, yamls[won])));
+                const both = await Promise.allSettled(same.map(id => spawn(session, id, yamls[won])));
                 expect(both.map(result => result.status), JSON.stringify(both.map(result => result.reason?.message ?? null))).toEqual(["fulfilled", "fulfilled"]);
             }
         } finally {
@@ -178,15 +178,15 @@ describe("workflow: one name and version is one definition among a session's Wor
         try {
             const { rows } = await catalog.pool.query("SHOW default_transaction_isolation");
             expect(rows[0].default_transaction_isolation).toBe("repeatable read");
-            const spawn = (chat, id, yaml) => createWorkflow(host, { workflowSessionId: id, parentSessionId: chat, yaml, actor: ACTOR,
+            const spawn = (session, id, yaml) => createWorkflow(host, { workflowSessionId: id, parentSessionId: session, yaml, actor: ACTOR,
                 operationId: `create-${id}`, publish: true, refuseVersionReuse: true });
             for (let round = 0; round < 5; round += 1) {
-                const chat = randomUUID();
-                await catalog.createSession(chat, { owner: PERSON });
+                const session = randomUUID();
+                await catalog.createSession(session, { owner: PERSON });
                 let open;
                 meeting = { arrived: [], opened: new Promise(resolve => { open = resolve; }), open: () => open() };
                 const ids = [randomUUID(), randomUUID()];
-                const results = await Promise.allSettled([spawn(chat, ids[0], YAML("3.0.0", 30)), spawn(chat, ids[1], YAML("3.0.0", 45))]);
+                const results = await Promise.allSettled([spawn(session, ids[0], YAML("3.0.0", 30)), spawn(session, ids[1], YAML("3.0.0", 45))]);
                 const met = meeting;
                 meeting = null;
                 expect(met.arrived.length, `round ${round}: both creations reached the version check after their claims`).toBe(2);
@@ -217,9 +217,9 @@ describe("workflow: one name and version is one definition among a session's Wor
         await catalog.initialize();
         try {
             const host = { catalog, store: catalog.workflowStore(), duroxideClient: {} };
-            const chat = randomUUID();
-            await catalog.createSession(chat, { owner: PERSON });
-            const create = (id, yaml, operationId = `create-${id}`) => createWorkflow(host, { workflowSessionId: id, parentSessionId: chat, yaml,
+            const session = randomUUID();
+            await catalog.createSession(session, { owner: PERSON });
+            const create = (id, yaml, operationId = `create-${id}`) => createWorkflow(host, { workflowSessionId: id, parentSessionId: session, yaml,
                 actor: ACTOR, operationId, publish: true, refuseVersionReuse: true });
             // As an earlier build wrote it: the claim's marker without the name, version and hashes.
             const asEarlierBuild = id => catalog.pool.query(

@@ -1,12 +1,12 @@
 /**
- * A REAL model on a repeated workflow notice that needs no answer (owner "No response" dump, 2026-11-06). In chat
+ * A REAL model on a repeated workflow notice that needs no answer (owner "No response" dump, 2026-11-06). In session
  * 726e9bfc, gpt-5.6-terra (medium) answered repeated send-state notices with nothing: reasoning only, no text, no tool
  * call; the runtime made each an error and retried it twice. With the quiet rule (isQuietWorkflowNoticeTurn), such a
- * turn is one completed turn. Here a root chat on the named model (as a person's new chat starts, at 1.0.83) is told to
+ * turn is one completed turn. Here a root session on the named model (as a person's new session starts, at 1.0.83) is told to
  * stay silent on repeats, gets one notice, then the same notice up to three times (the runtime's own sender, as a send
  * state queues it).
  *
- * PASS: no "No response was returned" error, every notice turn completed once (no retry), the chat idle, and at least one
+ * PASS: no "No response was returned" error, every notice turn completed once (no retry), the session idle, and at least one
  * repeat answered with nothing and recorded as a quiet empty answer. NOT EXERCISED (fails, named so): the model answered
  * every repeat with text, so the quiet path was not reached. Its answers are recorded, not judged.
  *
@@ -64,15 +64,15 @@ describe("a workflow notice that needs no answer, on a real model (owner No resp
         try {
             const worker = { workflowScripts: { enabled: true }, logLevel: "warning" };
             await withClient(env, { worker }, async (client) => {
-                const chat = await client.createSession({ model: plan.model.ref, owner: OWNER, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });
-                await chat.sendAndWait(INSTRUCTION, TURN_MS);
-                const events = types => client._catalog.getSessionEvents(chat.sessionId, 0, 2_000, types);
+                const session = await client.createSession({ model: plan.model.ref, owner: OWNER, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) });
+                await session.sendAndWait(INSTRUCTION, TURN_MS);
+                const events = types => client._catalog.getSessionEvents(session.sessionId, 0, 2_000, types);
                 const turnsSoFar = async () => (await events(["session.turn_completed"])).length;
                 const run = "real-notice-run-1";
                 // The first notice (a new list), then the same list again until one repeat is answered with nothing.
                 for (let poll = 1; poll <= 1 + REPEATS; poll += 1) {
                     const before = await turnsSoFar();
-                    await chat.send(notice(run, poll), { sender: workflowRuntimeSender("message") });
+                    await session.send(notice(run, poll), { sender: workflowRuntimeSender("message") });
                     const deadline = Date.now() + TURN_MS;
                     while (Date.now() < deadline && (await turnsSoFar()) === before) await pause(500);
                     // Past the first retry delay (15 s) of a failed turn: a retry would show by now.
@@ -88,7 +88,7 @@ describe("a workflow notice that needs no answer, on a real model (owner No resp
                 receipt.errors = errors;
                 receipt.quietTurns = quiet.length;
                 receipt.answers = answers.map(text => text.slice(0, 200));
-                receipt.state = (await client._catalog.getSession(chat.sessionId))?.state ?? null;
+                receipt.state = (await client._catalog.getSession(session.sessionId))?.state ?? null;
                 receipt.verdict = errors.some(text => /No response was returned/.test(text)) ? "FAIL: an empty answer was an error"
                     : receipt.notices.some(item => item.turns.length !== 1 || item.turns[0] !== "completed") ? "FAIL: a notice turn failed or was retried"
                         : quiet.length === 0 ? "NOT EXERCISED: the model answered every repeat with text" : "PASS";

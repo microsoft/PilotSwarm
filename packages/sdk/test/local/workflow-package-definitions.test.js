@@ -1,16 +1,16 @@
 /**
  * Workflow Simplified stage 2.3, on PostgreSQL: a package's Workflow Definitions (spec "Packages and Agent Smith": P1–P7,
- * E2-7, D7; A2; migration 0108; chat-packages.ts, chat-definitions.ts, definition-tool.ts, the management client).
+ * E2-7, D7; A2; migration 0108; session-packages.ts, session-definitions.ts, definition-tool.ts, the management client).
  * Packages are published to the real agent registry with their bytes in a filesystem artifact store:
  * - P1: the registry's packages export their definitions with their cards; a viewer sees the shared ones and their own;
- * - P2, P5, E2-7: attaching one makes the chat's locked definition `<package>/<name>` at revision 1 with the package
+ * - P2, P5, E2-7: attaching one makes the session's locked definition `<package>/<name>` at revision 1 with the package
  *   version and the card's digest; attaching it again changes nothing; a save to it is refused (DEFINITION_LOCKED); Start
- *   pins its revision; Make a copy saves the package's YAML as the chat's own, editable definition, with a note;
+ *   pins its revision; Make a copy saves the package's YAML as the session's own, editable definition, with a note;
  * - P6: a newer package version is offered (packageUpdate) and attached as the next revision; a running Workflow keeps its own;
- * - P4: a chat starts what its agent names (a bare name in the agent's own package, another package's by package and name),
- *   reads a card first, and is refused one its agent does not name; a coordinating chat starts its own;
+ * - P4: a session starts what its agent names (a bare name in the agent's own package, another package's by package and name),
+ *   reads a card first, and is refused one its agent does not name; a coordinating session starts its own;
  * - A2: a definition whose agent state uses an agent that names definitions is refused at save and at Start;
- * - the management client: the picker's catalog, a coordinating chat's preparation and attach (its row's workflowRef and
+ * - the management client: the picker's catalog, a coordinating session's preparation and attach (its row's workflowRef and
  *   title), a person's newer version and Make a copy.
  * No model, no controller: a started run stays admitted (a recording duroxide client stands in for the dispatch).
  */
@@ -24,12 +24,12 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmManagementClient } from "../helpers/local-workers.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 import { FilesystemArtifactStore, publishAgentPackageDir } from "../../src/index.ts";
-import { createPackageWorkflowSource } from "../../src/workflow/chat-packages.ts";
+import { createPackageWorkflowSource } from "../../src/workflow/session-packages.ts";
 import { createRegistryWorkflowAgentResolver } from "../../src/workflow/agent-resolver.ts";
 import {
-    attachChatPackageWorkflow, copyChatPackageWorkflow, listChatWorkflowDefinitions, saveChatWorkflowDefinition, startChatWorkflowDefinition,
+    attachSessionPackageWorkflow, copySessionPackageWorkflow, listSessionWorkflowDefinitions, saveSessionWorkflowDefinition, startSessionWorkflowDefinition,
     withPackageUpdates,
-} from "../../src/workflow/chat-definitions.ts";
+} from "../../src/workflow/session-definitions.ts";
 import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
@@ -119,7 +119,7 @@ function packageDir(files) {
     return dir;
 }
 
-/** The real store and registry, two published packages, and a chat. */
+/** The real store and registry, two published packages, and a session. */
 async function harness() {
     const h = await openWorkflowStore(getEnv());
     const tag = randomUUID().slice(0, 8);
@@ -146,14 +146,14 @@ async function harness() {
         enqueueEvent: async () => {},
     };
     const host = { catalog: h.catalog, store: h.store, duroxideClient, packageWorkflows: createPackageWorkflowSource({ catalog: h.catalog, artifactStore }) };
-    const chat = randomUUID();
-    await h.catalog.createSession(chat, { owner: OWNER });
-    return { h, host, chat, release, ops, tag, publish, releaseFiles, artifactStore, dispatched };
+    const session = randomUUID();
+    await h.catalog.createSession(session, { owner: OWNER });
+    return { h, host, session, release, ops, tag, publish, releaseFiles, artifactStore, dispatched };
 }
 
-const chatActor = chat => ({ kind: "chat", sessionId: chat });
-const tool = (host, chat, args, extra = {}) => workflowDefinitionFromTool(args, {
-    callerSessionId: chat, host, toolCallId: extra.toolCallId ?? `call-${randomUUID()}`, owner: OWNER, binding: async () => null,
+const sessionActor = session => ({ kind: "session", sessionId: session });
+const tool = (host, session, args, extra = {}) => workflowDefinitionFromTool(args, {
+    callerSessionId: session, host, toolCallId: extra.toolCallId ?? `call-${randomUUID()}`, owner: OWNER, binding: async () => null,
     ...(extra.agentWorkflows ? { agentWorkflows: extra.agentWorkflows } : {}),
 }).then(text => JSON.parse(text));
 
@@ -179,50 +179,50 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
         }
     });
 
-    it("P2, P5, E2-7: attached locked at the package version; once; a save refused; Start pins it; Make a copy is the chat's own", { timeout: TIMEOUT }, async () => {
-        const { h, host, chat, release } = await harness();
+    it("P2, P5, E2-7: attached locked at the package version; once; a save refused; Start pins it; Make a copy is the session's own", { timeout: TIMEOUT }, async () => {
+        const { h, host, session, release } = await harness();
         try {
             const ref = `${release}/release-watch`;
-            const attach = (operationId) => attachChatPackageWorkflow(host, { ownerSessionId: chat, ref, viewer: VIEWER, actor: chatActor(chat), operationId, by: "chat" });
+            const attach = (operationId) => attachSessionPackageWorkflow(host, { ownerSessionId: session, ref, viewer: VIEWER, actor: sessionActor(session), operationId, by: "session" });
             const first = await attach("attach-1");
             expect(first.receipt).toMatchObject({ operation: "attach", name: ref, revision: 1, created: true, changed: true,
                 package: { packageName: release, semver: "1.0.0" } });
             expect(first.receipt.package.cardDigest).toMatch(/^[0-9a-f]{64}$/);
             expect((await attach("attach-2")).receipt).toMatchObject({ revision: 1, created: false, changed: false });
-            const [view] = await listChatWorkflowDefinitions(host, chat);
+            const [view] = await listSessionWorkflowDefinitions(host, session);
             expect(view).toMatchObject({ name: ref, locked: true, packageName: release, currentRevision: 1,
                 current: { package: { packageName: release, semver: "1.0.0", cardDigest: first.receipt.package.cardDigest } } });
-            // Locked: the chat's save of it is refused in words, by name and by its id.
-            const byName = await tool(host, chat, { operation: "save", name: ref, yaml: WATCH_YAML(5, "9.9.9") });
+            // Locked: the session's save of it is refused in words, by name and by its id.
+            const byName = await tool(host, session, { operation: "save", name: ref, yaml: WATCH_YAML(5, "9.9.9") });
             expect(byName).toMatchObject({ ok: false, error: { code: "DEFINITION_LOCKED" } });
             expect(byName.error.message).toMatch(/locked: it cannot be changed here\. Make a copy of it .* Nothing was saved\.$/);
-            await refused(host.store.chat.save({ ownerSessionId: chat, name: ref, yaml: WATCH_YAML(5, "9.9.9"), compiled: { valid: true, diagnostics: [],
+            await refused(host.store.sessionDefinitions.save({ ownerSessionId: session, name: ref, yaml: WATCH_YAML(5, "9.9.9"), compiled: { valid: true, diagnostics: [],
                 yamlSha256: "x", irSha256: null, ir: null, version: "9.9.9" }, expected: { definitionId: view.definitionId, revision: 1 },
-            actor: chatActor(chat), operationId: "save-locked", requestSha256: "x", seenByChat: true }), "DEFINITION_LOCKED");
+            actor: sessionActor(session), operationId: "save-locked", requestSha256: "x", seenBySession: true }), "DEFINITION_LOCKED");
             // Start pins revision 1; the Workflow's own definition is the package's YAML.
-            const started = await startChatWorkflowDefinition(host, { ownerSessionId: chat, definition: { name: ref }, inputs: { train: "M70" },
+            const started = await startSessionWorkflowDefinition(host, { ownerSessionId: session, definition: { name: ref }, inputs: { train: "M70" },
                 actor: ENGINE, operationId: "start-1" });
             expect(started).toMatchObject({ name: ref, revision: 1 });
             expect((await h.store.readRevision(started.workflowId, 1)).yaml).toBe(WATCH_YAML(30, "1.0.0"));
-            // Make a copy: the chat's own definition release-watch, revision 1, unlocked, with a note for the chat.
-            const copy = await copyChatPackageWorkflow(host, { ownerSessionId: chat, definitionId: view.definitionId, actor: { kind: "user", provider: "test",
+            // Make a copy: the session's own definition release-watch, revision 1, unlocked, with a note for the session.
+            const copy = await copySessionPackageWorkflow(host, { ownerSessionId: session, definitionId: view.definitionId, actor: { kind: "user", provider: "test",
                 subject: "ada", display: "Ada Lovelace" }, operationId: "copy-1", personWords: "Ada Lovelace" });
             expect(copy.receipt).toMatchObject({ name: "release-watch", revision: 1, created: true, valid: true });
             // Formal L1: the copy is source 'copy' and names the definition, revision and package version it came from.
-            expect((await h.store.chat.readDefinition(copy.receipt.definitionId))).toMatchObject({ locked: false, packageName: null, source: "copy",
+            expect((await h.store.sessionDefinitions.readDefinition(copy.receipt.definitionId))).toMatchObject({ locked: false, packageName: null, source: "copy",
                 copiedFrom: { definitionId: view.definitionId, name: ref, revision: 1, package: { packageName: release, semver: "1.0.0",
                     packageId: first.receipt.package.packageId, sha256: first.receipt.package.sha256 } } });
-            const [copyView] = (await listChatWorkflowDefinitions(host, chat)).filter(item => item.definitionId === copy.receipt.definitionId);
+            const [copyView] = (await listSessionWorkflowDefinitions(host, session)).filter(item => item.definitionId === copy.receipt.definitionId);
             expect(copyView.copiedFrom).toMatchObject({ name: ref, revision: 1 });
-            expect((await tool(host, chat, { operation: "read", definition_id: copy.receipt.definitionId })).copiedFrom ?? null)
+            expect((await tool(host, session, { operation: "read", definition_id: copy.receipt.definitionId })).copiedFrom ?? null)
                 .toEqual({ name: ref, revision: 1, packageVersion: "1.0.0" });
             // Any other definition names no source.
-            expect((await h.store.chat.readDefinition(view.definitionId)).copiedFrom).toBe(null);
-            expect((await h.store.chat.pendingNotes(chat)).map(note => note.text)).toEqual(["Ada Lovelace saved release-watch revision 1."]);
-            await refused(copyChatPackageWorkflow(host, { ownerSessionId: chat, definitionId: view.definitionId, actor: ENGINE, operationId: "copy-2" }),
+            expect((await h.store.sessionDefinitions.readDefinition(view.definitionId)).copiedFrom).toBe(null);
+            expect((await h.store.sessionDefinitions.pendingNotes(session)).map(note => note.text)).toEqual(["Ada Lovelace saved release-watch revision 1."]);
+            await refused(copySessionPackageWorkflow(host, { ownerSessionId: session, definitionId: view.definitionId, actor: ENGINE, operationId: "copy-2" }),
                 "DEFINITION_EXISTS");
-            // A copy of the chat's own definition is not a copy: it is changed by saving it.
-            await refused(copyChatPackageWorkflow(host, { ownerSessionId: chat, definitionId: copy.receipt.definitionId, actor: ENGINE, operationId: "copy-3" }),
+            // A copy of the session's own definition is not a copy: it is changed by saving it.
+            await refused(copySessionPackageWorkflow(host, { ownerSessionId: session, definitionId: copy.receipt.definitionId, actor: ENGINE, operationId: "copy-3" }),
                 "WORKFLOW_COMMAND_INVALID");
         } finally {
             await h.stop();
@@ -230,22 +230,22 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
     });
 
     it("P6: a newer package version is offered and attached for the next Workflow; the running one keeps its own", { timeout: TIMEOUT }, async () => {
-        const { h, host, chat, release, publish, releaseFiles } = await harness();
+        const { h, host, session, release, publish, releaseFiles } = await harness();
         try {
             const ref = `${release}/release-watch`;
-            const first = await attachChatPackageWorkflow(host, { ownerSessionId: chat, ref, viewer: VIEWER, actor: chatActor(chat), operationId: "a-1", by: "chat" });
-            const running = await startChatWorkflowDefinition(host, { ownerSessionId: chat, definition: { name: ref }, inputs: { train: "M70" }, actor: ENGINE,
+            const first = await attachSessionPackageWorkflow(host, { ownerSessionId: session, ref, viewer: VIEWER, actor: sessionActor(session), operationId: "a-1", by: "session" });
+            const running = await startSessionWorkflowDefinition(host, { ownerSessionId: session, definition: { name: ref }, inputs: { train: "M70" }, actor: ENGINE,
                 operationId: "s-1" });
             await publish(release, "1.1.0", releaseFiles(45, "1.1.0"));
-            const [offered] = await withPackageUpdates(host, await listChatWorkflowDefinitions(host, chat), VIEWER);
+            const [offered] = await withPackageUpdates(host, await listSessionWorkflowDefinitions(host, session), VIEWER);
             expect(offered.packageUpdate).toMatchObject({ semver: "1.1.0" });
-            const second = await attachChatPackageWorkflow(host, { ownerSessionId: chat, ref, viewer: VIEWER, actor: chatActor(chat), operationId: "a-2", by: "chat" });
+            const second = await attachSessionPackageWorkflow(host, { ownerSessionId: session, ref, viewer: VIEWER, actor: sessionActor(session), operationId: "a-2", by: "session" });
             expect(second.receipt).toMatchObject({ definitionId: first.receipt.definitionId, revision: 2, created: false, changed: true, package: { semver: "1.1.0" } });
-            const [after] = await withPackageUpdates(host, await listChatWorkflowDefinitions(host, chat), VIEWER);
+            const [after] = await withPackageUpdates(host, await listSessionWorkflowDefinitions(host, session), VIEWER);
             expect(after.packageUpdate).toBeNull();
             expect(after.workflows).toEqual([expect.objectContaining({ workflowSessionId: running.workflowId, revision: 1 })]);
             expect((await h.store.readRevision(running.workflowId, 1)).yaml).toBe(WATCH_YAML(30, "1.0.0"));
-            const next = await startChatWorkflowDefinition(host, { ownerSessionId: chat, definition: { name: ref }, inputs: { train: "M71" }, actor: ENGINE,
+            const next = await startSessionWorkflowDefinition(host, { ownerSessionId: session, definition: { name: ref }, inputs: { train: "M71" }, actor: ENGINE,
                 operationId: "s-2" });
             expect(next.revision).toBe(2);
             expect((await h.store.readRevision(next.workflowId, 1)).yaml).toBe(WATCH_YAML(45, "1.1.0"));
@@ -256,46 +256,46 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
 
     // Stage 2 review S2SF-F6 / formal L4: "newer" is the same package's strictly greater semver. A rollback (an older active
     // version) and another package of the same name (the owner's own copy, which shadows the shared one) are never offered,
-    // and a person's or the chat's "newer version" attaches neither.
+    // and a person's or the session's "newer version" attaches neither.
     it("S2SF-F6 / L4: 1.1.0 attached and 1.0.0 active: no offer and no update; an owner's own copy neither; the same package's 1.2.0 is", { timeout: TIMEOUT }, async () => {
-        const { h, host, chat, release, publish, releaseFiles, artifactStore } = await harness();
+        const { h, host, session, release, publish, releaseFiles, artifactStore } = await harness();
         const env = getEnv();
         const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
             factsSchema: env.factsSchema, workflowCommands: {}, artifactStore });
         await mgmt.start();
         const ref = `${release}/release-watch`;
-        const offered = async () => (await mgmt.listChatWorkflowDefinitions(chat))[0].packageUpdate ?? null;
+        const offered = async () => (await mgmt.listSessionWorkflowDefinitions(session))[0].packageUpdate ?? null;
         try {
             await publish(release, "1.1.0", releaseFiles(45, "1.1.0"));
-            const attached = await attachChatPackageWorkflow(host, { ownerSessionId: chat, ref, viewer: VIEWER, actor: chatActor(chat), operationId: "a-1", by: "chat" });
+            const attached = await attachSessionPackageWorkflow(host, { ownerSessionId: session, ref, viewer: VIEWER, actor: sessionActor(session), operationId: "a-1", by: "session" });
             expect(attached.receipt).toMatchObject({ revision: 1, package: { semver: "1.1.0" } });
             const definitionId = attached.receipt.definitionId;
             // A rollback: 1.0.0 is the active version again.
             await h.catalog.pinAgentPackageVersion(release, "1.0.0", OWNER, false, { scope: "shared" });
             expect(await offered()).toBe(null);
-            expect((await mgmt.readChatWorkflowDefinition(chat, { definitionId })).packageUpdate ?? null).toBe(null);
-            const rollback = await refused(mgmt.updateChatWorkflowPackage(chat, { definitionId, operationId: "u-1" }, { principal: VIEWER }), "PACKAGE_NOT_NEWER");
-            expect(rollback.message).toBe("The package's active version is 1.0.0, not newer than the 1.1.0 this chat has. "
+            expect((await mgmt.readSessionWorkflowDefinition(session, { definitionId })).packageUpdate ?? null).toBe(null);
+            const rollback = await refused(mgmt.updateSessionWorkflowPackage(session, { definitionId, operationId: "u-1" }, { principal: VIEWER }), "PACKAGE_NOT_NEWER");
+            expect(rollback.message).toBe("The package's active version is 1.0.0, not newer than the 1.1.0 this session has. "
                 + "Nothing was attached; its Workflows start 1.1.0.");
             expect(rollback.status).toBe(409);
-            const card = await tool(host, chat, { operation: "card", name: ref });
+            const card = await tool(host, session, { operation: "card", name: ref });
             expect(card).toMatchObject({ ok: true, version: "1.1.0", attached: true });
             expect("newerVersion" in card).toBe(false);
-            const update = await tool(host, chat, { operation: "start", name: ref, update: true, inputs: { train: "M70" } });
+            const update = await tool(host, session, { operation: "start", name: ref, update: true, inputs: { train: "M70" } });
             expect(update).toMatchObject({ ok: false, error: { code: "PACKAGE_NOT_NEWER" } });
-            expect(await h.store.chat.listWorkflows({ definitionId })).toEqual([]);
-            expect((await h.store.chat.readDefinition(definitionId)).currentRevision).toBe(1);
+            expect(await h.store.sessionDefinitions.listWorkflows({ definitionId })).toEqual([]);
+            expect((await h.store.sessionDefinitions.readDefinition(definitionId)).currentRevision).toBe(1);
             // The same package's 1.2.0 is newer: offered, and taken for the next Workflow.
             await publish(release, "1.2.0", releaseFiles(50, "1.2.0"));
             expect(await offered()).toMatchObject({ semver: "1.2.0" });
-            expect(await mgmt.updateChatWorkflowPackage(chat, { definitionId, operationId: "u-2" }, { principal: VIEWER }))
+            expect(await mgmt.updateSessionWorkflowPackage(session, { definitionId, operationId: "u-2" }, { principal: VIEWER }))
                 .toMatchObject({ revision: 2, changed: true, package: { semver: "1.2.0" } });
             // The owner's own copy of the package (user scope, same name, 2.0.0) shadows the shared one: another package, not newer.
             await publish(release, "2.0.0", releaseFiles(60, "2.0.0"), { scope: "user", owner: OWNER });
             expect(await offered()).toBe(null);
-            const other = await refused(mgmt.updateChatWorkflowPackage(chat, { definitionId, operationId: "u-3" }, { principal: VIEWER }), "PACKAGE_NOT_NEWER");
-            expect(other.message).toMatch(/is another package of that name, not the one this chat has \(1\.2\.0\)\. Nothing was attached/);
-            expect((await h.store.chat.readDefinition(definitionId)).currentRevision).toBe(2);
+            const other = await refused(mgmt.updateSessionWorkflowPackage(session, { definitionId, operationId: "u-3" }, { principal: VIEWER }), "PACKAGE_NOT_NEWER");
+            expect(other.message).toMatch(/is another package of that name, not the one this session has \(1\.2\.0\)\. Nothing was attached/);
+            expect((await h.store.sessionDefinitions.readDefinition(definitionId)).currentRevision).toBe(2);
         } finally {
             await mgmt.stop();
             await h.stop();
@@ -305,53 +305,53 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
     // Stage 2 review S2RT-F10 (and formal L2): an attach and a Make a copy that ran are answered from their receipts when
     // repeated, whatever the registry's active version is now.
     it("S2RT-F10: a start with update interrupted after its attach, replayed after a republish, starts the attached revision; a repeated copy answers its receipt", { timeout: TIMEOUT }, async () => {
-        const { h, host, chat, release, publish, releaseFiles } = await harness();
+        const { h, host, session, release, publish, releaseFiles } = await harness();
         try {
             const ref = `${release}/release-watch`;
             const agentWorkflows = async () => ({ packageName: release, refs: ["release-watch"] });
             // 1.0.0 attached and started once; then 1.1.0 is published.
-            expect(await tool(host, chat, { operation: "start", name: ref, inputs: { train: "M70" } }, { agentWorkflows })).toMatchObject({ ok: true, revision: 1 });
+            expect(await tool(host, session, { operation: "start", name: ref, inputs: { train: "M70" } }, { agentWorkflows })).toMatchObject({ ok: true, revision: 1 });
             await publish(release, "1.1.0", releaseFiles(45, "1.1.0"));
-            // The chat's start with update attaches 1.1.0 (revision 2), then stops before its Start is stored.
+            // The session's start with update attaches 1.1.0 (revision 2), then stops before its Start is stored.
             let fail = true;
             const stopping = { ...host, store: new Proxy(h.store, { get: (target, name) => (name === "createDefinition" && fail
                 ? async () => { fail = false; throw new Error("worker stopped"); } : typeof target[name] === "function" ? target[name].bind(target) : target[name]) }) };
             const args = { operation: "start", name: ref, update: true, inputs: { train: "M71" } };
-            const first = await tool(stopping, chat, args, { agentWorkflows, toolCallId: "call-update" });
+            const first = await tool(stopping, session, args, { agentWorkflows, toolCallId: "call-update" });
             expect(first.ok).toBe(false);
-            const [definition] = await h.store.chat.listDefinitions(chat);
+            const [definition] = await h.store.sessionDefinitions.listDefinitions(session);
             expect(definition.currentRevision).toBe(2);
             // 1.2.0 is published; the same call again starts revision 2 (1.1.0) and attaches nothing more.
             await publish(release, "1.2.0", releaseFiles(50, "1.2.0"));
-            const again = await tool(host, chat, args, { agentWorkflows, toolCallId: "call-update" });
+            const again = await tool(host, session, args, { agentWorkflows, toolCallId: "call-update" });
             expect(again, JSON.stringify(again)).toMatchObject({ ok: true, revision: 2 });
-            expect((await h.store.chat.readDefinition(definition.definitionId)).currentRevision).toBe(2);
+            expect((await h.store.sessionDefinitions.readDefinition(definition.definitionId)).currentRevision).toBe(2);
             expect((await h.store.readRevision(again.workflowId, 1)).yaml).toBe(WATCH_YAML(45, "1.1.0"));
             // Make a copy (of the newest, revision 2) whose answer was lost; the package moves to 1.2.0 (revision 3); the same copy
             // again answers its receipt: the copy of revision 2.
-            const copy = await copyChatPackageWorkflow(host, { ownerSessionId: chat, definitionId: definition.definitionId, actor: ENGINE, operationId: "copy-lost" });
-            await attachChatPackageWorkflow(host, { ownerSessionId: chat, ref, viewer: VIEWER, actor: chatActor(chat), operationId: "a-3", by: "chat", newerOnly: true });
-            expect((await h.store.chat.readDefinition(definition.definitionId)).currentRevision).toBe(3);
-            const repeated = await copyChatPackageWorkflow(host, { ownerSessionId: chat, definitionId: definition.definitionId, actor: ENGINE, operationId: "copy-lost" });
+            const copy = await copySessionPackageWorkflow(host, { ownerSessionId: session, definitionId: definition.definitionId, actor: ENGINE, operationId: "copy-lost" });
+            await attachSessionPackageWorkflow(host, { ownerSessionId: session, ref, viewer: VIEWER, actor: sessionActor(session), operationId: "a-3", by: "session", newerOnly: true });
+            expect((await h.store.sessionDefinitions.readDefinition(definition.definitionId)).currentRevision).toBe(3);
+            const repeated = await copySessionPackageWorkflow(host, { ownerSessionId: session, definitionId: definition.definitionId, actor: ENGINE, operationId: "copy-lost" });
             expect(repeated).toEqual({ receipt: copy.receipt, replayed: true });
-            expect((await h.store.chat.readDefinition(copy.receipt.definitionId)).copiedFrom).toMatchObject({ revision: 2 });
+            expect((await h.store.sessionDefinitions.readDefinition(copy.receipt.definitionId)).copiedFrom).toMatchObject({ revision: 2 });
         } finally {
             await h.stop();
         }
     });
 
-    // Formal L3: two attaches under one operation id at the same time. Both read no receipt, then wait for the chat (held
-    // here); the first stores its attach, and the second, once it has the chat, answers that receipt (not a key error).
+    // Formal L3: two attaches under one operation id at the same time. Both read no receipt, then wait for the session (held
+    // here); the first stores its attach, and the second, once it has the session, answers that receipt (not a key error).
     it("L3: a concurrent attach under the same operation id answers the first one's receipt", { timeout: TIMEOUT }, async () => {
-        const { h, host, chat, release } = await harness();
+        const { h, host, session, release } = await harness();
         const env = getEnv();
         const direct = new pg.Pool({ connectionString: env.store, max: 1 });
         const holder = await direct.connect();
         try {
             await holder.query("BEGIN");
-            await holder.query(`SELECT 1 FROM "${env.cmsSchema}".sessions WHERE session_id = $1 FOR UPDATE`, [chat]);
-            const request = { ownerSessionId: chat, ref: `${release}/release-watch`, viewer: VIEWER, actor: chatActor(chat), operationId: "same", by: "chat" };
-            const both = Promise.allSettled([attachChatPackageWorkflow(host, request), attachChatPackageWorkflow(host, request)]);
+            await holder.query(`SELECT 1 FROM "${env.cmsSchema}".sessions WHERE session_id = $1 FOR UPDATE`, [session]);
+            const request = { ownerSessionId: session, ref: `${release}/release-watch`, viewer: VIEWER, actor: sessionActor(session), operationId: "same", by: "session" };
+            const both = Promise.allSettled([attachSessionPackageWorkflow(host, request), attachSessionPackageWorkflow(host, request)]);
             await new Promise(resolve => setTimeout(resolve, 2_000));
             await holder.query("COMMIT");
             const results = await both;
@@ -359,7 +359,7 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
             const [a, b] = results.map(result => result.value);
             expect(a.receipt).toEqual(b.receipt);
             expect([a.replayed, b.replayed].sort()).toEqual([false, true]);
-            const definitions = await h.store.chat.listDefinitions(chat);
+            const definitions = await h.store.sessionDefinitions.listDefinitions(session);
             expect(definitions.map(item => item.currentRevision)).toEqual([1]);
         } finally {
             holder.release();
@@ -368,40 +368,40 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
         }
     });
 
-    it("P4: the chat starts what its agent names, reads the card first, and is refused another; a coordinating chat starts its own", { timeout: TIMEOUT }, async () => {
-        const { h, host, chat, release, ops, tag } = await harness();
+    it("P4: the session starts what its agent names, reads the card first, and is refused another; a coordinating session starts its own", { timeout: TIMEOUT }, async () => {
+        const { h, host, session, release, ops, tag } = await harness();
         try {
             const agentWorkflows = async () => ({ packageName: release, refs: ["release-watch", `${ops}/incident-digest`] });
-            const listed = await tool(host, chat, { operation: "list" }, { agentWorkflows });
+            const listed = await tool(host, session, { operation: "list" }, { agentWorkflows });
             expect(listed.canStart).toEqual([
                 { name: `${release}/release-watch`, version: "1.0.0", description: "Watches a release train and reports when it is clear.", attached: false },
                 { name: `${ops}/incident-digest`, version: "0.4.1", description: "Collects the day's incidents into one digest.", attached: false },
             ]);
-            const card = await tool(host, chat, { operation: "card", name: `${release}/release-watch` }, { agentWorkflows });
+            const card = await tool(host, session, { operation: "card", name: `${release}/release-watch` }, { agentWorkflows });
             expect(card).toMatchObject({ ok: true, operation: "card", name: `${release}/release-watch`, version: "1.0.0", attached: false,
                 exampleInputs: { train: "M70" }, outcomes: { clear: "The train finished without a blocker." } });
             expect(card.inputsSchema).toMatchObject({ type: "object", required: ["train"] });
             expect(card.card).toContain("When to use it: A release train is rolling out.");
             // Another package's definition, by package and name: attached and started in one call, pinned to the attached revision.
-            const started = await tool(host, chat, { operation: "start", name: `${ops}/incident-digest` }, { agentWorkflows });
+            const started = await tool(host, session, { operation: "start", name: `${ops}/incident-digest` }, { agentWorkflows });
             expect(started).toMatchObject({ ok: true, operation: "start", name: `${ops}/incident-digest`, revision: 1 });
-            const [view] = (await listChatWorkflowDefinitions(host, chat)).filter(item => item.name === `${ops}/incident-digest`);
+            const [view] = (await listSessionWorkflowDefinitions(host, session)).filter(item => item.name === `${ops}/incident-digest`);
             expect(view).toMatchObject({ locked: true, packageName: ops, workflows: [expect.objectContaining({ workflowSessionId: started.workflowId })] });
             // The list now says it is attached, and the read says it is locked.
-            const again = await tool(host, chat, { operation: "list" }, { agentWorkflows });
+            const again = await tool(host, session, { operation: "list" }, { agentWorkflows });
             expect(again.definitions.find(item => item.name === `${ops}/incident-digest`)).toMatchObject({ locked: true, package: { name: ops, version: "0.4.1" } });
             expect(again.canStart.find(item => item.name === `${ops}/incident-digest`).attached).toBe(true);
             // A definition the agent does not name is refused, and nothing is attached.
-            const other = await tool(host, chat, { operation: "start", name: `${release}/release-watch`, inputs: { train: "M70" } });
+            const other = await tool(host, session, { operation: "start", name: `${release}/release-watch`, inputs: { train: "M70" } });
             expect(other).toMatchObject({ ok: false, error: { code: "PACKAGE_WORKFLOW_NOT_ALLOWED" } });
-            expect((await listChatWorkflowDefinitions(host, chat)).some(item => item.name === `${release}/release-watch`)).toBe(false);
-            const missing = await tool(host, chat, { operation: "start", name: `nothing-${tag}/x` }, { agentWorkflows: async () => ({ packageName: null,
+            expect((await listSessionWorkflowDefinitions(host, session)).some(item => item.name === `${release}/release-watch`)).toBe(false);
+            const missing = await tool(host, session, { operation: "start", name: `nothing-${tag}/x` }, { agentWorkflows: async () => ({ packageName: null,
                 refs: [`nothing-${tag}/x`] }) });
             expect(missing).toMatchObject({ ok: false, error: { code: "PACKAGE_WORKFLOW_NOT_FOUND" } });
-            // A coordinating chat (made for release-watch) starts its own without any agent list.
+            // A coordinating session (made for release-watch) starts its own without any agent list.
             const coordinating = randomUUID();
             await h.catalog.createSession(coordinating, { owner: OWNER });
-            await attachChatPackageWorkflow(host, { ownerSessionId: coordinating, ref: `${release}/release-watch`, viewer: VIEWER, actor: ENGINE,
+            await attachSessionPackageWorkflow(host, { ownerSessionId: coordinating, ref: `${release}/release-watch`, viewer: VIEWER, actor: ENGINE,
                 operationId: "coordinate", by: "system", workflowRef: `${release}/release-watch` });
             expect((await h.catalog.getSession(coordinating)).workflowRef).toBe(`${release}/release-watch`);
             const own = await tool(host, coordinating, { operation: "start", name: `${release}/release-watch`, inputs: { train: "M70" } });
@@ -413,25 +413,25 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
     });
 
     it("A2: an agent state may not use an agent that names definitions: refused at save and at Start", { timeout: TIMEOUT }, async () => {
-        const { h, host, chat, release } = await harness();
+        const { h, host, session, release } = await harness();
         try {
             const resolving = { ...host, resolveAgent: createRegistryWorkflowAgentResolver(h.catalog) };
-            const save = (yaml, onHost, name = "delegate") => saveChatWorkflowDefinition(onHost, { ownerSessionId: chat, name, yaml, expected: null,
-                actor: chatActor(chat), operationId: `save-${randomUUID()}`, by: "chat" });
+            const save = (yaml, onHost, name = "delegate") => saveSessionWorkflowDefinition(onHost, { ownerSessionId: session, name, yaml, expected: null,
+                actor: sessionActor(session), operationId: `save-${randomUUID()}`, by: "session" });
             const atSave = await refused(save(DELEGATE("release-watcher", release), resolving), "AGENT_HAS_WORKFLOWS");
             expect(atSave.message).toMatch(/^State 'ask' uses agent "release-watcher", which names Workflow Definitions it can start\. .* Nothing was saved\.$/);
             // A host that resolves no agents saves it (Start pins every named agent)...
             const saved = (await save(DELEGATE("release-watcher", release), { ...host })).receipt;
             expect(saved).toMatchObject({ revision: 1, valid: true });
             // ...and Start refuses it, writing nothing.
-            const atStart = await refused(startChatWorkflowDefinition(resolving, { ownerSessionId: chat, definition: { definitionId: saved.definitionId },
+            const atStart = await refused(startSessionWorkflowDefinition(resolving, { ownerSessionId: session, definition: { definitionId: saved.definitionId },
                 inputs: {}, actor: ENGINE, operationId: "start-a2" }), "AGENT_HAS_WORKFLOWS");
             expect(atStart.message).toMatch(/Nothing was changed\.$/);
-            expect((await h.store.chat.listWorkflows({ definitionId: saved.definitionId }))).toEqual([]);
+            expect((await h.store.sessionDefinitions.listWorkflows({ definitionId: saved.definitionId }))).toEqual([]);
             // The package's other agent names none: saved and started.
             const helper = (await save(DELEGATE("release-helper", release).replace("name: delegate", "name: helper"), resolving, "helper")).receipt;
             expect(helper.valid).toBe(true);
-            const ok = await startChatWorkflowDefinition(resolving, { ownerSessionId: chat, definition: { definitionId: helper.definitionId }, inputs: {},
+            const ok = await startSessionWorkflowDefinition(resolving, { ownerSessionId: session, definition: { definitionId: helper.definitionId }, inputs: {},
                 actor: ENGINE, operationId: "start-helper" });
             expect(ok.revision).toBe(1);
         } finally {
@@ -439,7 +439,7 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
         }
     });
 
-    it("the management client: the picker's catalog, a coordinating chat, a person's newer version and Make a copy", { timeout: TIMEOUT }, async () => {
+    it("the management client: the picker's catalog, a coordinating session, a person's newer version and Make a copy", { timeout: TIMEOUT }, async () => {
         const { h, release, tag, publish, releaseFiles, artifactStore } = await harness();
         const env = getEnv();
         const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
@@ -453,39 +453,39 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
                 outcomes: { clear: "The train finished without a blocker." } });
             // S2SF-F4: what the definition shows of its effects, read from its checked bytes, whatever its card says.
             expect(watch.checked).toEqual({ scripts: [], agents: [], words: "Checked from the definition: it runs no scripts and has no agent steps." });
-            const prepared = await mgmt.prepareWorkflowChat(`${release}/release-watch`, VIEWER);
+            const prepared = await mgmt.prepareSessionForWorkflow(`${release}/release-watch`, VIEWER);
             expect(prepared.systemMessage).toContain("Checked from the definition: it runs no scripts and has no agent steps.");
             expect(prepared.systemMessage).toContain("Effects (the author's words): No scripts; one wait.");
             expect(prepared).toMatchObject({ ref: `${release}/release-watch`, semver: "1.0.0", title: `release-watch · ${release}`, model: null });
-            expect(prepared.systemMessage).toContain(`This chat coordinates one Workflow Definition: ${release}/release-watch (package version 1.0.0).`);
+            expect(prepared.systemMessage).toContain(`This session coordinates one Workflow Definition: ${release}/release-watch (package version 1.0.0).`);
             expect(prepared.kickoff).toMatch(/ask for each input it needs/);
-            await refused(mgmt.prepareWorkflowChat(`nothing-${tag}/x`, VIEWER), "PACKAGE_WORKFLOW_NOT_FOUND");
-            // The coordinating chat: attached, its row's workflowRef and title.
-            const chat = randomUUID();
-            await h.catalog.createSession(chat, { owner: OWNER });
-            const attached = await mgmt.attachChatWorkflowPackage(chat, { ref: prepared.ref, operationId: "coordinate", coordinating: true, title: prepared.title },
+            await refused(mgmt.prepareSessionForWorkflow(`nothing-${tag}/x`, VIEWER), "PACKAGE_WORKFLOW_NOT_FOUND");
+            // The coordinating session: attached, its row's workflowRef and title.
+            const session = randomUUID();
+            await h.catalog.createSession(session, { owner: OWNER });
+            const attached = await mgmt.attachSessionWorkflowPackage(session, { ref: prepared.ref, operationId: "coordinate", coordinating: true, title: prepared.title },
                 { principal: VIEWER });
             expect(attached).toMatchObject({ revision: 1, created: true });
-            expect(await h.catalog.getSession(chat)).toMatchObject({ workflowRef: prepared.ref, title: prepared.title });
+            expect(await h.catalog.getSession(session)).toMatchObject({ workflowRef: prepared.ref, title: prepared.title });
             // DS-1: a person's save of the locked definition is DEFINITION_LOCKED, with its own name, a bare name or none.
             const lockedId = attached.definitionId;
             for (const [name, guard] of [[prepared.ref, { definitionId: lockedId, expectedRevision: 1 }], ["release-watch", { definitionId: lockedId, expectedRevision: 1 }],
                 [prepared.ref, {}]]) {
-                const refusal = await refused(mgmt.saveChatWorkflowDefinition(chat, { name, yaml: WATCH_YAML(5, "9.9.9"), operationId: `ds1-${randomUUID()}`, ...guard },
+                const refusal = await refused(mgmt.saveSessionWorkflowDefinition(session, { name, yaml: WATCH_YAML(5, "9.9.9"), operationId: `ds1-${randomUUID()}`, ...guard },
                     { principal: VIEWER }), "DEFINITION_LOCKED");
                 expect(refusal.message).toMatch(/Make a copy of it \(in the Workflow tab\) and change the copy\. Nothing was saved\.$/);
             }
-            expect((await h.store.chat.readDefinition(lockedId)).currentRevision).toBe(1);
+            expect((await h.store.sessionDefinitions.readDefinition(lockedId)).currentRevision).toBe(1);
             // A person takes the newer version for the next Workflow.
             await publish(release, "1.1.0", releaseFiles(45, "1.1.0"));
-            const [listed] = await mgmt.listChatWorkflowDefinitions(chat);
+            const [listed] = await mgmt.listSessionWorkflowDefinitions(session);
             expect(listed).toMatchObject({ locked: true, packageUpdate: { semver: "1.1.0" } });
-            expect(await mgmt.updateChatWorkflowPackage(chat, { definitionId: listed.definitionId, operationId: "update" }, { principal: VIEWER }))
+            expect(await mgmt.updateSessionWorkflowPackage(session, { definitionId: listed.definitionId, operationId: "update" }, { principal: VIEWER }))
                 .toMatchObject({ revision: 2, changed: true, package: { semver: "1.1.0" } });
             // Make a copy.
-            expect(await mgmt.copyChatWorkflowDefinition(chat, { definitionId: listed.definitionId, operationId: "copy" }, { principal: { ...VIEWER,
+            expect(await mgmt.copySessionWorkflowDefinition(session, { definitionId: listed.definitionId, operationId: "copy" }, { principal: { ...VIEWER,
                 displayName: "Ada Lovelace" } })).toMatchObject({ name: "release-watch", revision: 1, created: true });
-            const read = await mgmt.readChatWorkflowDefinition(chat, { definitionId: listed.definitionId });
+            const read = await mgmt.readSessionWorkflowDefinition(session, { definitionId: listed.definitionId });
             expect(read).toMatchObject({ locked: true, packageUpdate: null, revision: { revision: 2, package: { semver: "1.1.0" } } });
         } finally {
             await mgmt.stop();
@@ -493,7 +493,7 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
         }
     });
 
-    // Stage 2 review S2SF-F3: the picker's chat is made with instructions written from one package version; the attach takes
+    // Stage 2 review S2SF-F3: the picker's session is made with instructions written from one package version; the attach takes
     // exactly that version (its package id and content hash), or nothing.
     it("S2SF-F3: the attach takes the prepared package version or nothing: another active version, or a removed package, attaches nothing", { timeout: TIMEOUT }, async () => {
         const { h, release, publish, releaseFiles, artifactStore } = await harness();
@@ -502,21 +502,21 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
             factsSchema: env.factsSchema, workflowCommands: {}, artifactStore });
         await mgmt.start();
         const ref = `${release}/release-watch`;
-        const coordinate = (chat, prepared) => mgmt.attachChatWorkflowPackage(chat, { ref, operationId: `coordinate-${chat}`, coordinating: true,
+        const coordinate = (session, prepared) => mgmt.attachSessionWorkflowPackage(session, { ref, operationId: `coordinate-${session}`, coordinating: true,
             title: prepared.title, packageId: prepared.packageId, sha256: prepared.sha256 }, { principal: VIEWER });
-        const nothingAttached = async (chat) => {
-            expect(await mgmt.listChatWorkflowDefinitions(chat)).toEqual([]);
-            expect((await h.catalog.getSession(chat)).workflowRef ?? null).toBe(null);
+        const nothingAttached = async (session) => {
+            expect(await mgmt.listSessionWorkflowDefinitions(session)).toEqual([]);
+            expect((await h.catalog.getSession(session)).workflowRef ?? null).toBe(null);
         };
         try {
-            const prepared = await mgmt.prepareWorkflowChat(ref, VIEWER);
+            const prepared = await mgmt.prepareSessionForWorkflow(ref, VIEWER);
             expect(prepared).toMatchObject({ semver: "1.0.0", packageId: expect.any(String), sha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
             // The prepared version, unchanged: attached at that version.
             const same = randomUUID();
             await h.catalog.createSession(same, { owner: OWNER });
             expect(await coordinate(same, prepared)).toMatchObject({ revision: 1, created: true, package: { semver: "1.0.0" } });
             // A version and its package id must come together.
-            await refused(mgmt.attachChatWorkflowPackage(same, { ref, operationId: "half", packageId: prepared.packageId }, { principal: VIEWER }),
+            await refused(mgmt.attachSessionWorkflowPackage(same, { ref, operationId: "half", packageId: prepared.packageId }, { principal: VIEWER }),
                 "WORKFLOW_COMMAND_INVALID");
             // 1.1.0 becomes active between prepare and attach: nothing is attached.
             await publish(release, "1.1.0", releaseFiles(45, "1.1.0"));
@@ -527,7 +527,7 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
             expect(refusal.status).toBe(409);
             await nothingAttached(changed);
             // The package is removed between prepare and attach: nothing is attached.
-            const again = await mgmt.prepareWorkflowChat(ref, VIEWER);
+            const again = await mgmt.prepareSessionForWorkflow(ref, VIEWER);
             expect(again.semver).toBe("1.1.0");
             await h.catalog.setAgentPackageEnabled(release, false, OWNER, false, { scope: "shared" });
             const gone = randomUUID();

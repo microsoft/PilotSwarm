@@ -1,6 +1,6 @@
 /**
  * Batch 8 (d-1): the session details box of a workflow session shows what the workflow runs (Workflow, Revision, Run,
- * Started by, Steps) instead of a chat's Model, Context, Cron and Agent; an agent session that runs one of a workflow's
+ * Started by, Steps) instead of a session's Model, Context, Cron and Agent; an agent session that runs one of a workflow's
  * steps shows "Step of" instead of Cron. The values come from what the portal already holds; nothing is fetched.
  *
  * Run: node --test test/workflow-session-details.test.mjs
@@ -123,7 +123,7 @@ test("workflowStepParent: an agent session whose parent is a workflow session sh
     assert.deepEqual(workflowStepParent(untitled, { sessionId: "agent-1", parentSessionId: SESSION }), { sessionId: SESSION, title: null });
 });
 
-test("workflowStepParent: none for a chat parent, an unloaded parent, no parent, a workflow session or a group", () => {
+test("workflowStepParent: none for a session parent, an unloaded parent, no parent, a workflow session or a group", () => {
     const sessions = {
         [SESSION]: { sessionId: SESSION, sessionKind: "workflow", title: "Workflow: Triage" },
         [PARENT]: { sessionId: PARENT, title: "Chat" },
@@ -140,7 +140,7 @@ test("workflowStepParent: none for a chat parent, an unloaded parent, no parent,
 test("the details box keeps ten rows for a workflow and shows the run, not a %, when collapsed", () => {
     const webApp = read("../../react/src/web-app.js");
     const rows = webApp.match(/\.\.\.\(workflow \? \[\s*([\s\S]*?)\] : \[\s*([\s\S]*?)\]\),/);
-    assert.ok(rows, "the workflow rows replace the chat rows");
+    assert.ok(rows, "the workflow rows replace the session rows");
     const labels = text => [...text.matchAll(/field\("([^"]+)"/g)].map(match => match[1]);
     assert.deepEqual(labels(rows[1]), ["Workflow", "Revision", "Run", "Steps"]);
     assert.match(rows[1], /startedBy,/);

@@ -90,9 +90,9 @@ import { publishedScheduleActive } from "./workflow/agent-reminder.js";
 import { createWorkflowAgentResolver } from "./workflow/agent-resolver.js";
 import { workflowTestModeFromEnv } from "./workflow/test-mode-switch.js";
 import { workflowDefinitionFromTool } from "./workflow/definition-tool.js";
-import { createPackageWorkflowSource, manifestAgentWorkflows } from "./workflow/chat-packages.js";
+import { createPackageWorkflowSource, manifestAgentWorkflows } from "./workflow/session-packages.js";
 import { requireWorkflowScriptsInYaml } from "./workflow/scripts-gate.js";
-import { chatCompletionRefusal } from "./workflow/chat-definitions.js";
+import { sessionCompletionRefusal } from "./workflow/session-definitions.js";
 import { authorizeWorkflowTestNotice, workflowTestAgentScope, workflowTestAgentToolCall } from "./workflow/test-agent-tools.js";
 import { sessionInsideWorkflow, spawnNesting, spawnNestingRefusal, workflowDefinitionToolsRefusal, workflowDefinitionToolsRefused } from "./workflow/input-policy.js";
 import { applyOperatorCommandToWorkflow, applySessionCommandToWorkflow } from "./workflow/service.js";
@@ -701,7 +701,7 @@ export function mergedTurnMessages(sender: unknown, clientMessageIds: readonly s
  * The event as the transcript records it: an SDK system prompt echo becomes its summary (exported for tests). The summary
  * is fixed words and the echo's length only (stage 2 review S2SF-F2): anyone who may read the session reads its
  * transcript, and the echo's first words are the base instructions, which may carry private instructions. A workflow
- * agent chat's whole text is kept apart, redacted, for the Workflow's owner only (keepWorkflowBaseInstructions).
+ * agent session's whole text is kept apart, redacted, for the Workflow's owner only (keepWorkflowBaseInstructions).
  */
 export function summarizeSdkSystemPromptEchoEvent(
     event: { eventType: string; data: unknown },
@@ -1294,7 +1294,7 @@ export function createSessionManagerProxy(
             return ctx.scheduleActivity("updateCmsState", payload);
         },
         /**
-         * 1.0.83 (PR 270): report a Workflow agent chat's turn that failed for good, so the visits it worked on that are
+         * 1.0.83 (PR 270): report a Workflow agent session's turn that failed for good, so the visits it worked on that are
          * still pending fail execution_failed and their Workflow is woken (workflow/agent-turn-failure.ts). Routed with
          * the workflow-request tag, which every worker that runs 1.0.83 declares.
          */
@@ -1432,7 +1432,7 @@ export function registerActivities(
     // status turn opened 13 or more extra connections at once (2026-11-04). Their queries share the worker's bounded
     // pools; stopping them leaves those open. A worker without all three (tests, SQLite) starts them as before.
     const sharedClientStorage = provider && catalog && factStore ? { provider, catalog, factStore } : null;
-    // Workflow Simplified stage 2.3 (chat-packages.ts): packages' Workflow Definitions, read from the agent registry and the
+    // Workflow Simplified stage 2.3 (session-packages.ts): packages' Workflow Definitions, read from the agent registry and the
     // package bytes; one source per worker, so a package version's YAML is read from its bytes once.
     const packageWorkflowSource = catalog && artifactStore ? createPackageWorkflowSource({ catalog, artifactStore }) : null;
     const startInternalClient = async (client: PilotSwarmClient): Promise<void> => {
@@ -1820,22 +1820,22 @@ export function registerActivities(
         let inlineSdkClientPromise: Promise<PilotSwarmClient> | null = null;
         let cancelPoll: ReturnType<typeof setInterval> | null = null;
         let finalTurnResult: TurnResult | null = null;
-        // Stage 2.1 (E2-4, F3): a person's save of one of this chat's Workflow Definitions left a note; the chat reads the notes
+        // Stage 2.1 (E2-4, F3): a person's save of one of this session's Workflow Definitions left a note; the session reads the notes
         // at the start of its next turn's prompt (read once per attempt; a save never starts a turn), and they are consumed only
         // when that turn succeeds, so a turn that fails leaves them for its retry.
-        const chatNotes: { read: { ids: number[]; text: string } | null; failed?: boolean } = { read: null };
-        const readChatNotesOnce = async (): Promise<{ ids: number[]; text: string }> => {
-            if (chatNotes.read !== null) return chatNotes.read;
-            chatNotes.read = { ids: [], text: "" };
-            if (!catalog?.workflowStore) return chatNotes.read;
+        const sessionNotes: { read: { ids: number[]; text: string } | null; failed?: boolean } = { read: null };
+        const readSessionNotesOnce = async (): Promise<{ ids: number[]; text: string }> => {
+            if (sessionNotes.read !== null) return sessionNotes.read;
+            sessionNotes.read = { ids: [], text: "" };
+            if (!catalog?.workflowStore) return sessionNotes.read;
             try {
-                const notes = await catalog.workflowStore().chat.pendingNotes(input.sessionId);
-                if (notes.length) chatNotes.read = { ids: notes.map(note => note.noteId), text: notes.map(note => `[SYSTEM: ${note.text}]`).join("\n") };
+                const notes = await catalog.workflowStore().sessionDefinitions.pendingNotes(input.sessionId);
+                if (notes.length) sessionNotes.read = { ids: notes.map(note => note.noteId), text: notes.map(note => `[SYSTEM: ${note.text}]`).join("\n") };
             } catch (error: any) {
-                chatNotes.failed = true;
+                sessionNotes.failed = true;
                 traceWarn(`[runTurn] could not read the Workflow Definition notes of ${input.sessionId}: ${error?.message ?? error}`);
             }
-            return chatNotes.read;
+            return sessionNotes.read;
         };
         // Workflow intake (runTurnV5, design 5.5; exposure protocol revision
         // 2, section 4; review of c1bda7a2, W1): each run of this attempt (the
@@ -1927,7 +1927,7 @@ export function registerActivities(
                 carriedText: "",
                 foldedSteerText: "",
                 /**
-                 * Review RT-D2 (C1): a continued workflow chat's turn ends with its visit fence, exactly the turn visit live
+                 * Review RT-D2 (C1): a continued workflow session's turn ends with its visit fence, exactly the turn visit live
                  * admission uses (inherited included; null visit when it names none); null for every other turn.
                  */
                 visitFence: null as { visit: string | null } | null,
@@ -1954,7 +1954,7 @@ export function registerActivities(
         };
         // Review RT-D2 (C1), O-L1: a turn whose result an earlier attempt saved ends with the visit fence its live turn had,
         // saved with that result (savedTurnVisitFence). This read is only the fallback for a result an older build saved
-        // without it: the turn visit read again as the live turn reads it (this input's prompt ids; a continued chat
+        // without it: the turn visit read again as the live turn reads it (this input's prompt ids; a continued session
         // only). For an inherited visit that read can differ when a newer named prompt was recorded in between.
         const rereadTurnVisitFence = async (): Promise<{ visit: string | null } | null> => {
             if (!workflowRequestTurn || !catalog?.workflowStore) return null;
@@ -2537,39 +2537,39 @@ export function registerActivities(
         }
         const workflowAgentChild = workflowLineage?.agentRoot?.distance === 0;
         if (workflowAgentChild) (runConfig as ManagedSessionConfig).workflowAgentChild = true;
-        // A1 (Workflow Simplified, spec 14): a session inside a Workflow (an agent node's chat or one of its sub-agents) is
+        // A1 (Workflow Simplified, spec 14): a session inside a Workflow (an agent node's session or one of its sub-agents) is
         // declared no definition tools (spawn_workflow, update_workflow); the bridge below refuses them too.
         if (workflowDefinitionToolsRefused(workflowLineage)) (runConfig as ManagedSessionConfig).workflowInsideWorkflow = true;
-        // FU-17: an agent state that limits its tools (`tools: none` or a list) limits its chat and every session it starts to
+        // FU-17: an agent state that limits its tools (`tools: none` or a list) limits its session and every session it starts to
         // them, read from the state's run's own revision before the session is created or resumed (the session manager offers
         // only those). A limit that cannot be read fails the turn (it is retried): such a session never runs a turn unlimited.
         if (workflowLineage?.agentRoot && catalog?.workflowStore) {
             const limit = await catalog.workflowStore().readAgentToolLimit(workflowLineage.agentRoot.nodeExecutionId);
             if (limit !== null) (runConfig as ManagedSessionConfig).workflowToolLimit = limit;
         }
-        // Workflows on demand (owner 2026-11-08T16:55Z): on a 1.0.83 turn a chat has the Workflow tools and guidance only
+        // Workflows on demand (owner 2026-11-08T16:55Z): on a 1.0.83 turn a session has the Workflow tools and guidance only
         // when they are on in it (session-manager decides from its saved flag and these). A Workflow's message or request, a
-        // person's saved definition (a pending note) or a coordinating chat turns them on for good; a trigger that cannot be
-        // read turns them on for this turn. Whether the chat owns a definition or a Workflow is read only while they are off.
+        // person's saved definition (a pending note) or a coordinating session turns them on for good; a trigger that cannot be
+        // read turns them on for this turn. Whether the session owns a definition or a Workflow is read only while they are off.
         if (workflowRequestTurn && catalog?.workflowStore) {
             const store = catalog.workflowStore();
-            const notes = await readChatNotesOnce();
+            const notes = await readSessionNotesOnce();
             const stashed = Array.isArray((input as any).stashedPrompts) ? (input as any).stashedPrompts.map((item: any) => String(item?.prompt ?? item ?? "")) : [];
             const updates = [effectivePrompt ?? "", ...stashed].some(text => /\[WORKFLOW_UPDATE\b/.test(text));
             if (turnIntake !== null || updates || notes.text || catalogSessionRow?.workflowRef) {
                 (runConfig as ManagedSessionConfig).workflowContextTrigger = "lasting";
-            } else if (chatNotes.failed) {
+            } else if (sessionNotes.failed) {
                 (runConfig as ManagedSessionConfig).workflowContextTrigger = "turn";
             }
-            (runConfig as ManagedSessionConfig).workflowContextOwnsCheck = () => store.chat.hasWorkflows(input.sessionId);
+            (runConfig as ManagedSessionConfig).workflowContextOwnsCheck = () => store.sessionDefinitions.hasWorkflows(input.sessionId);
         }
         const workflowTestScope = workflowLineage?.agentRoot && catalog?.workflowStore
             ? await workflowTestAgentScope(catalog.workflowStore(), workflowLineage)
             : null;
         // The turn-to-visit fence (review RT-1..RT-3; design wfs-rt1-3-fence-design.md, accepted with the parent's decisions):
-        // a turn of an agent state's chat that continues works for one visit, its turn visit (store.readTurnVisit), read
+        // a turn of an agent state's session that continues works for one visit, its turn visit (store.readTurnVisit), read
         // right after the turn starts: a turn whose visit is decided does not run, only a Stop naming that visit stops it,
-        // and its reminder and completion name only that visit. Null for every other session (chat: new included).
+        // and its reminder and completion name only that visit. Null for every other session (session: new included).
         const workflowFenceStore = workflowAgentChild && catalog?.workflowStore ? catalog.workflowStore() : null;
         let workflowTurnVisit: WorkflowTurnVisit | null = null;
         // Conditional epoch init (runTurn2): create a brand-new SDK session
@@ -2718,7 +2718,7 @@ export function registerActivities(
             inlineSdkClientPromise = (async () => {
                 const startedClient = new PilotSwarmClient(internalClientConfig());
                 // The turn's own client creates its sub-agents (spawn_agent) and agent sessions (create_agent_session), at the
-                // latest version (1.0.83), as a person's new chat starts.
+                // latest version (1.0.83), as a person's new session starts.
                 await startInternalClient(startedClient);
                 inlineSdkClient = startedClient;
                 return startedClient;
@@ -2731,7 +2731,7 @@ export function registerActivities(
         };
 
         // Every worker runs the full Workflow engine (owner decision 2026-11-08T15:30Z), so every turn's host does, a frozen
-        // version's turn included (a chat of the previous release, until its continue-as-new): the workflow tools take
+        // version's turn included (a session of the previous release, until its continue-as-new): the workflow tools take
         // request, agent and parallel states and the stop and test operations, and a publication pins its named agents: package agents at the registry's
         // exact revision, this worker's deployment and system agents by name (agent-resolver.ts).
         const workflowHost = async (): Promise<WorkflowToolHost> => {
@@ -2741,9 +2741,9 @@ export function registerActivities(
                 catalog, store: catalog.workflowStore(), duroxideClient: sdkClient._getDuroxideClient(),
                 // Stage 2.0: this worker's script setting gates script nodes at save and Start (scripts-gate.ts).
                 scripts: sessionManager.workflowScriptsEnabled,
-                // Stage 2.3: packages' Workflow Definitions, for a chat to attach and start.
+                // Stage 2.3: packages' Workflow Definitions, for a session to attach and start.
                 ...(packageWorkflowSource ? { packageWorkflows: packageWorkflowSource } : {}),
-                // OF-S2-7: an agent node's model chosen at start is checked against the owning chat's catalog (its owner's).
+                // OF-S2-7: an agent node's model chosen at start is checked against the owning session's catalog (its owner's).
                 checkAgentModel: sdkClient._workflowAgentModelCheck(),
                 // The test operations only while workflow test mode is on (spec 16; off by default).
                 testMode: workflowTestModeFromEnv(),
@@ -2775,7 +2775,7 @@ export function registerActivities(
             }
             return { packageName: null, refs: [] };
         };
-        // A1 (Workflow Simplified, spec 14; E4): a session inside a Workflow (an agent node's chat or one of its sub-agents)
+        // A1 (Workflow Simplified, spec 14; E4): a session inside a Workflow (an agent node's session or one of its sub-agents)
         // may not create or change workflow definitions. The server decides by the stored lineage, whatever this worker runs
         // and whatever the session was declared; a lineage that cannot be read refuses the call (it throws).
         const definitionToolsRefused = async (): Promise<boolean> => {
@@ -3171,13 +3171,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 return updateWorkflowFromTool(args, { callerSessionId: input.sessionId, host });
             },
             /**
-             * Stage 2.1: workflow_definition, this chat's own definitions (definition-tool.ts). The calling session is the chat;
+             * Stage 2.1: workflow_definition, this session's own definitions (definition-tool.ts). The calling session is the session;
              * refused inside a Workflow (A1, by the stored lineage).
              */
             workflowDefinition: async (args: Record<string, unknown>, call?: { toolCallId?: string }) => {
                 try { if (await definitionToolsRefused()) return workflowDefinitionToolsRefusal(); } catch (error) { return workflowToolErrorPayload(error); }
                 // A save's scripts gate from its YAML alone, before the host is made (e02ec6f8 run); a start's is decided on the
-                // stored revision it starts, before its binding is captured (chat-definitions.ts).
+                // stored revision it starts, before its binding is captured (session-definitions.ts).
                 if (args.operation === "save") {
                     try { requireWorkflowScriptsInYaml(sessionManager.workflowScriptsEnabled, args.yaml, "save"); } catch (error) { return workflowToolErrorPayload(error); }
                 }
@@ -3242,7 +3242,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     let host: Awaited<ReturnType<typeof workflowBridgeHost>>;
                     try { host = await workflowBridgeHost(); } catch (error) { return workflowCompletionFailure(error); }
                     return completeWorkflowNodeFromTool(args, { callerSessionId: input.sessionId, store: host.store, client: host.duroxideClient,
-                        // A continued chat's turn completes only the visit whose prompt it received (RT-3); a turn with none
+                        // A continued session's turn completes only the visit whose prompt it received (RT-3); a turn with none
                         // (null) completes none (D1).
                         ...(workflowTurnVisit ? { turnVisit: workflowTurnVisit.nodeExecutionId } : {}) });
                 },
@@ -3413,7 +3413,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }
 
                     // S2RT-F3: the shared budget's own count (sub-agents pending or running, and active Workflows), as Start
-                    // counts it; the creation below counts it again under the chat's lock (child-budget.ts, spawnAgentAdmission).
+                    // counts it; the creation below counts it again under the session's lock (child-budget.ts, spawnAgentAdmission).
                     const admission = await spawnAgentAdmission({ parentSessionId: input.sessionId, max: MAX_SUB_AGENTS,
                         countBudgetChildren: catalog?.countBudgetChildren ? id => catalog.countBudgetChildren!(id) : null,
                         directChildren: loadDirectChildSessions });
@@ -4018,8 +4018,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             completeAgent: async (args: { agent_id: string; result?: Record<string, unknown> }) => {
                 try {
                     const child = await resolveManagedChild(args.agent_id);
-                    // Stage 2.1 (R4): a chat cannot complete while one of its Workflows is active; nothing is recorded or sent.
-                    const r4 = await chatCompletionRefusalText(child.sessionId);
+                    // Stage 2.1 (R4): a session cannot complete while one of its Workflows is active; nothing is recorded or sent.
+                    const r4 = await sessionCompletionRefusalText(child.sessionId);
                     if (r4) return `[SYSTEM: complete_agent refused — ${r4}]`;
                     let builtOutcome: ReturnType<typeof buildResultJson> | null = null;
                     if (catalog) {
@@ -4691,7 +4691,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     // DS-3: a runtime note is never what the session is named; the turn's own words are.
                     if (persistedEvent) persistedEvent = sessionTitleChangedForRecord(persistedEvent, turnOwnWords);
                     if (!persistedEvent) return;
-                    // A workflow agent node's chat keeps its whole base instructions (finding 8): once per distinct text, as an
+                    // A workflow agent node's session keeps its whole base instructions (finding 8): once per distinct text, as an
                     // artifact of its Workflow, named in the summary event; the transcript still records only the summary.
                     // The kept text has its secrets hidden, and only the Workflow's owner reads it (review SF-3).
                     const echoed = workflowAgentChild && artifactStore && workflowLineage?.agentRoot ? sdkSystemPromptEchoContent(event) : null;
@@ -4899,7 +4899,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
             // The turn-to-visit fence (RT-1..RT-3): the turn visit, read after the turn started (so a Stop recorded after the read
             // binds to this turn), a read that fails failing the turn (it is retried); and the controls such a turn takes: a
-            // Stop that names another visit of the chat (its request id, workflow-cycle-stop:<nx>) is not this turn's.
+            // Stop that names another visit of the session (its request id, workflow-cycle-stop:<nx>) is not this turn's.
             const readWorkflowTurnVisit = async (): Promise<WorkflowTurnVisit | null> => workflowFenceStore
                 ? cmsRetryCritical(`runTurn.turnVisit session=${input.sessionId}`,
                     () => workflowFenceStore.readTurnVisit(input.sessionId, incomingClientMessageIds), (msg) => activityCtx.traceInfo(msg))
@@ -4957,7 +4957,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 if (started.stopped || openStop || decided) {
                     // A Stop reached this turn before the model ran: end it
                     // without a model run. Carried steers are taken by the
-                    // stopped turn (D6). A continued chat's turn whose visit
+                    // stopped turn (D6). A continued session's turn whose visit
                     // is decided is ended the same way (the fence: its Stop
                     // may have found no turn and is not sent again).
                     tc.earlyStop = true;
@@ -5209,7 +5209,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                                 return { remind: false, reason: "schedule" };
                             }
                         }
-                        // A continued chat's turn is reminded only of its own visit (RT-3): the turn visit read at its start.
+                        // A continued session's turn is reminded only of its own visit (RT-3): the turn visit read at its start.
                         const record = await reminderStore.recordAgentReminder({ childSessionId: input.sessionId, turn: input.turnIndex ?? 0,
                             ...(workflowTurnVisit ? { visit: workflowTurnVisit.nodeExecutionId } : {}) });
                         activityCtx.traceInfo(`[runTurn] session=${input.sessionId} step reminder: ` + (record.recorded
@@ -5234,7 +5234,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // before a run starts and by the model session immediately
                 // before each of its sends, a cancelled activity starts no run
                 // and sends nothing.
-                const notes = await readChatNotesOnce();
+                const notes = await readSessionNotesOnce();
                 const notedPrompt = notes.text ? `${notes.text}\n\n${prompt}` : prompt;
                 const modelPrompt = turnIntake ? composeIntakePrompt(notedPrompt, turnIntake) : notedPrompt;
                 let intakeAdmission: NonNullable<TurnOptions["intakeAdmission"]> | undefined;
@@ -5251,7 +5251,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         traceWarn(`[runTurn] activity cancelled for ${input.sessionId}; this run of the attempt does not start, and nothing is sent`);
                         return { type: "error", message: INTAKE_ENDED_BEFORE_SEND_MESSAGE } as TurnResult;
                     }
-                    // Review PRR-2: a refused intake omits only its Workflow items; the chat's notes stay in the prompt (they are
+                    // Review PRR-2: a refused intake omits only its Workflow items; the session's notes stay in the prompt (they are
                     // marked read when this turn succeeds).
                     intakeAdmission = intakeAdmissionFor(notedPrompt, run, eligible);
                 }
@@ -5264,7 +5264,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     bootstrap: input.bootstrap,
                     ...(quietEmptyAnswer ? { quietEmptyAnswer: true } : {}),
                     ...(quietWorkflowNotice ? { quietEmptyAnswerKind: "workflow_notice" as const } : {}),
-                    // PR 270: a Workflow agent chat's turn ends as an error on a session.error, even after text.
+                    // PR 270: a Workflow agent session's turn ends as an error on a session.error, even after text.
                     ...(workflowAgentChild ? { sessionErrorEndsTurn: true } : {}),
                     requiredTool: input.requiredTool,
                     ...(stepReminder ? { stepReminder } : {}),
@@ -5637,7 +5637,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             let toSave: TurnResult = tc && liveCursor > 0 && bodyResult.type !== "stopped"
                 ? { ...bodyResult, controlCursor: { turn: tc.turn, cursor: liveCursor } } as TurnResult
                 : bodyResult;
-            // Review O-L1 (C1): a continued chat's turn saves the visit fence it read at T3, so a turn end from this saved
+            // Review O-L1 (C1): a continued session's turn saves the visit fence it read at T3, so a turn end from this saved
             // result (a retry, or an adopted racing winner) fences with exactly that visit.
             if (tc?.visitFence) toSave = { ...toSave, turnVisitFence: { turn: tc.turn, visit: tc.visitFence.visit } } as TurnResult;
             const committed = await runTurnCommit(lifecycle, lifecycleBaseVersion, toSave);
@@ -5718,9 +5718,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
             finalTurnResult = withIntakeWitness(finalTurnResult);
             // Stage 2.1 (F3): the notes this turn read are consumed with its success.
-            const readNotes = chatNotes.read?.ids ?? [];
+            const readNotes = sessionNotes.read?.ids ?? [];
             if (readNotes.length && !["error", "cancelled", "stopped"].includes(finalTurnResult.type) && catalog?.workflowStore) {
-                await catalog.workflowStore().chat.consumeNotes(input.sessionId, readNotes)
+                await catalog.workflowStore().sessionDefinitions.consumeNotes(input.sessionId, readNotes)
                     .catch((error: any) => traceWarn(`[runTurn] could not mark the Workflow Definition notes of ${input.sessionId} read: ${error?.message ?? error}`));
             }
             return finalTurnResult;
@@ -6663,9 +6663,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
      * tools (complete_agent, cancel_agent, delete_agent), so both reach the store the same way.
      */
     /** Stage 2.1 (R4): the words that refuse completing `targetSessionId` while one of its Workflows is active, or null. */
-    const chatCompletionRefusalText = async (targetSessionId: string): Promise<string | null> => {
+    const sessionCompletionRefusalText = async (targetSessionId: string): Promise<string | null> => {
         if (!catalog?.workflowStore) return null;
-        const refusal = await chatCompletionRefusal({ store: catalog.workflowStore() }, targetSessionId);
+        const refusal = await sessionCompletionRefusal({ store: catalog.workflowStore() }, targetSessionId);
         return refusal ? refusal.message : null;
     };
 
@@ -6690,11 +6690,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         input: { sessionId: string; command: any },
     ): Promise<void> => {
         activityCtx.traceInfo(`[sendCommandToSession] session=${input.sessionId} cmd=${input.command?.cmd}`);
-        // Stage 2.1 (R4): complete_agent's done for a chat with an active Workflow is refused; the orchestration's catch tells
+        // Stage 2.1 (R4): complete_agent's done for a session with an active Workflow is refused; the orchestration's catch tells
         // the caller (complete_agent failed: …). A parent's own shutdown cascade is not refused: its children end, and their
         // Workflows with them (migration 0088's trigger).
         if (input.command?.cmd === "done" && input.command?.args?.reason === "Completed by parent") {
-            const r4 = await chatCompletionRefusalText(input.sessionId);
+            const r4 = await sessionCompletionRefusalText(input.sessionId);
             if (r4) throw new Error(r4);
         }
         // A workflow child's lifecycle command is applied in the workflow store

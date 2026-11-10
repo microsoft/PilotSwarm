@@ -3,12 +3,12 @@
  * along with the log. show the base prompts, the agents outputs and the logs for the session in a clearly discernable
  * way."). One group per visit of the node, newest first ("Visit 4 · 17:42:01"), and in each group, in time order, three
  * kinds of row told apart by their label:
- * - Prompt: what the agent chat was given: the visit's prompt (the workflow's wrapper with its input and the node's task),
+ * - Prompt: what the agent session was given: the visit's prompt (the workflow's wrapper with its input and the node's task),
  *   any message to it (the parent agent's), and the runtime's notes to it (system messages);
- * - Agent: the chat's answers, each tool call as one line (its arguments and result to expand), and its typed result;
- * - Workflow: the Workflow's own lines for that visit (started, the chat, reminders, its end), as the Log says them.
- * The chat is read with the same history reads as any session; a chat that continues across visits (chat: continue) is
- * cut at each visit's prompt. The agent's base instructions are not recorded in its chat, so the Log says so and shows
+ * - Agent: the session's answers, each tool call as one line (its arguments and result to expand), and its typed result;
+ * - Workflow: the Workflow's own lines for that visit (started, the session, reminders, its end), as the Log says them.
+ * The session is read with the same history reads as any session; a session that continues across visits (session: continue) is
+ * cut at each visit's prompt. The agent's base instructions are not recorded in its session, so the Log says so and shows
  * only what is recorded. Long text is folded (`more`). Pure.
  */
 import { callText, firstCallLine } from "./chat-activity.js";
@@ -58,9 +58,9 @@ const digestOf = text => {
 
 /**
  * A recorded base-instructions summary as a row's parts: its length and snippet, and where its whole text is kept
- * (`baseInstructions`, a workflow agent chat's: { sessionId, artifact, sha256, chars }), or null for another message.
+ * (`baseInstructions`, a workflow agent session's: { sessionId, artifact, sha256, chars }), or null for another message.
  *
- * r4 C04 (the live dump, agent chat events 16316 and 16380): the SDK's echo of the system prompt it composed can be
+ * r4 C04 (the live dump, agent session events 16316 and 16380): the SDK's echo of the system prompt it composed can be
  * recorded whole, as a system.message with the model's role "system" and its interaction id ({ content, interactionId,
  * role }, no sender): its first words are not the ones session-proxy summarizes, so the transcript holds all of it (55,151
  * characters each turn) and no file names it. Such an echo is the base instructions too, with its own text:
@@ -139,17 +139,17 @@ export function workflowAgentLogVisits(node, limit = WORKFLOW_AGENT_LOG_VISITS) 
     return visits.slice().sort((a, b) => (b.ordinal ?? 0) - (a.ordinal ?? 0)).slice(0, Math.max(1, limit));
 }
 
-/** The agent chats the shown visits used (a continued chat once): what the Log reads. */
-export function workflowAgentLogChats(node, limit = WORKFLOW_AGENT_LOG_VISITS) {
+/** The agent sessions the shown visits used (a continued session once): what the Log reads. */
+export function workflowAgentLogSessions(node, limit = WORKFLOW_AGENT_LOG_VISITS) {
     return [...new Set(workflowAgentLogVisits(node, limit).map(visit => visit.agent?.childSessionId).filter(id => typeof id === "string" && id))];
 }
 
 /**
- * A chat's events by the visit they belong to: each event goes to the visit whose prompt came last before it. Events
+ * A session's events by the visit they belong to: each event goes to the visit whose prompt came last before it. Events
  * loaded before any prompt of a shown visit belong to `firstVisit` (leadingVisit; reviews UI-10, UI-D5: a visit only on
  * evidence, else EARLIER), never dropped.
  */
-function chatByVisit(events, visitIds, firstVisit) {
+function sessionByVisit(events, visitIds, firstVisit) {
     const byVisit = new Map();
     let current = firstVisit;
     const sorted = (Array.isArray(events) ? events : []).filter(isRecord).slice().sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
@@ -172,8 +172,8 @@ const toolPreview = args => {
     return firstCallLine(JSON.stringify(args));
 };
 
-/** The rows of one visit's chat events: prompts, answers, tool calls (one row per call) and the typed result. */
-function chatRows(events, visitId) {
+/** The rows of one visit's session events: prompts, answers, tool calls (one row per call) and the typed result. */
+function agentSessionRows(events, visitId) {
     const rows = [];
     const calls = new Map();
     // Review UI-F5: the instructions in force, by digest; only an echo of the same ones is dropped, so a change back (A, B,
@@ -182,7 +182,7 @@ function chatRows(events, visitId) {
     for (const event of events) {
         const data = isRecord(event.data) ? event.data : {};
         const at = timeOf(event.createdAt);
-        const base = { key: `chat:${event.sessionId ?? ""}:${event.seq}`, seq: event.seq ?? 0, at };
+        const base = { key: `session:${event.sessionId ?? ""}:${event.seq}`, seq: event.seq ?? 0, at };
         const prompted = workflowPromptVisit(event);
         if (event.eventType === "user.message" || prompted) {
             const content = typeof data.content === "string" ? data.content : "";
@@ -241,23 +241,23 @@ function chatRows(events, visitId) {
 }
 
 /**
- * r4 C04 (low): the Log's own words for its agent chat's lines. In a node's own Log the node's name and a raw session id
- * say nothing new, and its time limit is a clock: "Agent chat started; time limit 08:41:17 PST", with the chat linked
- * (`chat`: { sessionId, words }, the words of the text that open it). Other lines read as the Whole Workflow Log says them.
+ * r4 C04 (low): the Log's own words for its agent session's lines. In a node's own Log the node's name and a raw session id
+ * say nothing new, and its time limit is a clock: "Agent session started; time limit 08:41:17 PST", with the session linked
+ * (`session`: { sessionId, words }, the words of the text that open it). Other lines read as the Whole Workflow Log says them.
  */
 function agentLogWorkflowLine(event, data, now) {
-    const chatId = typeof data.childSessionId === "string" && data.childSessionId ? data.childSessionId : null;
+    const agentSessionId = typeof data.childSessionId === "string" && data.childSessionId ? data.childSessionId : null;
     const limit = data.deadline ? workflowNodeClock(data.deadline, now) : null;
     if (event.eventType === "workflow.agent_spawned") {
-        const later = data.chat === "continue" && Number.isSafeInteger(data.cycle) && data.cycle > 1;
+        const later = data.session === "continue" && Number.isSafeInteger(data.cycle) && data.cycle > 1;
         const words = later ? "same agent session" : "Agent session";
         return { text: `${later ? `Visit ${data.cycle} · ${words}` : `${words} started`}${limit ? ` · limit ${limit}` : ""}`,
-            ...(chatId ? { chat: { sessionId: chatId, words } } : {}) };
+            ...(agentSessionId ? { agentSession: { sessionId: agentSessionId, words } } : {}) };
     }
-    if (event.eventType === "workflow.agent_chat_restarted") {
+    if (event.eventType === "workflow.agent_session_restarted") {
         const words = "new agent session";
         return { text: `${Number.isSafeInteger(data.cycle) ? `Visit ${data.cycle}` : "This visit"} · ${words} · the earlier one had ended`, level: "warning",
-            ...(chatId ? { chat: { sessionId: chatId, words } } : {}) };
+            ...(agentSessionId ? { agentSession: { sessionId: agentSessionId, words } } : {}) };
     }
     return workflowEventText(event.eventType, data, "short");
 }
@@ -271,13 +271,13 @@ function workflowRows(events, runId, visitId, now = Date.now()) {
         const line = agentLogWorkflowLine(event, data, now);
         if (!line) continue;
         rows.push({ key: `wf:${event.seq}`, seq: event.seq ?? 0, at: timeOf(event.createdAt), kind: "workflow", label: "Workflow", text: line.text,
-            level: line.level ?? "info", ...(line.chat ? { chat: line.chat } : {}) });
+            level: line.level ?? "info", ...(line.agentSession ? { agentSession: line.agentSession } : {}) });
     }
     return rows;
 }
 
 /**
- * Review UI-D6: what the Log offers for a chat's older lines, from its coverage entry { hasOlder, cap?, error? }: null
+ * Review UI-D6: what the Log offers for a session's older lines, from its coverage entry { hasOlder, cap?, error? }: null
  * when nothing older exists; else { action: "load" | "retry" | null, text }. `cap`: the history window's limit, reached
  * (Load older makes no progress past it, so it is not offered and the Log says so); `error`: the last older-page read
  * failed (shown, with Retry).
@@ -303,20 +303,20 @@ function agentRunStatus(visit) {
     return [what, took].filter(Boolean).join(" · ");
 }
 
-/** The key of a chat's rows whose visit is not known (review UI-D5): they come before the first prompt loaded. */
-const EARLIER = Symbol("earlier in this chat");
+/** The key of a session's rows whose visit is not known (review UI-D5): they come before the first prompt loaded. */
+const EARLIER = Symbol("earlier in this session");
 
 /**
- * The visit the rows that start a chat's loaded window belong to, before its first loaded prompt (reviews UI-10, UI-D5).
- * `own`: the shown visits of the chat, oldest first; `single`: the chat serves one visit only (a new chat each visit, or
+ * The visit the rows that start a session's loaded window belong to, before its first loaded prompt (reviews UI-10, UI-D5).
+ * `own`: the shown visits of the session, oldest first; `single`: the session serves one visit only (a new session each visit, or
  * the run's whole history holds one visit of it).
  * - The window starts at a prompt: none (null).
- * - A shown visit's prompt comes first, with a shown visit before it whose prompt was given to the chat (its invocation
+ * - A shown visit's prompt comes first, with a shown visit before it whose prompt was given to the session (its invocation
  *   is recorded spawned): that earlier visit (the rows come after its prompt, which is on an older page, and before the
  *   next one). Review UI-F3: a visit before it that never got its prompt (spawned false, e.g. it timed out first) is no
  *   evidence, so the rows are not given to it, nor guessed further back.
- * - Otherwise a chat that serves one visit: that visit.
- * - r4 C04: a window that starts where the chat starts (`complete`: no older events) holds every prompt the chat got, so
+ * - Otherwise a session that serves one visit: that visit.
+ * - r4 C04: a window that starts where the session starts (`complete`: no older events) holds every prompt the session got, so
  *   its rows before the first prompt are of that prompt's turn (the turn's note to the agent is recorded just before its
  *   prompt): that visit, or none when it is a visit the Log does not show.
  * - Otherwise which visit they belong to is not known: EARLIER (the Log shows them apart until their prompt is loaded),
@@ -337,7 +337,7 @@ function leadingVisit(events, own, single, complete = false) {
     return single && ids.length === 1 ? ids[0] : EARLIER;
 }
 
-/** A visit's model line: what its spawn recorded ({ model, modelNow: false }), else its chat's now ({ model, modelNow: true }). */
+/** A visit's model line: what its spawn recorded ({ model, modelNow: false }), else its session's now ({ model, modelNow: true }). */
 function visitModel(used, current) {
     const ran = workflowModelWords(used);
     if (ran) return { model: ran, modelNow: false };
@@ -346,44 +346,44 @@ function visitModel(used, current) {
 }
 
 /**
- * The Log of an agent node: { groups, earlier, more, partial, loading, note }. `chats` maps an agent chat's session id to its loaded events
- * (undefined: not read yet); `coverage` maps it to { hasOlder, cap?, error? } (the chat has events older than those loaded;
+ * The Log of an agent node: { groups, earlier, more, partial, loading, note }. `sessions` maps an agent session id to its loaded events
+ * (undefined: not read yet); `coverage` maps it to { hasOlder, cap?, error? } (the session has events older than those loaded;
  * the history window's limit, reached; the last older-page read's error: workflowAgentLogOlder, review UI-D6). Each
  * group is { visitId, ordinal, header, status, rows, loading, truncated }: `truncated` when the start of the visit's
- * chat (its prompt) is not loaded and older chat events exist (review UI-10: the Log says so and offers Load older,
+ * session (its prompt) is not loaded and older session events exist (review UI-10: the Log says so and offers Load older,
  * never shows such a group as a complete visit). rows are { key, kind (prompt, agent, result or workflow), label, text,
- * more?, detail?, at, time }; a continued chat's visit without its own Base instructions row carries the reference of
+ * more?, detail?, at, time }; a continued session's visit without its own Base instructions row carries the reference of
  * the nearest earlier loaded visit's ("the same as visit N"), without its text.
  */
-export function workflowAgentNodeLog({ node, events = [], chats = new Map(), coverage = new Map(), runId = null, limit = WORKFLOW_AGENT_LOG_VISITS,
-    now = Date.now(), chatModels = new Map() } = {}) {
+export function workflowAgentNodeLog({ node, events = [], agentSessions = new Map(), coverage = new Map(), runId = null, limit = WORKFLOW_AGENT_LOG_VISITS,
+    now = Date.now(), sessionModels = new Map() } = {}) {
     const all = (Array.isArray(node?.executions) ? node.executions : []).filter(item => typeof item?.id === "string");
     const visits = workflowAgentLogVisits(node, limit);
     const shownIds = new Set(visits.map(visit => visit.id));
-    const read = typeof chats?.get === "function" ? chats : new Map(Object.entries(chats ?? {}));
+    const read = typeof agentSessions?.get === "function" ? agentSessions : new Map(Object.entries(agentSessions ?? {}));
     const covered = typeof coverage?.get === "function" ? coverage : new Map(Object.entries(coverage ?? {}));
-    // OF-S2-7 review OF7-R8: what each visit's chat ran on, recorded with its spawn; else its chat's model as it is now.
-    const models = typeof chatModels?.get === "function" ? chatModels : new Map(Object.entries(chatModels ?? {}));
+    // OF-S2-7 review OF7-R8: what each visit's session ran on, recorded with its spawn; else its session's model as it is now.
+    const models = typeof sessionModels?.get === "function" ? sessionModels : new Map(Object.entries(sessionModels ?? {}));
     const spawned = workflowSpawnedModels(events, runId);
-    // Each chat is cut once by the prompts of the visits shown; a visit with its own chat takes all of it. Review UI-D5: a
-    // continued chat's rows before its first loaded prompt go to a visit only on evidence; otherwise they are shown apart.
+    // Each session is cut once by the prompts of the visits shown; a visit with its own session takes all of it. Review UI-D5: a
+    // continued session's rows before its first loaded prompt go to a visit only on evidence; otherwise they are shown apart.
     const cut = new Map();
-    for (const chatId of new Set(visits.map(visit => visit.agent?.childSessionId).filter(Boolean))) {
-        const own = visits.filter(visit => visit.agent?.childSessionId === chatId).sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
-        const single = node?.chat !== "continue"
-            || (all.filter(visit => visit.agent?.childSessionId === chatId).length === 1 && !node?.partial);
-        const loaded = read.get(chatId);
-        // r4 C04: the chat's coverage says its window starts where the chat starts (a read with no older events).
-        const complete = covered.has(chatId) && covered.get(chatId)?.hasOlder === false;
-        if (Array.isArray(loaded)) cut.set(chatId, chatByVisit(loaded, new Set(own.map(visit => visit.id)), leadingVisit(loaded, own, single, complete)));
+    for (const agentSessionId of new Set(visits.map(visit => visit.agent?.childSessionId).filter(Boolean))) {
+        const own = visits.filter(visit => visit.agent?.childSessionId === agentSessionId).sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
+        const single = node?.session !== "continue"
+            || (all.filter(visit => visit.agent?.childSessionId === agentSessionId).length === 1 && !node?.partial);
+        const loaded = read.get(agentSessionId);
+        // r4 C04: the session's coverage says its window starts where the session starts (a read with no older events).
+        const complete = covered.has(agentSessionId) && covered.get(agentSessionId)?.hasOlder === false;
+        if (Array.isArray(loaded)) cut.set(agentSessionId, sessionByVisit(loaded, new Set(own.map(visit => visit.id)), leadingVisit(loaded, own, single, complete)));
     }
     let loading = false;
     const groups = visits.map(visit => {
-        const chatId = visit.agent?.childSessionId ?? null;
-        const waiting = Boolean(chatId) && !cut.has(chatId);
+        const agentSessionId = visit.agent?.childSessionId ?? null;
+        const waiting = Boolean(agentSessionId) && !cut.has(agentSessionId);
         if (waiting) loading = true;
-        const chatEvents = chatId && cut.has(chatId) ? cut.get(chatId).get(visit.id) ?? [] : [];
-        const sorted = [...chatRows(chatEvents, visit.id), ...workflowRows(events, runId, visit.id, now)]
+        const agentSessionEvents = agentSessionId && cut.has(agentSessionId) ? cut.get(agentSessionId).get(visit.id) ?? [] : [];
+        const sorted = [...agentSessionRows(agentSessionEvents, visit.id), ...workflowRows(events, runId, visit.id, now)]
             .map((row, index) => ({ ...row, order: index }))
             .sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity) || a.order - b.order);
         // The base instructions come before the visit's own prompt (they are what the agent is, the prompt what it is asked).
@@ -392,19 +392,19 @@ export function workflowAgentNodeLog({ node, events = [], chats = new Map(), cov
         if (base > asked && asked >= 0) sorted.splice(asked, 0, ...sorted.splice(base, 1));
         const rows = sorted.map(({ order, ...row }) => ({ ...row, time: row.at === null ? null : workflowNodeClock(row.at, now) }));
         const started = visit.enteredAt ? workflowNodeClock(visit.enteredAt, now) : null;
-        // UI-10: the visit's start (its prompt) is not loaded while the chat has older events: the group is not complete.
-        const truncated = !waiting && Boolean(chatId) && covered.get(chatId)?.hasOlder === true && !rows.some(row => row.label === "Prompt");
+        // UI-10: the visit's start (its prompt) is not loaded while the session has older events: the group is not complete.
+        const truncated = !waiting && Boolean(agentSessionId) && covered.get(agentSessionId)?.hasOlder === true && !rows.some(row => row.label === "Prompt");
         return {
-            visitId: visit.id, ordinal: visit.ordinal ?? null, chatId, loading: waiting, truncated, older: truncated ? workflowAgentLogOlder(covered.get(chatId)) : null,
+            visitId: visit.id, ordinal: visit.ordinal ?? null, agentSessionId, loading: waiting, truncated, older: truncated ? workflowAgentLogOlder(covered.get(agentSessionId)) : null,
             header: `Visit ${visit.ordinal ?? "—"}${started ? ` · ${started}` : ""}`, status: agentRunStatus(visit), rows,
-            ...visitModel(spawned.get(visit.id), chatId ? models.get(chatId) : null),
+            ...visitModel(spawned.get(visit.id), agentSessionId ? models.get(agentSessionId) : null),
         };
     });
-    // UI-10: a continued chat's later visits carry the base instructions the chat had at an earlier visit (one row, no text).
+    // UI-10: a continued session's later visits carry the base instructions the session had at an earlier visit (one row, no text).
     // Review UI-11: the same base instructions (by their whole digest) are shown once, at the oldest visit that has them;
     // a later row says which visit shows them. Review UI-D9: every Base instructions row of a visit counts, in recorded
     // order: each distinct digest is shown in full once; a reference names which of a visit's instructions it means when
-    // that visit has more than one; a visit with none carries the chat's last ones.
+    // that visit has more than one; a visit with none carries the session's last ones.
     const byOrdinal = groups.slice().sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
     const lastBase = new Map();
     const shownBySha = new Map();
@@ -428,10 +428,10 @@ export function workflowAgentNodeLog({ node, events = [], chats = new Map(), cov
             last = { row: own, from };
         }
         if (last) {
-            lastBase.set(group.chatId, last);
+            lastBase.set(group.agentSessionId, last);
             continue;
         }
-        const earlier = group.chatId ? lastBase.get(group.chatId) : null;
+        const earlier = group.agentSessionId ? lastBase.get(group.agentSessionId) : null;
         if (!earlier || group.loading) continue;
         const prompt = group.rows.findIndex(row => row.label === "Prompt");
         const carried = { key: `carried:${group.visitId}`, kind: "prompt", label: "Base instructions", at: null, time: null,
@@ -439,12 +439,12 @@ export function workflowAgentNodeLog({ node, events = [], chats = new Map(), cov
             carriedNumber: earlier.from.number, instructions: null, instructionsKept: earlier.row.instructionsKept === true };
         group.rows.splice(prompt >= 0 ? prompt : 0, 0, carried);
     }
-    // Review UI-D5: a continued chat's loaded rows whose visit is not known yet (its prompt is on an older page): shown
-    // apart, oldest last, until Load older reaches a prompt. { chatId, header, rows, hasOlder }.
-    const earlier = [...cut.entries()].flatMap(([chatId, byVisit]) => {
-        const rows = byVisit.has(EARLIER) ? chatRows(byVisit.get(EARLIER), null) : [];
-        return rows.length ? [{ chatId, header: "Earlier in this agent session · run not loaded", hasOlder: covered.get(chatId)?.hasOlder === true,
-            older: workflowAgentLogOlder(covered.get(chatId)),
+    // Review UI-D5: a continued session's loaded rows whose visit is not known yet (its prompt is on an older page): shown
+    // apart, oldest last, until Load older reaches a prompt. { agentSessionId, header, rows, hasOlder }.
+    const earlier = [...cut.entries()].flatMap(([agentSessionId, byVisit]) => {
+        const rows = byVisit.has(EARLIER) ? agentSessionRows(byVisit.get(EARLIER), null) : [];
+        return rows.length ? [{ agentSessionId, header: "Earlier in this agent session · run not loaded", hasOlder: covered.get(agentSessionId)?.hasOlder === true,
+            older: workflowAgentLogOlder(covered.get(agentSessionId)),
             rows: rows.map(row => ({ ...row, time: row.at === null ? null : workflowNodeClock(row.at, now) })) }] : [];
     });
     // `more`: older visits are loaded but not shown ("Show older visits"); `partial`: the run's loaded history has no older ones.

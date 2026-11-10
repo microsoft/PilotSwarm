@@ -46,8 +46,8 @@ test("keyboard supports Option-produced characters and composer navigation witho
         assert.equal(navigationShortcut(event(extra)), 0);
 });
 
-// Workflow Simplified, review UI-8: two Workflows of one chat are two views, and the right block's tab is part of a view.
-test("a Workflow selected under its chat and the right block's tab are part of a view", () => {
+// Workflow Simplified, review UI-8: two Workflows of one session are two views, and the right block's tab is part of a view.
+test("a Workflow selected under its session and the right block's tab are part of a view", () => {
     const base = { mode: "workspace", sessionId: "owner-1", canvasOpen: true, canvasSlot: 1 };
     const a = cleanView({ ...base, workflowRowId: "wf-1", sidePaneTab: "workflow" });
     const b = cleanView({ ...base, workflowRowId: "wf-2", sidePaneTab: "workflow" });

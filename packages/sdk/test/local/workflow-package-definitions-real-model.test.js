@@ -1,14 +1,14 @@
 /**
  * Stage 2.3's real-model scenario (spec "Order of work": "start from the new-session picker; an agent starts another
  * package's definition"), on a REAL model with Workflows on and packages published to the local agent registry:
- * 1. the picker's path: a chat made for release-tools/release-watch (prepareWorkflowChat, a session with its coordinating
- *    instructions, the definition attached and locked, its kickoff): the chat asks for the train and starts nothing; told
+ * 1. the picker's path: a session made for release-tools/release-watch (prepareSessionForWorkflow, a session with its coordinating
+ *    instructions, the definition attached and locked, its kickoff): the session asks for the train and starts nothing; told
  *    the train, it starts the Workflow, which ends completed;
  * 2. a package agent (release-watcher, whose front matter names ops-kit/incident-digest) is asked for the day's incident
- *    digest: its chat starts ops-kit's definition by package and name, and that Workflow ends completed.
+ *    digest: its session starts ops-kit's definition by package and name, and that Workflow ends completed.
  *
  * PASS: after the kickoff no Workflow; then one Workflow of the locked release-watch definition, pinned to the package
- * version 1.0.0, completed; and one Workflow of the agent chat's attached ops-kit/incident-digest, completed. The model's
+ * version 1.0.0, completed; and one Workflow of the agent session's attached ops-kit/incident-digest, completed. The model's
  * answers and tool calls are recorded, not judged.
  *
  * It spends model tokens, so it runs only when asked: PS_WORKFLOW_REAL_MODEL=run with PS_WORKFLOW_REAL_MODEL_REF
@@ -114,7 +114,7 @@ async function until(read, label, ms) {
 }
 
 const plan = realModelPlan(process.env, { registry: catalogOrNull(), githubToken: process.env.GITHUB_TOKEN ?? null });
-const TITLE = "a chat made from the picker asks for its input and starts its Workflow; a package agent starts another package's definition";
+const TITLE = "a session made from the picker asks for its input and starts its Workflow; a package agent starts another package's definition";
 
 describe("A package's Workflow Definitions (stage 2.3), on a real model", () => {
     if (plan.state === "skip") {
@@ -153,48 +153,48 @@ describe("A package's Workflow Definitions (stage 2.3), on a real model", () => 
                     factsSchema: env.factsSchema, artifactStore });
                 await mgmt.start();
                 const catalog = client._catalog;
-                const chatStore = catalog.workflowStore().chat;
+                const definitionStore = catalog.workflowStore().sessionDefinitions;
                 const model = { model: plan.model.ref, ...(plan.effort ? { reasoningEffort: plan.effort } : {}) };
                 const eventsOf = (sessionId, types) => catalog.getSessionEvents(sessionId, 0, 5_000, types);
                 const toolCalls = async sessionId => (await eventsOf(sessionId, ["tool.execution_start"])).map(event => String(event.data?.toolName ?? event.data?.name ?? ""));
                 const answers = async sessionId => (await eventsOf(sessionId, ["assistant.message"])).map(event => event.data?.content)
                     .filter(value => typeof value === "string" && value).map(value => value.slice(0, 300));
                 const ended = (definitionId, workflowSessionId) => until(async () => {
-                    const row = (await chatStore.listWorkflows({ definitionId })).find(item => item.workflowSessionId === workflowSessionId);
+                    const row = (await definitionStore.listWorkflows({ definitionId })).find(item => item.workflowSessionId === workflowSessionId);
                     return row && row.runStatus && !ACTIVE.has(row.runStatus) ? row : null;
                 }, "the Workflow ends", RUN_MS);
 
-                // 1. The picker's path: the catalog lists release-watch; its chat is made as the portal makes it.
+                // 1. The picker's path: the catalog lists release-watch; its session is made as the portal makes it.
                 const ref = `${release}/release-watch`;
                 const listed = await mgmt.listCreatableWorkflows(OWNER);
                 expect(listed.map(item => item.ref)).toEqual(expect.arrayContaining([ref, `${ops}/incident-digest`]));
-                const prepared = await mgmt.prepareWorkflowChat(ref, OWNER);
-                const chat = await client.createSession({ ...model, owner: OWNER, systemMessage: prepared.systemMessage });
-                const attached = await mgmt.attachChatWorkflowPackage(chat.sessionId, { ref, operationId: `workflow-chat:${chat.sessionId}`, coordinating: true,
+                const prepared = await mgmt.prepareSessionForWorkflow(ref, OWNER);
+                const session = await client.createSession({ ...model, owner: OWNER, systemMessage: prepared.systemMessage });
+                const attached = await mgmt.attachSessionWorkflowPackage(session.sessionId, { ref, operationId: `session-for-workflow:${session.sessionId}`, coordinating: true,
                     title: prepared.title, packageId: prepared.packageId, sha256: prepared.sha256 }, { principal: OWNER });
-                await chat.sendAndWait(prepared.kickoff, TURN_MS);
-                const afterKickoff = await chatStore.listWorkflows({ definitionId: attached.definitionId });
-                receipt.steps.kickoff = { toolCalls: await toolCalls(chat.sessionId), answers: await answers(chat.sessionId), workflows: afterKickoff.length };
+                await session.sendAndWait(prepared.kickoff, TURN_MS);
+                const afterKickoff = await definitionStore.listWorkflows({ definitionId: attached.definitionId });
+                receipt.steps.kickoff = { toolCalls: await toolCalls(session.sessionId), answers: await answers(session.sessionId), workflows: afterKickoff.length };
                 expect(afterKickoff, JSON.stringify(receipt)).toEqual([]);
-                await chat.sendAndWait("The train is M70. Start it now.", TURN_MS);
-                const started = await chatStore.listWorkflows({ definitionId: attached.definitionId });
-                receipt.steps.start = { toolCalls: await toolCalls(chat.sessionId), workflows: started.map(item => ({ revision: item.revision, status: item.runStatus })) };
+                await session.sendAndWait("The train is M70. Start it now.", TURN_MS);
+                const started = await definitionStore.listWorkflows({ definitionId: attached.definitionId });
+                receipt.steps.start = { toolCalls: await toolCalls(session.sessionId), workflows: started.map(item => ({ revision: item.revision, status: item.runStatus })) };
                 expect(started.length, JSON.stringify(receipt)).toBe(1);
                 expect(started[0].revision).toBe(1);
-                const revision = await chatStore.readRevision(attached.definitionId, 1);
+                const revision = await definitionStore.readRevision(attached.definitionId, 1);
                 expect(revision.package).toMatchObject({ packageName: release, semver: "1.0.0" });
                 expect((await ended(attached.definitionId, started[0].workflowSessionId)).runStatus).toBe("completed");
-                expect((await catalog.getSession(chat.sessionId)).workflowRef).toBe(ref);
+                expect((await catalog.getSession(session.sessionId)).workflowRef).toBe(ref);
 
                 // 2. A package agent starts another package's definition, by package and name.
-                const agentChat = await client.createSessionForAgent("release-watcher", { ...model, owner: OWNER });
-                await agentChat.sendAndWait("Please start today's incident digest.", TURN_MS);
-                const digest = await chatStore.readDefinitionByName(agentChat.sessionId, `${ops}/incident-digest`);
-                receipt.steps.agent = { toolCalls: await toolCalls(agentChat.sessionId), answers: await answers(agentChat.sessionId),
+                const agentSession = await client.createSessionForAgent("release-watcher", { ...model, owner: OWNER });
+                await agentSession.sendAndWait("Please start today's incident digest.", TURN_MS);
+                const digest = await definitionStore.readDefinitionByName(agentSession.sessionId, `${ops}/incident-digest`);
+                receipt.steps.agent = { toolCalls: await toolCalls(agentSession.sessionId), answers: await answers(agentSession.sessionId),
                     attached: digest ? { locked: digest.locked, packageName: digest.packageName } : null };
                 expect(digest, JSON.stringify(receipt)).toBeTruthy();
                 expect(digest).toMatchObject({ locked: true, packageName: ops });
-                const digestRuns = await chatStore.listWorkflows({ definitionId: digest.definitionId });
+                const digestRuns = await definitionStore.listWorkflows({ definitionId: digest.definitionId });
                 receipt.steps.agent.workflows = digestRuns.map(item => ({ revision: item.revision, status: item.runStatus }));
                 expect(digestRuns.length, JSON.stringify(receipt)).toBe(1);
                 expect((await ended(digest.definitionId, digestRuns[0].workflowSessionId)).runStatus).toBe("completed");

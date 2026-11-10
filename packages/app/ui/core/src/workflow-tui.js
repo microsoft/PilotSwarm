@@ -1,9 +1,9 @@
-import { workflowFailure, workflowNodeChatTitle } from "./workflow-owner.js";
+import { workflowFailure, workflowNodeSessionTitle } from "./workflow-owner.js";
 import { WORKFLOW_STATE_MARKS, workflowFailureDetail, workflowItemsFraction, workflowOutcomeWord, workflowRunStateWord, workflowRunsText,
     workflowSessionModel } from "./workflow-words.js";
 import {
     layoutWorkflowGraph, workflowReadModelView, compactWorkflowExecutions, formatSeconds, projectWorkflow, workflowAgentBindingRows,
-    workflowAgentChatMode, workflowAgentTools, workflowAgentTask, workflowExecutionResult, workflowExecutionValue,
+    workflowAgentSessionMode, workflowAgentTools, workflowAgentTask, workflowExecutionResult, workflowExecutionValue,
     workflowKvApplied, workflowKvCompare, workflowKvSnapshot, workflowRouteKind, workflowRunRows, workflowShownExecution,
     workflowActivity, workflowSessionSubtree, workflowVisitEnding, workflowWholeValue, workflowBranchNumber, workflowItemList,
     workflowJoinWords,
@@ -42,11 +42,11 @@ function variableRetryOf(projection, modal, variables, payloads) {
 
 /**
  * The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed
- * state, read-only child chats"; T115): the graph the portal's workflow pane
+ * state, read-only child sessions"; T115): the graph the portal's workflow pane
  * draws, as text. States in graph order with their observed state, the
  * selected state's details and transitions (a transition inside a loop is
  * marked as one), and, for an agent state, the child session of each of its
- * occurrences, which the person opens to read its actual chat.
+ * occurrences, which the person opens to read its actual session.
  *
  * It reads only what the shared controller has loaded for the session
  * (ensureWorkflowDefinition, ensureWorkflowReadModel: the same reads the
@@ -136,10 +136,10 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
     const sessionName = id => sessionTitle(sessionsById, id);
     let flow = null;
     if (safeView.definition || readModel || workflowModel) {
-        // OF-S2-7: the model of the chat that owns the Workflow, which its agent nodes use unless their start chose one.
-        const chatModel = workflowSessionModel(sessionsById?.[session?.parentSessionId] ?? null);
+        // OF-S2-7: the model of the session that owns the Workflow, which its agent nodes use unless their start chose one.
+        const sessionModel = workflowSessionModel(sessionsById?.[session?.parentSessionId] ?? null);
         flow = projectWorkflow({ definition: safeView.definition, readModel, workflowModel, selectedRunId, events: list, readModelAfterSeq,
-            olderHistory: safeView.olderHistory ?? null, sessionName, chatModel });
+            olderHistory: safeView.olderHistory ?? null, sessionName, sessionModel });
     }
     const definition = flow ? flow.definition : null;
     const nodes = flow ? flow.nodes : [];
@@ -325,14 +325,14 @@ export function workflowViewProjectionFor(state, sessionId) {
 }
 
 /**
- * A loaded session's name as its list row says it: an agent node's chat "review · agent", a Workflow without its "Workflow: "
+ * A loaded session's name as its list row says it: an agent node's session "review · agent", a Workflow without its "Workflow: "
  * prefix, else its title; null when it is not loaded or has none. Pure.
  */
 function sessionTitle(byId, sessionId) {
     const row = isPlainRecord(byId) && typeof sessionId === "string" && sessionId && Object.hasOwn(byId, sessionId) ? byId[sessionId] : null;
     if (!row) return null;
-    const chat = workflowNodeChatTitle(byId, row);
-    if (chat) return chat;
+    const agentSession = workflowNodeSessionTitle(byId, row);
+    if (agentSession) return agentSession;
     const title = typeof row.title === "string" ? row.title.replace(/^Workflow: /, "").trim() : "";
     return title || null;
 }
@@ -1687,9 +1687,9 @@ function detailLines(selection, width) {
     // An agent state's task, the workflow interface it names and what the shown run pins it to, as the portal says them.
     if (node.kind === "agent") {
         add(`Agent: ${workflowAgentTask(node)}`);
-        add(`Chat: ${workflowAgentChatMode(node)}`);
+        add(`Session: ${workflowAgentSessionMode(node)}`);
         if (workflowAgentTools(node)) add(`Tools: ${workflowAgentTools(node)}`);
-        // OF-S2-7: the model it uses, chosen at start or from the chat.
+        // OF-S2-7: the model it uses, chosen at start or from the session.
         if (node.model) for (const text of wrapped(node.model.text, Math.max(20, width))) add(text);
         const told = node.invoke?.source === "agent" ? null : workflowFirstSentence(node.about?.prompt, Math.max(40, width - 8));
         if (told) add(`Prompt: ${told}`, "gray");
@@ -1743,7 +1743,7 @@ function detailLines(selection, width) {
             : typeof node.branchName === "string" && node.branchName ? `Branch ${node.branchName} ends here.` : "The item ends here.", "gray");
     }
     if (occurrences.length) {
-        // Review 19:27Z (row 10): each chat by its visit, its state in marks and words, and its title (never its id).
+        // Review 19:27Z (row 10): each session by its visit, its state in marks and words, and its title (never its id).
         add("Agent sessions · Tab choose · Enter open:", "cyan");
         occurrences.forEach((occurrence, index) => {
             const chosen = index === occurrenceIndex;
@@ -1753,7 +1753,7 @@ function detailLines(selection, width) {
             add(`${chosen ? "▸" : " "} ${visit} · ${result} · ${title}`, chosen ? "white" : "gray", chosen ? { bold: true } : {});
         });
         add("People can read these agent sessions; the server refuses their prompts, answers and instructions.", "gray");
-        // The sessions the chosen chat started (owner decision q14; mock M14 "View owned subtree"), as loaded here.
+        // The sessions the chosen session started (owner decision q14; mock M14 "View owned subtree"), as loaded here.
         const under = selection.occurrence?.childSessionId
             ? workflowSessionSubtree(selection.sessionsById, selection.occurrence.childSessionId).filter(entry => entry.depth > 0) : [];
         if (under.length) {
@@ -1833,9 +1833,9 @@ export function selectWorkflowViewModal(state, maxWidth = 100, viewportHeight = 
         title: bounded(`Workflow: ${selection.projection.name} · ${selection.projection.status}`, contentWidth),
         rows,
         selectedRowIndex: rowOf[selection.selectedIndex] ?? 0,
-        // Workflow Simplified words (03): a node, not a step; Esc goes back to the chat the pane belongs to.
+        // Workflow Simplified words (03): a node, not a step; Esc goes back to the session the pane belongs to.
         detailsTitle: selection.selected
-            ? `Node ${bounded(selection.selected.id, 30)} — ↑↓ node · Tab agent session · Enter open · Esc back to the chat` : "Workflow",
+            ? `Node ${bounded(selection.selected.id, 30)} — ↑↓ node · Tab agent session · Enter open · Esc back to the session` : "Workflow",
         detailsLines,
         listHeight,
         detailsHeight,
@@ -1854,8 +1854,8 @@ export const WORKFLOW_INPUT_DENIED_TEXT = "This session runs a node of a Workflo
 
 /**
  * The read-only composer's note, in the portal and the terminal alike. The server's reason comes first (review UI-17),
- * then, with the title of the chat that owns the Workflow known, `To change this, message <that chat>.`; with no reason,
- * the short line `Read-only. To change this, message <that chat>.` (Workflow Simplified, spec 14 mock and 03 words).
+ * then, with the title of the session that owns the Workflow known, `To change this, message <that session>.`; with no reason,
+ * the short line `Read-only. To change this, message <that session>.` (Workflow Simplified, spec 14 mock and 03 words).
  * Without that title: the reason, else WORKFLOW_INPUT_DENIED_TEXT (review 19:27Z: never the controlling session's id).
  * Pure.
  */

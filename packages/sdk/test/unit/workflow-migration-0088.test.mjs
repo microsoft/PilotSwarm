@@ -1,6 +1,7 @@
 /**
- * Migration 0088 (workflow): the one Workflow migration, after main's 0087, creates the Workflow schema in its final shape.
- * - It is registered once, last, as three idempotent steps: everything but the index in one transaction, then the drop of
+ * Migration 0088 (workflow): the Workflow migration after main's 0087 creates the Workflow schema; 0089 then renames its
+ *   owner-side objects (workflow-migration-0089.test.js).
+ * - It is registered once, right after 0087 and before 0089, as three idempotent steps: everything but the index in one transaction, then the drop of
  *   an invalid parent_session_id index under a lock timeout, then the index built concurrently.
  * - What it adds to the existing sessions table (two columns, a check, two triggers) is added only when missing, so a run
  *   again takes no lock on sessions; nothing in it drops or rewrites a table, a column or a row.
@@ -24,11 +25,13 @@ const chatEnded = () => {
     return sql.slice(sql.indexOf('CREATE OR REPLACE FUNCTION "s".workflow_on_chat_ended()'), sql.indexOf("$$ LANGUAGE plpgsql; DO $sessions_triggers$"));
 };
 
-test("one Workflow migration, 0088, registered last after main's 0087, as three steps", () => {
+test("the Workflow migration, 0088, registered after main's 0087 and before 0089, as three steps", () => {
     const list = CMS_MIGRATIONS("s");
-    assert.deepEqual(list.at(-1), { version: "0088", name: "workflow", steps: workflowMigration("s") });
-    assert.equal(list.at(-2).version, "0087");
-    assert.deepEqual(list.filter(item => /workflow|0111|parent_session/.test(item.name)).map(item => item.version), ["0088"]);
+    const at = list.findIndex(item => item.version === "0088");
+    assert.deepEqual(list[at], { version: "0088", name: "workflow", steps: workflowMigration("s") });
+    assert.equal(list[at - 1].version, "0087");
+    assert.deepEqual(list.slice(at + 1).map(item => [item.version, item.name]), [["0089", "workflow_session_names"]]);
+    assert.deepEqual(list.filter(item => /workflow|0111|parent_session/.test(item.name)).map(item => item.version), ["0088", "0089"]);
     assert.equal(workflowMigration("s").length, 3);
     assert.match(objects, /^\s*-- 0088_workflow[^\n]*\nBEGIN;\n/);
     assert.match(objects, /\nCOMMIT;\n\s*$/);

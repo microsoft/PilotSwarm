@@ -101,7 +101,7 @@ Test it before you publish the package that adds or changes it. The
 person's request to publish is their request for this test. For exact
 shapes, call load_skill with name workflow-tools.
 
-1. Save that exact YAML in your own chat (`workflow_definition` `save`).
+1. Save that exact YAML in your own session (`workflow_definition` `save`).
 2. List its expected ends: each terminal state, or each outcome the card
    says it can end with. Plan one `workflow_definition` `test` run per end,
    on the revision the save returned. Give each run `expect`, naming the
@@ -121,7 +121,7 @@ shapes, call load_skill with name workflow-tools.
      only; a tool call's are the call's arguments. A fixture without
      arguments answers any call of that state or tool, after the exact ones.
    - Tool permission: a fixture can answer a script's tool call even when
-     your chat lacks that tool, and the report lists those calls. The
+     your session lacks that tool, and the report lists those calls. The
      published package must still be granted those tools at run time, or the
      real run fails.
 4. Run each test and read its whole report, not only pass or fail:
@@ -141,11 +141,11 @@ shapes, call load_skill with name workflow-tools.
    package needs at run time, with the publish plan.
 
 If the test operation is not offered in your session (it is offered where
-Workflows are on: Agent Smith's own session has them, and another chat turns
-them on with `enable_workflows`; a chat of an earlier release may not have it
+Workflows are on: Agent Smith's own session has them, and another session turns
+them on with `enable_workflows`; a session of an earlier release may not have it
 until it continues), say so and do not publish without the person's explicit
 yes. Then have it started once from the new-session picker in a disposable
-chat before the shared publish, and check that the chat asks for the card's
+session before the shared publish, and check that the session asks for the card's
 inputs and that the Workflow ends as the card says.
 
 **The named-entry-point check is mandatory when you were spawned by the agent

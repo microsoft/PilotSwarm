@@ -1,5 +1,5 @@
-// r4 C04, confirmed on live data: the executor's dump of a chat: continue agent node on wfsimp (portal 5482bae3, worker
-// fd0fcda8; artifact agent-log-live-dump-20261106.tgz, sha256 db5eec92…). The fixture is that dump's 98 agent chat events
+// r4 C04, confirmed on live data: the executor's dump of a session: continue agent node on wfsimp (portal 5482bae3, worker
+// fd0fcda8; artifact agent-log-live-dump-20261106.tgz, sha256 db5eec92…). The fixture is that dump's 98 agent session events
 // and 16 Workflow events as the API returned them; heavy model.* data and the SDK echo's 55,151-character text are left
 // out (the test rebuilds an echo of that length). What it shows:
 // - each visit's prompt is a system.message with its client message id and sender (no user.message at all);
@@ -20,23 +20,23 @@ process.env.TZ = "UTC";
 const dump = JSON.parse(readFileSync(new URL("./fixtures/agent-log-live-dump-20261106.json", import.meta.url), "utf8"));
 const IDENTITY = "You are GitHub Copilot, an AI coding agent built by GitHub. You are an interactive tool that helps users with ";
 const ECHO = `${IDENTITY}${"software engineering tasks. ".repeat(4000)}`.slice(0, 55151);
-const chat = dump.chatEvents.map(event => event.data?.content === "<<SDK_ECHO 55151>>" ? { ...event, data: { ...event.data, content: ECHO } } : event);
-const bySeq = new Map(chat.map(event => [event.seq, event]));
-const CHAT = chat[0].sessionId;
+const agentSession = dump.agentSessionEvents.map(event => event.data?.content === "<<SDK_ECHO 55151>>" ? { ...event, data: { ...event.data, content: ECHO } } : event);
+const bySeq = new Map(agentSession.map(event => [event.seq, event]));
+const AGENT_SESSION = agentSession[0].sessionId;
 const [first, second] = dump.factExecutions.slice().sort((a, b) => a.ordinal - b.ordinal);
 const node = {
-    id: "fact", kind: "agent", type: "agent", chat: "continue", runs: 2,
+    id: "fact", kind: "agent", type: "agent", session: "continue", runs: 2,
     executions: dump.factExecutions.map(item => ({ id: item.nodeExecutionId, ordinal: item.ordinal, status: item.state, outcome: item.outcome,
         resultKind: item.resultKind, enteredAt: item.enteredAt, endedAt: item.endedAt, deadline: item.deadline, agent: item.agent })),
 };
 node.current = node.executions.find(item => item.ordinal === 2);
 const NOW = Date.parse("2026-11-06T17:10:00.000Z");
-const log = (readable = true, coverage = new Map([[CHAT, { hasOlder: false }]])) => workflowAgentNodeLog({ node, events: dump.workflowEvents,
-    chats: new Map([[CHAT, chat]]), coverage, runId: dump.runId, now: NOW });
-const chatRows = group => group.rows.filter(row => row.key.startsWith("chat:"));
+const log = (readable = true, coverage = new Map([[AGENT_SESSION, { hasOlder: false }]])) => workflowAgentNodeLog({ node, events: dump.workflowEvents,
+    agentSessions: new Map([[AGENT_SESSION, agentSession]]), coverage, runId: dump.runId, now: NOW });
+const agentSessionRows = group => group.rows.filter(row => row.key.startsWith("session:"));
 
 test("the dump's shapes: both prompts are system.message with the visit's id; the echo and turn_stopped are not prompts", () => {
-    assert.equal(chat.filter(event => event.eventType === "user.message").length, 0);
+    assert.equal(agentSession.filter(event => event.eventType === "user.message").length, 0);
     assert.equal(workflowPromptVisit(bySeq.get(16305)), first.nodeExecutionId);
     assert.equal(workflowPromptVisit(bySeq.get(16371)), second.nodeExecutionId);
     for (const seq of [16316, 16380, 16366, 16420]) assert.equal(workflowPromptVisit(bySeq.get(seq)), null, String(seq));
@@ -53,13 +53,13 @@ test("the Log of the dump: each visit has its base instructions (shown once), it
     const shown = log();
     assert.deepEqual(shown.earlier, []);
     const [visit2, visit1] = shown.groups;
-    assert.deepEqual(chatRows(visit1).map(row => row.label), ["Base instructions", "Prompt", "Result"]);
-    assert.deepEqual(chatRows(visit2).map(row => row.label), ["Base instructions", "Prompt", "Result"]);
-    assert.equal(chatRows(visit1)[0].text.split(":")[0], "55,151 characters");
-    assert.equal(chatRows(visit2)[0].text, "Same as visit 1");
-    assert.ok(chatRows(visit1)[1].text.startsWith("[SYSTEM: WORKFLOW NODE INVOCATION. You are an ordinary agent session"));
-    assert.ok(chatRows(visit2)[1].text.startsWith("[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE 2."));
-    assert.match(chatRows(visit1)[2].text, /^success · \{"fact":"PostgreSQL uses multiversion concurrency control/);
+    assert.deepEqual(agentSessionRows(visit1).map(row => row.label), ["Base instructions", "Prompt", "Result"]);
+    assert.deepEqual(agentSessionRows(visit2).map(row => row.label), ["Base instructions", "Prompt", "Result"]);
+    assert.equal(agentSessionRows(visit1)[0].text.split(":")[0], "55,151 characters");
+    assert.equal(agentSessionRows(visit2)[0].text, "Same as visit 1");
+    assert.ok(agentSessionRows(visit1)[1].text.startsWith("[SYSTEM: WORKFLOW NODE INVOCATION. You are an ordinary agent session"));
+    assert.ok(agentSessionRows(visit2)[1].text.startsWith("[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE 2."));
+    assert.match(agentSessionRows(visit1)[2].text, /^success · \{"fact":"PostgreSQL uses multiversion concurrency control/);
     assert.ok(!shown.groups.some(group => group.rows.some(row => row.label === "Note to the agent")), "no echo or prompt reads as a note");
     // Its Workflow lines, in the Log's words.
     assert.ok(visit1.rows.some(row => row.kind === "workflow" && /^Agent session started · limit 17:04:40/.test(row.text)));

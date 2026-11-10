@@ -1025,7 +1025,7 @@ export class PilotSwarmWorker {
             ]);
             if (!child || child.parentSessionId !== parentSessionId || !parent || parent.deletedAt
                 || ["completed", "failed", "cancelled"].includes(parent.state ?? "")) return false;
-            // Stage 2.2: an agent's test never wakes the chat: its test bench notifies nobody (test-bench.ts).
+            // Stage 2.2: an agent's test never wakes the session: its test bench notifies nobody (test-bench.ts).
             if (isWorkflowTestBench(child)) return false;
             const { resolveEffectiveSpawnOwner } = await import("./cms.js");
             const [childOwner, parentOwner] = await Promise.all([
@@ -2193,7 +2193,7 @@ export class PilotSwarmWorker {
             }
             if (seen.has(skill.name)) continue;
             this._loadableSkills.push(skill);
-            // The Workflow skills are loadable but not indexed here, in the base every chat shares: a chat with Workflows on
+            // The Workflow skills are loadable but not indexed here, in the base every session shares: a session with Workflows on
             // lists them in its own copy of this index (session-manager, withWorkflowSkillsListed), as Base V2 does.
             if (this._unlistedSkillDirs.some(dir => typeof skill.dir === "string" && path.resolve(path.dirname(skill.dir)) === dir)) {
                 seen.set(skill.name, null);
@@ -2404,7 +2404,7 @@ export class PilotSwarmWorker {
         if (!this._unlistedSkillDirs.includes(path.resolve(skillsDir))) this._unlistedSkillDirs.push(path.resolve(skillsDir));
         // A Base V2 session's load_skill, skills index and search_capabilities read only capability sources, so an
         // SDK skill directory is one too, like a plugin directory's skills.
-        // Not listed in the skills index: the Workflow guidance names them where Workflows are on in a chat.
+        // Not listed in the skills index: the Workflow guidance names them where Workflows are on in a session.
         const source: CapabilitySource = { id: `static:${capabilityHash(skillsDir).slice(0, 20)}`, name: sourceName,
             source: "static", scope: "shared", revision: "", artifacts: [], tools: new Map(), mcpServers: {}, unlisted: true };
         for (const skill of loadSkillsSync(skillsDir)) {

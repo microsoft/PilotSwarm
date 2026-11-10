@@ -4,7 +4,7 @@
  * session count stayed flat, until it was OOMKilled. This test measures it on one real worker with the real Copilot CLI
  * and a scripted model (no tokens):
  *
- *   for each N in PS_SESSION_LEAK_STEPS (default 0,50,100,200, cumulative): N chats with one turn each, then N Workflows
+ *   for each N in PS_SESSION_LEAK_STEPS (default 0,50,100,200, cumulative): N sessions with one turn each, then N Workflows
  *   whose one agent step (session: new) completes at once; then wait until the worker holds no warm session (eviction
  *   with PILOTSWARM_SESSION_EVICT_MS, default 1000, and the end of the agent steps), gc() and record:
  *   - node: RSS and heap used;
@@ -15,9 +15,9 @@
  *
  * It prints one table row per step and the MiB per session between the first and the last step. It asserts nothing about
  * the numbers: the executor compares them at main, at the side branch before the leak fixes and after them. A build
- * without Workflow (main) runs the chats only, and says so (agentSteps: false).
+ * without Workflow (main) runs the sessions only, and says so (agentSteps: false).
  *
- * The second case: one long chat (PS_SESSION_LEAK_LONG_TURNS turns, default 300) is summarized once (the session
+ * The second case: one long session (PS_SESSION_LEAK_LONG_TURNS turns, default 300) is summarized once (the session
  * orchestration's summarizeSession activity, called as the worker registers it), while the RSS of this process and of
  * every process below it is sampled every 50 ms. It prints the baseline, the peak and the peak minus the baseline of
  * both, and the processes the summarization started. Over 300 MiB above the baseline it says so.
@@ -145,7 +145,7 @@ function cleanupLines(sessionStateDir) {
 }
 
 describe.skipIf(!RUN)("per-session memory on one worker (opt-in repro)", () => {
-    it("measures node, CLI, session-manager maps and database connections per finished chat and agent step", { timeout: 6 * 60 * 60_000 }, async () => {
+    it("measures node, CLI, session-manager maps and database connections per finished session and agent step", { timeout: 6 * 60 * 60_000 }, async () => {
         process.env.PILOTSWARM_SESSION_EVICT_MS ||= "1000";
         const env = getEnv();
         const direct = new pg.Pool({ connectionString: env.store, max: 1 });
@@ -179,8 +179,8 @@ describe.skipIf(!RUN)("per-session memory on one worker (opt-in repro)", () => {
                 };
                 for (const target of STEPS) {
                     for (; done < target; done += 1) {
-                        const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
-                        await chat.sendAndWait("Say ok.", 120_000);
+                        const ownerSession = await client.createSession({ model: qualifiedModel, owner: OWNER });
+                        await ownerSession.sendAndWait("Say ok.", 120_000);
                         if (!store) continue;
                         const created = await service.createWorkflow({ catalog, store, duroxideClient: duroxide }, {
                             workflowSessionId: randomUUID(), parentSessionId: parent, yaml: STEP_WORKFLOW, actor: ACTOR, operationId: `leak-${done}`,
@@ -204,27 +204,27 @@ describe.skipIf(!RUN)("per-session memory on one worker (opt-in repro)", () => {
         const last = rows.at(-1);
         if (first && last && last.n > first.n) {
             const sessions = (last.agentSteps ? 2 : 1) * (last.n - first.n);
-            console.log(`[session-memory-repro] per finished session (a chat or an agent step): node ${((last.rssMiB - first.rssMiB) / sessions).toFixed(3)} MiB, `
+            console.log(`[session-memory-repro] per finished session (a session or an agent step): node ${((last.rssMiB - first.rssMiB) / sessions).toFixed(3)} MiB, `
                 + `heap ${((last.heapMiB - first.heapMiB) / sessions).toFixed(3)} MiB, CLI ${((last.cliMiB - first.cliMiB) / sessions).toFixed(3)} MiB`);
         }
         console.table(rows);
     });
 
-    it("measures the peak RSS of a long chat's summarization (node and the processes below it)", { timeout: 2 * 60 * 60_000 }, async () => {
+    it("measures the peak RSS of a long session's summarization (node and the processes below it)", { timeout: 2 * 60 * 60_000 }, async () => {
         const turns = Number(process.env.PS_SESSION_LEAK_LONG_TURNS || 300);
         const env = getEnv();
         await withScriptedModel(env, { respond, worker: { logLevel: "warning" } }, async ({ client, worker, qualifiedModel }) => {
             const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
             await catalog.initialize();
             try {
-                const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
-                for (let turn = 0; turn < turns; turn += 1) await chat.sendAndWait(`Turn ${turn}: say ok about item ${turn}.`, 120_000);
-                const events = (await catalog.getSessionEvents(chat.sessionId, undefined, 100_000)).length;
+                const ownerSession = await client.createSession({ model: qualifiedModel, owner: OWNER });
+                for (let turn = 0; turn < turns; turn += 1) await ownerSession.sendAndWait(`Turn ${turn}: say ok about item ${turn}.`, 120_000);
+                const events = (await catalog.getSessionEvents(ownerSession.sessionId, undefined, 100_000)).length;
                 // The worker's own summarizeSession activity, registered on a capture runtime with the worker's session manager.
                 const handlers = {};
                 registerActivities({ registerActivity: (name, fn) => { handlers[name] = fn; } }, worker.sessionManager, null, undefined, catalog);
                 if (typeof handlers.summarizeSession !== "function") throw new Error("this build registers no summarizeSession activity");
-                await catalog.updateSession(chat.sessionId, { titleLocked: false }).catch(() => {});
+                await catalog.updateSession(ownerSession.sessionId, { titleLocked: false }).catch(() => {});
                 collect();
                 await pause(1_000);
                 const before = descendantsRssMiB();
@@ -249,7 +249,7 @@ describe.skipIf(!RUN)("per-session memory on one worker (opt-in repro)", () => {
                 let title = null;
                 let error = null;
                 try {
-                    title = await handlers.summarizeSession({ traceInfo: () => {}, traceWarn: () => {} }, { sessionId: chat.sessionId });
+                    title = await handlers.summarizeSession({ traceInfo: () => {}, traceWarn: () => {} }, { sessionId: ownerSession.sessionId });
                 } catch (caught) {
                     error = String(caught?.message ?? caught);
                 } finally {

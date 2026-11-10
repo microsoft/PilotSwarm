@@ -19,7 +19,7 @@ import {
     WORKFLOW_CONTROLLER_VERSION,
     WORKFLOW_MAX_CORRELATION_BYTES,
     WORKFLOW_NOTIFY_NAME,
-    endWorkflowRunChats,
+    endWorkflowRunAgentSessions,
     workflowTurnStopOf,
     workflowRunEndRequester,
     WORKFLOW_NOTIFY_VERSION,
@@ -30,10 +30,10 @@ import {
 } from "./runtime.js";
 import { testResultFor, workflowTestAnsweredProjection, type WorkflowTestFixture, type WorkflowTestResponse } from "./test-mode.js";
 import { readWorkflowInterfaceExport, workflowInterfaceMismatches } from "./package-interface.js";
-import type { PackageWorkflowSource } from "./chat-packages.js";
+import type { PackageWorkflowSource } from "./session-packages.js";
 import { agentModelsDigestPart, parseWorkflowAgentModels, requireAgentModelsForRevision, requireUsableAgentModels, workflowAgentModelsText,
     type WorkflowAgentModelCheck, type WorkflowAgentModels } from "./agent-models.js";
-import { requireBenchLiveLocked } from "./chat-definition-store.js";
+import { requireBenchLiveLocked } from "./session-definition-store.js";
 import { WORKFLOW_COMMAND_QUEUE } from "./commands.js";
 import {
     ACTIVE_RUN_STATUSES,
@@ -116,12 +116,12 @@ export interface WorkflowHost {
      */
     testRetention?: { keep?: number; graceSeconds?: number };
     /**
-     * Workflow Simplified stage 2.3 (chat-packages.ts): the agent registry's package Workflow Definitions, so a chat can
+     * Workflow Simplified stage 2.3 (session-packages.ts): the agent registry's package Workflow Definitions, so a session can
      * attach and start one. Absent: a host that cannot read packages refuses them (PACKAGE_WORKFLOWS_UNAVAILABLE).
      */
     packageWorkflows?: PackageWorkflowSource;
     /**
-     * OF-S2-7: whether the owner of the chat that owns a Workflow (its agent nodes spend as them) may use an agent node's
+     * OF-S2-7: whether the owner of the session that owns a Workflow (its agent nodes spend as them) may use an agent node's
      * chosen model (their catalog; agent-models.ts). Absent: the host refuses every agent model map (fail closed).
      */
     checkAgentModel?: WorkflowAgentModelCheck;
@@ -149,7 +149,7 @@ export interface WorkflowPublicationAgent {
      */
     workflowInterface?: JsonValue;
     /**
-     * Workflow Simplified stage 2.3 (A2): the agent names Workflow Definitions its chat may start (its workflows list). An
+     * Workflow Simplified stage 2.3 (A2): the agent names Workflow Definitions its session may start (its workflows list). An
      * agent state may not use it: refused at save and at Start (AGENT_HAS_WORKFLOWS).
      */
     bringsWorkflows?: boolean;
@@ -291,7 +291,7 @@ export interface CreateWorkflowRequest {
     /** Start the live run now (requires publish). */
     /**
      * inputs: static run inputs; vars: the initial open KV map (revision 1); agentModels (OF-S2-7): the agent nodes' models
-     * chosen at start, by state id (agent-models.ts), checked against this revision and the owning chat's catalog.
+     * chosen at start, by state id (agent-models.ts), checked against this revision and the owning session's catalog.
      */
     start?: { inputs: JsonValue; vars?: { [key: string]: JsonValue }; agentModels?: WorkflowAgentModels | null } | null;
     notifyParent?: boolean;
@@ -304,19 +304,19 @@ export interface CreateWorkflowRequest {
      */
     refuseVersionReuse?: boolean;
     /**
-     * S2RT-F3: a chat Start counted toward the chat's budget of running children: the chat's row is locked exclusively and
+     * S2RT-F3: a session Start counted toward the session's budget of running children: the session's row is locked exclusively and
      * the budget counted in the claim's transaction (a full one rolls the claim back: CHILD_LIMIT). A replay (its claim
      * exists) is not counted again: the claim is its reservation.
      */
     childBudget?: { max: number } | null;
     /**
-     * Stage 2.1: the Workflow starts a chat's definition at this revision (chat-definitions.ts). Its own definition is that
-     * revision's YAML, pinned (R1); the chat, the definition and the revision are checked under their locks in the
-     * transaction that admits the run (requireChatStartLocked).
+     * Stage 2.1: the Workflow starts a session's definition at this revision (session-definitions.ts). Its own definition is that
+     * revision's YAML, pinned (R1); the session, the definition and the revision are checked under their locks in the
+     * transaction that admits the run (requireSessionStartLocked).
      */
-    chatPin?: { ownerSessionId: string; definitionId: string; revision: number } | null;
+    sessionPin?: { ownerSessionId: string; definitionId: string; revision: number } | null;
     /**
-     * Stage 2.2: the Workflow is an agent's test bench for this revision of a chat's definition (chat-test.ts): a service
+     * Stage 2.2: the Workflow is an agent's test bench for this revision of a session's definition (definition-test.ts): a service
      * session (service_kind workflow-test; its definition and revision in its creation config) that no list shows, never a Workflow of the definition.
      * G4: `expect`, the end its test must reach (a terminal state or an outcome), kept with them for its report.
      */
@@ -380,9 +380,9 @@ function liveAdmission(workflowSessionId: string, inputs: JsonValue, vars: { [ke
 
 /**
  * OF-S2-7 review OF7-R1: the identity a Workflow's agent nodes spend as, and so the catalog a start's choices are checked
- * against: the effective owner of the Workflow (its own owner, else its lineage's: the owner of the chat that owns it), as
+ * against: the effective owner of the Workflow (its own owner, else its lineage's: the owner of the session that owns it), as
  * the agent host resolves it at spawn. Never the caller's (a person or an administrator starting another owner's Workflow).
- * `workflowSessionId` when the Workflow exists; else its owner as it will be made (`owner`) or its parent chat's.
+ * `workflowSessionId` when the Workflow exists; else its owner as it will be made (`owner`) or its parent session's.
  */
 export async function workflowSpendingOwner(host: Pick<WorkflowHost, "catalog">, at: { workflowSessionId?: string | null;
     owner?: SessionOwnerInfo | null; parentSessionId?: string | null }): Promise<SessionOwnerInfo | null> {
@@ -408,7 +408,7 @@ function startAgentModels(given: unknown, ir: WorkflowIR | null, what: string): 
 }
 
 /**
- * OF-S2-7: that `spender` (workflowSpendingOwner: the owner of the chat that owns the Workflow) may use each chosen model.
+ * OF-S2-7: that `spender` (workflowSpendingOwner: the owner of the session that owns the Workflow) may use each chosen model.
  * Review D4: only for a request no stored receipt answers yet: a repeat of an admitted start returns its receipt, even when
  * the owner can no longer use a model it chose (its run already has it).
  */
@@ -539,10 +539,10 @@ async function finishRecoveredRun(host: Pick<WorkflowHost, "store" | "duroxideCl
     await host.store.repairEndedRunSessionRow(run.runId);
     let unended: unknown = null;
     try {
-        // With the chats that continued across visits (chat: continue), which only a run's end ends.
+        // With the sessions that continued across visits (session: continue), which only a run's end ends.
         // Review G5: a child's running turn is stopped before its cancel (a session takes a command only between turns).
         const stopTurn = workflowTurnStopOf(host.catalog);
-        await endWorkflowRunChats(host.store, host.duroxideClient, run.runId, stopTurn ? { stopTurn } : {});
+        await endWorkflowRunAgentSessions(host.store, host.duroxideClient, run.runId, stopTurn ? { stopTurn } : {});
     } catch (error) {
         unended = error;
     }
@@ -725,7 +725,7 @@ function sameGrant(stored: unknown, requested: WorkflowToolBinding | null | unde
 
 /**
  * A test bench's expected end (G4), as stored in its creation config (agentTest.expect) or requested: { state } or
- * { outcome }; anything else is none, the default (outcome succeeded). chat-test.ts reads a bench's expect with it too.
+ * { outcome }; anything else is none, the default (outcome succeeded). definition-test.ts reads a bench's expect with it too.
  */
 export function testBenchExpect(value: unknown): { state: string } | { outcome: string } | null {
     if (!isJsonObject(value)) return null;
@@ -765,11 +765,11 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
     requirePublishable(compiled, publish);
     const startInputs = request.start ? request.start.inputs : null;
     if (request.start) validateRunInputs(compiled.ir, compiled.irSha256, request.start.inputs);
-    // OF-S2-7: the agent nodes' models chosen at start, against exactly this revision and the owning chat's catalog (the
+    // OF-S2-7: the agent nodes' models chosen at start, against exactly this revision and the owning session's catalog (the
     // identity that spends: the Workflow's effective owner, never the caller's; OF7-R1).
     const agentModels = request.start
         ? startAgentModels(request.start.agentModels, compiled.ir,
-            request.chatPin ? `revision ${request.chatPin.revision} of ${compiled.name ?? "this definition"}` : compiled.name ?? "this Workflow") : null;
+            request.sessionPin ? `revision ${request.sessionPin.revision} of ${compiled.name ?? "this definition"}` : compiled.name ?? "this Workflow") : null;
     // Built before anything is written: inputs or vars over their limits refuse the request without a claim.
     const admission = request.start ? liveAdmission(request.workflowSessionId, request.start.inputs, request.start.vars ?? null, agentModels) : null;
     // A definition published at creation pins its named agents first: one that cannot be resolved refuses the request
@@ -805,18 +805,18 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
             workflow: { apiVersion: WORKFLOW_API_VERSION, fingerprint: WORKFLOW_CREATE_FINGERPRINT, requestSha256, operationId: request.operationId,
                 ...(compiled.name ? { name: compiled.name } : {}), ...(compiled.version ? { version: compiled.version } : {}),
                 yamlSha256: compiled.yamlSha256, ...(compiled.irSha256 ? { irSha256: compiled.irSha256 } : {}),
-                // S2RT-F5: a chat Start's pin is part of its creation's identity: a replay continues only with this pin.
-                ...(request.chatPin ? { chatPin: { definitionId: request.chatPin.definitionId, revision: request.chatPin.revision } } : {}) },
+                // S2RT-F5: a session Start's pin is part of its creation's identity: a replay continues only with this pin.
+                ...(request.sessionPin ? { sessionPin: { definitionId: request.sessionPin.definitionId, revision: request.sessionPin.revision } } : {}) },
             ...(request.binding ? { workflowToolBinding: request.binding } : {}),
             ...(request.testBench ? { agentTest: { definitionId: request.testBench.definitionId, revision: request.testBench.revision,
                 ...(request.testBench.expect ? { expect: request.testBench.expect } : {}) } } : {}),
         },
         ...(versionGuard || (request.childBudget && parentId) || (request.testBench && parentId) ? { afterClaim: async (client: PoolClient) => {
-            // S2RT-F6: a test bench is made only while its chat is live and its definition is not deleted, under their locks.
+            // S2RT-F6: a test bench is made only while its session is live and its definition is not deleted, under their locks.
             if (request.testBench && parentId) {
-                await requireBenchLiveLocked(client, host.store.chat.schema, { ownerSessionId: parentId, definitionId: request.testBench.definitionId });
+                await requireBenchLiveLocked(client, host.store.sessionDefinitions.schema, { ownerSessionId: parentId, definitionId: request.testBench.definitionId });
             }
-            if (request.childBudget && parentId) await host.store.chat.requireChildBudgetLocked(client, parentId, request.workflowSessionId, request.childBudget.max);
+            if (request.childBudget && parentId) await host.store.sessionDefinitions.requireChildBudgetLocked(client, parentId, request.workflowSessionId, request.childBudget.max);
             if (versionGuard) await host.store.requireVersionFreeLocked(client, versionGuard);
         } } : {}),
         // The bench's definition is its creation config's agentTest; service_of (a session's uuid) names no session here, and an
@@ -846,9 +846,9 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Workflow ${request.workflowSessionId} has a creation record this build cannot read.`);
         }
         let sameRequest = marker.requestSha256 === requestSha256 && marker.operationId === request.operationId && grantMatches && ownerMatches;
-        // S2RT-F5: a claim that recorded a chat pin continues only with that pin (a claim of an earlier build records none).
-        if (sameRequest && isJsonObject(marker.chatPin) && (!request.chatPin || marker.chatPin.definitionId !== request.chatPin.definitionId
-            || marker.chatPin.revision !== request.chatPin.revision)) {
+        // S2RT-F5: a claim that recorded a session pin continues only with that pin (a claim of an earlier build records none).
+        if (sameRequest && isJsonObject(marker.sessionPin) && (!request.sessionPin || marker.sessionPin.definitionId !== request.sessionPin.definitionId
+            || marker.sessionPin.revision !== request.sessionPin.revision)) {
             sameRequest = false;
         }
         if (!sameRequest) {
@@ -878,7 +878,7 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
         // Review SDK3-F3: a resumed claim (this request found its row) was not checked when it was made, or was made by an
         // earlier build that records no version: its definition is checked when it is stored.
         ...(versionGuard && !claim.created ? { versionGuard: { ...versionGuard, nothingSaved: "Nothing was saved: the claim stays without a definition." } } : {}),
-        ...(request.chatPin ? { chatPin: request.chatPin } : {}),
+        ...(request.sessionPin ? { sessionPin: request.sessionPin } : {}),
     });
     await dispatchWorkflowRun(host, stored.receipt);
     return stored;
@@ -936,7 +936,7 @@ export async function applyWorkflowUpdate(
             validateRunInputs(revisionIr, revision.irSha256, command.inputs);
         }
         requireWorkflowScripts(host, revisionIr, command.operation === "publish_and_start" ? "start" : "save");
-        // OF7-R3: a publish_and_start's agent models, against exactly the revision it publishes and the owning chat's catalog.
+        // OF7-R3: a publish_and_start's agent models, against exactly the revision it publishes and the owning session's catalog.
         const agentModels = command.operation === "publish_and_start"
             ? startAgentModels(command.agentModels, revisionIr, `revision ${command.expectedRevision}`) : null;
         const definition = revisionIr ? await host.store.readDefinition(workflowSessionId) : null;
@@ -967,7 +967,7 @@ export async function applyWorkflowUpdate(
             validateRunInputs(publishedIr, definition.publishedIrSha256, command.inputs);
             requireWorkflowScripts(host, publishedIr, "start");
         }
-        // OF7-R3: a start's agent models, against exactly the published revision and the owning chat's catalog.
+        // OF7-R3: a start's agent models, against exactly the published revision and the owning session's catalog.
         const agentModels = startAgentModels(command.agentModels, publishedIr, `revision ${definition?.publishedRevision ?? "(none published)"}`);
         const startSha256 = jsonSha256({ kind: "start", definitionHash: command.definitionHash, inputs: canonicalJson(command.inputs), ...varsDigestPart(command.vars),
             ...notifyDigestPart(command.notifyParent), ...agentModelsDigestPart(agentModels) });
@@ -1487,7 +1487,7 @@ export async function startWorkflowTest(host: WorkflowHost, workflowSessionId: s
     if (command.agentMode !== "real" && parseWorkflowAgentModels(command.agentModels)) {
         throw new WorkflowStoreError("AGENT_MODELS_INVALID", "agentModels applies to a test with real agents; a mocked test spawns no agent.");
     }
-    // OF7-R1, R2: a real-agent test's choices are checked against the owning chat's catalog before it is admitted (below, once
+    // OF7-R1, R2: a real-agent test's choices are checked against the owning session's catalog before it is admitted (below, once
     // no stored receipt answers the request: review D4).
     const agentModels = command.agentMode === "real" ? startAgentModels(command.agentModels, ir, `revision ${command.expectedRevision}`) : null;
     const agentModelsText = workflowAgentModelsText(agentModels);

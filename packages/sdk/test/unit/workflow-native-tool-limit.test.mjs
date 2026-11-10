@@ -1,7 +1,7 @@
 /**
- * Stage 2 review S2RT-F1: a Workflow agent state's tool limit (FU-17) binds the native workers its chat starts. With
+ * Stage 2 review S2RT-F1: a Workflow agent state's tool limit (FU-17) binds the native workers its session starts. With
  * `tools: [task, view, read_facts]` the agent may start a native task, but the worker may not run `bash` or a disallowed
- * MCP tool: their declarations are cut to the limit, and the child hook refuses the call. The state's own chat keeps
+ * MCP tool: their declarations are cut to the limit, and the child hook refuses the call. The state's own session keeps
  * complete_workflow_node; a worker never gets it. Without a limit nothing changes.
  *
  * Run: node --test test/unit/workflow-native-tool-limit.test.mjs
@@ -32,10 +32,10 @@ test("the native workers' declarations are cut to the limit; without one they ar
     assert.equal(limit.allows("complete_workflow_node"), false, "a worker never finishes the state");
 });
 
-test("S2RT-F1: task is allowed to the state's chat; its worker's bash and a disallowed MCP tool are refused; an allowed read goes on", async () => {
+test("S2RT-F1: task is allowed to the state's session; its worker's bash and a disallowed MCP tool are refused; an allowed read goes on", async () => {
     const hooks = nativeSubagentHooks("model-1", undefined, () => true, undefined, undefined, nativeWorkflowToolLimit(LIMIT));
     const pre = (sessionId, toolName, toolArgs = {}) => hooks.onPreToolUse({ sessionId, toolName, toolArgs }, { sessionId: PARENT });
-    // The parent (the state's chat) starts a native task.
+    // The parent (the state's session) starts a native task.
     const task = await pre(PARENT, "task", { agent_type: "swarm-task", prompt: "run it", mode: "sync" });
     assert.notEqual(task?.permissionDecision, "deny", JSON.stringify(task));
     // Its worker tries bash: refused, whatever it was declared.

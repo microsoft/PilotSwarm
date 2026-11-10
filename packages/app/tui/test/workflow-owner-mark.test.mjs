@@ -1,4 +1,4 @@
-// OF-S2-5: the TUI's session list and chat title say when a session (a sub-agent too) has grown Workflows: " ◇" after its
+// OF-S2-5: the TUI's session list and session title say when a session (a sub-agent too) has grown Workflows: " ◇" after its
 // title, gray, from the list row's hasWorkflowDefinitions flag. Workflows are always on, so the terminal's panes, which
 // build their own selector state (components.js), pass no Workflows slice; this checks the same shape they pass.
 import test from "node:test";
@@ -34,7 +34,7 @@ test("the TUI list: a sub-agent that owns a definition reads 'Helper ◇', the m
     assert.equal(row.runs.find(run => run.role === "workflowOwner")?.color, "gray");
 });
 
-test("the TUI chat title: 'Helper ◇' from the row flag, with no opt-in", () => {
+test("the TUI session title: 'Helper ◇' from the row flag, with no opt-in", () => {
     assert.match(text(selectChatPaneChrome(chatState(store(), "sub-1")).title), /Helper ◇/);
     assert.doesNotMatch(text(selectChatPaneChrome(chatState(store(), "root-1")).title), /◇/);
 });

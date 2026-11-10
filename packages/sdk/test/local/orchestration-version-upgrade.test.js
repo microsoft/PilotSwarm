@@ -284,11 +284,11 @@ describe("orchestration version upgrades", () => {
         expect(readFifo(values)).toEqual([]);
         expect(result.parkedOnTimerMs).toBe(3_600_000);
     });
-    // 1.0.83 opens (owner decision 2026-11-08T15:30Z): a live chat of the previous release continues as new into it, and
+    // 1.0.83 opens (owner decision 2026-11-08T15:30Z): a live session of the previous release continues as new into it, and
     // 1.0.83 accepts everything it carries (the compatibility floor). Its queued prompts (KV FIFO), its pending child
     // digest, its rehydration notice and a set_model all arrive: the new model's turn says the notice once, the queued
     // prompts run once, in order, and the child's update is delivered once.
-    it("a 1.0.82 chat with queued prompts, a pending child digest, a rehydration notice and a set_model continues as new into 1.0.83 and keeps them all", async () => {
+    it("a 1.0.82 session with queued prompts, a pending child digest, a rehydration notice and a set_model continues as new into 1.0.83 and keeps them all", async () => {
         const values = new Map();
         values.set("fifo.0", JSON.stringify([
             { kind: "prompt", prompt: "QUEUED-P1", bootstrap: false, clientMessageIds: ["p1"] },

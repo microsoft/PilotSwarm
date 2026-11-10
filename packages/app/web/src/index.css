@@ -13375,7 +13375,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-alog-note { margin: 0; }
 .ps-wf-alog-visit h3 { margin: 0 0 4px; font-size: 0.85em; font-weight: 600; }
 .ps-wf-alog-status { font-weight: 400; color: var(--ps-muted); }
-/* OF-S2-7: the model a visit's chat used, under its header; the Start dialog's agent nodes and their models. */
+/* OF-S2-7: the model a visit's agent session used, under its header; the Start dialog's agent nodes and their models. */
 .ps-wf-alog-model { margin: 0 0 4px; overflow-wrap: anywhere; }
 .ps-wf-models { margin: 0; padding-left: 1.2em; overflow-wrap: anywhere; }
 .ps-wf-alog-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
@@ -13524,19 +13524,19 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
   .ps-wf-tab.is-phone .ps-wf-tab-head.is-two-lines > .ps-wf-head-rest { flex: 0 1 auto; min-width: 0; }
 }
 /* UXFD-F10: on a phone the YAML box scrolls inside a capped height, and the editor's bar stays at the top of the tab.
-   UXP-GEM-04: the chat's editor too (ChatYamlEditor: .ps-wf-chat-editor, its bar .ps-wf-bar.is-yaml, then the box, each a
+   UXP-GEM-04: the chat's editor too (SessionYamlEditor: .ps-wf-session-editor, its bar .ps-wf-bar.is-yaml, then the box, each a
    child of it), not only the stage-1 draft editor. */
-.ps-wf-tab.is-phone .ps-wf-chat-editor > .ps-workflow-yaml,
+.ps-wf-tab.is-phone .ps-wf-session-editor > .ps-workflow-yaml,
 .ps-wf-tab.is-phone .ps-workflow-draft-editor > .ps-workflow-yaml { max-height: 55vh; overflow: auto; }
-.ps-wf-tab.is-phone .ps-wf-chat-editor > .ps-wf-bar.is-yaml,
+.ps-wf-tab.is-phone .ps-wf-session-editor > .ps-wf-bar.is-yaml,
 .ps-wf-tab.is-phone .ps-workflow-draft-editor > .ps-workflow-yaml-strip { position: sticky; top: 0; z-index: 2; background: var(--ps-surface); }
 /* UXP-GEM-04 (WebKit at 390 px): the YAML view's scroller (.ps-wf-yaml) is shorter than 55vh under the tab's header lines, so
    a capped box still ran under the bar. On a phone the chat's editor fills that scroller: its bar and notes keep their
    height and the box takes the rest, scrolling inside itself; no viewport cap, at least 8 lines (line-height 1.45, its
    padding and border). */
-.ps-wf-tab.is-phone .ps-wf-yaml > .ps-wf-chat-editor { display: flex; flex-direction: column; min-height: 0; }
-.ps-wf-tab.is-phone .ps-wf-chat-editor > :not(.ps-workflow-yaml):not(.ps-workflow-yaml-marks) { flex: none; }
-.ps-wf-tab.is-phone .ps-wf-chat-editor > .ps-workflow-yaml { flex: 1 1 auto; min-height: calc(8 * 1.45em + 6px); max-height: none; }
+.ps-wf-tab.is-phone .ps-wf-yaml > .ps-wf-session-editor { display: flex; flex-direction: column; min-height: 0; }
+.ps-wf-tab.is-phone .ps-wf-session-editor > :not(.ps-workflow-yaml):not(.ps-workflow-yaml-marks) { flex: none; }
+.ps-wf-tab.is-phone .ps-wf-session-editor > .ps-workflow-yaml { flex: 1 1 auto; min-height: calc(8 * 1.45em + 6px); max-height: none; }
 .ps-wf-tab.is-phone .ps-wf-head-actions { gap: 6px; }
 .ps-wf-tab.is-phone .ps-wf-picker-select { width: 100%; min-height: 44px; text-overflow: ellipsis; }
 .ps-wf-tab.is-phone .ps-wf-picker-face { min-height: 44px; }
@@ -13577,7 +13577,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
   flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; direction: ltr;
 }
 .ps-wf-state.has-time > .ps-wf-state-time { flex: none; white-space: pre; }
-/* UX2D-F12: a phone's list of a chat definition's Workflows: two lines per Workflow, nothing wrapped: # (both lines), its
+/* UX2D-F12: a phone's list of a session definition's Workflows: two lines per Workflow, nothing wrapped: # (both lines), its
    state and the time it took; then its revision and when it started. The column heads are read, not shown. */
 .ps-wf-tab.is-phone .ps-wf-list-row:not(.is-head) {
   grid-template-columns: 2.6em minmax(0, 1fr) max-content;

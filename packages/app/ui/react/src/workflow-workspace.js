@@ -49,16 +49,16 @@ function useWorkflowView(controller) {
     const { readModel, readModelAfterSeq, workflowModel, error: readError } = workflowReadModelView(view);
     // The older history a person loaded (loadOlderWorkflowHistory) joins the selection's own model, for the run it shows only.
     const olderHistory = view.olderHistory ?? null;
-    // OF-S2-7: the model of the chat that owns the Workflow (its agent nodes use it unless their start chose one).
-    const chatModelKey = useControllerSelector(controller, state => workflowSessionModelKey(state.sessions.byId,
+    // OF-S2-7: the model of the session that owns the Workflow (its agent nodes use it unless their start chose one).
+    const sessionModelKey = useControllerSelector(controller, state => workflowSessionModelKey(state.sessions.byId,
         state.sessions.byId?.[sessionId]?.parentSessionId ?? null));
-    const chatModel = React.useMemo(() => workflowModelFromKey(chatModelKey), [chatModelKey]);
+    const sessionModel = React.useMemo(() => workflowModelFromKey(sessionModelKey), [sessionModelKey]);
     const flow = React.useMemo(() => {
         if (!view.definition && !readModel && !workflowModel) return null;
         // A definition is never redrawn once the read model says there is no graph (invalid or unavailable); the no-graph
         // panel explains why.
-        return projectWorkflow({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq, olderHistory, chatModel });
-    }, [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory, chatModel]);
+        return projectWorkflow({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq, olderHistory, sessionModel });
+    }, [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory, sessionModel]);
     const definition = flow ? flow.definition : null;
     const nodes = flow ? flow.nodes : EMPTY_EVENTS;
     const selected = nodes.find(node => node.id === view.selectedNodeId)

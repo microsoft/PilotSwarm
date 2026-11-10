@@ -109,7 +109,7 @@ function admissionStore(...answers) {
             return answer;
         }),
         // Every 1.0.83 turn reads its session's Workflow lineage first (session-proxy executeTurnBody; the real store's
-        // readWorkflowLineage): these chats are in no Workflow.
+        // readWorkflowLineage): these sessions are in no Workflow.
         readWorkflowLineage: vi.fn(async () => null),
     };
 }
@@ -478,12 +478,12 @@ describe("runTurnV5: the store admits the carried items before a run includes th
 
     // Review PRR-2: a refusal omits only the Workflow items. A Workflow Definition note the turn read stays in the prompt the
     // model gets, and is marked read once when the turn succeeds; a turn that fails leaves it for its retry.
-    it("PRR-2: refused, the run keeps the chat's pending note in its prompt and consumes it once on success; a failed turn leaves it pending", async () => {
+    it("PRR-2: refused, the run keeps the session's pending note in its prompt and consumes it once on success; a failed turn leaves it pending", async () => {
         for (const [outcome, consumed] of [["completed", 1], ["error", 0]]) {
             const v4 = turnControlCatalog();
             const store = admissionStore({ allowed: false, reason: "exposed" });
             const consumes = [];
-            store.chat = {
+            store.sessionDefinitions = {
                 pendingNotes: vi.fn(async () => [{ noteId: 7, text: "Ada Lovelace saved hn-top-watch revision 1." }]),
                 consumeNotes: vi.fn(async (sessionId, ids) => { consumes.push([sessionId, ids]); }),
             };

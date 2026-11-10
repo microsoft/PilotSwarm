@@ -1,6 +1,6 @@
 /**
- * Owner "No response" dump (2026-11-06; build d838a303, orchestration 1.0.83, gpt-5.6-terra): chat 726e9bfc ran two
- * copies of a monitor whose send state messages the chat. Each repeated notice says "Use it as the user asked; it needs
+ * Owner "No response" dump (2026-11-06; build d838a303, orchestration 1.0.83, gpt-5.6-terra): session 726e9bfc ran two
+ * copies of a monitor whose send state messages the session. Each repeated notice says "Use it as the user asked; it needs
  * no answer." The model answered 29 of them with nothing (reasoning only, no text, no tool call); the Copilot CLI reports
  * that as "No response was returned", and the session failed the turn, retried it after 15 s and 30 s, then waited for
  * the person: 83 errors. Now a ROOT session's turn that answers only workflow notices that need no answer ends completed
@@ -10,7 +10,7 @@
  * - The runTurn activity asks for the quiet answer (and names it) only for such a turn (isQuietWorkflowNoticeTurn;
  *   its cases in test/unit/workflow-notice-empty-answer.test.mjs).
  * - A full worker (PostgreSQL, duroxide and the Copilot CLI) with the model scripted, configured as the Workflow test
- *   environment switch configures it, and a chat started at 1.0.83: the runtime's own message notice answered with
+ *   environment switch configures it, and a session started at 1.0.83: the runtime's own message notice answered with
  *   nothing is one completed turn, no session.error, the session idle, no retry; the run's end answered with nothing is
  *   still an error.
  *
@@ -53,7 +53,7 @@ describe("a workflow notice that needs no answer: the runTurn activity", () => {
         return harness.session.runTurn.mock.calls[0]?.[1] ?? {};
     };
 
-    it("asks for a quiet empty answer, named a workflow notice, on a root chat's turn of the runtime's message notice", async () => {
+    it("asks for a quiet empty answer, named a workflow notice, on a root session's turn of the runtime's message notice", async () => {
         const options = await optionsOf({ prompt: appendSystemContextBlock(MESSAGE("act-1"), "[RECURRING TASK] Watch the top 20."),
             sender: workflowRuntimeSender("message") });
         expect(options.quietEmptyAnswer).toBe(true);
@@ -84,31 +84,31 @@ describe("a workflow notice that needs no answer, answered with nothing (real wo
         };
         const worker = { workflowScripts: { enabled: true } };
         await withScriptedModel(getEnv(), { respond, worker }, async ({ client, qualifiedModel }) => {
-            const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
-            expect(await chat.sendAndWait("Watch the top 20 and tell me what changes.", TIMEOUT)).toBe("Watching.");
-            const turns = async () => (await client._catalog.getSessionEvents(chat.sessionId, 0, 500, ["session.turn_completed"]))
+            const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
+            expect(await session.sendAndWait("Watch the top 20 and tell me what changes.", TIMEOUT)).toBe("Watching.");
+            const turns = async () => (await client._catalog.getSessionEvents(session.sessionId, 0, 500, ["session.turn_completed"]))
                 .filter(event => Number(event.data?.iteration) >= 1);
 
-            await chat.send(MESSAGE("real-message"), { sender: workflowRuntimeSender("message") });
+            await session.send(MESSAGE("real-message"), { sender: workflowRuntimeSender("message") });
             await until(async () => ((await turns()).length > 0 ? true : null), "the notice's turn");
             // Past the first retry delay (15 s) of a failed turn: nothing more runs.
             await pause(20_000);
             expect(asked.message, "the model was asked once").toBe(1);
             expect((await turns()).map(event => event.data?.resultType)).toEqual(["completed"]);
-            expect(await client._catalog.getSessionEvents(chat.sessionId, 0, 500, ["session.error"])).toEqual([]);
-            const quiet = await client._catalog.getSessionEvents(chat.sessionId, 0, 500, ["session.empty_answer"]);
+            expect(await client._catalog.getSessionEvents(session.sessionId, 0, 500, ["session.error"])).toEqual([]);
+            const quiet = await client._catalog.getSessionEvents(session.sessionId, 0, 500, ["session.empty_answer"]);
             expect(quiet).toHaveLength(1);
             expect(quiet[0].data).toMatchObject({ kind: "workflow_notice", text: expect.stringContaining("a workflow notice that needs no answer") });
-            expect((await client._catalog.getSession(chat.sessionId))?.state).toBe("idle");
+            expect((await client._catalog.getSession(session.sessionId))?.state).toBe("idle");
 
             // The run's end asks for a report: an empty answer to it keeps today's rule.
-            await chat.send(ENDED("real-ended"), { sender: workflowRuntimeSender("ended") });
+            await session.send(ENDED("real-ended"), { sender: workflowRuntimeSender("ended") });
             const errors = await until(async () => {
-                const found = await client._catalog.getSessionEvents(chat.sessionId, 0, 500, ["session.error"]);
+                const found = await client._catalog.getSessionEvents(session.sessionId, 0, 500, ["session.error"]);
                 return found.length > 0 ? found : null;
             }, "the run end's empty answer to be an error");
             expect(String(errors[0].data?.message ?? "")).toContain("No response was returned");
-            expect(await client._catalog.getSessionEvents(chat.sessionId, 0, 500, ["session.empty_answer"])).toHaveLength(1);
+            expect(await client._catalog.getSessionEvents(session.sessionId, 0, 500, ["session.empty_answer"])).toHaveLength(1);
         });
     });
 });

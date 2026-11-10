@@ -124,10 +124,10 @@ function requireUserPrincipal(authContext, methodName) {
 // readWorkflow is content-bearing (a run's outputs, KV, executions and
 // message previews, and the definition's revisions), so every one of its
 // selectors is gated whatever the switch says (adversarial review SF-1).
-const ENFORCED_NEW_METHODS = new Set(["updateWorkflow", "readWorkflow", "listChatWorkflowDefinitions", "readChatWorkflowDefinition",
-    "saveChatWorkflowDefinition", "startChatWorkflowDefinition", "deleteChatWorkflowDefinition",
+const ENFORCED_NEW_METHODS = new Set(["updateWorkflow", "readWorkflow", "listSessionWorkflowDefinitions", "readSessionWorkflowDefinition",
+    "saveSessionWorkflowDefinition", "startSessionWorkflowDefinition", "deleteSessionWorkflowDefinition",
     // Stage 2.3: a person's Make a copy and newer package version.
-    "copyChatWorkflowDefinition", "updateChatWorkflowPackage"]);
+    "copySessionWorkflowDefinition", "updateSessionWorkflowPackage"]);
 
 // The artifact operations on one session's file. When the file is owner-only (a Workflow agent's base instructions,
 // isOwnerOnlyArtifact; review SF-3), each of them needs session:manage on that session, enforced whatever the ownership
@@ -150,7 +150,7 @@ const BREAK_GLASS_AUDITED = {
     // A workflow's view carries its run's outputs, KV and message previews.
     readWorkflow: true,
     // Stage 2.1: a definition's YAML.
-    readChatWorkflowDefinition: true,
+    readSessionWorkflowDefinition: true,
 };
 
 // How often an unchanged role is re-confirmed in the users table.
@@ -846,15 +846,15 @@ export class PortalRuntime {
             // Workflow: a person's command, after the session:manage gate
             // above, which is enforced for it even while the ownership switch is off. The actor is the signed-in caller,
             // never a field of the command; the command is passed as it is, and the adapter refuses what is not one.
-            // Stage 2.1: a chat's Workflow Definitions, after the gate above (session:read for list and read, session:manage for
+            // Stage 2.1: a session's Workflow Definitions, after the gate above (session:read for list and read, session:manage for
             // a person's save, start and delete; enforced whatever the ownership switch says). The actor is the signed-in caller.
-            case "listChatWorkflowDefinitions":
-                return this.transport.listChatWorkflowDefinitions(safeParams.sessionId, { includeDeleted: safeParams.includeDeleted === true });
+            case "listSessionWorkflowDefinitions":
+                return this.transport.listSessionWorkflowDefinitions(safeParams.sessionId, { includeDeleted: safeParams.includeDeleted === true });
             // Stage 2.1b: the read says whether this caller may save, start and delete (updateWorkflow's own gate on this read's
-            // access, as a Workflow's read says it). A revision's YAML is for one who may; anyone else who can read the chat gets
+            // access, as a Workflow's read says it). A revision's YAML is for one who may; anyone else who can read the session gets
             // no YAML, and the input schema and diagnostics as a Workflow's reader gets them (workflowReaderView, R2-SF-2).
-            case "readChatWorkflowDefinition": {
-                const read = await this.transport.readChatWorkflowDefinition(safeParams.sessionId, { definitionId: safeParams.definitionId ?? null,
+            case "readSessionWorkflowDefinition": {
+                const read = await this.transport.readSessionWorkflowDefinition(safeParams.sessionId, { definitionId: safeParams.definitionId ?? null,
                     name: safeParams.name ?? null, revision: safeParams.revision ?? null });
                 if (!read || typeof read !== "object" || Array.isArray(read)) return read;
                 const viewer = this._workflowCommandViewer(gate.snapshot, isAdmin);
@@ -864,29 +864,29 @@ export class PortalRuntime {
                 const { yaml: _yaml, ...revision } = reader.revision;
                 return { ...reader, revision, viewer };
             }
-            case "saveChatWorkflowDefinition":
-                return this.transport.saveChatWorkflowDefinition(safeParams.sessionId, { name: safeParams.name, yaml: safeParams.yaml,
+            case "saveSessionWorkflowDefinition":
+                return this.transport.saveSessionWorkflowDefinition(safeParams.sessionId, { name: safeParams.name, yaml: safeParams.yaml,
                     definitionId: safeParams.definitionId ?? null, expectedRevision: safeParams.expectedRevision ?? null, operationId: safeParams.operationId },
                     { principal: owner ? { provider: owner.provider, subject: owner.subject, displayName: owner.displayName ?? owner.email ?? null } : null });
-            case "startChatWorkflowDefinition":
-                return this.transport.startChatWorkflowDefinition(safeParams.sessionId, { definitionId: safeParams.definitionId,
+            case "startSessionWorkflowDefinition":
+                return this.transport.startSessionWorkflowDefinition(safeParams.sessionId, { definitionId: safeParams.definitionId,
                     revision: safeParams.revision ?? null, runAgainOf: safeParams.runAgainOf ?? null, inputs: safeParams.inputs ?? {},
                     vars: safeParams.vars ?? null, notifyParent: safeParams.notifyParent !== false, operationId: safeParams.operationId,
-                    // OF-S2-7: agent node models chosen at start (the SDK checks them against the revision and the owning chat's catalog).
+                    // OF-S2-7: agent node models chosen at start (the SDK checks them against the revision and the owning session's catalog).
                     ...(safeParams.agentModels !== undefined && safeParams.agentModels !== null ? { agentModels: safeParams.agentModels } : {}) },
                     { principal: owner ? { provider: owner.provider, subject: owner.subject } : null });
-            case "deleteChatWorkflowDefinition":
-                return this.transport.deleteChatWorkflowDefinition(safeParams.sessionId, { definitionId: safeParams.definitionId,
+            case "deleteSessionWorkflowDefinition":
+                return this.transport.deleteSessionWorkflowDefinition(safeParams.sessionId, { definitionId: safeParams.definitionId,
                     operationId: safeParams.operationId },
                     { principal: owner ? { provider: owner.provider, subject: owner.subject, displayName: owner.displayName ?? null } : null });
             // Stage 2.3: a person's Make a copy of a package's locked definition, and its package's newer version for the next
             // Workflow, after the session:manage gate above.
-            case "copyChatWorkflowDefinition":
-                return this.transport.copyChatWorkflowDefinition(safeParams.sessionId, { definitionId: safeParams.definitionId,
+            case "copySessionWorkflowDefinition":
+                return this.transport.copySessionWorkflowDefinition(safeParams.sessionId, { definitionId: safeParams.definitionId,
                     revision: safeParams.revision ?? null, operationId: safeParams.operationId },
                     { principal: owner ? { provider: owner.provider, subject: owner.subject, displayName: owner.displayName ?? owner.email ?? null } : null });
-            case "updateChatWorkflowPackage":
-                return this.transport.updateChatWorkflowPackage(safeParams.sessionId, { definitionId: safeParams.definitionId,
+            case "updateSessionWorkflowPackage":
+                return this.transport.updateSessionWorkflowPackage(safeParams.sessionId, { definitionId: safeParams.definitionId,
                     operationId: safeParams.operationId },
                     { principal: owner ? { provider: owner.provider, subject: owner.subject, displayName: owner.displayName ?? null } : null });
             case "updateWorkflow":
@@ -1117,16 +1117,16 @@ export class PortalRuntime {
             }
             case "listCreatableAgents":
                 return this.transport.listCreatableAgents(owner, resourceAdmin);
-            // Stage 2.3 (P1, P2): the package Workflow Definitions the caller can make a chat for, and making one. The caller's
-            // own packages and the shared ones; the chat is theirs.
+            // Stage 2.3 (P1, P2): the package Workflow Definitions the caller can make a session for, and making one. The caller's
+            // own packages and the shared ones; the session is theirs.
             case "listCreatableWorkflows":
                 return this.transport.listCreatableWorkflows(owner);
-            case "createWorkflowChat": {
+            case "createSessionForWorkflow": {
                 await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
                 if (typeof safeParams.ref !== "string" || !safeParams.ref.includes("/")) {
-                    throw Object.assign(new Error("createWorkflowChat requires ref: <package>/<name>"), { code: "INVALID_REQUEST", status: 400 });
+                    throw Object.assign(new Error("createSessionForWorkflow requires ref: <package>/<name>"), { code: "INVALID_REQUEST", status: 400 });
                 }
-                const created = await this.transport.createWorkflowChat(safeParams.ref, {
+                const created = await this.transport.createSessionForWorkflow(safeParams.ref, {
                     model: safeParams.model,
                     reasoningEffort: safeParams.reasoningEffort,
                     contextTier: safeParams.contextTier,

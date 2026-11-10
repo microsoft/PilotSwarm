@@ -24,9 +24,9 @@ test("each receipt is the larger of the stored and the written value; every othe
 
 test("the Workflow dot's receipt: a second device's older save does not bring an old failure's dot back", () => {
     // Device A saw a failure at t=5,000 and saved; device B, which read the profile before that, saves its receipt of 1,000.
-    const stored = { canvasPrefs: { chat1: { optedOut: false, lastViewedRev: 0, lastViewedDataRev: 0, lastViewedWorkflowAt: 5_000 } } };
-    const fromB = { canvasPrefs: { chat1: { optedOut: false, lastViewedRev: 0, lastViewedDataRev: 0, lastViewedWorkflowAt: 1_000 } } };
-    assert.equal(mergeProfileReceipts(stored, fromB).canvasPrefs.chat1.lastViewedWorkflowAt, 5_000);
+    const stored = { canvasPrefs: { owner1: { optedOut: false, lastViewedRev: 0, lastViewedDataRev: 0, lastViewedWorkflowAt: 5_000 } } };
+    const fromB = { canvasPrefs: { owner1: { optedOut: false, lastViewedRev: 0, lastViewedDataRev: 0, lastViewedWorkflowAt: 1_000 } } };
+    assert.equal(mergeProfileReceipts(stored, fromB).canvasPrefs.owner1.lastViewedWorkflowAt, 5_000);
 });
 
 test("a stored entry the write leaves out is kept only when it holds a receipt and its session still exists", () => {

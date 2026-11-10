@@ -1,6 +1,6 @@
 /**
- * Owner, 2026-11-06T19:40Z (F9): "I asked the chat for another revision of the workflow, it supposedly built one, but i
- * can't find it anywhere". His chat called spawn_workflow with new YAML (version 1.1.0) as a draft: a third workflow child
+ * Owner, 2026-11-06T19:40Z (F9): "I asked the session for another revision of the workflow, it supposedly built one, but i
+ * can't find it anywhere". His session called spawn_workflow with new YAML (version 1.1.0) as a draft: a third workflow child
  * of hacker-news-top-change-monitor, its own revision 1, never started, beside #1 and #2 (1.0.0, running). The Definition
  * view showed it (it is the newest child) but said only "Revision 1"; the picker said "· revision 1"; the Workflows view
  * listed only started Workflows. Now:

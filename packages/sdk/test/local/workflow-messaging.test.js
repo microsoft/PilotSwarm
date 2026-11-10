@@ -25,7 +25,7 @@
  *   decides the sender in the transaction that admits the receive or
  *   accepts a fresh input, so a sender deleted after the receive was
  *   resolved, or after the send was checked, is refused there; since stage
- *   2.1 (R5, migration 0107) deleting a Workflow's own parent (the chat
+ *   2.1 (R5, migration 0107) deleting a Workflow's own parent (the session
  *   that owns it) deletes the Workflow and cancels its run with it, so its
  *   receive is never entered;
  * - one reading of the store's clock decides each acceptance and each
@@ -685,7 +685,7 @@ states:
             const run = await started(h, parent, PARENT_RECEIVER, { dispatch: false });
             const before = await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "before" });
             expect(before).toMatchObject({ ok: true, claimedBy: null, senderSessionId: parent.sessionId });
-            // The parent is deleted before the run enters the receive. Stage 2.1 (R5, migration 0107): deleting the chat that owns
+            // The parent is deleted before the run enters the receive. Stage 2.1 (R5, migration 0107): deleting the session that owns
             // a Workflow deletes the Workflow with it, and that cancels its run in the same transaction (0090), so the receive is
             // never entered and the parent's input is never taken. (Before 2.1 the Workflow stayed, and its receive failed as
             // unavailable; a deleted sender that is not the parent still fails it so, below.)
@@ -727,7 +727,7 @@ states:
                 return stop;
             };
             // The parent selector: the parent gave an input before the run began, and is deleted after its receive was
-            // resolved, before its admission. Stage 2.1 (R5, migration 0107): deleting the chat that owns a Workflow deletes
+            // resolved, before its admission. Stage 2.1 (R5, migration 0107): deleting the session that owns a Workflow deletes
             // the Workflow with it and cancels its run in the same transaction (0090); the admission then admits nothing (the
             // session is deleted), and the parent's input is not taken. (Before 2.1 the Workflow stayed, and the admission
             // failed the receive as unavailable; a named sender that is not the parent still does, below.)

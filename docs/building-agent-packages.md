@@ -363,7 +363,7 @@ workflows/release-watch/
 └── card.md           # its interface card
 ```
 
-The card tells a chat what the Workflow is, as a canvas app's manifest does.
+The card tells a session what the Workflow is, as a canvas app's manifest does.
 YAML front matter, then notes:
 
 ```markdown
@@ -400,10 +400,10 @@ node of the definition (or a hint note that names a model). Errors name the file
 (`workflow_card_mismatch`, `invalid_workflow_card`, `invalid_workflow`,
 `workflow_name_mismatch`, `workflow_missing_card`, `workflow_missing_yaml`).
 
-The card's `effects` are your words, and people and chats read them as such
+The card's `effects` are your words, and people and sessions read them as such
 (`Effects (the author's words): …`). Beside them they read what the
 definition itself shows: whether it runs scripts (code on a worker that can
-reach the network and use the starting chat's tools, which can read and
+reach the network and use the starting session's tools, which can read and
 write files and run processes) and which agent steps ask a model.
 
 `modelHints` (OF-S2-7) say what kind of model an agent node needs, keyed by
@@ -415,13 +415,13 @@ name a provider or a model, so the package works on any deployment:
 publication refuses a note that contains `provider:model` or the id or name of
 any model in the publisher's catalog. A Workflow definition
 never names a model: every agent node uses the model, reasoning effort and
-context tier of the chat that starts it, unless that start maps the node to a
-model with `agent_models`. A chat does that only when the person asks, or
+context tier of the session that starts it, unless that start maps the node to a
+model with `agent_models`. A session does that only when the person asks, or
 when the node's hint asks; it picks a model from its own catalog
 (`list_available_models`) and says what it chose. Give hints only where a node
 really needs one.
 
-An agent names the definitions its chat may start:
+An agent names the definitions its session may start:
 
 ```yaml
 workflows:
@@ -430,12 +430,12 @@ workflows:
 ```
 
 A bare name must be one of this package's definitions (`unknown_workflow_ref`
-otherwise); another package's is checked when a chat starts it. An agent that
+otherwise); another package's is checked when a session starts it. An agent that
 names definitions cannot be an agent step's agent (`workflow_agent_brings_workflows`
 inside the package; `AGENT_HAS_WORKFLOWS` at save and Start).
 
 People find a package's definitions in the new-session picker's **Workflows**
-group; choosing one makes a chat for it (its *coordinating chat*). In any chat,
+group; choosing one makes a session for it (its *coordinating session*). In any session,
 a package's definition is named `<package>/<name>`, attached at the package's
 version and locked: it is started, never edited; **Make a copy** makes an
 editable one. See `docs/developer/building/workflow-sessions.md`.

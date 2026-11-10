@@ -50,7 +50,7 @@ export function cleanView(value) {
         canvasSlot: Number.isInteger(value.canvasSlot) && value.canvasSlot >= 1 && value.canvasSlot <= 5 ? value.canvasSlot : 1,
         diagnosticsOpen: value.diagnosticsOpen === true,
         artifactSessionId: text(value.artifactSessionId), artifactFilename: text(value.artifactFilename),
-        // Workflow Simplified (review UI-8): the Workflow row selected under its chat, and the right block's tab.
+        // Workflow Simplified (review UI-8): the Workflow row selected under its session, and the right block's tab.
         workflowRowId: text(value.workflowRowId),
         sidePaneTab: SIDE_TABS.includes(value.sidePaneTab) ? value.sidePaneTab : "canvas",
         // Review UI-D3: the Workflow tab's context, restored with the view (choosing in the tab is not a visit).

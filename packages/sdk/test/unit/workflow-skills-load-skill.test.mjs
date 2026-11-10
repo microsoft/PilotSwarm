@@ -5,7 +5,7 @@
  * `search_capabilities` read only capability sources. The worker loads the
  * Workflow skills (plugins/workflow/skills, and workflow-testing with test
  * mode on) from an SDK directory rather than a plugin directory, so they must
- * also come as a static capability source; otherwise a chat that follows
+ * also come as a static capability source; otherwise a session that follows
  * the guidance (call load_skill with name workflow-authoring) is told no such skill
  * exists. A V1 session reads the worker's shared skill list and must keep
  * them too.
@@ -46,7 +46,7 @@ async function catalogFor(worker, sessionId, version) {
 test("a Base V2 session on a default worker can load every Workflow skill", async (t) => {
     const worker = defaultWorker(t, false);
     const names = await catalogFor(worker, "s-v2", "v2");
-    for (const name of WORKFLOW_SKILLS) assert.ok(names.includes(name), `load_skill serves ${name} to a chat`);
+    for (const name of WORKFLOW_SKILLS) assert.ok(names.includes(name), `load_skill serves ${name} to a session`);
     assert.ok(!names.includes("workflow-testing"), "workflow-testing stays hidden with test mode off");
     assert.ok(names.includes("canvas-apps"), "the system plugin's skills are still there");
     // Each name once: the source is not duplicated.

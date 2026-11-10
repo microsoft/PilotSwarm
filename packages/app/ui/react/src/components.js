@@ -1760,7 +1760,7 @@ function ThemePickerModalContainer({ controller }) {
 
 /**
  * Workflow sessions (TUI): the read-only workflow view (selectWorkflowViewModal): the states in graph order with the
- * selected one, then the selected state's details, transitions and agent chats. It sends nothing.
+ * selected one, then the selected state's details, transitions and agent sessions. It sends nothing.
  */
 export function WorkflowViewModal({ state }) {
     const platform = useUiPlatform();

@@ -54,8 +54,8 @@ async function until(check, label, timeoutMs = 150_000) {
 }
 
 describe("workflow driven by an agent", () => {
-    // Stage 2.1: workflow_definition saves revision 1 of the chat's definition, starts it, and reads it back with the Workflow
-    // it started (a chat with Workflows on; on demand, owner 2026-11-08T16:55Z).
+    // Stage 2.1: workflow_definition saves revision 1 of the session's definition, starts it, and reads it back with the Workflow
+    // it started (a session with Workflows on; on demand, owner 2026-11-08T16:55Z).
     it("saves without running, starts the saved revision, runs with delegated tools and wakes the parent once", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const respond = (_body, position) => {

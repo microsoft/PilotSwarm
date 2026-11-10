@@ -52,10 +52,10 @@ test("a Workflow's start and elapsed time come from its live run's own events; a
 test("each icon button of the Workflow tab has its explanation, for a tooltip that reads 'name — explanation'", () => {
     assert.equal(workflowTabButtonTip("pause"), "no new node starts; started nodes finish");
     assert.equal(workflowTabButtonTip("start", { number: 8 }), "start Workflow #8 from this definition");
-    assert.equal(workflowTabButtonTip("start-another", { name: "watch-flow", number: 3 }), "ask the chat to start watch-flow #3 from this definition");
+    assert.equal(workflowTabButtonTip("start-another", { name: "watch-flow", number: 3 }), "ask the session to start watch-flow #3 from this definition");
     assert.equal(workflowTabButtonTip("save", { revision: 4 }), "save as a new revision after revision 4");
     // Owner, 2026-11-06T19:40Z (F7): full screen's way out.
-    assert.equal(workflowTabButtonTip("exit-full-screen"), "bring back the chat and the sessions");
+    assert.equal(workflowTabButtonTip("exit-full-screen"), "bring back the session and the sessions");
     for (const kind of ["definition", "workflows", "start", "start-another", "yaml", "compare", "pause", "resume", "stop", "save", "discard",
         "exit-full-screen"]) {
         const tip = workflowTabButtonTip(kind);
@@ -136,7 +136,7 @@ test("F7: the full-screen header button is a named, framed icon with its tooltip
         onClick: () => {} });
     const html = renderToStaticMarkup(React.createElement(WorkflowTab, { controller: mountTab(), mobile: false, modeButtons: exit }));
     const head = buttonsOf(html, "<header class=\"ps-wf-tab-head\"", "</header>");
-    assert.deepEqual(head.map(button => [button.name, button.words, button.tip]).at(-1), ["Exit full screen", "", "bring back the chat and the sessions"]);
+    assert.deepEqual(head.map(button => [button.name, button.words, button.tip]).at(-1), ["Exit full screen", "", "bring back the session and the sessions"]);
     assert.match(html, /<span class="ps-wf-tab-modes"><span class="ps-workflow-tool-wrap"><button type="button" class="ps-mini-button ps-workflow-tool-button" aria-label="Exit full screen"/);
 });
 

@@ -1,12 +1,12 @@
 /**
- * Workflows on demand through the real Copilot CLI (scripted local inference, no database): what the chat records for
+ * Workflows on demand through the real Copilot CLI (scripted local inference, no database): what the session records for
  * enable_workflows, and the row the portal draws from it (chat-activity.js appendChatCall: success false or an error is
  * "Failed").
  *
- * Deployed UX check: a chat showed "enable_workflows Failed" although Workflows were on. The activation call itself is
+ * Deployed UX check: a session showed "enable_workflows Failed" although Workflows were on. The activation call itself is
  * recorded as a success (its result {"workflows":"on"} and the turn-boundary note). A call after they are on reached a
  * CLI session that was no longer declared the tool, and the CLI refused it itself ("Tool 'enable_workflows' does not
- * exist."): a Failed row. A chat whose Workflows are on demand now keeps the tool declared once they are on; the call is
+ * exist."): a Failed row. A session whose Workflows are on demand now keeps the tool declared once they are on; the call is
  * answered "already on" and recorded as a success. Two calls in one response (the CLI runs them at once) give one
  * activation and one continuation.
  *
@@ -26,7 +26,7 @@ import { appendChatCall } from "../../../app/ui/core/src/chat-activity.js";
 const MODEL = "gpt-5.6-terra";
 const owner = { provider: "test", subject: "workflow-context-cli", email: null, displayName: null };
 
-/** A chat on a manager with durable capability storage (in memory, compare-and-set), the real CLI and a scripted model. */
+/** A session on a manager with durable capability storage (in memory, compare-and-set), the real CLI and a scripted model. */
 async function harness(respond, run) {
     const home = mkdtempSync(join(tmpdir(), "ps-workflow-context-cli-"));
     const sessionId = randomUUID();
@@ -94,7 +94,7 @@ describe("enable_workflows through the real CLI: the recorded tool event and its
         }, async (h) => {
             const { turn, saves, sessionId } = h;
             const first = await turn(0, "watch the build every minute");
-            expect(first.result.forceContinuePrompt).toMatch(/^Workflows are now on in this chat/);
+            expect(first.result.forceContinuePrompt).toMatch(/^Workflows are now on in this session/);
             expect(h.state.workflows).toBe(true);
             const [activation] = completions(first.events);
             expect(activation.data.success).toBe(true);
@@ -106,7 +106,7 @@ describe("enable_workflows through the real CLI: the recorded tool event and its
             expect(rows(sessionId, first.events, second.events)).toEqual(["Done", "Done"]);
             expect(again.data.success, JSON.stringify(again.data)).toBe(true);
             expect(again.data.error).toBeUndefined();
-            expect(resultText(again)).toMatch(/already on in this chat/);
+            expect(resultText(again)).toMatch(/already on in this session/);
             expect(second.result.forceContinuePrompt).toBeUndefined();
             expect(saves).toHaveLength(1);
             const continued = requests.at(-2);
@@ -121,7 +121,7 @@ describe("enable_workflows through the real CLI: the recorded tool event and its
             return { tools: [{ name: "enable_workflows", args: {} }, { name: "enable_workflows", args: {} }] };
         }, async ({ turn, saves, sessionId }) => {
             const { result, events } = await turn(0, "watch the build every minute");
-            expect(result.forceContinuePrompt).toMatch(/^Workflows are now on in this chat/);
+            expect(result.forceContinuePrompt).toMatch(/^Workflows are now on in this session/);
             expect(result.queuedActions ?? []).toEqual([]);
             const done = completions(events);
             expect(done).toHaveLength(2);

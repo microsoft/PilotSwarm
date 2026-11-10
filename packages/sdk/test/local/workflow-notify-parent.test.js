@@ -363,11 +363,11 @@ describe("workflow: telling the parent when a live run ends", () => {
         }
     });
 
-    // Deployed check DS-2: a chat made without a first message (POST /sessions) has no session orchestration until that
+    // Deployed check DS-2: a session made without a first message (POST /sessions) has no session orchestration until that
     // message. A Workflow it has (a person started it) that ends then is not lost: the worker's own delivery finds no
-    // orchestration, the notice is kept as one chat note its first turn reads, and the skip says so. The chat is not
+    // orchestration, the notice is kept as one session note its first turn reads, and the skip says so. The session is not
     // started for it.
-    it("DS-2: a parent chat that has not started yet keeps the run's end as one note for its first turn; nothing is queued", { timeout: TIMEOUT }, async () => {
+    it("DS-2: a parent session that has not started yet keeps the run's end as one note for its first turn; nothing is queued", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv(), { deliver: client => workflowParentNotifier(client) });
         try {
             const parent = await parentOf(h);
@@ -380,28 +380,28 @@ describe("workflow: telling the parent when a live run ends", () => {
             expect(notices.map(event => [event.eventType, event.data])).toEqual([
                 ["workflow.parent_notification_skipped", { runId, reason: WORKFLOW_NOTICE_KEPT_AS_NOTE }],
             ]);
-            expect(WORKFLOW_NOTICE_KEPT_AS_NOTE).toBe("the chat has not started yet; kept as a note for its first turn");
-            // The chat still has no orchestration: nothing queued, nothing started.
+            expect(WORKFLOW_NOTICE_KEPT_AS_NOTE).toBe("the session has not started yet; kept as a note for its first turn");
+            // The session still has no orchestration: nothing queued, nothing started.
             expect((await h.client.getStatus(`session-${parent.parentId}`)).status).toBe("NotFound");
-            const notes = await h.store.chat.pendingNotes(parent.parentId);
+            const notes = await h.store.sessionDefinitions.pendingNotes(parent.parentId);
             expect(notes).toHaveLength(1);
             expect(notes[0]).toMatchObject({ definitionId: id, revision: 1 });
             expect(notes[0].text).toContain(runId);
             expect(notes[0].text).toContain("succeeded");
-            // Kept once: the same notice again (a retried attempt) adds none, also after the chat's first turn read it.
-            await h.store.chat.keepNote(parent.parentId, id, 1, notes[0].text);
-            expect(await h.store.chat.pendingNotes(parent.parentId)).toHaveLength(1);
-            await h.store.chat.consumeNotes(parent.parentId, [notes[0].noteId]);
-            await h.store.chat.keepNote(parent.parentId, id, 1, notes[0].text);
-            expect(await h.store.chat.pendingNotes(parent.parentId)).toEqual([]);
+            // Kept once: the same notice again (a retried attempt) adds none, also after the session's first turn read it.
+            await h.store.sessionDefinitions.keepNote(parent.parentId, id, 1, notes[0].text);
+            expect(await h.store.sessionDefinitions.pendingNotes(parent.parentId)).toHaveLength(1);
+            await h.store.sessionDefinitions.consumeNotes(parent.parentId, [notes[0].noteId]);
+            await h.store.sessionDefinitions.keepNote(parent.parentId, id, 1, notes[0].text);
+            expect(await h.store.sessionDefinitions.pendingNotes(parent.parentId)).toEqual([]);
         } finally {
             await h.stop();
         }
     });
 
     // Review R3-PA1 (formal parent.r3-told-twice): the note and its skip record are one write. Fault injection: the first
-    // delivery finds the parent chat not started, and the note's write fails right after it (as a crash would); the retry
-    // finds the chat started and delivers. The parent is told once: a pending note or a notice, never both.
+    // delivery finds the parent session not started, and the note's write fails right after it (as a crash would); the retry
+    // finds the session started and delivers. The parent is told once: a pending note or a notice, never both.
     it("R3-PA1: a failure right after the note is kept tells the parent once, as a note or as a notice, never both", { timeout: TIMEOUT }, async () => {
         const delivered = [];
         let deliveries = 0;
@@ -412,11 +412,11 @@ describe("workflow: telling the parent when a live run ends", () => {
             return { delivered: true };
         } });
         try {
-            const chat = h.store.chat;
+            const session = h.store.sessionDefinitions;
             let failed = false;
             for (const name of ["keepNote", "keepNoteIn"]) {
-                const original = chat[name].bind(chat);
-                chat[name] = async (...args) => {
+                const original = session[name].bind(session);
+                session[name] = async (...args) => {
                     const result = await original(...args);
                     if (!failed) {
                         failed = true;
@@ -434,7 +434,7 @@ describe("workflow: telling the parent when a live run ends", () => {
             const notices = await settledNotices(h, id, runId);
             expect(failed).toBe(true);
             expect(deliveries).toBe(2);
-            const pending = await h.store.chat.pendingNotes(parent.parentId);
+            const pending = await h.store.sessionDefinitions.pendingNotes(parent.parentId);
             expect(pending.length + delivered.length, JSON.stringify({ pending, delivered, notices })).toBe(1);
             expect(delivered).toEqual([expect.objectContaining({ parentSessionId: parent.parentId, clientMessageId: `workflow:${id}:${runId}:terminal` })]);
             expect(notices.map(event => event.eventType)).toEqual(["workflow.parent_notified"]);

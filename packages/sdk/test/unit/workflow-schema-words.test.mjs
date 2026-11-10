@@ -1,5 +1,5 @@
 // A workflow schema problem in plain words (schema-words.ts, used by WorkflowSchemaSet.validate): the words a refused
-// Start shows in the Start dialog and returns to the chat (WORKFLOW_INPUT_INVALID's details), and a node's input or output
+// Start shows in the Start dialog and returns to the session (WORKFLOW_INPUT_INVALID's details), and a node's input or output
 // problems. No JSON of Ajv's params, no const or enum value; the place by name.
 //
 // Run: node --test packages/sdk/test/unit/workflow-schema-words.test.mjs (after the SDK build)

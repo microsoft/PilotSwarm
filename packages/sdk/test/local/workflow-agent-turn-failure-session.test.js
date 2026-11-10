@@ -1,7 +1,7 @@
 /**
- * PR 270 (owner decision): the turn of a Workflow agent state's own chat ends as an error on a session.error that is not
+ * PR 270 (owner decision): the turn of a Workflow agent state's own session ends as an error on a session.error that is not
  * benign, even when the model already gave text (TurnOptions.sessionErrorEndsTurn, set by the runTurn activity for that
- * chat only). Before, such a turn ended "completed" with the text, no retry ran, no reminder was given (the turn had an
+ * session only). Before, such a turn ended "completed" with the text, no retry ran, no reminder was given (the turn had an
  * error), and the step waited for its deadline. Every other session keeps today's rule: text wins over the error.
  *
  * The Copilot session is a test double that emits the events a turn gets (as inline-control-tools.test.js's).
@@ -60,8 +60,8 @@ function textThenError(error = RATE_LIMIT) {
     return fake;
 }
 
-describe("a Workflow agent chat's turn whose model fails after it gave text (PR 270)", () => {
-    it("ends as an error for the agent chat's turn, so its retries and its failure report apply", async () => {
+describe("a Workflow agent session's turn whose model fails after it gave text (PR 270)", () => {
+    it("ends as an error for the agent session's turn, so its retries and its failure report apply", async () => {
         const managed = new ManagedSession("workflow-agent-text-then-error", textThenError(), {});
         const result = await managed.runTurn("do the step", { sessionErrorEndsTurn: true });
         expect(result.type).toBe("error");
@@ -75,7 +75,7 @@ describe("a Workflow agent chat's turn whose model fails after it gave text (PR 
         expect(result.content).toBe("I looked at the change; let me write the review.");
     });
 
-    it("leaves the benign post-completion query error benign for the agent chat too", async () => {
+    it("leaves the benign post-completion query error benign for the agent session too", async () => {
         const managed = new ManagedSession("workflow-agent-benign", textThenError({
             type: "session.error", data: { message: "Cannot read properties of null (reading 'length')", errorType: "query" },
         }), {});

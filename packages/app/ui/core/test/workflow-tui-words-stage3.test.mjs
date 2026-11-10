@@ -3,8 +3,8 @@
  * covered, and the clearer items). What the other TUI and step-log tests do not already pin:
  * - D-W12: the marks are the words module's (✓ ● ✕ ⊘); ✗ is gone; ○ for a node not reached is the TUI's own;
  * - D-W13: the title's state is one word; its detail is a notice line ("Canceled at once", "Pausing · waiting…");
- * - no ids in TUI lines: a session by its name (an agent node's chat "review · agent"), else words, never its id;
- * - the session list under a chat in words; a status in its one word;
+ * - no ids in TUI lines: a session by its name (an agent node's session "review · agent"), else words, never its id;
+ * - the session list under a session in words; a status in its one word;
  * - the words module's state word for a raw status, and a server reason that is only a state word is left out;
  * - the step log's Visit table and the whole value's preview line.
  *
@@ -27,7 +27,7 @@ const AGENT_STATES = [
 function view(model, { sessions = [], node = "poll", events = [] } = {}) {
     const store = createStore(appReducer, createInitialState({ mode: "local" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-flow", status: "running", sessionKind: "workflow", parentSessionId: "chat" },
-        { sessionId: "chat", title: "Release chat", status: "idle" }, ...sessions] });
+        { sessionId: "chat", title: "Release session", status: "idle" }, ...sessions] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel(events) });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: model, readModelRunId: null } });
@@ -61,10 +61,10 @@ test("D-W13: one word in the title; Canceled at once and Pausing say their detai
     assert.ok(!stopped.lines.some(line => /Stopped/.test(line)), "never Stopped");
 });
 
-test("no ids: a received message, a send and an agent node's chat say the session's name; unloaded, words", () => {
+test("no ids: a received message, a send and an agent node's session say the session's name; unloaded, words", () => {
     const inbox = sender => [{ messageId: "m1", contract: "Ack@1", senderSessionId: sender, claimedBy: "nx-await_ack-1", acceptedAt: "2026-11-02T09:00:00Z" }];
     const received = readModel({ nodeExecutions: [done("await_ack", 1, "received")], inbox: inbox("chat") });
-    assert.ok(view(received, { node: "await_ack" }).lines.includes("Received Ack@1 from Release chat."), view(received, { node: "await_ack" }).lines.join("\n"));
+    assert.ok(view(received, { node: "await_ack" }).lines.includes("Received Ack@1 from Release session."), view(received, { node: "await_ack" }).lines.join("\n"));
     const unknown = readModel({ nodeExecutions: [done("await_ack", 1, "received")], inbox: inbox("gone-123456") });
     const lines = view(unknown, { node: "await_ack" }).lines;
     assert.ok(lines.includes("Received Ack@1."), lines.join("\n"));
@@ -72,17 +72,17 @@ test("no ids: a received message, a send and an agent node's chat say the sessio
 
     const agentModel = readModel({ graph: { revision: 1, initial: "review", states: AGENT_STATES },
         nodeExecutions: [row("review", 1, "pending", { agent: { childSessionId: "child-1", spawned: true, end: null } })] });
-    const chats = view(agentModel, { node: "review", sessions: [
+    const agentSessions = view(agentModel, { node: "review", sessions: [
         { sessionId: "child-1", title: "Workflow step: review", status: "running", parentSessionId: "wf" },
         { sessionId: "helper-1", title: "Helper", status: "cancelled", parentSessionId: "child-1" },
         { sessionId: "helper-2", title: null, status: "idle", parentSessionId: "child-1" },
     ] }).lines;
-    assert.ok(chats.includes("▸ visit 1 · ● running · review · agent"), chats.join("\n"));
+    assert.ok(agentSessions.includes("▸ visit 1 · ● running · review · agent"), agentSessions.join("\n"));
     // C: "2 sessions under this agent session:", each by its title and its status in one word.
-    assert.ok(chats.includes("2 sessions under this agent session:"), chats.join("\n"));
-    assert.ok(chats.includes("Helper · Canceled"), chats.join("\n"));
-    assert.ok(chats.includes("untitled session · Waiting"), chats.join("\n"));
-    assert.ok(!chats.some(line => /child-1|helper-2/.test(line)), "no session id");
+    assert.ok(agentSessions.includes("2 sessions under this agent session:"), agentSessions.join("\n"));
+    assert.ok(agentSessions.includes("Helper · Canceled"), agentSessions.join("\n"));
+    assert.ok(agentSessions.includes("untitled session · Waiting"), agentSessions.join("\n"));
+    assert.ok(!agentSessions.some(line => /child-1|helper-2/.test(line)), "no session id");
 });
 
 test("a status in its one word, never raw; a server reason that is only a state word is left out", () => {

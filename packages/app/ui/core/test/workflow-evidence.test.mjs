@@ -5,7 +5,7 @@
  *   - a parallel step's visit lists each branch: where it is, its last step, a short result and why it did not succeed;
  *     a blocked join names the branches that block it
  *   - from a step's details a person asks the workflow's parent agent for findings, rework or approval: an ordinary
- *     message in the parent's chat naming the run, step, visit and branch, how it ended and its result; the parent decides
+ *     message in the parent's session naming the run, step, visit and branch, how it ended and its result; the parent decides
  *
  * Run: node --test test/workflow-evidence.test.mjs
  */
@@ -61,7 +61,7 @@ test("a parallel step's visit lists each branch, and a blocked join names the br
         ["not loaded", null]]);
     assert.deepEqual([running.running, running.blocked, running.blocking], [1, false, []]);
     // Owner batch 7 (H2): while the visit runs with its whole history loaded, a branch not begun is queued; a running
-    // branch names its current step's deadline, and an agent step's created chat.
+    // branch names its current step's deadline, and an agent step's created session.
     const live = workflowBranchEvidence([
         { ...executions[0], deadline: "2026-11-04T18:10:00.000Z", agent: { childSessionId: "child-0", spawned: true } },
         { id: "d", stateId: "work", ordinal: 2, status: "pending", agent: { childSessionId: "child-1", spawned: false }, ...branch(1) },
@@ -119,7 +119,7 @@ function seeded({ parent = "parent-1" } = {}) {
     return { controller, store, sent };
 }
 
-test("the controller sends the question to the parent's chat as an ordinary message, and says why when it cannot", async () => {
+test("the controller sends the question to the parent's session as an ordinary message, and says why when it cannot", async () => {
     const h = seeded();
     const result = await h.controller.askParentAboutStep("wf", { stateId: "fan", kind: "rework", note: "branch 1 crashed" });
     assert.deepEqual(result, { ok: true, parentSessionId: "parent-1" });
@@ -148,7 +148,7 @@ test("the portal shows a parallel step's branches and the three ways to ask the 
     const render = props => renderToStaticMarkup(React.createElement(WorkflowNodeContent, { tab: "details", selected: fan, nodes: projected.nodes,
         select: () => {}, runOutput: null, runError: null, runId: RUN, ...props }));
     const html = render({ onAskParent: async () => ({ ok: true }) });
-    // Owner batch 7 (H2): one Branches table (#, current step, status, deadline, result, agent chat). People read branches from
+    // Owner batch 7 (H2): one Branches table (#, current step, status, deadline, result, agent session). People read branches from
     // 1; the data attributes keep the index from 0.
     assert.match(html, /aria-label="Items"><h3>Items<\/h3><p[^>]*>1\/3 ok<\/p>/);
     assert.match(html, /<p role="status" data-blocking="1,2"[^>]*>Blocked by items 2, 3<\/p>/);

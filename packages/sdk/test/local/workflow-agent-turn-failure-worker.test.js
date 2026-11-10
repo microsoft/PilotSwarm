@@ -1,16 +1,16 @@
 /**
- * PR 270 (owner decision; the TEST run whose two For each items waited 75 minutes): an agent step whose chat's turn fails
+ * PR 270 (owner decision; the TEST run whose two For each items waited 75 minutes): an agent step whose session's turn fails
  * for good fails execution_failed at once and its failure route runs, instead of waiting for its deadline. A full
  * PilotSwarmWorker (PostgreSQL, Duroxide and the Copilot CLI) with the model scripted (scripted-model.mjs), as
  * workflow-agent-worker.test.js runs one.
  *
- * - The model fails every request of the step's chat (HTTP 400): each turn ends in an error, the session orchestration
+ * - The model fails every request of the step's session (HTTP 400): each turn ends in an error, the session orchestration
  *   retries it (15 s, then 30 s), and when its retries are spent it reports the failed turn
  *   (orchestration/workflow-turn-failure.ts): the step fails execution_failed (winner controller), the run takes its
- *   failure route, and the chat is cancelled, long before the step's 30-minute deadline.
+ *   failure route, and the session is cancelled, long before the step's 30-minute deadline.
  * - Text, then the failure: the model answers the step's prompt with text and a tool call, then fails the next request.
  *   Before, the turn ended "completed" with that text (the error was dropped), so no retry ran, no reminder was given and
- *   the step waited for its deadline. Now the chat's turn ends as an error, retries, and the failure is reported.
+ *   the step waited for its deadline. Now the session's turn ends as an error, retries, and the failure is reported.
  *
  * At 01caf109 the step stays pending until its deadline in both cases, so both fail there.
  */
@@ -69,7 +69,7 @@ async function waitFor(label, check, timeoutMs, evidence) {
     throw new Error(`boundary not reached: ${label}`);
 }
 
-/** Run one case: `respond` answers the step chat's requests; returns what the case checks. */
+/** Run one case: `respond` answers the step session's requests; returns what the case checks. */
 async function runCase(respond) {
     const env = getEnv();
     const requests = [];
@@ -102,7 +102,7 @@ async function runCase(respond) {
             }, 300_000, evidence);
             const elapsedMs = Date.now() - startedAt;
             const node = await store.readNodeExecution(nodeExecutionId);
-            const invocation = await waitFor("the chat's end is sent", async () => {
+            const invocation = await waitFor("the session's end is sent", async () => {
                 const row = await store.readAgentInvocation(nodeExecutionId);
                 return row?.endSentAt ? row : null;
             }, 60_000, evidence);
@@ -123,7 +123,7 @@ function expectFailedStep({ run, node, invocation, failed, elapsedMs }) {
     expect(failed).toContainEqual(expect.objectContaining({ nodeExecutionId: node.nodeExecutionId, outcome: "execution_failed", cause: "agent_turn_failed" }));
 }
 
-describe("a Workflow agent step whose chat's turn fails for good (PR 270, real worker)", () => {
+describe("a Workflow agent step whose session's turn fails for good (PR 270, real worker)", () => {
     it("the model fails every request: after the turn's retries the step fails execution_failed and its failure route runs", { timeout: TIMEOUT }, async () => {
         const outcome = await runCase(() => ({ httpStatus: 400, message: "scripted model failure: exceeded token rate limit" }));
         expectFailedStep(outcome);
@@ -131,7 +131,7 @@ describe("a Workflow agent step whose chat's turn fails for good (PR 270, real w
         expect(outcome.requests.filter(request => request.step === 0).length).toBeGreaterThanOrEqual(3);
     });
 
-    it("text, then the failure: the chat's turn ends as an error, not completed, so it retries and the step fails", { timeout: TIMEOUT }, async () => {
+    it("text, then the failure: the session's turn ends as an error, not completed, so it retries and the step fails", { timeout: TIMEOUT }, async () => {
         const outcome = await runCase((_body, position) => (position.step === 0
             ? { content: "Let me look at the models first.", tools: [{ name: "list_available_models", args: {} }] }
             : { httpStatus: 400, message: "scripted model failure after text" }));

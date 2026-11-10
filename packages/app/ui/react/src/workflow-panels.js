@@ -1,6 +1,6 @@
 import React from "react";
 import {
-    compactWorkflowExecutions, formatSeconds, formatWorkflowValue, workflowActivity, workflowAgentBindingRows, workflowAgentChatMode, workflowAgentTask, workflowAgentTools, workflowExecutionResult,
+    compactWorkflowExecutions, formatSeconds, formatWorkflowValue, workflowActivity, workflowAgentBindingRows, workflowAgentSessionMode, workflowAgentTask, workflowAgentTools, workflowExecutionResult,
     workflowExecutionValue, workflowKvApplied, workflowKvCompare, workflowKvSnapshot, workflowRouteKind, workflowSessionSubtree, workflowShownExecution,
     workflowAgentEndText, workflowEventTime, workflowShortHash, workflowShownNotices, workflowVisitEnding, workflowWholeValue,
     describeWorkflowExecution, workflowBranchChoice, workflowBranchNumber, workflowBranchSteps, workflowForEachText,
@@ -227,7 +227,7 @@ function kindProperties(node, current) {
     }
     if (node.kind === "agent") {
         // The workflow interface the state names and what the shown run pins it to (package revision, interface digest).
-        rows.push(["Agent", workflowAgentTask(node)], ["Agent session", workflowAgentChatMode(node)], ...workflowAgentBindingRows(node.binding), ["Outcomes", (node.outcomes || []).join(", ") || "—"]);
+        rows.push(["Agent", workflowAgentTask(node)], ["Agent session", workflowAgentSessionMode(node)], ...workflowAgentBindingRows(node.binding), ["Outcomes", (node.outcomes || []).join(", ") || "—"]);
         // FU-17: a state that limits its agent's tools says which.
         if (workflowAgentTools(node)) rows.push(["Tools", workflowAgentTools(node)]);
         if (node.timeoutSeconds !== undefined) rows.push(["Deadline", typeof node.timeoutSeconds === "number" ? formatSeconds(node.timeoutSeconds) : String(node.timeoutSeconds)]);
@@ -240,19 +240,19 @@ function kindProperties(node, current) {
 }
 
 /**
- * An agent state's child session (design 03, R23): a click opens its actual chat, which people read but cannot
+ * An agent state's child session (design 03, R23): a click opens its actual session, which people read but cannot
  * write to. Nothing is opened when the child has not been created yet.
  */
 function AgentChild({ agent, openSession, subtree = [] }) {
     if (!agent?.childSessionId) return null;
-    // Every session under this step: its agent chat and what that chat started (mock M14 "View owned subtree").
+    // Every session under this step: its agent session and what that session started (mock M14 "View owned subtree").
     const under = subtree.filter(entry => entry.depth > 0);
     return h("div", { className: "ps-workflow-agent-child" },
         h("h3", null, "Agent session"),
         h("div", { className: "ps-workflow-property" }, h("span", null, "Session"), h("strong", null, agent.childSessionId)),
         h("div", { className: "ps-workflow-property" }, h("span", null, "Status"),
             h("strong", null, agent.end ? `Ended (${workflowAgentEndText(agent.end) ?? agent.end})` : agent.spawned ? "Created" : "Not created yet")),
-        openSession && agent.spawned ? h("button", { type: "button", className: "ps-workflow-transition", "data-action": "open-agent-chat",
+        openSession && agent.spawned ? h("button", { type: "button", className: "ps-workflow-transition", "data-action": "open-agent-session",
             onClick: () => openSession(agent.childSessionId) }, "Open the agent session (read-only)") : null,
         // While the step waits, its description already says only the typed result completes it.
         h("p", null, "People can read this agent session. Only the workflow's parent agent can message it."),
@@ -269,7 +269,7 @@ function AgentChild({ agent, openSession, subtree = [] }) {
  * Each branch of a parallel step's visit (owner decision q16; mocks M22 "JOIN BLOCKED k / n", M23 "Inspect conflict",
  * M24 "Inspect evidence"; owner batch 7, H2): how many succeeded, run and wait, which ones block a blocked join, and per
  * branch its current (or last) step, where it is, that step's deadline, its result or why it did not succeed, and its
- * agent chat when that step is an agent step. Branches are numbered from 1 for people; the data attributes keep the
+ * agent session when that step is an agent step. Branches are numbered from 1 for people; the data attributes keep the
  * index from 0.
  */
 function BranchEvidence({ evidence, openSession = null }) {
@@ -296,7 +296,7 @@ function BranchEvidence({ evidence, openSession = null }) {
                 h("td", null, row.name ?? String(workflowBranchNumber(row.index))), h("td", null, row.step ?? "—"), h("td", null, row.status),
                 h("td", { title: row.deadline ? workflowTimeTitle(row.deadline) ?? undefined : undefined }, row.deadline ? workflowShortTime(row.deadline) ?? row.deadline : "—"),
                 h("td", null, row.why ?? row.result ?? (row.outcome ? workflowOutcomeWord(row.outcome) : "—")),
-                h("td", null, !row.agent ? "—" : openSession ? h("button", { type: "button", className: "ps-mini-button", "data-action": "open-branch-chat",
+                h("td", null, !row.agent ? "—" : openSession ? h("button", { type: "button", className: "ps-mini-button", "data-action": "open-branch-session",
                     "data-session": row.agent, onClick: () => openSession(row.agent) }, "Open") : row.agent))))) : null);
 }
 
@@ -346,7 +346,7 @@ function BranchPicker({ branches, chosen, onBranch = null, named = false }) {
 /**
  * Ask the workflow's parent agent about this visit (owner decision q16; mocks M22 "Send findings", M23 "Request scoped
  * rework", M24 "Ask parent for approval"): choose findings, rework or approval, add a note, and send it to the parent
- * agent's chat as an ordinary message (controller.askParentAboutStep). The parent decides what to do.
+ * agent's session as an ordinary message (controller.askParentAboutStep). The parent decides what to do.
  */
 function AskParent({ onAskParent, executionId }) {
     const [kind, setKind] = React.useState(null);
@@ -367,7 +367,7 @@ function AskParent({ onAskParent, executionId }) {
         kind ? h("button", { type: "button", className: "ps-mini-button", "data-action": "ask-parent-send", style: { justifySelf: "start" },
             onClick: () => { send(); } }, "Send to the parent agent") : null,
         sent ? h("p", { role: "status", style: { margin: 0 } }, sent) : null,
-        h("p", { style: { margin: 0, color: "var(--ps-muted)" } }, "It goes to the parent agent's chat as a message; the parent decides what to do."));
+        h("p", { style: { margin: 0, color: "var(--ps-muted)" } }, "It goes to the parent agent's session as a message; the parent decides what to do."));
 }
 
 /** A collapsed list of activity rows (owner decision q14): time, what happened, who, newest first. */
@@ -431,7 +431,7 @@ function KvApplied({ execution, runId, kv }) {
  * the runtime kept on the Workflow (`row.instructions`), or a plain line that only the summary was kept. A reader who is
  * not the Workflow's owner (`readInstructions` answers `{ ownerOnly: true }`; review SF-3) is told so, and nothing is read.
  * A text whose sha256 is not the recorded one (`{ changed: true }`; review SF-4) is not shown: the row says it changed.
- * r4 C04: an echo recorded whole (`row.inline`) is shown from the chat itself, to the owner only, with no file read.
+ * r4 C04: an echo recorded whole (`row.inline`) is shown from the session itself, to the owner only, with no file read.
  */
 function BaseInstructions({ row, readInstructions, onInstructions, openBodies = false }) {
     // Review UI-11: the body (and the whole text) is mounted only while the row is open.
@@ -462,16 +462,16 @@ function LazyDetails({ summary, body, className = undefined, openBodies = false 
         h("summary", null, summary), open ? body() : null);
 }
 
-/** A row's text with its chat's words as a link that opens that chat (r4 C04: the Workflow's line about the agent chat). */
-function withChatLink(text, chat, onOpenChat) {
-    const at = chat && onOpenChat && typeof text === "string" ? text.indexOf(chat.words) : -1;
+/** A row's text with its session's words as a link that opens that session (r4 C04: the Workflow's line about the agent session). */
+function withSessionLink(text, agentSession, onOpenSession) {
+    const at = agentSession && onOpenSession && typeof text === "string" ? text.indexOf(agentSession.words) : -1;
     if (at < 0) return text;
-    return [text.slice(0, at), h("button", { key: "chat", type: "button", className: "ps-link-button", "data-action": "open-agent-chat",
-        "data-session": chat.sessionId, onClick: () => onOpenChat(chat.sessionId) }, chat.words), text.slice(at + chat.words.length)];
+    return [text.slice(0, at), h("button", { key: "chat", type: "button", className: "ps-link-button", "data-action": "open-agent-session",
+        "data-session": agentSession.sessionId, onClick: () => onOpenSession(agentSession.sessionId) }, agentSession.words), text.slice(at + agentSession.words.length)];
 }
 
 /** One row of an agent node's Log: its label and time, then its text (folded with Show more) or its call (to expand). */
-function AgentLogRow({ row, readInstructions = null, onInstructions = null, openBodies = false, onOpenChat = null }) {
+function AgentLogRow({ row, readInstructions = null, onInstructions = null, openBodies = false, onOpenSession = null }) {
     const [open, setOpen] = React.useState(false);
     const body = row.label === "Base instructions" && row.carriedFrom !== undefined
         ? h("p", { className: "ps-wf-muted", "data-carried-from": row.carriedFrom ?? "" }, row.text)
@@ -479,7 +479,7 @@ function AgentLogRow({ row, readInstructions = null, onInstructions = null, open
         : row.detail !== undefined
         ? h(LazyDetails, { summary: row.text, body: () => h("pre", null, row.detail), openBodies })
         : h("div", { className: "ps-wf-alog-text" },
-            h("p", null, open && row.more ? row.more : withChatLink(row.text, row.chat, onOpenChat)),
+            h("p", null, open && row.more ? row.more : withSessionLink(row.text, row.agentSession, onOpenSession)),
             row.more ? h("button", { type: "button", className: "ps-mini-button", "data-action": "fold", onClick: () => setOpen(!open) },
                 open ? "Show less" : "Show more") : null);
     return h("li", { className: "ps-wf-alog-row", "data-kind": row.kind, "data-level": row.level ?? undefined },
@@ -488,14 +488,14 @@ function AgentLogRow({ row, readInstructions = null, onInstructions = null, open
 }
 
 /**
- * What the Log offers for a chat's older lines (workflowAgentLogOlder; review UI-D6): Load older; or the last read's
+ * What the Log offers for a session's older lines (workflowAgentLogOlder; review UI-D6): Load older; or the last read's
  * error, said, with Retry; or, at the history window's limit, that plain fact and no button.
  */
-function OlderChat({ older, chatId, onOlderChat, olderChatLoading }) {
+function OlderAgentHistory({ older, agentSessionId, onOlderAgentHistory, olderAgentHistoryLoading }) {
     if (!older) return null;
-    const loading = Boolean(olderChatLoading?.has?.(chatId));
-    const button = older.action && onOlderChat ? h("button", { type: "button", className: "ps-link-button", "data-action": "older-chat",
-        disabled: loading, onClick: () => onOlderChat(chatId) }, loading ? "Loading…" : older.action === "retry" ? "Retry" : "Load older") : null;
+    const loading = Boolean(olderAgentHistoryLoading?.has?.(agentSessionId));
+    const button = older.action && onOlderAgentHistory ? h("button", { type: "button", className: "ps-link-button", "data-action": "older-agent-history",
+        disabled: loading, onClick: () => onOlderAgentHistory(agentSessionId) }, loading ? "Loading…" : older.action === "retry" ? "Retry" : "Load older") : null;
     return h(React.Fragment, null,
         older.text ? h("span", { "data-older": older.action === "retry" ? "failed" : "limit", role: older.action === "retry" ? "alert" : undefined },
             `${older.text} `) : null,
@@ -505,31 +505,31 @@ function OlderChat({ older, chatId, onOlderChat, olderChatLoading }) {
 /**
  * An agent node's Log (finding 8; workflowAgentNodeLog): what is not recorded, said once; then one group per visit,
  * newest first ("Visit 4 · 17:42:01" and where it ended), with its Prompt, Agent and Workflow rows in time order, told
- * apart by their label and the colour of their edge. `failed` names the chats that could not be read; `onMore` shows
+ * apart by their label and the colour of their edge. `failed` names the sessions that could not be read; `onMore` shows
  * older visits.
  */
 export function WorkflowAgentLog({ log, failed = null, onMore = null, nodeId = null, readInstructions = null, onInstructions = null,
-    onOlderChat = null, olderChatLoading = null, onOlderVisits = null, openBodies = false, onOpenChat = null }) {
+    onOlderAgentHistory = null, olderAgentHistoryLoading = null, onOlderVisits = null, openBodies = false, onOpenSession = null }) {
     return h("div", { className: "ps-wf-alog", "aria-label": nodeId ? `Log of node ${nodeId}` : "Agent node log" },
         h("p", { className: "ps-wf-muted ps-wf-alog-note" }, log.note),
         log.groups.length ? null : h("p", { className: "ps-wf-muted" }, "Not reached"),
         log.groups.map(group => h("section", { key: group.visitId, className: "ps-wf-alog-visit", "data-visit": group.ordinal ?? undefined },
             h("h3", null, group.header, group.status ? h("span", { className: "ps-wf-alog-status" }, ` · ${group.status}`) : null),
-            // OF-S2-7: the model this visit's chat used.
+            // OF-S2-7: the model this visit's session used.
             group.model ? h("p", { className: "ps-wf-muted ps-wf-alog-model", "data-model": group.modelNow ? "now" : "used" },
                 `${group.modelNow ? "Model now" : "Model"}: ${group.model}`) : null,
-            group.loading ? h("p", { className: "ps-wf-muted" }, failed?.has?.(group.chatId) ? "Could not read the agent session." : "Reading the agent session…") : null,
-            // Review UI-10: the start of this visit's chat is not loaded; it is not shown as complete.
+            group.loading ? h("p", { className: "ps-wf-muted" }, failed?.has?.(group.agentSessionId) ? "Could not read the agent session." : "Reading the agent session…") : null,
+            // Review UI-10: the start of this visit's session is not loaded; it is not shown as complete.
             group.truncated ? h("p", { className: "ps-wf-muted", "data-truncated": "" }, "This visit's start is not loaded. ",
-                h(OlderChat, { older: group.older, chatId: group.chatId, onOlderChat, olderChatLoading })) : null,
+                h(OlderAgentHistory, { older: group.older, agentSessionId: group.agentSessionId, onOlderAgentHistory, olderAgentHistoryLoading })) : null,
             group.rows.length ? h("ol", { className: "ps-wf-alog-rows" }, group.rows.map(row => h(AgentLogRow, { key: row.key, row, readInstructions,
-                onInstructions, openBodies, onOpenChat }))) : null)),
-        // Review UI-D5: a continued chat's loaded lines whose visit is not known yet, shown apart until their prompt is loaded.
-        (log.earlier ?? []).map(part => h("section", { key: `earlier:${part.chatId}`, className: "ps-wf-alog-visit is-earlier", "data-earlier": "" },
+                onInstructions, openBodies, onOpenSession }))) : null)),
+        // Review UI-D5: a continued session's loaded lines whose visit is not known yet, shown apart until their prompt is loaded.
+        (log.earlier ?? []).map(part => h("section", { key: `earlier:${part.agentSessionId}`, className: "ps-wf-alog-visit is-earlier", "data-earlier": "" },
             h("h3", null, part.header),
             h("p", { className: "ps-wf-muted" }, "Visit known once the earlier prompt is loaded. ",
-                h(OlderChat, { older: part.older, chatId: part.chatId, onOlderChat, olderChatLoading })),
-            h("ol", { className: "ps-wf-alog-rows" }, part.rows.map(row => h(AgentLogRow, { key: row.key, row, readInstructions, onInstructions, openBodies, onOpenChat }))))),
+                h(OlderAgentHistory, { older: part.older, agentSessionId: part.agentSessionId, onOlderAgentHistory, olderAgentHistoryLoading })),
+            h("ol", { className: "ps-wf-alog-rows" }, part.rows.map(row => h(AgentLogRow, { key: row.key, row, readInstructions, onInstructions, openBodies, onOpenSession }))))),
         log.more && onMore ? h("button", { type: "button", className: "ps-mini-button", "data-action": "older-visits", onClick: onMore }, "Show older visits") : null,
         !log.more && log.partial ? h("p", { className: "ps-wf-muted" }, "Older visits not loaded. ",
             onOlderVisits ? h("button", { type: "button", className: "ps-link-button", "data-action": "older-executions", onClick: onOlderVisits }, "Load older visits") : null)
@@ -539,8 +539,8 @@ export function WorkflowAgentLog({ log, failed = null, onMore = null, nodeId = n
 /**
  * A Workflow's Node panel (Workflow Simplified; owner feedback 2026-11-06, finding 7): one view, no tabs inside the tab.
  * What the node does in one sentence; Now and Runs in one line each; its last result as readable text (Read the whole
- * value when the preview was cut short); for an agent node how its chat works, what its agent is told (folded) and Open
- * the agent chat; a parallel node's For each and branches; and Next, one line per outcome in words, each selecting the
+ * value when the preview was cut short); for an agent node how its session works, what its agent is told (folded) and Open
+ * the agent session; a parallel node's For each and branches; and Next, one line per outcome in words, each selecting the
  * node it names, then what happens when it fails. Its visits, one by one, are in the Log. From the shared model
  * (workflowNodeSummary), as the TUI says it.
  */
@@ -562,9 +562,9 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
         h("div", { className: "ps-wf-facts" },
             fact("Now", summary.now, { "data-fact": "now" }),
             fact("Visits", summary.runs, { "data-fact": "runs", title: summary.runsTitle }),
-            summary.agent ? fact("Agent session", summary.agent.chatMode, { "data-fact": "chat" }) : null,
+            summary.agent ? fact("Agent session", summary.agent.sessionMode, { "data-fact": "session" }) : null,
             summary.agent?.tools ? fact("Tools", summary.agent.tools, { "data-fact": "tools", title: summary.agent.toolsTitle }) : null,
-            // OF-S2-7: the model it uses, chosen at start or from the chat.
+            // OF-S2-7: the model it uses, chosen at start or from the session.
             summary.agent?.model ? fact("Model", summary.agent.model, { "data-fact": "model" }) : null),
         result ? h("div", { className: `ps-wf-result${result.error ? " is-error" : ""}`, "data-fact": "result" },
             h("h3", null, result.label),
@@ -579,8 +579,8 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
             summary.agent.told ? h("details", { className: "ps-wf-told" }, h("summary", null, "Prompt"), h("pre", null, summary.agent.told))
                 : summary.agent.toldWords ? h("p", { className: "ps-wf-muted" }, summary.agent.toldWords) : null,
             ...workflowAgentBindingRows(selected.binding).map(([label, value, title]) => fact(label, value, title ? { title } : {})),
-            openSession && summary.agent.chatSessionId ? h("button", { type: "button", className: "ps-mini-button", "data-action": "open-agent-chat",
-                "data-session": summary.agent.chatSessionId, onClick: () => openSession(summary.agent.chatSessionId) }, "Open agent session") : null) : null,
+            openSession && summary.agent.sessionId ? h("button", { type: "button", className: "ps-mini-button", "data-action": "open-agent-session",
+                "data-session": summary.agent.sessionId, onClick: () => openSession(summary.agent.sessionId) }, "Open agent session") : null) : null,
         selected.kind === "parallel" ? h(ParallelSections, { selected, current, nodes, select, openSession }) : null,
         // OF-S2-8: the script and sample input and output (NodeCodeSections), before where it goes next.
         sections,
@@ -784,7 +784,7 @@ export function WorkflowTestInterceptions({ test, controller = null, sessionId =
     if (!items.length) return null;
     const answerable = Boolean(controller && responder?.respond);
     const waits = id => answerable && responder.waiting.some(item => item.interceptionId === id);
-    // Asking the workflow's parent agent about a held call that waits (owner decision q12): a message in its chat.
+    // Asking the workflow's parent agent about a held call that waits (owner decision q12): a message in its session.
     const askable = Boolean(controller && parentSessionId && responder?.runId);
     const asks = item => askable && item.state === "awaiting_parent";
     return h("section", { className: "ps-workflow-test", "aria-label": "Test calls", style: { padding: "6px 10px", fontSize: "0.75rem" } },
@@ -801,7 +801,7 @@ export function WorkflowTestInterceptions({ test, controller = null, sessionId =
                         onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { answeringInterceptionId: item.interceptionId } }) },
                     "Answer") : null,
                     asks(item) ? h("button", { type: "button", className: "ps-mini-button", "data-action": "ask-parent",
-                        title: "Send a message about this call to the parent agent's chat; it answers with its own tools.",
+                        title: "Send a message about this call to the parent agent's session; it answers with its own tools.",
                         onClick: () => { controller.askParentAboutHeldCall?.(sessionId, { runId: responder.runId, interceptionId: item.interceptionId })?.catch?.(() => {}); } },
                     "Ask the parent agent") : null) : null)))),
         // Older held calls of this run than the read holds: the run's older history reads them.
@@ -833,7 +833,7 @@ export function WorkflowTestAnswer({ controller, sessionId, responder, intercept
             response: draft.response });
         if (result?.ok) close();
     };
-    // The same answer as a suggestion in the parent agent's chat instead (owner decision q12; mock M18).
+    // The same answer as a suggestion in the parent agent's session instead (owner decision q12; mock M18).
     const askParent = async () => {
         const draft = workflowTestResponseDraft(kind, valueText);
         setError(draft.ok ? null : draft.error);
@@ -860,7 +860,7 @@ export function WorkflowTestAnswer({ controller, sessionId, responder, intercept
             title: responder.reason ?? (responder.busy ? "Another command for this Workflow is being sent." : "Send this answer to the test run."),
             onClick: () => { send(); } }, responder.pending === "test_respond" ? "Sending…" : "Send answer"),
         parentSessionId ? h("button", { type: "button", className: "ps-mini-button", "data-action": "ask-parent",
-            title: "Send this answer to the parent agent's chat as a suggestion; it answers the call with its own tools.",
+            title: "Send this answer to the parent agent's session as a suggestion; it answers the call with its own tools.",
             onClick: () => { askParent(); } }, "Send to the parent agent instead") : null,
         h("button", { type: "button", className: "ps-mini-button", onClick: close }, "Close")),
     error ? h("span", { role: "alert", style: { color: TONES.error } }, error) : null);
@@ -1229,7 +1229,7 @@ export function WorkflowYamlView({ controller, sessionId, model, reads = null })
     const yamlText = value && typeof value.yaml === "string" ? value.yaml : null;
     // Words (03, 17): no draft or published; the revision and what a person can do.
     const note = !known ? "There is no revision to show yet."
-        : published ? `Revision ${revision} · read-only. To change it, ask the chat.`
+        : published ? `Revision ${revision} · read-only. To change it, ask the session.`
             : `Revision ${revision} · read-only: you cannot change this definition.`;
     return h("section", { className: "ps-workflow-yaml-view", "aria-label": "Workflow YAML", "data-revision": known ? revision : undefined },
     h("p", { className: "ps-workflow-yaml-note" }, note),

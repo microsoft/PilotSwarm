@@ -2,8 +2,8 @@
  * Usability re-test r3, C09: zen did not survive a reload at 1440 px. The page had a Workflow row selected (the parent's
  * Workflow #1); the profile saves it as activeSessionId (the highlighted row, review UI-8); after the reload the profile
  * was applied before the catalog answered, so it could not be mapped to its session, and the Workflow stayed the active
- * session itself: it showed alone in the middle (no chat, and no zen there). Once the session's row is loaded, its chat is
- * selected with the Workflow row, and that chat's own view (its columns and zen) applies.
+ * session itself: it showed alone in the middle (no session, and no zen there). Once the session's row is loaded, its session is
+ * selected with the Workflow row, and that session's own view (its columns and zen) applies.
  *
  * Run: node --test ui/core/test/workflow-simplified-stored-row.test.mjs
  */
@@ -30,7 +30,7 @@ test("a stored Workflow row applied before the catalog selects its session's cha
     assert.equal(state.sessions.workflowRowId, "wf-1", "with the Workflow row");
     assert.deepEqual({ ...selectWorkflowTabContext(state) }, { ownerId: "owner", workflowId: "wf-1", nodeSessionId: null, nodeStateId: null });
     assert.equal(state.ui.workflowTabs.owner.workflowId, "wf-1", "the owner's tab remembers it");
-    assert.equal(state.ui.canvasZen, true, "the chat's own view: zen");
+    assert.equal(state.ui.canvasZen, true, "the session's own view: zen");
     assert.equal(state.ui.canvasOpen, true);
 });
 
@@ -40,7 +40,7 @@ test("a Workflow whose session is not loaded stays the active session; a link st
     store.dispatch({ type: "sessions/selected", sessionId: "wf-1" });
     assert.equal(store.getState().sessions.activeSessionId, "wf-1", "its session is not loaded");
     store.dispatch({ type: "sessions/loaded", sessions: rows });
-    assert.deepEqual([store.getState().sessions.activeSessionId, store.getState().sessions.workflowRowId], ["owner", "wf-1"], "loaded later: its chat");
+    assert.deepEqual([store.getState().sessions.activeSessionId, store.getState().sessions.workflowRowId], ["owner", "wf-1"], "loaded later: its session");
     // A link (navigation intent) to the Workflow keeps its own mapping (S8).
     const linked = createStore(appReducer, createInitialState({ mode: "api" }));
     linked.dispatch({ type: "sessions/navigationIntent", sessionId: "wf-1" });

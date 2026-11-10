@@ -1,17 +1,17 @@
 /**
- * Package Workflow Definitions for chats (Workflow Simplified stage 2.3; spec "Packages and Agent Smith": P1–P6, D7, D8).
+ * Package Workflow Definitions for sessions (Workflow Simplified stage 2.3; spec "Packages and Agent Smith": P1–P6, D7, D8).
  *
  * A published package exports its Workflow Definitions in its manifest (agent-package-format.ts: name, card, digests and
- * interface; the YAML stays in the package's bytes). This module reads them as a chat's owner sees them:
+ * interface; the YAML stays in the package's bytes). This module reads them as a session's owner sees them:
  *
  * - visible: the agent registry's enabled packages at their active versions (getAgentPackagesInstallManifest), shared or
  *   the owner's own; when both have a package of one name, the owner's own copy is the one (as for agents);
  * - read: a definition's YAML comes out of that package version's bytes, which are checked against the registry's content
- *   hash (fetchAgentPackageTarGz) and against the YAML hash the manifest exported, so what a chat attaches is exactly what
+ *   hash (fetchAgentPackageTarGz) and against the YAML hash the manifest exported, so what a session attaches is exactly what
  *   was published and checked with its card (P7);
- * - a chat names one `<package>/<name>` (D7); an agent's bare name means its own package (P4).
+ * - a session names one `<package>/<name>` (D7); an agent's bare name means its own package (P4).
  *
- * The chat side (attach, start, the card, what a chat may start) is in chat-definitions.ts and definition-tool.ts.
+ * The session side (attach, start, the card, what a session may start) is in session-definitions.ts and definition-tool.ts.
  */
 import type { AgentPackageInstallEntry, SessionCatalog } from "../cms.js";
 import type { ArtifactStore } from "../session-store.js";
@@ -23,7 +23,7 @@ import { readWorkflowCard, workflowEffectFacts, workflowPackageRef, type Workflo
 import { compileWorkflow } from "./compiler.js";
 import { WorkflowStoreError } from "./store.js";
 
-/** Whose packages a chat sees: its owner (null: shared packages only). */
+/** Whose packages a session sees: its owner (null: shared packages only). */
 export interface PackageViewer {
     provider: string;
     subject: string;

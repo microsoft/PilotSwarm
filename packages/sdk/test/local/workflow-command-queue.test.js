@@ -739,7 +739,7 @@ describe("workflow lifecycle commands as store state (duroxide races review S7-D
         for (const [label, endFirst, status, words] of [
             ["a person's cancel", async (h, run) => controlWorkflowRun(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "stopped by a person" },
                 { actor: { kind: "user", provider: "test", subject: `person-${randomUUID()}` }, operationId: "person-cancel" }), "cancelled", "cancelled"],
-            ["the chat's own end", async (h, _run, parent) => h.catalog.updateSession(parent, { state: "cancelled" }), "cancelled", "cancelled"],
+            ["the session's own end", async (h, _run, parent) => h.catalog.updateSession(parent, { state: "cancelled" }), "cancelled", "cancelled"],
             // Review DRR-5: a person's reason that reads as the deletion's own words is still a cancel (its stored command).
             ["a person's cancel whose reason is the deletion's words", async (h, run) => controlWorkflowRun(h.host, run.workflowSessionId,
                 { operation: "cancel", runId: null, reason: "The workflow session was deleted." },

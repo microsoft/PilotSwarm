@@ -18,7 +18,7 @@ export const RESPOND_SESSION_REQUEST_TOOL = "respond_session_request";
 /** The respond_session_request tool's description and parameters. */
 export const RESPOND_SESSION_REQUEST_TOOL_SPEC = {
     description:
-        "Answer a typed request that a Workflow sent you, once, before its deadline; chat text is not an answer. request_id is its "
+        "Answer a typed request that a Workflow sent you, once, before its deadline; reply text is not an answer. request_id is its "
         + "requestId; operation_id is your id for this answer (repeat the call with it to retry). Give exactly one of response (a JSON "
         + "value matching the request's response schema) or decline ({ reason }). Returns the receipt as JSON, or a refusal such as "
         + "REQUEST_EXPIRED, REQUEST_CLOSED, RESPONSE_CONFLICT or RESPONSE_INVALID.",

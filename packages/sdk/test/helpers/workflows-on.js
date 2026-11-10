@@ -1,6 +1,6 @@
 /**
- * Workflows on demand (owner 2026-11-08T16:55Z): a chat has the Workflow tools only when they are on in it. A test whose
- * scripted model calls a Workflow tool in a new chat turns them on first, as enable_workflows would, by saving the chat's
+ * Workflows on demand (owner 2026-11-08T16:55Z): a session has the Workflow tools only when they are on in it. A test whose
+ * scripted model calls a Workflow tool in a new session turns them on first, as enable_workflows would, by saving the session's
  * flag with its capability state (revision-checked). workflow-context-on-demand-e2e.test.js covers enable_workflows itself.
  */
 import { withWorkflowsOn } from "../../src/capability-catalog.ts";

@@ -407,7 +407,7 @@ describe("FU-9: a person's words and a non-person prompt run as two turns", () =
     it("F-FU9-1: a queued person's prompt then a send_session_message prompt (its real payload) give two turns", async () => {
         resetSessionMessageRateLimitsForTests();
         const [message] = await enqueuedBy(client => sendInternalSessionMessage({
-            catalog: { getSession: async id => ({ sessionId: id, title: id === "peer" ? "Peer chat" : "This chat", state: "running" }) },
+            catalog: { getSession: async id => ({ sessionId: id, title: id === "peer" ? "Peer session" : "This session", state: "running" }) },
             duroxideClient: client,
         }, { fromSessionId: "peer", toSessionId: "this", subject: "ping", body: "SESSION-MESSAGE-BODY" }));
         const h = harness();
@@ -490,11 +490,11 @@ describe("FU-9: a person's words and a non-person prompt run as two turns", () =
         const [wake] = await enqueuedBy(client => wakeProviderPausedSessions({ providers: { pausedFor: async () => ["this"] } }, client, "azure-openai"));
         expect(wake).toEqual({ prompt: PROVIDER_BUDGET_WAKE_PROMPT, sender: { kind: "system", display: "provider budget" } });
         const h = harness();
-        appendToFifo(h.runtime, [prompt(wake.prompt, { sender: wake.sender }), prompt("AGENT-WORDS for the paused chat", { sender: AGENT })]);
+        appendToFifo(h.runtime, [prompt(wake.prompt, { sender: wake.sender }), prompt("AGENT-WORDS for the paused session", { sender: AGENT })]);
         h.results.push({ type: "wait", seconds: 30, reason: "budget", budget: true });
         h.step();
         expect(h.turns).toHaveLength(1);
-        expect(h.runtime.state.budgetStash?.map(entry => entry.prompt)).toEqual(["AGENT-WORDS for the paused chat"]);
+        expect(h.runtime.state.budgetStash?.map(entry => entry.prompt)).toEqual(["AGENT-WORDS for the paused session"]);
     });
 });
 

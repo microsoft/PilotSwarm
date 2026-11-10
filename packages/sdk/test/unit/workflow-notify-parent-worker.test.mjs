@@ -21,7 +21,7 @@ test("the parent delivery reads the parent's orchestration status first, and que
     for (const status of ["NotFound", "Completed", "Failed", "Terminated"]) {
         const fake = client(status);
         const sender = { kind: "system", display: "workflow" };
-        // Deployed check DS-2: a parent with no orchestration yet (a chat made without a first message) says so.
+        // Deployed check DS-2: a parent with no orchestration yet (a session made without a first message) says so.
         assert.deepEqual(await workflowParentNotifier(fake)("parent-1", "ended", sender, "id-1"),
             status === "NotFound" ? { delivered: false, notStarted: true } : { delivered: false }, status);
         assert.deepEqual(fake.calls, [["getStatus", "session-parent-1"]], status);

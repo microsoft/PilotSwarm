@@ -173,11 +173,11 @@ import { readWorkflowModel, workflowExclusiveRead } from "./workflow/tools.js";
 import { WORKFLOW_READ_STATUS } from "./workflow/read-pages.js";
 import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/human-commands.js";
 import {
-    attachChatPackageWorkflow, chatCompletionRefusal, copyChatPackageWorkflow, deleteChatWorkflowDefinition, findPackageWorkflow, listChatWorkflowDefinitions,
+    attachSessionPackageWorkflow, sessionCompletionRefusal, copySessionPackageWorkflow, deleteSessionWorkflowDefinition, findPackageWorkflow, listSessionWorkflowDefinitions,
     packageWorkflowFacts,
-    readChatWorkflowDefinition, requireChatDefinitionsWritable, saveChatWorkflowDefinition, startChatWorkflowDefinition, withPackageUpdates,
-} from "./workflow/chat-definitions.js";
-import { createPackageWorkflowSource, type PackageViewer, type PackageWorkflowSource } from "./workflow/chat-packages.js";
+    readSessionWorkflowDefinition, requireSessionDefinitionsWritable, saveSessionWorkflowDefinition, startSessionWorkflowDefinition, withPackageUpdates,
+} from "./workflow/session-definitions.js";
+import { createPackageWorkflowSource, type PackageViewer, type PackageWorkflowSource } from "./workflow/session-packages.js";
 import { coordinatingInstructions, workflowEffectFactsWords, workflowModelHintWords } from "./workflow/package-card.js";
 import { resolveWorkflowTestMode } from "./workflow/test-mode-switch.js";
 import { createRegistryWorkflowAgentResolver } from "./workflow/agent-resolver.js";
@@ -454,7 +454,7 @@ function normalizeSystemRestartDisposition(disposition: SystemSessionRestartDisp
 /** A workflow session runs a workflow graph; it has no conversation to send to. */
 function workflowNotConversationalError(sessionId: string): Error {
     return Object.assign(
-        new Error(`Session ${sessionId.slice(0, 8)} is a workflow session; it runs a workflow graph and does not accept chat messages.`),
+        new Error(`Session ${sessionId.slice(0, 8)} is a workflow session; it runs a workflow graph and does not accept prompts.`),
         { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL", status: 409 },
     );
 }
@@ -525,7 +525,7 @@ export interface PilotSwarmSessionView {
     serviceKind?: string;
     /** The session this service session serves. */
     serviceOf?: string;
-    /** Stage 2.3 (P2): a coordinating chat's package Workflow Definition, `<package>/<name>` (the session list's Workflow badge). */
+    /** Stage 2.3 (P2): a coordinating session's package Workflow Definition, `<package>/<name>` (the session list's Workflow badge). */
     workflowRef?: string;
     /**
      * OF-S2-5: whether the session owns a live Workflow Definition (migration 0088), so a list row can say it has grown
@@ -869,7 +869,7 @@ export interface PilotSwarmManagementClientOptions {
     /** Artifact store used by direct-mode agent-package publish/read/delete operations. */
     artifactStore?: ArtifactStore | null;
     /**
-     * Durable workflows: a person's workflow commands (updateWorkflow and the chat definition operations). Unset (the
+     * Durable workflows: a person's workflow commands (updateWorkflow and the session definition operations). Unset (the
      * default) or any object: the commands take the milestone operations (stop, and with test mode the test operations), as
      * the agents' tools do, and a publication pins its named agents: package agents only, at the agent registry's exact revision (a deployment agent's name is refused
      * AGENT_UNAVAILABLE here). `null`: no person's commands (updateWorkflow answers WORKFLOW_COMMANDS_UNAVAILABLE, 501, and
@@ -1690,10 +1690,10 @@ export class PilotSwarmManagementClient {
         }
         if (session.status === "completed") return;
         if (session.status === "cancelled" || session.status === "failed") return;
-        // Stage 2.1 (R4): a chat cannot complete while one of its Workflows is active (the refusal names them, 409).
+        // Stage 2.1 (R4): a session cannot complete while one of its Workflows is active (the refusal names them, 409).
         const workflowStore = this._workflowStoreOrNull();
         if (workflowStore) {
-            const refusal = await chatCompletionRefusal({ store: workflowStore }, sessionId);
+            const refusal = await sessionCompletionRefusal({ store: workflowStore }, sessionId);
             if (refusal) throw Object.assign(new Error(refusal.message), { code: refusal.code, status: 409, details: refusal.details, expose: true });
         }
 
@@ -2116,7 +2116,7 @@ export class PilotSwarmManagementClient {
             testMode: resolveWorkflowTestMode(enabled.testMode),
             resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!),
             // OF7-R2: a person's real-agent test, start or publish_and_start with agent models is checked against the owning
-            // chat's catalog before anything is admitted.
+            // session's catalog before anything is admitted.
             checkAgentModel: (choice, owner) => this._checkWorkflowAgentModel(choice, owner),
         };
         try {
@@ -2146,15 +2146,15 @@ export class PilotSwarmManagementClient {
      * nothing. Async, as the Web client's answer is (from the server's
      * bootstrap).
      */
-    // ─── Stage 2.1: a chat's Workflow Definitions, for a person ───────────────────────────
+    // ─── Stage 2.1: a session's Workflow Definitions, for a person ───────────────────────────
 
-    /** The chat row a person's definition call is for: a live session that is not a Workflow. */
-    private async _chatForDefinitions(chatSessionId: string): Promise<WorkflowHost> {
+    /** The session row a person's definition call is for: a live session that is not a Workflow. */
+    private async _sessionForDefinitions(ownerSessionId: string): Promise<WorkflowHost> {
         this._ensureStarted();
         const failure = (code: string, status: number, message: string): Error => Object.assign(new Error(message), { code, status, expose: true });
-        const session = await this._catalog!.getSession(chatSessionId);
+        const session = await this._catalog!.getSession(ownerSessionId);
         if (!session || session.deletedAt) throw failure("NOT_FOUND", 404, "Session not found.");
-        if (session.sessionKind === "workflow") throw failure("CHAT_NOT_FOUND", 404, "A Workflow does not own Workflow Definitions; its chat does.");
+        if (session.sessionKind === "workflow") throw failure("SESSION_NOT_FOUND", 404, "A Workflow does not own Workflow Definitions; its session does.");
         const store = this._workflowStoreOrNull();
         if (!store) throw failure("WORKFLOW_UNAVAILABLE", 503, "This deployment cannot store Workflow Definitions.");
         const enabled = this.config.workflowCommands;
@@ -2165,13 +2165,13 @@ export class PilotSwarmManagementClient {
             ...(enabled ? { testMode: resolveWorkflowTestMode(enabled.testMode), resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}),
             // Stage 2.3: packages' Workflow Definitions (attach, Make a copy, a newer version).
             ...(packages ? { packageWorkflows: packages } : {}),
-            // OF-S2-7: an agent node's model chosen at start is checked against the owning chat's catalog (its owner's).
+            // OF-S2-7: an agent node's model chosen at start is checked against the owning session's catalog (its owner's).
             checkAgentModel: (choice, owner) => this._checkWorkflowAgentModel(choice, owner),
         };
     }
 
     /**
-     * OF-S2-7: whether `owner`, the owner of the chat that owns a Workflow (its agent nodes spend as them), may use an agent
+     * OF-S2-7: whether `owner`, the owner of the session that owns a Workflow (its agent nodes spend as them), may use an agent
      * node's chosen model, as a session created for them would resolve it, with an explicit effort or tier the model lists
      * (OF7-R6): null when they may, else the reason in words. Without a model catalog it cannot check, so it refuses.
      */
@@ -2180,7 +2180,7 @@ export class PilotSwarmManagementClient {
         const store = this._catalog?.providers;
         if (!store || !this._modelProviders) return "this deployment has no model catalog to check it against.";
         try {
-            // Review D6: as the node's spawn resolves its chat (createSession: the owner's eligible providers, never the system's).
+            // Review D6: as the node's spawn resolves its session (createSession: the owner's eligible providers, never the system's).
             const actor = await store.lookupUserId(owner ?? null);
             const credentials = await store.allCredentials();
             resolveRuntimeModelSelection(this._modelProviders, credentials, {
@@ -2196,16 +2196,16 @@ export class PilotSwarmManagementClient {
 
     private _packageWorkflowSource: PackageWorkflowSource | null = null;
 
-    /** Stage 2.3 (chat-packages.ts): the agent registry's package Workflow Definitions, when this client has the package bytes. */
+    /** Stage 2.3 (session-packages.ts): the agent registry's package Workflow Definitions, when this client has the package bytes. */
     private _packageWorkflows(): PackageWorkflowSource | null {
         if (!this._catalog || !this._artifactStore) return null;
         this._packageWorkflowSource ??= createPackageWorkflowSource({ catalog: this._catalog, artifactStore: this._artifactStore });
         return this._packageWorkflowSource;
     }
 
-    /** Whose packages a chat sees: its owner's. */
-    private async _chatViewer(chatSessionId: string): Promise<PackageViewer | null> {
-        const owner = (await this._catalog!.getSession(chatSessionId))?.owner ?? null;
+    /** Whose packages a session sees: its owner's. */
+    private async _sessionViewer(ownerSessionId: string): Promise<PackageViewer | null> {
+        const owner = (await this._catalog!.getSession(ownerSessionId))?.owner ?? null;
         return owner?.provider && owner?.subject ? { provider: owner.provider, subject: owner.subject } : null;
     }
 
@@ -2218,13 +2218,13 @@ export class PilotSwarmManagementClient {
     /** A person's change needs a deployment that takes a person's workflow commands (as updateWorkflow does: 501 otherwise). */
     private _requirePersonCommands(): void {
         if (!this.config.workflowCommands) {
-            throw Object.assign(new Error("This deployment does not take workflow commands from people yet; the chat changes its definitions "
+            throw Object.assign(new Error("This deployment does not take workflow commands from people yet; the session changes its definitions "
                 + "with its workflow_definition tool."), { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501, expose: true });
         }
     }
 
     /**
-     * A chat definition operation's refusal for the Web API: its code, status and message, and its details, which are safe
+     * A session definition operation's refusal for the Web API: its code, status and message, and its details, which are safe
      * to show (exposeDetails), as updateWorkflow's are. UX2D-F1: without them the portal could not say who saved a newer
      * revision, when (in the person's own time) or offer Reload, and showed the server's sentence with its UTC time.
      */
@@ -2236,13 +2236,13 @@ export class PilotSwarmManagementClient {
         return workflowAdapterFailure(error);
     }
 
-    /** Stage 2.1: a chat's Workflow Definitions with their revisions and Workflows (deleted ones with includeDeleted). */
-    async listChatWorkflowDefinitions(chatSessionId: string, options: { includeDeleted?: boolean } = {}): Promise<Record<string, unknown>[]> {
+    /** Stage 2.1: a session's Workflow Definitions with their revisions and Workflows (deleted ones with includeDeleted). */
+    async listSessionWorkflowDefinitions(ownerSessionId: string, options: { includeDeleted?: boolean } = {}): Promise<Record<string, unknown>[]> {
         try {
-            const host = await this._chatForDefinitions(chatSessionId);
-            const views = await listChatWorkflowDefinitions(host, chatSessionId, { includeDeleted: options.includeDeleted === true });
+            const host = await this._sessionForDefinitions(ownerSessionId);
+            const views = await listSessionWorkflowDefinitions(host, ownerSessionId, { includeDeleted: options.includeDeleted === true });
             // Stage 2.3 (P6): a locked definition's newer package version, offered for the next Workflow.
-            return (await withPackageUpdates(host, views, await this._chatViewer(chatSessionId))) as unknown as Record<string, unknown>[];
+            return (await withPackageUpdates(host, views, await this._sessionViewer(ownerSessionId))) as unknown as Record<string, unknown>[];
         } catch (error) {
             throw this._definitionFailure(error);
         }
@@ -2253,13 +2253,13 @@ export class PilotSwarmManagementClient {
      * revision's graph (null for one with errors), as a Workflow's view draws it, and whether this deployment takes a person's
      * save, start and delete (`personCommands`); whether this caller may send them is the portal's to add.
      */
-    async readChatWorkflowDefinition(chatSessionId: string, ref: { definitionId?: string | null; name?: string | null; revision?: number | null })
+    async readSessionWorkflowDefinition(ownerSessionId: string, ref: { definitionId?: string | null; name?: string | null; revision?: number | null })
         : Promise<Record<string, unknown>> {
         try {
-            const host = await this._chatForDefinitions(chatSessionId);
-            const read = await readChatWorkflowDefinition(host, chatSessionId, { definitionId: ref.definitionId ?? null, name: ref.name ?? null },
+            const host = await this._sessionForDefinitions(ownerSessionId);
+            const read = await readSessionWorkflowDefinition(host, ownerSessionId, { definitionId: ref.definitionId ?? null, name: ref.name ?? null },
                 { revision: ref.revision ?? null, graph: true });
-            const [withUpdate] = await withPackageUpdates(host, [read], await this._chatViewer(chatSessionId));
+            const [withUpdate] = await withPackageUpdates(host, [read], await this._sessionViewer(ownerSessionId));
             return { ...withUpdate, personCommands: Boolean(this.config.workflowCommands) } as unknown as Record<string, unknown>;
         } catch (error) {
             throw this._definitionFailure(error);
@@ -2268,22 +2268,22 @@ export class PilotSwarmManagementClient {
 
     /**
      * Stage 2.1: a person saves a revision (the YAML tab's Save; E2-1..E2-4). `definitionId` and `expectedRevision` name the
-     * revision the edit was based on (Q1); without them, the first save of `name`. The chat gets a note on its next turn
+     * revision the edit was based on (Q1); without them, the first save of `name`. The session gets a note on its next turn
      * ("<person> saved <name> revision N."); nothing wakes it.
      */
-    async saveChatWorkflowDefinition(chatSessionId: string, request: { name: string; yaml: string; definitionId?: string | null; expectedRevision?: number | null;
+    async saveSessionWorkflowDefinition(ownerSessionId: string, request: { name: string; yaml: string; definitionId?: string | null; expectedRevision?: number | null;
         operationId: string }, options: { principal?: { provider?: string | null; subject?: string | null; displayName?: string | null; email?: string | null } | null } = {})
         : Promise<Record<string, unknown>> {
         try {
             this._requirePersonCommands();
-            const host = await this._chatForDefinitions(chatSessionId);
+            const host = await this._sessionForDefinitions(ownerSessionId);
             const provider = String(options.principal?.provider ?? "").trim();
             const subject = String(options.principal?.subject ?? "").trim();
             const display = String(options.principal?.displayName ?? options.principal?.email ?? "").trim() || null;
             const actor = provider && subject ? { kind: "user" as const, provider, subject, display } : { kind: "system" as const, name: "management-client" };
             const expected = request.definitionId || request.expectedRevision != null
                 ? { definitionId: String(request.definitionId ?? ""), revision: Number(request.expectedRevision) } : null;
-            const stored = await saveChatWorkflowDefinition(host, { ownerSessionId: chatSessionId, name: request.name, yaml: request.yaml, expected, actor,
+            const stored = await saveSessionWorkflowDefinition(host, { ownerSessionId: ownerSessionId, name: request.name, yaml: request.yaml, expected, actor,
                 operationId: request.operationId, by: "person", personWords: display ?? (subject || "A person") });
             return { ...stored.receipt, replayed: stored.replayed } as unknown as Record<string, unknown>;
         } catch (error) {
@@ -2292,19 +2292,19 @@ export class PilotSwarmManagementClient {
     }
 
     /** Stage 2.1: a person starts a Workflow from a revision (Start; Run again names the Workflow it repeats). */
-    async startChatWorkflowDefinition(chatSessionId: string, request: { definitionId: string; revision?: number | null; runAgainOf?: string | null;
+    async startSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; revision?: number | null; runAgainOf?: string | null;
         inputs?: unknown; vars?: Record<string, unknown> | null; notifyParent?: boolean; operationId: string;
         /** OF-S2-7: agent node models chosen at start, by state id (agent-models.ts); absent with runAgainOf: the repeated one's. */
         agentModels?: unknown },
         options: { principal?: { provider?: string | null; subject?: string | null } | null } = {}): Promise<Record<string, unknown>> {
         try {
             this._requirePersonCommands();
-            const host = await this._chatForDefinitions(chatSessionId);
+            const host = await this._sessionForDefinitions(ownerSessionId);
             const provider = String(options.principal?.provider ?? "").trim();
             const subject = String(options.principal?.subject ?? "").trim();
             const actor: WorkflowActor = provider && subject ? { kind: "user", provider, subject } : { kind: "system", name: "management-client" };
             const inputs = request.inputs === undefined ? {} : request.inputs;
-            return (await startChatWorkflowDefinition(host, { ownerSessionId: chatSessionId, definition: { definitionId: request.definitionId },
+            return (await startSessionWorkflowDefinition(host, { ownerSessionId: ownerSessionId, definition: { definitionId: request.definitionId },
                 revision: request.revision ?? null, runAgainOf: request.runAgainOf ?? null, inputs: inputs as JsonValue,
                 vars: (request.vars ?? null) as { [key: string]: JsonValue } | null, notifyParent: request.notifyParent !== false, actor,
                 operationId: request.operationId,
@@ -2317,16 +2317,16 @@ export class PilotSwarmManagementClient {
     }
 
     /** Stage 2.1: a person deletes a definition (Q8); refused while one of its Workflows is active (R6). */
-    async deleteChatWorkflowDefinition(chatSessionId: string, request: { definitionId: string; operationId: string },
+    async deleteSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; operationId: string },
         options: { principal?: { provider?: string | null; subject?: string | null; displayName?: string | null } | null } = {}): Promise<Record<string, unknown>> {
         try {
             this._requirePersonCommands();
-            const host = await this._chatForDefinitions(chatSessionId);
+            const host = await this._sessionForDefinitions(ownerSessionId);
             const provider = String(options.principal?.provider ?? "").trim();
             const subject = String(options.principal?.subject ?? "").trim();
             const actor = provider && subject ? { kind: "user" as const, provider, subject, display: options.principal?.displayName ?? null }
                 : { kind: "system" as const, name: "management-client" };
-            const stored = await deleteChatWorkflowDefinition(host, { ownerSessionId: chatSessionId, definitionId: request.definitionId, actor,
+            const stored = await deleteSessionWorkflowDefinition(host, { ownerSessionId: ownerSessionId, definitionId: request.definitionId, actor,
                 operationId: request.operationId });
             return { ...stored.receipt, replayed: stored.replayed } as unknown as Record<string, unknown>;
         } catch (error) {
@@ -2337,7 +2337,7 @@ export class PilotSwarmManagementClient {
     // ─── Stage 2.3: packages' Workflow Definitions ─────────────────────────────────────────
 
     /**
-     * P1, P2: every package Workflow Definition `viewer` can make a chat for (the new-session picker's Workflows group), each
+     * P1, P2: every package Workflow Definition `viewer` can make a session for (the new-session picker's Workflows group), each
      * with its package and the words of its card. Empty when this client cannot read packages.
      */
     async listCreatableWorkflows(viewer: { provider?: string | null; subject?: string | null } | null): Promise<Record<string, unknown>[]> {
@@ -2368,10 +2368,10 @@ export class PilotSwarmManagementClient {
     }
 
     /**
-     * P2, P3, D8: what a coordinating chat for `ref` is made with: its title, its instructions (the card, and how to
+     * P2, P3, D8: what a coordinating session for `ref` is made with: its title, its instructions (the card, and how to
      * coordinate it), the first message that asks it to greet the person, and the card's suggested model.
      */
-    async prepareWorkflowChat(ref: string, viewer: { provider?: string | null; subject?: string | null } | null)
+    async prepareSessionForWorkflow(ref: string, viewer: { provider?: string | null; subject?: string | null } | null)
         : Promise<{ ref: string; title: string; systemMessage: string; kickoff: string; model: string | null; semver: string; packageId: string; sha256: string }> {
         this._ensureStarted();
         try {
@@ -2382,11 +2382,11 @@ export class PilotSwarmManagementClient {
             // S2SF-F4: the instructions say what the definition shows of its effects, whatever its card says.
             const facts = await packageWorkflowFacts(source, entry);
             return {
-                // S2SF-F3: the exact version these instructions describe, for the attach (attachChatWorkflowPackage's packageId, sha256).
+                // S2SF-F3: the exact version these instructions describe, for the attach (attachSessionWorkflowPackage's packageId, sha256).
                 ref: entry.ref, semver: entry.semver, packageId: entry.packageId, sha256: entry.sha256, model: card.model,
                 title: `${entry.workflow.name} · ${entry.packageName}`,
                 systemMessage: coordinatingInstructions(entry.ref, entry.semver, card, entry.workflow.interface, facts),
-                kickoff: `A person made this chat to run the Workflow Definition ${entry.ref} (${entry.packageName} ${entry.semver}). Greet them in one `
+                kickoff: `A person made this session to run the Workflow Definition ${entry.ref} (${entry.packageName} ${entry.semver}). Greet them in one `
                     + `short sentence, say in one or two sentences what it does, and ${inputs ? "ask for each input it needs that you do not have" : "ask whether to start it now"}. `
                     + "Do not start it before they answer.",
             };
@@ -2396,17 +2396,17 @@ export class PilotSwarmManagementClient {
     }
 
     /**
-     * P2, P5, P6: attach the package's active version of `ref` to a chat, locked. `coordinating`: the chat was made for it
+     * P2, P5, P6: attach the package's active version of `ref` to a session, locked. `coordinating`: the session was made for it
      * from the new-session picker; its session row records the reference (the session list's Workflow badge) and its title
-     * names it. `packageId` and `sha256` (from prepareWorkflowChat; S2SF-F3): attach exactly that version, or nothing
+     * names it. `packageId` and `sha256` (from prepareSessionForWorkflow; S2SF-F3): attach exactly that version, or nothing
      * (PACKAGE_VERSION_CHANGED when another is active now, PACKAGE_WORKFLOW_NOT_FOUND when the package is gone). A person's
-     * newer-version choice (Use it for the next Workflow) is updateChatWorkflowPackage.
+     * newer-version choice (Use it for the next Workflow) is updateSessionWorkflowPackage.
      */
-    async attachChatWorkflowPackage(chatSessionId: string, request: { ref: string; operationId: string; coordinating?: boolean; title?: string | null;
+    async attachSessionWorkflowPackage(ownerSessionId: string, request: { ref: string; operationId: string; coordinating?: boolean; title?: string | null;
         packageId?: string | null; sha256?: string | null; newerOnly?: boolean },
         options: { principal?: { provider?: string | null; subject?: string | null; displayName?: string | null } | null } = {}): Promise<Record<string, unknown>> {
         try {
-            const host = await this._chatForDefinitions(chatSessionId);
+            const host = await this._sessionForDefinitions(ownerSessionId);
             const provider = String(options.principal?.provider ?? "").trim();
             const subject = String(options.principal?.subject ?? "").trim();
             const actor = provider && subject ? { kind: "user" as const, provider, subject, display: options.principal?.displayName ?? null }
@@ -2414,49 +2414,49 @@ export class PilotSwarmManagementClient {
             if ((request.packageId == null) !== (request.sha256 == null)) {
                 throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "A package version is named by both its packageId and its sha256.");
             }
-            const stored = await attachChatPackageWorkflow(host, { ownerSessionId: chatSessionId, ref: request.ref, viewer: await this._chatViewer(chatSessionId),
+            const stored = await attachSessionPackageWorkflow(host, { ownerSessionId: ownerSessionId, ref: request.ref, viewer: await this._sessionViewer(ownerSessionId),
                 actor, operationId: request.operationId, by: request.coordinating ? "system" : "person",
                 ...(request.coordinating ? { workflowRef: request.ref } : {}),
                 ...(request.packageId != null && request.sha256 != null ? { version: { packageId: String(request.packageId), sha256: String(request.sha256) } } : {}),
                 ...(request.newerOnly === true ? { newerOnly: true } : {}) });
-            if (request.coordinating && request.title) await this._catalog!.updateSession(chatSessionId, { title: request.title });
+            if (request.coordinating && request.title) await this._catalog!.updateSession(ownerSessionId, { title: request.title });
             return { ...stored.receipt, replayed: stored.replayed } as unknown as Record<string, unknown>;
         } catch (error) {
             throw this._definitionFailure(error);
         }
     }
 
-    /** P6: a person attaches the package's newer version to a locked definition, for the chat's next Workflow. */
-    async updateChatWorkflowPackage(chatSessionId: string, request: { definitionId: string; operationId: string },
+    /** P6: a person attaches the package's newer version to a locked definition, for the session's next Workflow. */
+    async updateSessionWorkflowPackage(ownerSessionId: string, request: { definitionId: string; operationId: string },
         options: { principal?: { provider?: string | null; subject?: string | null; displayName?: string | null } | null } = {}): Promise<Record<string, unknown>> {
         try {
             this._requirePersonCommands();
-            const host = await this._chatForDefinitions(chatSessionId);
+            const host = await this._sessionForDefinitions(ownerSessionId);
             // Review PRS-002: refused for a session inside a Workflow before the definition is looked up (as the attach it makes).
-            await requireChatDefinitionsWritable(host, chatSessionId);
-            const definition = await host.store.chat.readDefinition(request.definitionId);
-            if (!definition || definition.ownerSessionId !== chatSessionId || definition.deletedAt !== null || !definition.locked) {
-                throw new WorkflowStoreError("DEFINITION_NOT_FOUND", "This chat has no package Workflow Definition with that id.");
+            await requireSessionDefinitionsWritable(host, ownerSessionId);
+            const definition = await host.store.sessionDefinitions.readDefinition(request.definitionId);
+            if (!definition || definition.ownerSessionId !== ownerSessionId || definition.deletedAt !== null || !definition.locked) {
+                throw new WorkflowStoreError("DEFINITION_NOT_FOUND", "This session has no package Workflow Definition with that id.");
             }
             // S2SF-F6 / L4: only the same package's strictly greater version (PACKAGE_NOT_NEWER for a rollback or another package).
-            return await this.attachChatWorkflowPackage(chatSessionId, { ref: definition.name, operationId: request.operationId, newerOnly: true }, options);
+            return await this.attachSessionWorkflowPackage(ownerSessionId, { ref: definition.name, operationId: request.operationId, newerOnly: true }, options);
         } catch (error) {
             throw this._definitionFailure(error);
         }
     }
 
-    /** E2-7, P5: a person's Make a copy of a locked definition: an editable definition of the chat's own, at revision 1. */
-    async copyChatWorkflowDefinition(chatSessionId: string, request: { definitionId: string; revision?: number | null; operationId: string },
+    /** E2-7, P5: a person's Make a copy of a locked definition: an editable definition of the session's own, at revision 1. */
+    async copySessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; revision?: number | null; operationId: string },
         options: { principal?: { provider?: string | null; subject?: string | null; displayName?: string | null; email?: string | null } | null } = {})
         : Promise<Record<string, unknown>> {
         try {
             this._requirePersonCommands();
-            const host = await this._chatForDefinitions(chatSessionId);
+            const host = await this._sessionForDefinitions(ownerSessionId);
             const provider = String(options.principal?.provider ?? "").trim();
             const subject = String(options.principal?.subject ?? "").trim();
             const display = String(options.principal?.displayName ?? options.principal?.email ?? "").trim() || null;
             const actor = provider && subject ? { kind: "user" as const, provider, subject, display } : { kind: "system" as const, name: "management-client" };
-            const stored = await copyChatPackageWorkflow(host, { ownerSessionId: chatSessionId, definitionId: request.definitionId, revision: request.revision ?? null,
+            const stored = await copySessionPackageWorkflow(host, { ownerSessionId: ownerSessionId, definitionId: request.definitionId, revision: request.revision ?? null,
                 actor, operationId: request.operationId, personWords: display ?? (subject || "A person") });
             return { ...stored.receipt, replayed: stored.replayed } as unknown as Record<string, unknown>;
         } catch (error) {
@@ -4863,7 +4863,7 @@ export class PilotSwarmManagementClient {
         }
         // G1 residual (TLA+ limit.cc-g1-end-during-turn): a done or cancel is marked on the session before it is queued,
         // once its orchestration is known to be live (a command that cannot be sent leaves no mark). The callers checked
-        // the session first (a system session, a chat with an active Workflow are refused before this).
+        // the session first (a system session, a session with an active Workflow are refused before this).
         if (command.cmd !== "delete") {
             await this._assertOrchestrationLive(`session-${sessionId}`, sessionId, "sendCommand");
             await recordSessionEndRequested(this._catalog!, sessionId, command);

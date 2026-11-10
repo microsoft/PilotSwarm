@@ -1,7 +1,7 @@
 import { normalizeSessionSortMode, normalizeSessionUsage, reconcileSessionSort } from "./session-sort.js";
 import { normalizeMoa } from "./moa.js";
 import { normalizeWorkflowLayouts, workflowLayoutsWith } from "./workflow-layouts.js";
-import { CHAT_DEFINITION_READS_MAX, isWorkflowTestBench } from "./workflow-chat-definitions.js";
+import { SESSION_DEFINITION_READS_MAX, isWorkflowTestBench } from "./workflow-session-definitions.js";
 import { workflowArrivalAutoOpen, workflowLifecycleObserve } from "./workflow-lifecycle.js";
 import { normalizeThemeSound } from "./theme-sound.js";
 import { normalizeCodeFont } from "./code-font.js";
@@ -14,7 +14,7 @@ import { SYSTEM_OWNER_KEY, ownerKeyForOwner, selectSessionRows } from "./selecto
 import { systemSessionSortOrder } from "./system-titles.js";
 import { createMotdState, createMotdAdminState, canReadMotd, motdPrincipal } from "./motd.js";
 import {
-    normalizeWorkflowPanelHeights, normalizeWorkflowPanelWidths, selectWorkflowTabContext, WORKFLOW_SIDE_TAB, workflowAncestorOf, workflowDefinitionName, workflowNodeStateOfChat, workflowOwnerId,
+    normalizeWorkflowPanelHeights, normalizeWorkflowPanelWidths, selectWorkflowTabContext, WORKFLOW_SIDE_TAB, workflowAncestorOf, workflowDefinitionName, workflowNodeStateOfSession, workflowOwnerId,
     workflowSelectionTarget,
 } from "./workflow-owner.js";
 import {
@@ -885,22 +885,22 @@ export function appReducer(state, action) {
 }
 
 /**
- * OF-S2-4 (B, C, d): after a change to the sessions, the Workflows' read models, the chat's definitions list, the profile
- * read or the receipts, the Workflow tab's chat (selectWorkflowTabContext: also while an agent node's chat is the active
+ * OF-S2-4 (B, C, d): after a change to the sessions, the Workflows' read models, the session's definitions list, the profile
+ * read or the receipts, the Workflow tab's session (selectWorkflowTabContext: also while an agent node's session is the active
  * session, review F2) has its Workflow keys recorded (their changes date the Workflow button's dot, workflow-lifecycle.js),
- * and a chat whose panel was never on screen opens it once, by one rule, at once or on arrival (workflowArrivalAutoOpen).
+ * and a session whose panel was never on screen opens it once, by one rule, at once or on arrival (workflowArrivalAutoOpen).
  * It opens the desktop column and the phone layer, as a canvas's first draw does, and keeps full screen or zen. Every other
  * action leaves the state as it was (reference comparisons only).
  */
 function workflowLifecycleStep(prev, next) {
     if (next === prev) return next;
     const sessionsChanged = next.sessions.byId !== prev.sessions.byId || next.sessions.activeSessionId !== prev.sessions.activeSessionId;
-    const definitionsChanged = next.ui.chatDefinitions !== prev.ui.chatDefinitions;
+    const definitionsChanged = next.ui.sessionDefinitions !== prev.ui.sessionDefinitions;
     const profileChanged = next.ui.sessionViewsLoaded !== prev.ui.sessionViewsLoaded || next.canvas?.prefs !== prev.canvas?.prefs;
     if (!sessionsChanged && !definitionsChanged && !profileChanged && next.ui.workflowViews === prev.ui.workflowViews) return next;
     const ownerId = selectWorkflowTabContext(next).ownerId;
     if (!ownerId) return next;
-    const entry = next.ui.chatDefinitions?.[ownerId] ?? null;
+    const entry = next.ui.sessionDefinitions?.[ownerId] ?? null;
     const lifecycle = workflowLifecycleObserve(next.ui.workflowLifecycle, next.sessions.byId, ownerId, next.ui.workflowViews, entry);
     const observed = lifecycle === next.ui.workflowLifecycle ? next : { ...next, ui: { ...next.ui, workflowLifecycle: lifecycle } };
     if (!workflowArrivalAutoOpen(observed, ownerId)) return observed;
@@ -912,9 +912,9 @@ function workflowLifecycleStep(prev, next) {
 /**
  * Usability re-test r3, C09: a Workflow row saved as the selection (the profile's activeSessionId is the highlighted row,
  * UI-8) and applied before the catalog answered could not be mapped to its session then, so it stayed the active session
- * itself: after a reload the Workflow showed alone in the middle, with no chat, zen or full screen. A workflow child is
+ * itself: after a reload the Workflow showed alone in the middle, with no session, zen or full screen. A workflow child is
  * the active session only while its session is not loaded (selectWorkflowTabContext); once that session's row is
- * loaded, select its chat with the Workflow row, as a click on the row or a link does, and apply that chat's own view
+ * loaded, select its session with the Workflow row, as a click on the row or a link does, and apply that session's own view
  * (its columns and zen). A link still resolving maps itself. O(1): two lookups in the session map.
  */
 function selectWorkflowOwnerOnceLoaded(state) {
@@ -931,7 +931,7 @@ function appReducerStep(state, action) {
     const sessionId = action.sessionId ?? action.session?.sessionId;
     const contentUpdate = /^(history|files|canvas|orchestration|executionHistory|sessionStats|outbox)\//.test(action.type) || action.type === "sessions/merged";
     if (sessionId && contentUpdate && state.sessions?.goneIds?.includes(sessionId)) return state;
-    // Workflow Simplified (S4, S8): selecting a Workflow row selects the chat of the session that owns it and shows the
+    // Workflow Simplified (S4, S8): selecting a Workflow row selects the session of the session that owns it and shows the
     // Workflow in that session's Workflow tab. Every way of selecting (a click, the keyboard, a deep link) arrives here.
     const workflowTarget = action.type === "sessions/selected" && !action.workflowRowId
         ? workflowSelectionTarget(state.sessions?.byId, action.sessionId) : null;
@@ -944,7 +944,7 @@ function appReducerStep(state, action) {
     if (workflowLinkResolved(state, reconciled)) return openWorkflowTab(rememberWorkflowRow(reconciled));
     // OF-S2-3b: choosing a Workflow (the tab's pickers and list; in full screen or zen nothing else is in view) keeps the mode.
     if (workflowTarget) return openWorkflowTab(reconciled, { keepDisplayMode: true });
-    // Review UI-9: selecting an agent node's chat (or one of its sub-agents) is a choice of its Workflow and that node, made
+    // Review UI-9: selecting an agent node's session (or one of its sub-agents) is a choice of its Workflow and that node, made
     // now: the node is selected in its Workflow (a later click on the graph chooses again) and the Workflow tab opens.
     // Review UI-D2: in the same step, its owner's Workflow tab shows that Workflow's definition, the Workflows view and that
     // Workflow, whatever definition or view was chosen there before (a later choice in the tab chooses again).
@@ -974,23 +974,23 @@ function showWorkflowInOwnerTab(state, workflowId) {
     return same ? state : { ...state, ui: { ...state.ui, workflowTabs: { ...tabs, [key]: tab } } };
 }
 
-/** The Workflow and node of a selected agent node chat or its sub-agent (S6): { workflowId, nodeStateId }, else null. */
+/** The Workflow and node of a selected agent node session or its sub-agent (S6): { workflowId, nodeStateId }, else null. */
 function agentNodeOfSelection(state) {
     const byId = state.sessions?.byId || {};
     const activeId = state.sessions?.activeSessionId ?? null;
     const ancestor = activeId ? workflowAncestorOf(byId, activeId) : null;
     if (!ancestor) return null;
-    return { workflowId: ancestor.workflowId, nodeStateId: workflowNodeStateOfChat(byId[ancestor.nodeSessionId]) };
+    return { workflowId: ancestor.workflowId, nodeStateId: workflowNodeStateOfSession(byId[ancestor.nodeSessionId]) };
 }
 
 /**
  * A Workflow tab's state without a version or definition child chosen in it (owner, 2026-11-07T00:03Z): a Workflow row
  * chosen shows its own. Review UI4-F2: that includes a child shown with Show it (`definitionChild`), and review UI4-F1 the
  * version chosen as a child (`versionChild`), so the picker and the Definition view describe the Workflow selected. Stage
- * 2.1b: and the revision of a chat's definition chosen (`chatRevision`), so the Definition view shows the revision it runs.
+ * 2.1b: and the revision of a session's definition chosen (`sessionRevision`), so the Definition view shows the revision it runs.
  */
 function withoutChosenVersion(tab) {
-    const { versionChild, definitionChild, chatRevision, ...rest } = tab || {};
+    const { versionChild, definitionChild, sessionRevision, ...rest } = tab || {};
     return rest;
 }
 
@@ -1014,7 +1014,7 @@ function workflowLinkResolved(before, after) {
 
 // The right block shows the Workflow tab (L1, S4): the canvas column, on its Workflow side, recorded as the session's own
 // view as a person's toggle is. `workflowOpenSeq` ticks so the phone brings its Workflow pane up, unless `phone` is false
-// (an agent chat chosen on the phone shows that chat; its Workflow is one tap away). Review F7: a panel that opens by
+// (an agent session chosen on the phone shows that session; its Workflow is one tap away). Review F7: a panel that opens by
 // itself (`auto`, OF-S2-4d) ticks `workflowAutoOpenSeq` instead, which the phone shows without a hand-opening's effects.
 function openWorkflowTab(state, { phone = true, keepDisplayMode = false, auto = false } = {}) {
     const ui = state.ui;
@@ -1358,7 +1358,7 @@ function baseReducer(state, action) {
                 ? normalizeStoredSessionOrder(settings.sessionOrder)
                 : state.sessions.manualOrder;
             const storedActive = hasActive ? normalizeStoredActiveSessionId(settings.activeSessionId) : null;
-            // Review UI-8: a saved Workflow selection selects its chat with that Workflow row, as a click on the row does.
+            // Review UI-8: a saved Workflow selection selects its session with that Workflow row, as a click on the row does.
             const storedWorkflow = hasActive && storedActive ? workflowSelectionTarget(state.sessions.byId, storedActive) : null;
             const nextActiveSessionId = hasActive
                 ? (storedWorkflow ? storedWorkflow.ownerId : storedActive)
@@ -2019,7 +2019,7 @@ function baseReducer(state, action) {
                     }
                 }
             }
-            // Except under the session the person is looking at: when it gains its FIRST child (a workflow its chat just
+            // Except under the session the person is looking at: when it gains its FIRST child (a workflow its session just
             // started, a sub-agent), the child shows at once instead of behind "[+1]". Background rows still start
             // collapsed, and a session that already had children keeps whatever the person chose. Same baseline rule as
             // above (no baseline, no change). A session that was already collapsed before this listing stays collapsed:
@@ -3918,44 +3918,44 @@ function baseReducer(state, action) {
             return { ...state, ui: { ...state.ui, workflowTabs: { ...(state.ui.workflowTabs || {}), [ownerId]: { ...previous, ...action.patch } } } };
         }
 
-        // Stage 2.1b: a chat's Workflow Definitions as last read ({ items, at, error, unsupported, loading }), per chat.
-        case "ui/chatDefinitions": {
+        // Stage 2.1b: a session's Workflow Definitions as last read ({ items, at, error, unsupported, loading }), per session.
+        case "ui/sessionDefinitions": {
             const ownerId = typeof action.ownerId === "string" && action.ownerId ? action.ownerId : null;
             if (!ownerId || !action.patch || typeof action.patch !== "object") return state;
-            const previous = state.ui.chatDefinitions?.[ownerId] || {};
+            const previous = state.ui.sessionDefinitions?.[ownerId] || {};
             if (Object.entries(action.patch).every(([key, value]) => previous[key] === value)) return state;
-            return { ...state, ui: { ...state.ui, chatDefinitions: { ...(state.ui.chatDefinitions || {}), [ownerId]: { ...previous, ...action.patch } } } };
+            return { ...state, ui: { ...state.ui, sessionDefinitions: { ...(state.ui.sessionDefinitions || {}), [ownerId]: { ...previous, ...action.patch } } } };
         }
 
-        // Stage 2.1b: one revision of a chat's definition as read ({ phase, value, error, at }), by `${definitionId}:${revision}`.
-        // A revision never changes once saved, so a read is kept; the oldest reads past CHAT_DEFINITION_READS_MAX go.
-        case "ui/chatDefinitionRead": {
+        // Stage 2.1b: one revision of a session's definition as read ({ phase, value, error, at }), by `${definitionId}:${revision}`.
+        // A revision never changes once saved, so a read is kept; the oldest reads past SESSION_DEFINITION_READS_MAX go.
+        case "ui/sessionDefinitionRead": {
             const ownerId = typeof action.ownerId === "string" && action.ownerId ? action.ownerId : null;
             const key = typeof action.key === "string" && action.key ? action.key : null;
             if (!ownerId || !key || !action.entry || typeof action.entry !== "object") return state;
-            const reads = state.ui.chatDefinitionReads?.[ownerId] || {};
+            const reads = state.ui.sessionDefinitionReads?.[ownerId] || {};
             const { [key]: _previous, ...others } = reads;
             // Review S2UI-F2: the reads on screen (the revision shown, Compare's two) are never the ones that go.
-            const shown = new Set(Object.values(state.ui.chatDefinitionShown?.[ownerId] || {}).filter(Boolean));
+            const shown = new Set(Object.values(state.ui.sessionDefinitionShown?.[ownerId] || {}).filter(Boolean));
             const pinned = Object.entries(others).filter(([name]) => shown.has(name));
             const evictable = Object.entries(others).filter(([name]) => !shown.has(name))
                 .sort(([, a], [, b]) => (Number(a?.at) || 0) - (Number(b?.at) || 0));
-            const room = Math.max(0, CHAT_DEFINITION_READS_MAX - 1 - pinned.length);
+            const room = Math.max(0, SESSION_DEFINITION_READS_MAX - 1 - pinned.length);
             const kept = [...pinned, ...evictable.slice(Math.max(0, evictable.length - room))];
-            return { ...state, ui: { ...state.ui, chatDefinitionReads: { ...(state.ui.chatDefinitionReads || {}),
+            return { ...state, ui: { ...state.ui, sessionDefinitionReads: { ...(state.ui.sessionDefinitionReads || {}),
                 [ownerId]: { ...Object.fromEntries(kept), [key]: { ...action.entry, at: Number(action.entry.at) || Date.now() } } } } };
         }
 
-        // Review S2UI-F2: which revision reads a chat's Definition view has on screen ({ main, from, to }: read keys, or null),
+        // Review S2UI-F2: which revision reads a session's Definition view has on screen ({ main, from, to }: read keys, or null),
         // so they are kept in the cache whatever else is read.
-        case "ui/chatDefinitionShown": {
+        case "ui/sessionDefinitionShown": {
             const ownerId = typeof action.ownerId === "string" && action.ownerId ? action.ownerId : null;
             const role = ["main", "from", "to"].includes(action.role) ? action.role : null;
             if (!ownerId || !role) return state;
             const key = typeof action.key === "string" && action.key ? action.key : null;
-            const shown = state.ui.chatDefinitionShown?.[ownerId] || {};
+            const shown = state.ui.sessionDefinitionShown?.[ownerId] || {};
             if ((shown[role] ?? null) === key) return state;
-            return { ...state, ui: { ...state.ui, chatDefinitionShown: { ...(state.ui.chatDefinitionShown || {}), [ownerId]: { ...shown, [role]: key } } } };
+            return { ...state, ui: { ...state.ui, sessionDefinitionShown: { ...(state.ui.sessionDefinitionShown || {}), [ownerId]: { ...shown, [role]: key } } } };
         }
 
         // A failed Workflow the person opened (O6): the Workflow badge stops counting it.

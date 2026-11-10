@@ -85,7 +85,7 @@ export const WORKFLOW_TOOL_GLYPHS = Object.freeze({
     // Stage 2.4 (FU-26): the replay's steps, a bar beside a play mark.
     "step-back": () => glyph(h("path", { d: "M6 5v14" }), h("path", { d: "M18 5l-9 7 9 7z" })),
     "step-on": () => glyph(h("path", { d: "M18 5v14" }), h("path", { d: "M6 5l9 7-9 7z" })),
-    // Stage 2.1b: delete a chat's definition (a bin).
+    // Stage 2.1b: delete a session's definition (a bin).
     delete: () => glyph(h("path", { d: "M4 7h16" }), h("path", { d: "M9 7V4h6v3" }), h("path", { d: "M6 7l1 13h10l1-13" }), h("path", { d: "M10 11v6" }),
         h("path", { d: "M14 11v6" })),
 });

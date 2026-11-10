@@ -1,19 +1,19 @@
 /**
- * Chat-owned Workflow Definitions (Workflow Simplified stage 2.1; migration 0088; spec "definitions", "editing", "tools";
+ * Session-owned Workflow Definitions (Workflow Simplified stage 2.1; migration 0088; spec "definitions", "editing", "tools";
  * the coordinator's 2.1 readings Q1–Q10 and F2–F4).
  *
- * A definition belongs to one chat and is named in it; each save is an immutable revision with its author and the revision
+ * A definition belongs to one session and is named in it; each save is an immutable revision with its author and the revision
  * it was based on. Every check and its write is one transaction under the same locks (Q3):
- * - save: the chat row (FOR NO KEY UPDATE: saves only on a live chat, Q7), then the definition row (FOR UPDATE); the guard
+ * - save: the session row (FOR NO KEY UPDATE: saves only on a live session, Q7), then the definition row (FOR UPDATE); the guard
  *   names the definition and its revision (Q1): a stale save, or one on a deleted definition, is refused and writes
- *   nothing; a first save of a name relies on the live (chat, name) key;
- * - delete (a person's, Q8): the chat row (FOR SHARE), then the definition row (FOR UPDATE); refused while one of its
+ *   nothing; a first save of a name relies on the live (session, name) key;
+ * - delete (a person's, Q8): the session row (FOR SHARE), then the definition row (FOR UPDATE); refused while one of its
  *   Workflows is active (R6);
- * - Start (WorkflowStore.createDefinition with a chat pin, requireChatStartLocked): the chat row (FOR SHARE: live), the
+ * - Start (WorkflowStore.createDefinition with a session pin, requireSessionStartLocked): the session row (FOR SHARE: live), the
  *   definition row (FOR SHARE: not deleted), the revision (valid, the YAML being stored), before the Workflow's own rows.
- * A chat that ends ends its Workflows (migration 0088's trigger, R5 and F2).
+ * An owner session that ends ends its Workflows (migration 0088's trigger, R5 and F2).
  *
- * Stage 2.3 (migration 0088; P2, P5, P6, E2-7): a package's definition attached to a chat is a locked definition named
+ * Stage 2.3 (migration 0088; P2, P5, P6, E2-7): a package's definition attached to a session is a locked definition named
  * `<package>/<name>` (attachPackage). Each package version attached is a revision recording the package and its card; a save
  * to a locked definition is refused (DEFINITION_LOCKED), and a person makes an editable copy instead (a first save of the
  * package's YAML under its own name).
@@ -23,15 +23,15 @@ import { randomUUID } from "node:crypto";
 import { canonicalJson, sha256Hex, type JsonValue } from "./json.js";
 import type { WorkflowCompileResult, WorkflowDiagnostic, WorkflowIR } from "./compiler.js";
 import { WorkflowStoreError, revisionIrFrom } from "./store.js";
-import { packageVersionIsNewer } from "./chat-packages.js";
+import { packageVersionIsNewer } from "./session-packages.js";
 import { childBudgetCountSql, childBudgetWords } from "../child-budget.js";
 
 /** Stage 2.2: the ended tests a definition keeps (older ended ones are deleted; their rows and runs stay). */
 export const WORKFLOW_DEFINITION_TESTS_KEPT = 5;
 
-/** Who saved a revision or deleted a definition: the chat (its own tool), a person, or the system (an import). */
-export type ChatDefinitionActor =
-    | { kind: "chat"; sessionId: string }
+/** Who saved a revision or deleted a definition: the session (its own tool), a person, or the system (an import). */
+export type SessionDefinitionActor =
+    | { kind: "session"; sessionId: string }
     | { kind: "user"; provider: string; subject: string; display?: string | null }
     | { kind: "system"; name: string };
 
@@ -39,22 +39,22 @@ export type ChatDefinitionActor =
  * Formal L1 (stage 2 review): where a Make a copy came from: the locked definition, the revision copied and its package
  * version. Kept with the copy's creation record (created_by), so no column is needed.
  */
-export interface ChatCopiedFrom {
+export interface SessionCopiedFrom {
     definitionId: string;
     name: string;
     revision: number;
     package: { packageId: string; packageName: string; semver: string; sha256: string } | null;
 }
 
-export interface ChatDefinitionRow {
+export interface SessionDefinitionRow {
     definitionId: string;
     ownerSessionId: string;
     name: string;
     currentRevision: number;
-    /** 'imported' (a stage 1 import; no migration makes one now), 'package' (2.3), 'copy' (a Make a copy, L1), or null (the chat's or a person's first save). */
+    /** 'imported' (a stage 1 import; no migration makes one now), 'package' (2.3), 'copy' (a Make a copy, L1), or null (the session's or a person's first save). */
     source: string | null;
     /** L1: a copy's source (source 'copy'); null for any other definition. */
-    copiedFrom: ChatCopiedFrom | null;
+    copiedFrom: SessionCopiedFrom | null;
     /** Stage 2.3: a package's definition, read-only here (E2-7); `packageName` is its package. */
     locked: boolean;
     packageName: string | null;
@@ -63,8 +63,8 @@ export interface ChatDefinitionRow {
     deletedAt: string | null;
 }
 
-export interface ChatRevisionSummary {
-    /** Stage 2.2: the newest agent test of this revision, when one ran (added by the list, chat-definitions.ts). */
+export interface SessionRevisionSummary {
+    /** Stage 2.2: the newest agent test of this revision, when one ran (added by the list, session-definitions.ts). */
     lastTest?: { testId: string; verdict: "passed" | "failed" | "running"; at: string } | null;
     definitionId: string;
     revision: number;
@@ -73,16 +73,16 @@ export interface ChatRevisionSummary {
     yamlSha256: string;
     irSha256: string | null;
     basedOn: number | null;
-    actor: ChatDefinitionActor;
+    actor: SessionDefinitionActor;
     imported: boolean;
     createdAt: string;
     errorCount: number;
-    /** Stage 2.3: the package version this revision is (a locked definition's), with its card's digest; null for the chat's own. */
-    package: ChatRevisionPackage | null;
+    /** Stage 2.3: the package version this revision is (a locked definition's), with its card's digest; null for the session's own. */
+    package: SessionRevisionPackage | null;
 }
 
 /** The package version a locked definition's revision is (P5): its id, version and content hash, and its card's digest. */
-export interface ChatRevisionPackage {
+export interface SessionRevisionPackage {
     packageId: string;
     packageName: string;
     semver: string;
@@ -90,28 +90,28 @@ export interface ChatRevisionPackage {
     cardDigest: string;
 }
 
-export interface ChatRevisionRow extends ChatRevisionSummary {
+export interface SessionRevisionRow extends SessionRevisionSummary {
     yaml: string;
     diagnostics: WorkflowDiagnostic[];
     /** Stage 2.3: a package revision's card, as the registry exported it (package-card.ts WorkflowCard); null otherwise. */
     card: JsonValue | null;
 }
 
-/** Stage 2.3: what attaching a package version to a chat did (attachPackage). */
-export interface ChatAttachReceipt {
+/** Stage 2.3: what attaching a package version to a session did (attachPackage). */
+export interface SessionAttachReceipt {
     operation: "attach";
     definitionId: string;
     name: string;
     revision: number;
-    /** A new definition (the first version attached to this chat). */
+    /** A new definition (the first version attached to this session). */
     created: boolean;
     /** A new revision was added (false: that package version was already the newest revision). */
     changed: boolean;
-    package: ChatRevisionPackage;
+    package: SessionRevisionPackage;
     attachedAt: string;
 }
 
-export interface ChatSaveReceipt {
+export interface SessionSaveReceipt {
     operation: "save";
     definitionId: string;
     name: string;
@@ -126,15 +126,15 @@ export interface ChatSaveReceipt {
     savedAt: string;
 }
 
-export interface ChatDeleteReceipt {
+export interface SessionDeleteReceipt {
     operation: "delete";
     definitionId: string;
     name: string;
     deletedAt: string;
 }
 
-/** A Workflow started from a chat definition: its session, the revision it pins and its live run's status (null: none). */
-export interface ChatWorkflowRow {
+/** A Workflow started from a session definition: its session, the revision it pins and its live run's status (null: none). */
+export interface SessionWorkflowRow {
     workflowSessionId: string;
     definitionId: string;
     revision: number;
@@ -143,11 +143,11 @@ export interface ChatWorkflowRow {
 }
 
 /**
- * Stage 2.2: one agent test of a revision (its test bench, chat-test.ts), as the definition's list shows it: the test bench
+ * Stage 2.2: one agent test of a revision (its test bench, definition-test.ts), as the definition's list shows it: the test bench
  * session (the test's id), its definition and revision, its test run and that run's state, and when it was started and
  * ended. `verdict`: passed (the run completed with outcome succeeded), failed (it ended any other way), running.
  */
-export interface ChatTestRow {
+export interface DefinitionTestRow {
     testId: string;
     definitionId: string;
     revision: number;
@@ -159,7 +159,7 @@ export interface ChatTestRow {
     endedAt: string | null;
 }
 
-export interface ChatNoteRow {
+export interface SessionNoteRow {
     noteId: number;
     definitionId: string;
     revision: number;
@@ -167,17 +167,17 @@ export interface ChatNoteRow {
     createdAt: string;
 }
 
-export interface StoredChatOperation<T> {
+export interface StoredSessionOperation<T> {
     receipt: T;
     replayed: boolean;
 }
 
 /** The statuses of a live run that make its Workflow active (WorkflowStore ACTIVE_RUN_STATUSES). */
 const ACTIVE = ["admitted", "running", "paused"];
-/** The chat states after which it is no longer live (Q7: its definitions are read-only; F2: its Workflows end). */
-export const CHAT_ENDED_STATES: readonly string[] = ["completed", "cancelled", "failed"];
+/** The session states after which it is no longer live (Q7: its definitions are read-only; F2: its Workflows end). */
+export const OWNER_SESSION_ENDED_STATES: readonly string[] = ["completed", "cancelled", "failed"];
 /** The most revisions one definition keeps (as a Workflow's own definition, WORKFLOW_REVISION_LIMITS). */
-export const CHAT_DEFINITION_MAX_REVISIONS = 1_000;
+export const SESSION_DEFINITION_MAX_REVISIONS = 1_000;
 
 type Row = Record<string, unknown>;
 const iso = (value: unknown): string => (value instanceof Date ? value.toISOString() : String(value));
@@ -188,7 +188,7 @@ const parse = <T>(text: unknown, fallback: T): T => {
 };
 
 /** L1: a copy's source, as its creation record keeps it; null when it has none or it is not well formed. */
-function copiedFromOf(createdBy: unknown): ChatCopiedFrom | null {
+function copiedFromOf(createdBy: unknown): SessionCopiedFrom | null {
     const record = parse<Row>(typeof createdBy === "string" ? createdBy : null, {});
     const from = record && typeof record === "object" ? (record as Row).copiedFrom as Row | undefined : undefined;
     if (!from || typeof from !== "object" || typeof from.definitionId !== "string" || typeof from.name !== "string"
@@ -202,7 +202,7 @@ function copiedFromOf(createdBy: unknown): ChatCopiedFrom | null {
     };
 }
 
-function definitionFrom(row: Row): ChatDefinitionRow {
+function definitionFrom(row: Row): SessionDefinitionRow {
     return {
         definitionId: String(row.definition_id), ownerSessionId: String(row.owner_session_id), name: String(row.name),
         currentRevision: Number(row.current_revision), source: row.source === null || row.source === undefined ? null : String(row.source),
@@ -212,47 +212,47 @@ function definitionFrom(row: Row): ChatDefinitionRow {
     };
 }
 
-function packageFrom(row: Row, packageName: string | null): ChatRevisionPackage | null {
+function packageFrom(row: Row, packageName: string | null): SessionRevisionPackage | null {
     if (row.package_id === null || row.package_id === undefined) return null;
     return { packageId: String(row.package_id), packageName: packageName ?? "", semver: String(row.package_semver ?? ""),
         sha256: String(row.package_sha256 ?? ""), cardDigest: String(row.card_digest ?? "") };
 }
 
-function summaryFrom(row: Row): ChatRevisionSummary {
+function summaryFrom(row: Row): SessionRevisionSummary {
     const diagnostics = parse<WorkflowDiagnostic[]>(row.diagnostics, []);
     return {
         definitionId: String(row.definition_id), revision: Number(row.revision), valid: row.valid === true,
         semver: row.semver === null || row.semver === undefined ? null : String(row.semver), yamlSha256: String(row.yaml_sha256),
         irSha256: row.ir_sha256 === null || row.ir_sha256 === undefined ? null : String(row.ir_sha256),
         basedOn: row.based_on === null || row.based_on === undefined ? null : Number(row.based_on),
-        actor: parse<ChatDefinitionActor>(row.actor, { kind: "system", name: "unknown" }), imported: row.imported === true,
+        actor: parse<SessionDefinitionActor>(row.actor, { kind: "system", name: "unknown" }), imported: row.imported === true,
         createdAt: iso(row.created_at), errorCount: Array.isArray(diagnostics) ? diagnostics.filter(item => item?.severity !== "warning").length : 0,
         package: packageFrom(row, row.package_name === null || row.package_name === undefined ? null : String(row.package_name)),
     };
 }
 
-/** E2-7: a package's definition is read-only in the chat; the words say how to change it. */
-export function lockedRefusal(definition: Pick<ChatDefinitionRow, "definitionId" | "name" | "packageName">): WorkflowStoreError {
+/** E2-7: a package's definition is read-only in the session; the words say how to change it. */
+export function lockedRefusal(definition: Pick<SessionDefinitionRow, "definitionId" | "name" | "packageName">): WorkflowStoreError {
     return new WorkflowStoreError("DEFINITION_LOCKED", `${definition.name} comes from the package ${definition.packageName ?? "it was published in"} and is `
         + "locked: it cannot be changed here. Make a copy of it (in the Workflow tab) and change the copy. Nothing was saved.",
     { definitionId: definition.definitionId, packageName: definition.packageName });
 }
 
-/** "the chat", a person's name, or "the system", for the stale-save words (E2-3). */
-export function chatActorWords(actor: ChatDefinitionActor): string {
-    if (actor.kind === "chat") return "the chat";
+/** "the session", a person's name, or "the system", for the stale-save words (E2-3). */
+export function sessionActorWords(actor: SessionDefinitionActor): string {
+    if (actor.kind === "session") return "the session";
     if (actor.kind === "user") return actor.display?.trim() || actor.subject;
     return actor.name === "imported" ? "the import of stage 1 Workflows" : "the system";
 }
 
-export class ChatDefinitionStore {
+export class SessionDefinitionStore {
     private readonly t: { definitions: string; revisions: string; operations: string; seen: string; notes: string; sessions: string; wfDefinitions: string; runs: string };
 
     constructor(private readonly pool: Pool, readonly schema: string) {
         const s = `"${schema}"`;
         this.t = {
-            definitions: `${s}.workflow_chat_definitions`, revisions: `${s}.workflow_chat_revisions`, operations: `${s}.workflow_chat_operations`,
-            seen: `${s}.workflow_chat_seen`, notes: `${s}.workflow_chat_notes`, sessions: `${s}.sessions`,
+            definitions: `${s}.session_workflow_definitions`, revisions: `${s}.session_workflow_revisions`, operations: `${s}.session_workflow_operations`,
+            seen: `${s}.session_workflow_seen`, notes: `${s}.session_workflow_notes`, sessions: `${s}.sessions`,
             wfDefinitions: `${s}.workflow_definitions`, runs: `${s}.workflow_runs`,
         };
     }
@@ -278,14 +278,14 @@ export class ChatDefinitionStore {
         }
     }
 
-    /** Lock the chat's row (`mode`) and require it live: not deleted, not completed, canceled or failed (Q7). */
-    private async lockLiveChat(client: PoolClient, ownerSessionId: string, mode: "FOR SHARE" | "FOR NO KEY UPDATE"): Promise<void> {
+    /** Lock the session's row (`mode`) and require it live: not deleted, not completed, canceled or failed (Q7). */
+    private async lockLiveOwnerSession(client: PoolClient, ownerSessionId: string, mode: "FOR SHARE" | "FOR NO KEY UPDATE"): Promise<void> {
         const { rows } = await client.query(`SELECT state, deleted_at, session_kind FROM ${this.t.sessions} WHERE session_id = $1 ${mode}`, [ownerSessionId]);
         const row = rows[0];
-        if (!row || row.deleted_at !== null) throw new WorkflowStoreError("CHAT_NOT_FOUND", "This chat does not exist or was deleted.");
-        if (row.session_kind === "workflow") throw new WorkflowStoreError("CHAT_NOT_FOUND", "A Workflow does not own Workflow Definitions; its chat does.");
-        if (CHAT_ENDED_STATES.includes(String(row.state))) {
-            throw new WorkflowStoreError("CHAT_NOT_LIVE", `This chat has ${row.state === "failed" ? "failed" : `been ${row.state === "cancelled" ? "canceled" : row.state}`}: `
+        if (!row || row.deleted_at !== null) throw new WorkflowStoreError("SESSION_NOT_FOUND", "This session does not exist or was deleted.");
+        if (row.session_kind === "workflow") throw new WorkflowStoreError("SESSION_NOT_FOUND", "A Workflow does not own Workflow Definitions; its session does.");
+        if (OWNER_SESSION_ENDED_STATES.includes(String(row.state))) {
+            throw new WorkflowStoreError("SESSION_NOT_LIVE", `This session has ${row.state === "failed" ? "failed" : `been ${row.state === "cancelled" ? "canceled" : row.state}`}: `
                 + "its Workflow Definitions can be read, not changed or started.", { state: String(row.state) });
         }
     }
@@ -306,9 +306,9 @@ export class ChatDefinitionStore {
     }
 
     /**
-     * Code check G2: the stored kind and receipt of an operation of this chat, whatever its request digest; null when none is
+     * Code check G2: the stored kind and receipt of an operation of this session, whatever its request digest; null when none is
      * stored. spawn_workflow's compatibility path reads its save receipt by operation id before it computes its guard, so an
-     * exact repeat is answered from that receipt (its guard, from what the chat has seen, has moved since).
+     * exact repeat is answered from that receipt (its guard, from what the session has seen, has moved since).
      */
     async readStoredOperation<T>(ownerSessionId: string, operationId: string): Promise<{ kind: string; receipt: T } | null> {
         const { rows } = await this.pool.query(`SELECT kind, receipt FROM ${this.t.operations} WHERE owner_session_id = $1 AND operation_id = $2`,
@@ -317,7 +317,7 @@ export class ChatDefinitionStore {
         return { kind: String(rows[0].kind), receipt: JSON.parse(String(rows[0].receipt)) as T };
     }
 
-    /** The stored receipt of an operation of this chat, or null (another request with the id is refused, OPERATION_CONFLICT). */
+    /** The stored receipt of an operation of this session, or null (another request with the id is refused, OPERATION_CONFLICT). */
     async readOperation<T>(ownerSessionId: string, operationId: string, kind: string, requestSha256: string): Promise<T | null> {
         const client = await this.pool.connect();
         try {
@@ -336,8 +336,8 @@ export class ChatDefinitionStore {
     }
 
     /**
-     * Whether the chat owns a Workflow Definition (deleted ones too) or a Workflow (a workflow child of any kind): Workflows on
-     * demand turn on in such a chat (one from before this release).
+     * Whether the session owns a Workflow Definition (deleted ones too) or a Workflow (a workflow child of any kind): Workflows on
+     * demand turn on in such a session (one from before this release).
      */
     async hasWorkflows(ownerSessionId: string): Promise<boolean> {
         const { rows } = await this.pool.query(
@@ -346,28 +346,28 @@ export class ChatDefinitionStore {
         return rows[0]?.has === true;
     }
 
-    /** The chat's definitions, oldest first; deleted ones only when asked. */
-    async listDefinitions(ownerSessionId: string, options: { includeDeleted?: boolean } = {}): Promise<ChatDefinitionRow[]> {
+    /** The session's definitions, oldest first; deleted ones only when asked. */
+    async listDefinitions(ownerSessionId: string, options: { includeDeleted?: boolean } = {}): Promise<SessionDefinitionRow[]> {
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.t.definitions} WHERE owner_session_id = $1 ${options.includeDeleted ? "" : "AND deleted_at IS NULL"}
               ORDER BY created_at, definition_id`, [ownerSessionId]);
         return rows.map(definitionFrom);
     }
 
-    async readDefinition(definitionId: string): Promise<ChatDefinitionRow | null> {
+    async readDefinition(definitionId: string): Promise<SessionDefinitionRow | null> {
         const { rows } = await this.pool.query(`SELECT * FROM ${this.t.definitions} WHERE definition_id = $1`, [definitionId]);
         return rows[0] ? definitionFrom(rows[0]) : null;
     }
 
-    /** The chat's live definition of that name, or null. */
-    async readDefinitionByName(ownerSessionId: string, name: string): Promise<ChatDefinitionRow | null> {
+    /** The session's live definition of that name, or null. */
+    async readDefinitionByName(ownerSessionId: string, name: string): Promise<SessionDefinitionRow | null> {
         const { rows } = await this.pool.query(`SELECT * FROM ${this.t.definitions} WHERE owner_session_id = $1 AND name = $2 AND deleted_at IS NULL`,
             [ownerSessionId, name]);
         return rows[0] ? definitionFrom(rows[0]) : null;
     }
 
     /** A definition's revisions, oldest first, without their YAML. */
-    async listRevisions(definitionId: string): Promise<ChatRevisionSummary[]> {
+    async listRevisions(definitionId: string): Promise<SessionRevisionSummary[]> {
         const { rows } = await this.pool.query(
             `SELECT r.definition_id, r.revision, r.valid, r.semver, r.yaml_sha256, r.ir_sha256, r.based_on, r.actor, r.imported, r.created_at, r.diagnostics,
                     r.package_id, r.package_semver, r.package_sha256, r.card_digest, d.package_name
@@ -377,7 +377,7 @@ export class ChatDefinitionStore {
     }
 
     /** One revision with its YAML and diagnostics, or null. */
-    async readRevision(definitionId: string, revision: number): Promise<ChatRevisionRow | null> {
+    async readRevision(definitionId: string, revision: number): Promise<SessionRevisionRow | null> {
         const { rows } = await this.pool.query(
             `SELECT r.*, d.package_name FROM ${this.t.revisions} r JOIN ${this.t.definitions} d ON d.definition_id = r.definition_id
               WHERE r.definition_id = $1 AND r.revision = $2`, [definitionId, revision]);
@@ -398,27 +398,27 @@ export class ChatDefinitionStore {
         return revisionIrFrom(rows[0], revision, undefined);
     }
 
-    /** The Workflows started from a definition (or every definition of a chat), oldest first, with their live run's status. */
-    async listWorkflows(filter: { definitionId?: string; ownerSessionId?: string }): Promise<ChatWorkflowRow[]> {
-        const where = filter.definitionId ? "d.chat_definition_id = $1" : "d.parent_session_id = $1 AND d.chat_definition_id IS NOT NULL";
+    /** The Workflows started from a definition (or every definition of a session), oldest first, with their live run's status. */
+    async listWorkflows(filter: { definitionId?: string; ownerSessionId?: string }): Promise<SessionWorkflowRow[]> {
+        const where = filter.definitionId ? "d.session_definition_id = $1" : "d.parent_session_id = $1 AND d.session_definition_id IS NOT NULL";
         const { rows } = await this.pool.query(
-            `SELECT d.workflow_session_id, d.chat_definition_id, d.chat_revision, d.created_at,
+            `SELECT d.workflow_session_id, d.session_definition_id, d.session_revision, d.created_at,
                     (SELECT r.status FROM ${this.t.runs} r WHERE r.workflow_session_id = d.workflow_session_id AND r.mode = 'live'
                       ORDER BY r.created_at DESC LIMIT 1) AS run_status
                FROM ${this.t.wfDefinitions} d
                JOIN ${this.t.sessions} s ON s.session_id = d.workflow_session_id AND s.deleted_at IS NULL
               WHERE ${where}
               ORDER BY d.created_at, d.workflow_session_id`, [filter.definitionId ?? filter.ownerSessionId]);
-        return rows.map((row: Row) => ({ workflowSessionId: String(row.workflow_session_id), definitionId: String(row.chat_definition_id),
-            revision: Number(row.chat_revision), runStatus: row.run_status === null || row.run_status === undefined ? null : String(row.run_status),
+        return rows.map((row: Row) => ({ workflowSessionId: String(row.workflow_session_id), definitionId: String(row.session_definition_id),
+            revision: Number(row.session_revision), runStatus: row.run_status === null || row.run_status === undefined ? null : String(row.run_status),
             createdAt: iso(row.created_at) }));
     }
 
     /**
-     * Stage 2.2: a chat's agent tests (its test benches: service_kind workflow-test), newest first, each with its newest test
+     * Stage 2.2: a session's agent tests (its test benches: service_kind workflow-test), newest first, each with its newest test
      * run; of one definition when `definitionId` is given. Deleted test benches are not listed.
      */
-    async listTests(ownerSessionId: string, definitionId: string | null = null): Promise<ChatTestRow[]> {
+    async listTests(ownerSessionId: string, definitionId: string | null = null): Promise<DefinitionTestRow[]> {
         const { rows } = await this.pool.query(
             `SELECT s.session_id, s.created_at, s.creation_config, run.run_id, run.status, run.terminal_outcome, run.finished_at
                FROM ${this.t.sessions} s
@@ -434,7 +434,7 @@ export class ChatDefinitionStore {
             if (!bench || typeof bench.definitionId !== "string" || !Number.isSafeInteger(revision)) return [];
             const status = row.status === null || row.status === undefined ? null : String(row.status);
             const outcome = row.terminal_outcome === null || row.terminal_outcome === undefined ? null : String(row.terminal_outcome);
-            const verdict: ChatTestRow["verdict"] = status === null || ACTIVE.includes(status) ? "running"
+            const verdict: DefinitionTestRow["verdict"] = status === null || ACTIVE.includes(status) ? "running"
                 : status === "completed" && outcome === "succeeded" ? "passed" : "failed";
             return [{ testId: String(row.session_id), definitionId: bench.definitionId, revision, runId: row.run_id === null || row.run_id === undefined
                 ? null : String(row.run_id), status, outcome, verdict, startedAt: iso(row.created_at), endedAt: isoOrNull(row.finished_at) }];
@@ -455,7 +455,7 @@ export class ChatDefinitionStore {
 
     /**
      * S2RT-F8: retention again when a test ends (its run finished, was canceled, or was ended elsewhere): the bench's own
-     * chat and definition, from its creation record. Repeat-safe, and safe when two tests end at once (a retired test is
+     * session and definition, from its creation record. Repeat-safe, and safe when two tests end at once (a retired test is
      * soft-deleted once; a running one is never retired). Nothing for a session that is not a test bench.
      */
     async retireTestsAfterEnd(benchSessionId: string, keep: number = WORKFLOW_DEFINITION_TESTS_KEPT): Promise<string[]> {
@@ -467,21 +467,21 @@ export class ChatDefinitionStore {
         return this.retireTests(String(row.parent_session_id), String(row.definition_id), keep);
     }
 
-    /** A chat's Workflows that are active (R4: a chat cannot complete while one is), from chat definitions or not. */
-    async activeWorkflowsOfChat(ownerSessionId: string): Promise<Array<{ workflowSessionId: string; definitionId: string | null; title: string | null }>> {
+    /** A session's Workflows that are active (R4: a session cannot complete while one is), from session definitions or not. */
+    async activeWorkflowsOfSession(ownerSessionId: string): Promise<Array<{ workflowSessionId: string; definitionId: string | null; title: string | null }>> {
         const { rows } = await this.pool.query(
-            `SELECT s.session_id, s.title, d.chat_definition_id
+            `SELECT s.session_id, s.title, d.session_definition_id
                FROM ${this.t.sessions} s
                JOIN ${this.t.runs} r ON r.workflow_session_id = s.session_id AND r.mode = 'live' AND r.status = ANY($2::text[])
                LEFT JOIN ${this.t.wfDefinitions} d ON d.workflow_session_id = s.session_id
               WHERE s.parent_session_id = $1 AND s.session_kind = 'workflow' AND s.deleted_at IS NULL
               ORDER BY s.created_at, s.session_id`, [ownerSessionId, ACTIVE]);
         return rows.map((row: Row) => ({ workflowSessionId: String(row.session_id), title: row.title === null || row.title === undefined ? null : String(row.title),
-            definitionId: row.chat_definition_id === null || row.chat_definition_id === undefined ? null : String(row.chat_definition_id) }));
+            definitionId: row.session_definition_id === null || row.session_definition_id === undefined ? null : String(row.session_definition_id) }));
     }
 
     /**
-     * Stage 2.4 (PR 235 2b893906): the chat's running children, the budget spawn_agent and Start share: its sub-agents
+     * Stage 2.4 (PR 235 2b893906): the session's running children, the budget spawn_agent and Start share: its sub-agents
      * that are running and its Workflows whose live run is active. Not its system sessions or service sessions (an agent's
      * test benches, stage 2.2).
      */
@@ -493,14 +493,14 @@ export class ChatDefinitionStore {
     }
 
     /**
-     * S2RT-F3: in a Start's claim transaction, lock the chat's row exclusively, then refuse when its budget is full (the
+     * S2RT-F3: in a Start's claim transaction, lock the session's row exclusively, then refuse when its budget is full (the
      * claimed Workflow is not counted: its claim is its reservation). The same lock and count as spawn_agent's creation.
-     * Lock-order check O1: the chat must still be live under that lock (lockLiveChat), so a claim that waited behind the
-     * chat's deletion or end is refused and rolled back, and leaves no Workflow session, as a test bench's admission is
+     * Lock-order check O1: the session must still be live under that lock (lockLiveOwnerSession), so a claim that waited behind the
+     * session's deletion or end is refused and rolled back, and leaves no Workflow session, as a test bench's admission is
      * (requireBenchLiveLocked).
      */
     async requireChildBudgetLocked(client: PoolClient, ownerSessionId: string, workflowSessionId: string, max: number): Promise<void> {
-        await this.lockLiveChat(client, ownerSessionId, "FOR NO KEY UPDATE");
+        await this.lockLiveOwnerSession(client, ownerSessionId, "FOR NO KEY UPDATE");
         const { rows } = await client.query(childBudgetCountSql(`"${this.schema}"`), [ownerSessionId, workflowSessionId]);
         const count = Number(rows[0]?.n ?? 0);
         if (count >= max) {
@@ -523,13 +523,13 @@ export class ChatDefinitionStore {
         return Number(rows[0]?.level ?? 0);
     }
 
-    /** The newest revision of a definition the chat itself has seen (its saves and reads), or null (Q2). */
+    /** The newest revision of a definition the session itself has seen (its saves and reads), or null (Q2). */
     async seenRevision(ownerSessionId: string, definitionId: string): Promise<number | null> {
         const { rows } = await this.pool.query(`SELECT revision FROM ${this.t.seen} WHERE owner_session_id = $1 AND definition_id = $2`, [ownerSessionId, definitionId]);
         return rows[0] ? Number(rows[0].revision) : null;
     }
 
-    /** The chat has seen these revisions (a read or list of its own): each kept at its highest. */
+    /** The session has seen these revisions (a read or list of its own): each kept at its highest. */
     async markSeen(ownerSessionId: string, seen: Array<{ definitionId: string; revision: number }>): Promise<void> {
         for (const item of seen) {
             if (!(item.revision >= 1)) continue;
@@ -541,12 +541,12 @@ export class ChatDefinitionStore {
     }
 
     /**
-     * Save a revision (spec E2-1..E2-6; Q1, Q3, Q7). `expected` null: the first save of `name` in this chat (refused,
-     * DEFINITION_EXISTS, when the chat already has one). Otherwise the save names the definition and the revision it was
-     * based on: a definition of another chat or name is not found, a deleted one is refused (DEFINITION_DELETED), and a
+     * Save a revision (spec E2-1..E2-6; Q1, Q3, Q7). `expected` null: the first save of `name` in this session (refused,
+     * DEFINITION_EXISTS, when the session already has one). Otherwise the save names the definition and the revision it was
+     * based on: a definition of another session or name is not found, a deleted one is refused (DEFINITION_DELETED), and a
      * newer revision saved meanwhile refuses it (REVISION_STALE, with who saved it and when). A revision that is not valid
-     * is saved with its diagnostics (E2-5). `seenByChat`: the chat's own save (it has seen what it saved). `noteBy`: a
-     * person's save leaves a note naming them for the chat's next turn (E2-4); it never starts a turn. A repeated operation is answered from its receipt.
+     * is saved with its diagnostics (E2-5). `seenBySession`: the session's own save (it has seen what it saved). `noteBy`: a
+     * person's save leaves a note naming them for the session's next turn (E2-4); it never starts a turn. A repeated operation is answered from its receipt.
      */
     async save(input: {
         ownerSessionId: string;
@@ -554,23 +554,23 @@ export class ChatDefinitionStore {
         yaml: string;
         compiled: WorkflowCompileResult;
         expected: { definitionId: string; revision: number } | null;
-        actor: ChatDefinitionActor;
+        actor: SessionDefinitionActor;
         operationId: string;
         requestSha256: string;
-        seenByChat: boolean;
-        /** A person's save: their name for the note the chat reads ("Affan Dar saved hn-top-watch revision 6."). */
+        seenBySession: boolean;
+        /** A person's save: their name for the note the session reads ("Affan Dar saved hn-top-watch revision 6."). */
         noteBy?: string | null;
         /** L1: a first save that is a Make a copy: the definition is source 'copy', and its creation record names its source. */
-        copiedFrom?: ChatCopiedFrom | null;
-    }): Promise<StoredChatOperation<ChatSaveReceipt>> {
+        copiedFrom?: SessionCopiedFrom | null;
+    }): Promise<StoredSessionOperation<SessionSaveReceipt>> {
         return this.transaction(async client => {
-            const prior = await this.priorOperation<ChatSaveReceipt>(client, input.ownerSessionId, input.operationId, "save", input.requestSha256);
+            const prior = await this.priorOperation<SessionSaveReceipt>(client, input.ownerSessionId, input.operationId, "save", input.requestSha256);
             if (prior) return { receipt: prior, replayed: true };
-            await this.lockLiveChat(client, input.ownerSessionId, "FOR NO KEY UPDATE");
+            await this.lockLiveOwnerSession(client, input.ownerSessionId, "FOR NO KEY UPDATE");
             // Formal L3 (the 2.1 save has the same shape): a concurrent repeat stored its receipt while this one waited.
-            const stored = await this.priorOperation<ChatSaveReceipt>(client, input.ownerSessionId, input.operationId, "save", input.requestSha256);
+            const stored = await this.priorOperation<SessionSaveReceipt>(client, input.ownerSessionId, input.operationId, "save", input.requestSha256);
             if (stored) return { receipt: stored, replayed: true };
-            let definition: ChatDefinitionRow;
+            let definition: SessionDefinitionRow;
             let created = false;
             if (input.expected === null) {
                 const copied = input.copiedFrom ?? null;
@@ -583,7 +583,7 @@ export class ChatDefinitionStore {
                     const existing = await client.query(`SELECT * FROM ${this.t.definitions} WHERE owner_session_id = $1 AND name = $2 AND deleted_at IS NULL`,
                         [input.ownerSessionId, input.name]);
                     const found = existing.rows[0] ? definitionFrom(existing.rows[0]) : null;
-                    throw new WorkflowStoreError("DEFINITION_EXISTS", `This chat already has ${input.name}${found ? ` (revision ${found.currentRevision})` : ""}. `
+                    throw new WorkflowStoreError("DEFINITION_EXISTS", `This session already has ${input.name}${found ? ` (revision ${found.currentRevision})` : ""}. `
                         + "Read it, then save with its definition id and revision.",
                         found ? { definitionId: found.definitionId, currentRevision: found.currentRevision } : null);
                 }
@@ -593,7 +593,7 @@ export class ChatDefinitionStore {
                 const { rows } = await client.query(`SELECT * FROM ${this.t.definitions} WHERE definition_id = $1 FOR UPDATE`, [input.expected.definitionId]);
                 const found = rows[0] ? definitionFrom(rows[0]) : null;
                 if (!found || found.ownerSessionId !== input.ownerSessionId) {
-                    throw new WorkflowStoreError("DEFINITION_NOT_FOUND", `This chat has no Workflow Definition ${input.expected.definitionId}.`);
+                    throw new WorkflowStoreError("DEFINITION_NOT_FOUND", `This session has no Workflow Definition ${input.expected.definitionId}.`);
                 }
                 if (found.deletedAt !== null) {
                     throw new WorkflowStoreError("DEFINITION_DELETED", `${found.name} was deleted. Nothing was saved.`,
@@ -607,14 +607,14 @@ export class ChatDefinitionStore {
                 if (found.currentRevision !== input.expected.revision) {
                     const latest = await client.query(`SELECT actor, created_at FROM ${this.t.revisions} WHERE definition_id = $1 AND revision = $2`,
                         [found.definitionId, found.currentRevision]);
-                    const by = latest.rows[0] ? parse<ChatDefinitionActor>(latest.rows[0].actor, { kind: "system", name: "unknown" }) : { kind: "system", name: "unknown" } as ChatDefinitionActor;
+                    const by = latest.rows[0] ? parse<SessionDefinitionActor>(latest.rows[0].actor, { kind: "system", name: "unknown" }) : { kind: "system", name: "unknown" } as SessionDefinitionActor;
                     const at = latest.rows[0] ? iso(latest.rows[0].created_at) : null;
                     throw new WorkflowStoreError("REVISION_STALE",
-                        `Revision ${found.currentRevision} was saved by ${chatActorWords(by)}${at ? ` at ${at}` : ""}. Reload to edit it. Nothing was saved.`,
+                        `Revision ${found.currentRevision} was saved by ${sessionActorWords(by)}${at ? ` at ${at}` : ""}. Reload to edit it. Nothing was saved.`,
                         { definitionId: found.definitionId, currentRevision: found.currentRevision, expectedRevision: input.expected.revision,
                             savedBy: by as unknown as JsonValue, savedAt: at });
                 }
-                if (found.currentRevision >= CHAT_DEFINITION_MAX_REVISIONS) {
+                if (found.currentRevision >= SESSION_DEFINITION_MAX_REVISIONS) {
                     throw new WorkflowStoreError("REVISION_LIMIT", `${found.name} has ${found.currentRevision} revisions, the most one definition keeps.`);
                 }
                 definition = found;
@@ -627,7 +627,7 @@ export class ChatDefinitionStore {
                 [definition.definitionId, revision, input.yaml, input.compiled.yamlSha256, input.compiled.valid, canonicalJson(input.compiled.diagnostics),
                     input.compiled.version, input.compiled.ir ? canonicalJson(input.compiled.ir) : null, input.compiled.irSha256, basedOn, canonicalJson(input.actor)]);
             await client.query(`UPDATE ${this.t.definitions} SET current_revision = $2, updated_at = now() WHERE definition_id = $1`, [definition.definitionId, revision]);
-            if (input.seenByChat) {
+            if (input.seenBySession) {
                 await client.query(
                     `INSERT INTO ${this.t.seen} (owner_session_id, definition_id, revision) VALUES ($1, $2, $3)
                      ON CONFLICT (owner_session_id, definition_id) DO UPDATE SET revision = GREATEST(${this.t.seen}.revision, EXCLUDED.revision), updated_at = now()`,
@@ -637,7 +637,7 @@ export class ChatDefinitionStore {
                 await client.query(`INSERT INTO ${this.t.notes} (owner_session_id, definition_id, revision, text) VALUES ($1, $2, $3, $4)`,
                     [input.ownerSessionId, definition.definitionId, revision, `${input.noteBy.trim()} saved ${definition.name} revision ${revision}.`]);
             }
-            const receipt: ChatSaveReceipt = {
+            const receipt: SessionSaveReceipt = {
                 operation: "save", definitionId: definition.definitionId, name: definition.name, revision, basedOn, created,
                 valid: input.compiled.valid, semver: input.compiled.version, yamlSha256: input.compiled.yamlSha256, irSha256: input.compiled.irSha256,
                 diagnostics: input.compiled.diagnostics, savedAt: iso(saved[0].created_at),
@@ -648,37 +648,37 @@ export class ChatDefinitionStore {
     }
 
     /**
-     * Stage 2.3 (P2, P5, P6): attach a package version of a Workflow Definition to the chat, as its locked definition
+     * Stage 2.3 (P2, P5, P6): attach a package version of a Workflow Definition to the session, as its locked definition
      * `name` (`<package>/<name>`). The first attach makes the definition at revision 1; a later one with another package
      * version adds a revision (the next Workflow starts it; running ones keep theirs, R1, P6); the same version again adds
      * nothing. `compiled` must be valid (the package was checked when it was published; the caller refuses a definition this
-     * host cannot run). `workflowRef`: the chat is the coordinating chat made for it (P2): its session row records the
-     * reference once. Under the chat's lock, as a save is (Q3, Q7). A repeated operation is answered from its receipt.
+     * host cannot run). `workflowRef`: the session is the coordinating session made for it (P2): its session row records the
+     * reference once. Under the session's lock, as a save is (Q3, Q7). A repeated operation is answered from its receipt.
      */
     async attachPackage(input: {
         ownerSessionId: string;
         name: string;
         yaml: string;
         compiled: WorkflowCompileResult;
-        package: ChatRevisionPackage;
+        package: SessionRevisionPackage;
         card: JsonValue;
-        actor: ChatDefinitionActor;
+        actor: SessionDefinitionActor;
         operationId: string;
         requestSha256: string;
-        seenByChat: boolean;
+        seenBySession: boolean;
         workflowRef?: string | null;
         /** S2SF-F6 / L4: an existing definition takes only the same package's strictly greater version (PACKAGE_NOT_NEWER). */
         newerOnly?: boolean;
-    }): Promise<StoredChatOperation<ChatAttachReceipt>> {
+    }): Promise<StoredSessionOperation<SessionAttachReceipt>> {
         if (!input.compiled.valid || !input.compiled.ir || !input.compiled.irSha256) {
             throw new WorkflowStoreError("DEFINITION_INVALID", `${input.name} is not a valid Workflow Definition here. Nothing was attached.`);
         }
         return this.transaction(async client => {
-            const prior = await this.priorOperation<ChatAttachReceipt>(client, input.ownerSessionId, input.operationId, "attach", input.requestSha256);
+            const prior = await this.priorOperation<SessionAttachReceipt>(client, input.ownerSessionId, input.operationId, "attach", input.requestSha256);
             if (prior) return { receipt: prior, replayed: true };
-            await this.lockLiveChat(client, input.ownerSessionId, "FOR NO KEY UPDATE");
-            // Formal L3: the same operation running at the same time stored its receipt while this one waited for the chat.
-            const stored = await this.priorOperation<ChatAttachReceipt>(client, input.ownerSessionId, input.operationId, "attach", input.requestSha256);
+            await this.lockLiveOwnerSession(client, input.ownerSessionId, "FOR NO KEY UPDATE");
+            // Formal L3: the same operation running at the same time stored its receipt while this one waited for the session.
+            const stored = await this.priorOperation<SessionAttachReceipt>(client, input.ownerSessionId, input.operationId, "attach", input.requestSha256);
             if (stored) return { receipt: stored, replayed: true };
             const live = async () => {
                 const { rows } = await client.query(`SELECT * FROM ${this.t.definitions} WHERE owner_session_id = $1 AND name = $2 AND deleted_at IS NULL FOR UPDATE`,
@@ -697,7 +697,7 @@ export class ChatDefinitionStore {
             }
             if (!definition) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${input.name} could not be attached. Nothing was attached.`);
             if (!definition.locked) {
-                throw new WorkflowStoreError("DEFINITION_EXISTS", `This chat has its own definition named ${input.name}. Nothing was attached.`,
+                throw new WorkflowStoreError("DEFINITION_EXISTS", `This session has its own definition named ${input.name}. Nothing was attached.`,
                     { definitionId: definition.definitionId });
             }
             let changed = true;
@@ -709,9 +709,9 @@ export class ChatDefinitionStore {
                     const attached = { packageId: String(rows[0]?.package_id ?? ""), semver: String(rows[0]?.package_semver ?? "") };
                     if (!packageVersionIsNewer(attached, input.package)) {
                         throw new WorkflowStoreError("PACKAGE_NOT_NEWER", attached.packageId !== input.package.packageId
-                            ? `The ${input.name} you can use now is another package of that name, not the one this chat has (${attached.semver}). `
+                            ? `The ${input.name} you can use now is another package of that name, not the one this session has (${attached.semver}). `
                                 + "Nothing was attached; its Workflows start the version it has."
-                            : `The package's active version is ${input.package.semver}, not newer than the ${attached.semver} this chat has. `
+                            : `The package's active version is ${input.package.semver}, not newer than the ${attached.semver} this session has. `
                                 + `Nothing was attached; its Workflows start ${attached.semver}.`,
                         { definitionId: definition.definitionId, attached: attached.semver, active: input.package.semver });
                     }
@@ -720,7 +720,7 @@ export class ChatDefinitionStore {
             let revision = definition.currentRevision;
             let attachedAt = new Date().toISOString();
             if (changed) {
-                if (definition.currentRevision >= CHAT_DEFINITION_MAX_REVISIONS) {
+                if (definition.currentRevision >= SESSION_DEFINITION_MAX_REVISIONS) {
                     throw new WorkflowStoreError("REVISION_LIMIT", `${definition.name} has ${definition.currentRevision} revisions, the most one definition keeps.`);
                 }
                 revision = definition.currentRevision + 1;
@@ -736,7 +736,7 @@ export class ChatDefinitionStore {
                 await client.query(`UPDATE ${this.t.definitions} SET current_revision = $2, updated_at = now() WHERE definition_id = $1`,
                     [definition.definitionId, revision]);
             }
-            if (input.seenByChat) {
+            if (input.seenBySession) {
                 await client.query(
                     `INSERT INTO ${this.t.seen} (owner_session_id, definition_id, revision) VALUES ($1, $2, $3)
                      ON CONFLICT (owner_session_id, definition_id) DO UPDATE SET revision = GREATEST(${this.t.seen}.revision, EXCLUDED.revision), updated_at = now()`,
@@ -746,7 +746,7 @@ export class ChatDefinitionStore {
                 await client.query(`UPDATE ${this.t.sessions} SET workflow_ref = $2 WHERE session_id = $1 AND workflow_ref IS NULL`,
                     [input.ownerSessionId, input.workflowRef]);
             }
-            const receipt: ChatAttachReceipt = { operation: "attach", definitionId: definition.definitionId, name: definition.name, revision, created, changed,
+            const receipt: SessionAttachReceipt = { operation: "attach", definitionId: definition.definitionId, name: definition.name, revision, created, changed,
                 package: { ...input.package }, attachedAt };
             await this.recordOperation(client, input.ownerSessionId, input.operationId, "attach", input.requestSha256, receipt);
             return { receipt, replayed: false };
@@ -758,23 +758,23 @@ export class ChatDefinitionStore {
      * them); its revisions stay, so a finished Workflow keeps its pinned copy. A repeated operation is answered from its
      * receipt.
      */
-    async deleteDefinition(input: { ownerSessionId: string; definitionId: string; actor: ChatDefinitionActor; operationId: string; requestSha256: string })
-        : Promise<StoredChatOperation<ChatDeleteReceipt>> {
+    async deleteDefinition(input: { ownerSessionId: string; definitionId: string; actor: SessionDefinitionActor; operationId: string; requestSha256: string })
+        : Promise<StoredSessionOperation<SessionDeleteReceipt>> {
         return this.transaction(async client => {
-            const prior = await this.priorOperation<ChatDeleteReceipt>(client, input.ownerSessionId, input.operationId, "delete", input.requestSha256);
+            const prior = await this.priorOperation<SessionDeleteReceipt>(client, input.ownerSessionId, input.operationId, "delete", input.requestSha256);
             if (prior) return { receipt: prior, replayed: true };
-            await this.lockLiveChat(client, input.ownerSessionId, "FOR SHARE");
+            await this.lockLiveOwnerSession(client, input.ownerSessionId, "FOR SHARE");
             const { rows } = await client.query(`SELECT * FROM ${this.t.definitions} WHERE definition_id = $1 FOR UPDATE`, [input.definitionId]);
             const found = rows[0] ? definitionFrom(rows[0]) : null;
             if (!found || found.ownerSessionId !== input.ownerSessionId) {
-                throw new WorkflowStoreError("DEFINITION_NOT_FOUND", `This chat has no Workflow Definition ${input.definitionId}.`);
+                throw new WorkflowStoreError("DEFINITION_NOT_FOUND", `This session has no Workflow Definition ${input.definitionId}.`);
             }
             if (found.deletedAt !== null) throw new WorkflowStoreError("DEFINITION_DELETED", `${found.name} was already deleted.`, { definitionId: found.definitionId });
             const active = await client.query(
                 `SELECT d.workflow_session_id, s.title FROM ${this.t.wfDefinitions} d
                    JOIN ${this.t.runs} r ON r.workflow_session_id = d.workflow_session_id AND r.mode = 'live' AND r.status = ANY($2::text[])
                    JOIN ${this.t.sessions} s ON s.session_id = d.workflow_session_id AND s.deleted_at IS NULL
-                  WHERE d.chat_definition_id = $1 ORDER BY d.created_at`, [input.definitionId, ACTIVE]);
+                  WHERE d.session_definition_id = $1 ORDER BY d.created_at`, [input.definitionId, ACTIVE]);
             if (active.rows.length) {
                 const ids = active.rows.map((row: Row) => String(row.workflow_session_id));
                 throw new WorkflowStoreError("DEFINITION_IN_USE",
@@ -785,9 +785,9 @@ export class ChatDefinitionStore {
                 `UPDATE ${this.t.definitions} SET deleted_at = now(), deleted_by = $2, updated_at = now() WHERE definition_id = $1 RETURNING deleted_at`,
                 [input.definitionId, canonicalJson(input.actor)]);
             // S2RT-F6: its hidden tests end with it (their reports stay): their bench sessions in id order, then their active test
-            // runs in id order, then their pending nodes, their runs and their sessions, as the chat-ended trigger does.
+            // runs in id order, then their pending nodes, their runs and their sessions, as the owner-session-ended trigger does.
             await endDefinitionTests(client, this.schema, input.ownerSessionId, input.definitionId);
-            const receipt: ChatDeleteReceipt = { operation: "delete", definitionId: found.definitionId, name: found.name, deletedAt: iso(deleted[0].deleted_at) };
+            const receipt: SessionDeleteReceipt = { operation: "delete", definitionId: found.definitionId, name: found.name, deletedAt: iso(deleted[0].deleted_at) };
             await this.recordOperation(client, input.ownerSessionId, input.operationId, "delete", input.requestSha256, receipt);
             return { receipt, replayed: false };
         });
@@ -795,7 +795,7 @@ export class ChatDefinitionStore {
 
     /**
      * Deployed check DS-2: keep `text` (a Workflow's end notice) as a note `ownerSessionId`'s next turn reads, as a person's
-     * save note is read (E2-4, F3). Once: the same text for the same chat and definition is kept once (a retried notice
+     * save note is read (E2-4, F3). Once: the same text for the same session and definition is kept once (a retried notice
      * runs under its run's notice lock, so its look and its write are not raced by another attempt of that notice).
      */
     async keepNote(ownerSessionId: string, definitionId: string, revision: number, text: string): Promise<void> {
@@ -811,8 +811,8 @@ export class ChatDefinitionStore {
             [ownerSessionId, definitionId, revision, text]);
     }
 
-    /** A person's save notes the chat has not read with a turn that succeeded (E2-4, F3), oldest first. */
-    async pendingNotes(ownerSessionId: string): Promise<ChatNoteRow[]> {
+    /** A person's save notes the session has not read with a turn that succeeded (E2-4, F3), oldest first. */
+    async pendingNotes(ownerSessionId: string): Promise<SessionNoteRow[]> {
         const { rows } = await this.pool.query(
             `SELECT note_id, definition_id, revision, text, created_at FROM ${this.t.notes}
               WHERE owner_session_id = $1 AND consumed_at IS NULL ORDER BY note_id LIMIT 50`, [ownerSessionId]);
@@ -830,25 +830,25 @@ export class ChatDefinitionStore {
 
 /**
  * Start's checks (Q3), in the transaction that stores the Workflow's definition and admits its run, before the Workflow's
- * own rows are locked: the chat is live (its row FOR SHARE, which a chat's completion, cancel, failure or deletion waits
- * for, and whose trigger then ends the run: R4, R5, F2), the definition is the chat's and not deleted (its row FOR SHARE,
+ * own rows are locked: the session is live (its row FOR SHARE, which a session's completion, cancel, failure or deletion waits
+ * for, and whose trigger then ends the run: R4, R5, F2), the definition is the session's and not deleted (its row FOR SHARE,
  * which a delete waits for: R6), and the revision exists, is valid and is the YAML being stored (R1, E2-5).
  */
-export async function requireChatStartLocked(client: PoolClient, schema: string,
+export async function requireSessionStartLocked(client: PoolClient, schema: string,
     pin: { ownerSessionId: string; definitionId: string; revision: number }, yamlSha256: string): Promise<void> {
     const s = `"${schema}"`;
-    const chat = await client.query(`SELECT state, deleted_at FROM ${s}.sessions WHERE session_id = $1 FOR SHARE`, [pin.ownerSessionId]);
-    if (!chat.rows[0] || chat.rows[0].deleted_at !== null) throw new WorkflowStoreError("CHAT_NOT_FOUND", "This chat does not exist or was deleted. Nothing was started.");
-    if (CHAT_ENDED_STATES.includes(String(chat.rows[0].state))) {
-        throw new WorkflowStoreError("CHAT_NOT_LIVE", "This chat has ended: its Workflow Definitions cannot be started. Nothing was started.",
-            { state: String(chat.rows[0].state) });
+    const session = await client.query(`SELECT state, deleted_at FROM ${s}.sessions WHERE session_id = $1 FOR SHARE`, [pin.ownerSessionId]);
+    if (!session.rows[0] || session.rows[0].deleted_at !== null) throw new WorkflowStoreError("SESSION_NOT_FOUND", "This session does not exist or was deleted. Nothing was started.");
+    if (OWNER_SESSION_ENDED_STATES.includes(String(session.rows[0].state))) {
+        throw new WorkflowStoreError("SESSION_NOT_LIVE", "This session has ended: its Workflow Definitions cannot be started. Nothing was started.",
+            { state: String(session.rows[0].state) });
     }
-    const definition = await client.query(`SELECT owner_session_id, name, deleted_at FROM ${s}.workflow_chat_definitions WHERE definition_id = $1 FOR SHARE`,
+    const definition = await client.query(`SELECT owner_session_id, name, deleted_at FROM ${s}.session_workflow_definitions WHERE definition_id = $1 FOR SHARE`,
         [pin.definitionId]);
     const row = definition.rows[0];
-    if (!row || row.owner_session_id !== pin.ownerSessionId) throw new WorkflowStoreError("DEFINITION_NOT_FOUND", `This chat has no Workflow Definition ${pin.definitionId}.`);
+    if (!row || row.owner_session_id !== pin.ownerSessionId) throw new WorkflowStoreError("DEFINITION_NOT_FOUND", `This session has no Workflow Definition ${pin.definitionId}.`);
     if (row.deleted_at !== null) throw new WorkflowStoreError("DEFINITION_DELETED", `${row.name} was deleted. Nothing was started.`, { definitionId: pin.definitionId });
-    const revision = await client.query(`SELECT valid, yaml_sha256 FROM ${s}.workflow_chat_revisions WHERE definition_id = $1 AND revision = $2`,
+    const revision = await client.query(`SELECT valid, yaml_sha256 FROM ${s}.session_workflow_revisions WHERE definition_id = $1 AND revision = $2`,
         [pin.definitionId, pin.revision]);
     if (!revision.rows[0]) throw new WorkflowStoreError("REVISION_NOT_FOUND", `${row.name} has no revision ${pin.revision}.`);
     if (revision.rows[0].valid !== true) {
@@ -881,26 +881,26 @@ async function endDefinitionTests(client: PoolClient, schema: string, ownerSessi
 }
 
 /**
- * S2RT-F6: a hidden test bench of the chat's definition is made and its test admitted only while the chat is live and the
- * definition is not deleted, checked under their locks (the chat FOR SHARE, then the definition FOR SHARE: the order of a
- * Start, before the bench's own rows). A chat that ended or was deleted, or a definition deleted, makes nothing.
+ * S2RT-F6: a hidden test bench of the session's definition is made and its test admitted only while the session is live and the
+ * definition is not deleted, checked under their locks (the session FOR SHARE, then the definition FOR SHARE: the order of a
+ * Start, before the bench's own rows). A session that ended or was deleted, or a definition deleted, makes nothing.
  */
 export async function requireBenchLiveLocked(client: PoolClient, schema: string, bench: { ownerSessionId: string; definitionId: string }): Promise<void> {
     const s = `"${schema}"`;
-    const chat = await client.query(`SELECT state, deleted_at FROM ${s}.sessions WHERE session_id = $1 FOR SHARE`, [bench.ownerSessionId]);
-    if (!chat.rows[0] || chat.rows[0].deleted_at !== null) throw new WorkflowStoreError("CHAT_NOT_FOUND", "This chat does not exist or was deleted. Nothing was tested.");
-    if (CHAT_ENDED_STATES.includes(String(chat.rows[0].state))) {
-        throw new WorkflowStoreError("CHAT_NOT_LIVE", "This chat has ended: its Workflow Definitions cannot be tested. Nothing was tested.",
-            { state: String(chat.rows[0].state) });
+    const session = await client.query(`SELECT state, deleted_at FROM ${s}.sessions WHERE session_id = $1 FOR SHARE`, [bench.ownerSessionId]);
+    if (!session.rows[0] || session.rows[0].deleted_at !== null) throw new WorkflowStoreError("SESSION_NOT_FOUND", "This session does not exist or was deleted. Nothing was tested.");
+    if (OWNER_SESSION_ENDED_STATES.includes(String(session.rows[0].state))) {
+        throw new WorkflowStoreError("SESSION_NOT_LIVE", "This session has ended: its Workflow Definitions cannot be tested. Nothing was tested.",
+            { state: String(session.rows[0].state) });
     }
-    const definition = await client.query(`SELECT owner_session_id, name, deleted_at FROM ${s}.workflow_chat_definitions WHERE definition_id = $1 FOR SHARE`,
+    const definition = await client.query(`SELECT owner_session_id, name, deleted_at FROM ${s}.session_workflow_definitions WHERE definition_id = $1 FOR SHARE`,
         [bench.definitionId]);
     const row = definition.rows[0];
-    if (!row || row.owner_session_id !== bench.ownerSessionId) throw new WorkflowStoreError("DEFINITION_NOT_FOUND", `This chat has no Workflow Definition ${bench.definitionId}.`);
+    if (!row || row.owner_session_id !== bench.ownerSessionId) throw new WorkflowStoreError("DEFINITION_NOT_FOUND", `This session has no Workflow Definition ${bench.definitionId}.`);
     if (row.deleted_at !== null) throw new WorkflowStoreError("DEFINITION_DELETED", `${row.name} was deleted. Nothing was tested.`, { definitionId: bench.definitionId });
 }
 
 /** The digest a stored save's request is recognized by (its definition, revision guard, YAML and author kind). */
-export function chatSaveRequestSha256(input: { name: string; yamlSha256: string; expected: { definitionId: string; revision: number } | null }): string {
+export function sessionSaveRequestSha256(input: { name: string; yamlSha256: string; expected: { definitionId: string; revision: number } | null }): string {
     return sha256Hex(canonicalJson({ kind: "save", name: input.name, yamlSha256: input.yamlSha256, expected: input.expected }));
 }

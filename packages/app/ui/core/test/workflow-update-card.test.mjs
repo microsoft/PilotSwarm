@@ -1,6 +1,6 @@
 /**
  * Batch 7 (w-4): a workflow's message (it starts with a [WORKFLOW_UPDATE ...] header) is recorded as a system.message
- * whose sender is the workflow. The portal and the terminal show it in the chat as a card titled "Workflow · <type>",
+ * whose sender is the workflow. The portal and the terminal show it in the session as a card titled "Workflow · <type>",
  * green for a completed run, red for a failed one, yellow for a request or a held call, cyan for a message, with the
  * workflow, run, status, step, contract and deadline it names, its sentence and its data. Live and from history alike.
  *
@@ -93,7 +93,7 @@ test("a card names the workflow, run, status, step, contract and deadline, then 
     assert.match(send.text, /^Workflow: session-wf-sessi\nRun: run-1234\nStep: notify\nContract: note@1\n\nA workflow/);
 });
 
-test("the chat shows the card with its title", () => {
+test("the session shows the card with its title", () => {
     const rendered = JSON.stringify(chatLines(buildHistoryModel(EVENTS), { testMode: true }));
     // A card's title is drawn in capitals (buildMessageCardLines).
     for (const title of ["Workflow · ended", "Workflow · request", "Workflow · test waiting", "Workflow · message"]) {
@@ -317,7 +317,7 @@ test("SF-D5: a stored 'Workflow · test waiting' card shows only while the serve
         assert.ok(JSON.stringify(selectChatLines(on, 80, {})).includes("TEST WAITING"));
         assert.ok(!JSON.stringify(selectChatLines(appReducer(on, { type: "ui/workflowTestMode", on: false }), 80, {})).includes("TEST WAITING"));
     }
-    // A chat with no test notice keeps its own array (no copy).
+    // A session with no test notice keeps its own array (no copy).
     const plain = chatState(buildHistoryModel(EVENTS.filter(item => item.seq !== 4)));
     assert.equal(selectActiveChat(plain).length, 4);
 });

@@ -42,7 +42,7 @@ export const WORKFLOW_PARALLEL_MAX_ITEMS = 64;
 export const WORKFLOW_AGENT_TOOLS_MAX = 64;
 /** FU-17: a tool name in an agent state's `tools` list, as the agent sees it (a PilotSwarm, built-in or MCP tool). */
 export const WORKFLOW_AGENT_TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9_.:\/-]{0,127}$/;
-/** FU-17: the tool an agent state's own chat always keeps: it is how the chat finishes the state. */
+/** FU-17: the tool an agent state's own session always keeps: it is how the session finishes the state. */
 export const WORKFLOW_AGENT_COMPLETION_TOOL = "complete_workflow_node";
 /** The most branches of one parallel state that are active at once. */
 export const WORKFLOW_PARALLEL_MAX_CONCURRENCY = 16;
@@ -82,7 +82,7 @@ export const SUPPORTED_NODE_TYPES = ["script", "wait", "messaging", "agent", "pa
 const KNOWN_NODE_TYPES = [...SUPPORTED_NODE_TYPES, "join"] as readonly string[];
 
 /**
- * I2 (owner 2026-11-09T06:40Z; UXP-AC-01: a real user's chat invented state types): words a writer uses for a state type,
+ * I2 (owner 2026-11-09T06:40Z; UXP-AC-01: a real user's session invented state types): words a writer uses for a state type,
  * and the type that does it (a messaging mode is its own `type` nowhere).
  */
 const STATE_TYPE_WORDS: Readonly<Record<string, string>> = Object.freeze({
@@ -309,18 +309,17 @@ export interface WorkflowIRAgent {
     /** Route label -> target node: the outcomes, and runtime routes (timed_out, needs_input and the others). */
     next: Record<string, string>;
     /**
-     * The YAML's `session` (owner decision agent-node-continue-20261106; owner 2026-11-09T06:30Z renamed the YAML key from
-     * `chat`; this stored field keeps its name): `continue` keeps ONE agent session for this state across its visits in a
+     * The YAML's `session` (owner decision agent-node-continue-20261106): `continue` keeps ONE agent session for this state across its visits in a
      * run (each later visit is a new cycle prompt in the same session); absent for `new` (a new agent session each visit).
      * Owner 2026-11-09T05:38Z: `continue` is the default where it is allowed, so a compile writes it for an agent state
      * outside a parallel state's body (a For each body or a named branch) that does not set `session`; in a body an unset
      * `session` is `new`. Absent is still `new`, so a stored IR means what it meant; a Start compiles the revision's YAML
      * again, so a revision saved without `session` before the default changed starts with `continue`.
      */
-    chat?: "continue";
+    session?: "continue";
     /**
-     * FU-17: the tools the state's agent chat (and every session it starts) may use: `[]` for `tools: none`, else the names
-     * listed; the chat always keeps complete_workflow_node. Absent: every tool its session has (the IR of a definition that
+     * FU-17: the tools the state's agent session (and every session it starts) may use: `[]` for `tools: none`, else the names
+     * listed; the session always keeps complete_workflow_node. Absent: every tool its session has (the IR of a definition that
      * does not set it is unchanged).
      */
     tools?: string[];
@@ -978,15 +977,11 @@ export function parseWorkflowInterfaceRef(text: unknown): { name: string; versio
 function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, schemas: SchemaCollector, hasCatchAll: boolean,
     diagnostics: Diagnostics): WorkflowIRAgent | null {
     const path = `states.${id}`;
-    checkKeys(raw, ["type", "description", "invoke", "input", "inputSchema", "outputSchema", "outcomes", "timeoutSeconds", "transition", "session", "chat",
+    checkKeys(raw, ["type", "description", "invoke", "input", "inputSchema", "outputSchema", "outcomes", "timeoutSeconds", "transition", "session",
         "tools"], path, diagnostics);
-    // Owner 2026-11-09T06:30Z: the agent session's key is `session`; `chat` is not a field (no alias: unreleased).
-    if (raw.chat !== undefined) {
-        diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.chat`, "`chat` is now `session`: write `session: continue` or `session: new`.");
-    }
-    let chat: "continue" | null = null;
+    let session: "continue" | null = null;
     if (raw.session !== undefined && raw.session !== "new") {
-        if (raw.session === "continue") chat = "continue";
+        if (raw.session === "continue") session = "continue";
         else diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.session`, "session must be continue (one agent session across the state's visits, the default) "
             + "or new (a new agent session for each visit, the only choice inside a For each or a parallel branch).");
     }
@@ -1087,7 +1082,7 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
     return {
         id, type: "agent", description: optionalText(raw.description, `${path}.description`, diagnostics),
         invoke, hasInput, input, inputSchema, outputSchema, outcomes, timeoutSeconds, next,
-        ...(chat !== null ? { chat } : {}),
+        ...(session !== null ? { session } : {}),
         ...(tools !== null ? { tools } : {}),
     };
 }
@@ -1315,7 +1310,7 @@ function checkGraph(ir: { initial: string; catchAll: string | null; nodes: Recor
     for (const body of bodies) {
         for (const member of body.states) {
             const node = ir.nodes[member];
-            if (node?.type === "agent" && node.chat === "continue") {
+            if (node?.type === "agent" && node.session === "continue") {
                 diagnostics.error("WORKFLOW_FIELD_INVALID", body.branch !== null ? `states.${body.id}.branches.${body.branch}.states.${member}.session`
                     : `states.${body.id}.body.states.${member}.session`, body.branch !== null
                     ? `state '${member}' cannot continue its agent session: it runs inside branch '${body.branch}' of parallel state '${body.id}'. Use session: new.`
@@ -1558,7 +1553,7 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
             const node = compileAgent(id, rawNode, nodeIds, schemas, catchAllApplies, into);
             // Owner 2026-11-09T05:38Z: an agent state that does not set `session` continues its agent session across its
             // visits, where it may: outside a parallel state's body. In a body (For each items, named branches) it is `new`.
-            if (node && body === null && rawNode.session === undefined) node.chat = "continue";
+            if (node && body === null && rawNode.session === undefined) node.session = "continue";
             if (node) nodes[id] = node;
         } else if (type === "parallel" && body !== null) {
             into.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.type`, "a parallel state's body cannot hold another parallel state.");
@@ -1906,7 +1901,7 @@ function simpleObjectShape(schema: JsonValue | undefined): { properties: Readonl
 
 /**
  * A warning, never an error, for a script or agent state with no `input:` whose inputSchema refuses what a route brings it
- * (2026-11-08: a chat's check_ci took a closed { checks } and gave { checks, ciState }; its wait passed that back, and the
+ * (2026-11-08: a session's check_ci took a closed { checks } and gave { checks, ciState }; its wait passed that back, and the
  * second visit failed invalid_input). The value a route brings is a script's or agent's output (its outputSchema), or what a
  * wait, or a receive's elapsed route, without an `input:` of its own passes on. Both schemas must be simple objects; it warns
  * when the consumer is closed and the producer declares a property the consumer does not, or when the producer is closed
@@ -2152,7 +2147,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
             need(validInvoke && typeof node.hasInput === "boolean" && Object.hasOwn(node, "input")
                 && nullableString(node.inputSchema) && nullableString(node.outputSchema) && stringArray(node.outcomes) && node.outcomes.length > 0
                 && (typeof timeoutSeconds === "number" || typeof timeoutSeconds === "string") && stringMap(node.next)
-                && (node.chat === undefined || node.chat === "continue")
+                && (node.session === undefined || node.session === "continue")
                 && (node.tools === undefined || (stringArray(node.tools) && node.tools.length <= WORKFLOW_AGENT_TOOLS_MAX
                     && node.tools.every(name => WORKFLOW_AGENT_TOOL_NAME.test(name)))),
                 `stored IR agent state ${id} is invalid`);
@@ -2165,7 +2160,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                     : { prompt: (invoke as { prompt: string }).prompt },
                 hasInput: node.hasInput, input: node.input, inputSchema: node.inputSchema, outputSchema: node.outputSchema,
                 outcomes: node.outcomes, timeoutSeconds, next: node.next,
-                ...(node.chat === "continue" ? { chat: "continue" as const } : {}),
+                ...(node.session === "continue" ? { session: "continue" as const } : {}),
                 ...(Array.isArray(node.tools) ? { tools: [...node.tools as string[]] } : {}),
             };
         } else if (node.type === "parallel") {

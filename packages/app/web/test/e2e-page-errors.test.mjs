@@ -22,7 +22,7 @@ test("the filter leaves out exactly the two ResizeObserver reports and keeps eve
 });
 
 test("both Workflow spec files collect page errors only through the filter", () => {
-    for (const file of ["workflow-tab.spec.mjs", "workflow-chat-definitions.spec.mjs"]) {
+    for (const file of ["workflow-tab.spec.mjs", "workflow-session-definitions.spec.mjs"]) {
         const source = fs.readFileSync(new URL(`./e2e/${file}`, import.meta.url), "utf8");
         assert.match(source, /^import \{ collectPageErrors \} from "\.\/page-errors\.mjs";$/m, file);
         const listeners = source.match(/page\.on\("pageerror", [^\n]*\)/g) ?? [];

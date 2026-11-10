@@ -465,7 +465,7 @@ test("a form whose run the view no longer shows sends nothing; Esc goes back; an
 
     // An ordinary session has no workflow view, so neither command opens or sends anything.
     const plain = harness(model());
-    plain.store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "chat", title: "An ordinary chat", status: "idle" }] });
+    plain.store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "chat", title: "An ordinary session", status: "idle" }] });
     plain.store.dispatch({ type: "sessions/selected", sessionId: "chat" });
     const before = statusOf(plain.store);
     await open(plain);

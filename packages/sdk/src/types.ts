@@ -106,7 +106,7 @@ type LateSteersCarrier = {
 type ControlCursorCarrier = {
     controlCursor?: { turn: number; cursor: number };
     /**
-     * A continued workflow chat's turn: the visit fence it read at turn start, saved with the result so a turn end from
+     * A continued workflow session's turn: the visit fence it read at turn start, saved with the result so a turn end from
      * the saved result fences with the same visit (review O-L1; savedTurnVisitFence).
      */
     turnVisitFence?: { turn: number; visit: string | null };
@@ -251,7 +251,7 @@ export interface TurnOptions {
      * F-C3: the turn of a ROOT session whose prompt is only the runtime's own words (the internal system-only prompt of a
      * child digest or a wake, with no person's words folded in). When the model answers it with nothing (the Copilot
      * CLI's "No response was returned", errorType query) and the turn made no tool call and sent no steer, the turn is
-     * completed with empty content: no error, no retry, no chat warning. Set by the runTurn activity only.
+     * completed with empty content: no error, no retry, no session warning. Set by the runTurn activity only.
      */
     quietEmptyAnswer?: boolean;
     /**
@@ -261,7 +261,7 @@ export interface TurnOptions {
      */
     quietEmptyAnswerKind?: "workflow_notice";
     /**
-     * PR 270: the turn of a Workflow agent state's own chat. A session.error that is not benign ends the turn as an error
+     * PR 270: the turn of a Workflow agent state's own session. A session.error that is not benign ends the turn as an error
      * even when the model already gave text, so the turn's retries run and, when they are spent, the session reports the
      * failed turn to its Workflow (orchestration/workflow-turn-failure.ts) instead of ending "completed" in silence.
      * Set by the runTurn activity only.
@@ -367,7 +367,7 @@ export interface TurnOptions {
          * their descriptions say so; every other turn's are unchanged.
          */
         workflowMilestone?: boolean;
-        /** Stage 2.1: workflow_definition (list, read, save, start) for this chat's own definitions; JSON. */
+        /** Stage 2.1: workflow_definition (list, read, save, start) for this session's own definitions; JSON. */
         workflowDefinition?(args: Record<string, unknown>, call?: { toolCallId?: string }): Promise<string>;
         spawnAgent(args: {
             agent_name?: string;
@@ -872,7 +872,7 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
     workflowAgentChild?: boolean;
     /**
      * Workflow Simplified A1 (spec 14; E4): this turn's session is inside a
-     * Workflow (an agent node's chat or one of its sub-agents, by its stored
+     * Workflow (an agent node's session or one of its sub-agents, by its stored
      * lineage), so it is declared no definition tools (spawn_workflow,
      * update_workflow); its handlers and the turn's bridge refuse them too.
      * Set by the runTurn activity. Runtime-only.
@@ -880,19 +880,19 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
     workflowInsideWorkflow?: boolean;
     /**
      * Workflows on demand (owner 2026-11-08T16:55Z): a reason found by the runTurn activity to turn Workflows on in this
-     * chat for this turn: `lasting` (a Workflow message or request arrived, a person saved a definition, the chat
-     * coordinates a package's Workflow) also saves the chat's flag; `turn` (a trigger could not be read) does not.
+     * session for this turn: `lasting` (a Workflow message or request arrived, a person saved a definition, the session
+     * coordinates a package's Workflow) also saves the session's flag; `turn` (a trigger could not be read) does not.
      * Runtime-only.
      */
     workflowContextTrigger?: "lasting" | "turn";
-    /** Workflows on demand: whether the chat owns a Workflow Definition or a Workflow (read only while they are off). Runtime-only. */
+    /** Workflows on demand: whether the session owns a Workflow Definition or a Workflow (read only while they are off). Runtime-only. */
     workflowContextOwnsCheck?: () => Promise<boolean>;
     /** Workflows on demand: this turn's Workflow context, as the session manager decided it (on, off or none). Runtime-only. */
     workflowContext?: import("./workflow/guidance.js").WorkflowContextMode;
     /**
      * Workflow Simplified FU-17: this turn's session is in the subtree of an
      * agent state that limits its tools (`tools: none` or a list): the only
-     * tools the session is offered (an agent state's own chat also keeps
+     * tools the session is offered (an agent state's own session also keeps
      * complete_workflow_node). Set by the runTurn activity from the state's
      * run revision. Runtime-only.
      */
@@ -2151,7 +2151,7 @@ export interface TurnEndResult {
 /** Options of turn end (worker T8). */
 export interface TurnEndOptions {
     /**
-     * A continued workflow chat's turn (review RT-D2): its turn visit, exactly the one live admission uses (the read turn
+     * A continued workflow session's turn (review RT-D2): its turn visit, exactly the one live admission uses (the read turn
      * visit's node execution, inherited included; null when it names none). An open Stop that names another visit gets
      * too_late, under the session row's lock and in the same transaction as the end. Absent for every other turn.
      */

@@ -1,16 +1,16 @@
 /**
- * Model-facing Workflow text where a chat's tools differ (PR 270 text review, findings G-1 to G-11): the guidance and the
- * declarations name only tools the chat is declared, and only what its turn can do.
+ * Model-facing Workflow text where a session's tools differ (PR 270 text review, findings G-1 to G-11): the guidance and the
+ * declarations name only tools the session is declared, and only what its turn can do.
  *
- * - G-1: a chat inside a Workflow (an agent state's chat and its sub-agents) is declared neither workflow_definition nor
+ * - G-1: a session inside a Workflow (an agent state's session and its sub-agents) is declared neither workflow_definition nor
  *   update_workflow: its guidance has one sentence in the definition paragraphs' place.
  * - G-2: read_workflow sends a reader to update_workflow recover only where update_workflow is declared.
  * - G-3: a frozen 1.0.82 turn is not declared respond_session_request: its guidance does not name it.
  * - G-4: every turn's host runs a Workflow test, a frozen 1.0.82 turn's included: no line says tests do not run here.
- * - G-6: a Base V1 chat with Workflows on lists the Workflow skills in its skills index, so load_skill's "exactly as
+ * - G-6: a Base V1 session with Workflows on lists the Workflow skills in its skills index, so load_skill's "exactly as
  *   listed" holds; while they are off they stay unlisted (the Base V2 index's rule).
  * - G-9 and G-11: update_workflow declares no operation of a Workflow made before revisions, and the workflow-tools skill
- *   speaks of revisions and this chat's Workflows, not workflow children.
+ *   speaks of revisions and this session's Workflows, not workflow children.
  *
  * The tests marked "(wiring)" read what session-manager.ts and managed-session.ts pass; the others the text itself.
  *
@@ -37,7 +37,7 @@ const {
     isWorkflowSkill, skillsIndexLine, skillsIndexSection, withWorkflowSkillsListed, workflowSessionGuidance,
 } = guidance;
 
-const REQUEST_SENTENCE = "`request`: answer it once with `respond_session_request` before its deadline, never in chat.";
+const REQUEST_SENTENCE = "`request`: answer it once with `respond_session_request` before its deadline, never as plain text.";
 const TEST_LINE = "Test a revision only when the user asks, or before you publish it in a package; `start` never needs a test.";
 const BASE_V1 = { version: "v1", fingerprint: "test", revision: null };
 const BASE_V2 = { version: "v2", fingerprint: "test", revision: null };
@@ -57,7 +57,7 @@ test("G-1: inside a Workflow the guidance has one sentence for the definition pa
             "test_waiting", "A wait state can wait until a clock time", "Script nodes are off"]) {
             assert.ok(!inside.includes(word), `${label}: ${word}`);
         }
-        // Every other chat keeps the definition paragraphs.
+        // Every other session keeps the definition paragraphs.
         const outside = workflowSessionGuidance(testMode, { scripts, clockWaits, requests: true });
         assert.ok(outside.includes("call `load_skill` with name `workflow-authoring`") && outside.includes(TEST_LINE), label);
         assert.ok(!outside.includes(WORKFLOW_INSIDE_GUIDANCE), label);
@@ -68,16 +68,16 @@ test("G-1: inside a Workflow the guidance has one sentence for the definition pa
             .replace(` ${REQUEST_SENTENCE} ${WORKFLOW_PERSON_CONTROL_GUIDANCE}`, "")}`);
 });
 
-test("G-1 (wiring): a session inside a Workflow carries the inside guidance; a chat outside every Workflow, the full guidance", () => {
+test("G-1 (wiring): a session inside a Workflow carries the inside guidance; a session outside every Workflow, the full guidance", () => {
     const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "Legacy base." });
     for (const version of [BASE_V1, BASE_V2]) {
         const inside = JSON.stringify(manager._buildSystemMessage("inside", { baseAgentPolicy: version, workflowMilestoneTurn: true,
             workflowInsideWorkflow: true, workflowAgentChild: true, workflowContext: "on" }));
         assert.ok(inside.includes(WORKFLOW_INSIDE_GUIDANCE), version.version);
-        assert.ok(!inside.includes("workflow_definition") && !inside.includes("Definitions belong to this chat"), version.version);
+        assert.ok(!inside.includes("workflow_definition") && !inside.includes("Definitions belong to this session"), version.version);
         const outside = JSON.stringify(manager._buildSystemMessage("outside", { baseAgentPolicy: version, workflowMilestoneTurn: true,
             workflowContext: "on" }));
-        assert.ok(!outside.includes(WORKFLOW_INSIDE_GUIDANCE) && outside.includes("Definitions belong to this chat"), version.version);
+        assert.ok(!outside.includes(WORKFLOW_INSIDE_GUIDANCE) && outside.includes("Definitions belong to this session"), version.version);
     }
 });
 
@@ -111,7 +111,7 @@ test("G-2 (wiring): a session inside a Workflow is declared read_workflow withou
 // ─── G-3: respond_session_request on a frozen 1.0.82 turn ───
 
 test("G-3: the request sentence names respond_session_request only where it is declared", () => {
-    // UXP-AD-01: the person's control sentence follows it (a chat that controls its Workflows).
+    // UXP-AD-01: the person's control sentence follows it (a session that controls its Workflows).
     assert.ok(WORKFLOW_SESSION_GUIDANCE.endsWith(`${REQUEST_SENTENCE} ${WORKFLOW_PERSON_CONTROL_GUIDANCE}`));
     for (const testMode of [false, true]) for (const scripts of [false, true]) {
         const frozen = workflowSessionGuidance(testMode, { scripts, requests: false });
@@ -207,7 +207,7 @@ test("G-6: a base without a skills index gets one with the Workflow skills; othe
         `Base.\n\n${skillsIndexSection(["- `alpha` — A.", "- `workflow-testing` — Tests.", "- `workflow-tools` — Every argument.", "- `zeta` — Z."])}\n\n## After\n\nMore.`);
 });
 
-test("G-6 (wiring): a Base V1 chat lists the Workflow skills in its skills index only while Workflows are on in it", () => {
+test("G-6 (wiring): a Base V1 session lists the Workflow skills in its skills index only while Workflows are on in it", () => {
     const worker = buildWorker();
     const manager = new SessionManager(undefined, null, { frameworkBasePrompt: worker._frameworkBasePrompt, skills: worker._loadableSkills });
     const prompt = context => JSON.parse(JSON.stringify(manager._buildSystemMessage(`v1-${context}`, { baseAgentPolicy: BASE_V1, workflowContext: context })));
@@ -253,17 +253,17 @@ test("G-9: update_workflow declares no operation or argument of a Workflow made 
 
 // ─── G-11: the workflow-tools skill ───
 
-test("G-11: the workflow-tools skill speaks of revisions and this chat's Workflows, not workflow children", () => {
+test("G-11: the workflow-tools skill speaks of revisions and this session's Workflows, not workflow children", () => {
     const text = fs.readFileSync(path.join(WORKFLOW_SKILLS_DIR, "workflow-tools", "SKILL.md"), "utf8");
     const flat = text.replace(/\s+/g, " ");
     for (const old of ["workflow child", "creating agent", "Workflows made before definitions had revisions", "replace_definition",
-        "publish_and_start", "PINNED_TO_CHAT_REVISION", "WORKFLOW_REVISION_LIMIT"]) {
+        "publish_and_start", "PINNED_TO_SESSION_REVISION", "WORKFLOW_REVISION_LIMIT"]) {
         assert.ok(!flat.includes(old), old);
     }
     for (const phrase of [
         "| `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | A Workflow keeps its revision; it never changes. Save a new revision with `workflow_definition`, then start it. |",
         "| `LIVE_RUN_EXISTS` | This Workflow already has its live run. To run the definition again, `start` it again: each start is a new Workflow. |",
-        "| `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | `update_workflow` and `read_workflow` take only this chat's Workflows: those started from its definitions, by you or the person. A person changes theirs in the Workflow tab. |",
+        "| `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | `update_workflow` and `read_workflow` take only this session's Workflows: those started from its definitions, by you or the person. A person changes theirs in the Workflow tab. |",
         "It controls a Workflow's run; to change or start a definition, use `workflow_definition`.",
     ]) assert.ok(flat.includes(phrase), phrase);
     assert.ok(Buffer.byteLength(text, "utf8") <= 20 * 1024, `${Buffer.byteLength(text, "utf8")} bytes`);

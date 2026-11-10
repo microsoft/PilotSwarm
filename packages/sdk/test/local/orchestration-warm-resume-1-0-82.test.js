@@ -1,6 +1,6 @@
 /**
  * Warm-resume cases that drive the frozen orchestration 1.0.82's own modules (drain and the auth-failure projection),
- * kept for the chats still on it (in-flight 1.0.82 histories replay on 1.0.82 until their next continue-as-new). The
+ * kept for the sessions still on it (in-flight 1.0.82 histories replay on 1.0.82 until their next continue-as-new). The
  * same cases on 1.0.83, the latest, with the version-independent upgrade cases, are in
  * orchestration-warm-resume.test.js.
  */

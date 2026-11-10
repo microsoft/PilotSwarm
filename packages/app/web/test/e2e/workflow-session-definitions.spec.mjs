@@ -1,4 +1,4 @@
-// The Workflow tab on a chat's own Workflow Definitions (Workflow Simplified stage 2.1b; spec "definitions" R1, R6;
+// The Workflow tab on a session's own Workflow Definitions (Workflow Simplified stage 2.1b; spec "definitions" R1, R6;
 // "editing" E2-1..E2-5, E2-8; the coordinator's 2.1 readings Q8, Q10), in a real browser over a mocked backend (page.route
 // stubs over the shared stub server; no deployed stack, no model):
 //   - the header picks a definition (one option each); the Definition view picks a revision, each saying who saved it and
@@ -8,10 +8,10 @@
 //   - Compare shows any two revisions side by side;
 //   - a Workflow says the revision it runs, Run again… starts that revision again (runAgainOf), and Delete… asks first,
 //     shows the server's refusal while a Workflow runs, then deletes;
-//   - a person who can read the chat but not change it sees no YAML, and Start and Delete say why they are off.
+//   - a person who can read the session but not change it sees no YAML, and Start and Delete say why they are off.
 // A connection whose list is not there keeps the stage 1 tab (every test of workflow-tab.spec.mjs runs that way).
 //
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs (from packages/app/web, after build).
 // PS_E2E_SHOT_DIR, when set, receives screenshots of each state for review.
 import { test, expect } from "@playwright/test";
 import fs from "node:fs";
@@ -28,7 +28,7 @@ const BENCH = "c4444444-2222-3333-4444-555555555555";
 const SHOTS = process.env.PS_E2E_SHOT_DIR || null;
 const now = Date.now();
 const iso = (offsetMs) => new Date(now + offsetMs).toISOString();
-const CHAT = { sessionId: AGENT_ID, title: "Hacker News watcher", status: "idle", model: "test:test-model", createdAt: now - 600_000, updatedAt: now - 60_000 };
+const SESSION = { sessionId: AGENT_ID, title: "Hacker News watcher", status: "idle", model: "test:test-model", createdAt: now - 600_000, updatedAt: now - 60_000 };
 
 const STATES = [
     { id: "poll", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["changed", "unchanged"], next: { changed: "done", unchanged: "pause" } },
@@ -39,7 +39,7 @@ const INPUTS = { type: "object", required: ["topic"], properties: { topic: { typ
 const yamlOf = (revision) => revision === 3
     ? "apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: hn-top-watch, version: \"1.2.0\" }\ninitial: nowhere\nstates: {}\n"
     : `apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: hn-top-watch, version: "1.${revision - 1}.0" }\ninitial: poll\n# wait ${revision * 10}\n`;
-const CHAT_ACTOR = { kind: "chat", sessionId: AGENT_ID };
+const SESSION_ACTOR = { kind: "session", sessionId: AGENT_ID };
 const PERSON_ACTOR = { kind: "user", provider: "dev", subject: "affan", display: "Affan Dar" };
 
 async function shot(page, name) {
@@ -56,38 +56,38 @@ const workflowTab = (page) => page.locator(".ps-wf-tab").filter({ visible: true 
 const viewSwitch = (tab, name) => tab.getByRole("group", { name: "Definition or Workflows" }).getByRole("button", { name, exact: true });
 
 /**
- * The chat, its two definitions (hn-top-watch: revision 1 by the chat, 2 by Affan Dar, 3 by the chat with errors; Workflows
+ * The session, its two definitions (hn-top-watch: revision 1 by the session, 2 by Affan Dar, 3 by the session with errors; Workflows
  * #1 on revision 1, completed, and #2 on revision 2, running; alpha: one revision, no Workflows) and the definition routes,
- * each recorded. `reader`: the signed-in person can read the chat but not change it. `controls`: a running Workflow offers
+ * each recorded. `reader`: the signed-in person can read the session but not change it. `controls`: a running Workflow offers
  * the person its run controls (Pause, Stop…), as the server does.
  */
-async function routeChat(page, { reader = false, tested = false, emptyList = false, controls = false } = {}) {
+async function routeSession(page, { reader = false, tested = false, emptyList = false, controls = false } = {}) {
     const revision = (number, actor, valid = true) => ({ definitionId: "def-hn", revision: number, valid, semver: `1.${number - 1}.0`, yamlSha256: `y${number}`,
         irSha256: valid ? `ir${number}` : null, basedOn: number > 1 ? number - 1 : null, actor, imported: false, createdAt: iso(-300_000 + number * 60_000),
         errorCount: valid ? 0 : 1 });
     const hn = {
-        definitionId: "def-hn", ownerSessionId: AGENT_ID, name: "hn-top-watch", source: "chat", createdAt: iso(-300_000), updatedAt: iso(-100_000), deletedAt: null,
+        definitionId: "def-hn", ownerSessionId: AGENT_ID, name: "hn-top-watch", source: "session", createdAt: iso(-300_000), updatedAt: iso(-100_000), deletedAt: null,
         currentRevision: 3, newestValidRevision: 2,
-        revisions: [revision(1, CHAT_ACTOR), { ...revision(2, PERSON_ACTOR),
-            // Stage 2.2: the chat tested revision 2 when the person asked.
-            ...(tested ? { lastTest: { testId: BENCH, verdict: "passed", at: iso(-120_000) } } : {}) }, revision(3, CHAT_ACTOR, false)],
+        revisions: [revision(1, SESSION_ACTOR), { ...revision(2, PERSON_ACTOR),
+            // Stage 2.2: the session tested revision 2 when the person asked.
+            ...(tested ? { lastTest: { testId: BENCH, verdict: "passed", at: iso(-120_000) } } : {}) }, revision(3, SESSION_ACTOR, false)],
         workflows: [
             { workflowSessionId: W1, definitionId: "def-hn", revision: 1, runStatus: "completed", createdAt: iso(-200_000) },
             { workflowSessionId: W2, definitionId: "def-hn", revision: 2, runStatus: "running", createdAt: iso(-150_000) },
         ],
     };
-    const alpha = { definitionId: "def-alpha", ownerSessionId: AGENT_ID, name: "alpha", source: "chat", createdAt: iso(-500_000), updatedAt: iso(-400_000),
-        deletedAt: null, currentRevision: 1, newestValidRevision: 1, revisions: [{ ...revision(1, CHAT_ACTOR), definitionId: "def-alpha" }], workflows: [] };
+    const alpha = { definitionId: "def-alpha", ownerSessionId: AGENT_ID, name: "alpha", source: "session", createdAt: iso(-500_000), updatedAt: iso(-400_000),
+        deletedAt: null, currentRevision: 1, newestValidRevision: 1, revisions: [{ ...revision(1, SESSION_ACTOR), definitionId: "def-alpha" }], workflows: [] };
     const yamls = new Map([[1, yamlOf(1)], [2, yamlOf(2)], [3, yamlOf(3)]]);
     const rows = [
         { sessionId: W1, title: "Workflow: hn-top-watch", status: "completed", sessionKind: "workflow", parentSessionId: AGENT_ID, createdAt: now - 200_000, updatedAt: now - 120_000 },
         { sessionId: W2, title: "Workflow: hn-top-watch", status: "running", sessionKind: "workflow", parentSessionId: AGENT_ID, createdAt: now - 150_000, updatedAt: now - 10_000 },
     ];
-    const state = { hn, alpha, yamls, rows, inUse: true, reads: [], saves: [], starts: [], deletes: [], list: null, chat: null, listReads: 0, view: null,
+    const state = { hn, alpha, yamls, rows, inUse: true, reads: [], saves: [], starts: [], deletes: [], list: null, session: null, listReads: 0, view: null,
         others: [] };
     const view = (item) => ({ ...item, current: item.revisions.find((entry) => entry.revision === item.currentRevision) ?? null });
     state.view = view;
-    // Review S2UI-F4: a chat whose list is empty (its Workflows are stage 1 children 0107 did not import).
+    // Review S2UI-F4: a session whose list is empty (its Workflows are stage 1 children 0107 did not import).
     // OF-S2-4: a test may give the list itself (`state.list`) and count its reads (`state.listReads`).
     const listed = () => (state.list ? state.list() : emptyList ? [] : [view(alpha), view(hn)]);
     // Final review FUI-F2: a Workflow listed failed has its poll visit ended in a runtime error, and its run says so.
@@ -121,14 +121,14 @@ async function routeChat(page, { reader = false, tested = false, emptyList = fal
         const answer = (result) => route.fulfill({ json: { ok: true, result } });
         const refuse = (status, code, message, details) => route.fulfill({ status, json: { ok: false, error: { code, message, ...(details ? { details } : {}) } } });
         // Stage 2.2: a test bench as an older server might list it; the screen never shows it.
-        const sessions = [state.chat ?? CHAT, ...state.others, ...state.rows, ...(tested ? [{ sessionId: BENCH, title: "Workflow: hn-top-watch", status: "completed", sessionKind: "workflow",
+        const sessions = [state.session ?? SESSION, ...state.others, ...state.rows, ...(tested ? [{ sessionId: BENCH, title: "Workflow: hn-top-watch", status: "completed", sessionKind: "workflow",
             parentSessionId: AGENT_ID, serviceKind: "workflow-test", serviceOf: "def-hn", createdAt: now - 130_000, updatedAt: now - 120_000 }] : [])];
         if (pathname.endsWith("/models")) return answer([{ providerId: "test", modelName: "test-model", qualifiedName: "test:test-model" }]);
         if (pathname.endsWith("/providers")) return answer({ providers: [{ name: "test", typeId: "test", class: "shared", hasCredential: true, usableByMe: true }] });
         if (pathname.endsWith("/providers/status")) return answer({ providers: [] });
         if (pathname.endsWith("/defaults")) return answer({});
-        // OF-S2-4: the chat's status as last served to the browser (the list or its detail), so a simulated turn changes it.
-        const served = (answer) => (result) => { state.servedStatus = (state.chat ?? CHAT).status; return answer(result); };
+        // OF-S2-4: the session's status as last served to the browser (the list or its detail), so a simulated turn changes it.
+        const served = (answer) => (result) => { state.servedStatus = (state.session ?? SESSION).status; return answer(result); };
         if (pathname.endsWith("/management/sessions")) return served(answer)({ sessions, hasMore: false, nextCursor: null });
         if (pathname.endsWith("/sessions") && req.method() === "GET") return served(answer)({ sessions, hasMore: false });
         if (pathname.endsWith(`/sessions/${AGENT_ID}/workflow-definitions`) && req.method() === "GET") {
@@ -161,7 +161,7 @@ async function routeChat(page, { reader = false, tested = false, emptyList = fal
             const item = state.hn;
             if (body.expectedRevision !== item.currentRevision) {
                 const newest = item.revisions.find((entry) => entry.revision === item.currentRevision);
-                return refuse(409, "REVISION_STALE", `Revision ${item.currentRevision} was saved by the chat at ${newest.createdAt}. Reload to edit it. Nothing was saved.`,
+                return refuse(409, "REVISION_STALE", `Revision ${item.currentRevision} was saved by the session at ${newest.createdAt}. Reload to edit it. Nothing was saved.`,
                     { definitionId: item.definitionId, currentRevision: item.currentRevision, expectedRevision: body.expectedRevision, savedBy: newest.actor,
                         savedAt: newest.createdAt });
             }
@@ -199,14 +199,14 @@ async function routeChat(page, { reader = false, tested = false, emptyList = fal
             return answer({ operation: "delete", definitionId: "def-hn", name: "hn-top-watch", deletedAt: state.hn.deletedAt, replayed: false });
         }
         if (pathname.includes(`/sessions/${AGENT_ID}/events`)) return answer([]);
-        // OF-S2-4d: another chat of the person's, with no definition.
+        // OF-S2-4d: another session of the person's, with no definition.
         for (const other of state.others) {
             if (pathname.endsWith(`/sessions/${other.sessionId}/workflow-definitions`) && req.method() === "GET") return answer([]);
             if (pathname.includes(`/sessions/${other.sessionId}/events`)) return answer([]);
             if (pathname.endsWith(`/sessions/${other.sessionId}`)) return answer({ ...other, events: [], messages: [] });
         }
-        // The chat's detail agrees with the list (a1ac03ce :908: it answered the constant CHAT, so a turn was never seen).
-        if (pathname.endsWith(`/sessions/${AGENT_ID}`)) return served(answer)({ ...(state.chat ?? CHAT), events: [], messages: [] });
+        // The session's detail agrees with the list (a1ac03ce :908: it answered the constant SESSION, so a turn was never seen).
+        if (pathname.endsWith(`/sessions/${AGENT_ID}`)) return served(answer)({ ...(state.session ?? SESSION), events: [], messages: [] });
         for (const row of state.rows) {
             if (pathname.endsWith(`/sessions/${row.sessionId}/workflow`) && req.method() === "GET") {
                 // OF-S2-8: a definitionRevision read answers the Workflow's YAML (its Node panel's script and samples).
@@ -227,8 +227,8 @@ async function routeChat(page, { reader = false, tested = false, emptyList = fal
 }
 
 /**
- * OF-S2-4d: a chat whose Workflow panel never showed opens it by itself on arrival, once its definitions are read (these
- * stubs keep no receipt, so every chat with a definition does); the Workflow button opens it otherwise.
+ * OF-S2-4d: a session whose Workflow panel never showed opens it by itself on arrival, once its definitions are read (these
+ * stubs keep no receipt, so every session with a definition does); the Workflow button opens it otherwise.
  */
 async function showPanel(page) {
     const tab = page.locator(".ps-wf-tab").filter({ visible: true }).first();
@@ -240,17 +240,17 @@ async function openTab(page) {
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
     await showPanel(page);
     const main = workflowTab(page);
-    await expect(main).toHaveAttribute("data-chat-definitions", "true");
+    await expect(main).toHaveAttribute("data-session-definitions", "true");
     return main;
 }
 
-test("chat definitions: one option per definition; each revision says who saved it; a revision with errors says why Start refuses it; a valid one draws and starts", async ({ page }) => {
+test("session definitions: one option per definition; each revision says who saved it; a revision with errors says why Start refuses it; a valid one draws and starts", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const state = await routeChat(page);
+    const state = await routeSession(page);
     const main = await openTab(page);
-    // The definition picker: one option per definition, by name (no versions); OF-S2-8: no option asks the chat for a new one.
+    // The definition picker: one option per definition, by name (no versions); OF-S2-8: no option asks the session for a new one.
     const definitions = main.getByRole("combobox", { name: "Definition", exact: true });
     await expect.poll(() => definitions.locator("option").allTextContents()).toEqual(["alpha", "hn-top-watch"]);
     // The one saved most recently is shown, at its newest revision.
@@ -259,9 +259,9 @@ test("chat definitions: one option per definition; each revision says who saved 
     const revisions = main.getByRole("combobox", { name: "Revision", exact: true });
     const labels = await revisions.locator("option").allTextContents();
     expect(labels).toHaveLength(3);
-    expect(labels[0]).toMatch(/^Revision 3 · newest · by the chat · .+ · not valid · version 1\.2\.0$/);
+    expect(labels[0]).toMatch(/^Revision 3 · newest · by the session · .+ · not valid · version 1\.2\.0$/);
     expect(labels[1]).toMatch(/^Revision 2 · by Affan Dar · .+ · version 1\.1\.0$/);
-    expect(labels[2]).toMatch(/^Revision 1 · by the chat · .+ · version 1\.0\.0$/);
+    expect(labels[2]).toMatch(/^Revision 1 · by the session · .+ · version 1\.0\.0$/);
     // Revision 3 has errors: one line says why, no graph, and Start is off and says why (E2-5), pointing at revision 2.
     await expect(main.locator(".ps-wf-line.is-error").first()).toHaveText("Revision 3 not valid · line 4: initial names no state: nowhere.");
     await expect(main.getByRole("group", { name: "Workflow graph" })).toHaveCount(0);
@@ -299,7 +299,7 @@ test("save: the editor names the revision it edited; a newer one saved meanwhile
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const state = await routeChat(page);
+    const state = await routeSession(page);
     const main = await openTab(page);
     await main.getByRole("button", { name: "YAML", exact: true }).click();
     const box = main.getByRole("textbox", { name: "Workflow YAML", exact: true });
@@ -308,10 +308,10 @@ test("save: the editor names the revision it edited; a newer one saved meanwhile
     await expect(main.locator(".ps-workflow-yaml-marks li")).toHaveCount(1);
     const save = main.locator('[data-action="save"]');
     await expect(save).toBeDisabled();
-    // The person fixes it; meanwhile the chat saves revision 4.
+    // The person fixes it; meanwhile the session saves revision 4.
     const fixed = yamlOf(3).replace("initial: nowhere\nstates: {}", "initial: poll");
     await box.fill(fixed);
-    await expect(main.locator(".ps-wf-chat-editor .ps-wf-bar-text")).toHaveText("Editing revision 3 · not saved");
+    await expect(main.locator(".ps-wf-session-editor .ps-wf-bar-text")).toHaveText("Editing revision 3 · not saved");
     state.hn.revisions.push({ ...state.hn.revisions[0], revision: 4, valid: true, semver: "1.3.0", basedOn: 3, createdAt: new Date().toISOString() });
     state.hn.currentRevision = 4;
     state.hn.newestValidRevision = 4;
@@ -321,7 +321,7 @@ test("save: the editor names the revision it edited; a newer one saved meanwhile
     const notice = main.locator('[data-field="save-notice"]');
     await expect(notice).toHaveAttribute("role", "alert");
     // Review 21:15Z: a refusal begins with what was not done.
-    await expect(notice).toHaveText(/^Revision not saved: revision 4 was saved by the chat at \d{1,2}:\d{2}:\d{2}.*\. Reload to edit it\. Reload$/);
+    await expect(notice).toHaveText(/^Revision not saved: revision 4 was saved by the session at \d{1,2}:\d{2}:\d{2}.*\. Reload to edit it\. Reload$/);
     expect(state.saves).toHaveLength(1);
     expect(state.saves[0]).toMatchObject({ definitionId: "def-hn", name: "hn-top-watch", yaml: fixed, expectedRevision: 3 });
     await shot(page, "s21b-stale-save-1440");
@@ -351,7 +351,7 @@ test("S2UI-F1: typing while a save is pending: the later edit stays unsaved on t
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const state = await routeChat(page);
+    const state = await routeSession(page);
     const main = await openTab(page);
     await main.getByRole("button", { name: "YAML", exact: true }).click();
     const box = main.getByRole("textbox", { name: "Workflow YAML", exact: true });
@@ -369,7 +369,7 @@ test("S2UI-F1: typing while a save is pending: the later edit stays unsaved on t
     state.holdSave = null;
     await expect(main).toHaveAttribute("data-revision", "4");
     await expect(box).toHaveValue(second);
-    await expect(main.locator(".ps-wf-chat-editor .ps-wf-bar-text")).toHaveText("Editing revision 4 · not saved");
+    await expect(main.locator(".ps-wf-session-editor .ps-wf-bar-text")).toHaveText("Editing revision 4 · not saved");
     const save = main.locator('[data-action="save"]');
     await expect(save).toBeEnabled();
     await save.click();
@@ -381,17 +381,17 @@ test("S2UI-F1: typing while a save is pending: the later edit stays unsaved on t
     expect(errors).toEqual([]);
 });
 
-// Review S2UI-F4: an empty definitions list does not hide the chat's stage 1 Workflow children: the tab groups them by name,
+// Review S2UI-F4: an empty definitions list does not hide the session's stage 1 Workflow children: the tab groups them by name,
 // as stage 1 does, before any is selected.
 test("S2UI-F4: an empty definitions list with Workflow children shows them grouped by name", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    await routeChat(page, { emptyList: true });
+    await routeSession(page, { emptyList: true });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
     const main = await showPanel(page);
     await expect(main).toHaveAttribute("data-definition", "hn-top-watch");
-    await expect(main).not.toHaveAttribute("data-chat-definitions", "true");
+    await expect(main).not.toHaveAttribute("data-session-definitions", "true");
     await expect(page.getByText("No definitions yet.", { exact: true })).toHaveCount(0);
     expect(errors).toEqual([]);
 });
@@ -400,7 +400,7 @@ test("compare: any two revisions side by side (E2-8), chosen by mouse and by key
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    await routeChat(page);
+    await routeSession(page);
     const main = await openTab(page);
     await main.getByRole("button", { name: "Compare", exact: true }).click();
     const compare = main.locator('.ps-workflow-compare[data-compare="revisions"]');
@@ -427,7 +427,7 @@ test("a Workflow says the revision it runs; Run again… starts that revision; D
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const state = await routeChat(page);
+    const state = await routeSession(page);
     const main = await openTab(page);
     await viewSwitch(main, "Workflows").click();
     const list = main.getByRole("table", { name: "Workflows of hn-top-watch" });
@@ -460,7 +460,7 @@ test("a Workflow says the revision it runs; Run again… starts that revision; D
     const remove = main.locator('[data-action="delete"]');
     await remove.click();
     const confirm = page.getByRole("dialog", { name: "Delete hn-top-watch", exact: true });
-    await expect(confirm).toContainText("hn-top-watch and its 3 revisions leave this chat's definitions");
+    await expect(confirm).toContainText("hn-top-watch and its 3 revisions leave this session's definitions");
     // UX2D-F10: in agreeing number; #2 and #3 run, so it says why Delete will be refused.
     await expect(confirm.locator('[data-field="delete-keep"]')).toHaveText(
         "Each of its 3 Workflows keeps the revision it ran. 2 of them have not ended, so it cannot be deleted until they end.");
@@ -488,12 +488,12 @@ test("a Workflow says the revision it runs; Run again… starts that revision; D
 // UX2D-F2: a refused Delete left the keyboard with no way out: its button, disabled while the request ran, lost focus to
 // the page behind the backdrop, so Escape (and Tab) did nothing. The busy button now keeps focus (aria-disabled), and
 // any Workflow dialog takes Escape and Tab from the page while it is open: Escape closes it, Tab goes back into it.
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "UX2D-F2" (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "UX2D-F2" (from packages/app/web, after build).
 test("UX2D-F2: after a refused Delete the keyboard keeps the dialog: focus stays, Escape closes it; with focus on the page too, and Start's", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const state = await routeChat(page);
+    const state = await routeSession(page);
     const main = await openTab(page);
     const confirm = page.getByRole("dialog", { name: "Delete hn-top-watch", exact: true });
     const remove = main.locator('[data-action="delete"]');
@@ -531,11 +531,11 @@ test("UX2D-F2: after a refused Delete the keyboard keeps the dialog: focus stays
     expect(errors).toEqual([]);
 });
 
-test("a person who can read the chat but not change it sees no YAML, and Start, Delete and Run again say why they are off", async ({ page }) => {
+test("a person who can read the session but not change it sees no YAML, and Start, Delete and Run again say why they are off", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const state = await routeChat(page, { reader: true });
+    const state = await routeSession(page, { reader: true });
     const main = await openTab(page);
     const revisions = main.getByRole("combobox", { name: "Revision", exact: true });
     await revisions.selectOption("2");
@@ -546,7 +546,7 @@ test("a person who can read the chat but not change it sees no YAML, and Start, 
     await expect(main.locator('[data-action="delete"]')).toBeDisabled();
     await expect(main.locator('[data-action="delete"]')).toHaveAttribute("data-title", "Only this workflow's owner or an admin can command it.");
     await main.getByRole("button", { name: "YAML", exact: true }).click();
-    await expect(main.locator('[data-field="yaml-hidden"]')).toHaveText("Only this chat's owner or an admin can read this definition's YAML.");
+    await expect(main.locator('[data-field="yaml-hidden"]')).toHaveText("Only this session's owner or an admin can read this definition's YAML.");
     await expect(main.getByRole("textbox", { name: "Workflow YAML", exact: true })).toHaveCount(0);
     await main.getByRole("button", { name: "Compare", exact: true }).click();
     await expect(main.locator(".ps-workflow-compare").getByRole("alert")).toHaveText("Only people who can change this definition can read its YAML.");
@@ -560,11 +560,11 @@ test("a person who can read the chat but not change it sees no YAML, and Start, 
     expect(errors).toEqual([]);
 });
 
-test("stage 2.2: the revision the chat tested says its last test; others say nothing; the test is neither a row nor a Workflow", async ({ page }) => {
+test("stage 2.2: the revision the session tested says its last test; others say nothing; the test is neither a row nor a Workflow", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    await routeChat(page, { tested: true });
+    await routeSession(page, { tested: true });
     const main = await openTab(page);
     const lastTest = main.locator("[data-last-test]");
     // Revision 3 (the newest, shown first) was never tested: no line.
@@ -590,7 +590,7 @@ test("stage 2.2: the revision the chat tested says its last test; others say not
 // ─── Stage 2.3: a package's Workflow Definitions (spec "Packages and Agent Smith" P1, P2, P5, P6, E2-7, D8) ──────────────
 
 const COORD_ID = "c5555555-2222-3333-4444-555555555555";
-/** A Workflow of the coordinating chat's locked definition (review S2UI-F3: Make a copy while it is selected). */
+/** A Workflow of the coordinating session's locked definition (review S2UI-F3: Make a copy while it is selected). */
 const W_PKG = "c6666666-2222-3333-4444-555555555555";
 const WATCH_CARD = {
     ref: "release-tools/release-watch", name: "release-watch", package: "release-tools", packageTitle: "Release Tools", semver: "1.2.0", scope: "shared",
@@ -602,8 +602,8 @@ const WATCH_CARD = {
 const WATCH_YAML = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: release-watch, version: \"1.2.0\" }\ninitial: poll\n";
 
 /**
- * The new-session picker's catalog (one agent and one package Workflow), the chat it makes for the Workflow, and that
- * chat's locked definition: revision 1 is release-tools 1.2.0, and 1.3.0 is offered. Make a copy adds the chat's own
+ * The new-session picker's catalog (one agent and one package Workflow), the session it makes for the Workflow, and that
+ * session's locked definition: revision 1 is release-tools 1.2.0, and 1.3.0 is offered. Make a copy adds the session's own
  * release-watch; Use it for the next Workflow adds revision 2 (1.3.0). Each request is recorded.
  */
 async function routePackages(page) {
@@ -630,7 +630,7 @@ async function routePackages(page) {
         const url = new URL(req.url());
         const pathname = url.pathname;
         const answer = (result) => route.fulfill({ json: { ok: true, result } });
-        const sessions = [CHAT, ...(state.made ? [coordinating()] : []), ...(state.withWorkflow ? [workflowRow()] : [])];
+        const sessions = [SESSION, ...(state.made ? [coordinating()] : []), ...(state.withWorkflow ? [workflowRow()] : [])];
         if (pathname.endsWith("/models")) return answer([{ providerId: "test", modelName: "test-model", qualifiedName: "test:test-model" }]);
         if (pathname.endsWith("/providers")) return answer({ providers: [{ name: "test", typeId: "test", class: "shared", hasCredential: true, usableByMe: true }] });
         if (pathname.endsWith("/providers/status")) return answer({ providers: [] });
@@ -692,13 +692,13 @@ async function routePackages(page) {
             if (pathname.includes(`/sessions/${W_PKG}/events`)) return answer([]);
             if (pathname.endsWith(`/sessions/${W_PKG}`)) return answer({ ...workflowRow(), events: [], messages: [] });
         }
-        if (pathname.endsWith(`/sessions/${AGENT_ID}`)) return answer({ ...CHAT, events: [], messages: [] });
+        if (pathname.endsWith(`/sessions/${AGENT_ID}`)) return answer({ ...SESSION, events: [], messages: [] });
         return route.fallback();
     });
     return state;
 }
 
-test("stage 2.3: the new-session picker lists a package's Workflow with its card; choosing it makes a chat with the Workflow badge", async ({ page }) => {
+test("stage 2.3: the new-session picker lists a package's Workflow with its card; choosing it makes a session with the Workflow badge", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
@@ -726,7 +726,7 @@ test("stage 2.3: the new-session picker lists a package's Workflow with its card
     await page.getByRole("button", { name: "Create Session", exact: true }).click();
     await expect.poll(() => state.created.length).toBe(1);
     expect(state.created[0]).toMatchObject({ ref: "release-tools/release-watch", model: "test:test-model" });
-    // The chat is open, and its row wears the Workflow badge naming its Workflow.
+    // The session is open, and its row wears the Workflow badge naming its Workflow.
     await expect(page.locator(`.ps-session-list-button[data-session-id="${COORD_ID}"] [data-workflow-ref="release-tools/release-watch"]`).first()).toBeVisible();
     expect(errors).toEqual([]);
 });
@@ -734,13 +734,13 @@ test("stage 2.3: the new-session picker lists a package's Workflow with its card
 // Packages lens at 4124eb6c (1024 px): the picker card's checked-effects sentence ended at "it" behind the dialog's footer,
 // so its warning (a script can reach the network, files and processes) could not be read. It is safety wording: it now
 // comes right under the card's name and package line, and is wholly inside the details pane as it opens.
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "picker card's safety" (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "picker card's safety" (from packages/app/web, after build).
 test("the picker card's safety words are wholly visible as the details open, at 1024 and 1440 px", async ({ page }) => {
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
     await routePackages(page);
     const checked = "Checked from the definition: it runs scripts (steps poll, notify). A script runs code on a worker: it can reach the network, "
-        + "and use the tools of the chat that starts it, which can read and write files and run processes. It has agent steps (summarize): each one asks a model.";
+        + "and use the tools of the session that starts it, which can read and write files and run processes. It has agent steps (summarize): each one asks a model.";
     await page.route("**/workflow-definitions/catalog", (route) => route.fulfill({ json: { ok: true, result: [{ ...WATCH_CARD,
         description: "Watches a release train and reports blockers. ".repeat(4).trim(), whenToUse: "A release train is rolling out. ".repeat(3).trim(),
         checked: { scripts: ["notify", "poll"], agents: ["summarize"], words: checked } }] } }));
@@ -775,7 +775,7 @@ test("S2UI-F8: at 390 px the locked definition's Make a copy and Use it for the 
     state.made = true;
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${COORD_ID}`);
     const main = await showPanel(page);
-    const banner = main.locator('[data-chat-definition="locked"]');
+    const banner = main.locator('[data-session-definition="locked"]');
     await expect(banner.locator('[data-field="package"]')).toHaveText("from release-tools 1.2.0 · locked");
     for (const action of ["copy", "use-newer"]) {
         const box = await banner.locator(`[data-action="${action}"]`).boundingBox();
@@ -787,11 +787,11 @@ test("S2UI-F8: at 390 px the locked definition's Make a copy and Use it for the 
 
 
 
-// Final review FUI-F1: on a phone held sideways (844 x 390, a touch screen) a chat's definition keeps its 44 px targets as at
+// Final review FUI-F1: on a phone held sideways (844 x 390, a touch screen) a session's definition keeps its 44 px targets as at
 // 390 px: the Start dialog's controls (portalled out of the tab), the Delete… at the end of the line under the pickers, and a
 // package definition's Make a copy and Use it for the next Workflow.
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "FUI-F1" (from packages/app/web, after build).
-test.describe("FUI-F1: a chat's definition on a phone held sideways (844 x 390, touch)", () => {
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "FUI-F1" (from packages/app/web, after build).
+test.describe("FUI-F1: a session's definition on a phone held sideways (844 x 390, touch)", () => {
     test.use({ hasTouch: true, isMobile: true });
     const target = async (locator, label) => {
         const box = await locator.boundingBox();
@@ -804,7 +804,7 @@ test.describe("FUI-F1: a chat's definition on a phone held sideways (844 x 390, 
         await page.setViewportSize({ width: 844, height: 390 });
         const errors = [];
         page.on("pageerror", collectPageErrors(errors));
-        await routeChat(page);
+        await routeSession(page);
         const main = await openTab(page);
         await main.getByRole("combobox", { name: "Revision", exact: true }).selectOption("2");
         await target(main.locator('[data-field="revision-info"] [data-action="delete"]'), "Delete…");
@@ -828,28 +828,28 @@ test.describe("FUI-F1: a chat's definition on a phone held sideways (844 x 390, 
         state.made = true;
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${COORD_ID}`);
         const main = await showPanel(page);
-        const banner = main.locator('[data-chat-definition="locked"]');
+        const banner = main.locator('[data-session-definition="locked"]');
         await expect(banner.locator('[data-field="package"]')).toHaveText("from release-tools 1.2.0 · locked");
         for (const action of ["copy", "use-newer"]) await target(banner.locator(`[data-action="${action}"]`), action);
         expect(errors).toEqual([]);
     });
 });
 
-// UX2D-F6: a revision saved from another page (the chat's row and its Workflows do not change) was not known here until
+// UX2D-F6: a revision saved from another page (the session's row and its Workflows do not change) was not known here until
 // Save was refused or the page reloaded. The list is read again when the page is shown again or the window takes focus,
 // so the editor says a newer revision was saved before the person saves.
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "UX2D-F6" (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "UX2D-F6" (from packages/app/web, after build).
 test("UX2D-F6: a revision saved from another page is known when this page is shown again or takes focus", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const state = await routeChat(page);
+    const state = await routeSession(page);
     const main = await openTab(page);
     await main.getByRole("button", { name: "YAML", exact: true }).click();
     const box = main.getByRole("textbox", { name: "Workflow YAML", exact: true });
     await expect(box).toHaveValue(yamlOf(3));
     await box.fill(yamlOf(3).replace("initial: nowhere\nstates: {}", "initial: poll"));
-    await expect(main.locator(".ps-wf-chat-editor .ps-wf-bar-text")).toHaveText("Editing revision 3 · not saved");
+    await expect(main.locator(".ps-wf-session-editor .ps-wf-bar-text")).toHaveText("Editing revision 3 · not saved");
     // Another page saves revision 4.
     state.hn.revisions.push({ ...state.hn.revisions[1], revision: 4, basedOn: 3, createdAt: new Date().toISOString() });
     state.hn.currentRevision = 4;
@@ -868,15 +868,15 @@ test("UX2D-F6: a revision saved from another page is known when this page is sho
     await expect(newer).toContainText("Revision 5 was saved after the one you are editing.");
     expect(errors).toEqual([]);
 });
-// UX round UX2D-F3, F4, F5: on a phone (390 px) every control of a chat's definition is a 44 px target: the panel tabs and
+// UX round UX2D-F3, F4, F5: on a phone (390 px) every control of a session's definition is a 44 px target: the panel tabs and
 // the Compare pickers, the Start and Delete dialogs' buttons, their Close and Add, the Maximize toggle and the graph's
 // zoom, fit and move buttons (measured raw, within float precision).
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "UX2D-F3" (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "UX2D-F3" (from packages/app/web, after build).
 test("UX2D-F3, F4, F5: at 390 px the panel tabs, Compare pickers, dialog buttons, Close, Add, Maximize and graph controls are 44 px targets", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    await routeChat(page);
+    await routeSession(page);
     const main = await openTab(page);
     const target = async (locator, label) => {
         const box = await locator.boundingBox();
@@ -924,7 +924,7 @@ test("UX2D-F3, F4, F5: at 390 px the panel tabs, Compare pickers, dialog buttons
 // who saved the revision, when, its version and "not valid" are the dimmed line under the row. A phone wraps the row to
 // two lines (Definition with full screen, then Rev, the icons and Start…) and keeps "not valid" in view. (Supersedes
 // UX2D-F8: the revision picker no longer carries its author and time.) The Workflow picker says "Workflow" too.
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "OF-S2-8" (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "OF-S2-8" (from packages/app/web, after build).
 const centerY = (box) => box.y + box.height / 2;
 async function headParts(main, { phone = false } = {}) {
     const head = main.locator(".ps-wf-tab-head");
@@ -948,7 +948,7 @@ test("OF-S2-8: at 1440 px Definition, Rev, the view icons, YAML, Compare and Sta
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    await routeChat(page);
+    await routeSession(page);
     const main = await openTab(page);
     const parts = await headParts(main);
     await expect(parts.definitionLabel).toBeVisible();
@@ -957,7 +957,7 @@ test("OF-S2-8: at 1440 px Definition, Rev, the view icons, YAML, Compare and Sta
     await expect(parts.revisionFace).toHaveText("3");
     await expect.poll(() => parts.definitions.locator("option").allTextContents()).toEqual(["alpha", "hn-top-watch"]);
     // The open list keeps each revision's detail.
-    await expect(parts.revisions.locator("option").first()).toHaveText(/^Revision 3 · newest · by the chat · .+ · not valid · version 1\.2\.0$/);
+    await expect(parts.revisions.locator("option").first()).toHaveText(/^Revision 3 · newest · by the session · .+ · not valid · version 1\.2\.0$/);
     // One line, in the owner's order.
     const boxes = {};
     for (const name of ["definitionLabel", "definitionFace", "revLabel", "revisionFace", "icons", "start", "maximize"]) boxes[name] = await parts[name].boundingBox();
@@ -969,7 +969,7 @@ test("OF-S2-8: at 1440 px Definition, Rev, the view icons, YAML, Compare and Sta
     // The revision's face is short.
     expect(boxes.revisionFace.width).toBeLessThan(80);
     // The dimmed line: who, when (no seconds), version, newest, not valid.
-    await expect(parts.info).toHaveText(/^by the chat · \d{1,2}:\d{2} · version 1\.2\.0 · newest · not valid/);
+    await expect(parts.info).toHaveText(/^by the session · \d{1,2}:\d{2} · version 1\.2\.0 · newest · not valid/);
     await expect(parts.info.locator('[data-field="not-valid"]')).toBeVisible();
     expect((await parts.info.boundingBox()).y).toBeGreaterThanOrEqual(boxes.definitionFace.y + boxes.definitionFace.height - 1);
     // Real labels: a click on one focuses its picker.
@@ -1004,7 +1004,7 @@ test("OF-S2-8: at 390 px the row wraps to two lines, Definition with full screen
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    await routeChat(page);
+    await routeSession(page);
     const main = await openTab(page);
     const parts = await headParts(main, { phone: true });
     await expect(parts.revisionFace).toHaveText("3");
@@ -1030,7 +1030,7 @@ test("OF-S2-8: at 390 px the row wraps to two lines, Definition with full screen
     await expect(notValid).toBeVisible();
     const box = await notValid.boundingBox();
     expect(box.x + box.width).toBeLessThanOrEqual(390);
-    await expect(parts.info).toHaveText(/^by the chat · \d{1,2}:\d{2} · version 1\.2\.0 · newest · not valid/);
+    await expect(parts.info).toHaveText(/^by the session · \d{1,2}:\d{2} · version 1\.2\.0 · newest · not valid/);
     await shot(page, "of-s2-8-definition-rows-390");
     expect(errors).toEqual([]);
 });
@@ -1039,7 +1039,7 @@ test("OF-S2-8: at 390 px the row wraps to two lines, Definition with full screen
 // schema a Sample input and a Sample output, each closed until opened, each sample saying it is one and keeping its schema
 // in a Schema row; the YAML (viewer and editor), the samples and the scripts are highlighted in the theme's code colours,
 // and the editor stays a plain textarea (typing, undo) under the colours.
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "OF-S2-8" (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "OF-S2-8" (from packages/app/web, after build).
 const SCRIPT_YAML = `apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: hn-top-watch, version: "1.1.0" }
@@ -1107,7 +1107,7 @@ test("OF-S2-8: a script node's Node panel shows its script and sample input and 
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const state = await routeChat(page);
+    const state = await routeSession(page);
     state.yamls.set(2, SCRIPT_YAML);
     state.workflowYaml = SCRIPT_YAML;
     const main = await openTab(page);
@@ -1133,7 +1133,7 @@ test("OF-S2-8: the YAML viewer and editor are highlighted; the editor stays a pl
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const state = await routeChat(page);
+    const state = await routeSession(page);
     state.yamls.set(2, SCRIPT_YAML);
     const main = await openTab(page);
     // Revision 2, read-only: highlighted.
@@ -1188,7 +1188,7 @@ test("OF-S2-8: the YAML viewer and editor are highlighted; the editor stays a pl
 // under them, node names and type lines, edge labels, the Node panel's words, the script's and samples' highlighted
 // code, the YAML's), and its parts 3:1 or more (node card edges, node-kind icons on their wells, edge lines, the Start
 // marker, end rings), in the Definition view and in a Workflow's view (its nodes not reached).
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "OF-S2-8 contrast" (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "OF-S2-8 contrast" (from packages/app/web, after build).
 const viewerContrast = (page) => page.evaluate(() => {
     const parse = (value) => {
         let match = /^rgba?\(([^)]+)\)/.exec(value ?? "");
@@ -1280,7 +1280,7 @@ for (const theme of listThemes()) {
         await page.setViewportSize({ width: 1440, height: 900 });
         const errors = [];
         page.on("pageerror", collectPageErrors(errors));
-        const state = await routeChat(page);
+        const state = await routeSession(page);
         state.yamls.set(2, SCRIPT_YAML);
         state.workflowYaml = SCRIPT_YAML;
         await page.route("**/me/profile", (route) => route.fulfill({ json: { ok: true, result: { isAdmin: false, profileSettings: { themeId: theme.id } } } }));
@@ -1326,13 +1326,13 @@ for (const theme of listThemes()) {
 // read 2.5:1 to 2.7:1 with the theme's own danger colour), and in win95 a failed step's error result sits in a white well as
 // the other code boxes do. Measured as drawn (viewerContrast): a failed last test under the pickers, a failed Workflow's
 // reason in the Workflows list, its failed step's error result in the Node panel, and its Log's error line.
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "FUI-F2 contrast" (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "FUI-F2 contrast" (from packages/app/web, after build).
 for (const theme of listThemes()) {
     test(`FUI-F2 contrast: a failed Workflow's danger words and error result read 4.5:1 or more, ${theme.id}`, async ({ page }) => {
         await page.setViewportSize({ width: 1440, height: 900 });
         const errors = [];
         page.on("pageerror", collectPageErrors(errors));
-        const state = await routeChat(page, { tested: true });
+        const state = await routeSession(page, { tested: true });
         state.hn.revisions[1].lastTest.verdict = "failed";
         state.hn.workflows[0].runStatus = "failed";
         state.rows[0].status = "failed";
@@ -1384,21 +1384,21 @@ for (const theme of listThemes()) {
     });
 }
 
-// UX2D-F11: at 1024 px, with the Workflow tab open, the narrow session column showed a chat's Workflow rows as
+// UX2D-F11: at 1024 px, with the Workflow tab open, the narrow session column showed a session's Workflow rows as
 // "… Completed [+1]": the state chip and the [+N] badge kept their width and the title gave all of its away. The title
 // keeps its start (about 12 characters), and the chip gives way first.
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "UX2D-F11" (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "UX2D-F11" (from packages/app/web, after build).
 test("UX2D-F11: at 1024 px a Workflow row in the session list keeps its name and number; the state chip gives way first", async ({ page }) => {
     await page.setViewportSize({ width: 1024, height: 768 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    await routeChat(page);
+    await routeSession(page);
     await openTab(page);
     await expect(page.locator(".ps-workspace-main-grid")).toHaveClass(/is-session-wrap/);
-    // A chat's children are collapsed by default: open its row so its Workflow rows show.
-    const chatRow = page.locator(`.ps-session-list-button[data-session-id="${AGENT_ID}"]`).first();
-    await chatRow.click();
-    await expect(chatRow).not.toContainText("[+2]");
+    // A session's children are collapsed by default: open its row so its Workflow rows show.
+    const ownerRow = page.locator(`.ps-session-list-button[data-session-id="${AGENT_ID}"]`).first();
+    await ownerRow.click();
+    await expect(ownerRow).not.toContainText("[+2]");
     for (const id of [W1, W2]) {
         const row = page.locator(`.ps-session-list-button[data-session-id="${id}"]`).first();
         await expect(row).toBeVisible();
@@ -1421,12 +1421,12 @@ test("UX2D-F11: at 1024 px a Workflow row in the session list keeps its name and
 // UX2D-F12: on a phone the Workflows list wrapped "revision 2" and its start time onto two lines each, and the run bar's
 // state pill read "Running · …", its time taken cut. The list now takes two lines per Workflow with nothing wrapped, and
 // the pill cuts its label, never the time.
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "UX2D-F12" (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "UX2D-F12" (from packages/app/web, after build).
 test("UX2D-F12: at 390 px the Workflows list wraps nothing, and the run bar's pill keeps the time taken", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    await routeChat(page);
+    await routeSession(page);
     // #2 has run for 2 h 03 min 04 s: its start event.
     const startedAt = new Date(Date.now() - (2 * 3600 + 3 * 60 + 4) * 1000).toISOString();
     await page.route(`**/api/v1/**/sessions/${W2}/events**`, (route) => route.fulfill({ json: { ok: true, result: [
@@ -1467,7 +1467,7 @@ test("UX2D-F12: at 390 px the Workflows list wraps nothing, and the run bar's pi
 // UXP-TL-01 (owner, TEST at 390 x 844, a running Workflow): the run bar's state chip collapsed to an empty pill ("·") beside
 // Pause, Stop… and Run again…. The chip keeps its words and its time: the Workflow picker gives way first, then the buttons
 // go to a line of their own; nothing overlaps and everything stays inside the screen.
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "UXP-TL-01" (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "UXP-TL-01" (from packages/app/web, after build).
 test.describe("UXP-TL-01: a phone (390 x 844, touch)", () => {
     test.use({ hasTouch: true, isMobile: true });
 
@@ -1475,7 +1475,7 @@ test.describe("UXP-TL-01: a phone (390 x 844, touch)", () => {
         await page.setViewportSize({ width: 390, height: 844 });
         const errors = [];
         page.on("pageerror", collectPageErrors(errors));
-        await routeChat(page, { controls: true });
+        await routeSession(page, { controls: true });
         const startedAt = new Date(Date.now() - (2 * 3600 + 3 * 60 + 4) * 1000).toISOString();
         await page.route(`**/api/v1/**/sessions/${W2}/events**`, (route) => route.fulfill({ json: { ok: true, result: [
             { sessionId: W2, seq: 1, eventType: "workflow.started", createdAt: startedAt, data: { runId: `run-${W2}`, mode: "live", name: "hn-top-watch" } },
@@ -1522,12 +1522,12 @@ test("S2UI-F3: Make a copy with the package Workflow's own row selected opens th
     const main = workflowTab(page);
     await expect(main).toHaveAttribute("data-definition", "release-tools/release-watch");
     await main.getByRole("button", { name: "Definition", exact: true }).click();
-    const banner = main.locator('[data-chat-definition="locked"]');
+    const banner = main.locator('[data-session-definition="locked"]');
     await expect(banner.locator('[data-field="package"]')).toHaveText("from release-tools 1.2.0 · locked");
     await banner.locator('[data-action="copy"]').click();
     await expect.poll(() => state.copies.length).toBe(1);
     await expect(main).toHaveAttribute("data-definition", "release-watch");
-    await expect(main.locator('[data-chat-definition="locked"]')).toHaveCount(0);
+    await expect(main.locator('[data-session-definition="locked"]')).toHaveCount(0);
     // Formal L1: the copy says where it came from.
     await expect(main.locator('[data-field="copied-from"]')).toHaveText("Copied from release-tools/release-watch revision 1 (release-tools 1.2.0)");
     expect(errors).toEqual([]);
@@ -1541,20 +1541,20 @@ test("stage 2.3: a package's definition is locked: where it comes from, read-onl
     state.made = true;
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${COORD_ID}`);
     const main = await showPanel(page);
-    await expect(main).toHaveAttribute("data-chat-definitions", "true");
+    await expect(main).toHaveAttribute("data-session-definitions", "true");
     await expect(main.getByRole("combobox", { name: "Definition", exact: true }).locator("option:checked")).toHaveText("release-tools/release-watch · locked");
-    const banner = main.locator('[data-chat-definition="locked"]');
+    const banner = main.locator('[data-session-definition="locked"]');
     await expect(banner.locator('[data-field="package"]')).toHaveText("from release-tools 1.2.0 · locked");
     await expect(banner.locator('[data-field="package-update"]')).toHaveText("Version 1.3.0 is available");
     // Its YAML is shown read-only (the box every read-only revision uses) and says how to change it; there is no editor:
-    // no chat editor (the editable case's .ps-wf-chat-editor), no YAML editor region and no Save.
+    // no session editor (the editable case's .ps-wf-session-editor), no YAML editor region and no Save.
     await main.getByRole("button", { name: "YAML", exact: true }).click();
     await expect(main.locator('[data-field="yaml-read-only"]')).toContainText("is locked: it cannot be changed here. Make a copy to change it.");
     const yaml = main.getByRole("textbox", { name: "Workflow YAML", exact: true });
     await expect(yaml).toHaveValue(WATCH_YAML);
     await expect(yaml).toHaveAttribute("readonly", "");
     await expect(yaml).not.toBeEditable();
-    await expect(main.locator(".ps-wf-chat-editor")).toHaveCount(0);
+    await expect(main.locator(".ps-wf-session-editor")).toHaveCount(0);
     await expect(main.getByRole("region", { name: "YAML editor", exact: true })).toHaveCount(0);
     await expect(main.locator('[data-action="save"]')).toHaveCount(0);
     await shot(page, "s23-locked-1440");
@@ -1571,34 +1571,34 @@ test("stage 2.3: a package's definition is locked: where it comes from, read-onl
     await expect(banner.locator('[data-action="copy"]')).toBeVisible({ timeout: 300 });
     await expect(main.locator('.ps-wf-info [data-action="delete"]')).toBeVisible({ timeout: 300 });
     await expect(main.locator('[data-field="yaml-read-only"]')).toBeVisible();
-    // Make a copy (by the keyboard): the chat's own release-watch is shown, editable.
+    // Make a copy (by the keyboard): the session's own release-watch is shown, editable.
     await banner.locator('[data-action="copy"]').focus();
     await page.keyboard.press("Enter");
     await expect.poll(() => state.copies.length).toBe(1);
     expect(state.copies[0]).toMatchObject({ definitionId: "def-pkg", revision: 2 });
     await expect(main).toHaveAttribute("data-definition", "release-watch");
-    await expect(main.locator('[data-chat-definition="locked"]')).toHaveCount(0);
+    await expect(main.locator('[data-session-definition="locked"]')).toHaveCount(0);
     expect(errors).toEqual([]);
 });
 
 // ------------------------------------------------------------------------------------------------------------
 // OF-S2-4 B and C (owner, 2026-11-07T19:14Z): "the first time a wf definition is created, just pop open the wf panel. and
 // from then on if the user shuts it down, just put a yellow dot whenever there is a lifecycle event". With the panel
-// closed, the portal reads the chat's definitions in the background (when the chat's rows change, at least every 30 s).
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "OF-S2-4" (from packages/app/web, after build).
+// closed, the portal reads the session's definitions in the background (when the session's rows change, at least every 30 s).
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "OF-S2-4" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
-async function lifecycleChat(page) {
-    const state = await routeChat(page, { emptyList: true });
+async function lifecycleSession(page) {
+    const state = await routeSession(page, { emptyList: true });
     state.list = () => [];
     state.rows.length = 0;
-    // The chat's agent works and stops (its status changes) as it saves: the session list's poll sees that, and the portal
+    // The session's agent works and stops (its status changes) as it saves: the session list's poll sees that, and the portal
     // reads the list then (review F3: statuses, not a row's update, make it read again). The status flips against the one
     // the browser last saw, so two saves between two polls (4 s) cannot cancel each other out.
     state.touch = () => {
-        const busy = (state.servedStatus ?? (state.chat ?? CHAT).status) === "running";
-        state.chat = { ...CHAT, status: busy ? "idle" : "running", updatedAt: Date.now() };
+        const busy = (state.servedStatus ?? (state.session ?? SESSION).status) === "running";
+        state.session = { ...SESSION, status: busy ? "idle" : "running", updatedAt: Date.now() };
     };
-    // The chat's first definition, saved by its agent now.
+    // The session's first definition, saved by its agent now.
     state.fresh = () => {
         const made = new Date().toISOString();
         state.hn.createdAt = made;
@@ -1611,12 +1611,12 @@ async function lifecycleChat(page) {
     return state;
 }
 
-test("OF-S2-4: the chat's first definition opens the panel; closed, every lifecycle change lights the Workflow dot until it is opened", async ({ page }) => {
+test("OF-S2-4: the session's first definition opens the panel; closed, every lifecycle change lights the Workflow dot until it is opened", async ({ page }) => {
     test.setTimeout(120_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const state = await lifecycleChat(page);
+    const state = await lifecycleSession(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
     const button = page.getByRole("button", { name: /^(Workflow|Workflow — needs attention|Hide the Workflow tab)$/ });
     await expect(button).toHaveAccessibleName("Workflow");
@@ -1624,7 +1624,7 @@ test("OF-S2-4: the chat's first definition opens the panel; closed, every lifecy
     await expect.poll(() => state.listReads, { timeout: 15_000 }).toBeGreaterThan(0);
     await expect(page.locator(".ps-wf-tab")).toHaveCount(0);
 
-    // B: the agent saves the chat's first definition: the panel opens on it.
+    // B: the agent saves the session's first definition: the panel opens on it.
     state.fresh();
     state.touch();
     await expect(workflowTab(page)).toBeVisible({ timeout: 20_000 });
@@ -1677,12 +1677,12 @@ test("OF-S2-4: the chat's first definition opens the panel; closed, every lifecy
     expect(errors).toEqual([]);
 });
 
-test("OF-S2-4: on a phone the chat's first definition brings the Workflow pane up", async ({ page }) => {
+test("OF-S2-4: on a phone the session's first definition brings the Workflow pane up", async ({ page }) => {
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const state = await lifecycleChat(page);
+    const state = await lifecycleSession(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
     await expect.poll(() => state.listReads, { timeout: 15_000 }).toBeGreaterThan(0);
     await expect(page.locator(".ps-wf-tab").filter({ visible: true })).toHaveCount(0);
@@ -1694,44 +1694,44 @@ test("OF-S2-4: on a phone the chat's first definition brings the Workflow pane u
 });
 
 // ------------------------------------------------------------------------------------------------------------
-// OF-S2-4d (owner, 19:45Z): "if I switch to a chat with a yellow dot on the workflow and it was the first time the dot had
-// appeared then I want the panel to auto open. Follow the same behavior as canvas". The panel opens once per chat, the
+// OF-S2-4d (owner, 19:45Z): "if I switch to a session with a yellow dot on the workflow and it was the first time the dot had
+// appeared then I want the panel to auto open. Follow the same behavior as canvas". The panel opens once per session, the
 // first time it has a change the person has not seen: on arrival (a switch or a page load) when it happened elsewhere.
 // Once the panel was on screen (its receipt), later changes only light the dot.
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "OF-S2-4d" (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "OF-S2-4d" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
 const OTHER_ID = "11111110-2222-3333-4444-555555555552";
-const OTHER = { sessionId: OTHER_ID, title: "Release notes chat", status: "idle", model: "test:test-model", createdAt: now - 900_000, updatedAt: now - 30_000 };
+const OTHER = { sessionId: OTHER_ID, title: "Release notes session", status: "idle", model: "test:test-model", createdAt: now - 900_000, updatedAt: now - 30_000 };
 
-test("OF-S2-4d: a definition saved while the person is in another chat opens the panel when they switch to it, once", async ({ page }) => {
+test("OF-S2-4d: a definition saved while the person is in another session opens the panel when they switch to it, once", async ({ page }) => {
     test.setTimeout(120_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const state = await lifecycleChat(page);
+    const state = await lifecycleSession(page);
     state.others.push(OTHER);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${OTHER_ID}`);
     const button = page.getByRole("button", { name: /^(Workflow|Workflow — needs attention|Hide the Workflow tab)$/ });
     await expect(button).toHaveAccessibleName("Workflow");
-    // The agent of the other chat saves its first definition; the person is not there.
+    // The agent of the other session saves its first definition; the person is not there.
     state.fresh();
     state.touch();
     await page.waitForTimeout(1_500);
     await expect(page.locator(".ps-wf-tab")).toHaveCount(0);
     // They switch to it: the panel opens on its definition.
     const reads = state.listReads;
-    await page.locator(".ps-session-row-content", { hasText: CHAT.title }).first().click();
-    await expect(workflowTab(page)).toHaveAttribute("data-chat-definitions", "true", { timeout: 15_000 });
+    await page.locator(".ps-session-row-content", { hasText: SESSION.title }).first().click();
+    await expect(workflowTab(page)).toHaveAttribute("data-session-definitions", "true", { timeout: 15_000 });
     expect(state.listReads).toBeGreaterThan(reads);
     await expect(button).toHaveAccessibleName("Hide the Workflow tab");
     await shot(page, "of-s2-4d-arrival-1440");
     // Closed by hand, it stays closed: away and back.
     await button.click();
     await expect(page.locator(".ps-wf-tab")).toHaveCount(0);
-    // Arriving reads the chat's list at once, so the count is taken before the switch (only this chat's reads are counted).
+    // Arriving reads the session's list at once, so the count is taken before the switch (only this session's reads are counted).
     const back = state.listReads;
     await page.locator(".ps-session-row-content", { hasText: OTHER.title }).first().click();
-    await page.locator(".ps-session-row-content", { hasText: CHAT.title }).first().click();
+    await page.locator(".ps-session-row-content", { hasText: SESSION.title }).first().click();
     await expect.poll(() => state.listReads, { timeout: 15_000 }).toBeGreaterThan(back);
     await page.waitForTimeout(1_000);
     await expect(page.locator(".ps-wf-tab")).toHaveCount(0);
@@ -1746,31 +1746,31 @@ test("OF-S2-4d: a definition saved while the person is in another chat opens the
     expect(errors).toEqual([]);
 });
 
-test("OF-S2-4d: a page load onto a chat whose panel never showed, with a definition, opens it; a chat with nothing does not", async ({ page }) => {
+test("OF-S2-4d: a page load onto a session whose panel never showed, with a definition, opens it; a session with nothing does not", async ({ page }) => {
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const state = await routeChat(page);
+    const state = await routeSession(page);
     state.others.push(OTHER);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${OTHER_ID}`);
     await expect.poll(() => page.evaluate(() => document.querySelectorAll(".ps-session-row-content").length)).toBeGreaterThan(1);
     await page.waitForTimeout(1_500);
     await expect(page.locator(".ps-wf-tab")).toHaveCount(0);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
-    await expect(workflowTab(page)).toHaveAttribute("data-chat-definitions", "true", { timeout: 15_000 });
+    await expect(workflowTab(page)).toHaveAttribute("data-session-definitions", "true", { timeout: 15_000 });
     await expect(page.getByRole("button", { name: "Hide the Workflow tab", exact: true })).toBeVisible();
     expect(errors).toEqual([]);
 });
 
-test("OF-S2-4d: on a phone, arriving at a chat whose panel never showed brings the Workflow pane up", async ({ page }) => {
+test("OF-S2-4d: on a phone, arriving at a session whose panel never showed brings the Workflow pane up", async ({ page }) => {
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    await routeChat(page);
+    await routeSession(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
-    await expect(workflowTab(page)).toHaveAttribute("data-chat-definitions", "true", { timeout: 15_000 });
+    await expect(workflowTab(page)).toHaveAttribute("data-session-definitions", "true", { timeout: 15_000 });
     await shot(page, "of-s2-4d-arrival-390");
     expect(errors).toEqual([]);
 });
@@ -1780,7 +1780,7 @@ test("OF-S2-4d: on a phone, arriving at a chat whose panel never showed brings t
 // workflow icon next to the session title if the session has grown a workflow." A sub-agent's row wears the Workflow glyph
 // beside its title ("Has Workflows") once the session list says it owns a live definition: after its first save, without
 // the person opening it or its definitions being read, and again after a reload. It is not a Workflow row's own mark.
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "OF-S2-5" (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "OF-S2-5" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
 const HELPER_ID = "11111110-2222-3333-4444-555555555553";
 
@@ -1789,7 +1789,7 @@ test("OF-S2-5: a sub-agent row shows the Workflow mark after its first save, uno
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const state = await routeChat(page);
+    const state = await routeSession(page);
     const helper = { sessionId: HELPER_ID, title: "Release helper", status: "idle", model: "test:test-model", parentSessionId: OTHER_ID,
         createdAt: now - 800_000, updatedAt: now - 40_000, hasWorkflowDefinitions: false };
     state.others.push(OTHER, helper);
@@ -1819,16 +1819,16 @@ test("OF-S2-5: a sub-agent row shows the Workflow mark after its first save, uno
     expect(errors).toEqual([]);
 });
 
-// OF-S2-5, fixed in passing: the session list's own state lacked whether Workflows are on, so a package-made chat's badge never
-// drew; with it, and the "Has Workflows" mark, the chat's title says it too.
-// The chat's own header shows only below 921 px (index.css: on a desktop the session list names the chat and the header is
-// hidden), so its mark is checked on a phone, on a chat whose Workflow pane does not come up by itself (the server's flag,
+// OF-S2-5, fixed in passing: the session list's own state lacked whether Workflows are on, so a package-made session's badge never
+// drew; with it, and the "Has Workflows" mark, the session's title says it too.
+// The session's own header shows only below 921 px (index.css: on a desktop the session list names the session and the header is
+// hidden), so its mark is checked on a phone, on a session whose Workflow pane does not come up by itself (the server's flag,
 // nothing loaded); on a desktop the list row wears it (3d5ffa53 DEV: the header's mark was hidden at 1440 px by design).
-test("OF-S2-5: the open chat's title wears the mark when it has grown Workflows", async ({ page }) => {
+test("OF-S2-5: the open session's title wears the mark when it has grown Workflows", async ({ page }) => {
     test.setTimeout(60_000);
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const state = await routeChat(page);
+    const state = await routeSession(page);
     state.others.push({ ...OTHER, hasWorkflowDefinitions: true });
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${OTHER_ID}`);
@@ -1844,18 +1844,18 @@ test("OF-S2-5: the open chat's title wears the mark when it has grown Workflows"
 
 // ------------------------------------------------------------------------------------------------------------
 // The UX round's three product findings (UX packages lens, replay r2):
-// UX2R-F1: after a Workflow ran, the chat's Workflow tab opened on the Definition view with no word of it. It now names the
+// UX2R-F1: after a Workflow ran, the session's Workflow tab opened on the Definition view with no word of it. It now names the
 //   definition's newest Workflow and its state, and one click shows it.
 // UX2P-F3: the YAML button's tooltip covered the "Copied from" and revision lines under the bar. The header's and the bar's
 //   tooltips show above their buttons.
 // UX2P-F1: on a 390 px phone the picker's Workflow row was 31.66 px tall and Create Session 34 px. Both are 44 px targets.
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "UX2" (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "UX2" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
 test("UX2R-F1: the tab opened on the Definition view names the newest Workflow and its state; View it shows it", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    await routeChat(page);
+    await routeSession(page);
     const main = await openTab(page);
     await expect(main).toHaveAttribute("data-view", "definition");
     const latest = main.locator('[data-field="latest-workflow"]');
@@ -1874,7 +1874,7 @@ test("UX2P-F3: the bar's and the header's tooltips show above their buttons, nev
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    await routeChat(page);
+    await routeSession(page);
     const main = await openTab(page);
     for (const name of ["YAML", "Compare", "Definition"]) {
         const button = main.getByRole("button", { name, exact: true }).first();
@@ -1891,7 +1891,7 @@ test("UX2P-F3: the bar's and the header's tooltips show above their buttons, nev
 
 test("UX2P-F1: at 390 px the picker's rows and its dialog buttons are 44 px targets", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await routeChat(page);
+    await routeSession(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
     await expect(page.locator(".ps-prompt-input")).toBeVisible();
     const heights = await page.evaluate(() => {
@@ -1915,7 +1915,7 @@ test("UX2P-F1: at 390 px the picker's rows and its dialog buttons are 44 px targ
 // row's id · age · model), and the clamped title clipped it off the row (mark at x 319-345, row ending at 324). The mark
 // now sits right after the title and never shrinks: the title takes the ellipsis, the rest gives way first. Its box is
 // inside the row's visible box for a long title and for an untitled row, at 1440 and 390 px, and in the phone's header.
-// Selector: npx playwright test test/e2e/workflow-chat-definitions.spec.mjs -g "OF-S2-5-F1" (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-session-definitions.spec.mjs -g "OF-S2-5-F1" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
 const LONG_ID = "11111110-2222-3333-4444-555555555554";
 const UNTITLED_ID = "11111110-2222-3333-4444-555555555555";
@@ -1944,7 +1944,7 @@ test("OF-S2-5-F1: the mark stays on screen right after a long title and an untit
     test.setTimeout(90_000);
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const state = await routeChat(page);
+    const state = await routeSession(page);
     state.others.push(
         { sessionId: LONG_ID, title: "Quarterly release readiness review for the storage and networking teams, with every follow-up",
             status: "idle", model: "test:test-model", createdAt: now - 700_000, updatedAt: now - 20_000, hasWorkflowDefinitions: true },
@@ -1965,7 +1965,7 @@ test("OF-S2-5-F1: the mark stays on screen right after a long title and an untit
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${LONG_ID}`);
-    // The phone's header names the chat: a long title takes the ellipsis, the mark stays.
+    // The phone's header names the session: a long title takes the ellipsis, the mark stays.
     const header = page.locator(".ps-chat-panel .ps-panel-title.has-owner-mark").first();
     await expect(header.locator('[data-workflow-owner="true"]')).toBeVisible({ timeout: 15_000 });
     const inHeader = await header.evaluate((title) => {

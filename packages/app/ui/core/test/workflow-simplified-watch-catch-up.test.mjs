@@ -16,10 +16,10 @@ const event = (seq, eventType, data) => ({ sessionId: WF, seq, eventType, create
     data: { runId: "run-r4", stateId: "fact", ...data } });
 const SERVER = [
     event(1, "workflow.state_started", { nodeExecutionId: "nx-1", step: 2 }),
-    event(2, "workflow.agent_spawned", { nodeExecutionId: "nx-1", childSessionId: "chat-1", chat: "continue", cycle: 1 }),
+    event(2, "workflow.agent_spawned", { nodeExecutionId: "nx-1", childSessionId: "owner-1", session: "continue", cycle: 1 }),
     event(3, "workflow.state_completed", { nodeExecutionId: "nx-1", step: 2, outcome: "success" }),
     event(4, "workflow.state_started", { nodeExecutionId: "nx-2", step: 4 }),
-    event(5, "workflow.agent_spawned", { nodeExecutionId: "nx-2", childSessionId: "chat-1", chat: "continue", cycle: 2 }),
+    event(5, "workflow.agent_spawned", { nodeExecutionId: "nx-2", childSessionId: "owner-1", session: "continue", cycle: 2 }),
 ];
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
@@ -44,7 +44,7 @@ function harness() {
         { sessionId: WF, title: "Workflow: ux-facts", status: "running", sessionKind: "workflow", parentSessionId: OWNER },
     ] });
     store.dispatch({ type: "sessions/selected", sessionId: OWNER });
-    // The Workflow's history as its first load left it: visit 1 started and its chat spawned.
+    // The Workflow's history as its first load left it: visit 1 started and its session spawned.
     store.dispatch({ type: "history/set", sessionId: WF, history: { ...buildHistoryModel(SERVER.slice(0, 2), { requestedLimit: 300 }), lastSeq: 2 } });
     return { controller, store, reads, subscriptions };
 }
