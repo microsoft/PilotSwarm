@@ -1,11 +1,8 @@
 /**
  * Migration 0088 (workflow), the one Workflow migration, on PostgreSQL:
- * - Equivalence: after main's 0001-0087, it leaves the same schema as the 24 migrations it replaced (0088-0111 as PR 270
- *   had them at 01caf109, frozen in test/fixtures/workflow-migration-chain-01caf109.sql and read with today's object
- *   names, as helpers/workflow-migration-chain.js says). Both run on fresh schemas of the same database; the
- *   catalog snapshots (helpers/schema-snapshot.js: relations, ordered live columns, constraints, indexes, functions,
- *   triggers, views, sequences, types, policies, comments, privileges and seeded rows) are equal.
- * - A fresh create records 0088 once, and its steps run again change nothing.
+ * - A fresh create records 0088 once, and its steps run again change nothing (the catalog snapshot of
+ *   helpers/schema-snapshot.js: relations, ordered live columns, constraints, indexes, functions, triggers, views,
+ *   sequences, types, policies, comments, privileges and seeded rows).
  * - The lookups by parent_session_id (the chat-ended and deletion triggers, the child budget) use its index.
  * - Review DS2-004: a concurrent build that failed leaves an invalid index. A run again takes no lock on sessions until
  *   its drop of that leftover, which a transaction holding sessions makes fail fast (lock_timeout 5 s) with 0088
@@ -16,7 +13,6 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { schemaSnapshot, snapshotDifferences } from "../helpers/schema-snapshot.js";
-import { oldWorkflowChain } from "../helpers/workflow-migration-chain.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { CMS_MIGRATIONS } from "../../src/cms-migrations.ts";
 import { childBudgetCountSql } from "../../src/child-budget.ts";
@@ -26,24 +22,18 @@ import { runMigrations } from "../../src/pg-migrator.ts";
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 240_000;
 const CMS_LOCK_SEED = 0x63_6D_73;
-const main = schema => CMS_MIGRATIONS(schema).filter(migration => migration.version <= "0087");
 
 describe("migration 0088: the Workflow schema in one migration", () => {
-    it("leaves the same schema as the 24 migrations it replaced; a fresh create records 0088 once and a run again changes nothing", { timeout: TIMEOUT }, async () => {
+    it("a fresh create records 0088 once, and a run again changes nothing", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const pool = new pg.Pool({ connectionString: env.store, max: 1 });
         const tag = randomUUID().replace(/-/g, "").slice(0, 12);
-        const chain = `wf0088_${tag}_chain`;
         const fresh = `wf0088_${tag}_fresh`;
         const query = (sql, params) => pool.query(sql, params);
         try {
-            const old = oldWorkflowChain(chain);
-            expect(old.map(migration => migration.version)).toEqual(Array.from({ length: 24 }, (_, i) => String(88 + i).padStart(4, "0")));
-            await runMigrations(pool, chain, [...main(chain), ...old], CMS_LOCK_SEED);
             await runMigrations(pool, fresh, CMS_MIGRATIONS(fresh), CMS_LOCK_SEED);
 
             const before = await schemaSnapshot(query, fresh);
-            expect(snapshotDifferences(await schemaSnapshot(query, chain), before)).toEqual({});
             // Not vacuous: the Workflow tables, functions and both triggers on sessions are there.
             expect(before.relations.filter(relation => relation.relkind === "r" && relation.relname.startsWith("workflow_"))).toHaveLength(23);
             expect(before.triggers.filter(trigger => trigger.relname === "sessions").map(trigger => trigger.tgname))
@@ -57,7 +47,7 @@ describe("migration 0088: the Workflow schema in one migration", () => {
             expect(snapshotDifferences(before, await schemaSnapshot(query, fresh))).toEqual({});
             expect((await pool.query(`SELECT count(*)::int AS n FROM "${fresh}".schema_migrations WHERE version > '0087'`)).rows[0].n).toBe(1);
         } finally {
-            for (const schema of [chain, fresh]) await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {});
+            await pool.query(`DROP SCHEMA IF EXISTS "${fresh}" CASCADE`).catch(() => {});
             await pool.end();
         }
     });

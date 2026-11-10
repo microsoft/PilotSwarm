@@ -7,7 +7,7 @@
  * - The chat-ended trigger (S2RT-F2, S2RT-F6) takes its locks in the runtime's order (the chat, then its Workflow
  *   sessions in session_id order, then their runs in run_id order, then their nodes), ends test runs as well as live
  *   ones, and clears a cancelled run's paused_from.
- * workflow-migration-0088.test.js proves on PostgreSQL that it leaves the same schema as the 24 migrations it replaced.
+ * workflow-migration-0088.test.js runs it on PostgreSQL: a fresh create, a run again, and its index steps.
  *
  * Run: node --test test/unit/workflow-migration-0088.test.mjs
  */
