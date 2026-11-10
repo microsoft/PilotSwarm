@@ -854,7 +854,7 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
         if (view.selectedRunId) controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedRunId: null } });
     }, [controller, sessionId, view.selectedRunId]);
     // Owner 2026-11-09T03:37Z (the timeline as a viewing mode; FU-26's replay folded into it): under the graph of every
-    // version 2 run, running or ended, a timeline of its loaded visits. Its right end is Live: the graph as it is now, which
+    // run, running or ended, a timeline of its loaded visits. Its right end is Live: the graph as it is now, which
     // follows new visits. `replayId` is the visit shown in history (the graph as it stood when that visit began), or null
     // for Live. It is kept by visit, not by position, so new visits (the run keeps going) and older ones loaded later do not
     // move it, and history never returns to Live by itself; only Play does, at the right end.
@@ -1120,7 +1120,7 @@ export function timelineVisitAt(frames, index) {
 }
 
 /**
- * Owner 2026-11-09T03:37Z (the timeline; FU-26's replay folded into it): under the graph of every version 2 run, Step back,
+ * Owner 2026-11-09T03:37Z (the timeline; FU-26's replay folded into it): under the graph of every run, Step back,
  * Play or Pause, Step on, a slider over the run's loaded visits whose right end is Live (the newest visit; the graph as it
  * is now, following new visits), the moment shown in words, Live (Latest once the run ended), and Load older visits while
  * older visits are not loaded. Step back from Live shows the visit before the newest; Step on from the visit before the

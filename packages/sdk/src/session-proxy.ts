@@ -6656,7 +6656,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
     /**
      * A lifecycle command (cancel, done or delete) from the session whose orchestration runs `activityCtx` to its child
-     * `targetSessionId`, for a workflow child: the v2 store applies it (applySessionCommandToWorkflow: only the
+     * `targetSessionId`, for a workflow child: the workflow store applies it (applySessionCommandToWorkflow: only the
      * child's parent may send it; delete always deletes the child; cancel and done end its active run, S7-DX2). True when
      * nothing more is to be sent; false when the caller queues the command (a cancel or done that ended a begun run, for
      * its controller to finish, or any other target). Used by the sendCommandToSession activity and by the inline control
@@ -6697,7 +6697,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             const r4 = await chatCompletionRefusalText(input.sessionId);
             if (r4) throw new Error(r4);
         }
-        // A workflow child's lifecycle command is applied in the v2 store
+        // A workflow child's lifecycle command is applied in the workflow store
         // for the child's own parent (workflowChildCommandApplied); it is
         // queued only when that says so. Every other target keeps the queued
         // command. The activity's input and result are unchanged.

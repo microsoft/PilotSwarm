@@ -2138,7 +2138,7 @@ export class PilotSwarmManagementClient {
      * Workflow support as this client's host takes it now (design 04
      * "Advertise capability/version in bootstrap"; D11), for a server's
      * bootstrap and any client that gates its workflow surface
-     * (workflowCapabilities, human-commands.ts): version 2 reads when the
+     * (workflowCapabilities, human-commands.ts): reads when the
      * catalog has a workflow store; a person's commands unless the client
      * was created with `workflowCommands: null` (then the refusal every
      * command gets), with the controller version the runs they start run

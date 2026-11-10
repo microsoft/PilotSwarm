@@ -84,10 +84,10 @@ describe("web api e2e", () => {
         assertNotNull(bootstrap.auth, "bootstrap carries auth context");
         // Durable workflow support as every deployment has it (owner 2026-11-08T15:30Z): reads, and a person's commands on
         // the full engine, with no setting.
-        assertEqual(bootstrap.workflows??.read, true, "bootstrap advertises version 2 workflow reads");
-        assertEqual(bootstrap.workflows??.commands?.available, true, "a person's workflow commands are on by default");
-        assertEqual(bootstrap.workflows??.commands?.controllerVersion, "1.0.0", "on the full engine");
-        assert(bootstrap.workflows??.commands?.operations?.includes("stop"), "with the full engine's stop");
+        assertEqual(bootstrap.workflows?.read, true, "bootstrap advertises Workflow reads");
+        assertEqual(bootstrap.workflows?.commands?.available, true, "a person's workflow commands are on by default");
+        assertEqual(bootstrap.workflows?.commands?.controllerVersion, "1.0.0", "on the full engine");
+        assert(bootstrap.workflows?.commands?.operations?.includes("stop"), "with the full engine's stop");
         assertEqual(JSON.stringify(await mgmt.getWorkflowCapabilities()), JSON.stringify(bootstrap.workflows),
             "the web management client reads the same advertisement");
     });

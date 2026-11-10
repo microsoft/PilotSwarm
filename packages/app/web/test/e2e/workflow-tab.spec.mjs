@@ -758,7 +758,7 @@ test("of-03: the zen chat rail resizes by drag and a double-click puts it back a
     expect(errors).toEqual([]);
 });
 
-// READ-WIRE-02: a version 2 workflow whose authorized read model (GET /sessions/:id/workflow) cannot be read shows the
+// READ-WIRE-02: a Workflow whose authorized read model (GET /sessions/:id/workflow) cannot be read shows the
 // failure beside its graph, drawn from its events, and Retry reads it again at once, in a mounted browser.
 const FIXTURE_STATES = [
     { id: "poll", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["changed", "unchanged"],
@@ -810,7 +810,7 @@ test("a workflow's read model failure is shown beside its graph, and Retry reads
     // Drawn from its events, the poll node has no state row; read again, its row says its mark and outcome.
     const pollState = graph.locator('.ps-workflow-node[data-node-id="poll"] .ps-workflow-node-meta.is-state');
     await expect(pollState).toHaveCount(0);
-    await shot(page, "v2-read-model-failed");
+    await shot(page, "read-model-failed");
     const failed = reads;
     expect(failed).toBeGreaterThan(0);
     failReads = false;
@@ -818,7 +818,7 @@ test("a workflow's read model failure is shown beside its graph, and Retry reads
     await expect(alert).toHaveCount(0);
     await expect(pollState).toHaveText("✓changed");
     expect(reads).toBeGreaterThan(failed);
-    await shot(page, "v2-read-model-retried");
+    await shot(page, "read-model-retried");
     expect(errors).toEqual([]);
 });
 
@@ -827,7 +827,7 @@ test("a workflow's read model failure is shown beside its graph, and Retry reads
 // a deployed stack, no model. Run stop confirm, dismiss and refusal at 1440 and 390 pixels with a keyboard pause; an
 // unconfirmed pause retried with the same operation id; the virtual clock's checks and one exact advance; a workflow agent
 // state's chat read-only beside an ordinary one; a lost draft save kept and resent unchanged.
-// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "v2 commands:" (from packages/app/web, after build).
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "Workflow commands:" (from packages/app/web, after build).
 // The confirm modal's dialog role, modal marking, name, description and focus are asserted (owner decision q18 changed
 // what a failed access read shows: "Could not check…" with Retry instead of the ordinary composer; owner decision q17
 // added the dialog semantics).
@@ -866,7 +866,7 @@ const accept = (route, command, extra = {}) =>
 // command; a 409 refusal keeps the server's reason (no Retry) and re-reads; Pause needs no dialog. 1440 and 390.
 // ------------------------------------------------------------------------------------------------------------
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
-    test(`v2 commands: the Stop… dialog sends one stop, keeps a refusal's reason and re-reads; Pause needs none, at ${viewport.width}px`, async ({ page }) => {
+    test(`Workflow commands: the Stop… dialog sends one stop, keeps a refusal's reason and re-reads; Pause needs none, at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
         const errors = [];
         page.on("pageerror", collectPageErrors(errors));
@@ -927,7 +927,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         expect(commands[1]).toEqual({ operation: "pause", operation_id: expect.stringMatching(/^ui-pause-/), run_id: "run-1" });
         expect(commands[1].operation_id).not.toBe(commands[0].operation_id);
         await expect(page.getByRole("dialog")).toHaveCount(0);
-        await shot(page, `v2-run-controls-${viewport.width}`);
+        await shot(page, `run-controls-${viewport.width}`);
         expect(errors).toEqual([]);
     });
 }
@@ -936,7 +936,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
 // B2 — a lost answer: while pending every control is disabled with the server-side reason; a 503 is "unconfirmed";
 // Retry sends the SAME command with the SAME operation id and the server's replay clears the notice.
 // ------------------------------------------------------------------------------------------------------------
-test("v2 commands: an unconfirmed pause is retried with the same operation id, never as a second command", async ({ page }) => {
+test("Workflow commands: an unconfirmed pause is retried with the same operation id, never as a second command", async ({ page }) => {
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
     let release;
@@ -988,7 +988,7 @@ const FIXTURE_TEST_MODEL = {
     // The server says its test mode is on (review UI-5); without it no screen shows a test run.
     testMode: true,
 };
-test("v2 commands: the virtual clock refuses an invalid advance locally and sends one exact advance", async ({ page }) => {
+test("Workflow commands: the virtual clock refuses an invalid advance locally and sends one exact advance", async ({ page }) => {
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
     const { commands } = await routeWorkflow(page, {
@@ -1132,7 +1132,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
 // does not parse is marked aria-invalid with the problem under the box (its accessible description) and nothing is
 // sent; valid JSON clears the mark; focus shows the ring.
 // ------------------------------------------------------------------------------------------------------------
-test("v2 commands: the workflow screen's edit boxes share one theme style and mark invalid JSON under the box (of-07)", async ({ page }) => {
+test("Workflow commands: the workflow screen's edit boxes share one theme style and mark invalid JSON under the box (of-07)", async ({ page }) => {
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
     const { commands } = await routeWorkflow(page, {
@@ -1183,7 +1183,7 @@ test("v2 commands: the workflow screen's edit boxes share one theme style and ma
     expect(await value.getAttribute("aria-invalid")).toBeNull();
     await value.focus();
     expect((await value.evaluate(look)).shadow).not.toBe("none");
-    await shot(page, "v2-edit-boxes");
+    await shot(page, "edit-boxes");
     expect(errors).toEqual([]);
 });
 
@@ -1202,7 +1202,7 @@ const CHILD_REASON = "This session runs a step of a workflow. People cannot send
 // Review UI-17: the read-only note says the server's reason first, then the chat to message.
 const CHILD_NOTE = new RegExp(`^${CHILD_REASON.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} To change this, message .+\\.$`);
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
-    test(`v2 commands: a workflow agent state's chat is read-only with the server's reason; an ordinary chat is not, at ${viewport.width}px`, async ({ page }) => {
+    test(`Workflow commands: a workflow agent state's chat is read-only with the server's reason; an ordinary chat is not, at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
         const errors = [];
         page.on("pageerror", collectPageErrors(errors));
@@ -1236,7 +1236,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await expect(readonly).toHaveText(CHILD_NOTE);
         await expect(page.locator(".ps-prompt-input")).toHaveCount(0);
         await expect(page.locator(".ps-chat-composer.is-workflow")).toHaveCount(0); // a child chat is not a workflow session
-        await shot(page, `v2-child-readonly-${viewport.width}`);
+        await shot(page, `child-readonly-${viewport.width}`);
 
         // Positive control: the ordinary agent session in the same page keeps its prompt input.
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
@@ -1249,7 +1249,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
 
 // Owner decision q18: a session that may be a workflow step waits for the server's word; a failed access read shows that
 // it could not check, with Retry, and no message box; Retry reads again and the server's answer decides.
-test("v2 commands: a failed access check says it could not check, with Retry, and no message box until the server answers", async ({ page }) => {
+test("Workflow commands: a failed access check says it could not check, with Retry, and no message box until the server answers", async ({ page }) => {
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
     await routeApi(page);
@@ -1309,7 +1309,7 @@ const draftModel = (revision, yaml) => ({
     definition: { state: "draft", semver: "1.0.0", currentRevision: revision, publishedRevision: null, publishedDefinitionHash: null },
     personCommands: { operations: ["replace_definition"], viewer: { allowed: true }, draft: { revision, definitionHash: `hash-${revision}`, yaml } },
 });
-test("v2 commands: a draft save whose answer is lost keeps the edit and Retry sends the same replace_definition", async ({ page }) => {
+test("Workflow commands: a draft save whose answer is lost keeps the edit and Retry sends the same replace_definition", async ({ page }) => {
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
     let saved = false;
@@ -2034,12 +2034,12 @@ test("owner 00:03Z versions: each version is its own option, the Definition view
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", collectPageErrors(errors));
-    const V1 = OWNED.running, V2 = OWNED.failed;
+    const FIRST = OWNED.running, SECOND = OWNED.failed;
     const versioned = (workflowId, semver, status, outcome, runId) => ({ ...FIXTURE_READ_MODEL, workflowId,
         definition: { ...FIXTURE_READ_MODEL.definition, semver }, runs: [{ runId, mode: "live", status, revision: 1, outcome }],
         run: { ...FIXTURE_READ_MODEL.run, runId, status, outcome } });
-    const models = { [V1]: versioned(V1, "1.0.0", "cancelled", null, "run-1"), [V2]: versioned(V2, "1.1.0", "completed", "succeeded", "run-2") };
-    const yamlOf = id => `apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: watch-flow, version: "${id === V1 ? "1.0.0" : "1.1.0"}" }\ninitial: poll\n`;
+    const models = { [FIRST]: versioned(FIRST, "1.0.0", "cancelled", null, "run-1"), [SECOND]: versioned(SECOND, "1.1.0", "completed", "succeeded", "run-2") };
+    const yamlOf = id => `apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: watch-flow, version: "${id === FIRST ? "1.0.0" : "1.1.0"}" }\ninitial: poll\n`;
     const { rows } = await routeOwned(page, { models, yamlOf });
     rows.splice(0, rows.length, { ...OWNED_ROWS[0], status: "cancelled" }, { ...OWNED_ROWS[1], status: "completed" });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
@@ -2052,16 +2052,16 @@ test("owner 00:03Z versions: each version is its own option, the Definition view
     await viewSwitch(main, "Definition").click();
     const bar = main.locator(".ps-wf-bar-text").first();
     await expect(bar).toHaveText(/^Revision 1 · 1\.1\.0$/);
-    await expect(bar).toHaveAttribute("data-definition-child", V2);
+    await expect(bar).toHaveAttribute("data-definition-child", SECOND);
     // 1.0.0 chosen: the Definition view shows it (its YAML and Start another… are its own).
     await picker.selectOption({ label: "watch-flow · 1.0.0" });
     await expect(bar).toHaveText(/^Revision 1 · 1\.0\.0$/);
-    await expect(bar).toHaveAttribute("data-definition-child", V1);
+    await expect(bar).toHaveAttribute("data-definition-child", FIRST);
     await expect(main).toHaveAttribute("data-version", "1.0.0");
     await shot(page, "owner-0003-version-picker-1440");
     // Compare, from 1.1.0: the two versions' YAML, one line changed.
     await picker.selectOption({ label: "watch-flow · 1.1.0" });
-    await expect(bar).toHaveAttribute("data-definition-child", V2);
+    await expect(bar).toHaveAttribute("data-definition-child", SECOND);
     await main.getByRole("button", { name: "Compare", exact: true }).click();
     const compare = main.getByRole("region", { name: "Compare two versions", exact: true });
     await expect(compare).toHaveAttribute("data-from", "1.0.0");
@@ -2084,15 +2084,15 @@ test("owner 00:03Z versions: each version is its own option, the Definition view
     // the choice back.
     await picker.selectOption({ label: "watch-flow · 1.1.0" });
     await expect(viewSwitch(main, "Definition")).toHaveAttribute("aria-pressed", "true");
-    await expect(bar).toHaveAttribute("data-definition-child", V2);
+    await expect(bar).toHaveAttribute("data-definition-child", SECOND);
     await expect.poll(selected).toBe("watch-flow · 1.1.0");
     await main.getByRole("button", { name: "YAML", exact: true }).click();
     await expect(main.locator(".ps-wf-yaml textarea")).toHaveValue(/version: "1\.1\.0"/);
     await picker.focus();
     await page.keyboard.press("ArrowDown");
-    await expect(bar).toHaveAttribute("data-definition-child", V1);
+    await expect(bar).toHaveAttribute("data-definition-child", FIRST);
     await page.keyboard.press("ArrowUp");
-    await expect(bar).toHaveAttribute("data-definition-child", V2);
+    await expect(bar).toHaveAttribute("data-definition-child", SECOND);
     expect(errors).toEqual([]);
 });
 
@@ -3135,7 +3135,7 @@ test("M-18 (UI-8): the Log shows the Workflow's own entries only, never a test r
     expect(errors).toEqual([]);
 });
 
-// Stage 2.4 (FU-26) folded into the timeline (owner 2026-11-09T03:37Z, corrected 03:52Z): under every version 2 run's graph,
+// Stage 2.4 (FU-26) folded into the timeline (owner 2026-11-09T03:37Z, corrected 03:52Z): under every run's graph,
 // a timeline of its visits whose right end is Live (Latest once the run ended): the graph as it is now, following new
 // visits. Step back from Live shows the visit before the newest; Step back and Step on move one visit, the slider (mouse
 // and keys) any, and Step on or the slider at the right end is Live again; Play steps on in history and rejoins Live; Live
@@ -3549,7 +3549,7 @@ const CHAIN_STATES = [
 function chainFixture() {
     let seqs = 0;
     const event = (eventType, data, seconds) => ({ sessionId: WORKFLOW_ID, seq: ++seqs, eventType, createdAt: replayAt(seconds), data: { runId: "run-1", ...data } });
-    const events = [event("workflow.started", { ...FIXTURE_EVENTS[0].data, name: "chain-v2", initial: "s1", states: CHAIN_STATES }, 0)];
+    const events = [event("workflow.started", { ...FIXTURE_EVENTS[0].data, name: "chain-flow", initial: "s1", states: CHAIN_STATES }, 0)];
     const rows = [];
     for (const [index, state] of CHAIN_STATES.entries()) {
         const id = `nx-${state.id}-1`;
@@ -3560,7 +3560,7 @@ function chainFixture() {
         rows.push({ nodeExecutionId: id, stateId: state.id, ordinal: 1, state: last ? "pending" : "completed", outcome: last ? null : "ok", resultKind: "business",
             winner: "controller", attempts: 0, kvRevision: 1, enteredAt: replayAt(index * 10), endedAt: last ? null : replayAt(index * 10 + 5) });
     }
-    const model = { ...FIXTURE_READ_MODEL, revision: { ...FIXTURE_READ_MODEL.revision, name: "chain-v2" }, graph: { revision: 1, initial: "s1", states: CHAIN_STATES },
+    const model = { ...FIXTURE_READ_MODEL, revision: { ...FIXTURE_READ_MODEL.revision, name: "chain-flow" }, graph: { revision: 1, initial: "s1", states: CHAIN_STATES },
         runs: [{ runId: "run-1", mode: "live", status: "running", revision: 1, outcome: null }],
         run: { ...FIXTURE_READ_MODEL.run, status: "running", nodeExecutions: rows } };
     return { events, model };
@@ -3574,7 +3574,7 @@ for (const [name, size, touch] of [["a phone (390 x 844, touch)", { width: 390, 
             const errors = [];
             page.on("pageerror", collectPageErrors(errors));
             const { events, model } = chainFixture();
-            await routeApi(page, { workflowEvents: events, workflowState: { title: "Workflow: chain-v2", status: "running" },
+            await routeApi(page, { workflowEvents: events, workflowState: { title: "Workflow: chain-flow", status: "running" },
                 onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: model } }) });
             await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
             const main = workflowTab(page);

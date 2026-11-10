@@ -12,7 +12,7 @@
  *   own implementation; the receipts are the tool's, and the recorded actor
  *   is the person (a command's own actor field is ignored).
  * - The command targets the session it is sent to; recover stays the
- *   agent's; a session that is missing or not a version 2 workflow is 404.
+ *   agent's; a session that is missing or not a Workflow is 404.
  * - A workflow inside a workflow agent state's subtree takes only a person's
  *   brakes (pause, cancel): anything else is 403 WORKFLOW_HUMAN_INPUT_DENIED,
  *   naming its controlling agent; the workflow container above it takes every

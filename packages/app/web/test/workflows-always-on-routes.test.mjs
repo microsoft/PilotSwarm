@@ -1,6 +1,6 @@
 /**
  * Workflows are always on (owner 2026-11-08T08:03Z): the portal's side, over the real router and runtime.
- * - The bootstrap's `workflows` says `enabled: true` with the version 2 fields, a workflow's read reaches the store, and a
+ * - The bootstrap's `workflows` says `enabled: true` with its fields, a workflow's read reaches the store, and a
  *   person's command gets the deployment's own answer, never WORKFLOWS_DISABLED.
  * - POST /sessions/workflow is no route: 404 NOT_FOUND, and nothing is created.
  *
@@ -65,7 +65,7 @@ async function harness() {
     return { mgmt, counts, call, close: () => new Promise((resolve) => server.close(resolve)) };
 }
 
-test("always on: the bootstrap says enabled with the version 2 fields; a read reaches the store; a command is never WORKFLOWS_DISABLED; there is no create route", async () => {
+test("always on: the bootstrap says enabled with its fields; a read reaches the store; a command is never WORKFLOWS_DISABLED; there is no create route", async () => {
     const h = await harness();
     try {
         const boot = await h.call("/bootstrap");

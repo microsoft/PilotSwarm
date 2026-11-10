@@ -86,14 +86,14 @@ test("before the workflow screen has read anything: the title without its 'Workf
     assert.equal(none.workflow, null);
 });
 
-test("a version 1 definition without a read model: its name, version and steps", () => {
+test("a definition without a read model: its name, version and steps", () => {
     const definition = { name: "watch", version: "0.1.0", states: graphStates(3) };
     const details = workflowSessionDetails(stateWith({ definition }), workflowSession());
     assert.deepEqual(details, { workflow: "watch 0.1.0", revision: null, run: null, steps: "3", startedBy: null });
 });
 
 test("the read model's name wins over the definition's and the title", () => {
-    const view = { readModel: readModel({ name: "From model", semver: "2.0.0" }), definition: { shape: "v2", name: "From definition", version: "9" } };
+    const view = { readModel: readModel({ name: "From model", semver: "2.0.0" }), definition: { name: "From definition", version: "9" } };
     const details = workflowSessionDetails(stateWith(view), workflowSession());
     assert.equal(details.workflow, "From model 2.0.0");
 });

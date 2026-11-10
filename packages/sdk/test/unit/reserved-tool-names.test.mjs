@@ -43,7 +43,7 @@ test("the workflow turn tools are reserved whatever a session declares", () => {
         assert.equal(findReservedPackageToolName([name], [], []), name, `a capability tool named ${name}`);
     }
     // Names that only resemble them stay available.
-    assert.equal(findReservedPackageToolName(["complete_workflow", "complete_workflow_node_v2", "respond_request"], ordinary, []), null);
+    assert.equal(findReservedPackageToolName(["complete_workflow", "complete_workflow_node_2", "respond_request"], ordinary, []), null);
 });
 
 test("role- and store-gated platform bundles cannot be shadowed by packages", () => {

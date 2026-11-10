@@ -201,7 +201,7 @@ export const WORKFLOW_INTERFACE_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 /** A package workflow interface's version label, such as `1`. */
 export const WORKFLOW_INTERFACE_VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/;
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-const V2_MARKER = /^apiVersion:\s*["']?pilotswarm\.dev\/v1["']?\s*(?:#.*)?$/m;
+const API_VERSION_MARKER = /^apiVersion:\s*["']?pilotswarm\.dev\/v1["']?\s*(?:#.*)?$/m;
 
 export interface WorkflowDiagnostic {
     severity: "error" | "warning";
@@ -531,9 +531,9 @@ export interface WorkflowCompileOptions {
     enableClockWaits?: boolean;
 }
 
-/** True when the text declares the v2 apiVersion (used to route spawn_workflow; legacy YAML keeps its path). */
+/** True when the text declares the Workflow apiVersion (spawn_workflow refuses any other document). */
 export function declaresWorkflow(yaml: string): boolean {
-    return typeof yaml === "string" && V2_MARKER.test(yaml);
+    return typeof yaml === "string" && API_VERSION_MARKER.test(yaml);
 }
 
 export function isRuntimeRoute(label: string): boolean {

@@ -3,7 +3,7 @@
 // back to the control that opened it, and the portal's effects that move focus when a modal closes (the session list's
 // active-row reveal, the composer) leave it there. Effects do not run in server rendering, so those two are checked by
 // their source shape here; the focus moves themselves are checked in the browser
-// (web/test/e2e/workflow-session.spec.mjs, "v2 commands: run controls ...").
+// (web/test/e2e/workflow-session.spec.mjs, "Workflow commands: run controls ...").
 //
 // Run: node --test packages/app/ui/core/test/modal-dialog.test.mjs
 import test from "node:test";

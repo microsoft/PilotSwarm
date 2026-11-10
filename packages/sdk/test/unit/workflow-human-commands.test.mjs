@@ -6,7 +6,7 @@
  * - The HTTP status of each refusal code.
  * - An agent actor, a command that is not an object, a workflow_id naming
  *   another session and recover are refused before anything is read; a
- *   session that is not a version 2 workflow is WORKFLOW_NOT_FOUND.
+ *   session that is not a Workflow is WORKFLOW_NOT_FOUND.
  * - A workflow in an agent state's subtree refuses everything but a person's
  *   brakes (403 WORKFLOW_HUMAN_INPUT_DENIED with its details); a brake is not
  *   checked against the lineage and reaches the tool's own command parsing,
@@ -137,7 +137,7 @@ test("the management client answers from its own configuration and catalog, befo
     // reads on, commands off.
     const store = { workflowStore: () => ({}) };
     assert.deepEqual(await as({ config: {}, _catalog: store }).getWorkflowCapabilities(), workflowCapabilities({ read: true, commands: null }));
-    // A catalog without one (no version 2 workflows here): reads off.
+    // A catalog without one (no Workflows here): reads off.
     assert.equal((await as({ config: {}, _catalog: {} }).getWorkflowCapabilities()).read, false);
     // The full engine's commands, as every client is now created (its default).
     assert.deepEqual((await as({ config: { workflowCommands: {} }, _catalog: store }).getWorkflowCapabilities()).commands,

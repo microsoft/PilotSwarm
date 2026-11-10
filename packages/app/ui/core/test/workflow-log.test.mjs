@@ -15,14 +15,14 @@ const event = (eventType, data) => {
     return { sessionId: "wf", seq, eventType, data, createdAt: new Date(Date.UTC(2026, 10, 1, 12, 0, seq)) };
 };
 
-const v2States = next => [
+const loopStates = next => [
     { id: "poll", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["unchanged", "changed", "failure"], next },
     { id: "end", type: "terminal", outcome: "succeeded" },
 ];
 const LOOP = { unchanged: "poll", failure: "poll", changed: "end", timed_out: "end" };
 const started = (runId = "run-a", revision = 1, next = LOOP) => event("workflow.started", {
     runId, mode: "live", revision, definitionHash: `h${revision}`, irSha256: `i${revision}`, name: "watch-flow", version: "1.0.0",
-    initial: "poll", states: v2States(next),
+    initial: "poll", states: loopStates(next),
 });
 const begin = (step, runId = "run-a") => event("workflow.state_started", {
     runId, nodeExecutionId: `nx-${runId}-${step}`, stateId: "poll", scopeId: "root", ordinal: step, type: "script", step, kvRevision: 1,
@@ -36,7 +36,7 @@ const runtimeError = (step, code = "timed_out", error = "Script timed out", runI
 const progress = history => history.chat.filter(item => item.workflowProgress);
 const counts = history => progress(history).map(item => item.workflowProgress.count);
 
-test("a normal v2 loop is one updating row, live append matches replay, and the raw events stay", () => {
+test("a normal loop is one updating row, live append matches replay, and the raw events stay", () => {
     const rows = [started()];
     for (let step = 1; step <= 28; step++) rows.push(begin(step), done(step));
     const history = buildHistoryModel(rows);

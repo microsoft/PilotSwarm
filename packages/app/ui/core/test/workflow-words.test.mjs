@@ -131,7 +131,7 @@ test("the cards: two rows, no type word, no 'Done by its agent', 'in the loaded 
 });
 
 test("runtime-error routes are one red label, '✕ error', with every outcome in its title and its description", () => {
-    const layout = layoutWorkflowGraphTB({ ...DAD, shape: "v2" });
+    const layout = layoutWorkflowGraphTB({ ...DAD });
     const error = layout.edges.find(edge => edge.from === "generate_joke" && edge.to === "done");
     assert.equal(error.kind, "error");
     assert.equal(error.labelText, WORKFLOW_ERROR_EDGE_LABEL);
@@ -144,7 +144,7 @@ test("runtime-error routes are one red label, '✕ error', with every outcome in
     // A business route keeps its outcome as written.
     assert.equal(layout.edges.find(edge => edge.from === "generate_joke" && edge.to === "send_joke").labelText, "generated");
     // A route that takes both: its business outcomes, then "✕ error".
-    const mixed = layoutWorkflowGraphTB({ shape: "v2", revision: 1, initial: "a", states: [
+    const mixed = layoutWorkflowGraphTB({ revision: 1, initial: "a", states: [
         { id: "a", type: "script", runtime: "node", outcomes: ["ok"], next: { ok: "b", failure: "b" } }, { id: "b", type: "terminal", outcome: "succeeded" }] });
     assert.equal(mixed.edges[0].kind, "mixed");
     assert.equal(mixed.edges[0].labelText, "ok / ✕ error");

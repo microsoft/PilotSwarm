@@ -11,7 +11,7 @@ import { annotateWorkflowEdges } from "./workflow-view.js";
  *
  * The result keeps the edge contract the web graph and annotateWorkflowEdges use: one edge per pair of steps (several
  * outcomes to one target share it, their labels joined with " / "), a parallel state's "each branch" edge to its body's
- * first state, and for a version 2 graph each edge's kind (outcome, error, mixed or branch). Pure and deterministic: the
+ * first state, and for a graph each edge's kind (outcome, error, mixed or branch). Pure and deterministic: the
  * same definition gives the same layout. The terminal's graph order keeps its own layout (layoutWorkflowGraph).
  *
  * Owner batch 7 (H2): a parallel step's body is drawn as a branch box under it (fork, branch box, join bar). Its steps
@@ -62,7 +62,7 @@ export function workflowEdgeLabelText(outcome) {
     return text.length > LABEL_LIMIT ? `${text.slice(0, LABEL_LIMIT - 1)}…` : text;
 }
 
-/** OF-S2-2: the label of a version 2 graph's runtime-error routes, whatever outcomes they take. */
+/** OF-S2-2: the label of a graph's runtime-error routes, whatever outcomes they take. */
 export const WORKFLOW_ERROR_EDGE_LABEL = "✕ error";
 
 /**

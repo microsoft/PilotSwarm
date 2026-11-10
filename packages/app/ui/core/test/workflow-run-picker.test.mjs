@@ -318,7 +318,7 @@ test("going back to live while its model loads or fails never draws the last tes
         assert.equal(projection.runId, null, `mode ${String(mode)}`);
         assert.ok(projection.nodes.every(node => node.state === "idle" && !node.current), `mode ${String(mode)}`);
         assert.equal(projection.status.label, "Not started");
-        assert.ok(projection.banners.every(banner => !/v2 shape/.test(banner.text)), "events of a left-out run are not called malformed");
+        assert.ok(projection.banners.every(banner => !/unknown format/.test(banner.text)), "events of a left-out run are not called malformed");
     }
     // The live run's own model draws only its own rows, and its own output.
     const ownLive = projectWorkflow({ definition: def(), readModel: liveModel, workflowModel: liveModel, selectedRunId: null, events });

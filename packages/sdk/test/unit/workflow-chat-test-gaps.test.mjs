@@ -560,7 +560,7 @@ test("the skills teach receive and visit fixtures, expect, the report's fields a
     }
 });
 
-test("the service's refusals say Workflow, never v2", async () => {
+test("the service's refusals say Workflow, in one word", async () => {
     const none = { store: { readDefinition: async () => null }, catalog: untouchable("catalog"), duroxideClient: untouchable("duroxide") };
     await assert.rejects(previewWorkflowAgentVersions(none, "wf-1"), error => error.code === "WORKFLOW_NOT_FOUND" && error.message === "No Workflow wf-1.");
     await assert.rejects(sendTypedWorkflowInput(none, { workflowSessionId: "wf-1", senderSessionId: "chat", contract: "X@1", payload: {}, operationId: "op-1" }),
@@ -568,7 +568,7 @@ test("the service's refusals say Workflow, never v2", async () => {
     const built = fs.readFileSync(new URL("../../dist/workflow/service.js", import.meta.url), "utf8");
     assert.ok(built.includes("already exists and is not this parent's Workflow; nothing was changed."));
     assert.ok(built.includes('"This session catalog cannot create Workflows."'));
-    for (const old of ["parent's workflow", "No workflow", "is not a version 2 workflow", "cannot create workflows"]) {
+    for (const old of ["parent's workflow", "No workflow", "is not a version", "cannot create workflows"]) {
         assert.ok(!built.includes(old), old);
     }
 });

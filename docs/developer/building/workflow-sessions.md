@@ -867,7 +867,7 @@ artifact and return its reference; the parent message contains a short preview.
 
 Completion notification is on by default. `notify_on_completion: false`
 disables it; a parent-requested stop does not send a redundant wake-up. For a
-version 2 workflow, starting its live run (`update_workflow start` or
+Workflow, starting its live run (`update_workflow start` or
 `publish_and_start`, by the agent or by a person) turns the notification on
 again, even for a draft spawned with it off, unless that start passes
 `notify_on_completion: false`; `read_workflow` shows the current setting as
@@ -879,7 +879,7 @@ deduplication covers pending messages and its last 20 consumed IDs. This is
 not an unbounded exactly-once guarantee. Delivery failures are recorded as
 `workflow.parent_notification_failed`; they do not replace the workflow's
 terminal result. A terminal, deleted or no-longer-authorized parent is skipped.
-When a version 2 live run ends and its parent is not told, the workflow records
+When a live run ends and its parent is not told, the workflow records
 `workflow.parent_notification_skipped` once, with the reason (`notifications
 are off` or `parent is gone`); Run activity and the terminal show it ("The
 parent agent was not told: notifications are off."). A run the parent ended
@@ -914,7 +914,7 @@ still reach the parent after the notice.
 Workflow names and outputs arrive as escaped JSON explicitly marked untrusted,
 not as executable instructions.
 
-A version 2 workflow's messages to an agent session share one format, as a
+A Workflow's messages to an agent session share one format, as a
 child agent's `[CHILD_UPDATE ...]` does: a header line
 `[WORKFLOW_UPDATE from=<workflow session> workflow=<name>@<version> run=<run> type=<ended|message|request|test_waiting> ...]`
 with the type's fields (ended: `status`, `outcome`, `state`; message:
@@ -938,7 +938,7 @@ started), the run ends as **cancelled** without reaching a terminal state
 (complete also ends it as cancelled, with reason "Stopped"), and the parent
 is told unless it asked. Delete also removes the session.
 
-For a version 2 workflow, a cancel or complete ends the run in the store when
+For a Workflow, a cancel or complete ends the run in the store when
 it is accepted, from every entry point: `update_workflow`, the parent agent,
 the management API and the agent manager's `manage_agent_session`. Its
 pending steps are cancelled in the same transaction, so no further step
@@ -1175,21 +1175,21 @@ Agents learn named branches from `workflow-authoring` (section 8),
 keeps the router pattern as the older form, for branches that come from a
 list. The base guidance and Agent Smith (1.4.7) say the same.
 
-A version 2 parallel state that does not join ends with a report of its
+A parallel state that does not join ends with a report of its
 branches (`joined: false`, `total`, `succeeded`, `failFast`, `branches`). The
 report also has `timedOut` (whether the state's time limit ended it) and
 `needed` (the successes its join needed). A run compiled before parallel time
 limits existed (IR 8) gets both too, with `timedOut` always `false`; a report
 already stored is not rewritten. These fields are added; none is removed or
 changed, so read a report by the fields you use, not by its exact set of
-fields. Version 2 workflows were not turned on before these fields came, so no
-stored run depends on the shorter report.
+fields. Workflows were not turned on before these fields came, so no stored
+run depends on the shorter report.
 
-Version 2 hides more secrets in workflow text than it did before. Events and
+A Workflow hides more secrets in its text than it did before. Events and
 rows that were stored before this change are not rewritten. Such events and
 rows exist only in development and test deployments. An old event can show a
 list or object default of a binding, or part of a credential that was cut
-before it was hidden. Before you share a version 2 test session from such a
+before it was hidden. Before you share a Workflow test session from such a
 deployment with other people, delete the session or create it again.
 
 Cleanup failures are explicit. The worker attempts native-task cancellation
@@ -1229,7 +1229,7 @@ controller goes on and tries again at most once per wake period, also while
 the run is busy with other steps and after it continues as new; the run's
 end ends any agent session still owed.
 
-A version 2 run's controller is one duroxide orchestration, and these
+A Workflow run's controller is one duroxide orchestration, and these
 duroxide limits shape it:
 
 - It waits by racing its command queue against a durable timer. A queue
@@ -1265,9 +1265,9 @@ duroxide limits shape it:
   an execution starts, by the duroxide version that started it (the
   corrected behavior came in 0.1.31). An upgrade does not change an
   execution that an older version started; its next execution after a
-  continue-as-new gets the current behavior. Version 2 workflows were added
-  after PilotSwarm moved to duroxide 0.1.32 (duroxide-node 0.2.4), so no
-  version 2 execution started with the older behavior. Executions of other
+  continue-as-new gets the current behavior. Workflows were added after
+  PilotSwarm moved to duroxide 0.1.32 (duroxide-node 0.2.4), so no Workflow
+  execution started with the older behavior. Executions of other
   orchestrations, such as agent sessions, that an older duroxide started keep
   the older behavior.
 

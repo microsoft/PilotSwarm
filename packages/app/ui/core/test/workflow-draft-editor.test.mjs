@@ -14,7 +14,7 @@
  *   - the editor is the YAML tab of a draft (batch 6, r-2); any other revision
  *     shows read-only there (server render)
  *
- * Run: node --test test/workflow-v1-editor.test.mjs
+ * Run: node --test test/workflow-draft-editor.test.mjs
  */
 import test from "node:test";
 import assert from "node:assert/strict";

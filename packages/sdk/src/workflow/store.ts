@@ -1854,7 +1854,7 @@ export class WorkflowStore {
     /**
      * Lock the workflow's session row. Every transaction takes its locks in
      * one order (session, definition, run, node) and re-checks deletion here,
-     * so it serializes with deletion (whose trigger ends v2 work in the same
+     * so it serializes with deletion (whose trigger ends workflow work in the same
      * transaction as the soft delete). False when the row is deleted or absent.
      */
     private async lockLiveSession(client: PoolClient, workflowSessionId: string): Promise<boolean> {

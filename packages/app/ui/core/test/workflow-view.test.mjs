@@ -284,7 +284,7 @@ test("loops keep the visit count, the last outcome and a compact history while t
     assert.deepEqual(changed.map(item => item.count), [1, 2]);
 });
 
-test("v2 graphs keep real branches, loops and reconvergence, mark runtime-error routes, and draw no edges out of terminals", () => {
+test("graphs keep real branches, loops and reconvergence, mark runtime-error routes, and draw no edges out of terminals", () => {
     for (const width of [300, 390, 1440]) {
         const layout = layoutWorkflowGraph(definition, width);
         assert.equal(layout.positions.size, 6);

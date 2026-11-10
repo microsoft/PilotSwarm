@@ -130,7 +130,7 @@ const directClient = (config = {}) => ({
 /** The SDK's web-mode management client over a server whose bootstrap is `bootstrap`. */
 const webClient = (bootstrap) => new WebPilotSwarmManagementClient({ api: { getBootstrap: async () => bootstrap } });
 
-// 5a. Default off, as every deployment is configured today: version 2 reads, a person's commands refused (501), no tool.
+// 5a. Default off, as every deployment is configured today: reads, a person's commands refused (501), no tool.
 {
     const mgmt = directClient();
     const advertised = await mgmt.getWorkflowCapabilities();

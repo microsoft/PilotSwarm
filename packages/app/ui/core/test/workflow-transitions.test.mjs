@@ -137,7 +137,7 @@ test("named branches: a lane's first visit came by its lane's line from the para
 test("both renderers draw the lit parts: data-lit, data-lit-age and the current step (the plain picture here)", () => {
     const transitions = workflowTransitions(loopVisits(["check", "wait", "check", "wait", "check"]), LOOP);
     const lit = workflowLitTransitions(transitions);
-    const nodes = LOOP.states.map(state => ({ id: state.id, shape: "v2", type: state.type, kind: state.type === "terminal" ? "terminal" : state.type,
+    const nodes = LOOP.states.map(state => ({ id: state.id, type: state.type, kind: state.type === "terminal" ? "terminal" : state.type,
         state: "done", phase: "done", label: state.id, stateLabel: "Done" }));
     const html = renderToStaticMarkup(React.createElement(WorkflowGraph, { definition: LOOP, nodes, selected: nodes[1], select() {}, lit }));
     const card = id => new RegExp(`<div[^>]*data-node-id="${id}"[^>]*>`).exec(html)?.[0] ?? "";

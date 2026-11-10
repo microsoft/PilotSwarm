@@ -6657,7 +6657,7 @@ export class PilotSwarmUiController {
     async ensureWorkflowDefinition(sessionId, { retry = false } = {}) {
         const state = this.getState();
         if (state.sessions.byId[sessionId]?.sessionKind !== "workflow") return;
-        // The v2 read model loads beside the definition, from the authorized read operation; it is never awaited here.
+        // The read model loads beside the definition, from the authorized read operation; it is never awaited here.
         this.ensureWorkflowReadModel(sessionId, { force: retry }).catch(() => {});
         const view = state.ui.workflowViews?.[sessionId];
         if (view?.definition) return;
@@ -6720,7 +6720,7 @@ export class PilotSwarmUiController {
      * follow-up asks for the current selection without waiting for events. A
      * model older than the one shown for the same selection (by its
      * watermark or definition revision) is not applied. WORKFLOW_NOT_FOUND
-     * (the session is not, or not yet, a version 2 workflow: its definition
+     * (the session is not, or not yet, a Workflow: its definition
      * commits after its session row) sets `readModelUnavailable` and shows no
      * error; any other failure sets `readModelError` (bounded text) and keeps
      * the last read model.
@@ -10311,7 +10311,7 @@ export class PilotSwarmUiController {
      * the active session: its states in graph order, the selected state's
      * details and an agent state's child sessions (workflow-tui.js). It asks
      * for the same reads the portal's workflow pane makes
-     * (ensureWorkflowDefinition, which also reads the v2 read model) and
+     * (ensureWorkflowDefinition, which also reads the read model) and
      * sends nothing; another kind of session gets a status line instead.
      */
     openWorkflowViewModal() {

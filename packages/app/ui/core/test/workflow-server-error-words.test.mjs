@@ -62,7 +62,7 @@ test("a step's failure event carries its words to the graph before its read", ()
         { seq: 3, eventType: "workflow.state_failed", createdAt: at, data: { runId: "run-1", nodeExecutionId: "nx-poll-1", stateId: "poll", step: 1,
             outcome: "execution_failed", resultKind: "runtime_error", error: CUT, errorWords: WORDS } },
     ];
-    const projection = projectWorkflow({ definition: { shape: "v2", initial: "poll", states }, events });
+    const projection = projectWorkflow({ definition: { initial: "poll", states }, events });
     const node = projection.nodes.find(item => item.id === "poll");
     const execution = node.current ?? node.executions?.at(-1);
     assert.equal(execution?.errorWords, WORDS);

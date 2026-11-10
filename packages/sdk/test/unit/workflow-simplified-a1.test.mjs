@@ -43,7 +43,7 @@ test("spawn_workflow refuses before anything else when its caller is inside a Wo
         captureToolBinding: async () => { throw new Error("not reached"); },
         workflowHost: async () => { throw new Error("not reached"); },
     });
-    const older = "apiVersion: pilotswarm.dev/v1alpha1\nkind: Workflow\nmetadata: { name: x, version: 1.0.0 }\n";
+    const older = "apiVersion: example.com/other\nkind: Workflow\nmetadata: { name: x, version: 1.0.0 }\n";
     const yaml = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: x, version: \"1.0.0\" }\ninitial: done\nstates:\n  done: { type: terminal, outcome: succeeded }\n";
     // Inside a Workflow every document gets the same refusal, whatever its apiVersion.
     assert.equal(await spawnWorkflowFromTool({ yaml: older }, { toolCallId: "t" }, deps(true)), workflowDefinitionToolsRefusal());

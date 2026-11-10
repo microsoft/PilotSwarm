@@ -4,8 +4,8 @@
  * catalog's createSession call that agent sessions use, and the ordinary
  * PilotSwarmClient (createSession and its session handle).
  *
- * A v2 creation claims the session row exclusively. It never changes a row
- * another creator made (an agent session, a different v2 request), whether
+ * A Workflow creation claims the session row exclusively. It never changes a row
+ * another creator made (an agent session, a different Workflow request), whether
  * that row existed first or was inserted concurrently.
  * No other creator can take a workflow's id: the catalog leaves the row
  * unchanged (as it always has), the ordinary client reads it back and returns
@@ -65,7 +65,7 @@ function agentCreate(h, id) {
     return h.catalog.createSession(id, { parentSessionId: h.parentId, owner: OWNER, creationConfig: { systemMessage: "agent" } });
 }
 
-function v2Create(h, id, name = "v2", operationId = "create") {
+function workflowCreate(h, id, name = "flow", operationId = "create") {
     return createWorkflow(h.host, {
         workflowSessionId: id, parentSessionId: h.parentId, owner: OWNER, yaml: DRAFT(name),
         actor: ACTOR, operationId,
@@ -91,7 +91,7 @@ describe("workflow admission at the session creation boundary", () => {
             const agentId = randomUUID();
             await agentCreate(h, agentId);
             const agentBefore = await snapshot(h, agentId);
-            await expect(v2Create(h, agentId)).rejects.toMatchObject({ code: "SESSION_EXISTS" });
+            await expect(workflowCreate(h, agentId)).rejects.toMatchObject({ code: "SESSION_EXISTS" });
             const agentAfter = await snapshot(h, agentId);
             expect(agentAfter).toEqual(agentBefore);
             expect(agentAfter.kind).toBe("agent");
@@ -104,21 +104,21 @@ describe("workflow admission at the session creation boundary", () => {
             await createWorkflow(h.host, { workflowSessionId: foreignId, parentSessionId: otherParent, owner: OWNER,
                 yaml: DRAFT("foreign"), actor: ACTOR, operationId: "create" });
             const foreignBefore = await snapshot(h, foreignId);
-            await expect(v2Create(h, foreignId)).rejects.toMatchObject({ code: "SESSION_EXISTS" });
+            await expect(workflowCreate(h, foreignId)).rejects.toMatchObject({ code: "SESSION_EXISTS" });
             await expect(createWorkflow(h.host, { workflowSessionId: foreignId, parentSessionId: otherParent,
                 owner: { provider: "test", subject: "someone-else" }, yaml: DRAFT("foreign"), actor: ACTOR, operationId: "create" }))
                 .rejects.toMatchObject({ code: "WORKFLOW_EXISTS" });
             expect(await snapshot(h, foreignId)).toEqual(foreignBefore);
 
             // An ordinary catalog creator leaves a workflow's row as it was.
-            const agentAfterV2 = randomUUID();
-            await v2Create(h, agentAfterV2);
-            const v2Before = await snapshot(h, agentAfterV2);
-            await agentCreate(h, agentAfterV2);
-            await h.catalog.createSession(agentAfterV2, { owner: OWNER, creationConfig: { replace: true } });
-            expect(await snapshot(h, agentAfterV2)).toEqual(v2Before);
-            expect(v2Before.owner).toEqual(OWNER);
-            expect(v2Before.root).toBe(h.parentId);
+            const agentAfterWorkflow = randomUUID();
+            await workflowCreate(h, agentAfterWorkflow);
+            const workflowBefore = await snapshot(h, agentAfterWorkflow);
+            await agentCreate(h, agentAfterWorkflow);
+            await h.catalog.createSession(agentAfterWorkflow, { owner: OWNER, creationConfig: { replace: true } });
+            expect(await snapshot(h, agentAfterWorkflow)).toEqual(workflowBefore);
+            expect(workflowBefore.owner).toEqual(OWNER);
+            expect(workflowBefore.root).toBe(h.parentId);
         } finally { await h.catalog.close(); }
     });
 
@@ -128,59 +128,59 @@ describe("workflow admission at the session creation boundary", () => {
             const agentFirst = randomUUID();
             await agentCreate(h, agentFirst);
             const agentState = await snapshot(h, agentFirst);
-            await expect(v2Create(h, agentFirst)).rejects.toMatchObject({ code: "SESSION_EXISTS" });
+            await expect(workflowCreate(h, agentFirst)).rejects.toMatchObject({ code: "SESSION_EXISTS" });
             expect(await snapshot(h, agentFirst)).toEqual(agentState);
             expect(agentState).toMatchObject({ kind: "agent", owner: OWNER, root: h.parentId, definition: null });
 
-            const v2First = randomUUID();
-            await v2Create(h, v2First);
-            const v2State = await snapshot(h, v2First);
-            await agentCreate(h, v2First);
-            expect(await snapshot(h, v2First)).toEqual(v2State);
-            expect(v2State).toMatchObject({ kind: "workflow", owner: OWNER, root: h.parentId, definition: { state: "draft", revision: 1 } });
+            const workflowFirst = randomUUID();
+            await workflowCreate(h, workflowFirst);
+            const workflowState = await snapshot(h, workflowFirst);
+            await agentCreate(h, workflowFirst);
+            expect(await snapshot(h, workflowFirst)).toEqual(workflowState);
+            expect(workflowState).toMatchObject({ kind: "workflow", owner: OWNER, root: h.parentId, definition: { state: "draft", revision: 1 } });
         } finally { await h.catalog.close(); }
     });
 
-    it("lets exactly one of concurrent agent and v2 creators own each id, with no mixed state", { timeout: TIMEOUT }, async () => {
+    it("lets exactly one of concurrent agent and Workflow creators own each id, with no mixed state", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const outcomes = { agent: 0, v2: 0 };
+            const outcomes = { agent: 0, workflow: 0 };
             for (let round = 0; round < 16; round += 1) {
                 const id = randomUUID();
                 // Alternate which creator starts first; both run concurrently.
-                let agentCall, v2Call;
-                if (round % 2 === 0) { agentCall = agentCreate(h, id); v2Call = v2Create(h, id); }
-                else { v2Call = v2Create(h, id); agentCall = agentCreate(h, id); }
-                const [agent, v2] = await Promise.allSettled([agentCall, v2Call]);
+                let agentCall, workflowCall;
+                if (round % 2 === 0) { agentCall = agentCreate(h, id); workflowCall = workflowCreate(h, id); }
+                else { workflowCall = workflowCreate(h, id); agentCall = agentCreate(h, id); }
+                const [agent, workflow] = await Promise.allSettled([agentCall, workflowCall]);
                 const state = await snapshot(h, id);
-                const isV2 = state.kind === "workflow" && Boolean(state.creation.workflow);
+                const isWorkflow = state.kind === "workflow" && Boolean(state.creation.workflow);
                 const isAgent = state.kind === "agent" && state.creation?.systemMessage === "agent" && !state.creation.workflow;
-                expect(isV2 !== isAgent, JSON.stringify(state)).toBe(true);
+                expect(isWorkflow !== isAgent, JSON.stringify(state)).toBe(true);
                 expect(state).toMatchObject({ owner: OWNER, root: h.parentId });
                 // The catalog's create never fails on an existing row; it leaves the row unchanged.
                 expect(agent.status, String(agent.reason)).toBe("fulfilled");
-                if (isV2) {
-                    outcomes.v2 += 1;
-                    expect(v2.status).toBe("fulfilled");
+                if (isWorkflow) {
+                    outcomes.workflow += 1;
+                    expect(workflow.status).toBe("fulfilled");
                     expect(state.definition).toEqual({ state: "draft", revision: 1 });
-                    expect(state.title).toBe("Workflow: v2");
+                    expect(state.title).toBe("Workflow: flow");
                 } else {
                     outcomes.agent += 1;
-                    expect(v2.status).toBe("rejected");
-                    expect(v2.reason.code).toBe("SESSION_EXISTS");
+                    expect(workflow.status).toBe("rejected");
+                    expect(workflow.reason.code).toBe("SESSION_EXISTS");
                     expect(state.definition).toBeNull();
                 }
             }
-            expect(outcomes.agent + outcomes.v2).toBe(16);
+            expect(outcomes.agent + outcomes.workflow).toBe(16);
         } finally { await h.catalog.close(); }
     });
 
-    it("lets one of two different concurrent v2 requests win an id; the other changes nothing", { timeout: TIMEOUT }, async () => {
+    it("lets one of two different concurrent Workflow requests win an id; the other changes nothing", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             for (let round = 0; round < 10; round += 1) {
                 const id = randomUUID();
-                const results = await Promise.allSettled([v2Create(h, id, "first", "op-a"), v2Create(h, id, "second", "op-b")]);
+                const results = await Promise.allSettled([workflowCreate(h, id, "first", "op-a"), workflowCreate(h, id, "second", "op-b")]);
                 const won = results.filter(result => result.status === "fulfilled");
                 const lost = results.filter(result => result.status === "rejected");
                 expect(won, JSON.stringify(lost.map(result => result.reason?.message))).toHaveLength(1);
@@ -201,7 +201,7 @@ describe("workflow admission at the session creation boundary", () => {
         try {
             for (let round = 0; round < 10; round += 1) {
                 const id = randomUUID();
-                const results = await Promise.allSettled([v2Create(h, id), v2Create(h, id)]);
+                const results = await Promise.allSettled([workflowCreate(h, id), workflowCreate(h, id)]);
                 expect(results.map(result => result.status), JSON.stringify(results.map(result => result.reason?.message))).toEqual(["fulfilled", "fulfilled"]);
                 const [a, b] = results.map(result => result.value);
                 expect(a.receipt).toEqual(b.receipt);
@@ -260,8 +260,8 @@ describe("workflow admission at the session creation boundary", () => {
         const duroxide = new Client(provider);
         // A worker-equivalent registration runs one workflow to its end. It stops before the
         // ordinary client acts: no session runtime runs while the client is observed.
-        const v2Runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] } });
-        registerWorkflow(v2Runtime, {
+        const workflowRuntime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] } });
+        registerWorkflow(workflowRuntime, {
             store: h.store, catalog: h.catalog, enabled: () => true,
             resolveToolBinding: async () => null,
             openToolExecutor: async () => { throw new Error("This workflow calls no tools."); },
@@ -270,23 +270,23 @@ describe("workflow admission at the session creation boundary", () => {
             deleteSession: async (sessionId) => h.catalog.softDeleteSession(sessionId),
             wakeBackstopMs: 500,
         });
-        await v2Runtime.start();
+        await workflowRuntime.start();
         const client = new PilotSwarmClient({
             store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema, modelProvidersPath,
         });
-        const running = { v2: true, observer: null };
+        const running = { workflow: true, observer: null };
         try {
             const live = { ...h.host, duroxideClient: duroxide };
             const draftId = randomUUID();
-            await v2Create(h, draftId, "draft-only");
+            await workflowCreate(h, draftId, "draft-only");
             const finishedId = randomUUID();
             const finished = await createWorkflow(live, { workflowSessionId: finishedId, parentSessionId: h.parentId, owner: OWNER,
                 yaml: DRAFT("finished"), actor: ACTOR, operationId: "run", start: { inputs: {} } });
             const controller = await duroxide.waitForOrchestration(finished.receipt.run.controllerInstanceId, 60_000);
             expect(controller.status, JSON.stringify(controller)).toBe("Completed");
             expect((await h.store.readRun(finished.receipt.run.runId)).status).toBe("completed");
-            await v2Runtime.shutdown(100);
-            running.v2 = false;
+            await workflowRuntime.shutdown(100);
+            running.workflow = false;
             await client.start();
 
             // Caller evidence: every durable write the real client makes, forwarded unchanged to its real client.
@@ -361,7 +361,7 @@ describe("workflow admission at the session creation boundary", () => {
             expect(await observe(finishedId)).toEqual(before[finishedId]);
         } finally {
             await client.stop();
-            if (running.v2) await v2Runtime.shutdown(100);
+            if (running.workflow) await workflowRuntime.shutdown(100);
             if (running.observer) await running.observer.shutdown(100);
             await h.catalog.close();
         }

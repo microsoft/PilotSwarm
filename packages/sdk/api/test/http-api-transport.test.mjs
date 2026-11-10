@@ -204,7 +204,7 @@ test("readWorkflow reads GET /sessions/:sessionId/workflow; only an absent run i
         jsonResponse({ ok: true, result: view }),
         jsonResponse({ ok: true, result: view }),
         jsonResponse({ ok: false, error: { code: "INVALID_REQUEST", message: "runId must be a run id of 1 to 256 characters." } }, { status: 400 }),
-        jsonResponse({ ok: false, error: { code: "WORKFLOW_NOT_FOUND", message: "This session is not a version 2 workflow." } }, { status: 404 }),
+        jsonResponse({ ok: false, error: { code: "WORKFLOW_NOT_FOUND", message: "This session is not a Workflow." } }, { status: 404 }),
     ] });
     assert.deepEqual(await transport.readWorkflow("s1"), view);
     assert.deepEqual(await transport.readWorkflow("s1", { runId: null }), view);

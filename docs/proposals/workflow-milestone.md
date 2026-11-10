@@ -757,7 +757,7 @@ the same agent child, branch, stop, test and pin fields. The shared UI
   (R03, R04, R05, R17 to R20, R26, R28; mocks M01 to M04, M15, M16, M18 to
   M20; INACTIVE).** See below.
 - **Browser checks** (`web/test/e2e/workflow-session.spec.mjs`, the tests
-  named `v2 commands:`, against its stub server): Stop's confirmation, a
+  named `Workflow commands:`, against its stub server): Stop's confirmation, a
   dialog with its name, description and focus (q17), and its dismissal
   (nothing sent), a 409's reason and the re-read, and Pause by keyboard,
   at 1440 and 390 px; an unconfirmed pause sent again with the same
@@ -773,16 +773,15 @@ takes now, so a client gates its workflow surface before a call is refused
 (`workflowCapabilities`, `human-commands.ts`; the management client's
 `getWorkflowCapabilities`, which the portal runtime's bootstrap,
 `NodeSdkTransport`, `HttpApiTransport` and the Web management client
-expose). `v2.apiVersion` is the workflow document version; `v2.read` says
-whether `readWorkflow` reads version 2 workflows (false without a workflow
-store); `v2.create` and `v2.input` are false (a person creates no version 2
-workflow and sends it no typed input; its parent agent does); `v2.commands`
+expose). `apiVersion` is the workflow document version; `read` says
+whether `readWorkflow` reads workflows (false without a workflow store);
+`create` and `input` are false (a person creates no workflow and sends it
+no typed input; its parent agent does); `commands`
 is off as every deployment is configured today, naming the refusal each
 command gets (501 `WORKFLOW_COMMANDS_UNAVAILABLE`), and, with the test-only
 option `workflowCommands`, names the controller version the runs it starts
 run at (1.8.0, or 1.9.0 with `requests`) and the operations a person may
-send; `legacyCreate` says that `createWorkflowSession` keeps its version 1
-semantics and never makes a version 2 draft. It reports configuration only:
+send. It reports configuration only:
 it serves, registers and activates nothing, the route names are unchanged
 (their final names stay API review item D11), and the server decides every
 call again. An older server advertises none (null). The MCP server's
@@ -818,7 +817,7 @@ with the test-only option `workflowCommands`; otherwise it answers 501
   direct mode, or the client itself (system) without one; a command never
   names its actor.
 - **What.** The command targets the session it is sent to (a `workflow_id`
-  naming another is refused), which must be a version 2 workflow (404
+  naming another is refused), which must be a Workflow (404
   otherwise). `recover` stays the agent's. A refusal carries its code and
   HTTP status: 404 for what does not exist, 403 forbidden, 400 an invalid
   command, 422 a value its contract refuses, 429 a limit, 409 a conflict
@@ -1058,9 +1057,8 @@ choosing one sets the same selection as the portal's picker
 (`selectedRunId`) and reads that run's own model, so the view shows only
 that run (its agent states' own children included). The selected state's
 details end with its history, newest first, as the portal's History tab
-lists it (a v2 state's visits with a loop's unchanged repeats combined,
-`compactWorkflowExecutions`; a legacy state's steps with their outcome and
-duration), and, for a test run, that run's intercepted effects as the
+lists it (a state's visits with a loop's unchanged repeats combined,
+`compactWorkflowExecutions`), and, for a test run, that run's intercepted effects as the
 portal's table lists them (the effect, its state, and its answer or that it
 waits for the parent; those of the selected state marked), from that run's
 own read model only. PgUp and PgDn (ctrl-u, ctrl-d) scroll the details a
@@ -1784,5 +1782,4 @@ serves), no typed input into a running test, and no display of lineage, receipts
   returned", and the session retried the same message twice (15 s, 30 s) before giving up, about 30k input tokens a
   turn; the chat view hides that diagnostic by design (`isActivityOnlySessionError`). The message now asks the agent
   to tell the user the result in one or two sentences, and still marks the JSON as untrusted data. Not specific to
-  1.0.83: the message and the session's retry are the same at 1.0.82. Version 1 workflows (`workflow/activities.ts`)
-  still send the old wording.
+  1.0.83: the message and the session's retry are the same at 1.0.82.

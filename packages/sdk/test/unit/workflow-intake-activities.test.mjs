@@ -148,7 +148,7 @@ test("only a test or the full-engine worker module registers the intake activiti
     assert.ok(!/workflow-request|WORKFLOW_REQUEST|WorkflowIntake|workflowIntake/.test(worker), "worker.ts registers, routes or declares nothing of the intake itself");
     // It loads the full-engine worker module once, always (owner decision 2026-11-08T15:30Z: every worker serves it).
     assert.deepEqual(importsOf(workerText).filter(specifier => specifier.includes("milestone-worker")), ["./workflow/milestone-worker.js"]);
-    assert.match(worker, /const milestone = await import\("\.\/workflow\/v2\/milestone-worker\.js"\);/);
+    assert.match(worker, /const milestone = await import\("\.\/workflow\/milestone-worker\.js"\);/);
 });
 
 // ─── The claim ───────────────────────────────────────────────

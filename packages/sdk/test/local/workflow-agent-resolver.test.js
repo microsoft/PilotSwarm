@@ -123,7 +123,7 @@ describe("workflow: a person's publication pins named agents from the agent regi
             const foreign = `bob-kit-${tag}`;
             const [S1, S2, A1] = [hex(), hex(), hex()];
             const reviewer = [{ name: "reviewer", tools: ["read_file"] }];
-            const sharedV1 = await catalog.publishAgentPackage(packageInput(shared, "1.0.0", S1, reviewer, { scope: "shared" }));
+            const sharedFirst = await catalog.publishAgentPackage(packageInput(shared, "1.0.0", S1, reviewer, { scope: "shared" }));
             const ownV1 = await catalog.publishAgentPackage(packageInput(own, "0.1.0", A1, [{ name: "reviewer" }], { owner: PERSON }));
             await catalog.publishAgentPackage(packageInput(foreign, "2.0.0", hex(), [{ name: "secret-agent" }], { owner: OTHER }));
             const parent = randomUUID();
@@ -136,13 +136,13 @@ describe("workflow: a person's publication pins named agents from the agent regi
             expect(await publish(draft, "pub-1")).toMatchObject({ operation: "publish", state: "published", publishedRevision: 1 });
             const pins = {
                 mine: { name: "reviewer", package: own, version: "0.1.0", packageId: ownV1.packageId, revision: A1 },
-                theirs: { name: "reviewer", package: shared, version: "1.0.0", packageId: sharedV1.packageId, revision: S1 },
+                theirs: { name: "reviewer", package: shared, version: "1.0.0", packageId: sharedFirst.packageId, revision: S1 },
             };
             expect((await store.readDefinition(draft.workflowSessionId)).publishedAgentPins).toEqual(pins);
 
             // A republished package changes nothing that is published; a later publication pins its new revision.
-            const sharedV2 = await catalog.publishAgentPackage(packageInput(shared, "1.1.0", S2, reviewer, { scope: "shared" }));
-            expect(sharedV2.packageId).toBe(sharedV1.packageId);
+            const sharedNext = await catalog.publishAgentPackage(packageInput(shared, "1.1.0", S2, reviewer, { scope: "shared" }));
+            expect(sharedNext.packageId).toBe(sharedFirst.packageId);
             expect((await store.readDefinition(draft.workflowSessionId)).publishedAgentPins).toEqual(pins);
             expect((await mgmt.readWorkflow(draft.workflowSessionId)).definition.publishedAgentPins).toEqual(pins);
             const later = await draftOf(catalog, store, parent, naming({ theirs: { name: "reviewer", package: shared } }));
@@ -284,10 +284,10 @@ describe("workflow: a worker's publication pins named agents from the agent regi
         };
         await intakeNativeCase(getEnv(), "worker publication pins", script, { inlineClient: true, userAgents },
             async h => {
-                const sharedV1 = await h.catalog.publishAgentPackage(packageInput(shared, "1.0.0", S1, [{ name: checker, tools: ["read_file"] }],
+                const sharedFirst = await h.catalog.publishAgentPackage(packageInput(shared, "1.0.0", S1, [{ name: checker, tools: ["read_file"] }],
                     { scope: "shared" }));
                 // The worker's installed copy of that agent: never what a publication pins.
-                userAgents.push({ name: checker, prompt: "An older checker.", namespace: shared, packageId: sharedV1.packageId,
+                userAgents.push({ name: checker, prompt: "An older checker.", namespace: shared, packageId: sharedFirst.packageId,
                     packageScope: "shared", tools: ["old_tool"] });
                 await h.catalog.publishAgentPackage(packageInput(`foreign-kit-${tag}`, "1.0.0", hex(), [{ name: `secret-${tag}` }],
                     { owner: { provider: "test", subject: `foreign-${tag}` } }));
@@ -301,7 +301,7 @@ describe("workflow: a worker's publication pins named agents from the agent regi
                 expect(outcomes.published).toMatchObject({ ok: true, operation: "publish", state: "published", publishedRevision: 1 });
                 expect((await h.store.readDefinition(drafts.pinned.workflowSessionId)).publishedAgentPins).toEqual({
                     helper: { name: "local-helper", package: null, version: null, packageId: null },
-                    review: { name: checker, package: shared, version: "1.0.0", packageId: sharedV1.packageId, revision: S1 },
+                    review: { name: checker, package: shared, version: "1.0.0", packageId: sharedFirst.packageId, revision: S1 },
                 });
                 expect(outcomes.refused).toMatchObject({ ok: false, error: { code: "AGENT_UNAVAILABLE",
                     details: { stateId: "only", agent: `secret-${tag}` } } });

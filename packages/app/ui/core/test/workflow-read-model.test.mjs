@@ -17,13 +17,13 @@
  *     model are shown for it (only its own events); the last model's
  *     workflow-wide parts (its graph, or that there is none, with the reason)
  *     stay, so an earlier definition is not drawn again
- *   - WORKFLOW_NOT_FOUND (also a version 2 session whose definition has not
+ *   - WORKFLOW_NOT_FOUND (also a Workflow session whose definition has not
  *     committed yet) shows no error and is asked again, once, on new events
  *     or a changed session row
  *   - any other failure keeps the model shown and is reported, bounded, for
  *     its selection, with a Retry in the side pane's Notices (rendered here on the
  *     server; the click is the controller's forced request)
- *   - the execution log names v2 wait and messaging states by their kind
+ *   - the execution log names wait and messaging states by their kind
  *
  * Run: node --test test/workflow-read-model.test.mjs
  */
@@ -489,7 +489,7 @@ test("READ-WIRE-01: without its own model, the live selection never stands for a
 
 test("the execution log names wait and messaging states by their kind", () => {
     const started = formatWorkflowEventText({ eventType: "workflow.started", seq: 1, data: {
-        name: "v2", version: "1.0.0", initial: "pause",
+        name: "flow", version: "1.0.0", initial: "pause",
         states: [
             { id: "pause", type: "wait", seconds: 30, outcomes: ["elapsed"], next: { elapsed: "tell" } },
             { id: "tell", type: "messaging", mode: "send", contract: "Note@1", recipient: "parent", outcomes: ["sent"], next: { sent: "listen" } },

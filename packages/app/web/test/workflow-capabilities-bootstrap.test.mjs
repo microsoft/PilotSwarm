@@ -40,7 +40,7 @@ async function bootstrapHarness({ config, getter = true } = {}) {
     const mgmt = {
         _ensureStarted() {},
         _catalog: {
-            // A version 2 workflow "wf1" outside every agent step (a person's command reads its definition and lineage).
+            // A Workflow "wf1" outside every agent step (a person's command reads its definition and lineage).
             workflowStore: () => ({ readDefinition: async (id) => (id === "wf1" ? { parentSessionId: "p1" } : null), readWorkflowLineage: async () => null }),
             getSession: async (sessionId) => ({ sessionId, sessionKind: "workflow", deletedAt: null }),
         },
@@ -71,7 +71,7 @@ async function bootstrapHarness({ config, getter = true } = {}) {
     return { mgmt, origin, bootstrap, close: () => new Promise((resolve) => server.close(resolve)) };
 }
 
-test("a deployment as configured today advertises version 2 reads and a person's commands off, with the refusal they get", async () => {
+test("a deployment as configured today advertises reads and a person's commands off, with the refusal they get", async () => {
     const h = await bootstrapHarness();
     try {
         const body = await h.bootstrap();

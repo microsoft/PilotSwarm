@@ -114,7 +114,7 @@ test("workflow registers exactly one version of each orchestration, and each act
     assert.equal(registered.find((entry) => entry.name === WORKFLOW_CONTROLLER_NAME).fn, workflowController);
     // Every activity is registered once, under its one name.
     assert.deepEqual([...activities].sort(), [...new Set(Object.values(WORKFLOW_ACTIVITIES))].sort());
-    assert.ok(activities.every((name) => /^workflow\.v2\.[A-Za-z]+$/.test(name)), activities.join(", "));
+    assert.ok(activities.every((name) => /^workflow\.[A-Za-z]+$/.test(name)), activities.join(", "));
 });
 
 // Owner 2026-11-08T15:45Z (pse/decision/scripts-default-on): PILOTSWARM_WORKFLOW_SCRIPTS is an opt-out.
@@ -167,7 +167,7 @@ function spawnDeps(overrides = {}) {
 test("spawn_workflow refuses any other apiVersion, naming the one it takes, and touches nothing", async () => {
     const never = (name) => async () => { throw new Error(`${name} must not be called`); };
     const deps = spawnDeps({ resolveOwner: never("resolveOwner"), captureToolBinding: never("captureToolBinding"), workflowHost: never("workflowHost") });
-    const older = "apiVersion: pilotswarm.dev/v1alpha1\nkind: Workflow\nmetadata: { name: x, version: 1.0.0 }\ninitial: a\nstates: {}\n";
+    const older = "apiVersion: example.com/other\nkind: Workflow\nmetadata: { name: x, version: 1.0.0 }\ninitial: a\nstates: {}\n";
     for (const yaml of [older, "kind: Workflow\n", "not yaml: [", ""]) {
         const answer = JSON.parse(await spawnWorkflowFromTool({ yaml }, { toolCallId: "t" }, deps));
         assert.equal(answer.ok, false);

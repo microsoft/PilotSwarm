@@ -175,7 +175,7 @@ Frontmatter fields:
 | `inheritDefaultMcpServers` | optional | Also attach the deployment's default MCP servers. |
 | `initialPrompt` | optional | Auto-sent first message when a session starts blank. |
 | `initialRequiredTool` | optional, schema `3` | Tool with a registered session handler that must produce a real execution event during the initial prompt turn. It must also appear in `tools`. PilotSwarm corrects one prose-only response, then fails closed if the handler is unavailable or still not invoked. |
-| `workflowInterface` | optional, schema `5` | The typed contract that a version 2 workflow's agent state can name (`interface: <name>@<version>`). Only workflow publication reads it. See below. |
+| `workflowInterface` | optional, schema `5` | The typed contract that a Workflow's agent state can name (`interface: <name>@<version>`). Only workflow publication reads it. See below. |
 
 A `workflowInterface` is an indented mapping:
 

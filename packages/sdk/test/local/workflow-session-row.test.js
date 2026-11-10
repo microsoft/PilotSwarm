@@ -310,7 +310,7 @@ describe("workflow: a workflow session's row follows its live run (review B1)", 
     it("RC2-RT2-1: a workflow without a live run and a conversational session are left alone", { timeout: TIMEOUT }, async () => {
         const h = await fixture(getEnv());
         try {
-            const { workflowSessionId: draft } = await h.workflow("v1");
+            const { workflowSessionId: draft } = await h.workflow("draft-only");
             await h.catalog.updateSession(draft, { state: "running" });
             expect(await h.store.recordControllerFailed({ workflowSessionId: draft, message: "late" })).toEqual({ written: false });
             expect((await h.catalog.getSession(draft)).state).toBe("running");

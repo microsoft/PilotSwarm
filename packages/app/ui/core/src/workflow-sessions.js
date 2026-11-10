@@ -13,7 +13,7 @@ import { WORKFLOW_STATE_MARKS, workflowDuration, workflowFailureDetail, workflow
 
 export const WORKFLOW_SESSION_GLYPH = "◇";
 
-/** The v2 events that report a control action or a side effect, not a step of the run. They never end or split a poll summary. */
+/** The events that report a control action or a side effect, not a step of the run. They never end or split a poll summary. */
 export const WORKFLOW_CONTROL_EVENT_TYPES = [
     // Workflow control events (packages/sdk/src/workflow/runtime.ts, service.ts, store.ts).
     "workflow.paused",

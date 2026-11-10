@@ -1,6 +1,6 @@
 /**
  * Workflow from an agent: the full stack with a scripted model (real
- * workers, PostgreSQL, duroxide and the Copilot CLI). The parent drafts a v2
+ * workers, PostgreSQL, duroxide and the Copilot CLI). The parent drafts a
  * workflow (nothing runs), publishes the exact reviewed hash and starts it;
  * the scripts use the parent's delegated tools; the result wakes the parent.
  */
@@ -12,7 +12,7 @@ import { turnWorkflowsOn } from "../helpers/workflows-on.js";
 
 const TIMEOUT = 240_000;
 const OWNER = { provider: "test", subject: "workflow-owner" };
-const PROMPT = "Draft the v2 fact pipeline, then publish and run it.";
+const PROMPT = "Draft the fact pipeline, then publish and run it.";
 
 const YAML = `
 apiVersion: pilotswarm.dev/v1
@@ -26,7 +26,7 @@ states:
   remember:
     type: script
     source: |
-      const key = "v2-e2e/" + context.input.run;
+      const key = "wf-e2e/" + context.input.run;
       await callTool("store_fact", { key, value: { run: context.input.run } });
       await setResult("stored", { key });
     transition: { next: { stored: check, failure: broken } }
@@ -109,7 +109,7 @@ describe("workflow driven by an agent", () => {
                 const orchestration = await client.duroxideClient.getStatus(run.controllerInstanceId);
                 expect(run.status, JSON.stringify({ error: run.terminalError, orchestration })).toBe("completed");
                 expect(run.terminalOutcome).toBe("succeeded");
-                expect(run.terminalOutput).toEqual({ key: "v2-e2e/first", count: 1 });
+                expect(run.terminalOutput).toEqual({ key: "wf-e2e/first", count: 1 });
 
                 await until(() => model.sessionRequests(PROMPT)
                     .some((record) => record.position.lastUserText.includes("type=ended")), "the parent wake", 60_000);

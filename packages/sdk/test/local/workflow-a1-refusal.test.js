@@ -59,7 +59,7 @@ states:
 `;
 
 /** A document in another format: refused for its apiVersion outside a Workflow. */
-const OTHER_FORMAT = "apiVersion: pilotswarm.dev/v1alpha1\nkind: Workflow\nmetadata: { name: x, version: 1.0.0 }\n";
+const OTHER_FORMAT = "apiVersion: example.com/other\nkind: Workflow\nmetadata: { name: x, version: 1.0.0 }\n";
 
 /** The chat P, its Workflow W with agent state `review` admitted for child C, C's sub-agent G, and P's ordinary sub-agent S. */
 async function lineageOf(catalog) {

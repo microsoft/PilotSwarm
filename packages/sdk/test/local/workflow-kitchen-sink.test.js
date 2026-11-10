@@ -8,7 +8,7 @@
  * - a script that exits non-zero, routed as execution_failed with its exit code and stderr; a script past its timeout,
  *   routed as timed_out; a wait state; a terminal output built from what the steps carried;
  * - each tool call's window on the log (FU-25).
- * scripts are Node only (PR 235's Python and PowerShell states and its live canvas are v1's). No `.env` needed beyond
+ * scripts are Node only (PR 235's Python and PowerShell states and its live canvas are gone). No `.env` needed beyond
  * the local suite's.
  */
 import { describe, it, expect } from "vitest";

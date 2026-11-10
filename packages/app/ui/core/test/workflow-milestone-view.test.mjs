@@ -33,7 +33,7 @@ const milestoneStates = [
 const graph = { revision: 1, initial: "review", states: milestoneStates };
 const byId = (projection, id) => projection.nodes.find(node => node.id === id);
 
-test("agent and parallel states are read as v2 states, with their own labels; malformed ones are refused", () => {
+test("agent and parallel states are read as states, with their own labels; malformed ones are refused", () => {
     const definition = workflowDefinition(graph);
     assert.equal(definition.states.length, 6);
     assert.equal(workflowNodeLabel(milestoneStates[0]), "Agent · code-reviewer");

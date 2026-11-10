@@ -148,7 +148,7 @@ test("with the ownership switch off, other session:read operations are still onl
  * The actual HTTP route, end to end in-process: the generated Express route, the real PortalRuntime gate, the real
  * NodeSdkTransport.readWorkflow and the real PilotSwarmManagementClient.readWorkflow adapter (its runId validation, its
  * session lookup and readWorkflowView), over a stand-in catalog and workflow store (no database): alice owns every
- * session; wf1 is a version 2 workflow with a live run, an earlier run R and a test run T kept from while test mode was on
+ * session; wf1 is a Workflow with a live run, an earlier run R and a test run T kept from while test mode was on
  * (which the read hides while it is off: review SF-5); any other session is an agent session. The adapter has
  * no options unless `config` is given (the test-only workflowCommands option, INACTIVE).
  */
@@ -242,7 +242,7 @@ test("the HTTP route keeps an explicit empty or blank runId for the adapter's va
             assert.equal(refused.body.error.code, "INVALID_REQUEST", query);
         }
         assert.deepEqual(h.adapterCalls, [["s1", { runId: "" }], ["s1", { runId: "  " }]]);
-        // An absent run is omitted: the adapter reads the session, which here is no version 2 workflow.
+        // An absent run is omitted: the adapter reads the session, which here is no Workflow.
         const agent = await h.get("/sessions/s1/workflow");
         assert.equal(agent.status, 404);
         assert.equal(agent.body.error.code, "WORKFLOW_NOT_FOUND");

@@ -72,7 +72,7 @@ function checkState(node) {
 }
 
 /**
- * Validate a V2 state list (`workflow.started.states`, or `graph` of the read
+ * Validate a state list (`workflow.started.states`, or `graph` of the read
  * model). The states are kept as given, so every transition is preserved.
  */
 export function workflowDefinition(data, meta = {}) {

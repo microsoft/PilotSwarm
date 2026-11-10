@@ -4,7 +4,7 @@
  * It returns readWorkflowView's bounded view of the workflow (the same
  * object the read_workflow tool builds its answer from) without the YAML,
  * and changes nothing. A missing or deleted session is NOT_FOUND, a session
- * that is not a version 2 workflow WORKFLOW_NOT_FOUND, a run that is not one
+ * that is not a Workflow WORKFLOW_NOT_FOUND, a run that is not one
  * of the workflow's runs RUN_NOT_FOUND, and an invalid run id
  * INVALID_REQUEST, each with its HTTP status. The caller's authorization is
  * the portal's session:read gate (web/test/workflow-read-runtime.test.mjs);

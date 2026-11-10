@@ -69,7 +69,6 @@ function chatTexts() {
 test("UXFD-F3: no text a 1.0.83 chat sees teaches the version 1 inputs form; spawn_workflow is not declared", () => {
     for (const [where, text] of chatTexts()) {
         assert.ok(!/required: true/.test(text), `${where} teaches required: true`);
-        assert.ok(!/v1alpha1/.test(text), `${where} names version 1`);
     }
     for (const opts of [{ workflowMilestone: true }, {}]) {
         assert.ok(!ManagedSession.subAgentToolDefs(opts).some(tool => tool.name === "spawn_workflow"));

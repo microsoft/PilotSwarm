@@ -25,7 +25,7 @@ const WORKER = readFileSync(new URL("../../src/worker.ts", import.meta.url), "ut
 
 test("every worker declares the workflow-request tag and serves the full engine, with no test option", () => {
     assert.deepEqual([...WORKFLOW_MILESTONE_WORKER_TAGS], [WORKFLOW_REQUEST_CAPABILITY]);
-    assert.match(WORKER, /const milestone = await import\("\.\/workflow\/v2\/milestone-worker\.js"\);/);
+    assert.match(WORKER, /const milestone = await import\("\.\/workflow\/milestone-worker\.js"\);/);
     assert.match(WORKER, /\.\.\.milestone\.WORKFLOW_MILESTONE_WORKER_TAGS\]/);
     assert.match(WORKER, /\n\s+agentNodes: milestone\.workflowMilestoneAgentNodes\(/);
     assert.doesNotMatch(WORKER, /workflowRequests/);

@@ -3,7 +3,7 @@
 // counted on the Notices button. Once the agent is no longer in a turn, or with no parent agent, the invalid state is
 // shown as before. Both are compact at the top of the pane (CSS: .ps-workflow-empty align-content: start).
 //
-// Run: node --test packages/app/ui/core/test/workflow-v1-progress.test.mjs
+// Run: node --test packages/app/ui/core/test/workflow-draft-progress.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
