@@ -26,6 +26,11 @@ async function withCollector(t) {
 }
 
 test("packed SDK telemetry preload exports actual worker turn usage without repository scripts", { timeout: 120_000 }, async t => {
+    const store = process.env.PILOTSWARM_SMOKE_DATABASE_URL;
+    if (!store) {
+        t.skip("set PILOTSWARM_SMOKE_DATABASE_URL to an isolated temporary PostgreSQL database");
+        return;
+    }
     const dir = await mkdtemp(path.join(os.tmpdir(), "pilotswarm-sdk-telemetry-package-"));
     t.after(() => rm(dir, { recursive: true, force: true }));
     const { requests, endpoint } = await withCollector(t);
@@ -53,7 +58,8 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
         import { shutdownTelemetry } from "pilotswarm-sdk/telemetry";
 
         const temp = await mkdtemp(path.join(os.tmpdir(), "pilotswarm-sdk-consumer-"));
-        const store = "sqlite://" + path.join(temp, "runtime.sqlite");
+        const store = process.env.PILOTSWARM_SMOKE_DATABASE_URL;
+        assert.ok(store, "the smoke database URL is required");
         const model = await new Promise(resolve => {
             const server = http.createServer((request, response) => {
                 const chunks = [];
@@ -124,6 +130,7 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
         cwd: dir,
         env: {
             PATH: process.env.PATH,
+            PILOTSWARM_SMOKE_DATABASE_URL: store,
             OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
             OTEL_METRIC_EXPORT_INTERVAL: "1000000",
             OTEL_EXPORTER_OTLP_TIMEOUT: "1000",
