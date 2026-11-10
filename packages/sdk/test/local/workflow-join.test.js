@@ -931,14 +931,13 @@ describe("workflow parallel joins of the first k: the controller", () => {
 });
 
 describe("workflow parallel time limits: the controller", () => {
-    // CI run 114: on a loaded runner the 2 s time limit passed before the first branch had finished, so the second was
-    // never admitted (once the limit passed a branch admits only its terminal) and nothing was running to cut. The time
-    // limit is now 20 s (scaled), and the case first waits until the first branch has finished and the second is in its wait. Seen
-    // only after the limit, the case is VOID (not a product result), as the continue-as-new case below says it.
+    // Two seconds missed branch admission on the loaded 4-CPU CI runner. Five seconds leaves room for that load
+    // without the old 20-second local wait. The stored first end and second wait are explicit preconditions; seen
+    // only after the scaled limit, the case is VOID rather than a different timeout scenario.
     it("ends the state timed_out with 1 of 3 finished: its output kept, the running branch cancelled, the queued one not started; a late result loses", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const timeoutSeconds = testTime.seconds(20);
+            const timeoutSeconds = testTime.seconds(5);
             const { workflowSessionId, runId, fan, at } = await started(h, joinDoc({ items: [{ ms: 0 }, { seconds: 600 }, { seconds: 600 }], concurrency: 1,
                 timeoutSeconds }));
             await until(async () => {
