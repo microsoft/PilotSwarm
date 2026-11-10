@@ -33,9 +33,12 @@ export function runtimeProviderFromEnv(env = process.env) {
     return String(env?.HORIZON_DATABASE_URL ?? "").trim() ? "horizondb" : "postgres";
 }
 
-/** Vitest's test and hook time limits: the given limits unchanged on every provider but HorizonDB, where they grow by the time scale. */
+/** The most the vitest safety nets (test and hook limits) grow by: tests that need more set their own scaled limits. */
+export const VITEST_TIMEOUT_MAX_SCALE = 3;
+
+/** Vitest's test and hook time limits: the given limits unchanged on every provider but HorizonDB, where they grow by the time scale, at most threefold. */
 export function vitestTimeouts(provider, env = process.env, base = { testTimeout: 300_000, hookTimeout: 120_000 }) {
     if (provider !== "horizondb") return { ...base };
-    const scaled = timeScaler(timeScaleFor(provider, env));
+    const scaled = timeScaler(Math.min(timeScaleFor(provider, env), VITEST_TIMEOUT_MAX_SCALE));
     return { testTimeout: scaled.ms(base.testTimeout), hookTimeout: scaled.ms(base.hookTimeout) };
 }

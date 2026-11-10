@@ -34,10 +34,12 @@ test("the provider an environment selects, as the storage config resolves it", (
     assert.equal(runtimeProviderFromEnv({ PILOTSWARM_RUNTIME_PROVIDER: "horizondb" }), "horizondb");
 });
 
-test("vitest limits grow by the time scale on HorizonDB only", () => {
+test("vitest limits grow by the time scale on HorizonDB only, at most threefold", () => {
     assert.deepEqual(vitestTimeouts("postgres", {}), { testTimeout: 300_000, hookTimeout: 120_000 });
     assert.deepEqual(vitestTimeouts("postgres", { PS_TEST_TIME_SCALE: "4" }), { testTimeout: 300_000, hookTimeout: 120_000 });
-    assert.deepEqual(vitestTimeouts("horizondb", {}), { testTimeout: 3_000_000, hookTimeout: 1_200_000 });
+    assert.deepEqual(vitestTimeouts("horizondb", {}), { testTimeout: 900_000, hookTimeout: 360_000 });
+    assert.deepEqual(vitestTimeouts("horizondb", { PS_TEST_TIME_SCALE: "50" }), { testTimeout: 900_000, hookTimeout: 360_000 });
+    assert.deepEqual(vitestTimeouts("horizondb", { PS_TEST_TIME_SCALE: "3" }), { testTimeout: 900_000, hookTimeout: 360_000 });
     assert.deepEqual(vitestTimeouts("horizondb", { PS_TEST_TIME_SCALE: "2" }), { testTimeout: 600_000, hookTimeout: 240_000 });
     assert.deepEqual(vitestTimeouts("horizondb", { PS_TEST_TIME_SCALE: "0.5" }), { testTimeout: 150_000, hookTimeout: 60_000 });
 });
