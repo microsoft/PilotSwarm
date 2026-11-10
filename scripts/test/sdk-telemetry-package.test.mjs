@@ -160,8 +160,11 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
     assert.ok(requests.length > 0, "the packed consumer must flush to the local receiver");
     const metricRequests = requests.filter(request => request.path === "/v1/metrics");
     assert.ok(metricRequests.length > 0, "the packaged preload must use the OTLP metrics endpoint");
-    assert.ok(!requests.some(request => request.path === "/v1/traces" || request.path === "/v1/logs"),
-        "default mode must not export traces or logs");
+    assert.deepEqual(
+        [...new Set(requests.map(request => request.path).filter(pathname => pathname !== "/v1/metrics"))],
+        [],
+        "default mode must not export a non-metrics OTLP signal",
+    );
     const metrics = metricRequests.flatMap(request => request.body.resourceMetrics)
         .flatMap(resource => resource.scopeMetrics)
         .flatMap(scope => scope.metrics);
