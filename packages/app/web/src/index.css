@@ -11613,7 +11613,11 @@ textarea.ps-link-input {
   font-weight: 700;
 }
 .ps-side-pane-tab svg { width: 14px; height: 14px; }
-.ps-side-pane-body { position: relative; overflow: hidden; }
+/* A clipping box, never a scroller: its layers are parked outside it (translateX(-105%)) and scroll inside themselves.
+   With `overflow: hidden` alone it could still be scrolled from script (focus, scrollIntoView, an automation's scroll
+   into view): a phone's Workflow tab, whose content was a few pixels wider than the pane, then sat shifted left with a
+   dead strip at its left edge, where a press reached the page instead of the graph. */
+.ps-side-pane-body { position: relative; overflow: hidden; overflow: clip; }
 .ps-side-pane-layer {
   position: absolute;
   inset: 0;
