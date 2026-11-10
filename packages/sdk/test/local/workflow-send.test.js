@@ -1087,21 +1087,23 @@ describe("workflow messaging send", () => {
     });
 
     it("records only an acceptance whose content is the message's: the same message given under its id is its delivery; another payload, correlation, contract or ttl is not, also when it is given after the attempt began", { timeout: TIMEOUT }, async () => {
-        // Fault injection: a one-time stop as a delivery attempt reads its message, or just before the recipient's store
-        // accepts its input.
-        let holdRead = null;
+        // Fault injection: a one-time stop as a delivery attempt begins (it has read its message, nothing is decided), or
+        // just before the recipient's store accepts its input. CI run 115: the stop was on readOutboxMessage, which the
+        // controller's collection (every 500 ms here) and an earlier send's late attempt also call, so under load one of
+        // them took it and the attempt ran on, delivering before the test's input. Only the deliver activity begins one.
+        let holdBegin = null;
         let beforeAccept = null;
         const h = await harness(getEnv(), {
             wrapStore: store => {
                 const wrapped = Object.create(store);
-                wrapped.readOutboxMessage = async (...args) => {
-                    if (holdRead) {
-                        const hold = holdRead;
-                        holdRead = null;
+                wrapped.beginDelivery = async (...args) => {
+                    if (holdBegin) {
+                        const hold = holdBegin;
+                        holdBegin = null;
                         hold.arrive();
                         await hold.opened;
                     }
-                    return store.readOutboxMessage(...args);
+                    return store.beginDelivery(...args);
                 };
                 wrapped.acceptInput = async (...args) => {
                     if (beforeAccept) {
@@ -1119,7 +1121,7 @@ describe("workflow messaging send", () => {
             const parent = await sessionOf(h, alice);
             const withCorrelation = '    correlate: { buildId: "${inputs.buildId}" }\n';
             /**
-             * A send whose attempt stops (as it reads its message, or just before the recipient's acceptance) while a
+             * A send whose attempt stops (as it begins, or just before the recipient's acceptance) while a
              * trusted caller of the typed-input service gives the receiver `input` from the sending workflow under the
              * send's exchange id; by default the send's own content.
              */
@@ -1132,7 +1134,7 @@ describe("workflow messaging send", () => {
                         hold.arrive();
                         await hold.opened;
                     };
-                } else holdRead = hold;
+                } else holdBegin = hold;
                 const sender = await started(h, parent, SENDER({ recipient: '"${kv.peer}"', extra: withCorrelation }),
                     { owner: alice, vars: { peer: receiver.id } });
                 await hold.reached;

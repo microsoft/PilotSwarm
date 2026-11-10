@@ -4,6 +4,9 @@
  * do. Before, each child started a client of its own (a native duroxide provider, CMS and facts pools, migrations), and
  * stop() never closed the provider. A real worker, three agent steps (session: new) completed by a scripted model: no
  * client is started on its own storage, three borrow the worker's, and the database's connections do not grow per step.
+ * CI run 115 and DEV: counting every connection to the shared database also counted other suites' (99 against 96 under
+ * parallel load). The pools of this file's process take a name of their own (PGAPPNAME: node-postgres uses it when a pool
+ * names none), and only those are counted, once short-lived ones (the stats reads' management clients) have closed.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -41,8 +44,12 @@ afterEach(() => vi.restoreAllMocks());
 describe("a Workflow agent step's child client borrows the worker's storage (review L4)", () => {
     it("three agent steps start no client on its own storage, borrow the worker's three times, and add no connection per step", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
-        const direct = new pg.Pool({ connectionString: env.store, max: 1 });
-        const connections = async () => (await direct.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database()")).rows[0].n;
+        const appName = `agent-child-storage-${randomUUID().slice(0, 8)}`;
+        const priorAppName = process.env.PGAPPNAME;
+        process.env.PGAPPNAME = appName;
+        const direct = new pg.Pool({ connectionString: env.store, max: 1, application_name: `${appName}-probe` });
+        const connections = async () => (await direct.query(
+            "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND application_name = $1", [appName])).rows[0].n;
         try {
             await withScriptedModel(env, { respond, worker: { logLevel: "warning" } }, async ({ client }) => {
                 const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
@@ -72,13 +79,20 @@ describe("a Workflow agent step's child client borrows the worker's storage (rev
                     expect(own).not.toHaveBeenCalled();
                     expect(borrowed.mock.calls.length).toBeGreaterThanOrEqual(3);
                     // Each child's own client opened at least a duroxide provider and two pools; borrowing opens none.
-                    expect(await connections()).toBeLessThanOrEqual(before + 2);
+                    let after = await connections();
+                    for (let waited = 0; after > before + 2 && waited < 15_000; waited += 250) {
+                        await pause(250);
+                        after = await connections();
+                    }
+                    expect(after).toBeLessThanOrEqual(before + 2);
                 } finally {
                     await catalog.close();
                 }
             });
         } finally {
             await direct.end();
+            if (priorAppName === undefined) delete process.env.PGAPPNAME;
+            else process.env.PGAPPNAME = priorAppName;
         }
     });
 });
