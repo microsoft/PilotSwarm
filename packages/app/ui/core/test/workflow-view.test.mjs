@@ -20,7 +20,7 @@ test("a definition is checked: unsupported or mixed payloads are refused with a 
     assert.throws(() => workflowDefinition({ ...startedData, states: [{ ...states[0], next: { changed: "nowhere" } }] }), /node that is not defined/);
     assert.throws(() => workflowDefinition({ ...startedData, states: [states[2], states[4], states[5]], initial: "elsewhere" }), /start node/);
     assert.throws(() => workflowDefinition({ states: [{ id: "m", type: "messaging", mode: "teleport", contract: "A@1", outcomes: [], next: {} }] }), /messaging mode/);
-    // A payload that names no outcomes for its script state (the first engine's shape) is not a Workflow's.
+    // A payload that names no outcomes for its script state is not a Workflow's.
     assert.throws(() => workflowDefinition({ name: "watch", initial: "poll", states: [
         { id: "poll", type: "script", runtime: "node", next: { changed: "end" } }, { id: "end", type: "terminal", outcome: "succeeded" }] }), /lists no outcomes/);
 });
