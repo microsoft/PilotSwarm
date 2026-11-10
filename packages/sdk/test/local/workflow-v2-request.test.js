@@ -10,9 +10,9 @@
  *   name. A send or receive state may use a contract that declares a
  *   response; such a workflow is version 7 too. A response schema, with the
  *   schemas it references, is at most 8 KiB.
- * - By default requests are not enabled: a request state or a contract
- *   response is checked field by field and refused, so the definition is
- *   only an invalid draft and is never published or started.
+ * - The compiler's own options can leave requests out (its unit tests use
+ *   that): a request state or a contract response is then checked field by
+ *   field and refused. Every host compiles with them on.
  * - A worker reads IR version 7 only when asked to: by default it refuses it
  *   explicitly, and a version 6 or earlier IR never carries a response or a
  *   request state. IR 1 to 6 compile exactly as before.
@@ -68,7 +68,6 @@ import { describe, it, expect } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
-import { withClient } from "../helpers/local-workers.js";
 import { checkpoint, reachedDuring, requestClock, requestFixture } from "../helpers/workflow-v2-request-fixture.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import {
@@ -76,7 +75,6 @@ import {
 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson, jsonSha256, kindValueSha256 } from "../../src/workflow/v2/json.ts";
 import { schemaReferences } from "../../src/workflow/v2/schema.ts";
-import { createWorkflowV2, updateWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { describeWorkflowV2State, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
 import {
     nodeExecutionIdFor, WORKFLOW_V2_MAX_REQUEST_OPERATIONS, WORKFLOW_V2_MAX_RESPONSE_BYTES, WorkflowStore,
@@ -398,35 +396,6 @@ describe("workflow v2 request states: compiler and IR 7", () => {
         storeError(() => parseWorkflowIr(withResponse, { maxIrVersion: 7 }));
         storeError(() => parseWorkflowIr({ ...send, nodes: { ...send.nodes, tell: { ...send.nodes.tell, mode: "request", timeoutSeconds: 60 } } },
             { maxIrVersion: 7 }));
-    });
-});
-
-describe("workflow v2 request states: the definition path refuses them", () => {
-    it("keeps a request definition an invalid draft: it is not published or started", { timeout: TIMEOUT }, async () => {
-        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
-            const h = { catalog: client._catalog, store: client._catalog.workflowStore(), duroxideClient: client.duroxideClient };
-            const draftId = randomUUID();
-            const draft = await createWorkflowV2(h, { workflowSessionId: draftId, parentSessionId: null, yaml: REQUESTER(), actor: ACTOR, operationId: "create" });
-            expect(draft.receipt).toMatchObject({ state: "draft", revision: 1, valid: false, run: null });
-            await expectCode(updateWorkflowV2(h, draftId, { operation: "publish", expectedRevision: 1, definitionHash: draft.receipt.yamlSha256 },
-                { actor: ACTOR, operationId: "publish" }), "DEFINITION_INVALID");
-            await expectCode(updateWorkflowV2(h, draftId, { operation: "publish_and_start", expectedRevision: 1, definitionHash: draft.receipt.yamlSha256, inputs: {} },
-                { actor: ACTOR, operationId: "publish-start" }), "DEFINITION_INVALID");
-            expect(await h.store.listRuns(draftId)).toEqual([]);
-
-            for (const [yaml, request] of [
-                [REQUESTER(), { publish: true }],
-                [REQUESTER(), { start: { inputs: {} } }],
-                [SENDER({ response: `    response: { schema: { $ref: "#/schemas/Answer" } }\n` }), { publish: true }],
-            ]) {
-                const id = randomUUID();
-                await expectCode(createWorkflowV2(h, { workflowSessionId: id, parentSessionId: null, yaml, actor: ACTOR, operationId: "create", ...request }),
-                    "DEFINITION_INVALID");
-                expect(await h.store.listRuns(id)).toEqual([]);
-                // Refused before anything is written: no session row and no claim on the id (preview finding, ux-capture-r5).
-                expect(await h.catalog.getSession(id)).toBeNull();
-            }
-        });
     });
 });
 

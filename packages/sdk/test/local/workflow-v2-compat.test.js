@@ -21,7 +21,7 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflowV2, parseWorkflowIr, WORKFLOW_V2_API_VERSION } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson, jsonSha256, sha256Hex } from "../../src/workflow/v2/json.ts";
 import { createWorkflowV2, dispatchWorkflowV2Run } from "../../src/workflow/v2/service.ts";
-import { registerWorkflowV2, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { registerWorkflowV2, WORKFLOW_V2_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
@@ -116,7 +116,8 @@ describe("workflow v2 data from an earlier build", () => {
                 workflowSessionId: id, parentSessionId: null, notifyParent: false, yaml: CONTRACT,
                 compiled: { ...compiled, ir: old, irSha256: oldIrSha256 },
                 actor: ACTOR, operationId: "create", requestSha256: "earlier", publish: true,
-                start: { runId: randomUUID(), mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(id), inputsText: "{}", kvText: "{}", testAgentMode: null },
+                start: { runId: randomUUID(), mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(id), inputsText: "{}", kvText: "{}", testAgentMode: null,
+                    controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION },
                 title: "Workflow: old-contract",
             });
             await dispatchWorkflowV2Run({ catalog, store, duroxideClient: client }, stored.receipt);

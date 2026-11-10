@@ -836,9 +836,10 @@ function publishStatus(ctx: OrchestrationContext, input: ControllerInput, plan: 
 /**
  * Durable delays between the attempts of one tagged store activity (five attempts). duroxide-node 0.2.4's retrying
  * activity cannot carry a tag (its task has no withTag), so the controller and the orchestrations it starts retry on
- * their own durable timers; an attempt has no timeout of its own.
+ * their own durable timers; an attempt has no timeout of its own. Exported, as WORKFLOW_V2_FINALIZE_DELAYS_MS is, so a
+ * fault test can compress the schedule in time only.
  */
-const TAGGED_STORE_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000];
+export const WORKFLOW_V2_STORE_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000];
 
 /** One activity with the workflow-request capability tag; a runtime that cannot express the tag fails closed. */
 function taggedActivity(ctx: OrchestrationContext, name: string, input: unknown): ScheduledTask {
@@ -853,8 +854,8 @@ function* storeTagged(ctx: OrchestrationContext, name: string, input: unknown): 
         try {
             return yield taggedActivity(ctx, name, input);
         } catch (error) {
-            if (attempt >= TAGGED_STORE_RETRY_DELAYS_MS.length) throw error;
-            yield ctx.scheduleTimer(TAGGED_STORE_RETRY_DELAYS_MS[attempt]);
+            if (attempt >= WORKFLOW_V2_STORE_RETRY_DELAYS_MS.length) throw error;
+            yield ctx.scheduleTimer(WORKFLOW_V2_STORE_RETRY_DELAYS_MS[attempt]);
         }
     }
 }

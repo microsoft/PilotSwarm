@@ -36,7 +36,7 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import {
-    registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, WORKFLOW_V2_FINALIZE_DELAYS_MS,
+    registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, WORKFLOW_V2_FINALIZE_DELAYS_MS, WORKFLOW_V2_STORE_RETRY_DELAYS_MS,
     WORKFLOW_V2_NOTIFY_NAME, WORKFLOW_V2_NOTIFY_VERSION,
     workflowEffectInstanceId, workflowLiveControllerInstanceId, workflowNotifyInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
@@ -191,20 +191,27 @@ function gate() {
 
 /** The production finalize schedule (runtime.ts): nine durable delays between ten batches, about 29 minutes. */
 const PRODUCTION_FINALIZE_DELAYS_MS = [1_000, 5_000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000, 600_000];
+/** The production delays between the five attempts of one batch (runtime.ts): 15 s per batch. */
+const PRODUCTION_STORE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000];
 
 /**
- * Compress the controller's finalize schedule in time only (fault injection): each of its nine delays becomes
- * `delayMs`, so a delivery that always fails still runs ten batches of the store retry policy's five attempts (50), in
- * seconds instead of about 29 minutes. It first checks that the schedule is the production one, so no earlier test
- * left it changed. The returned restore puts the production values back and checks them; call it after every runtime
- * of the test stopped. This changes the module that the test's runtime runs; the tests of this file run one at a time.
+ * Compress the controller's retry schedules in time only (fault injection): each of the finalize schedule's nine delays
+ * and each of a batch's four delays between attempts becomes `delayMs`, so a delivery that always fails still runs ten
+ * batches of five attempts (50), in seconds instead of about 31 minutes. It first checks that both schedules are the
+ * production ones, so no earlier test left them changed. The returned restore puts the production values back and checks
+ * them; call it after every runtime of the test stopped. This changes the module that the test's runtime runs; the tests
+ * of this file run one at a time.
  */
 function compressFinalizeSchedule(delayMs) {
     expect([...WORKFLOW_V2_FINALIZE_DELAYS_MS]).toEqual(PRODUCTION_FINALIZE_DELAYS_MS);
+    expect([...WORKFLOW_V2_STORE_RETRY_DELAYS_MS]).toEqual(PRODUCTION_STORE_RETRY_DELAYS_MS);
     WORKFLOW_V2_FINALIZE_DELAYS_MS.fill(delayMs);
+    WORKFLOW_V2_STORE_RETRY_DELAYS_MS.fill(delayMs);
     return () => {
         WORKFLOW_V2_FINALIZE_DELAYS_MS.splice(0, WORKFLOW_V2_FINALIZE_DELAYS_MS.length, ...PRODUCTION_FINALIZE_DELAYS_MS);
+        WORKFLOW_V2_STORE_RETRY_DELAYS_MS.splice(0, WORKFLOW_V2_STORE_RETRY_DELAYS_MS.length, ...PRODUCTION_STORE_RETRY_DELAYS_MS);
         expect([...WORKFLOW_V2_FINALIZE_DELAYS_MS]).toEqual(PRODUCTION_FINALIZE_DELAYS_MS);
+        expect([...WORKFLOW_V2_STORE_RETRY_DELAYS_MS]).toEqual(PRODUCTION_STORE_RETRY_DELAYS_MS);
     };
 }
 
@@ -615,12 +622,12 @@ states:
             // When the collection returns the first state's stored result (its wake was already read),
             // the parent's cancel reaches the queue: wake first, cancel second.
             [WORKFLOW_V2_ACTIVITIES.collect]: (fn) => async (ctx, input) => {
-                const rows = await fn(ctx, input);
-                if (target && rows.length > 0 && cancels === 0) {
+                const collection = await fn(ctx, input);
+                if (target && collection.collected.length > 0 && cancels === 0) {
                     cancels += 1;
                     await h.client.enqueueEvent(target, "messages", JSON.stringify({ type: "cmd", cmd: "cancel", id: "cancel-behind-wake", args: { reason: "after the wake" } }));
                 }
-                return rows;
+                return collection;
             },
         });
         try {

@@ -127,8 +127,9 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             // Every management client takes a person's commands (owner 2026-11-08T15:30Z): its read adds what a person may do.
             const { personCommands, ...stored } = view;
             expect(stored).toEqual(await readWorkflowV2View(store, workflowSessionId, { runId: null, hideTestRuns: false }));
+            // The one controller takes a graceful stop, so a run a person may stop says so.
             expect(personCommands).toMatchObject({ operations: expect.arrayContaining(["pause", "resume", "cancel", "stop"]), restriction: null,
-                run: { runId, stop: false } });
+                run: { runId, stop: true } });
             expect(view.testMode).toBe(true);
             expect(view).toMatchObject({ workflowId: workflowSessionId, definition: { state: "published", currentRevision: 1 },
                 revision: { revision: 1, valid: true }, run: { runId, mode: "live" } });
