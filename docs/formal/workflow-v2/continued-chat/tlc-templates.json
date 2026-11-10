@@ -29,7 +29,10 @@
       "CarryDelete",
       "TurnGuard",
       "MarkCreating",
-      "CarryNotFound"
+      "CarryNotFound",
+      "AllowTurnFail",
+      "FailReport",
+      "TimeoutFair"
     ],
     "lists": "block",
     "deadlockFirst": false

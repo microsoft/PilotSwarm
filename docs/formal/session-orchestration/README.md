@@ -277,6 +277,17 @@ Known limits, accepted:
   write is due holds for the idle continue-as-new only.
 - A given-back digest that holds only a newer entry waits out that entry's batch window (`dw.*`).
 
+### tf1 (2026-11-10): a terminal turn failure reported to the Workflow (design)
+
+1.0.83 is changed in place (it is deployed nowhere). `OwnedRetry` gains `AllowExhaust` (the retry fails with its
+retries spent: the turn is terminal and the session goes idle with an error) and `Report` (`"none"`: the code before
+the fix; `"fix"`: a turn that carries a Workflow visit owes the store a failure report, a durable activity, carried
+across continue-as-new); the actions `RetryExhausted` and `ReportSend`; the rules `Inv_NoReportBeforeTerminal`,
+`Inv_ReportNotLost`, `Inv_ReportOnce` and `Prop_TerminalReported`; the faults `report-early` and
+`drop-report-at-can`. Cases (batch tf1): `or.terminal-no-report` (the code before the fix: violated),
+`or.terminal-report`, `or.terminal-report-safety-wait`, `-agent` (PASS), the two faults and a witness. `TurnLoop` is
+unchanged: the report is an activity before the session idles, and it changes no queue order.
+
 ## 5. How to run
 
 Java 17 or later is required.

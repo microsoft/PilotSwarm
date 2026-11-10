@@ -173,3 +173,10 @@ ref.mr-c9b23671-unstamped	ref.mr-c9b23671-unstamped.cfg	MergeRule
 ref.mr-c9b23671-forged	ref.mr-c9b23671-forged.cfg	MergeRule
 ref.mr-before-fu9	ref.mr-before-fu9.cfg	MergeRule
 wit.mr-batched	wit.mr-batched.cfg	MergeRule
+or.terminal-no-report	or.terminal-no-report.cfg	OwnedRetry
+or.terminal-report	or.terminal-report.cfg	OwnedRetry
+or.terminal-report-safety-wait	or.terminal-report-safety-wait.cfg	OwnedRetry
+or.terminal-report-safety-agent	or.terminal-report-safety-agent.cfg	OwnedRetry
+fault.or-report-early	fault.or-report-early.cfg	OwnedRetry
+fault.or-report-dropped-at-can	fault.or-report-dropped-at-can.cfg	OwnedRetry
+wit.or-terminal-reported	wit.or-terminal-reported.cfg	OwnedRetry

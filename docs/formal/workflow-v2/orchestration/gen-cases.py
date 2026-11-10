@@ -21,9 +21,11 @@ def g(plan, limit, k=1, conc=1, ff=False, cancel=True, stop=True, pause=True, de
       cmd="queue", lose=False):
     return dict(Plan=f'"{plan}"', Limit=limit, K=k, Conc=conc, FailFast=ff, AllowCancel=cancel, AllowStop=stop,
                 AllowPause=pause, AllowDeadline=deadline, AllowDelete=delete, Cmd=f'"{cmd}"', AllowLoseHint=lose, Fault=f'"{fault}"')
-def a(crashes=2, invalid=2, refuse=True, exhaust=False, endfail=False, evict=False, runend=True, ask=True, fault="none", head="efe44835"):
+def a(crashes=2, invalid=2, refuse=True, exhaust=False, endfail=False, evict=False, runend=True, ask=True, fault="none", head="efe44835",
+      turnfail=False, report="none", dfair=True):
     return dict(MaxCrashes=crashes, MaxInvalid=invalid, AllowRefuse=refuse, AllowExhaust=exhaust, AllowEndFail=endfail,
-                AllowEvict=evict, AllowRunEnd=runend, AllowAsk=ask, Fault=f'"{fault}"', Code=f'"{head}"')
+                AllowEvict=evict, AllowRunEnd=runend, AllowAsk=ask, Fault=f'"{fault}"', Code=f'"{head}"',
+                AllowTurnFail=turnfail, Report=f'"{report}"', DeadlineFair=dfair)
 def p(kind="send", flag="omitted", crashes=1, ext=False, pcancel=True, pend=False, fifo=False, evict=False, fault="none",
       back=False, turnfails=1, head="efe44835", wait=False, zombie=False, notifiers=1, statusrace=True, ntzombie=False,
       recover=False, maxrec=0, recafter=False):
@@ -66,6 +68,8 @@ for _m in ("graph", "parent", "paused", "execshare"):
     exec(open(os.path.join(HERE, f"r3-{_m}.py")).read())
 # r4 (2026-11-09): the r3 findings' fixes bound to the branch head a9f60db7 (R3_IMPL; batch "r4").
 exec(open(os.path.join(HERE, "r3-impl.py")).read())
+# tf1 (2026-11-10): an agent child's turn that fails terminally (TF_AGENT; batch "tf1").
+exec(open(os.path.join(HERE, "tf-agent.py")).read())
 
 # id, module, mode, spec, constants, invariants, properties, expected, note
 CASES = [
@@ -323,7 +327,8 @@ CASES = [
 R2E_IDS = None
 R3_START = len(CASES)
 R4_START = R3_START + len(R3_GRAPH) + len(R3_PARENT) + len(R3_PAUSED) + len(R3_EXECSHARE)
-CASES = r3_paused_patch(CASES + R3_GRAPH + R3_PARENT + R3_PAUSED + R3_EXECSHARE + R3_IMPL)
+TF_START = R4_START + len(R3_IMPL)
+CASES = r3_paused_patch(CASES + R3_GRAPH + R3_PARENT + R3_PAUSED + R3_EXECSHARE + R3_IMPL + TF_AGENT)
 
 def val(v):
     if isinstance(v, bool): return "TRUE" if v else "FALSE"
@@ -334,13 +339,14 @@ IDS = [c[0] for c in CASES]
 R2E_START = IDS.index("parent.zombie-holder-a10")
 STARTS = [(R2E_START, "r2e"), (IDS.index("exec.e1c-safety"), "r2f"), (IDS.index("parent.zombie-holder-recover-late-a10"), "r2g"),
           (IDS.index("graph.pause-pending-par"), "o3"), (IDS.index("graph.srt1-par"), "o4"), (IDS.index("graph.dx2-linear"), "o5"),
-          (R3_START, "r3"), (R4_START, "r4")]
+          (R3_START, "r3"), (R4_START, "r4"), (TF_START, "tf1")]
 def batch_of(n):
     b = "r2d"
     for start, name in STARTS:
         if n >= start: b = name
     return b
 def head_of(cid, mod, consts, b):
+    if b == "tf1": return TF_HEAD
     if "Code" in consts: return str(consts["Code"]).strip('"')   # r4: Code "a9f60db7" -> head a9f60db7
     if str(consts.get("Elsewhere", '"command"')).strip('"') == "a9f60db7": return "a9f60db7"   # r4: WfGraph at a9f60db7
     if mod != "WfGraph": return "efe44835"

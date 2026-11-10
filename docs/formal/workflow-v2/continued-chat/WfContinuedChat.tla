@@ -62,8 +62,14 @@ CONSTANTS
     MarkCreating,   \* a parent's end recorded without a live check (session-proxy), also on an agent session whose
                     \* start is queued but does not read as existing yet
     CarryNotFound,  \* DR2-003 fix: carryMarkedEnd also queues the end to an agent session that reads NotFound
-    Carry           \* the Workflow carries the end: an activity that acts on a mark (a replacement at admission, a visit
+    Carry,          \* the Workflow carries the end: an activity that acts on a mark (a replacement at admission, a visit
                     \* failed at once) first queues the mark's end itself (idempotent, retried with the activity)
+    \* tf1: a turn that fails terminally (its retries spent; the session goes idle with an error and stays usable).
+    AllowTurnFail,  \* a running turn may fail terminally
+    FailReport,     \* "none" (the code before the fix: nothing tells the store), "fix" (the session reports the failure and
+                    \* one store step decides the turn's own visit execution_failed while it is pending), "binds-newest"
+                    \* (fault: the report decides the session's newest pending visit)
+    TimeoutFair     \* a visit's time limit is forced to arrive (FALSE: liveness must not rest on it)
 
 ASSUME V \in 1..3 /\ Person \in {"none", "end", "delete", "any"}
 ASSUME {AllowStop, AllowCancel, AllowStopFail, RecoverFair, SpawnRecheck, RecheckSeesEnding, EndMark, StopBeforeSpawn, PerChatEnd, StopAtRunEnd} \subseteq BOOLEAN
@@ -72,6 +78,7 @@ ASSUME Fault \in {"none", "bind-newest", "replace-without-check", "no-owed-mark"
 ASSUME {SplitSpawn, CheckAll, Backstop, AllowSpawnCrash, MarkSplit, Withdraw, Outbox, Carry} \subseteq BOOLEAN
 ASSUME CarryDelete \in {"none", "visible", "owed", "queued", "queued-skew", "queued-race"}
 ASSUME {TurnGuard, MarkCreating, CarryNotFound} \subseteq BOOLEAN
+ASSUME AllowTurnFail \in BOOLEAN /\ FailReport \in {"none", "fix", "binds-newest"} /\ TimeoutFair \in BOOLEAN
 ASSUME Fence \in {"none", "create", "both", "after"} /\ MarkFail \in {"none", "throw", "crash"}
 
 Vis == 1..V
@@ -90,8 +97,10 @@ VARIABLES
     afterDone,  \* the run's end looked at every agent session (afterEnd)
     acted,      \* a person acted
     pend,       \* a person's split end (MarkSplit): [ph |-> "none", "marked", "thrown", "crashed", "done", "withdrawn", s]
+    reports,    \* tf1: visits whose turn failed terminally, their failure report owed to the store
+    failedV,    \* tf1 (history): visits whose turn failed terminally
     gh
-vars == <<marked, run, nv, vis, ses, readers, afterDone, acted, pend, gh>>
+vars == <<marked, run, nv, vis, ses, readers, afterDone, acted, pend, reports, failedV, gh>>
 
 NoVisit == [node |-> "none", how |-> "none", s |-> 0, sent |-> FALSE, endReq |-> FALSE, stopOk |-> FALSE, gaveUp |-> FALSE,
             ph |-> "idle", cr |-> FALSE]
@@ -99,6 +108,7 @@ NoSes == [st |-> "none", turn |-> 0, q |-> {}, chat |-> "open", ends |-> 0]
 
 Init == /\ marked = {} /\ run = "active" /\ nv = 0 /\ vis = [v \in Vis |-> NoVisit] /\ ses = [s \in Ses |-> NoSes]
         /\ readers = {} /\ afterDone = FALSE /\ acted = FALSE /\ pend = [ph |-> "none", s |-> 0] /\ gh = {}
+        /\ reports = {} /\ failedV = {}
 
 Decide(v, how) == [vis EXCEPT ![v].node = "decided", ![v].how = how]
 Used(s) == \E v \in Vis : vis[v].node # "none" /\ vis[v].s = s
@@ -139,7 +149,7 @@ Admit ==
                       \cup (IF prev # 0 /\ s # prev /\ Carried(prev) THEN {"carried"} ELSE {})
           /\ ses' = IF prev # 0 /\ s # prev THEN CarryEnd(prev) ELSE ses
     /\ nv' = nv + 1
-    /\ UNCHANGED <<pend, marked, run, readers, afterDone, acted>>
+    /\ UNCHANGED <<pend, marked, run, readers, afterDone, acted, reports, failedV>>
 
 (* spawnAgent: send the visit's prompt to its frozen agent session. A      *)
 (* completed or cancelled session refuses it: the spawn retries, then the  *)
@@ -162,7 +172,7 @@ Spawn(v) ==
           ELSE /\ vis' = [vis EXCEPT ![v].sent = TRUE]
                /\ ses' = [ses EXCEPT ![s].st = IF st = "none" THEN "creating" ELSE st, ![s].q = @ \cup {v}]
                /\ UNCHANGED gh
-    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted>>
+    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, reports, failedV>>
 
 (* DRR-1: the spawn in three steps (SplitSpawn). The G1 check reads the     *)
 (* agent session; the create (createSession, the catalog upsert) revives a *)
@@ -182,7 +192,7 @@ SpawnCheck(v) ==
        IN IF CheckApplies(v) /\ (GoneNow(s) \/ (RecheckSeesEnding /\ ses[s].st = "ending"))
           THEN FailNow(v, s)
           ELSE /\ vis' = [vis EXCEPT ![v].ph = "checked"] /\ UNCHANGED <<ses, gh>>
-    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted>>
+    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, reports, failedV>>
 SpawnCreate(v) ==
     /\ vis[v].node = "pending" /\ vis[v].ph = "checked" /\ run # "ended"
     /\ LET s == vis[v].s
@@ -194,7 +204,7 @@ SpawnCreate(v) ==
                        /\ gh' = gh \cup {"revived"}
                   ELSE /\ ses' = [ses EXCEPT ![s].st = IF @ = "none" THEN "row" ELSE @]
                        /\ UNCHANGED gh
-    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted>>
+    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, reports, failedV>>
 SpawnSend(v) ==
     /\ vis[v].node = "pending" /\ vis[v].ph = "created" /\ run # "ended"
     /\ LET s == vis[v].s
@@ -231,7 +241,7 @@ SpawnSend(v) ==
                /\ vis' = IF crash THEN [vis EXCEPT ![v].ph = "idle", ![v].cr = TRUE] ELSE [vis EXCEPT ![v].sent = TRUE]
                /\ ses' = [ses EXCEPT ![s].st = IF st \in {"none", "row"} THEN "creating" ELSE st, ![s].q = @ \cup {v}]
                /\ UNCHANGED gh
-    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted>>
+    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, reports, failedV>>
 
 (* DR2-001: the orchestration a send started on a deleted session with its *)
 (* delete queued behind the prompt: the worker reads the delete first, or  *)
@@ -242,19 +252,19 @@ RaceResolve(s) ==
     /\ \E turnFirst \in BOOLEAN :
           /\ ses' = [ses EXCEPT ![s].st = "deleted", ![s].q = {}]
           /\ gh' = gh \cup (IF ~turnFirst THEN {} ELSE IF TurnGuard THEN {"turnRefused"} ELSE {"turnOnDeleted"})
-    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted>>
+    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, reports, failedV>>
 OrphanTurn(s) ==
     /\ ses[s].st = "orphan"
     /\ IF TurnGuard
        THEN ses' = [ses EXCEPT ![s].st = "deleted", ![s].q = {}] /\ gh' = gh \cup {"turnRefused"}
        ELSE "turnOnDeleted" \notin gh /\ gh' = gh \cup {"turnOnDeleted"} /\ UNCHANGED ses
-    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted>>
+    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, reports, failedV>>
 
 (* The agent session becomes visible (an attempt in flight may finish      *)
 (* after the run ended).                                                   *)
 Visible(s) ==
     /\ ses[s].st = "creating" /\ ses' = [ses EXCEPT ![s].st = "live"]
-    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, gh>>
+    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, gh, reports, failedV>>
 
 (* A turn takes the oldest queued prompt; a decided visit's turn is not    *)
 (* run (session-proxy turn start).                                         *)
@@ -264,7 +274,7 @@ TurnStart(s) ==
            skip == vis[u].node = "decided" /\ Fault # "run-decided"
        IN /\ ses' = [ses EXCEPT ![s].q = @ \ {u}, ![s].turn = IF skip THEN 0 ELSE u]
           /\ gh' = gh \cup (IF skip THEN {"skipped"} ELSE {}) \cup (IF ~skip /\ vis[u].node = "decided" THEN {"ranDecided"} ELSE {})
-    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted>>
+    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, reports, failedV>>
 
 (* The turn ends with the agent's result: it decides only its own pending  *)
 (* visit (bound by node execution id); a late result is refused.           *)
@@ -276,13 +286,40 @@ TurnEnd(s) ==
        IN /\ vis' = IF vis[t].node = "pending" THEN Decide(t, "result") ELSE vis
           /\ gh' = gh \cup (IF vis[t].node = "pending" /\ t # u THEN {"wrongResult"} ELSE {})
     /\ ses' = [ses EXCEPT ![s].turn = 0]
-    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted>>
+    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, reports, failedV>>
+
+(* tf1: the running turn fails terminally: it ends without a result, the  *)
+(* session goes idle with an error and takes the next prompt (the next     *)
+(* successful turn clears the error: the next visit reuses it). With a     *)
+(* report, the failure of the turn's own visit is owed to the store. A     *)
+(* turn carries one visit's prompt here (TurnStart takes one); a turn that *)
+(* carried several would owe a report for each.                            *)
+TurnFails(s) ==
+    /\ AllowTurnFail /\ ses[s].turn # 0
+    /\ LET u == ses[s].turn
+       IN /\ ses' = [ses EXCEPT ![s].turn = 0]
+          /\ failedV' = failedV \cup {u}
+          /\ reports' = IF FailReport # "none" THEN reports \cup {u} ELSE reports
+    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, gh>>
+
+(* tf1: the report's store step: the turn's own visit is decided           *)
+(* execution_failed (winner controller) only while it is pending; a visit  *)
+(* already decided (a stale turn whose Stop failed, G2) is kept.           *)
+ReportDecide(u) ==
+    /\ u \in reports
+    /\ LET s == vis[u].s
+           pendVis == {w \in Vis : vis[w].s = s /\ vis[w].node = "pending"}
+           t == IF FailReport = "binds-newest" /\ pendVis # {} THEN CHOOSE w \in pendVis : \A x \in pendVis : x <= w ELSE u
+       IN /\ vis' = IF vis[t].node = "pending" THEN Decide(t, "execution_failed") ELSE vis
+          /\ gh' = gh \cup (IF vis[t].node = "pending" /\ t # u THEN {"wrongResult"} ELSE {})
+    /\ reports' = reports \ {u}
+    /\ UNCHANGED <<pend, marked, run, nv, ses, readers, afterDone, acted, failedV>>
 
 (* The visit's time limit.                                                 *)
 Timeout(v) ==
     /\ vis[v].node = "pending" /\ run # "ended"
     /\ vis' = Decide(v, "timeout")
-    /\ UNCHANGED <<pend, marked, run, nv, ses, readers, afterDone, acted, gh>>
+    /\ UNCHANGED <<pend, marked, run, nv, ses, readers, afterDone, acted, gh, reports, failedV>>
 
 (* endContinuedVisit: while the run is active (or stopping) the visit's    *)
 (* turn gets a cycle Stop; a Stop may fail past its retries (G2) and then  *)
@@ -298,7 +335,7 @@ EndVisit(v) ==
             /\ ses' = IF stopping /\ ok /\ ses[s].turn = v THEN [ses EXCEPT ![s].turn = 0] ELSE ses
             /\ gh' = gh \cup (IF stopping /\ ok /\ ses[s].turn = v THEN {"cycleStop"} ELSE {})
                         \cup (IF ~stopping /\ ses[s].turn = v THEN {"noStopAtEnd"} ELSE {})
-    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted>>
+    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, reports, failedV>>
 
 (* Fix G2: the next visit's spawn sends the Stop again until it lands; with *)
 (* the G5 fix, the run's end sends it again too (endWorkflowV2RunAgents).  *)
@@ -308,7 +345,7 @@ RetryStop(u) ==
        \/ StopAtRunEnd /\ run = "ended"
     /\ vis' = [vis EXCEPT ![u].gaveUp = FALSE, ![u].stopOk = TRUE]
     /\ ses' = IF ses[vis[u].s].turn = u THEN [ses EXCEPT ![vis[u].s].turn = 0] ELSE ses
-    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, gh>>
+    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, gh, reports, failedV>>
 
 (* The end of one agent session under its end lock (endContinuedChatLocked). *)
 Due(s) == Used(s) /\ ses[s].chat = "open" /\ vis[Newest(s)].node = "decided"
@@ -330,7 +367,7 @@ AfterEnd ==
     /\ run = "ended" /\ ~afterDone /\ (\A v \in Vis : vis[v].node # "pending")
     /\ ses' = [s \in Ses |-> IF Looked(s) /\ Due(s) THEN ChatEnd(ses[s]) ELSE ses[s]]
     /\ afterDone' = TRUE
-    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, acted, gh>>
+    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, acted, gh, reports, failedV>>
 
 (* A stopping run ends an idle agent session at collect; also the owed     *)
 (* end's retry (wfc) and the visit's own end after the run stopped.        *)
@@ -339,29 +376,29 @@ LookLocked(s) ==
     /\ \/ run = "stopping" /\ Due(s)
        \/ ses[s].chat = "owed" /\ ses[s].st # "creating"
     /\ ses' = [ses EXCEPT ![s] = ChatEnd([ses[s] EXCEPT !.chat = "open"])]
-    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, gh>>
+    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, gh, reports, failedV>>
 LookRead(s) ==
     /\ Fault = "end-without-lock" /\ s \notin readers
     /\ run # "active" /\ Due(s) /\ ses[s].st = "live"
     /\ readers' = readers \cup {s}
-    /\ UNCHANGED <<pend, marked, run, nv, vis, ses, afterDone, acted, gh>>
+    /\ UNCHANGED <<pend, marked, run, nv, vis, ses, afterDone, acted, gh, reports, failedV>>
 LookSend(s) ==
     /\ s \in readers /\ readers' = readers \ {s}
     /\ ses' = [ses EXCEPT ![s].ends = @ + 1, ![s].chat = "ended",
                            ![s].st = IF @ = "live" THEN (IF ses[s].turn = 0 THEN "ended" ELSE "ending") ELSE @]
-    /\ UNCHANGED <<pend, marked, run, nv, vis, afterDone, acted, gh>>
+    /\ UNCHANGED <<pend, marked, run, nv, vis, afterDone, acted, gh, reports, failedV>>
 
 (* A person runs recover after a failed end: every agent session looked at. *)
 Recover ==
     /\ run = "ended" /\ afterDone /\ (\E s \in Ses : Due(s))
     /\ ses' = [s \in Ses |-> IF Due(s) THEN ChatEnd(ses[s]) ELSE ses[s]]
-    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, gh>>
+    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, gh, reports, failedV>>
 
 (* An ended session's command lands after its running turn.                *)
 Finish(s) ==
     /\ ses[s].st = "ending" /\ ses[s].turn = 0
     /\ ses' = [ses EXCEPT ![s].st = "ended", ![s].q = {}]
-    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, gh>>
+    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, gh, reports, failedV>>
 
 (* A person ends or deletes an agent session (once).                       *)
 PersonEnd(s) ==
@@ -369,7 +406,7 @@ PersonEnd(s) ==
     /\ Person \in {"end", "any"} /\ ~acted /\ ses[s].st = "live"
     /\ ses' = [ses EXCEPT ![s].st = IF ses[s].turn = 0 THEN "ended" ELSE "ending"]
     /\ acted' = TRUE /\ marked' = marked \cup {s}
-    /\ UNCHANGED <<pend, run, nv, vis, readers, afterDone, gh>>
+    /\ UNCHANGED <<pend, run, nv, vis, readers, afterDone, gh, reports, failedV>>
 (* DRR-2: a person's end in two steps (MarkSplit): the mark, then the      *)
 (* command. The command may fail (the call throws) or the process may stop *)
 (* in between; a withdrawal removes a thrown end's mark; an outbox sends   *)
@@ -377,38 +414,38 @@ PersonEnd(s) ==
 PersonMark(s) ==
     /\ MarkSplit /\ Person \in {"end", "any"} /\ ~acted /\ (ses[s].st = "live" \/ (MarkCreating /\ ses[s].st = "creating"))
     /\ marked' = marked \cup {s} /\ acted' = TRUE /\ pend' = [ph |-> "marked", s |-> s]
-    /\ UNCHANGED <<run, nv, vis, ses, readers, afterDone, gh>>
+    /\ UNCHANGED <<run, nv, vis, ses, readers, afterDone, gh, reports, failedV>>
 PersonEnqueue ==
     /\ pend.ph = "marked" \/ (Outbox /\ pend.ph \in {"thrown", "crashed"})
     /\ ses' = [ses EXCEPT ![pend.s] = EndCmd(ses[pend.s])]
     /\ pend' = [pend EXCEPT !.ph = "done"]
-    /\ UNCHANGED <<marked, run, nv, vis, readers, afterDone, acted, gh>>
+    /\ UNCHANGED <<marked, run, nv, vis, readers, afterDone, acted, gh, reports, failedV>>
 PersonEnqueueFails ==
     /\ pend.ph = "marked" /\ MarkFail # "none"
     /\ pend' = [pend EXCEPT !.ph = IF MarkFail = "throw" THEN "thrown" ELSE "crashed"]
-    /\ UNCHANGED <<marked, run, nv, vis, ses, readers, afterDone, acted, gh>>
+    /\ UNCHANGED <<marked, run, nv, vis, ses, readers, afterDone, acted, gh, reports, failedV>>
 WithdrawMark ==
     /\ Withdraw /\ pend.ph = "thrown" /\ ~Outbox
     /\ marked' = marked \ {pend.s} /\ pend' = [pend EXCEPT !.ph = "withdrawn"]
-    /\ UNCHANGED <<run, nv, vis, ses, readers, afterDone, acted, gh>>
+    /\ UNCHANGED <<run, nv, vis, ses, readers, afterDone, acted, gh, reports, failedV>>
 PersonDelete(s) ==
     /\ Person \in {"delete", "any"} /\ ~acted /\ ((ses[s].st = "live" /\ ses[s].turn = 0) \/ ses[s].st = "row")
     /\ ses' = [ses EXCEPT ![s].st = IF @ = "row" THEN "tomb0" ELSE "deleted", ![s].q = {}]
     /\ acted' = TRUE
-    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, gh>>
+    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, gh, reports, failedV>>
 
-RunStop == AllowStop /\ run = "active" /\ run' = "stopping" /\ UNCHANGED <<pend, marked, nv, vis, ses, readers, afterDone, acted, gh>>
+RunStop == AllowStop /\ run = "active" /\ run' = "stopping" /\ UNCHANGED <<pend, marked, nv, vis, ses, readers, afterDone, acted, gh, reports, failedV>>
 StopDone ==
     /\ run = "stopping" /\ (\A v \in Vis : vis[v].node # "pending")
     /\ run' = "ended"
-    /\ UNCHANGED <<pend, marked, nv, vis, ses, readers, afterDone, acted, gh>>
+    /\ UNCHANGED <<pend, marked, nv, vis, ses, readers, afterDone, acted, gh, reports, failedV>>
 RunCancel ==
     /\ AllowCancel /\ run \in {"active", "stopping"} /\ run' = "ended"
     /\ vis' = [v \in Vis |-> IF vis[v].node = "pending" THEN [vis[v] EXCEPT !.node = "decided", !.how = "cancelled"] ELSE vis[v]]
-    /\ UNCHANGED <<pend, marked, nv, ses, readers, afterDone, acted, gh>>
+    /\ UNCHANGED <<pend, marked, nv, ses, readers, afterDone, acted, gh, reports, failedV>>
 RunDone ==
     /\ run = "active" /\ nv = V /\ vis[V].node = "decided" /\ vis[V].endReq
-    /\ run' = "ended" /\ UNCHANGED <<pend, marked, nv, vis, ses, readers, afterDone, acted, gh>>
+    /\ run' = "ended" /\ UNCHANGED <<pend, marked, nv, vis, ses, readers, afterDone, acted, gh, reports, failedV>>
 
 Done == run = "ended" /\ afterDone /\ UNCHANGED vars
 
@@ -416,14 +453,17 @@ Next ==
     \/ Done \/ Admit \/ RunStop \/ StopDone \/ RunCancel \/ RunDone \/ AfterEnd \/ Recover
     \/ PersonEnqueue \/ PersonEnqueueFails \/ WithdrawMark
     \/ \E v \in Vis : Spawn(v) \/ SpawnCheck(v) \/ SpawnCreate(v) \/ SpawnSend(v) \/ Timeout(v) \/ EndVisit(v) \/ RetryStop(v)
+                      \/ ReportDecide(v)
     \/ \E s \in Ses : Visible(s) \/ TurnStart(s) \/ TurnEnd(s) \/ LookLocked(s) \/ LookRead(s) \/ LookSend(s)
                       \/ Finish(s) \/ PersonEnd(s) \/ PersonMark(s) \/ PersonDelete(s) \/ RaceResolve(s) \/ OrphanTurn(s)
+                      \/ TurnFails(s)
 
 Spec == Init /\ [][Next]_vars
 Fairness ==
     /\ WF_vars(Admit) /\ WF_vars(StopDone) /\ WF_vars(RunDone) /\ WF_vars(AfterEnd)
     /\ WF_vars(PersonEnqueue) /\ WF_vars(WithdrawMark)
-    /\ \A v \in Vis : WF_vars(Spawn(v)) /\ WF_vars(SpawnCheck(v)) /\ WF_vars(SpawnCreate(v)) /\ WF_vars(SpawnSend(v)) /\ WF_vars(Timeout(v)) /\ WF_vars(EndVisit(v)) /\ WF_vars(RetryStop(v))
+    /\ \A v \in Vis : WF_vars(Spawn(v)) /\ WF_vars(SpawnCheck(v)) /\ WF_vars(SpawnCreate(v)) /\ WF_vars(SpawnSend(v)) /\ WF_vars(TimeoutFair /\ Timeout(v)) /\ WF_vars(EndVisit(v)) /\ WF_vars(RetryStop(v))
+                      /\ WF_vars(ReportDecide(v))
     /\ \A s \in Ses : WF_vars(Visible(s)) /\ WF_vars(TurnStart(s)) /\ WF_vars(TurnEnd(s)) /\ WF_vars(LookLocked(s))
                       /\ WF_vars(LookSend(s)) /\ WF_vars(Finish(s)) /\ WF_vars(RaceResolve(s))
                       /\ WF_vars(TurnGuard /\ OrphanTurn(s))
@@ -462,6 +502,9 @@ Inv_StopAtRunEnd == "noStopAtEnd" \notin gh
 Prop_VisitsDecided == \A v \in Vis : (vis[v].node = "pending") ~> (vis[v].node = "decided")
 Prop_AllEnded == <>[](run = "ended" => \A s \in Ses : ses[s].st \notin {"live", "ending", "creating"} \/ ~Used(s))
 Prop_OthersEnded == <>[](run = "ended" => \A s \in Ses \ {FailChat} : ses[s].st \notin {"live", "ending", "creating"} \/ ~Used(s))
+(* tf1: a visit whose turn failed terminally is decided without its time   *)
+(* limit (checked with TimeoutFair FALSE).                                  *)
+Prop_FailedVisitDecided == \A v \in Vis : (v \in failedV /\ vis[v].node = "pending") ~> (vis[v].node = "decided")
 Prop_OrphanEnded == \A s \in Ses : (ses[s].st \in {"orphan", "orphanq"}) ~> (ses[s].st \notin {"orphan", "orphanq"})
 (* DR2-001: no model turn runs on a deleted agent session.                 *)
 Inv_NoTurnOnDeleted == "turnOnDeleted" \notin gh
@@ -483,4 +526,8 @@ W_NoCycleStop == "cycleStop" \notin gh
 W_NoSkip == "skipped" \notin gh
 W_NoCarry == "carried" \notin gh
 W_NoRecheckFail == "recheckFail" \notin gh
+(* tf1: a failure report decides a visit; the next visit reuses the agent  *)
+(* session whose turn failed.                                              *)
+W_NoFailDecided == ~\E v \in Vis : vis[v].how = "execution_failed"
+W_NoReuseAfterFail == ~\E v \in 1..(V - 1) : vis[v].how = "execution_failed" /\ vis[v + 1].node # "none" /\ vis[v + 1].s = vis[v].s
 =============================================================================

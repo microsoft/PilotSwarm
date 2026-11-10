@@ -53,7 +53,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -125,7 +128,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -200,7 +206,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -275,7 +284,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -343,7 +355,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -411,7 +426,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -479,7 +497,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -538,7 +559,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "Inv_PromptNotDropped"
@@ -592,7 +616,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "Inv_NoLoudFail"
@@ -655,7 +682,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -718,7 +748,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "Inv_NoPromptBehindStaleTurn"
@@ -785,7 +818,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -859,7 +895,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -927,7 +966,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -996,7 +1038,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -1058,7 +1103,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "Inv_StopAtRunEnd"
@@ -1121,7 +1169,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -1197,7 +1248,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -1273,7 +1327,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -1345,7 +1402,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -1411,7 +1471,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -1469,7 +1532,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -1524,7 +1590,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "Inv_PromptNotDropped"
@@ -1581,7 +1650,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -1647,7 +1719,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -1719,7 +1794,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -1795,7 +1873,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -1870,7 +1951,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -1941,7 +2025,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -2004,7 +2091,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "W_NoRecheckFail"
@@ -2059,7 +2149,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -2115,7 +2208,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -2172,7 +2268,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -2230,7 +2329,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -2288,7 +2390,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -2354,7 +2459,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -2428,7 +2536,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -2505,7 +2616,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -2575,7 +2689,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -2635,7 +2752,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -2695,7 +2815,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -2761,7 +2884,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -2832,7 +2958,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -2907,7 +3036,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -2987,7 +3119,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -3063,7 +3198,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -3139,7 +3277,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -3219,7 +3360,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -3295,7 +3439,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -3358,7 +3505,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "W_NoCarry"
@@ -3422,7 +3572,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -3496,7 +3649,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -3561,7 +3717,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -3620,7 +3779,10 @@
     "CarryDelete": "\"owed\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -3691,7 +3853,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -3771,7 +3936,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -3847,7 +4015,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -3923,7 +4094,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -4000,7 +4174,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -4072,7 +4249,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -4143,7 +4323,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -4216,7 +4399,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -4289,7 +4475,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -4353,7 +4542,10 @@
     "CarryDelete": "\"visible\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -4419,7 +4611,10 @@
     "CarryDelete": "\"visible\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -4497,7 +4692,10 @@
     "CarryDelete": "\"visible\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -4573,7 +4771,10 @@
     "CarryDelete": "\"visible\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -4640,7 +4841,10 @@
     "CarryDelete": "\"queued\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -4712,7 +4916,10 @@
     "CarryDelete": "\"queued\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -4791,7 +4998,10 @@
     "CarryDelete": "\"queued\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -4857,7 +5067,10 @@
     "CarryDelete": "\"queued-skew\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -4922,7 +5135,10 @@
     "CarryDelete": "\"queued-skew\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -4987,7 +5203,10 @@
     "CarryDelete": "\"queued-race\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -5046,7 +5265,10 @@
     "CarryDelete": "\"queued-race\"",
     "TurnGuard": "TRUE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "TRUE"
+    "CarryNotFound": "TRUE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -5105,7 +5327,10 @@
     "CarryDelete": "\"queued-skew\"",
     "TurnGuard": "TRUE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "TRUE"
+    "CarryNotFound": "TRUE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -5172,7 +5397,10 @@
     "CarryDelete": "\"queued-race\"",
     "TurnGuard": "TRUE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "TRUE"
+    "CarryNotFound": "TRUE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -5241,7 +5469,10 @@
     "CarryDelete": "\"queued-race\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "TRUE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -5302,7 +5533,10 @@
     "CarryDelete": "\"queued-race\"",
     "TurnGuard": "TRUE",
     "MarkCreating": "TRUE",
-    "CarryNotFound": "TRUE"
+    "CarryNotFound": "TRUE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -5374,7 +5608,10 @@
     "CarryDelete": "\"queued-race\"",
     "TurnGuard": "TRUE",
     "MarkCreating": "TRUE",
-    "CarryNotFound": "TRUE"
+    "CarryNotFound": "TRUE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -5454,7 +5691,10 @@
     "CarryDelete": "\"queued-race\"",
     "TurnGuard": "TRUE",
     "MarkCreating": "TRUE",
-    "CarryNotFound": "TRUE"
+    "CarryNotFound": "TRUE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -5472,6 +5712,532 @@
     "Prop_AllEnded",
     "Prop_OwedSent"
    ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "tf.cc-turn-fails-waits",
+  "module": "WfContinuedChat",
+  "config": "tf.cc-turn-fails-waits.cfg",
+  "mode": "reviewed",
+  "meaning": "finding",
+  "spec": "LiveSpec",
+  "expected": "liveness",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_FailedVisitDecided"
+  ],
+  "deadlock": true,
+  "note": "tf1 finding (the code before the fix): a visit whose turn failed terminally is never reported; without its time limit it stays pending.",
+  "tlc": {
+   "comment": "tf.cc-turn-fails-waits (expected liveness): tf1 finding (the code before the fix): a visit whose turn failed terminally is never reported; without its time limit it stays pending.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "TRUE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_FailedVisitDecided"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "tf.cc-turn-fails",
+  "module": "WfContinuedChat",
+  "config": "tf.cc-turn-fails.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_FailedVisitDecided"
+  ],
+  "deadlock": true,
+  "note": "tf1 fix: the failure report decides the turn's own visit execution_failed, without its time limit.",
+  "tlc": {
+   "comment": "tf.cc-turn-fails (expected PASS): tf1 fix: the failure report decides the turn's own visit execution_failed, without its time limit.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "TRUE",
+    "FailReport": "\"fix\"",
+    "TimeoutFair": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_FailedVisitDecided"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "tf.cc-turn-fails-safety",
+  "module": "WfContinuedChat",
+  "config": "tf.cc-turn-fails-safety.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "tf1 fix: every safety property with failing turns, a person's end or delete and failing Stops (a report decides only its own pending visit).",
+  "tlc": {
+   "comment": "tf.cc-turn-fails-safety (expected PASS): tf1 fix: every safety property with failing turns, a person's end or delete and failing Stops (a report decides only its own pending visit).",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "TRUE",
+    "FailReport": "\"fix\"",
+    "TimeoutFair": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "tf.cc-turn-fails-live",
+  "module": "WfContinuedChat",
+  "config": "tf.cc-turn-fails-live.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent",
+   "Prop_FailedVisitDecided"
+  ],
+  "deadlock": true,
+  "note": "tf1 fix: every visit decided, every agent session ended, owed ends sent, with failing turns.",
+  "tlc": {
+   "comment": "tf.cc-turn-fails-live (expected PASS): tf1 fix: every visit decided, every agent session ended, owed ends sent, with failing turns.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "TRUE",
+    "FailReport": "\"fix\"",
+    "TimeoutFair": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent",
+    "Prop_FailedVisitDecided"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "tf.cc-stale-turn-fails",
+  "module": "WfContinuedChat",
+  "config": "tf.cc-stale-turn-fails.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_ResultOwnVisit",
+   "Inv_NoPromptBehindStaleTurn"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "tf1 fix: a decided visit's turn whose Stop failed (G2) fails terminally; its report changes nothing, and the next visit is not decided by it.",
+  "tlc": {
+   "comment": "tf.cc-stale-turn-fails (expected PASS): tf1 fix: a decided visit's turn whose Stop failed (G2) fails terminally; its report changes nothing, and the next visit is not decided by it.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "TRUE",
+    "FailReport": "\"fix\"",
+    "TimeoutFair": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_ResultOwnVisit",
+    "Inv_NoPromptBehindStaleTurn"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "fault.cc-report-binds-newest",
+  "module": "WfContinuedChat",
+  "config": "fault.cc-report-binds-newest.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_ResultOwnVisit"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "A failure report that decides the session's newest pending visit: a stale turn's failure decides the next visit.",
+  "tlc": {
+   "comment": "fault.cc-report-binds-newest (expected safety): A failure report that decides the session's newest pending visit: a stale turn's failure decides the next visit.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "TRUE",
+    "FailReport": "\"binds-newest\"",
+    "TimeoutFair": "TRUE"
+   },
+   "invariants": [
+    "Inv_ResultOwnVisit"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.cc-turn-fail-decided",
+  "module": "WfContinuedChat",
+  "config": "wit.cc-turn-fail-decided.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoFailDecided"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "tf1 fix: a failure report decides a visit execution_failed.",
+  "tlc": {
+   "comment": "wit.cc-turn-fail-decided (expected safety): tf1 fix: a failure report decides a visit execution_failed.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "TRUE",
+    "FailReport": "\"fix\"",
+    "TimeoutFair": "TRUE"
+   },
+   "invariants": [
+    "W_NoFailDecided"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.cc-reuse-after-fail",
+  "module": "WfContinuedChat",
+  "config": "wit.cc-reuse-after-fail.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoReuseAfterFail"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "tf1 fix: the next visit reuses the agent session whose turn failed (coordinator decision: no replacement).",
+  "tlc": {
+   "comment": "wit.cc-reuse-after-fail (expected safety): tf1 fix: the next visit reuses the agent session whose turn failed (coordinator decision: no replacement).",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "TRUE",
+    "FailReport": "\"fix\"",
+    "TimeoutFair": "TRUE"
+   },
+   "invariants": [
+    "W_NoReuseAfterFail"
+   ],
+   "properties": [],
    "deadlock": true
   }
  },
@@ -5520,7 +6286,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "Inv_ResultOwnVisit"
@@ -5574,7 +6343,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "Inv_OneLive"
@@ -5635,7 +6407,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -5696,7 +6471,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "Inv_EndOnce"
@@ -5750,7 +6528,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "Inv_NoTurnForDecided"
@@ -5804,7 +6585,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "W_NoReplacement"
@@ -5858,7 +6642,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "W_NoOwedEnd"
@@ -5912,7 +6699,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "W_NoCycleStop"
@@ -5966,7 +6756,10 @@
     "CarryDelete": "\"none\"",
     "TurnGuard": "FALSE",
     "MarkCreating": "FALSE",
-    "CarryNotFound": "FALSE"
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE"
    },
    "invariants": [
     "W_NoSkip"

@@ -1276,7 +1276,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"efe44835\""
+    "Code": "\"efe44835\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -1317,7 +1320,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"efe44835\""
+    "Code": "\"efe44835\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [],
    "properties": [
@@ -1353,7 +1359,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"efe44835\""
+    "Code": "\"efe44835\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [],
    "properties": [
@@ -1388,7 +1397,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"efe44835\""
+    "Code": "\"efe44835\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [],
    "properties": [
@@ -1423,7 +1435,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"efe44835\""
+    "Code": "\"efe44835\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [
     "Inv_PromptOnce"
@@ -1458,7 +1473,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"efe44835\""
+    "Code": "\"efe44835\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [
     "Wit_ChildCompletes"
@@ -1493,7 +1511,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"efe44835\""
+    "Code": "\"efe44835\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [
     "Wit_TimedOutChildEnded"
@@ -1528,7 +1549,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"efe44835\""
+    "Code": "\"efe44835\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [
     "Wit_SpawnAfterDecision"
@@ -1563,7 +1587,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"efe44835\""
+    "Code": "\"efe44835\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [
     "Wit_InvalidExhausted"
@@ -1598,7 +1625,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"no_end_after_spawn\"",
-    "Code": "\"efe44835\""
+    "Code": "\"efe44835\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [],
    "properties": [
@@ -1633,7 +1663,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"end_ignores_spawn\"",
-    "Code": "\"efe44835\""
+    "Code": "\"efe44835\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [],
    "properties": [
@@ -1668,7 +1701,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"accept_after_deadline\"",
-    "Code": "\"efe44835\""
+    "Code": "\"efe44835\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [
     "Inv_NoCompletionAfterDeadline"
@@ -2947,7 +2983,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"proposedD\""
+    "Code": "\"proposedD\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [],
    "properties": [
@@ -2987,7 +3026,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"proposedD\""
+    "Code": "\"proposedD\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -3028,7 +3070,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"proposedD\""
+    "Code": "\"proposedD\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [],
    "properties": [
@@ -3604,7 +3649,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"1f7bdc77\""
+    "Code": "\"1f7bdc77\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [],
    "properties": [
@@ -3644,7 +3692,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"1f7bdc77\""
+    "Code": "\"1f7bdc77\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -3685,7 +3736,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"1f7bdc77\""
+    "Code": "\"1f7bdc77\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [],
    "properties": [
@@ -3721,7 +3775,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"1f7bdc77\""
+    "Code": "\"1f7bdc77\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [
     "Wit_SecondEndCommand"
@@ -6113,7 +6170,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"a10c2e07\""
+    "Code": "\"a10c2e07\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [
     "TypeOK",
@@ -6154,7 +6214,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"a10c2e07\""
+    "Code": "\"a10c2e07\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [],
    "properties": [
@@ -6190,7 +6253,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"a10c2e07\""
+    "Code": "\"a10c2e07\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [],
    "properties": [
@@ -6225,7 +6291,10 @@
     "AllowRunEnd": "TRUE",
     "AllowAsk": "TRUE",
     "Fault": "\"none\"",
-    "Code": "\"a10c2e07\""
+    "Code": "\"a10c2e07\"",
+    "AllowTurnFail": "FALSE",
+    "Report": "\"none\"",
+    "DeadlineFair": "TRUE"
    },
    "invariants": [
     "Wit_SecondEndCommand"
@@ -12555,6 +12624,254 @@
    "properties": [
     "Prop_EndedReported"
    ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "tf.agent-fail-waits",
+  "module": "WfAgent",
+  "mode": "reviewed",
+  "spec": "LiveSpec",
+  "config": "tf.agent-fail-waits.cfg",
+  "head": "design",
+  "properties": [
+   "Prop_FailedDecided"
+  ],
+  "expected": "liveness",
+  "note": "Finding (the code before the fix): a child whose turn failed terminally is never reported; without the deadline its state stays pending.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "tf.agent-fail-waits (reviewed; expected liveness): Finding (the code before the fix): a child whose turn failed terminally is never reported; without the deadline its state stays pending.",
+   "spec": "LiveSpec",
+   "constants": {
+    "MaxCrashes": "2",
+    "MaxInvalid": "2",
+    "AllowRefuse": "TRUE",
+    "AllowExhaust": "FALSE",
+    "AllowEndFail": "FALSE",
+    "AllowEvict": "FALSE",
+    "AllowRunEnd": "TRUE",
+    "AllowAsk": "TRUE",
+    "Fault": "\"none\"",
+    "Code": "\"a10c2e07\"",
+    "AllowTurnFail": "TRUE",
+    "Report": "\"none\"",
+    "DeadlineFair": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_FailedDecided"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "tf.agent-fail-decided",
+  "module": "WfAgent",
+  "mode": "comparison",
+  "spec": "LiveSpec",
+  "config": "tf.agent-fail-decided.cfg",
+  "head": "design",
+  "properties": [
+   "Prop_FailedDecided",
+   "Prop_FailedChildReleased"
+  ],
+  "expected": "PASS",
+  "note": "The fix: the failure report decides the state execution_failed and the child is ended, without the deadline.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "tf.agent-fail-decided (comparison; expected PASS): The fix: the failure report decides the state execution_failed and the child is ended, without the deadline.",
+   "spec": "LiveSpec",
+   "constants": {
+    "MaxCrashes": "2",
+    "MaxInvalid": "2",
+    "AllowRefuse": "TRUE",
+    "AllowExhaust": "FALSE",
+    "AllowEndFail": "FALSE",
+    "AllowEvict": "FALSE",
+    "AllowRunEnd": "TRUE",
+    "AllowAsk": "TRUE",
+    "Fault": "\"none\"",
+    "Code": "\"a10c2e07\"",
+    "AllowTurnFail": "TRUE",
+    "Report": "\"fix\"",
+    "DeadlineFair": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_FailedDecided",
+    "Prop_FailedChildReleased"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "tf.agent-fail-safety",
+  "module": "WfAgent",
+  "mode": "comparison",
+  "spec": "Spec",
+  "config": "tf.agent-fail-safety.cfg",
+  "head": "design",
+  "properties": [
+   "TypeOK",
+   "Inv_NoCompletionAfterDeadline",
+   "Inv_PromptOnce",
+   "Inv_EndOnlyDecided",
+   "Inv_EndMatchesWinner",
+   "Inv_ChildOnlyFromAttempt",
+   "Inv_DecidedOnce",
+   "Inv_FailOnlyWhenPending"
+  ],
+  "expected": "PASS",
+  "note": "The fix: every agent-state rule, a decision never replaced, execution_failed only after a terminal failure; crashes, refusals, exhausted spawns, failed ends, a report delivered twice.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "tf.agent-fail-safety (comparison; expected PASS): The fix: every agent-state rule, a decision never replaced, execution_failed only after a terminal failure; crashes, refusals, exhausted spawns, failed ends, a report delivered twice.",
+   "spec": "Spec",
+   "constants": {
+    "MaxCrashes": "2",
+    "MaxInvalid": "2",
+    "AllowRefuse": "TRUE",
+    "AllowExhaust": "TRUE",
+    "AllowEndFail": "TRUE",
+    "AllowEvict": "FALSE",
+    "AllowRunEnd": "TRUE",
+    "AllowAsk": "TRUE",
+    "Fault": "\"none\"",
+    "Code": "\"a10c2e07\"",
+    "AllowTurnFail": "TRUE",
+    "Report": "\"fix\"",
+    "DeadlineFair": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoCompletionAfterDeadline",
+    "Inv_PromptOnce",
+    "Inv_EndOnlyDecided",
+    "Inv_EndMatchesWinner",
+    "Inv_ChildOnlyFromAttempt",
+    "Inv_DecidedOnce",
+    "Inv_FailOnlyWhenPending"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "tf.agent-fail-live",
+  "module": "WfAgent",
+  "mode": "comparison",
+  "spec": "LiveSpec",
+  "config": "tf.agent-fail-live.cfg",
+  "head": "design",
+  "properties": [
+   "Prop_StateDecided",
+   "Prop_ChildReleased",
+   "Prop_FailedDecided"
+  ],
+  "expected": "PASS",
+  "note": "The fix with the deadline: the state is decided and its child ended.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "tf.agent-fail-live (comparison; expected PASS): The fix with the deadline: the state is decided and its child ended.",
+   "spec": "LiveSpec",
+   "constants": {
+    "MaxCrashes": "2",
+    "MaxInvalid": "2",
+    "AllowRefuse": "TRUE",
+    "AllowExhaust": "FALSE",
+    "AllowEndFail": "FALSE",
+    "AllowEvict": "FALSE",
+    "AllowRunEnd": "TRUE",
+    "AllowAsk": "TRUE",
+    "Fault": "\"none\"",
+    "Code": "\"a10c2e07\"",
+    "AllowTurnFail": "TRUE",
+    "Report": "\"fix\"",
+    "DeadlineFair": "TRUE"
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_StateDecided",
+    "Prop_ChildReleased",
+    "Prop_FailedDecided"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "fault.agent-fail-unfenced",
+  "module": "WfAgent",
+  "mode": "deliberate",
+  "spec": "Spec",
+  "config": "fault.agent-fail-unfenced.cfg",
+  "head": "design",
+  "properties": [
+   "Inv_DecidedOnce"
+  ],
+  "expected": "safety",
+  "note": "The report decides a state that was already decided (no pending check).",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "fault.agent-fail-unfenced (deliberate; expected safety): The report decides a state that was already decided (no pending check).",
+   "spec": "Spec",
+   "constants": {
+    "MaxCrashes": "2",
+    "MaxInvalid": "2",
+    "AllowRefuse": "TRUE",
+    "AllowExhaust": "FALSE",
+    "AllowEndFail": "FALSE",
+    "AllowEvict": "FALSE",
+    "AllowRunEnd": "TRUE",
+    "AllowAsk": "TRUE",
+    "Fault": "\"none\"",
+    "Code": "\"a10c2e07\"",
+    "AllowTurnFail": "TRUE",
+    "Report": "\"unfenced\"",
+    "DeadlineFair": "TRUE"
+   },
+   "invariants": [
+    "Inv_DecidedOnce"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.agent-fail-decided",
+  "module": "WfAgent",
+  "mode": "witness",
+  "spec": "Spec",
+  "config": "wit.agent-fail-decided.cfg",
+  "head": "design",
+  "properties": [
+   "Wit_FailedDecided"
+  ],
+  "expected": "safety",
+  "note": "The failure report decides the state.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "wit.agent-fail-decided (witness; expected safety): The failure report decides the state.",
+   "spec": "Spec",
+   "constants": {
+    "MaxCrashes": "2",
+    "MaxInvalid": "2",
+    "AllowRefuse": "TRUE",
+    "AllowExhaust": "FALSE",
+    "AllowEndFail": "FALSE",
+    "AllowEvict": "FALSE",
+    "AllowRunEnd": "TRUE",
+    "AllowAsk": "TRUE",
+    "Fault": "\"none\"",
+    "Code": "\"a10c2e07\"",
+    "AllowTurnFail": "TRUE",
+    "Report": "\"fix\"",
+    "DeadlineFair": "TRUE"
+   },
+   "invariants": [
+    "Wit_FailedDecided"
+   ],
+   "properties": [],
    "deadlock": true
   }
  }

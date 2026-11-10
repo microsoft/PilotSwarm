@@ -23,6 +23,14 @@
 (* here (1c117a47's paging of the run's cleanup is in WfPaging).          *)
 (* r2e: Code = "a10c2e07" sends an end already marked sent again only     *)
 (* after a spawn and only when its recorded status was NotFound.          *)
+(* tf1: the child's turn fails terminally (its retries spent; the session *)
+(* goes idle with an error and never completes the state). Report =       *)
+(* "none": nothing tells the store, the state waits for its deadline.     *)
+(* Report = "fix": the child's session orchestration reports the failure  *)
+(* (a durable activity, at least once) and one store transaction decides  *)
+(* the state execution_failed (winner controller) only while it is       *)
+(* pending, and wakes the controller. DeadlineFair = FALSE checks that   *)
+(* the failed child is decided without the deadline.                      *)
 EXTENDS Naturals
 
 CONSTANTS
@@ -35,10 +43,15 @@ CONSTANTS
     AllowRunEnd,     \* the run ends while the state is pending (cancel, stop, expiry, deletion)
     AllowAsk,        \* the child asks its controlling parent agent and waits for an answer
     Fault,           \* "none", "no_end_after_spawn", "end_ignores_spawn", "accept_after_deadline"
-    Code             \* "efe44835" (= "1c117a47" here), "1f7bdc77" (group D as committed), "a10c2e07" or "proposedD"
+    Code,            \* "efe44835" (= "1c117a47" here), "1f7bdc77" (group D as committed), "a10c2e07" or "proposedD"
+    AllowTurnFail,   \* tf1: the child's turn may fail terminally
+    Report,          \* tf1: "none" (no report: the state waits for its deadline), "fix" (the failure decides it),
+                     \* "unfenced" (fault: the report decides even a decided state)
+    DeadlineFair     \* the deadline is forced to arrive (FALSE: liveness must not rest on it)
 
 ASSUME Code \in {"efe44835", "1c117a47", "1f7bdc77", "a10c2e07", "proposedD"}
 ASSUME Fault \in {"none", "no_end_after_spawn", "end_ignores_spawn", "accept_after_deadline"}
+ASSUME AllowTurnFail \in BOOLEAN /\ Report \in {"none", "fix", "unfenced"} /\ DeadlineFair \in BOOLEAN
 NONE == "none"
 
 VARIABLES
@@ -51,11 +64,12 @@ VARIABLES
     child,      \* [exists, st ("none", "active", "ended"), prompts, window, endCmd, asked, answered]
     invalidLeft,
     ctl,        \* the controller: "waiting", "ending", "ended"
+    rep,        \* tf1: the failure report: "none", "owed", "again" (delivered again after a crash), "done"
     \* history
-    acceptLate, acceptClosed, endBeforeDecision, wokeController
+    acceptLate, acceptClosed, endBeforeDecision, wokeController, redecided
 
 vars == <<node, due, runLive, inv, sp, crashes, child, invalidLeft, ctl,
-          acceptLate, acceptClosed, endBeforeDecision, wokeController>>
+          acceptLate, acceptClosed, endBeforeDecision, wokeController, rep, redecided>>
 
 Decided == node # "pending"
 ByAgent == node \in {"agent_ok", "agent_err", "invalid_output"}
@@ -65,10 +79,11 @@ Init ==
     /\ inv = [attempts |-> 0, spawned |-> FALSE, endReq |-> NONE, endSent |-> FALSE, endStatus |-> NONE]
     /\ sp = "begin" /\ crashes = 0
     /\ child = [exists |-> FALSE, st |-> "none", prompts |-> 0, window |-> FALSE, endCmd |-> FALSE,
-                asked |-> FALSE, answered |-> FALSE, ends |-> 0]
+                asked |-> FALSE, answered |-> FALSE, ends |-> 0, failed |-> FALSE]
     /\ invalidLeft = MaxInvalid
     /\ ctl = "waiting"
     /\ acceptLate = FALSE /\ acceptClosed = FALSE /\ endBeforeDecision = FALSE /\ wokeController = FALSE
+    /\ rep = "none" /\ redecided = FALSE
 
 ----------------------------------------------------------------------------
 (* endAgentChild: once the state is decided, record the end once (done   *)
@@ -119,7 +134,7 @@ SpawnBegin ==
          THEN /\ sp' = "endafter" /\ UNCHANGED <<inv, child, node>>
        ELSE /\ inv' = [inv EXCEPT !.attempts = @ + 1]
             /\ sp' = "host" /\ UNCHANGED <<child, node>>
-    /\ UNCHANGED <<due, runLive, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController>>
+    /\ UNCHANGED <<due, runLive, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController, rep, redecided>>
 
 (* host.spawn: create the child session (or find the one an earlier      *)
 (* attempt created) and send its first prompt with the stable client     *)
@@ -139,14 +154,14 @@ SpawnHost ==
           /\ wokeController' = TRUE
           /\ sp' = "done"
           /\ UNCHANGED child
-    /\ UNCHANGED <<due, runLive, inv, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision>>
+    /\ UNCHANGED <<due, runLive, inv, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, rep, redecided>>
 
 (* recordAgentSpawned: once; a repeat changes nothing.                     *)
 SpawnRecord ==
     /\ sp = "record"
     /\ inv' = [inv EXCEPT !.spawned = TRUE]
     /\ sp' = "endafter"
-    /\ UNCHANGED <<node, due, runLive, crashes, child, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController>>
+    /\ UNCHANGED <<node, due, runLive, crashes, child, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController, rep, redecided>>
 
 (* A state decided while its child was being created: the controller's   *)
 (* end may have found no session yet, so the spawn ends it again.        *)
@@ -154,13 +169,13 @@ SpawnEndAfter ==
     /\ sp = "endafter"
     /\ IF Decided /\ Fault # "no_end_after_spawn" THEN EndChild(TRUE) ELSE UNCHANGED <<inv, child>>
     /\ sp' = "done"
-    /\ UNCHANGED <<node, due, runLive, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController>>
+    /\ UNCHANGED <<node, due, runLive, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController, rep, redecided>>
 
 (* A worker crash inside the spawn activity: the activity runs again.     *)
 SpawnCrash ==
     /\ sp \in {"host", "record", "endafter"} /\ crashes < MaxCrashes
     /\ crashes' = crashes + 1 /\ sp' = "begin"
-    /\ UNCHANGED <<node, due, runLive, inv, child, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController>>
+    /\ UNCHANGED <<node, due, runLive, inv, child, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController, rep, redecided>>
 
 (* Every remaining attempt fails: agentSpawnFailed decides the state     *)
 (* unavailable (a result stored first is kept) and wakes the controller.  *)
@@ -174,11 +189,11 @@ SpawnExhausted ==
     /\ IF FixD /\ inv.attempts > 0
          THEN EndChildN(IF node = "pending" THEN "unavailable" ELSE node, TRUE)
          ELSE UNCHANGED <<inv, child>>
-    /\ UNCHANGED <<due, runLive, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision>>
+    /\ UNCHANGED <<due, runLive, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, rep, redecided>>
 
 ----------------------------------------------------------------------------
 (* The child session.                                                      *)
-Working == child.exists /\ child.st = "active" /\ child.prompts > 0
+Working == child.exists /\ child.st = "active" /\ child.prompts > 0 /\ ~child.failed
 
 (* complete_workflow_node: one transaction under the session and run     *)
 (* locks; one reading of the store's clock decides by the invocation's   *)
@@ -201,54 +216,79 @@ ChildComplete ==
            ELSE \* refused: decided (NODE_CLOSED), past the deadline (NODE_EXPIRED is bound,
                 \* so the deadline decides from now on), or the run ended
                 UNCHANGED <<node, due, invalidLeft, acceptLate, wokeController>>
-    /\ UNCHANGED <<runLive, inv, sp, crashes, child, ctl, acceptClosed, endBeforeDecision>>
+    /\ UNCHANGED <<runLive, inv, sp, crashes, child, ctl, acceptClosed, endBeforeDecision, rep, redecided>>
 
 (* The child asks its controlling parent agent (a needs_input it tries    *)
 (* to resolve before completing) and waits for the answer.                *)
 ChildAsks ==
     /\ AllowAsk /\ Working /\ ~child.asked
     /\ child' = [child EXCEPT !.asked = TRUE]
-    /\ UNCHANGED <<node, due, runLive, inv, sp, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController>>
+    /\ UNCHANGED <<node, due, runLive, inv, sp, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController, rep, redecided>>
 
 ParentAnswers ==
     /\ child.asked /\ ~child.answered
     /\ child' = [child EXCEPT !.answered = TRUE]
-    /\ UNCHANGED <<node, due, runLive, inv, sp, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController>>
+    /\ UNCHANGED <<node, due, runLive, inv, sp, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController, rep, redecided>>
 
 (* The child reads its end command and its session ends.                  *)
 ChildTakesEnd ==
     /\ child.st = "active" /\ child.endCmd
     /\ child' = [child EXCEPT !.st = "ended"]
     /\ endBeforeDecision' = (endBeforeDecision \/ ~Decided)
-    /\ UNCHANGED <<node, due, runLive, inv, sp, crashes, invalidLeft, ctl, acceptLate, acceptClosed, wokeController>>
+    /\ UNCHANGED <<node, due, runLive, inv, sp, crashes, invalidLeft, ctl, acceptLate, acceptClosed, wokeController, rep, redecided>>
 
 (* The child's session ends on its own (it completes, fails or is        *)
 (* cancelled by someone else) without completing the state.               *)
 ChildQuits ==
     /\ Working
     /\ child' = [child EXCEPT !.st = "ended"]
-    /\ UNCHANGED <<node, due, runLive, inv, sp, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController>>
+    /\ UNCHANGED <<node, due, runLive, inv, sp, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController, rep, redecided>>
+
+(* tf1: the child's turn fails terminally: its retries are spent, its      *)
+(* session goes idle with an error and never completes the state; it      *)
+(* still reads an end command. With a report, the failure is owed to the *)
+(* store.                                                                 *)
+ChildFailsTerminally ==
+    /\ AllowTurnFail /\ Working
+    /\ child' = [child EXCEPT !.failed = TRUE]
+    /\ rep' = IF Report # "none" THEN "owed" ELSE rep
+    /\ UNCHANGED <<node, due, runLive, inv, sp, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController, redecided>>
+
+(* tf1: the report's store transaction: the state is decided              *)
+(* execution_failed (winner controller) only while it is pending in a     *)
+(* live run, and the controller is woken; a decided state is kept (the    *)
+(* fault "unfenced" overwrites it). The activity may run again after a   *)
+(* crash that followed the transaction (at least once).                   *)
+ReportDecide ==
+    /\ rep \in {"owed", "again"}
+    /\ LET fenced == node = "pending" /\ runLive
+           decide == fenced \/ (Report = "unfenced" /\ node \notin {"pending", "execution_failed"})
+       IN /\ node' = IF decide THEN "execution_failed" ELSE node
+          /\ redecided' = (redecided \/ (decide /\ ~fenced))
+          /\ wokeController' = (wokeController \/ decide)
+    /\ \E again \in (IF rep = "owed" THEN BOOLEAN ELSE {FALSE}) : rep' = IF again THEN "again" ELSE "done"
+    /\ UNCHANGED <<due, runLive, inv, sp, crashes, child, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision>>
 
 (* Many other messages reach the child: its recent-id window forgets the  *)
 (* prompt's client message id.                                            *)
 Evict ==
     /\ AllowEvict /\ child.window
     /\ child' = [child EXCEPT !.window = FALSE]
-    /\ UNCHANGED <<node, due, runLive, inv, sp, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController>>
+    /\ UNCHANGED <<node, due, runLive, inv, sp, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController, rep, redecided>>
 
 ----------------------------------------------------------------------------
 (* The deadline arrives (the store's clock).                               *)
 Deadline ==
     /\ ~due
     /\ due' = TRUE
-    /\ UNCHANGED <<node, runLive, inv, sp, crashes, child, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController>>
+    /\ UNCHANGED <<node, runLive, inv, sp, crashes, child, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController, rep, redecided>>
 
 (* The controller elapses the state at its deadline (timed_out; the       *)
 (* store decides by its own clock, a result stored first is kept).        *)
 Elapse ==
     /\ ctl = "waiting" /\ due /\ node = "pending" /\ runLive
     /\ node' = "timed_out"
-    /\ UNCHANGED <<due, runLive, inv, sp, crashes, child, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController>>
+    /\ UNCHANGED <<due, runLive, inv, sp, crashes, child, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController, rep, redecided>>
 
 (* The controller collects the decided state and ends its child           *)
 (* (endAgent, its store retries only: a failure is traced and the result *)
@@ -258,7 +298,7 @@ Collect ==
     /\ \/ EndChild(FALSE)
        \/ AllowEndFail /\ UNCHANGED <<inv, child>>
     /\ ctl' = "ending"
-    /\ UNCHANGED <<node, due, runLive, sp, crashes, invalidLeft, acceptLate, acceptClosed, endBeforeDecision, wokeController>>
+    /\ UNCHANGED <<node, due, runLive, sp, crashes, invalidLeft, acceptLate, acceptClosed, endBeforeDecision, wokeController, rep, redecided>>
 
 (* Another end decides the run first: the pending state is cancelled.     *)
 RunEnds ==
@@ -266,7 +306,7 @@ RunEnds ==
     /\ runLive' = FALSE
     /\ node' = IF node = "pending" THEN "cancel" ELSE node
     /\ ctl' = "ending"
-    /\ UNCHANGED <<due, inv, sp, crashes, child, invalidLeft, acceptLate, acceptClosed, endBeforeDecision, wokeController>>
+    /\ UNCHANGED <<due, inv, sp, crashes, child, invalidLeft, acceptLate, acceptClosed, endBeforeDecision, wokeController, rep, redecided>>
 
 (* The run ended (after the state was routed, or by another end): the     *)
 (* controller's afterEnd ends the child of every decided agent state      *)
@@ -278,30 +318,33 @@ EndAgents ==
     /\ \/ IF ~inv.endSent THEN EndChild(FALSE) ELSE IF EndOwedAgain THEN EndChild(TRUE) ELSE UNCHANGED <<inv, child>>
        \/ AllowEndFail /\ UNCHANGED <<inv, child>>
     /\ ctl' = "ended"
-    /\ UNCHANGED <<node, due, sp, crashes, invalidLeft, acceptLate, acceptClosed, endBeforeDecision, wokeController>>
+    /\ UNCHANGED <<node, due, sp, crashes, invalidLeft, acceptLate, acceptClosed, endBeforeDecision, wokeController, rep, redecided>>
 
 Done == ctl = "ended" /\ sp = "done" /\ UNCHANGED vars
 
 Next ==
     \/ SpawnBegin \/ SpawnHost \/ SpawnRecord \/ SpawnEndAfter \/ SpawnCrash \/ SpawnExhausted
     \/ ChildComplete \/ ChildAsks \/ ParentAnswers \/ ChildTakesEnd \/ ChildQuits \/ Evict
+    \/ ChildFailsTerminally \/ ReportDecide
     \/ Deadline \/ Elapse \/ Collect \/ RunEnds \/ EndAgents \/ Done
 
 (* Fairness: workers run the spawn, the controller and the child; the    *)
-(* deadline arrives; a child reads its queued end command. Crashes,      *)
+(* deadline arrives (unless DeadlineFair is FALSE); a child reads its     *)
+(* queued end command; an owed failure report reaches the store. Crashes, *)
 (* refusals, exhausted attempts, failed ends, evictions, the child's     *)
 (* own answers and the parent's are free choices.                         *)
 Fairness ==
     /\ WF_vars(SpawnBegin) /\ WF_vars(SpawnHost) /\ WF_vars(SpawnRecord) /\ WF_vars(SpawnEndAfter)
-    /\ WF_vars(Deadline) /\ WF_vars(Elapse) /\ WF_vars(Collect) /\ WF_vars(EndAgents)
-    /\ WF_vars(ChildTakesEnd)
+    /\ WF_vars(DeadlineFair /\ Deadline) /\ WF_vars(Elapse) /\ WF_vars(Collect) /\ WF_vars(EndAgents)
+    /\ WF_vars(ChildTakesEnd) /\ WF_vars(ReportDecide)
 
 Spec == Init /\ [][Next]_vars
 LiveSpec == Spec /\ Fairness
 
 ----------------------------------------------------------------------------
 TypeOK ==
-    /\ node \in {"pending", "agent_ok", "agent_err", "invalid_output", "timed_out", "unavailable", "cancel"}
+    /\ node \in {"pending", "agent_ok", "agent_err", "invalid_output", "timed_out", "unavailable", "cancel", "execution_failed"}
+    /\ rep \in {"none", "owed", "again", "done"}
     /\ sp \in {"begin", "host", "record", "endafter", "done"}
     /\ ctl \in {"waiting", "ending", "ended"}
     /\ invalidLeft \in 0..MaxInvalid
@@ -312,10 +355,19 @@ Inv_PromptOnce == child.prompts <= 1
 Inv_EndOnlyDecided == ~endBeforeDecision
 Inv_EndMatchesWinner == inv.endReq # NONE => (inv.endReq = "done" <=> ByAgent)
 Inv_ChildOnlyFromAttempt == child.exists => inv.attempts > 0
+(* tf1: no decision is ever replaced (the failure report decides only a   *)
+(* pending state), and execution_failed follows a real terminal failure.  *)
+Inv_DecidedOnce == ~redecided
+Inv_FailOnlyWhenPending == node = "execution_failed" => (child.failed /\ ~redecided)
 
 (* Liveness.                                                               *)
 Prop_StateDecided == <>Decided
 Prop_ChildReleased == <>[](child.exists => child.st = "ended")
+(* tf1: a child whose turn failed terminally gets its state decided and   *)
+(* is ended, without waiting for the deadline (checked with DeadlineFair  *)
+(* FALSE).                                                                *)
+Prop_FailedDecided == child.failed ~> Decided
+Prop_FailedChildReleased == child.failed ~> (child.st = "ended")
 
 (* Witnesses, EXPECTED to be violated (reachable).                        *)
 Wit_ChildCompletes == ~(node = "agent_ok")
@@ -324,4 +376,6 @@ Wit_SpawnAfterDecision == ~(Decided /\ inv.endStatus = "notfound" /\ child.exist
 Wit_InvalidExhausted == ~(node = "invalid_output")
 (* r2: a second end command (same command id) reaches a child.           *)
 Wit_SecondEndCommand == child.ends < 2
+(* tf1: the failure report decides the state.                              *)
+Wit_FailedDecided == ~(node = "execution_failed")
 =============================================================================

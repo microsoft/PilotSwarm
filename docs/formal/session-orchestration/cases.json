@@ -2186,7 +2186,9 @@
     "AllowHandoff": "TRUE",
     "AllowShutdown": "TRUE",
     "Mode": "\"1.0.83\"",
-    "Fault": "\"none\""
+    "Fault": "\"none\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\""
    },
    "invariants": [
     "TypeOK",
@@ -2229,7 +2231,9 @@
     "AllowHandoff": "TRUE",
     "AllowShutdown": "TRUE",
     "Mode": "\"1.0.83\"",
-    "Fault": "\"none\""
+    "Fault": "\"none\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\""
    },
    "invariants": [
     "TypeOK",
@@ -2272,7 +2276,9 @@
     "AllowHandoff": "TRUE",
     "AllowShutdown": "TRUE",
     "Mode": "\"1.0.83\"",
-    "Fault": "\"none\""
+    "Fault": "\"none\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\""
    },
    "invariants": [
     "TypeOK",
@@ -2318,7 +2324,9 @@
     "AllowHandoff": "TRUE",
     "AllowShutdown": "FALSE",
     "Mode": "\"1.0.83\"",
-    "Fault": "\"none\""
+    "Fault": "\"none\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\""
    },
    "invariants": [
     "TypeOK",
@@ -2366,7 +2374,9 @@
     "AllowHandoff": "TRUE",
     "AllowShutdown": "FALSE",
     "Mode": "\"1.0.83\"",
-    "Fault": "\"none\""
+    "Fault": "\"none\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\""
    },
    "invariants": [
     "TypeOK",
@@ -2406,7 +2416,9 @@
     "AllowHandoff": "TRUE",
     "AllowShutdown": "TRUE",
     "Mode": "\"1.0.82\"",
-    "Fault": "\"none\""
+    "Fault": "\"none\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\""
    },
    "invariants": [
     "Inv_KeyOnlyForRetry"
@@ -2439,7 +2451,9 @@
     "AllowHandoff": "TRUE",
     "AllowShutdown": "TRUE",
     "Mode": "\"1.0.83\"",
-    "Fault": "\"other-first\""
+    "Fault": "\"other-first\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\""
    },
    "invariants": [
     "Inv_RetryFirst"
@@ -2472,7 +2486,9 @@
     "AllowHandoff": "TRUE",
     "AllowShutdown": "TRUE",
     "Mode": "\"1.0.83\"",
-    "Fault": "\"drop-at-can\""
+    "Fault": "\"drop-at-can\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\""
    },
    "invariants": [
     "Inv_RetryNotLost"
@@ -2505,7 +2521,9 @@
     "AllowHandoff": "TRUE",
     "AllowShutdown": "TRUE",
     "Mode": "\"1.0.83\"",
-    "Fault": "\"agent-released\""
+    "Fault": "\"agent-released\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\""
    },
    "invariants": [
     "Inv_AgentWaitKept"
@@ -2538,7 +2556,9 @@
     "AllowHandoff": "TRUE",
     "AllowShutdown": "TRUE",
     "Mode": "\"1.0.83\"",
-    "Fault": "\"fresh-with-key\""
+    "Fault": "\"fresh-with-key\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\""
    },
    "invariants": [
     "Inv_FreshNoKey"
@@ -2571,7 +2591,9 @@
     "AllowHandoff": "TRUE",
     "AllowShutdown": "TRUE",
     "Mode": "\"1.0.83\"",
-    "Fault": "\"none\""
+    "Fault": "\"none\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\""
    },
    "invariants": [
     "W_NoRetry"
@@ -2604,7 +2626,9 @@
     "AllowHandoff": "TRUE",
     "AllowShutdown": "TRUE",
     "Mode": "\"1.0.83\"",
-    "Fault": "\"none\""
+    "Fault": "\"none\"",
+    "AllowExhaust": "FALSE",
+    "Report": "\"none\""
    },
    "invariants": [
     "W_NoPollAfter"
@@ -6830,6 +6854,319 @@
    },
    "invariants": [
     "W_NoBatch"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "or.terminal-no-report",
+  "module": "OwnedRetry",
+  "config": "or.terminal-no-report.cfg",
+  "mode": "reviewed",
+  "meaning": "finding",
+  "spec": "LiveSpec",
+  "expected": "liveness",
+  "invariants": [
+   "TypeOK",
+   "Inv_RetryFirst",
+   "Inv_KeyOnlyForRetry",
+   "Inv_FreshNoKey",
+   "Inv_RetryNotLost",
+   "Inv_AgentWaitKept"
+  ],
+  "properties": [
+   "Prop_TerminalReported"
+  ],
+  "deadlock": true,
+  "rows": "tf1",
+  "note": "tf1 finding (the code before the fix): a retry that fails with its retries spent is terminal and nothing reports it.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "or.terminal-no-report (tf1; expected liveness): tf1 finding (the code before the fix): a retry that fails with its retries spent is terminal and nothing reports it.",
+   "spec": "LiveSpec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "FALSE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_RetryFirst",
+    "Inv_KeyOnlyForRetry",
+    "Inv_FreshNoKey",
+    "Inv_RetryNotLost",
+    "Inv_AgentWaitKept"
+   ],
+   "properties": [
+    "Prop_TerminalReported"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "or.terminal-report",
+  "module": "OwnedRetry",
+  "config": "or.terminal-report.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_RetryFirst",
+   "Inv_KeyOnlyForRetry",
+   "Inv_FreshNoKey",
+   "Inv_RetryNotLost",
+   "Inv_AgentWaitKept",
+   "Inv_NoReportBeforeTerminal",
+   "Inv_ReportNotLost",
+   "Inv_ReportOnce"
+  ],
+  "properties": [
+   "Prop_RetryDispatched",
+   "Prop_TerminalReported"
+  ],
+  "deadlock": true,
+  "rows": "tf1",
+  "note": "tf1 fix: a terminal failure of a Workflow visit's turn is reported once, across a continue-as-new too.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "or.terminal-report (tf1; expected PASS): tf1 fix: a terminal failure of a Workflow visit's turn is reported once, across a continue-as-new too.",
+   "spec": "LiveSpec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "FALSE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"fix\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_RetryFirst",
+    "Inv_KeyOnlyForRetry",
+    "Inv_FreshNoKey",
+    "Inv_RetryNotLost",
+    "Inv_AgentWaitKept",
+    "Inv_NoReportBeforeTerminal",
+    "Inv_ReportNotLost",
+    "Inv_ReportOnce"
+   ],
+   "properties": [
+    "Prop_RetryDispatched",
+    "Prop_TerminalReported"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "or.terminal-report-safety-wait",
+  "module": "OwnedRetry",
+  "config": "or.terminal-report-safety-wait.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_RetryFirst",
+   "Inv_KeyOnlyForRetry",
+   "Inv_FreshNoKey",
+   "Inv_RetryNotLost",
+   "Inv_AgentWaitKept",
+   "Inv_NoReportBeforeTerminal",
+   "Inv_ReportNotLost",
+   "Inv_ReportOnce"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "tf1",
+  "note": "tf1 fix: every owned-retry rule, and the report owed only after a terminal failure, never lost, sent once (wait timer, shutdown).",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "or.terminal-report-safety-wait (tf1; expected PASS): tf1 fix: every owned-retry rule, and the report owed only after a terminal failure, never lost, sent once (wait timer, shutdown).",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"fix\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_RetryFirst",
+    "Inv_KeyOnlyForRetry",
+    "Inv_FreshNoKey",
+    "Inv_RetryNotLost",
+    "Inv_AgentWaitKept",
+    "Inv_NoReportBeforeTerminal",
+    "Inv_ReportNotLost",
+    "Inv_ReportOnce"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "or.terminal-report-safety-agent",
+  "module": "OwnedRetry",
+  "config": "or.terminal-report-safety-agent.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_RetryFirst",
+   "Inv_KeyOnlyForRetry",
+   "Inv_FreshNoKey",
+   "Inv_RetryNotLost",
+   "Inv_AgentWaitKept",
+   "Inv_NoReportBeforeTerminal",
+   "Inv_ReportNotLost",
+   "Inv_ReportOnce"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "tf1",
+  "note": "tf1 fix: as or.terminal-report-safety-wait with an agent wait.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "or.terminal-report-safety-agent (tf1; expected PASS): tf1 fix: as or.terminal-report-safety-wait with an agent wait.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"agent\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"fix\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_RetryFirst",
+    "Inv_KeyOnlyForRetry",
+    "Inv_FreshNoKey",
+    "Inv_RetryNotLost",
+    "Inv_AgentWaitKept",
+    "Inv_NoReportBeforeTerminal",
+    "Inv_ReportNotLost",
+    "Inv_ReportOnce"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "fault.or-report-early",
+  "module": "OwnedRetry",
+  "config": "fault.or-report-early.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoReportBeforeTerminal"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "tf1",
+  "note": "A failure reported while its retry is still owed.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "fault.or-report-early (tf1; expected safety): A failure reported while its retry is still owed.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"report-early\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"fix\""
+   },
+   "invariants": [
+    "Inv_NoReportBeforeTerminal"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.or-report-dropped-at-can",
+  "module": "OwnedRetry",
+  "config": "fault.or-report-dropped-at-can.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_ReportNotLost"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "rows": "tf1",
+  "note": "A continue-as-new that drops the owed report.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "fault.or-report-dropped-at-can (tf1; expected safety): A continue-as-new that drops the owed report.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"drop-report-at-can\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"fix\""
+   },
+   "invariants": [
+    "Inv_ReportNotLost"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.or-terminal-reported",
+  "module": "OwnedRetry",
+  "config": "wit.or-terminal-reported.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoTerminalReport"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "tf1",
+  "note": "tf1 fix: a terminal failure is reported.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "wit.or-terminal-reported (tf1; expected safety): tf1 fix: a terminal failure is reported.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "TRUE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"fix\""
+   },
+   "invariants": [
+    "W_NoTerminalReport"
    ],
    "properties": [],
    "deadlock": true

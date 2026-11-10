@@ -11,7 +11,10 @@
       "AllowRunEnd",
       "AllowAsk",
       "Fault",
-      "Code"
+      "Code",
+      "AllowTurnFail",
+      "Report",
+      "DeadlineFair"
     ],
     "lists": "block",
     "deadlockFirst": false

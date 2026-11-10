@@ -371,6 +371,24 @@ and `-cut-done-running` (R3-PS1), `impl.graph-delete-after-cmd` and `-delete-aft
 `impl.parent-told-once` (R3-PA1) pass. `impl.graph-live-linear-all` adds the deletion after another end to the
 liveness check, which r3 had to leave out because of R3-GR1.
 
+## tf1 (2026-11-10): an agent child whose turn fails terminally (design)
+
+A child's turn can fail with its retries spent: its session goes idle with an error and never completes the state.
+Before the fix nothing tells the store, so the state waits for its deadline. The fix (owner decision 2026-11-10): the
+child's session orchestration reports the failure, and one store transaction decides the open state
+`execution_failed` (winner controller, only while it is pending) and wakes the controller; `execution_failed` routes
+like any error.
+
+`WfAgent` gains `AllowTurnFail`, `Report` (`"none"`: the code before the fix; `"fix"`; `"unfenced"`: a fault) and
+`DeadlineFair` (`FALSE`: the deadline is not forced, so a liveness pass cannot rest on it); the actions
+`ChildFailsTerminally` and `ReportDecide` (at least once: a report may be delivered again); the rules
+`Inv_DecidedOnce`, `Inv_FailOnlyWhenPending`, `Prop_FailedDecided` and `Prop_FailedChildReleased`. With the defaults
+every earlier case keeps its meaning. `tf-agent.py` adds the six cases (batch `tf1`, head `design` until the code is
+bound): `tf.agent-fail-waits` (the code before the fix: `Prop_FailedDecided` violated), `tf.agent-fail-decided`,
+`tf.agent-fail-safety`, `tf.agent-fail-live` (the fix: PASS), `fault.agent-fail-unfenced` (`Inv_DecidedOnce`
+violated) and `wit.agent-fail-decided`. The child session's side is in `../../session-orchestration/` (`OwnedRetry`)
+and a continued session's in `../continued-chat/`.
+
 ## Case taxonomy
 
 `cases.json` gives each of the 283 cases a `mode`: `reviewed` (234: the code as

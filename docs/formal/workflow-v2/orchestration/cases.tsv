@@ -281,3 +281,9 @@ impl.paused-live-any	impl.paused-live-any.cfg	WfPaused
 impl.paused-timed-live	impl.paused-timed-live.cfg	WfPaused
 impl.paused-resume-routed	impl.paused-resume-routed.cfg	WfPaused
 impl.paused-ended	impl.paused-ended.cfg	WfPaused
+tf.agent-fail-waits	tf.agent-fail-waits.cfg	WfAgent
+tf.agent-fail-decided	tf.agent-fail-decided.cfg	WfAgent
+tf.agent-fail-safety	tf.agent-fail-safety.cfg	WfAgent
+tf.agent-fail-live	tf.agent-fail-live.cfg	WfAgent
+fault.agent-fail-unfenced	fault.agent-fail-unfenced.cfg	WfAgent
+wit.agent-fail-decided	wit.agent-fail-decided.cfg	WfAgent

@@ -96,7 +96,9 @@
       "AllowHandoff",
       "AllowShutdown",
       "Mode",
-      "Fault"
+      "Fault",
+      "AllowExhaust",
+      "Report"
     ],
     "lists": "block",
     "deadlockFirst": false

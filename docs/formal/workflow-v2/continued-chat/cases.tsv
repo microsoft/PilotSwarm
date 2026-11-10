@@ -78,6 +78,14 @@ limit.cc-dr2-003-mark-notfound	limit.cc-dr2-003-mark-notfound.cfg	WfContinuedCha
 fix.cc-dr2-003-carry-notfound	fix.cc-dr2-003-carry-notfound.cfg	WfContinuedChat
 fix.cc-dr2-safety	fix.cc-dr2-safety.cfg	WfContinuedChat
 impl.cc-final-live	impl.cc-final-live.cfg	WfContinuedChat
+tf.cc-turn-fails-waits	tf.cc-turn-fails-waits.cfg	WfContinuedChat
+tf.cc-turn-fails	tf.cc-turn-fails.cfg	WfContinuedChat
+tf.cc-turn-fails-safety	tf.cc-turn-fails-safety.cfg	WfContinuedChat
+tf.cc-turn-fails-live	tf.cc-turn-fails-live.cfg	WfContinuedChat
+tf.cc-stale-turn-fails	tf.cc-stale-turn-fails.cfg	WfContinuedChat
+fault.cc-report-binds-newest	fault.cc-report-binds-newest.cfg	WfContinuedChat
+wit.cc-turn-fail-decided	wit.cc-turn-fail-decided.cfg	WfContinuedChat
+wit.cc-reuse-after-fail	wit.cc-reuse-after-fail.cfg	WfContinuedChat
 fault.bind-newest	fault.bind-newest.cfg	WfContinuedChat
 fault.replace-without-check	fault.replace-without-check.cfg	WfContinuedChat
 fault.no-owed-mark	fault.no-owed-mark.cfg	WfContinuedChat

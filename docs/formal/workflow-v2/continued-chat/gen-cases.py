@@ -12,13 +12,14 @@ def cc(v=3, person="none", stop=True, cancel=True, stopfail=False, failchat=0, r
        recheck=False, stopspawn=False, perchat=False, stopend=False, fault="none", seesending=True, endmark=False,
        split=False, checkall=False, fence="none", backstop=False, crash=False, marksplit=False, markfail="none",
        withdraw=False, outbox=False, carry=False, carrydelete="none",
-       turnguard=False, markcreating=False, carrynotfound=False):
+       turnguard=False, markcreating=False, carrynotfound=False, turnfail=False, failreport="none", tofair=True):
     return dict(V=v, Person=q(person), AllowStop=b(stop), AllowCancel=b(cancel), AllowStopFail=b(stopfail), FailChat=failchat,
                 RecoverFair=b(recover), SpawnRecheck=b(recheck), RecheckSeesEnding=b(seesending), EndMark=b(endmark), StopBeforeSpawn=b(stopspawn), PerChatEnd=b(perchat),
                 StopAtRunEnd=b(stopend), Fault=q(fault), SplitSpawn=b(split), CheckAll=b(checkall), Fence=q(fence),
                 Backstop=b(backstop), AllowSpawnCrash=b(crash), MarkSplit=b(marksplit), MarkFail=q(markfail),
                 Withdraw=b(withdraw), Outbox=b(outbox), Carry=b(carry), CarryDelete=q(carrydelete),
-                TurnGuard=b(turnguard), MarkCreating=b(markcreating), CarryNotFound=b(carrynotfound))
+                TurnGuard=b(turnguard), MarkCreating=b(markcreating), CarryNotFound=b(carrynotfound),
+                AllowTurnFail=b(turnfail), FailReport=q(failreport), TimeoutFair=b(tofair))
 M = "WfContinuedChat"
 CORE = ["TypeOK", "Inv_OneLive", "Inv_ResultOwnVisit", "Inv_ReplaceOnlyEnded", "Inv_NoTurnForDecided", "Inv_EndOnce"]
 ALL = CORE + ["Inv_PromptNotDropped", "Inv_NoLoudFail", "Inv_NoPromptBehindStaleTurn", "Inv_StopAtRunEnd"]
@@ -229,6 +230,26 @@ CASES = [
   f"{DR2F}: every DRR and DR2 fix together: all safety properties."),
  ("impl.cc-final-live", "impl", "confirmed", "LiveSpec", cc(v=2, person="any", markfail="crash", markcreating=True, crash=True, **IMPLD6), CORE + ["Inv_NoRevive", "Inv_NoTurnOnDeleted"], ["Prop_OrphanEnded"] + LIVE, "PASS", True,
   f"{DR2F}: every DRR and DR2 fix, a person's or a parent's end or delete, a lost command, a crashed spawn attempt: every visit decided, every agent session ended, owed ends sent, no orchestration left on a deleted session."),
+ # tf1 (2026-11-10): a turn that fails terminally (its retries spent). The code before the fix sends no report, and
+ # the visit waits for its time limit; the fix reports the failure and the store decides the turn's own visit
+ # execution_failed while it is pending. TimeoutFair = FALSE: liveness must not rest on the time limit. Base: the
+ # G1-G5 fixes and the end mark (IMPL2); the spawn as one step.
+ ("tf.cc-turn-fails-waits", "reviewed", "finding", "LiveSpec", cc(v=2, turnfail=True, tofair=False, **IMPL2), CORE, ["Prop_FailedVisitDecided"], "liveness", True,
+  "tf1 finding (the code before the fix): a visit whose turn failed terminally is never reported; without its time limit it stays pending."),
+ ("tf.cc-turn-fails", "proposal", "proposed-fix", "LiveSpec", cc(v=2, turnfail=True, failreport="fix", tofair=False, **IMPL2), CORE, ["Prop_FailedVisitDecided"], "PASS", True,
+  "tf1 fix: the failure report decides the turn's own visit execution_failed, without its time limit."),
+ ("tf.cc-turn-fails-safety", "proposal", "proposed-fix", "Spec", cc(person="any", stopfail=True, turnfail=True, failreport="fix", **IMPL2), ALL, [], "PASS", True,
+  "tf1 fix: every safety property with failing turns, a person's end or delete and failing Stops (a report decides only its own pending visit)."),
+ ("tf.cc-turn-fails-live", "proposal", "proposed-fix", "LiveSpec", cc(v=2, person="any", stopfail=True, turnfail=True, failreport="fix", **IMPL2), CORE, LIVE + ["Prop_FailedVisitDecided"], "PASS", True,
+  "tf1 fix: every visit decided, every agent session ended, owed ends sent, with failing turns."),
+ ("tf.cc-stale-turn-fails", "proposal", "proposed-fix", "Spec", cc(stopfail=True, turnfail=True, failreport="fix", **IMPL2), ["TypeOK", "Inv_ResultOwnVisit", "Inv_NoPromptBehindStaleTurn"], [], "PASS", True,
+  "tf1 fix: a decided visit's turn whose Stop failed (G2) fails terminally; its report changes nothing, and the next visit is not decided by it."),
+ ("fault.cc-report-binds-newest", "deliberate", "deliberate", "Spec", cc(stopfail=True, turnfail=True, failreport="binds-newest", **IMPL2), ["Inv_ResultOwnVisit"], [], "safety", False,
+  "A failure report that decides the session's newest pending visit: a stale turn's failure decides the next visit."),
+ ("wit.cc-turn-fail-decided", "proposal", "witness", "Spec", cc(v=2, turnfail=True, failreport="fix", **IMPL2), ["W_NoFailDecided"], [], "safety", True,
+  "tf1 fix: a failure report decides a visit execution_failed."),
+ ("wit.cc-reuse-after-fail", "proposal", "witness", "Spec", cc(v=2, turnfail=True, failreport="fix", **IMPL2), ["W_NoReuseAfterFail"], [], "safety", True,
+  "tf1 fix: the next visit reuses the agent session whose turn failed (coordinator decision: no replacement)."),
  # faults
  ("fault.bind-newest", "deliberate", "deliberate", "Spec", cc(stopfail=True, fault="bind-newest"), ["Inv_ResultOwnVisit"], [], "safety", False,
   "A result bound to the newest pending visit instead of its own: an old turn decides the next visit."),

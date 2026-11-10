@@ -115,6 +115,20 @@ Runs of the implementation cases (TLC 2.19, two workers):
 Every one of the 89 cases has a TLC result as expected; none is left unchecked (`cc.drr2-crash-live`, not checked
 within 1,800 s in cc6l, passed at 3,600 s in cc9l).
 
+## tf1 (2026-11-10): a turn that fails terminally (design)
+
+A turn can fail with its retries spent: the agent session goes idle with an error. Before the fix the visit waits for
+its time limit. The fix: the session reports the failure, and the store decides the turn's own visit
+`execution_failed` while it is pending; a visit already decided (a stale turn whose Stop failed, G2) is kept. The next
+visit reuses the agent session (its next successful turn clears the error). A turn carries one visit's prompt here; if
+a turn can carry the prompts of several visits, its report decides every pending visit it carried.
+
+New constants `AllowTurnFail`, `FailReport` (`"none"`, `"fix"`, `"binds-newest"`: a fault) and `TimeoutFair`; actions
+`TurnFails` and `ReportDecide`; `Prop_FailedVisitDecided`; witnesses `W_NoFailDecided` and `W_NoReuseAfterFail`. Cases
+(batch tf1, the G1-G5 fixes and the end mark as the base): `tf.cc-turn-fails-waits` (the code before the fix, with the
+time limit not forced: violated), `tf.cc-turn-fails`, `-safety`, `-live`, `tf.cc-stale-turn-fails` (PASS),
+`fault.cc-report-binds-newest` (`Inv_ResultOwnVisit` violated) and two witnesses.
+
 ## How to run
 
 As in `../../session-orchestration/README.md`: `TLA_TOOLS=<dir with tla2tools.jar> ./check-packet.sh` then
