@@ -25,4 +25,18 @@ TF_AGENT = [
   "The report decides a state that was already decided (no pending check)."),
  ("wit.agent-fail-decided", "WfAgent", "witness", "Spec", a(report="fix", **_TF), ["Wit_FailedDecided"], [], "safety",
   "The failure report decides the state."),
+ # A later successful turn drops a report still owed (d3230de4 handleTurnResult): the state is still decided, by the
+ # agent's completion or by the deadline; without the deadline it may stay pending (the stated limit).
+ ("tf.agent-fail-recovers", "WfAgent", "comparison", "LiveSpec", a(report="fix", recover=True, **_TF), [],
+  ["Prop_StateDecided", "Prop_ChildReleased", "Prop_FailedDecided"], "PASS",
+  "The fix with a later successful turn that drops an owed report: the state is still decided (the report, the agent or the deadline) and the child ended."),
+ ("tf.agent-fail-recovers-safety", "WfAgent", "comparison", "Spec", a(exhaust=True, endfail=True, report="fix", recover=True, **_TF), TF_INV, [], "PASS",
+  "The fix with a later successful turn: every rule, a decision never replaced."),
+ ("limit.agent-fail-recovered-no-deadline", "WfAgent", "comparison", "LiveSpec", a(dfair=False, report="fix", recover=True, **_TF), [],
+  ["Prop_FailedDecided"], "liveness",
+  "Design limit: a recovered child that never completes leaves its state to the deadline (here not forced)."),
+ ("wit.agent-dropped-then-agent", "WfAgent", "witness", "Spec", a(report="fix", recover=True, **_TF), ["Wit_DroppedThenAgent"], [], "safety",
+  "A dropped report's state is completed by the agent in the successful turn."),
+ ("wit.agent-dropped-then-timed-out", "WfAgent", "witness", "Spec", a(report="fix", recover=True, **_TF), ["Wit_DroppedThenTimedOut"], [], "safety",
+  "A dropped report's state is decided by its deadline."),
 ]

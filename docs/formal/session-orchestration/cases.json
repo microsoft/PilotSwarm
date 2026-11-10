@@ -2188,7 +2188,8 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"none\"",
     "AllowExhaust": "FALSE",
-    "Report": "\"none\""
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2233,7 +2234,8 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"none\"",
     "AllowExhaust": "FALSE",
-    "Report": "\"none\""
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2278,7 +2280,8 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"none\"",
     "AllowExhaust": "FALSE",
-    "Report": "\"none\""
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2326,7 +2329,8 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"none\"",
     "AllowExhaust": "FALSE",
-    "Report": "\"none\""
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2376,7 +2380,8 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"none\"",
     "AllowExhaust": "FALSE",
-    "Report": "\"none\""
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2418,7 +2423,8 @@
     "Mode": "\"1.0.82\"",
     "Fault": "\"none\"",
     "AllowExhaust": "FALSE",
-    "Report": "\"none\""
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "Inv_KeyOnlyForRetry"
@@ -2453,7 +2459,8 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"other-first\"",
     "AllowExhaust": "FALSE",
-    "Report": "\"none\""
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "Inv_RetryFirst"
@@ -2488,7 +2495,8 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"drop-at-can\"",
     "AllowExhaust": "FALSE",
-    "Report": "\"none\""
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "Inv_RetryNotLost"
@@ -2523,7 +2531,8 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"agent-released\"",
     "AllowExhaust": "FALSE",
-    "Report": "\"none\""
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "Inv_AgentWaitKept"
@@ -2558,7 +2567,8 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"fresh-with-key\"",
     "AllowExhaust": "FALSE",
-    "Report": "\"none\""
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "Inv_FreshNoKey"
@@ -2593,7 +2603,8 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"none\"",
     "AllowExhaust": "FALSE",
-    "Report": "\"none\""
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "W_NoRetry"
@@ -2628,7 +2639,8 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"none\"",
     "AllowExhaust": "FALSE",
-    "Report": "\"none\""
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "W_NoPollAfter"
@@ -6892,7 +6904,8 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"none\"",
     "AllowExhaust": "TRUE",
-    "Report": "\"none\""
+    "Report": "\"none\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6945,7 +6958,8 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"none\"",
     "AllowExhaust": "TRUE",
-    "Report": "\"fix\""
+    "Report": "\"fix\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6999,7 +7013,8 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"none\"",
     "AllowExhaust": "TRUE",
-    "Report": "\"fix\""
+    "Report": "\"fix\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7050,7 +7065,8 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"none\"",
     "AllowExhaust": "TRUE",
-    "Report": "\"fix\""
+    "Report": "\"fix\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7093,7 +7109,8 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"report-early\"",
     "AllowExhaust": "TRUE",
-    "Report": "\"fix\""
+    "Report": "\"fix\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "Inv_NoReportBeforeTerminal"
@@ -7128,7 +7145,8 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"drop-report-at-can\"",
     "AllowExhaust": "TRUE",
-    "Report": "\"fix\""
+    "Report": "\"fix\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "Inv_ReportNotLost"
@@ -7163,10 +7181,105 @@
     "Mode": "\"1.0.83\"",
     "Fault": "\"none\"",
     "AllowExhaust": "TRUE",
-    "Report": "\"fix\""
+    "Report": "\"fix\"",
+    "AllowLaterSuccess": "FALSE"
    },
    "invariants": [
     "W_NoTerminalReport"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "or.terminal-report-later-success",
+  "module": "OwnedRetry",
+  "config": "or.terminal-report-later-success.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_RetryFirst",
+   "Inv_KeyOnlyForRetry",
+   "Inv_FreshNoKey",
+   "Inv_RetryNotLost",
+   "Inv_AgentWaitKept",
+   "Inv_NoReportBeforeTerminal",
+   "Inv_ReportNotLost",
+   "Inv_ReportOnce"
+  ],
+  "properties": [
+   "Prop_RetryDispatched",
+   "Prop_TerminalSettled"
+  ],
+  "deadlock": true,
+  "rows": "tf1",
+  "note": "tf1 fix with a later successful turn (d3230de4): an owed report is sent, or dropped by that success; never lost, never sent twice.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "or.terminal-report-later-success (tf1; expected PASS): tf1 fix with a later successful turn (d3230de4): an owed report is sent, or dropped by that success; never lost, never sent twice.",
+   "spec": "LiveSpec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "FALSE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"fix\"",
+    "AllowLaterSuccess": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_RetryFirst",
+    "Inv_KeyOnlyForRetry",
+    "Inv_FreshNoKey",
+    "Inv_RetryNotLost",
+    "Inv_AgentWaitKept",
+    "Inv_NoReportBeforeTerminal",
+    "Inv_ReportNotLost",
+    "Inv_ReportOnce"
+   ],
+   "properties": [
+    "Prop_RetryDispatched",
+    "Prop_TerminalSettled"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.or-report-dropped",
+  "module": "OwnedRetry",
+  "config": "wit.or-report-dropped.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoDroppedReport"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "rows": "tf1",
+  "note": "tf1: a later success drops an owed report.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "wit.or-report-dropped (tf1; expected safety): tf1: a later success drops an owed report.",
+   "spec": "Spec",
+   "constants": {
+    "TimerKind": "\"wait\"",
+    "AllowHandoff": "TRUE",
+    "AllowShutdown": "FALSE",
+    "Mode": "\"1.0.83\"",
+    "Fault": "\"none\"",
+    "AllowExhaust": "TRUE",
+    "Report": "\"fix\"",
+    "AllowLaterSuccess": "TRUE"
+   },
+   "invariants": [
+    "W_NoDroppedReport"
    ],
    "properties": [],
    "deadlock": true

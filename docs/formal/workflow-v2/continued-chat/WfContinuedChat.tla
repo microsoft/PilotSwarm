@@ -69,7 +69,9 @@ CONSTANTS
     FailReport,     \* "none" (the code before the fix: nothing tells the store), "fix" (the session reports the failure and
                     \* one store step decides the turn's own visit execution_failed while it is pending), "binds-newest"
                     \* (fault: the report decides the session's newest pending visit)
-    TimeoutFair     \* a visit's time limit is forced to arrive (FALSE: liveness must not rest on it)
+    TimeoutFair,    \* a visit's time limit is forced to arrive (FALSE: liveness must not rest on it)
+    AllowRecover    \* a later turn of the session succeeds (a reminder of the failed visit) while its report is owed:
+                    \* the report is dropped (no report after a success); the agent may complete the visit in that turn
 
 ASSUME V \in 1..3 /\ Person \in {"none", "end", "delete", "any"}
 ASSUME {AllowStop, AllowCancel, AllowStopFail, RecoverFair, SpawnRecheck, RecheckSeesEnding, EndMark, StopBeforeSpawn, PerChatEnd, StopAtRunEnd} \subseteq BOOLEAN
@@ -79,6 +81,7 @@ ASSUME {SplitSpawn, CheckAll, Backstop, AllowSpawnCrash, MarkSplit, Withdraw, Ou
 ASSUME CarryDelete \in {"none", "visible", "owed", "queued", "queued-skew", "queued-race"}
 ASSUME {TurnGuard, MarkCreating, CarryNotFound} \subseteq BOOLEAN
 ASSUME AllowTurnFail \in BOOLEAN /\ FailReport \in {"none", "fix", "binds-newest"} /\ TimeoutFair \in BOOLEAN
+ASSUME AllowRecover \in BOOLEAN
 ASSUME Fence \in {"none", "create", "both", "after"} /\ MarkFail \in {"none", "throw", "crash"}
 
 Vis == 1..V
@@ -315,6 +318,20 @@ ReportDecide(u) ==
     /\ reports' = reports \ {u}
     /\ UNCHANGED <<pend, marked, run, nv, ses, readers, afterDone, acted, failedV>>
 
+(* tf1: a later turn of the session succeeds while the failed visit's     *)
+(* report is still owed (its activity failed so far): the report is       *)
+(* dropped; the agent completes the visit in that turn, or does not (then *)
+(* its time limit decides it).                                             *)
+RecoveredTurn(u) ==
+    /\ AllowRecover /\ u \in reports /\ vis[u].node = "pending"
+    /\ LET s == vis[u].s
+       IN /\ ses[s].st = "live" /\ ses[s].turn = 0
+          /\ \E done \in BOOLEAN :
+                /\ vis' = IF done THEN Decide(u, "result") ELSE vis
+                /\ gh' = gh \cup {"dropped"} \cup (IF done THEN {"droppedThenResult"} ELSE {})
+    /\ reports' = reports \ {u}
+    /\ UNCHANGED <<pend, marked, run, nv, ses, readers, afterDone, acted, failedV>>
+
 (* The visit's time limit.                                                 *)
 Timeout(v) ==
     /\ vis[v].node = "pending" /\ run # "ended"
@@ -453,7 +470,7 @@ Next ==
     \/ Done \/ Admit \/ RunStop \/ StopDone \/ RunCancel \/ RunDone \/ AfterEnd \/ Recover
     \/ PersonEnqueue \/ PersonEnqueueFails \/ WithdrawMark
     \/ \E v \in Vis : Spawn(v) \/ SpawnCheck(v) \/ SpawnCreate(v) \/ SpawnSend(v) \/ Timeout(v) \/ EndVisit(v) \/ RetryStop(v)
-                      \/ ReportDecide(v)
+                      \/ ReportDecide(v) \/ RecoveredTurn(v)
     \/ \E s \in Ses : Visible(s) \/ TurnStart(s) \/ TurnEnd(s) \/ LookLocked(s) \/ LookRead(s) \/ LookSend(s)
                       \/ Finish(s) \/ PersonEnd(s) \/ PersonMark(s) \/ PersonDelete(s) \/ RaceResolve(s) \/ OrphanTurn(s)
                       \/ TurnFails(s)
@@ -529,5 +546,7 @@ W_NoRecheckFail == "recheckFail" \notin gh
 (* tf1: a failure report decides a visit; the next visit reuses the agent  *)
 (* session whose turn failed.                                              *)
 W_NoFailDecided == ~\E v \in Vis : vis[v].how = "execution_failed"
+W_NoDroppedThenResult == "droppedThenResult" \notin gh
+W_NoDroppedThenTimeout == ~("dropped" \in gh /\ \E v \in failedV : vis[v].how = "timeout")
 W_NoReuseAfterFail == ~\E v \in 1..(V - 1) : vis[v].how = "execution_failed" /\ vis[v + 1].node # "none" /\ vis[v + 1].s = vis[v].s
 =============================================================================

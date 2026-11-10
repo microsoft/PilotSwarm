@@ -14,7 +14,8 @@
       "Code",
       "AllowTurnFail",
       "Report",
-      "DeadlineFair"
+      "DeadlineFair",
+      "AllowRecover"
     ],
     "lists": "block",
     "deadlockFirst": false

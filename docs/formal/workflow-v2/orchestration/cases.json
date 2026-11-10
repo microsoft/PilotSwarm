@@ -1279,7 +1279,8 @@
     "Code": "\"efe44835\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1323,7 +1324,8 @@
     "Code": "\"efe44835\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [],
    "properties": [
@@ -1362,7 +1364,8 @@
     "Code": "\"efe44835\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [],
    "properties": [
@@ -1400,7 +1403,8 @@
     "Code": "\"efe44835\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [],
    "properties": [
@@ -1438,7 +1442,8 @@
     "Code": "\"efe44835\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [
     "Inv_PromptOnce"
@@ -1476,7 +1481,8 @@
     "Code": "\"efe44835\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [
     "Wit_ChildCompletes"
@@ -1514,7 +1520,8 @@
     "Code": "\"efe44835\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [
     "Wit_TimedOutChildEnded"
@@ -1552,7 +1559,8 @@
     "Code": "\"efe44835\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [
     "Wit_SpawnAfterDecision"
@@ -1590,7 +1598,8 @@
     "Code": "\"efe44835\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [
     "Wit_InvalidExhausted"
@@ -1628,7 +1637,8 @@
     "Code": "\"efe44835\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [],
    "properties": [
@@ -1666,7 +1676,8 @@
     "Code": "\"efe44835\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [],
    "properties": [
@@ -1704,7 +1715,8 @@
     "Code": "\"efe44835\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [
     "Inv_NoCompletionAfterDeadline"
@@ -2986,7 +2998,8 @@
     "Code": "\"proposedD\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [],
    "properties": [
@@ -3029,7 +3042,8 @@
     "Code": "\"proposedD\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3073,7 +3087,8 @@
     "Code": "\"proposedD\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [],
    "properties": [
@@ -3652,7 +3667,8 @@
     "Code": "\"1f7bdc77\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [],
    "properties": [
@@ -3695,7 +3711,8 @@
     "Code": "\"1f7bdc77\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3739,7 +3756,8 @@
     "Code": "\"1f7bdc77\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [],
    "properties": [
@@ -3778,7 +3796,8 @@
     "Code": "\"1f7bdc77\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [
     "Wit_SecondEndCommand"
@@ -6173,7 +6192,8 @@
     "Code": "\"a10c2e07\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6217,7 +6237,8 @@
     "Code": "\"a10c2e07\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [],
    "properties": [
@@ -6256,7 +6277,8 @@
     "Code": "\"a10c2e07\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [],
    "properties": [
@@ -6294,7 +6316,8 @@
     "Code": "\"a10c2e07\"",
     "AllowTurnFail": "FALSE",
     "Report": "\"none\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [
     "Wit_SecondEndCommand"
@@ -12656,7 +12679,8 @@
     "Code": "\"a10c2e07\"",
     "AllowTurnFail": "TRUE",
     "Report": "\"none\"",
-    "DeadlineFair": "FALSE"
+    "DeadlineFair": "FALSE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [],
    "properties": [
@@ -12695,7 +12719,8 @@
     "Code": "\"a10c2e07\"",
     "AllowTurnFail": "TRUE",
     "Report": "\"fix\"",
-    "DeadlineFair": "FALSE"
+    "DeadlineFair": "FALSE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [],
    "properties": [
@@ -12741,7 +12766,8 @@
     "Code": "\"a10c2e07\"",
     "AllowTurnFail": "TRUE",
     "Report": "\"fix\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -12788,7 +12814,8 @@
     "Code": "\"a10c2e07\"",
     "AllowTurnFail": "TRUE",
     "Report": "\"fix\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [],
    "properties": [
@@ -12828,7 +12855,8 @@
     "Code": "\"a10c2e07\"",
     "AllowTurnFail": "TRUE",
     "Report": "\"unfenced\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [
     "Inv_DecidedOnce"
@@ -12866,10 +12894,224 @@
     "Code": "\"a10c2e07\"",
     "AllowTurnFail": "TRUE",
     "Report": "\"fix\"",
-    "DeadlineFair": "TRUE"
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "FALSE"
    },
    "invariants": [
     "Wit_FailedDecided"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "tf.agent-fail-recovers",
+  "module": "WfAgent",
+  "mode": "comparison",
+  "spec": "LiveSpec",
+  "config": "tf.agent-fail-recovers.cfg",
+  "head": "design",
+  "properties": [
+   "Prop_StateDecided",
+   "Prop_ChildReleased",
+   "Prop_FailedDecided"
+  ],
+  "expected": "PASS",
+  "note": "The fix with a later successful turn that drops an owed report: the state is still decided (the report, the agent or the deadline) and the child ended.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "tf.agent-fail-recovers (comparison; expected PASS): The fix with a later successful turn that drops an owed report: the state is still decided (the report, the agent or the deadline) and the child ended.",
+   "spec": "LiveSpec",
+   "constants": {
+    "MaxCrashes": "2",
+    "MaxInvalid": "2",
+    "AllowRefuse": "TRUE",
+    "AllowExhaust": "FALSE",
+    "AllowEndFail": "FALSE",
+    "AllowEvict": "FALSE",
+    "AllowRunEnd": "TRUE",
+    "AllowAsk": "TRUE",
+    "Fault": "\"none\"",
+    "Code": "\"a10c2e07\"",
+    "AllowTurnFail": "TRUE",
+    "Report": "\"fix\"",
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "TRUE"
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_StateDecided",
+    "Prop_ChildReleased",
+    "Prop_FailedDecided"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "tf.agent-fail-recovers-safety",
+  "module": "WfAgent",
+  "mode": "comparison",
+  "spec": "Spec",
+  "config": "tf.agent-fail-recovers-safety.cfg",
+  "head": "design",
+  "properties": [
+   "TypeOK",
+   "Inv_NoCompletionAfterDeadline",
+   "Inv_PromptOnce",
+   "Inv_EndOnlyDecided",
+   "Inv_EndMatchesWinner",
+   "Inv_ChildOnlyFromAttempt",
+   "Inv_DecidedOnce",
+   "Inv_FailOnlyWhenPending"
+  ],
+  "expected": "PASS",
+  "note": "The fix with a later successful turn: every rule, a decision never replaced.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "tf.agent-fail-recovers-safety (comparison; expected PASS): The fix with a later successful turn: every rule, a decision never replaced.",
+   "spec": "Spec",
+   "constants": {
+    "MaxCrashes": "2",
+    "MaxInvalid": "2",
+    "AllowRefuse": "TRUE",
+    "AllowExhaust": "TRUE",
+    "AllowEndFail": "TRUE",
+    "AllowEvict": "FALSE",
+    "AllowRunEnd": "TRUE",
+    "AllowAsk": "TRUE",
+    "Fault": "\"none\"",
+    "Code": "\"a10c2e07\"",
+    "AllowTurnFail": "TRUE",
+    "Report": "\"fix\"",
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoCompletionAfterDeadline",
+    "Inv_PromptOnce",
+    "Inv_EndOnlyDecided",
+    "Inv_EndMatchesWinner",
+    "Inv_ChildOnlyFromAttempt",
+    "Inv_DecidedOnce",
+    "Inv_FailOnlyWhenPending"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "limit.agent-fail-recovered-no-deadline",
+  "module": "WfAgent",
+  "mode": "comparison",
+  "spec": "LiveSpec",
+  "config": "limit.agent-fail-recovered-no-deadline.cfg",
+  "head": "design",
+  "properties": [
+   "Prop_FailedDecided"
+  ],
+  "expected": "liveness",
+  "note": "Design limit: a recovered child that never completes leaves its state to the deadline (here not forced).",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "limit.agent-fail-recovered-no-deadline (comparison; expected liveness): Design limit: a recovered child that never completes leaves its state to the deadline (here not forced).",
+   "spec": "LiveSpec",
+   "constants": {
+    "MaxCrashes": "2",
+    "MaxInvalid": "2",
+    "AllowRefuse": "TRUE",
+    "AllowExhaust": "FALSE",
+    "AllowEndFail": "FALSE",
+    "AllowEvict": "FALSE",
+    "AllowRunEnd": "TRUE",
+    "AllowAsk": "TRUE",
+    "Fault": "\"none\"",
+    "Code": "\"a10c2e07\"",
+    "AllowTurnFail": "TRUE",
+    "Report": "\"fix\"",
+    "DeadlineFair": "FALSE",
+    "AllowRecover": "TRUE"
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_FailedDecided"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.agent-dropped-then-agent",
+  "module": "WfAgent",
+  "mode": "witness",
+  "spec": "Spec",
+  "config": "wit.agent-dropped-then-agent.cfg",
+  "head": "design",
+  "properties": [
+   "Wit_DroppedThenAgent"
+  ],
+  "expected": "safety",
+  "note": "A dropped report's state is completed by the agent in the successful turn.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "wit.agent-dropped-then-agent (witness; expected safety): A dropped report's state is completed by the agent in the successful turn.",
+   "spec": "Spec",
+   "constants": {
+    "MaxCrashes": "2",
+    "MaxInvalid": "2",
+    "AllowRefuse": "TRUE",
+    "AllowExhaust": "FALSE",
+    "AllowEndFail": "FALSE",
+    "AllowEvict": "FALSE",
+    "AllowRunEnd": "TRUE",
+    "AllowAsk": "TRUE",
+    "Fault": "\"none\"",
+    "Code": "\"a10c2e07\"",
+    "AllowTurnFail": "TRUE",
+    "Report": "\"fix\"",
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "TRUE"
+   },
+   "invariants": [
+    "Wit_DroppedThenAgent"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.agent-dropped-then-timed-out",
+  "module": "WfAgent",
+  "mode": "witness",
+  "spec": "Spec",
+  "config": "wit.agent-dropped-then-timed-out.cfg",
+  "head": "design",
+  "properties": [
+   "Wit_DroppedThenTimedOut"
+  ],
+  "expected": "safety",
+  "note": "A dropped report's state is decided by its deadline.",
+  "batch": "tf1",
+  "tlc": {
+   "comment": "wit.agent-dropped-then-timed-out (witness; expected safety): A dropped report's state is decided by its deadline.",
+   "spec": "Spec",
+   "constants": {
+    "MaxCrashes": "2",
+    "MaxInvalid": "2",
+    "AllowRefuse": "TRUE",
+    "AllowExhaust": "FALSE",
+    "AllowEndFail": "FALSE",
+    "AllowEvict": "FALSE",
+    "AllowRunEnd": "TRUE",
+    "AllowAsk": "TRUE",
+    "Fault": "\"none\"",
+    "Code": "\"a10c2e07\"",
+    "AllowTurnFail": "TRUE",
+    "Report": "\"fix\"",
+    "DeadlineFair": "TRUE",
+    "AllowRecover": "TRUE"
+   },
+   "invariants": [
+    "Wit_DroppedThenTimedOut"
    ],
    "properties": [],
    "deadlock": true

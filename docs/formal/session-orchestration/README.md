@@ -284,7 +284,9 @@ retries spent: the turn is terminal and the session goes idle with an error) and
 the fix; `"fix"`: a turn that carries a Workflow visit owes the store a failure report, a durable activity, carried
 across continue-as-new); the actions `RetryExhausted` and `ReportSend`; the rules `Inv_NoReportBeforeTerminal`,
 `Inv_ReportNotLost`, `Inv_ReportOnce` and `Prop_TerminalReported`; the faults `report-early` and
-`drop-report-at-can`. Cases (batch tf1): `or.terminal-no-report` (the code before the fix: violated),
+`drop-report-at-can`. `AllowLaterSuccess` (`LaterSuccess`): a later turn that succeeds while the report is owed drops
+it, as `d3230de4` does; `or.terminal-report-later-success` checks `Prop_TerminalSettled` (sent or dropped) and a
+witness shows the drop. Cases (batch tf1): `or.terminal-no-report` (the code before the fix: violated),
 `or.terminal-report`, `or.terminal-report-safety-wait`, `-agent` (PASS), the two faults and a witness. `TurnLoop` is
 unchanged: the report is an activity before the session idles, and it changes no queue order.
 

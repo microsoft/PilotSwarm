@@ -180,3 +180,5 @@ or.terminal-report-safety-agent	or.terminal-report-safety-agent.cfg	OwnedRetry
 fault.or-report-early	fault.or-report-early.cfg	OwnedRetry
 fault.or-report-dropped-at-can	fault.or-report-dropped-at-can.cfg	OwnedRetry
 wit.or-terminal-reported	wit.or-terminal-reported.cfg	OwnedRetry
+or.terminal-report-later-success	or.terminal-report-later-success.cfg	OwnedRetry
+wit.or-report-dropped	wit.or-report-dropped.cfg	OwnedRetry

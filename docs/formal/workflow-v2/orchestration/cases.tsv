@@ -287,3 +287,8 @@ tf.agent-fail-safety	tf.agent-fail-safety.cfg	WfAgent
 tf.agent-fail-live	tf.agent-fail-live.cfg	WfAgent
 fault.agent-fail-unfenced	fault.agent-fail-unfenced.cfg	WfAgent
 wit.agent-fail-decided	wit.agent-fail-decided.cfg	WfAgent
+tf.agent-fail-recovers	tf.agent-fail-recovers.cfg	WfAgent
+tf.agent-fail-recovers-safety	tf.agent-fail-recovers-safety.cfg	WfAgent
+limit.agent-fail-recovered-no-deadline	limit.agent-fail-recovered-no-deadline.cfg	WfAgent
+wit.agent-dropped-then-agent	wit.agent-dropped-then-agent.cfg	WfAgent
+wit.agent-dropped-then-timed-out	wit.agent-dropped-then-timed-out.cfg	WfAgent

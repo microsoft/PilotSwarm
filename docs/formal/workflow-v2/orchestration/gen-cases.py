@@ -22,10 +22,10 @@ def g(plan, limit, k=1, conc=1, ff=False, cancel=True, stop=True, pause=True, de
     return dict(Plan=f'"{plan}"', Limit=limit, K=k, Conc=conc, FailFast=ff, AllowCancel=cancel, AllowStop=stop,
                 AllowPause=pause, AllowDeadline=deadline, AllowDelete=delete, Cmd=f'"{cmd}"', AllowLoseHint=lose, Fault=f'"{fault}"')
 def a(crashes=2, invalid=2, refuse=True, exhaust=False, endfail=False, evict=False, runend=True, ask=True, fault="none", head="efe44835",
-      turnfail=False, report="none", dfair=True):
+      turnfail=False, report="none", dfair=True, recover=False):
     return dict(MaxCrashes=crashes, MaxInvalid=invalid, AllowRefuse=refuse, AllowExhaust=exhaust, AllowEndFail=endfail,
                 AllowEvict=evict, AllowRunEnd=runend, AllowAsk=ask, Fault=f'"{fault}"', Code=f'"{head}"',
-                AllowTurnFail=turnfail, Report=f'"{report}"', DeadlineFair=dfair)
+                AllowTurnFail=turnfail, Report=f'"{report}"', DeadlineFair=dfair, AllowRecover=recover)
 def p(kind="send", flag="omitted", crashes=1, ext=False, pcancel=True, pend=False, fifo=False, evict=False, fault="none",
       back=False, turnfails=1, head="efe44835", wait=False, zombie=False, notifiers=1, statusrace=True, ntzombie=False,
       recover=False, maxrec=0, recafter=False):

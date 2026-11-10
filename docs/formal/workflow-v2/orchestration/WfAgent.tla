@@ -30,7 +30,11 @@
 (* (a durable activity, at least once) and one store transaction decides  *)
 (* the state execution_failed (winner controller) only while it is       *)
 (* pending, and wakes the controller. DeadlineFair = FALSE checks that   *)
-(* the failed child is decided without the deadline.                      *)
+(* the failed child is decided without the deadline. AllowRecover: a      *)
+(* later turn of the child succeeds (a reminder or a parent's answer)     *)
+(* while the report is still owed (its activity failed so far): the code  *)
+(* drops the report (no report after a success); the state is then        *)
+(* decided by the agent's completion or by the deadline.                  *)
 EXTENDS Naturals
 
 CONSTANTS
@@ -47,11 +51,12 @@ CONSTANTS
     AllowTurnFail,   \* tf1: the child's turn may fail terminally
     Report,          \* tf1: "none" (no report: the state waits for its deadline), "fix" (the failure decides it),
                      \* "unfenced" (fault: the report decides even a decided state)
-    DeadlineFair     \* the deadline is forced to arrive (FALSE: liveness must not rest on it)
+    DeadlineFair,    \* the deadline is forced to arrive (FALSE: liveness must not rest on it)
+    AllowRecover     \* tf1: a later turn of a failed child succeeds; an owed report is dropped
 
 ASSUME Code \in {"efe44835", "1c117a47", "1f7bdc77", "a10c2e07", "proposedD"}
 ASSUME Fault \in {"none", "no_end_after_spawn", "end_ignores_spawn", "accept_after_deadline"}
-ASSUME AllowTurnFail \in BOOLEAN /\ Report \in {"none", "fix", "unfenced"} /\ DeadlineFair \in BOOLEAN
+ASSUME AllowTurnFail \in BOOLEAN /\ Report \in {"none", "fix", "unfenced"} /\ DeadlineFair \in BOOLEAN /\ AllowRecover \in BOOLEAN
 NONE == "none"
 
 VARIABLES
@@ -64,7 +69,7 @@ VARIABLES
     child,      \* [exists, st ("none", "active", "ended"), prompts, window, endCmd, asked, answered]
     invalidLeft,
     ctl,        \* the controller: "waiting", "ending", "ended"
-    rep,        \* tf1: the failure report: "none", "owed", "again" (delivered again after a crash), "done"
+    rep,        \* tf1: the failure report: "none", "owed", "again" (delivered again after a crash), "done", "dropped"
     \* history
     acceptLate, acceptClosed, endBeforeDecision, wokeController, redecided
 
@@ -79,7 +84,7 @@ Init ==
     /\ inv = [attempts |-> 0, spawned |-> FALSE, endReq |-> NONE, endSent |-> FALSE, endStatus |-> NONE]
     /\ sp = "begin" /\ crashes = 0
     /\ child = [exists |-> FALSE, st |-> "none", prompts |-> 0, window |-> FALSE, endCmd |-> FALSE,
-                asked |-> FALSE, answered |-> FALSE, ends |-> 0, failed |-> FALSE]
+                asked |-> FALSE, answered |-> FALSE, ends |-> 0, failed |-> FALSE, failedOnce |-> FALSE]
     /\ invalidLeft = MaxInvalid
     /\ ctl = "waiting"
     /\ acceptLate = FALSE /\ acceptClosed = FALSE /\ endBeforeDecision = FALSE /\ wokeController = FALSE
@@ -250,8 +255,18 @@ ChildQuits ==
 (* store.                                                                 *)
 ChildFailsTerminally ==
     /\ AllowTurnFail /\ Working
-    /\ child' = [child EXCEPT !.failed = TRUE]
+    /\ child' = [child EXCEPT !.failed = TRUE, !.failedOnce = TRUE]
     /\ rep' = IF Report # "none" THEN "owed" ELSE rep
+    /\ UNCHANGED <<node, due, runLive, inv, sp, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController, redecided>>
+
+(* tf1: a later turn of the failed child succeeds (it was prompted again:  *)
+(* a reminder, a parent's answer); the child works again and may complete *)
+(* its state. A report still owed is dropped (handleTurnResult); one      *)
+(* whose store transaction ran is kept.                                   *)
+ChildRecovers ==
+    /\ AllowRecover /\ child.failed /\ child.st = "active"
+    /\ child' = [child EXCEPT !.failed = FALSE]
+    /\ rep' = IF rep = "owed" THEN "dropped" ELSE rep
     /\ UNCHANGED <<node, due, runLive, inv, sp, crashes, invalidLeft, ctl, acceptLate, acceptClosed, endBeforeDecision, wokeController, redecided>>
 
 (* tf1: the report's store transaction: the state is decided              *)
@@ -325,7 +340,7 @@ Done == ctl = "ended" /\ sp = "done" /\ UNCHANGED vars
 Next ==
     \/ SpawnBegin \/ SpawnHost \/ SpawnRecord \/ SpawnEndAfter \/ SpawnCrash \/ SpawnExhausted
     \/ ChildComplete \/ ChildAsks \/ ParentAnswers \/ ChildTakesEnd \/ ChildQuits \/ Evict
-    \/ ChildFailsTerminally \/ ReportDecide
+    \/ ChildFailsTerminally \/ ReportDecide \/ ChildRecovers
     \/ Deadline \/ Elapse \/ Collect \/ RunEnds \/ EndAgents \/ Done
 
 (* Fairness: workers run the spawn, the controller and the child; the    *)
@@ -344,7 +359,7 @@ LiveSpec == Spec /\ Fairness
 ----------------------------------------------------------------------------
 TypeOK ==
     /\ node \in {"pending", "agent_ok", "agent_err", "invalid_output", "timed_out", "unavailable", "cancel", "execution_failed"}
-    /\ rep \in {"none", "owed", "again", "done"}
+    /\ rep \in {"none", "owed", "again", "done", "dropped"}
     /\ sp \in {"begin", "host", "record", "endafter", "done"}
     /\ ctl \in {"waiting", "ending", "ended"}
     /\ invalidLeft \in 0..MaxInvalid
@@ -358,7 +373,7 @@ Inv_ChildOnlyFromAttempt == child.exists => inv.attempts > 0
 (* tf1: no decision is ever replaced (the failure report decides only a   *)
 (* pending state), and execution_failed follows a real terminal failure.  *)
 Inv_DecidedOnce == ~redecided
-Inv_FailOnlyWhenPending == node = "execution_failed" => (child.failed /\ ~redecided)
+Inv_FailOnlyWhenPending == node = "execution_failed" => (child.failedOnce /\ ~redecided)
 
 (* Liveness.                                                               *)
 Prop_StateDecided == <>Decided
@@ -378,4 +393,8 @@ Wit_InvalidExhausted == ~(node = "invalid_output")
 Wit_SecondEndCommand == child.ends < 2
 (* tf1: the failure report decides the state.                              *)
 Wit_FailedDecided == ~(node = "execution_failed")
+(* tf1: after a report was dropped, the agent completes the state, or the *)
+(* deadline decides it.                                                   *)
+Wit_DroppedThenAgent == ~(rep = "dropped" /\ ByAgent)
+Wit_DroppedThenTimedOut == ~(rep = "dropped" /\ node = "timed_out")
 =============================================================================

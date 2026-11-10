@@ -32,7 +32,8 @@
       "CarryNotFound",
       "AllowTurnFail",
       "FailReport",
-      "TimeoutFair"
+      "TimeoutFair",
+      "AllowRecover"
     ],
     "lists": "block",
     "deadlockFirst": false

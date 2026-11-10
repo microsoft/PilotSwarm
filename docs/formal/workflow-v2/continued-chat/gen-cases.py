@@ -12,14 +12,14 @@ def cc(v=3, person="none", stop=True, cancel=True, stopfail=False, failchat=0, r
        recheck=False, stopspawn=False, perchat=False, stopend=False, fault="none", seesending=True, endmark=False,
        split=False, checkall=False, fence="none", backstop=False, crash=False, marksplit=False, markfail="none",
        withdraw=False, outbox=False, carry=False, carrydelete="none",
-       turnguard=False, markcreating=False, carrynotfound=False, turnfail=False, failreport="none", tofair=True):
+       turnguard=False, markcreating=False, carrynotfound=False, turnfail=False, failreport="none", tofair=True, tfrecover=False):
     return dict(V=v, Person=q(person), AllowStop=b(stop), AllowCancel=b(cancel), AllowStopFail=b(stopfail), FailChat=failchat,
                 RecoverFair=b(recover), SpawnRecheck=b(recheck), RecheckSeesEnding=b(seesending), EndMark=b(endmark), StopBeforeSpawn=b(stopspawn), PerChatEnd=b(perchat),
                 StopAtRunEnd=b(stopend), Fault=q(fault), SplitSpawn=b(split), CheckAll=b(checkall), Fence=q(fence),
                 Backstop=b(backstop), AllowSpawnCrash=b(crash), MarkSplit=b(marksplit), MarkFail=q(markfail),
                 Withdraw=b(withdraw), Outbox=b(outbox), Carry=b(carry), CarryDelete=q(carrydelete),
                 TurnGuard=b(turnguard), MarkCreating=b(markcreating), CarryNotFound=b(carrynotfound),
-                AllowTurnFail=b(turnfail), FailReport=q(failreport), TimeoutFair=b(tofair))
+                AllowTurnFail=b(turnfail), FailReport=q(failreport), TimeoutFair=b(tofair), AllowRecover=b(tfrecover))
 M = "WfContinuedChat"
 CORE = ["TypeOK", "Inv_OneLive", "Inv_ResultOwnVisit", "Inv_ReplaceOnlyEnded", "Inv_NoTurnForDecided", "Inv_EndOnce"]
 ALL = CORE + ["Inv_PromptNotDropped", "Inv_NoLoudFail", "Inv_NoPromptBehindStaleTurn", "Inv_StopAtRunEnd"]
@@ -248,6 +248,14 @@ CASES = [
   "A failure report that decides the session's newest pending visit: a stale turn's failure decides the next visit."),
  ("wit.cc-turn-fail-decided", "proposal", "witness", "Spec", cc(v=2, turnfail=True, failreport="fix", **IMPL2), ["W_NoFailDecided"], [], "safety", True,
   "tf1 fix: a failure report decides a visit execution_failed."),
+ ("tf.cc-turn-fails-recovers", "proposal", "proposed-fix", "LiveSpec", cc(v=2, turnfail=True, failreport="fix", tfrecover=True, **IMPL2), CORE, LIVE + ["Prop_FailedVisitDecided"], "PASS", True,
+  "tf1 fix with a later successful turn that drops an owed report (d3230de4): the visit is still decided, by the report, the agent's result or its time limit."),
+ ("limit.cc-turn-fails-recovered-no-timeout", "proposal", "design-limit", "LiveSpec", cc(v=2, turnfail=True, failreport="fix", tfrecover=True, tofair=False, **IMPL2), CORE, ["Prop_FailedVisitDecided"], "liveness", True,
+  "Design limit: after a dropped report, a visit the agent does not complete is left to its time limit (here not forced)."),
+ ("wit.cc-dropped-then-result", "proposal", "witness", "Spec", cc(v=2, turnfail=True, failreport="fix", tfrecover=True, **IMPL2), ["W_NoDroppedThenResult"], [], "safety", True,
+  "After a dropped report, the agent completes the visit in the successful turn."),
+ ("wit.cc-dropped-then-timeout", "proposal", "witness", "Spec", cc(v=2, turnfail=True, failreport="fix", tfrecover=True, **IMPL2), ["W_NoDroppedThenTimeout"], [], "safety", True,
+  "After a dropped report, the visit's time limit decides it."),
  ("wit.cc-reuse-after-fail", "proposal", "witness", "Spec", cc(v=2, turnfail=True, failreport="fix", **IMPL2), ["W_NoReuseAfterFail"], [], "safety", True,
   "tf1 fix: the next visit reuses the agent session whose turn failed (coordinator decision: no replacement)."),
  # faults

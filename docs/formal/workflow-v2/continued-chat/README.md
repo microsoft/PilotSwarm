@@ -127,7 +127,13 @@ New constants `AllowTurnFail`, `FailReport` (`"none"`, `"fix"`, `"binds-newest"`
 `TurnFails` and `ReportDecide`; `Prop_FailedVisitDecided`; witnesses `W_NoFailDecided` and `W_NoReuseAfterFail`. Cases
 (batch tf1, the G1-G5 fixes and the end mark as the base): `tf.cc-turn-fails-waits` (the code before the fix, with the
 time limit not forced: violated), `tf.cc-turn-fails`, `-safety`, `-live`, `tf.cc-stale-turn-fails` (PASS),
-`fault.cc-report-binds-newest` (`Inv_ResultOwnVisit` violated) and two witnesses.
+`fault.cc-report-binds-newest` (`Inv_ResultOwnVisit` violated) and two witnesses. A later successful turn of the session
+while the report is owed drops it (`AllowRecover`, `RecoveredTurn`, as `d3230de4` does): `tf.cc-turn-fails-recovers`
+passes (the visit is decided by the report, the agent's result or its time limit), two witnesses show the last two, and
+`limit.cc-turn-fails-recovered-no-timeout` records the reliance on the time limit. A turn can carry the late prompt of a
+decided visit with the next visit's prompt; at most one of them is pending, and the report decides every pending visit
+it names (the model's turns carry one prompt; `fault.cc-report-binds-newest` checks that a report never decides a visit
+it did not carry).
 
 ## How to run
 

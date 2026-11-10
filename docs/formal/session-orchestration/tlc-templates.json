@@ -98,7 +98,8 @@
       "Mode",
       "Fault",
       "AllowExhaust",
-      "Report"
+      "Report",
+      "AllowLaterSuccess"
     ],
     "lists": "block",
     "deadlockFirst": false

@@ -18,7 +18,10 @@
 (* idle with an error. With Report = "fix", a turn that carries a Workflow *)
 (* visit owes the store a failure report (a durable activity): it is owed *)
 (* only once the failure is terminal, carried across continue-as-new, and *)
-(* sent once. Report = "none" is the code before the fix.                 *)
+(* sent once. Report = "none" is the code before the fix. AllowLaterSuccess: *)
+(* a later turn succeeds while the report is still owed (its activity     *)
+(* failed so far): the report is dropped (d3230de4 handleTurnResult: no   *)
+(* report after a success).                                               *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -30,12 +33,13 @@ CONSTANTS
     Fault,          \* "none", "other-first", "drop-at-can", "agent-released", "fresh-with-key", "report-early",
                     \* "drop-report-at-can"
     AllowExhaust,   \* tf1: the retry may fail with its retries spent (a terminal failure)
-    Report          \* tf1: "none" (no report) or "fix" (a terminal failure of a Workflow visit's turn is reported)
+    Report,         \* tf1: "none" (no report) or "fix" (a terminal failure of a Workflow visit's turn is reported)
+    AllowLaterSuccess \* tf1: a later turn succeeds while the report is owed; the report is dropped
 
 ASSUME TimerKind \in {"none", "wait", "agent"} /\ AllowHandoff \in BOOLEAN /\ AllowShutdown \in BOOLEAN
 ASSUME Mode \in {"1.0.83", "1.0.82"}
 ASSUME Fault \in {"none", "other-first", "drop-at-can", "agent-released", "fresh-with-key", "report-early", "drop-report-at-can"}
-ASSUME AllowExhaust \in BOOLEAN /\ Report \in {"none", "fix"}
+ASSUME AllowExhaust \in BOOLEAN /\ Report \in {"none", "fix"} /\ AllowLaterSuccess \in BOOLEAN
 
 VARIABLES
     owed,       \* the owned retry: "none", "fail" (with the thrown key), "fresh" (lossy hand-off)
@@ -47,7 +51,7 @@ VARIABLES
     cans, shutdown,
     owedCount, dispatched,
     terminal,   \* tf1: the turn failed with its retries spent
-    rep,        \* tf1: the failure report: "none", "owed", "sent"
+    rep,        \* tf1: the failure report: "none", "owed", "sent", "dropped"
     repCount,   \* tf1: reports sent
     gh
 vars == <<owed, key, prompt, turn, timer, failed, cans, shutdown, owedCount, dispatched, terminal, rep, repCount, gh>>
@@ -153,6 +157,12 @@ ReportSend ==
     /\ gh' = gh \cup (IF ~terminal THEN {"earlyReport"} ELSE {})
     /\ UNCHANGED <<owed, key, prompt, turn, timer, failed, cans, shutdown, owedCount, dispatched, terminal>>
 
+(* tf1: a later turn succeeds while the report is owed: it is dropped.     *)
+LaterSuccess ==
+    /\ AllowLaterSuccess /\ terminal /\ rep = "owed" /\ turn = "none"
+    /\ rep' = "dropped"
+    /\ UNCHANGED <<owed, key, prompt, turn, timer, failed, cans, shutdown, owedCount, dispatched, terminal, repCount, gh>>
+
 TimerFires ==
     /\ timer = "armed" /\ turn = "none" /\ owed = "none"
     /\ timer' = "fired"
@@ -162,7 +172,7 @@ Done == turn = "none" /\ rep # "owed" /\ (shutdown \/ (owed = "none" /\ ~prompt)
 
 Next == TurnFails \/ FirstSucceeds \/ PromptArrives \/ ContinueAsNew \/ BeginShutdown \/ DrainForRetry
         \/ DispatchRetry \/ DispatchRetry82 \/ DispatchOther \/ FinishTurn \/ TimerFires \/ Done
-        \/ RetryExhausted \/ ReportSend
+        \/ RetryExhausted \/ ReportSend \/ LaterSuccess
 Spec == Init /\ [][Next]_vars
 Fairness == WF_vars(TurnFails \/ FirstSucceeds) /\ WF_vars(DrainForRetry) /\ WF_vars(DispatchRetry) /\ WF_vars(DispatchRetry82)
             /\ WF_vars(DispatchOther) /\ WF_vars(FinishTurn \/ RetryExhausted) /\ WF_vars(TimerFires) /\ WF_vars(ReportSend)
@@ -172,7 +182,7 @@ LiveSpec == Spec /\ Fairness
 TypeOK == /\ owed \in {"none", "fail", "fresh"} /\ turn \in {"none", "first", "retry", "other"}
           /\ timer \in {"none", "armed", "released", "pollAfter", "fired", "lost"}
           /\ {key, prompt, failed, shutdown, terminal} \subseteq BOOLEAN /\ cans \in 0..1
-          /\ rep \in {"none", "owed", "sent"} /\ repCount \in 0..2
+          /\ rep \in {"none", "owed", "sent", "dropped"} /\ repCount \in 0..2
 (* The owed retry runs before any other turn (outside a graceful shutdown). *)
 Inv_RetryFirst == "otherFirst" \notin gh
 (* Only the retry's own dispatch reuses the thrown attempt's key.          *)
@@ -191,10 +201,13 @@ Inv_NoReportBeforeTerminal == "earlyReport" \notin gh
 Inv_ReportNotLost == (terminal /\ Report = "fix") => rep # "none"
 Inv_ReportOnce == repCount <= 1
 Prop_TerminalReported == terminal ~> (rep = "sent")
+(* With a later success: the report is sent or dropped by that success.    *)
+Prop_TerminalSettled == terminal ~> (rep \in {"sent", "dropped"})
 Prop_RetryDispatched == (owed # "none") ~> (owed = "none" /\ dispatched = owedCount)
 Prop_WaitResumes == (timer = "released") ~> (timer \in {"armed", "fired"})
 
 W_NoRetry == dispatched = 0
 W_NoPollAfter == timer # "pollAfter"
 W_NoTerminalReport == rep # "sent"
+W_NoDroppedReport == rep # "dropped"
 =============================================================================

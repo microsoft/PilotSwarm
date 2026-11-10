@@ -386,7 +386,11 @@ like any error.
 every earlier case keeps its meaning. `tf-agent.py` adds the six cases (batch `tf1`, head `design` until the code is
 bound): `tf.agent-fail-waits` (the code before the fix: `Prop_FailedDecided` violated), `tf.agent-fail-decided`,
 `tf.agent-fail-safety`, `tf.agent-fail-live` (the fix: PASS), `fault.agent-fail-unfenced` (`Inv_DecidedOnce`
-violated) and `wit.agent-fail-decided`. The child session's side is in `../../session-orchestration/` (`OwnedRetry`)
+violated) and `wit.agent-fail-decided`. The code (`d3230de4`) drops a report still owed when a later turn of
+the child succeeds (no report after a success): `AllowRecover` and `ChildRecovers` model it; `tf.agent-fail-recovers`
+and `-recovers-safety` pass (the state is still decided: by the report, the agent's completion or the deadline), the
+witnesses show a dropped report's state completed by the agent and decided by its deadline, and
+`limit.agent-fail-recovered-no-deadline` records that without the deadline such a state may stay pending. The child session's side is in `../../session-orchestration/` (`OwnedRetry`)
 and a continued session's in `../continued-chat/`.
 
 ## Case taxonomy

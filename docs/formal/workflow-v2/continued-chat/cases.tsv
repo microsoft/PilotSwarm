@@ -85,6 +85,10 @@ tf.cc-turn-fails-live	tf.cc-turn-fails-live.cfg	WfContinuedChat
 tf.cc-stale-turn-fails	tf.cc-stale-turn-fails.cfg	WfContinuedChat
 fault.cc-report-binds-newest	fault.cc-report-binds-newest.cfg	WfContinuedChat
 wit.cc-turn-fail-decided	wit.cc-turn-fail-decided.cfg	WfContinuedChat
+tf.cc-turn-fails-recovers	tf.cc-turn-fails-recovers.cfg	WfContinuedChat
+limit.cc-turn-fails-recovered-no-timeout	limit.cc-turn-fails-recovered-no-timeout.cfg	WfContinuedChat
+wit.cc-dropped-then-result	wit.cc-dropped-then-result.cfg	WfContinuedChat
+wit.cc-dropped-then-timeout	wit.cc-dropped-then-timeout.cfg	WfContinuedChat
 wit.cc-reuse-after-fail	wit.cc-reuse-after-fail.cfg	WfContinuedChat
 fault.bind-newest	fault.bind-newest.cfg	WfContinuedChat
 fault.replace-without-check	fault.replace-without-check.cfg	WfContinuedChat
