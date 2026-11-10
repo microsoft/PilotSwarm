@@ -48,7 +48,7 @@ async function startStep(catalog, store, duroxide) {
     const parent = randomUUID();
     await catalog.createSession(parent, { owner: OWNER });
     const workflowSessionId = randomUUID();
-    const created = await createWorkflowV2({ catalog, store, duroxideClient: duroxide, requests: true }, {
+    const created = await createWorkflowV2({ catalog, store, duroxideClient: duroxide }, {
         workflowSessionId, parentSessionId: parent, yaml: STEP_YAML, actor: ACTOR, operationId: "create", publish: true,
         start: { inputs: {} }, notifyParent: false,
     });

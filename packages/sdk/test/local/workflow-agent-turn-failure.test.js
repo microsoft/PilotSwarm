@@ -1,6 +1,6 @@
 /**
  * PR 270 (owner decision): the report of a Workflow agent chat's failed turn (workflow/v2/agent-turn-failure.ts) on
- * controller 1.9.0 with a test-double host (as workflow-v2-agent-node.test.js and workflow-simplified-chat-continue.test.js).
+ * the Workflow controller with a test-double host (as workflow-v2-agent-node.test.js and workflow-simplified-chat-continue.test.js).
  * The report is the activity session orchestration 1.0.83 makes when a turn of the chat fails for good; here the test
  * calls it as that activity does (reportWorkflowAgentTurnFailure over the store and the durable client).
  *
@@ -150,13 +150,12 @@ async function harness(env) {
         notifyParent: async () => { throw new Error("These workflows notify no parent."); },
         deleteSession: async sessionId => catalog.softDeleteSession(sessionId),
         wakeBackstopMs: 30_000,
-        workflowRequests: true,
         sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
         agentNodes,
     });
     await runtime.start();
     return {
-        catalog, store, client, spawns, stops, host: { catalog, store, duroxideClient: client, requests: true },
+        catalog, store, client, spawns, stops, host: { catalog, store, duroxideClient: client },
         /** The report, as the activity makes it for chat `sessionId`'s failed turn whose prompt ids are `clientMessageIds`. */
         report: (sessionId, clientMessageIds) => reportWorkflowAgentTurnFailure({ store, client }, { sessionId, clientMessageIds, cause: CAUSE }),
         async stop() {
@@ -193,7 +192,7 @@ const completeAs = (h, chat, args) => completeWorkflowNodeFromTool(args, { calle
 const eventsOf = async (h, workflowSessionId, type) => (await h.catalog.getSessionEvents(workflowSessionId, 0, 500))
     .filter(event => event.eventType === type).map(event => event.data);
 
-describe("a Workflow agent chat's failed turn decides its visit (PR 270; controller 1.9.0, test-only)", () => {
+describe("a Workflow agent chat's failed turn decides its visit (PR 270)", () => {
     it("a visit's own chat: the visit fails execution_failed before its deadline, the failure route runs and the chat is cancelled; a repeat decides nothing", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {

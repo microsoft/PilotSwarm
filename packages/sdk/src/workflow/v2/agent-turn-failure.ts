@@ -25,7 +25,7 @@
  */
 import type { ActivityContext } from "duroxide";
 import { isTransientCmsError } from "../../cms-retry.js";
-import { WORKFLOW_COMMAND_QUEUE } from "../orchestration.js";
+import { WORKFLOW_COMMAND_QUEUE } from "../commands.js";
 import { workflowAgentChatContinues } from "./agent-ids.js";
 import { workflowErrorWords } from "./error-words.js";
 import { canonicalJson } from "./json.js";
