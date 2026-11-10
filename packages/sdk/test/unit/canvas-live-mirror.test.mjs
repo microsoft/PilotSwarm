@@ -182,6 +182,46 @@ test("a forgotten subscription cannot be resurrected by an in-flight snapshot", 
     assert.equal(mirror.covers("s1", 1, 2), false);
 });
 
+test("a reconnect snapshot can establish a rebuilt plane without needing a ping", async () => {
+    let rows = [{ slot: 1, seq: 50, payload: { old: true } }];
+    const emitted = [];
+    const resets = [];
+    const mirror = createCanvasLiveMirror({
+        fetchSnapshot: async () => rows,
+        emit: (_sid, update) => emitted.push(update),
+        reset: (_sid, update) => resets.push(update),
+    });
+    await mirror.prime("s1");
+    rows = [{ slot: 1, seq: 1, payload: { rebuilt: true } }];
+    await mirror.prime("s1", { reconnect: true });
+    assert.deepEqual(resets, [{ slot: 1, seq: 0 }]);
+    assert.deepEqual(emitted.at(-1).payload, { rebuilt: true });
+    assert.equal(mirror.covers("s1", 1, 50), false);
+});
+
+test("a reconnect snapshot cannot regress a ping that arrived while its fetch was in flight", async () => {
+    let resolve;
+    let reads = 0;
+    const emitted = [];
+    const resets = [];
+    const mirror = createCanvasLiveMirror({
+        fetchSnapshot: () => ++reads === 1
+            ? Promise.resolve([{ slot: 1, seq: 2, payload: { x: 1 } }])
+            : new Promise(done => { resolve = done; }),
+        emit: (_sid, update) => emitted.push(update),
+        reset: (_sid, update) => resets.push(update),
+    });
+    await mirror.prime("s1");
+    const pending = mirror.prime("s1", { reconnect: true });
+    await Promise.resolve();
+    mirror.onPing("s1", { slot: 1, seq: 3, kind: "data", patch: { x: 2 } });
+    resolve([{ slot: 1, seq: 2, payload: { x: 1 } }]);
+    await pending;
+    assert.deepEqual(resets, []);
+    assert.equal(emitted.length, 2);
+    assert.deepEqual(emitted.at(-1).payload, { x: 2 });
+});
+
 test("a plane-unavailable signal releases the takeover so legacy events resume", async () => {
     const h = harness([{ slot: 1, seq: 1, payload: { a: 1 } }]);
     h.mirror.onPing("s1", { slot: 1, seq: 1, kind: "data" });

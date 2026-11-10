@@ -115,6 +115,17 @@ test("reconnect re-primes subscribed canvas state even when no new ping follows"
     h.off();
 });
 
+test("reconnect does not replay an unchanged applied tick into the canvas", async () => {
+    const h = canvasTransport(async () => [{ slot: 1, seq: 2, payload: { x: 1 } }]);
+    h.handlers.ping({ slot: 1, seq: 1, kind: "doc" });
+    h.handlers.ping({ slot: 1, seq: 2, kind: "data", patch: { x: 1 } });
+    h.handlers.reconnect();
+    await h.transport._canvasMirror.prime("s1");
+    h.handlers.event(durableTick(2));
+    assert.equal(h.ticks().length, 1, "neither the resync nor the durable copy is a new application");
+    h.off();
+});
+
 test("session subscription forwards native task snapshots transiently and releases both live topics", () => {
     const { transport } = createTransport();
     const callbacks = new Map();

@@ -62,7 +62,7 @@ export function createCanvasLiveMirror({
         return m;
     };
 
-    const resync = (sessionId) => {
+    const resync = (sessionId, resetOnRegression = false) => {
         if (inflight.has(sessionId)) return inflight.get(sessionId);
         const m = slots(sessionId);
         const wanted = targets.get(sessionId) || new Map();
@@ -73,6 +73,7 @@ export function createCanvasLiveMirror({
                 let failure;
                 let rows;
                 let fetched = false;
+                const beforeFetch = new Map(m);
                 try {
                     rows = await fetchSnapshot(sessionId);
                     fetched = true;
@@ -87,7 +88,12 @@ export function createCanvasLiveMirror({
                         if (!Number.isInteger(slot) || slot < 1 || slot > 5 || seq <= 0) continue;
                         const prev = m.get(slot);
                         // A snapshot can race a ping that already advanced us.
-                        if (prev && prev.seq >= seq) continue;
+                        if (prev && prev.seq >= seq) {
+                            if (!resetOnRegression || prev.seq === seq || prev !== beforeFetch.get(slot)) continue;
+                            // A fresh reconnect read can establish a rebuilt
+                            // plane lineage. Ordinary in-flight reads cannot.
+                            reset(sessionId, { slot, seq: 0 });
+                        }
                         const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
                         emit(sessionId, { slot, seq, payload });
                         m.set(slot, { seq, payload, appliedSeq: seq });
@@ -161,8 +167,15 @@ export function createCanvasLiveMirror({
             void resync(sessionId);
         },
         /** Prime the mirror on subscribe — the LVC burst. */
-        prime(sessionId) {
-            return resync(sessionId);
+        prime(sessionId, { reconnect = false } = {}) {
+            if (reconnect) {
+                // Invalidate pre-reconnect fetches, retaining applied data so
+                // an unchanged snapshot does not replay into the frame.
+                bySession.set(sessionId, new Map(bySession.get(sessionId)));
+                targets.delete(sessionId);
+                inflight.delete(sessionId);
+            }
+            return resync(sessionId, reconnect);
         },
         /** Suppress only a durable tick whose shared sequence was applied. */
         covers(sessionId, slot, seq) {

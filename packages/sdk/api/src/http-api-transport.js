@@ -763,13 +763,9 @@ export class HttpApiTransport {
             handler(event);
         };
         const unsubscribeEvents = this.api.subscribeSession(sessionId, wrapped, () => {
-            // Reconnect may follow a plane reset. Release the old lineage and
-            // re-read the subscribed session even if no new ping follows.
-            this._canvasMirror.forget(sessionId);
-            for (const h of this._canvasEmitHandlers?.get(sessionId) || []) {
-                h({ eventType: "session.canvas_plane_released", sessionId, transient: true });
-            }
-            void this._canvasMirror.prime(sessionId);
+            // Re-read even if no new ping follows, without replaying an
+            // unchanged tick. The mirror also detects a rebuilt plane row.
+            void this._canvasMirror.prime(sessionId, { reconnect: true });
             onResubscribe?.();
         });
         const unsubscribeCanvas = this.api.subscribeCanvasLive(sessionId, (message) => {
