@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
@@ -47,6 +46,7 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
 
     const program = `
         import assert from "node:assert/strict";
+        import { randomUUID } from "node:crypto";
         import http from "node:http";
         import { mkdtemp, rm, writeFile } from "node:fs/promises";
         import os from "node:os";
