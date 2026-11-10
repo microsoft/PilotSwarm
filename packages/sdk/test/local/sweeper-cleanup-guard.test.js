@@ -19,11 +19,15 @@
  *     sessionId), refuses live/idle children, and preserves the live parent
  *   - cleanup_session batch (sessionIds[]) gates each target independently:
  *     cleans eligible ones, refuses live roots, de-dupes
+ *   - a stale Workflow session (a test bench, whose session-<id> status reads
+ *     NotFound) is neither listed nor cleaned; its finished owner session's
+ *     cleanup still removes it as a descendant
  *
  * Run: npx vitest run test/local/sweeper-cleanup-guard.test.js
  */
 
 import { randomUUID } from "node:crypto";
+import pg from "pg";
 import { describe, it, beforeAll } from "vitest";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
@@ -236,6 +240,57 @@ async function testBatchCleansAllEligibleAndDedupes(env) {
     }
 }
 
+async function testWorkflowSessionIsNeverSwept(env) {
+    const catalog = await createCatalog(env);
+    const db = new pg.Pool({ connectionString: env.store, max: 1 });
+    const schema = `"${env.cmsSchema}"`;
+    try {
+        // A live owner session with a hidden test bench (a Workflow session). The bench's runs use wft-<runId>, so
+        // its own session-<id> status reads NotFound for as long as it is in use.
+        const ownerId = randomUUID();
+        const benchId = randomUUID();
+        await catalog.createSession(ownerId);
+        const claim = await catalog.createWorkflowSession(benchId, {
+            parentSessionId: ownerId, owner: null, creationConfig: { agentTest: { definitionId: "def-1", revision: 1 } },
+            service: { kind: "workflow-test", of: null },
+        });
+        assertEqual(claim.created, true, "the bench is claimed");
+        await db.query(
+            `INSERT INTO ${schema}.workflow_definitions (workflow_session_id, parent_session_id, api_version, state, current_revision)
+             VALUES ($1, $2, 'pilotswarm.dev/v1', 'draft', 1)`, [benchId, ownerId]);
+        // Stale: its row has not moved for an hour (a test waiting in one state does not touch it).
+        await db.query(`UPDATE ${schema}.sessions SET updated_at = now() - interval '1 hour' WHERE session_id IN ($1, $2)`,
+            [benchId, ownerId]);
+
+        const status = new Map([[`session-${ownerId}`, { status: "Running" }]]);
+        const tools = createSweeperTools({ catalog, duroxideClient: makeStubDuroxide(status), factStore: null });
+        const scan = findTool(tools, "scan_completed_sessions");
+        const cleanup = findTool(tools, "cleanup_session");
+
+        const scanned = await scan.handler({ graceMinutes: 5 });
+        assertEqual(scanned.sessions.some(s => s.sessionId === benchId), false, "the scan does not list a Workflow session");
+        const refused = await cleanup.handler({ sessionId: benchId, graceMinutes: 0 });
+        assertEqual(refused.ok, false, "cleanup_session refuses a Workflow session");
+        assertEqual(refused.refused, true, "the refusal is explicit");
+        assertEqual(await isLive(catalog, benchId), true, "the bench's row is intact");
+        const kept = await db.query(`SELECT state FROM ${schema}.workflow_definitions WHERE workflow_session_id = $1`, [benchId]);
+        assertEqual(kept.rows[0]?.state, "draft", "the bench's definition is intact");
+
+        // Its owner finishes: cleaning the owner still removes the bench, as a descendant.
+        status.set(`session-${ownerId}`, { status: "Completed" });
+        const cleaned = await cleanup.handler({ sessionId: ownerId, graceMinutes: 0 });
+        assertEqual(cleaned.ok, true, "the finished owner session is cleaned");
+        assertEqual(await isLive(catalog, ownerId), false, "the owner session is deleted");
+        assertEqual(await isLive(catalog, benchId), false, "the bench is deleted with its owner");
+        const ended = await db.query(`SELECT state FROM ${schema}.workflow_definitions WHERE workflow_session_id = $1`, [benchId]);
+        assertEqual(ended.rows[0]?.state, "deleted", "the deleted bench's definition is a tombstone");
+        console.log("  ✓ a Workflow session is never swept on its own; its owner's cleanup removes it");
+    } finally {
+        await db.end();
+        await catalog.close();
+    }
+}
+
 describe("Sweeper cleanup guardrails", () => {
     beforeAll(async () => { await preflightChecks(); });
 
@@ -257,5 +312,9 @@ describe("Sweeper cleanup guardrails", () => {
 
     it("cleanup_session batch cleans all eligible targets and de-dupes", { timeout: TIMEOUT }, async () => {
         await testBatchCleansAllEligibleAndDedupes(getEnv());
+    });
+
+    it("a stale Workflow session is neither listed nor cleaned; its owner's cleanup removes it", { timeout: TIMEOUT }, async () => {
+        await testWorkflowSessionIsNeverSwept(getEnv());
     });
 });

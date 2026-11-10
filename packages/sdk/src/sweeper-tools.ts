@@ -42,9 +42,19 @@ export function createSweeperTools(opts: {
     * cleanable when its OWN orchestration is terminal.
      */
     async function evaluateCleanupEligibility(
-        session: { sessionId: string; parentSessionId: string | null; updatedAt: Date },
+        session: { sessionId: string; parentSessionId: string | null; updatedAt: Date; sessionKind?: string },
         graceMinutes: number,
     ): Promise<{ eligible: boolean; status: string; reason: string }> {
+        // A Workflow session (a test bench, a draft, one not started yet) has no session-<id> orchestration, so its
+        // status reads NotFound while it is in use. It is never swept: its own run, or its owner session's end or
+        // deletion, ends it.
+        if (session.sessionKind === "workflow") {
+            return {
+                eligible: false,
+                status: "Workflow",
+                reason: "Refusing to clean a Workflow session: its own run, or its owner session's end or deletion, ends it.",
+            };
+        }
         let orchStatus = "NotFound";
         try {
             const st = await duroxideClient.getStatus(`session-${session.sessionId}`);
@@ -91,7 +101,7 @@ export function createSweeperTools(opts: {
     const scanTool = defineTool("scan_completed_sessions", {
         description:
             "Scan for terminal sessions that are eligible for cleanup. " +
-            "Only sessions whose OWN orchestration is Completed, Failed, Terminated, or NotFound are returned. " +
+            "Only sessions whose OWN orchestration is Completed, Failed, Terminated, or NotFound are returned; Workflow sessions never are. " +
             "Idle, zombie, orphaned, or otherwise live sessions are not cleanup candidates, including child sessions. " +
             "Pass only sessionId values from sessions[] to cleanup_session.",
         parameters: {
@@ -127,6 +137,8 @@ export function createSweeperTools(opts: {
                 for (const session of allSessions) {
                     // Never touch system sessions
                     if (session.isSystem) continue;
+                    // Nor Workflow sessions: they have no session-<id> orchestration (see evaluateCleanupEligibility).
+                    if (session.sessionKind === "workflow") continue;
 
                     let orchStatus: any = {};
                     try {
