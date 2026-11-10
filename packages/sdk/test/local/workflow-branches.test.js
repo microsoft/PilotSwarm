@@ -273,12 +273,18 @@ describe("named branches: the controller", () => {
 
     it("NB-R2: a graceful stop holds the fork: its time limit cuts nothing, writes no report; the stop cancels it", { timeout: TIMEOUT }, async () => {
         await withRuntime(async base => {
-            // Both branches' work runs 8 s; the fork's own time limit is 4 s; the stop's grace is 60 s.
-            const doc = branchesDoc({ timeoutSeconds: 4, quick: { input: { ms: 8_000 } }, careful: { input: { ms: 8_000 } } });
+            // Keep the stop before the fork's limit, and the work after it, also with a remote database.
+            const doc = branchesDoc({ timeoutSeconds: testTime.seconds(4),
+                quick: { input: { ms: testTime.ms(8_000) } }, careful: { input: { ms: testTime.ms(8_000) } } });
             const { workflowSessionId, runId, views, at } = await started(base, doc);
-            await until(async () => (await base.store.readNodeExecution(at(1, "careful_work")))?.state === "pending", "both branches' work to start");
-            await controlWorkflowRun(base.host, workflowSessionId, { operation: "stop", runId: null, reason: "enough", graceSeconds: 60 },
+            await until(async () => {
+                const rows = await Promise.all([base.store.readNodeExecution(at(0, "quick_work")), base.store.readNodeExecution(at(1, "careful_work"))]);
+                return rows.every(row => row?.state === "pending");
+            }, "both branches' work to start");
+            await controlWorkflowRun(base.host, workflowSessionId, { operation: "stop", runId: null, reason: "enough", graceSeconds: testTime.seconds(60) },
                 { actor: ACTOR, operationId: "stop-r2" });
+            expect(Date.now(), "VOID: the stop was accepted only after the fork's time limit")
+                .toBeLessThan((await base.store.readNodeExecution(views)).deadlineAt.getTime());
             const run = await endedRun(base, runId, 60_000);
             expect(run.status).toBe("stopped");
             // The started work ran to its own end: neither branch was cut by the fork's time limit.
