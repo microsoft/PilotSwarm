@@ -24,9 +24,7 @@ import { registerCapabilityResources } from "../../dist/src/resources/capabiliti
 import * as context from "../../dist/src/context.js";
 import { readFileSync } from "node:fs";
 
-// Workflows are always on (owner 2026-11-08T08:03Z): read_workflow is always registered, PILOTSWARM_WORKFLOWS (retired)
-// changes nothing.
-process.env.PILOTSWARM_WORKFLOWS = "off";
+// Workflows are always on (owner 2026-11-08T08:03Z): read_workflow is always registered.
 
 const SID = "a7f23cda-5cfd-4f0e-aff1-d6b0400b8da5";
 
@@ -40,7 +38,7 @@ function toolsWith(ctx) {
 // 1. Absent unless the context enables it.
 assert.equal(toolsWith({ mgmt: {} }).has("update_workflow"), false, "absent by default");
 assert.equal(toolsWith({ mgmt: {}, workflowCommands: false }).has("update_workflow"), false, "absent when off");
-// Always the read, whatever the retired PILOTSWARM_WORKFLOWS says; the command only with the test-only option.
+// Always the read; the command only with the test-only option.
 assert.deepEqual([...toolsWith({ mgmt: {} }).keys()], ["read_workflow"], "the read, always");
 assert.deepEqual([...toolsWith({ mgmt: {}, workflowCommands: true }).keys()].sort(), ["read_workflow", "update_workflow"], "and the command with the option");
 
@@ -324,14 +322,13 @@ console.log("✅ read_workflow: always registered, arguments as given, the read'
 
 console.log("✅ update_workflow: exact registration gate, duplicate delivery forwarded unchanged, generic refusal mapping (tester r2 M0-M2)");
 
-// 8. The Workflow V2 test environment switch is retired (owner decision 2026-11-08T15:30Z): every MCP server registers
-//    update_workflow and, in direct mode, takes a person's commands on the full engine; only `workflowCommands: null` (a
-//    test) leaves them off. No environment variable decides it.
-assert.equal("workflowContextOptionsFromEnv" in context, false, "no export reads the retired switch");
+// 8. Every MCP server registers update_workflow and, in direct mode, takes a person's commands on the full engine; only
+//    `workflowCommands: null` (a test) leaves them off. No environment variable decides it.
+assert.equal("workflowContextOptionsFromEnv" in context, false, "no export reads an environment switch");
 const contextSource = readFileSync(new URL("../../src/context.ts", import.meta.url), "utf8");
 assert.match(contextSource, /workflowCommands: opts\.workflowCommands !== null,/);
-assert.doesNotMatch(contextSource, /PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT|sessionStartVersion|_startSessionsAt/);
-console.log("✅ the retired Workflow V2 test environment switch: every server registers update_workflow unless a test passes null");
+assert.doesNotMatch(contextSource, /sessionStartVersion|_startSessionsAt/);
+console.log("✅ every server registers update_workflow unless a test passes null");
 
 // 9. Workflow test mode is hidden (Workflow Simplified, spec 16): update_workflow names stop and no test operation or
 //    argument unless test mode is on (the context's own value, or this process's PILOTSWARM_WORKFLOW_TEST_MODE=on).

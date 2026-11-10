@@ -1,11 +1,11 @@
 /**
- * Workflows are always on (owner decision 2026-11-08T08:03Z; the stage 2.0 switch PILOTSWARM_WORKFLOWS is gone), on
- * PostgreSQL. Unit side: test/unit/workflows-always-on.test.mjs.
+ * Workflows are always on (owner decision 2026-11-08T08:03Z; there is no switch), on PostgreSQL. Unit side:
+ * test/unit/workflows-always-on.test.mjs.
  *
- * - A management client made with no Workflow option, with PILOTSWARM_WORKFLOWS unset or set to the retired `off`: a
- *   person's input to a session in a Workflow agent node's subtree is refused (403 WORKFLOW_HUMAN_INPUT_DENIED), the access
- *   check reads the lineage, a v2 workflow's read works, and the bootstrap's answer is `enabled: true`.
- * - The client, likewise: a person's prompt to that session is refused, the setting unset or `off`.
+ * - A management client made with no Workflow option: a person's input to a session in a Workflow agent node's subtree is
+ *   refused (403 WORKFLOW_HUMAN_INPUT_DENIED), the access check reads the lineage, a workflow's read works, and the
+ *   bootstrap's answer is `enabled: true`.
+ * - The client, likewise: a person's prompt to that session is refused.
  * - A real 1.0.83 turn of a worker whose session manager was made with no Workflow setting: the turn's bridge has no
  *   switch, and spawn_workflow, update_workflow, read_workflow and send_workflow_input reach the workflow code.
  * - With script nodes off, a definition with one is refused in words naming PILOTSWARM_WORKFLOW_SCRIPTS; one without is
@@ -73,22 +73,11 @@ async function caught(call) {
     try { await call(); return null; } catch (error) { return error; }
 }
 
-/** Runs `fn` with PILOTSWARM_WORKFLOWS as given (undefined: unset), then puts it back. */
-async function withWorkflowsEnv(value, fn) {
-    const before = process.env.PILOTSWARM_WORKFLOWS;
-    if (value === undefined) delete process.env.PILOTSWARM_WORKFLOWS;
-    else process.env.PILOTSWARM_WORKFLOWS = value;
-    try { return await fn(); } finally {
-        if (before === undefined) delete process.env.PILOTSWARM_WORKFLOWS;
-        else process.env.PILOTSWARM_WORKFLOWS = before;
-    }
-}
-
 describe("Workflows always on: the management client and the client", () => {
-    it("with no Workflow setting or the retired PILOTSWARM_WORKFLOWS=off: the lineage is read, a person's input refused, reads work", { timeout: TIMEOUT }, async () => {
+    it("with no Workflow setting: the lineage is read, a person's input refused, reads work", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const h = await openWorkflowStore(env);
-        const on = await withWorkflowsEnv("off", () => createManagementClient(env));
+        const on = await createManagementClient(env);
         const client = new PilotSwarmClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema });
         await client.start();
         try {
@@ -100,18 +89,14 @@ describe("Workflows always on: the management client and the client", () => {
             await h.catalog.createSession(C, { parentSessionId: W, owner });
             const person = { kind: "user", provider: owner.provider, subject: owner.subject, display: "Owner", relation: "owner" };
 
-            for (const retired of [undefined, "off"]) {
-                await withWorkflowsEnv(retired, async () => {
-                    // The agent node's chat is refused to a person; the access check reads its lineage; the read works.
-                    expect((await caught(() => on.sendMessage(C, "do something else", { sender: person })))?.code).toBe(WORKFLOW_HUMAN_INPUT_DENIED);
-                    expect(await on.getWorkflowInputPolicy(C)).toMatchObject({ canSendPrompt: false, workflowSessionId: W });
-                    expect((await on.readWorkflow(W)).definition).toBeTruthy();
-                    expect((await on.getWorkflowCapabilities()).enabled).toBe(true);
-                    // The client: a person's prompt to the agent node's chat is refused too.
-                    const session = await client.resumeSession(C);
-                    expect((await caught(() => session.send("hello")))?.code).toBe(WORKFLOW_HUMAN_INPUT_DENIED);
-                });
-            }
+            // The agent node's chat is refused to a person; the access check reads its lineage; the read works.
+            expect((await caught(() => on.sendMessage(C, "do something else", { sender: person })))?.code).toBe(WORKFLOW_HUMAN_INPUT_DENIED);
+            expect(await on.getWorkflowInputPolicy(C)).toMatchObject({ canSendPrompt: false, workflowSessionId: W });
+            expect((await on.readWorkflow(W)).definition).toBeTruthy();
+            expect((await on.getWorkflowCapabilities()).enabled).toBe(true);
+            // The client: a person's prompt to the agent node's chat is refused too.
+            const session = await client.resumeSession(C);
+            expect((await caught(() => session.send("hello")))?.code).toBe(WORKFLOW_HUMAN_INPUT_DENIED);
         } finally {
             await client.stop();
             await on.stop();

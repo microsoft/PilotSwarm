@@ -1,9 +1,8 @@
 /**
  * Workflows are always on (owner 2026-11-08T08:03Z): the portal's side, over the real router and runtime.
- * - With no setting, and with the retired PILOTSWARM_WORKFLOWS=off still set: the bootstrap's `workflows` says
- *   `enabled: true` with the version 2 fields, a workflow's read reaches the store, and a person's command gets the
- *   deployment's own answer, never WORKFLOWS_DISABLED.
- * - POST /sessions/workflow, the legacy create, is no route (stage 2.5): 404 NOT_FOUND, and nothing is created.
+ * - The bootstrap's `workflows` says `enabled: true` with the version 2 fields, a workflow's read reaches the store, and a
+ *   person's command gets the deployment's own answer, never WORKFLOWS_DISABLED.
+ * - POST /sessions/workflow is no route: 404 NOT_FOUND, and nothing is created.
  *
  * Run: node --test web/test/workflows-always-on-routes.test.mjs
  */
@@ -16,24 +15,6 @@ import { PilotSwarmManagementClient } from "pilotswarm-sdk";
 
 import { createApiRouter } from "../api/router.js";
 import { PortalRuntime } from "../runtime.js";
-
-/** Runs `fn` with the retired Workflows setting (and the test environment switch) as given, then puts them back. */
-async function withEnv(values, fn) {
-    const keys = ["PILOTSWARM_WORKFLOWS", "PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT"];
-    const before = Object.fromEntries(keys.map(key => [key, process.env[key]]));
-    for (const key of keys) {
-        if (values[key] === undefined) delete process.env[key];
-        else process.env[key] = values[key];
-    }
-    try {
-        return await fn();
-    } finally {
-        for (const key of keys) {
-            if (before[key] === undefined) delete process.env[key];
-            else process.env[key] = before[key];
-        }
-    }
-}
 
 /**
  * The real router and runtime over a transport whose workflow calls are the real management client methods on a stand-in
@@ -84,31 +65,27 @@ async function harness() {
     return { mgmt, counts, call, close: () => new Promise((resolve) => server.close(resolve)) };
 }
 
-for (const [label, env] of [["no setting", {}], ["the retired PILOTSWARM_WORKFLOWS=off", { PILOTSWARM_WORKFLOWS: "off" }]]) {
-    test(`always on (${label}): the bootstrap says enabled with the version 2 fields; a read reaches the store; a command is never WORKFLOWS_DISABLED; the legacy create is no route`, async () => {
-        await withEnv(env, async () => {
-            const h = await harness();
-            try {
-                const boot = await h.call("/bootstrap");
-                assert.equal(boot.status, 200);
-                assert.equal(boot.body.workflows.enabled, true);
-                assert.equal(boot.body.workflows.v2.read, true);
-                const read = await h.call("/sessions/wf1/workflow");
-                assert.notEqual(read.body?.error?.code, "WORKFLOWS_DISABLED");
-                assert.ok(h.counts.reads > 0, "the read reached the catalog");
-                const command = await h.call("/sessions/wf1/workflow/commands", { method: "POST",
-                    body: JSON.stringify({ command: { operation: "pause", operation_id: "op-1" } }) });
-                // Every deployment takes a person's commands (owner decision 2026-11-08T15:30Z): the stand-in store has no run,
-                // so the command is refused by the store, never as unavailable or disabled.
-                assert.ok(!["WORKFLOW_COMMANDS_UNAVAILABLE", "WORKFLOWS_DISABLED"].includes(command.body?.error?.code), JSON.stringify(command.body));
-                // Stage 2.5 (PR 235 8055fcd8): the legacy create is gone; it is an unknown route.
-                const legacy = await h.call("/sessions/workflow", { method: "POST", body: JSON.stringify({ yaml: "apiVersion: pilotswarm.dev/v1alpha1\n" }) });
-                assert.equal(legacy.status, 404);
-                assert.equal(legacy.body.error.code, "NOT_FOUND");
-                assert.equal(h.counts.created, 0, "nothing was created");
-            } finally {
-                await h.close();
-            }
-        });
-    });
-}
+test("always on: the bootstrap says enabled with the version 2 fields; a read reaches the store; a command is never WORKFLOWS_DISABLED; there is no create route", async () => {
+    const h = await harness();
+    try {
+        const boot = await h.call("/bootstrap");
+        assert.equal(boot.status, 200);
+        assert.equal(boot.body.workflows.enabled, true);
+        assert.equal(boot.body.workflows.v2.read, true);
+        const read = await h.call("/sessions/wf1/workflow");
+        assert.notEqual(read.body?.error?.code, "WORKFLOWS_DISABLED");
+        assert.ok(h.counts.reads > 0, "the read reached the catalog");
+        const command = await h.call("/sessions/wf1/workflow/commands", { method: "POST",
+            body: JSON.stringify({ command: { operation: "pause", operation_id: "op-1" } }) });
+        // Every deployment takes a person's commands (owner decision 2026-11-08T15:30Z): the stand-in store has no run,
+        // so the command is refused by the store, never as unavailable or disabled.
+        assert.ok(!["WORKFLOW_COMMANDS_UNAVAILABLE", "WORKFLOWS_DISABLED"].includes(command.body?.error?.code), JSON.stringify(command.body));
+        // There is no create route: it is an unknown route.
+        const create = await h.call("/sessions/workflow", { method: "POST", body: JSON.stringify({ yaml: "kind: Workflow\n" }) });
+        assert.equal(create.status, 404);
+        assert.equal(create.body.error.code, "NOT_FOUND");
+        assert.equal(h.counts.created, 0, "nothing was created");
+    } finally {
+        await h.close();
+    }
+});

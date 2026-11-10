@@ -29,7 +29,6 @@ import { WORKFLOW_HUMAN_INPUT_DENIED } from "../../dist/workflow/v2/input-policy
 import { WORKFLOW_V2_API_VERSION } from "../../dist/workflow/v2/compiler.js";
 import { WORKFLOW_V2_CONTROLLER_VERSION } from "../../dist/workflow/v2/runtime.js";
 import { PilotSwarmManagementClient } from "../../dist/management-client.js";
-import * as sdk from "../../dist/index.js";
 
 const PERSON = { kind: "user", provider: "test", subject: "alice" };
 const ROOT = { childSessionId: "C", nodeExecutionId: "nx-1", workflowSessionId: "W1", controllingSessionId: "P", distance: 1 };
@@ -166,14 +165,8 @@ test("the management client answers from its own configuration and catalog, befo
         "its test mode is not dropped");
 });
 
-// The retired Workflow V2 test environment switch (owner decision 2026-11-08T15:30Z): the SDK no longer exports it, and its
-// management client takes a person's commands on the full engine by default.
-test("the Workflow V2 test environment switch is retired: no export reads it; a real management client takes the full engine's commands", async () => {
-    for (const name of ["WORKFLOW_V2_TEST_ENVIRONMENT_VARIABLE", "WORKFLOW_V2_TEST_ENVIRONMENT_ENABLED", "workflowV2TestEnvironmentFromEnv",
-        "workerOptionsForWorkflowV2TestEnvironment", "workflowV2TestEnvironmentNotice"]) {
-        assert.equal(name in sdk, false, name);
-    }
-    assert.equal(sdk.RETIRED_WORKFLOW_TEST_ENVIRONMENT_VARIABLE, "PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT");
+// A real management client takes a person's commands on the full engine by default.
+test("a real management client takes the full engine's commands", async () => {
     const client = new PilotSwarmManagementClient({ store: "postgres://capabilities.invalid/none" });
     const advertised = await Object.assign(Object.create(PilotSwarmManagementClient.prototype), {
         config: client.config, _catalog: { workflowStore: () => ({}) } }).getWorkflowCapabilities();

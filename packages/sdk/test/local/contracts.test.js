@@ -714,10 +714,8 @@ async function testGenericSessionsInheritFrameworkDefaultToolNames(env) {
 // Workflows on demand (owner 2026-11-08T16:55Z; ef41ef20): a new chat on a 1.0.83 turn, on a worker with durable
 // capability storage and no Workflow of its own, has Workflows off. It is declared enable_workflows in place of the
 // Workflow tools (spawn_workflow is declared nowhere since then), and its prompt carries the short paragraph, not the
-// guidance. Before ef41ef20 this chat was declared the Workflow tools and given the guidance: at 6290e66f through
-// vitest.config.js's PILOTSWARM_WORKFLOWS=on (a 1.0.82 turn), from 3b70e2c5 always, from 5d8eaa46 on a 1.0.83 turn (with
-// respond_session_request). The eval compares the model's list with the live metadata, which carries the CLI's own tools
-// (bash, list_bash, read_bash, stop_bash, …) too; no PilotSwarm change since 6290e66f declares or filters those.
+// guidance. The eval compares the model's list with the live metadata, which carries the CLI's own tools (bash, list_bash,
+// read_bash, stop_bash, …) too; no PilotSwarm change since 6290e66f declares or filters those.
 const EXPECTED_WORKFLOWS_OFF_TOOL_NAMES = ["enable_workflows"];
 const WORKFLOW_TOOL_NAMES_ABSENT_WHILE_OFF = [
     "workflow_definition",

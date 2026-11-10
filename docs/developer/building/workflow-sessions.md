@@ -996,12 +996,6 @@ and a person can send workflow commands.
   `true`, so an older portal or client keeps working; today's clients do not
   read it.
 
-`PILOTSWARM_WORKFLOWS` and `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` are
-retired. A deployment that still sets one, to any value (`off` included), is
-ignored with one startup warning on each worker, the portal and the MCP server,
-for example: "PILOTSWARM_WORKFLOWS is ignored: Workflows are always on. Remove
-it from the deployment's settings."
-
 Sessions of the previous release (orchestration 1.0.82) keep running on the
 frozen 1.0.82 and move to 1.0.83 at their next continue-as-new, which carries
 their queued prompts, pending child updates, notices and model. Until then a

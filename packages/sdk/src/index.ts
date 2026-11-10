@@ -80,12 +80,6 @@ export { horizonConfigFromEnv } from "./horizon-env.js";
 export {
     WORKFLOW_TEST_MODE_ENABLED, WORKFLOW_TEST_MODE_OPERATIONS, WORKFLOW_TEST_MODE_VARIABLE, workflowTestModeFromEnv, workflowTestModeNotice,
 } from "./workflow/v2/test-mode-switch.js";
-// Workflows are always on (owner 2026-11-08T08:03Z) with the full engine (2026-11-08T15:30Z); the retired PILOTSWARM_WORKFLOWS
-// and PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT settings are ignored with one warning each.
-export {
-    RETIRED_WORKFLOW_SETTINGS, RETIRED_WORKFLOW_TEST_ENVIRONMENT_VARIABLE, RETIRED_WORKFLOW_TEST_ENVIRONMENT_WARNING, RETIRED_WORKFLOWS_VARIABLE,
-    RETIRED_WORKFLOWS_WARNING, warnRetiredWorkflowsSetting,
-} from "./workflow/retired-workflows-setting.js";
 export {
     WORKFLOW_SCRIPTS_DISABLED, WORKFLOW_SCRIPTS_UNKNOWN_VALUE_WARNING, WORKFLOW_SCRIPTS_VARIABLE, resetWorkflowScriptsWarning,
     workflowScriptsDisabledText, workflowScriptsEnabledFromEnv, workflowScriptsOptionFromEnv, workflowV2ScriptNodes,

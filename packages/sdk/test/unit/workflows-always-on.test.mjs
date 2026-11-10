@@ -1,11 +1,10 @@
 /**
- * Workflows are always on (owner decision 2026-11-08T08:03Z): the PILOTSWARM_WORKFLOWS switch (stage 2.0) is gone.
- * - the retired setting: a deployment that still sets it, to any value, is ignored with one warning per process;
+ * Workflows are always on (owner decision 2026-11-08T08:03Z): there is no switch.
  * - agents: a session manager made with no Workflow setting declares the four workflow tools, scripts on or off, and the
  *   base instructions carry the Workflow guidance; no handler, bridge or spawn path reads a switch;
  * - the management client: the capabilities always say `enabled: true` (kept for an older client); reads, commands, the
- *   access check and lifecycle commands reach the Workflow store, whatever PILOTSWARM_WORKFLOWS says;
- * - the client: a person's prompt and event read the Workflow lineage, whatever PILOTSWARM_WORKFLOWS says.
+ *   access check and lifecycle commands reach the Workflow store;
+ * - the client: a person's prompt and event read the Workflow lineage.
  * Script nodes (PILOTSWARM_WORKFLOW_SCRIPTS) and test mode (PILOTSWARM_WORKFLOW_TEST_MODE) keep their own settings.
  *
  * Run: node --test test/unit/workflows-always-on.test.mjs
@@ -16,7 +15,6 @@ import fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as sdk from "../../dist/index.js";
-import { RETIRED_WORKFLOWS_WARNING, resetRetiredWorkflowsSettingWarning, warnRetiredWorkflowsSetting } from "../../dist/workflow/retired-workflows-setting.js";
 import { SessionManager } from "../../dist/session-manager.js";
 import { PilotSwarmManagementClient } from "../../dist/management-client.js";
 import { PilotSwarmClient } from "../../dist/client.js";
@@ -26,43 +24,10 @@ const SRC = new URL("../../src/", import.meta.url);
 const read = name => fs.readFileSync(new URL(name, SRC), "utf8");
 const WORKFLOW_TOOLS = ["workflow_definition", "update_workflow", "read_workflow", "send_workflow_input"];
 
-/** Runs `fn` with PILOTSWARM_WORKFLOWS as given (undefined: unset), then puts it back. */
-async function withRetired(value, fn) {
-    const before = process.env.PILOTSWARM_WORKFLOWS;
-    if (value === undefined) delete process.env.PILOTSWARM_WORKFLOWS;
-    else process.env.PILOTSWARM_WORKFLOWS = value;
-    try {
-        return await fn();
-    } finally {
-        if (before === undefined) delete process.env.PILOTSWARM_WORKFLOWS;
-        else process.env.PILOTSWARM_WORKFLOWS = before;
-    }
-}
-
-test("the retired setting: any value is ignored with one warning per process; unset or empty, no warning", () => {
-    assert.equal(sdk.RETIRED_WORKFLOWS_VARIABLE, "PILOTSWARM_WORKFLOWS");
-    assert.equal(RETIRED_WORKFLOWS_WARNING, "PILOTSWARM_WORKFLOWS is ignored: Workflows are always on. Remove it from the deployment's settings.");
+test("there is no Workflow switch: none of its names is exported", () => {
     for (const name of ["WORKFLOWS_DISABLED", "WORKFLOWS_VARIABLE", "workflowsEnabledFromEnv", "resolveWorkflowsEnabled", "workflowsNotice", "workflowsDisabledError"]) {
         assert.equal(Object.hasOwn(sdk, name), false, `${name} is gone`);
     }
-    for (const value of [undefined, "", "  "]) {
-        resetRetiredWorkflowsSettingWarning();
-        const said = [];
-        assert.equal(warnRetiredWorkflowsSetting(value === undefined ? {} : { PILOTSWARM_WORKFLOWS: value }, line => said.push(line)), false);
-        assert.deepEqual(said, [], JSON.stringify(value));
-    }
-    for (const value of ["off", "on", "yes"]) {
-        resetRetiredWorkflowsSettingWarning();
-        const said = [];
-        assert.equal(warnRetiredWorkflowsSetting({ PILOTSWARM_WORKFLOWS: value }, line => said.push(line)), true, value);
-        assert.equal(warnRetiredWorkflowsSetting({ PILOTSWARM_WORKFLOWS: value }, line => said.push(line)), false, "once per process");
-        assert.deepEqual(said, [RETIRED_WORKFLOWS_WARNING], value);
-    }
-    resetRetiredWorkflowsSettingWarning();
-    // The worker, the portal and the MCP server warn at start; none reads the setting otherwise.
-    assert.match(read("worker.ts"), /\n\s+warnRetiredWorkflowsSetting\(\);\n/);
-    assert.match(fs.readFileSync(new URL("../../../app/web/server.js", import.meta.url), "utf8"), /warnRetiredWorkflowsSetting\(process\.env,/);
-    assert.match(fs.readFileSync(new URL("../../../app/mcp/bin/pilotswarm-mcp.ts", import.meta.url), "utf8"), /warnRetiredWorkflowsSetting\(process\.env,/);
 });
 
 /** A SessionManager whose Copilot transport is stubbed (the workflow-milestone-tools pattern): each handle's declarations. */
@@ -89,17 +54,15 @@ function managerFixture(t, { scripts = true } = {}) {
     return { manager, calls };
 }
 
-test("agents: a session manager made with no Workflow setting declares the four workflow tools, scripts on or off, PILOTSWARM_WORKFLOWS=off ignored", async (t) => {
+test("agents: a session manager made with no Workflow setting declares the four workflow tools, scripts on or off", async (t) => {
     const names = tools => tools.map(tool => tool.name);
-    for (const [scripts, retired] of [[false, undefined], [true, undefined], [true, "off"]]) {
-        await withRetired(retired, async () => {
-            const { manager, calls } = managerFixture(t, { scripts });
-            assert.equal(Object.hasOwn(manager, "workflowsEnabled"), false, "no switch on the session manager");
-            await manager.getOrCreate(`s-${scripts}-${retired}`, { toolNames: [] }, { turnIndex: 0 });
-            const got = names(calls.at(-1).tools);
-            for (const name of WORKFLOW_TOOLS) assert.ok(got.includes(name), `${name} with scripts=${scripts}, PILOTSWARM_WORKFLOWS=${retired}`);
-            assert.ok(got.includes("spawn_agent"));
-        });
+    for (const scripts of [false, true]) {
+        const { manager, calls } = managerFixture(t, { scripts });
+        assert.equal(Object.hasOwn(manager, "workflowsEnabled"), false, "no switch on the session manager");
+        await manager.getOrCreate(`s-${scripts}`, { toolNames: [] }, { turnIndex: 0 });
+        const got = names(calls.at(-1).tools);
+        for (const name of WORKFLOW_TOOLS) assert.ok(got.includes(name), `${name} with scripts=${scripts}`);
+        assert.ok(got.includes("spawn_agent"));
     }
 });
 
@@ -185,36 +148,28 @@ function managementClient(config, catalog) {
     return Object.assign(Object.create(PilotSwarmManagementClient.prototype), { config, _catalog: catalog, _started: true });
 }
 
-test("the management client: the capabilities always say enabled; reads and commands reach the catalog, PILOTSWARM_WORKFLOWS=off ignored", async () => {
+test("the management client: the capabilities always say enabled; reads and commands reach the catalog", async () => {
     const store = { workflowStore: () => ({}) };
-    for (const retired of [undefined, "off"]) {
-        await withRetired(retired, async () => {
-            const capabilities = await managementClient({}, store).getWorkflowCapabilities();
-            assert.deepEqual(capabilities, workflowCapabilities({ read: true, commands: null }));
-            assert.equal(capabilities.enabled, true);
-            // A read goes to the catalog: never refused for a switch.
-            let touched = 0;
-            const catalog = new Proxy({}, { get: () => { touched += 1; throw Object.assign(new Error("the catalog was read"), { code: "CATALOG_READ" }); } });
-            const client = managementClient({ workflowCommands: { requests: true } }, catalog);
-            await assert.rejects(client.readWorkflow("wf"), error => error.code !== "WORKFLOWS_DISABLED");
-            assert.ok(touched > 0, "the read reached the catalog");
-        });
-    }
+    const capabilities = await managementClient({}, store).getWorkflowCapabilities();
+    assert.deepEqual(capabilities, workflowCapabilities({ read: true, commands: null }));
+    assert.equal(capabilities.enabled, true);
+    // A read goes to the catalog: never refused for a switch.
+    let touched = 0;
+    const catalog = new Proxy({}, { get: () => { touched += 1; throw Object.assign(new Error("the catalog was read"), { code: "CATALOG_READ" }); } });
+    const client = managementClient({ workflowCommands: {} }, catalog);
+    await assert.rejects(client.readWorkflow("wf"), error => error.code !== "WORKFLOWS_DISABLED");
+    assert.ok(touched > 0, "the read reached the catalog");
 });
 
-test("the management client: the access check reads the Workflow lineage, PILOTSWARM_WORKFLOWS=off ignored", async () => {
-    await withRetired("off", async () => {
-        let reads = 0;
-        const store = { readWorkflowLineage: async () => { reads += 1; return null; } };
-        const client = managementClient({}, { workflowStore: () => store });
-        await client.getWorkflowInputPolicy("c");
-        assert.equal(reads, 1);
-    });
+test("the management client: the access check reads the Workflow lineage", async () => {
+    let reads = 0;
+    const store = { readWorkflowLineage: async () => { reads += 1; return null; } };
+    const client = managementClient({}, { workflowStore: () => store });
+    await client.getWorkflowInputPolicy("c");
+    assert.equal(reads, 1);
 });
 
-test("the client: a person's prompt and event read the Workflow lineage, whatever PILOTSWARM_WORKFLOWS says", async () => {
+test("the client: a person's prompt and event read the Workflow lineage", async () => {
     const client = Object.assign(Object.create(PilotSwarmClient.prototype), { _catalog: { workflowStore: () => ({ marker: true }) } });
-    for (const retired of [undefined, "off", "on"]) {
-        await withRetired(retired, () => assert.deepEqual(client._workflowStoreOrNull(), { marker: true }, String(retired)));
-    }
+    assert.deepEqual(client._workflowStoreOrNull(), { marker: true });
 });

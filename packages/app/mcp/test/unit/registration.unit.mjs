@@ -163,20 +163,13 @@ async function main() {
         expectAll(names, ADMIN_TOOLS, true, "full ctx: admin tools present");
     }
 
-    // 2b. Workflows are always on: the retired PILOTSWARM_WORKFLOWS=off changes nothing.
+    // 2b. Workflows are always on: the read is registered, and the test-only option adds update_workflow.
     {
-        const saved = process.env.PILOTSWARM_WORKFLOWS;
-        process.env.PILOTSWARM_WORKFLOWS = "off";
-        try {
-            const names = await listToolNames(makeCtx({ enhanced: true, graph: true, admin: true, web: true }));
-            expectAll(names, ALWAYS_TOOLS, true, "retired PILOTSWARM_WORKFLOWS=off: unconditional tools present");
-            expectAll(names, WORKFLOW_TOOLS, true, "retired PILOTSWARM_WORKFLOWS=off: read_workflow still present");
-            const commands = await listToolNames({ ...makeCtx(), workflowCommands: true });
-            expectAll(commands, [...WORKFLOW_TOOLS, "update_workflow"], true, "retired PILOTSWARM_WORKFLOWS=off: the test-only option still adds update_workflow");
-        } finally {
-            if (saved === undefined) delete process.env.PILOTSWARM_WORKFLOWS;
-            else process.env.PILOTSWARM_WORKFLOWS = saved;
-        }
+        const names = await listToolNames(makeCtx({ enhanced: true, graph: true, admin: true, web: true }));
+        expectAll(names, ALWAYS_TOOLS, true, "unconditional tools present");
+        expectAll(names, WORKFLOW_TOOLS, true, "read_workflow present");
+        const commands = await listToolNames({ ...makeCtx(), workflowCommands: true });
+        expectAll(commands, [...WORKFLOW_TOOLS, "update_workflow"], true, "the test-only option adds update_workflow");
     }
 
     // 3. Non-admin with providers: read tools present, [admin] subset absent.

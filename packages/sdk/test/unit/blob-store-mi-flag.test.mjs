@@ -156,7 +156,6 @@ for (const entrypoint of ["packages/sdk/examples/worker.js", "packages/app/tui/s
                 DATABASE_URL: "postgresql://u:p@unittest.invalid/app",
                 PILOTSWARM_USE_MANAGED_IDENTITY: "0",
             };
-            delete env.PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT;
             if (flag === undefined) delete env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY;
             else env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY = flag;
             const result = spawnSync(process.execPath, [
@@ -174,16 +173,14 @@ for (const entrypoint of ["packages/sdk/examples/worker.js", "packages/app/tui/s
     }
 }
 
-// The retired Workflow V2 test environment switch through the two entry points (owner decision 2026-11-08T15:30Z): every
-// worker runs the full Workflow engine, so neither passes test options for it, whatever it is set to; the portal's embedded
+// Every worker runs the full Workflow engine, so neither entry point passes test options of its own; the portal's embedded
 // workers still take test options a caller passes.
-for (const [entrypoint, switchValue, embeddedTestOptions, expected] of [
-    ["packages/sdk/examples/worker.js", "isolated-test-only", null, null],
-    ["packages/sdk/examples/worker.js", undefined, null, null],
-    ["packages/app/tui/src/embedded-workers.js", "isolated-test-only", null, null],
-    ["packages/app/tui/src/embedded-workers.js", undefined, { intakeAdmissionRetryDelaysMs: [1] }, { intakeAdmissionRetryDelaysMs: [1] }],
+for (const [entrypoint, embeddedTestOptions, expected] of [
+    ["packages/sdk/examples/worker.js", null, null],
+    ["packages/app/tui/src/embedded-workers.js", null, null],
+    ["packages/app/tui/src/embedded-workers.js", { intakeAdmissionRetryDelaysMs: [1] }, { intakeAdmissionRetryDelaysMs: [1] }],
 ]) {
-    test(`${entrypoint} with the retired Workflow V2 test environment switch ${JSON.stringify(switchValue)} and test options ${JSON.stringify(embeddedTestOptions)}`, () => {
+    test(`${entrypoint} with test options ${JSON.stringify(embeddedTestOptions)}`, () => {
         const sdkUrl = new URL("../../dist/index.js", import.meta.url).href;
         const entryUrl = new URL(entrypoint, new URL("../../../../", import.meta.url)).href;
         const embedded = embeddedTestOptions ? `, testOptions: ${JSON.stringify(embeddedTestOptions)}` : "";
@@ -203,8 +200,6 @@ for (const [entrypoint, switchValue, embeddedTestOptions, expected] of [
             if (entry.startEmbeddedWorkers) await entry.startEmbeddedWorkers({count: 1, store: process.env.DATABASE_URL${embedded}});
         `;
         const env = { ...process.env, DATABASE_URL: "******unittest.invalid/app", PILOTSWARM_USE_MANAGED_IDENTITY: "0" };
-        if (switchValue === undefined) delete env.PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT;
-        else env.PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT = switchValue;
         const result = spawnSync(process.execPath, [
             "--experimental-test-module-mocks", "--no-warnings=ExperimentalWarning",
             "--input-type=module", "-e", script,

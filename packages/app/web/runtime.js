@@ -199,8 +199,7 @@ function providerNames(raw) {
 
 /**
  * The PortalRuntime options the portal server builds (server.js): its storage options and mode, exactly. Every deployment
- * runs the full Workflow engine and takes a person's workflow commands; the retired PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT
- * changes nothing (server.js warns once). Pure.
+ * runs the full Workflow engine and takes a person's workflow commands. Pure.
  */
 export function portalRuntimeOptions(storageOptions, mode) {
     return { ...storageOptions, mode };

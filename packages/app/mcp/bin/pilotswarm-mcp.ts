@@ -3,7 +3,6 @@
 import { parseArgs } from "node:util";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { Buffer } from "node:buffer";
-import { warnRetiredWorkflowsSetting } from "pilotswarm-sdk";
 import { createContext } from "../src/context.js";
 import { createMcpServer } from "../src/server.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -59,9 +58,7 @@ if (!apiUrl && !store) {
 const agentMgmtRaw = (values["agent-mgmt"] ?? "full").toLowerCase();
 const agentMgmt = ["off", "read", "full"].includes(agentMgmtRaw) ? agentMgmtRaw as "off" | "read" | "full" : "full";
 
-// MCP over stdio: log lines go to stderr, never to the protocol stream. Workflows are always on, with the full engine: the
-// retired PILOTSWARM_WORKFLOWS and PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT are ignored with one warning each.
-warnRetiredWorkflowsSetting(process.env, message => log.warn(`[pilotswarm-mcp] ${message}`));
+// MCP over stdio: log lines go to stderr, never to the protocol stream.
 const ctx = await createContext({
     ...(apiUrl ? { apiUrl } : { store }),
     modelProvidersPath: values["model-providers"],

@@ -63,8 +63,6 @@ test("the flag is on only when it is exactly `on`, separate from the test enviro
         assert.equal(workflowTestModeFromEnv({ PILOTSWARM_WORKFLOW_TEST_MODE: value }), false, JSON.stringify(value));
     }
     assert.equal(workflowTestModeFromEnv({ PILOTSWARM_WORKFLOW_TEST_MODE: "on" }), true);
-    // The Workflow V2 test environment switch does not turn it on.
-    assert.equal(workflowTestModeFromEnv({ PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: "isolated-test-only" }), false);
     assert.equal(workflowTestModeFromEnv(), false, "this process: off by default");
     // A host's own boolean wins; without one, the flag decides.
     assert.equal(resolveWorkflowTestMode(true, {}), true);

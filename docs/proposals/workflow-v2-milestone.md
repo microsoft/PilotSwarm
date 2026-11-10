@@ -13,8 +13,7 @@ Status: **live** with session orchestration 1.0.83. Every worker registers
 the controller and the orchestrations it starts, and every new run starts at
 the one controller version (see the note above). The durable recipient intake ships switched off: no
 worker sets the `workflowIntake` capability, so a Workflow's messages to a
-chat use the session queue. "The test environment switch" below is history:
-`PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` is retired and ignored. The names
+chat use the session queue. The names
 of the two workflow turn tools stay reserved, so packages and capabilities
 cannot export them ("The agent tools on a turn of a 1.9.0 worker" below).
 
@@ -1543,7 +1542,7 @@ switch below.
 
 `PilotSwarmWorkerOptions.testOptions.workflowRequests` (default off; the SDK
 reads no environment variable for it; the deployed entry points set it only
-for the test environment switch below) makes a `PilotSwarmWorker` run
+for a pre-release test switch) makes a `PilotSwarmWorker` run
 controller 1.9.0. The worker then loads `workflow/v2/milestone-worker.ts`,
 which nothing else imports, and:
 
@@ -1582,44 +1581,10 @@ every worker that can fetch 1.9.0 or 1.0.83 work must run the same option
 (the request design's activation gate, 8.4, stays required).
 
 > **Superseded (2026-11-08T15:30Z):** the milestone is released on every
-> deployment with session orchestration 1.0.83 and controller 1.9.0; the switch
-> below is retired and ignored with one warning. See
-> `docs/developer/building/workflow-sessions.md`, "Workflows are always on".
-
-**The test environment switch (test-only; isolated test environments
-only).** `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT`, exactly
-`isolated-test-only` (no other spelling, no spaces), is read by the deployed
-entry points and passes the options above (`test-environment.ts`,
-`workflowV2TestEnvironmentFromEnv`): the headless worker
-(`packages/sdk/examples/worker.js`, the `worker` image) and the portal's
-embedded workers get `testOptions.workflowRequests`; the portal
-(`packages/app/web/server.js`, `portalRuntimeOptions`) and the MCP server
-(`workflowContextOptionsFromEnv`) get `workflowCommands: { requests: true }`,
-so a person's commands, stop and the test operations included, are taken and
-advertised (`workflows.v2.commands`). The portal's session client
-(`NodeSdkTransport`) and the MCP server's direct-mode client also start new
-sessions at 1.0.83 (`sessionStartVersion`, `PilotSwarmClient._startSessionsAt`):
-only a 1.0.83 session's turns take request, agent and parallel states, so
-without it no person's chat could create such a workflow (found in the preview
-on 792c61e3). A session started before keeps its version; one at 1.0.82 still
-refuses those states. A sub-agent that a chat spawns (spawn_agent) starts at
-1.0.83 on a worker with `testOptions.workflowRequests` (the turn's own client,
-session-proxy getInlineClient, and spawnChildSession), so
-an agent can delegate writing such a workflow; system agents and their
-system children still start at 1.0.82. The rule is the worker's, not the
-caller's: on such a worker, spawn_agent from a system agent's turn also
-starts its (non-system) sub-agent at 1.0.83. That is fine in the test
-environment, where every worker serves 1.0.83, and it cannot happen with the
-switch off, where no worker has the option. Unset, empty or any other value is
-off, and every option is exactly as without it (unit tests prove it for the
-worker, the portal, its embedded workers and MCP; a local test runs a chat each
-way). Each entry point logs one
-line when the variable is set (ON, or ignored). Production defaults,
-`DURABLE_SESSION_LATEST_VERSION` (1.0.82) and the orchestration registry do
-not change, so this is not an activation; every worker that shares the
-environment's database must run the same image with the same value. Script
-states still need `PILOTSWARM_WORKFLOW_SCRIPTS=1`. The deploy README
-(`deploy/scripts/README.md`) and the configuration reference name it.
+> deployment with session orchestration 1.0.83 and controller 1.9.0. A
+> pre-release test environment switch gated it before; it never shipped and no
+> longer exists. See `docs/developer/building/workflow-sessions.md`,
+> "Workflows are always on".
 
 ## Run deadline (design 02 run lifecycle, D03; canonical `limits`)
 

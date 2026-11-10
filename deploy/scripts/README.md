@@ -519,15 +519,6 @@ cluster has no network policy engine, must block worker pods from
 `169.254.169.254` itself (for example, with the AKS IMDS restriction) or set
 `PILOTSWARM_WORKFLOW_SCRIPTS=0`.
 
-Two settings are retired. A deployment that still sets one, to any value, is
-ignored with one startup warning on each worker, the portal and the MCP server;
-remove it from the environment:
-
-| Retired variable | Why |
-|---|---|
-| `PILOTSWARM_WORKFLOWS` | Workflows are always on. |
-| `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` | Every worker runs the full Workflow engine. |
-
 ### Upgrading to this release: stop, deploy, start
 
 Do not roll the workers for this release. Stop every worker, deploy, then

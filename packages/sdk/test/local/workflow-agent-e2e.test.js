@@ -276,17 +276,14 @@ states:
 
     // Workflows are always on (owner 2026-11-08T08:03Z): a worker started without any Workflow setting offers the workflow
     // tools where Workflows are on in the chat (on demand, owner 16:55Z), script workflows on or off (a definition with a script node is refused at save and Start where they are off;
-    // scripts-gate.ts), and a deployment that still sets the retired PILOTSWARM_WORKFLOWS=off is ignored.
-    for (const [label, worker, retired] of [
-        ["no Workflow setting and script workflows off", { workflowScripts: { enabled: false } }, undefined],
-        ["the retired PILOTSWARM_WORKFLOWS=off and script workflows on", { workflowScripts: { enabled: true } }, "off"],
+    // scripts-gate.ts).
+    for (const [label, worker] of [
+        ["script workflows off", { workflowScripts: { enabled: false } }],
+        ["script workflows on", { workflowScripts: { enabled: true } }],
     ]) {
         it(`a worker with ${label} shows the workflow tools to the model`, { timeout: TIMEOUT }, async () => {
             const env = getEnv();
-            const before = process.env.PILOTSWARM_WORKFLOWS;
-            if (retired === undefined) delete process.env.PILOTSWARM_WORKFLOWS;
-            else process.env.PILOTSWARM_WORKFLOWS = retired;
-            try {
+            {
                 await withScriptedModel(env, { respond: () => ({ content: "ok" }), worker }, async ({ client, model, qualifiedModel }) => {
                     // Workflows on demand: a new chat is offered enable_workflows; with Workflows on, the Workflow tools.
                     const fresh = await client.createSession({ model: qualifiedModel, owner: OWNER });
@@ -307,9 +304,6 @@ states:
                     // Kept declared once they are on, answered "already on" (a call of an undeclared tool is a Failed row).
                     expect(listed.find((tool) => tool?.function?.name === "enable_workflows")?.function?.description).toMatch(/already on in this chat/);
                 });
-            } finally {
-                if (before === undefined) delete process.env.PILOTSWARM_WORKFLOWS;
-                else process.env.PILOTSWARM_WORKFLOWS = before;
             }
         });
     }

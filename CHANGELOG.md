@@ -71,10 +71,7 @@ templates, or whose cluster has no network policy engine, must block worker
 pods from `169.254.169.254` itself (for example, with the AKS IMDS
 restriction) or set `PILOTSWARM_WORKFLOW_SCRIPTS=0`.
 
-**Retired settings.** `PILOTSWARM_WORKFLOWS` and
-`PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` are ignored, with one startup
-warning on each worker, the portal and the MCP server. Remove them from the
-environment. `PILOTSWARM_WORKFLOW_TEST_MODE` is unchanged and off by default.
+`PILOTSWARM_WORKFLOW_TEST_MODE` is off by default.
 
 ## 0.8.10 — 2026-11-07
 

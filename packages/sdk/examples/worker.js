@@ -94,8 +94,7 @@ if (process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH) {
 // Set explicitly to override the plugin default, or leave undefined to use it.
 const SYSTEM_MESSAGE = undefined;
 
-// Workflows are always on, with the full engine; the worker warns once for each retired setting still set
-// (PILOTSWARM_WORKFLOWS, PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT).
+// Workflows are always on, with the full engine.
 const worker = new PilotSwarmWorker({
     store: process.env.DATABASE_URL,
     githubToken: process.env.GITHUB_TOKEN,

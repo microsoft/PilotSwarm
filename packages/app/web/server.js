@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WS_PATH } from "pilotswarm-sdk/api";
-import { buildSessionCatalogPgClientConfig, warnRetiredWorkflowsSetting } from "pilotswarm-sdk";
+import { buildSessionCatalogPgClientConfig } from "pilotswarm-sdk";
 import { getPortalAssetFile, getPortalConfig, parsePortalLinkOrigins } from "./config.js";
 import { authenticateRequest, getAuthConfig } from "./auth.js";
 import { getPublicAuthContext } from "./auth/authz/engine.js";
@@ -156,9 +156,6 @@ export async function startServer(opts = {}) {
         aadDbUser: process.env.PILOTSWARM_DB_AAD_USER || undefined,
     };
     const runtime = new PortalRuntime(portalRuntimeOptions(storageOptions, mode));
-    // Workflows are always on, with the full engine: the retired PILOTSWARM_WORKFLOWS and PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT
-    // are ignored with one warning each.
-    warnRetiredWorkflowsSetting(process.env, message => console.warn(`[portal] ${message}`));
 
     const app = express();
     app.set("trust proxy", true);

@@ -1,6 +1,5 @@
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
 import { isWorkflowTestBench } from "./workflow/v2/test-bench.js";
-import { warnRetiredWorkflowsSetting } from "./workflow/retired-workflows-setting.js";
 import { workflowScriptsEnabledFromEnv } from "./workflow/v2/scripts-gate.js";
 import { skillsIndexLine, skillsIndexSection, WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR } from "./workflow/guidance.js";
 import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
@@ -1018,8 +1017,6 @@ export class PilotSwarmWorker {
         // whose script nodes this worker does not run is refused with a clear message instead of waiting.
         const workflowScriptSettings = resolveWorkflowScriptSettings(this.config.workflowScripts);
         this.sessionManager.workflowScriptsEnabled = workflowScriptSettings.enabled;
-        // Workflows are always on (owner 2026-11-08T08:03Z): a deployment that still sets PILOTSWARM_WORKFLOWS is warned once.
-        warnRetiredWorkflowsSetting();
         const workflowClient = new Client(this._provider);
         const resolveWorkflowToolBinding = async (sessionId: string) => {
             if (!this._catalog?.getSessionCreationConfig) throw new Error("Workflow tool-policy storage is unavailable.");
