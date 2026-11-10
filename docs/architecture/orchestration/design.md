@@ -567,7 +567,7 @@ its model.
 Its deployment is not rolling (owner decision 2026-11-08): stop every worker,
 deploy, then start them. Duroxide does not route orchestration items by
 version. A worker of the previous image that fetches a 1.0.83 (or Workflow
-controller 1.9.0) item has no such version registered and abandons it with
+controller) item has no such version registered and abandons it with
 duroxide's unregistered-version backoff; after its maximum attempts (10 by
 default) duroxide marks the item poison and the session fails. Nothing makes
 a worker of the new image win that race, so no old worker may run once a

@@ -26,8 +26,8 @@ The chain starts at `0001_baseline` (the schema as of v1.0.41) and currently
 runs through the migrations listed at the top of `cms-migrations.ts`
 (metric summaries, stored procedures, session owners, user profiles,
 reasoning effort, session groups, turn metrics, stop-turn
-`active_turn_index`, …), then the Workflow migrations: `0088` (the session
-kind of a Workflow's session) and `0089` to `0110` (`migrations/workflow-v2-*.ts`): the
+`active_turn_index`, …), then the one Workflow migration, `0088`
+(`migrations/workflow-0088.ts`): the session kind of a Workflow's session, the
 `workflow_*` tables (definitions and their revisions, chat-owned definitions,
 runs, node executions, variables, inbox, input receipts, outbox, requests,
 intake, agent invocations, test runs) and the triggers that end a chat's or a

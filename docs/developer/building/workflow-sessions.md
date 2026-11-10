@@ -176,8 +176,8 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   is refused. A decided visit stops the session's running turn, not the
   session; the session ends when the run ends, and a graceful stop ends an
   idle one at once. If the session ended on its own, the next open visit
-  starts a new agent session and says so. Migration 0106 drops the UNIQUE on
-  `workflow_agent_invocations.child_session_id`.
+  starts a new agent session and says so. `workflow_agent_invocations` has one
+  row per visit (`child_session_id` is not unique).
   Each turn of a continued agent session works for one visit, its turn visit:
   the open visit its prompt names, or, for a turn a timer or a sub-agent's
   update starts, the visit of the session's newest visit prompt. A turn whose
@@ -211,7 +211,7 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   worker never gets `complete_workflow_node`. The Node panel and the
   terminal say the limit. **Known limit:** a worker of an
   earlier build ignores the field; deploy workers and the portal together,
-  as migration 0107 already requires.
+  as migration 0088 already requires.
 - **An agent node's input is its data** (stage 2.1, FU-17b). Its first and
   cycle prompts say to base the work on the input (and, for a cycle, the
   variables and previous result), not to fetch the same data again unless
@@ -273,18 +273,15 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
 ## A definition belongs to the chat (stage 2.1)
 
 A chat owns named **Workflow Definitions**; each save is a new, immutable
-**revision** (1, 2, 3) that records who saved it (`by the chat`, `by <person>`,
-`imported`) and the revision it was based on. A Workflow runs the revision it
+**revision** (1, 2, 3) that records who saved it (`by the chat`, `by <person>`)
+and the revision it was based on. A Workflow runs the revision it
 started with; a later save never changes it. The chat changes and starts its
 definitions with its `workflow_definition` tool. `spawn_workflow` is no
 longer declared to a model; its handler stays one release for a stale call,
 mapped to save then start (a repeat with the same `key` and YAML is answered
 as before, and a corrected YAML under the same `key` saves the next revision
-and starts it). Migration 0107 makes each chat's stage 1
-Workflows, grouped by name, one definition whose revisions are every distinct
-YAML they stored; a stage 1 child that never started is shown as its revision.
-A Workflow that is a copy of a chat revision (each such migrated child, and each
-Workflow a Start makes) takes none of the stage 1 definition operations
+and starts it).
+A Workflow that is a copy of a chat revision (each Workflow a Start makes) takes none of the stage 1 definition operations
 (`replace_definition`, `publish`, `publish_and_start`, `start`), from the chat
 or a person: they answer `PINNED_TO_CHAT_REVISION` (409) and change nothing. Change
 the definition with `workflow_definition save` (or YAML and Save in the
@@ -326,7 +323,7 @@ text value (`AGENT_MODELS_INVALID`, 400), or a model that catalog does not
 serve, or an effort or tier the model does not list (a model that lists none
 takes none) (`AGENT_MODEL_UNAVAILABLE`, 422) refuses the start in words. A
 host that cannot check models refuses any map. It is stored with the run
-(migration 0110, `workflow_runs.agent_models`) and shown by `read_workflow`
+(`workflow_runs.agent_models`) and shown by `read_workflow`
 as `run.agentModels`; **Run again** reuses it, unless the start gives its
 own (an empty map clears it). When a chosen model cannot be used any more at
 spawn, that node fails in words; it never falls back to another model. A
@@ -350,7 +347,7 @@ another revision under the same operation is refused (`OPERATION_CONFLICT`).
 A Workflow session has no turn, so it offers no Stop: its run has its own Stop
 and Cancel.
 
-**Clock waits** (stage 2.4; controller 1.9.0 only, IR 10). A wait state may
+**Clock waits** (stage 2.4; IR 10). A wait state may
 give `at` instead of `seconds`, with the `cron_at` fields:
 
 ```yaml
@@ -364,8 +361,7 @@ It waits until the next such time in its zone, daylight saving included
 (`minute` alone: every hour). The deadline is decided once, when the state is
 entered, from the store's clock (a test run's virtual clock); the graph says
 `Wait · until 09:00` and the Node panel `Waits until the next 09:00
-(America/Los_Angeles).` A host that does not run controller 1.9.0 refuses the
-definition (`WORKFLOW_FEATURE_UNSUPPORTED`, naming `at`).
+(America/Los_Angeles).`
 
 **Tool call windows** (FU-25, stage 2.4). Each tool call a script makes on
 the Workflow's shared tool session is on the Workflow's Log:
@@ -511,12 +507,10 @@ needs a test. People do not run tests themselves.
 - The Definition view says `Last test · passed 17:42` (or `failed`, or
   `Test running`) beside the revision picker, only for a revision that was
   tested (`revisions[].lastTest` of `listChatWorkflowDefinitions`).
-- Every deployment runs tests (every worker runs controller 1.9.0). Every
-  turn declares `test` (with `fixtures` and `test_id`) and its guidance
-  teaches testing, a turn of a previous-release chat still on 1.0.82
-  included: every turn's host runs Workflow tests. Only a host that cannot
-  run one (a client created without requests) refuses a call of `test`
-  (`WORKFLOW_TEST_UNAVAILABLE`), and a test read again by its `test_id` too.
+- Every deployment runs tests. Every turn declares `test` (with `fixtures`
+  and `test_id`) and its guidance teaches testing, a turn of a
+  previous-release chat still on 1.0.82 included: every turn's host runs
+  Workflow tests.
   A revision with errors, one this version no longer compiles, or one with a
   script node where scripts are off, is refused (`Nothing was tested.`).
 
@@ -916,9 +910,7 @@ queues it and records the result. Another attempt that finds the lock held
 waits for it (up to 20 seconds) and reads again, so it records nothing when
 the holder recorded; if the lock is still held, the attempt fails and is tried
 again. If the holder dies, the run still owes its notice and `recover`
-finishes it. Under controller 1.8.0 each attempt of a store activity, the
-notice included, is timed out after 30 seconds and tried again. Under 1.9.0 an
-attempt has no time limit of its own. Only the notice's own waits are bounded:
+finishes it. An attempt has no time limit of its own. Only the notice's own waits are bounded:
 at most 15 seconds for deliveries in flight and at most 20 seconds for the lock,
 no more than 27 seconds in all. Getting a database connection, the SQL calls
 and the send itself have no time limit, so an attempt that hangs there can
@@ -989,7 +981,7 @@ worker's activity slot stays held until that task ends, or at most for a
 Workflows need no setting (owner decisions, 2026-11-08): every worker, the
 portal, the MCP server and the terminal UI have them, with the full engine.
 Every worker serves session orchestration 1.0.83 (the latest version) and
-Workflow controller 1.9.0, so every Workflow can use agent, parallel and
+the Workflow controller (1.0.0), so every Workflow can use agent, parallel and
 request states, clock waits and a run deadline, every chat can test a revision,
 and a person can send workflow commands.
 
@@ -1027,8 +1019,8 @@ it from the deployment's settings."
 Sessions of the previous release (orchestration 1.0.82) keep running on the
 frozen 1.0.82 and move to 1.0.83 at their next continue-as-new, which carries
 their queued prompts, pending child updates, notices and model. Until then a
-turn of such a session runs on 1.0.82. Its Workflows run on controller 1.9.0
-like every other, and that turn is offered `workflow_definition`'s `test`
+turn of such a session runs on 1.0.82. Its Workflows run on the Workflow
+controller like every other, and that turn is offered `workflow_definition`'s `test`
 operation, but not the clock-wait line or `respond_session_request`, and a Workflow's request to the
 session is refused until it continues as new. Upgrade by stopping every
 worker, deploying, then starting them (`deploy/scripts/README.md`, "Upgrading
@@ -1047,7 +1039,7 @@ workers do, such a run fails at its first script node, with the setting named.
 scripts, `cron` says it wakes the agent only for work that
 needs its judgment, and that a check a script can do belongs in one Workflow
 (saved with `workflow_definition` and started once) that loops through a wait
-state; where clock waits run (controller 1.9.0), `cron_at` says the same, with
+state; where clock waits run, `cron_at` says the same, with
 a wait state's `at`. Every rule of their default wording is kept. With scripts
 off, both keep main's wording.
 
@@ -1344,7 +1336,7 @@ Isolation, in this version:
 ## Durability
 
 Each Workflow run has one durable controller orchestration
-(`workflow-v2-controller`, version 1.9.0), separate from the chat's own
+(`workflow-v2-controller`, version 1.0.0), separate from the chat's own
 orchestration. The controller keeps the exact ids of the work it started in
 its own history. Each visit of a state, with its input, outcome and output, is
 a row in PostgreSQL. So a worker restart loses nothing: the controller goes on

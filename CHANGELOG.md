@@ -27,10 +27,11 @@ person's message no longer merges into one turn with a prompt from an agent
 or the system (prompts of the same kind still merge).
 
 **Workflows are always on, with everything.** Every worker serves the full
-Workflow engine with controller 1.9.0: agent, parallel and request states,
+Workflow engine: agent, parallel and request states,
 clock waits, revision tests, named branches, per-node models and a person's
 Workflow commands, on every deployment. Every Workflow run starts at
-controller 1.9.0. The Workflow authoring skills load on every worker, and
+the one Workflow controller version, 1.0.0, and the Workflow schema is one
+CMS migration, 0088. The Workflow authoring skills load on every worker, and
 every chat can load them with `load_skill`, Base V2 chats included. See
 `docs/developer/building/workflow-sessions.md`.
 

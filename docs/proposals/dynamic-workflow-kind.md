@@ -79,7 +79,7 @@ The comparison with GitHub's workflow features is in
   `workflow_chat_revisions`, migration 0107). Start makes a Workflow from one
   revision.
 - The controller is one durable orchestration per run
-  (`workflow-v2-controller` 1.9.0 in `packages/sdk/src/workflow/v2/runtime.ts`).
+  (`workflow-v2-controller` 1.0.0 in `packages/sdk/src/workflow/v2/runtime.ts`).
   Each visit of a state is a row in PostgreSQL. The run records the
   controller version it started at (`workflow_runs.controller_version`,
   migration 0100).
@@ -124,7 +124,7 @@ All from public documentation, fetched 2026-11-08 [S12, S13, S14, S15]:
 | Concern | Where it lives today | Why every kind can use it |
 |---|---|---|
 | Definitions owned by a chat, with revisions | `workflow_chat_definitions`, `workflow_chat_revisions` (migration 0107) | Only the `yaml` and `ir` columns are language-specific. Identity, revision chain, validity and diagnostics are not. |
-| Runs | `workflow_runs` (migrations 0089, 0100, 0110) | A run of any kind is one durable orchestration at one version, with inputs, a status and an end. |
+| Runs | `workflow_runs` (migration 0088) | A run of any kind is one durable orchestration at one version, with inputs, a status and an end. |
 | Run status | admitted, running, paused, completed, failed, cancelled, stopped (`store.ts`) | Copilot's statuses map onto it: `error` to failed, `halted` to a run that shows `needsRecovery`, the rest by name. |
 | End notice to the chat | `notify_on_completion` | Copilot's `notifyOnComplete` is the same idea [S15]. |
 | Agent steps as child chats | `WorkflowAgentNodeHost`, `complete_workflow_node` | `ctx.agent` needs exactly this: a child, a typed result, correction turns and a model choice. |
@@ -520,8 +520,7 @@ Repository:
   `redact.ts`.
 - `packages/sdk/src/workflow/runner.ts` and `tool-policy.ts`: the script
   guard and tool policy.
-- `packages/sdk/src/migrations/workflow-v2-0089.ts` to `workflow-v2-0110.ts`:
-  the tables.
+- `packages/sdk/src/migrations/workflow-0088.ts`: the tables.
 - `packages/app/ui/react/src/workflow-tab.js` and
   `packages/app/ui/core/src/workflow-v2-view.js`: the Workflow tab and its
   projection.

@@ -1,5 +1,14 @@
 # Workflow messaging: durable recipient intake (design A, revision 3, amendment 2)
 
+> **As built (2026-11-10, owner decision: Workflow V2 was deployed nowhere, so its versions and migrations were
+> collapsed).** Each Workflow orchestration has one version: `workflow-v2-controller` 1.0.0 is the controller this
+> document calls 1.9.0 (the request controller); `workflow-v2-effect`, `-notify` and `-send` 1.0.0 are its tagged
+> 1.1.0 orchestrations; `workflow-v2-request`, `-agent` and `-chat-end` stay 1.0.0. Controller 1.8.0, the pre-release
+> controllers 1.0.0 to 1.7.0, the untagged orchestrations and activities, and the `workflowRequests` and
+> `WorkflowV2Host.requests` switches are gone: every activity is `workflow.v2.<name>` with the workflow-request tag.
+> The CMS migrations this document numbers 0088 to 0111 are one migration, 0088 (`migrations/workflow-0088.ts`), which
+> creates their final schema. Version and migration numbers below are the design's history.
+
 Status: revised design checkpoint for review. Docs only; no code changes.
 Revision 2 (`e287ddb3`) revised `c92d7eb1` after the Grok review
 (`wfv2-intake-design-c92d7eb1-grok-review.md`, SHA-256 `e77c20b8…`) with the
