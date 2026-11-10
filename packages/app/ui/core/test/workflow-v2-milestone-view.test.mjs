@@ -8,9 +8,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { layoutWorkflowGraph } from "../src/workflow-view.js";
 import {
-    annotateWorkflowV2Edges, projectWorkflowV2, projectWorkflowV2ReadModel, workflowV2Definition, workflowV2NodeLabel, workflowV2RunStatus,
+    layoutWorkflowGraph, annotateWorkflowV2Edges, projectWorkflowV2, projectWorkflowV2ReadModel, workflowV2Definition, workflowV2NodeLabel,
+    workflowV2RunStatus,
 } from "../src/workflow-v2-view.js";
 import { WorkflowV2NodeContent, WorkflowV2TestInterceptions, workflowV2RunPickerModel } from "../../react/src/workflow-v2-panels.js";
 import { RUN, readModel, row, done } from "./workflow-v2-fixtures.mjs";

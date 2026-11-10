@@ -6,10 +6,11 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
-import { workflowDefinition, workflowReadModelView } from "../src/workflow-view.js";
+import {
+    workflowV2Definition, workflowReadModelView, projectWorkflowV2,
+} from "../src/workflow-v2-view.js";
 import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
 import { selectWorkflowV2Run, workflowV2RunPickerModel } from "../../react/src/workflow-v2-panels.js";
-import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
 import { startedData, ev, row, done, readModel } from "./workflow-v2-fixtures.mjs";
 
 const SID = "wf-picker";
@@ -30,7 +31,7 @@ function seed({ view = {}, events = [], kind = "workflow" } = {}) {
     return { store, controller, transport, calls, view: () => store.getState().ui.workflowViews?.[SID] || {} };
 }
 const pane = controller => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, log: null, icon: null }));
-const def = () => workflowDefinition(startedData);
+const def = () => workflowV2Definition(startedData);
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 async function until(check, label) {
     for (let turn = 0; turn < 200; turn += 1) { if (check()) return; await new Promise(resolve => setImmediate(resolve)); }

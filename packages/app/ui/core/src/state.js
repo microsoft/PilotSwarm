@@ -471,7 +471,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // What a person may send to a session in a workflow agent state's subtree, as the server reported it
             // (normalizeWorkflowInputPolicy; read by the TUI's composer). Per session; absent until read.
             workflowInputPolicies: {},
-            // Review SF-D5: whether the server says workflow test mode is on (its bootstrap's workflows.v2.testMode); only
+            // Review SF-D5: whether the server says workflow test mode is on (its bootstrap's workflows.testMode); only
             // then does a chat show a stored "Workflow · test waiting" card. Off until the server says so.
             workflowTestMode: false,
             // That read in flight ("checking") or failed ("failed"), per session; absent otherwise (owner decision q18).

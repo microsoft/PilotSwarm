@@ -16,7 +16,8 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { projectWorkflowV2, workflowV2ContinueWords, workflowV2ItemCountsText, workflowV2NodeLabel, workflowV2OutcomeWord } from "../src/workflow-v2-view.js";
+import { projectWorkflowV2, workflowV2ContinueWords, workflowV2ItemCountsText, workflowV2NodeLabel } from "../src/workflow-v2-view.js";
+import { workflowOutcomeWord } from "../src/workflow-words.js";
 import { WorkflowStepCard } from "../../react/src/workflow-graph.js";
 import { done, readModel, row } from "./workflow-v2-fixtures.mjs";
 
@@ -49,7 +50,7 @@ test("each node says its type in a word (03, F5)", () => {
     assert.equal(workflowV2NodeLabel({ id: "a", type: "messaging", mode: "receive", contract: "Build@1" }), "Receive · Build@1");
     assert.equal(workflowV2NodeLabel({ id: "a", type: "parallel", concurrency: 3 }), "For each · up to 3 at a time");
     assert.equal(workflowV2NodeLabel({ id: "a", type: "terminal", outcome: "cancelled" }), "End · canceled", "O8: one l on screens");
-    assert.equal(workflowV2OutcomeWord("cancelled"), "canceled");
+    assert.equal(workflowOutcomeWord("cancelled"), "canceled");
     assert.equal(workflowV2ItemCountsText({ ok: 2, failed: 1, canceled: 0, running: 0 }), "2 ok · 1 failed");
     assert.equal(workflowV2ContinueWords({ join: "all_required" }), "Joins when all succeed");
     assert.equal(workflowV2ContinueWords({ join: { first: 2 }, forEach: { count: 3 } }), "Joins at the first 2 of 3");

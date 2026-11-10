@@ -32,8 +32,9 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore, formatWorkflowEventText } from "../src/index.js";
-import { workflowDefinition, workflowReadModelView } from "../src/workflow-view.js";
-import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
+import {
+    workflowV2Definition, workflowReadModelView, projectWorkflowV2,
+} from "../src/workflow-v2-view.js";
 import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
 import { RUN, startedData, ev, started, completed, row, done, readModel as fixtureReadModel } from "./workflow-v2-fixtures.mjs";
 
@@ -321,7 +322,7 @@ test("READ-WIRE-02: the side pane shows the selected run's read failure, with a 
     };
     const model = fixtureReadModel({ nodeExecutions: [done("poll", 1, "changed")] });
     // Batch 6 (r-3): the failure and its Retry show in the side pane's Notices.
-    const failed = { definition: workflowDefinition(startedData), readModel: model, readModelRunId: null,
+    const failed = { definition: workflowV2Definition(startedData), readModel: model, readModelRunId: null,
         readModelAttempt: { runId: null, afterSeq: 2, sessionUpdatedAt: null }, readModelError: "Service unavailable.", sidePanel: "notices" };
     const html = render(failed);
     assert.ok(html.includes("role=\"alert\""));
@@ -366,7 +367,7 @@ function assertNoRunA(html, label) {
 }
 
 test("READ-WIRE-01: with run A's history loaded, a selected run B whose model is loading or failed shows nothing of run A, and the workflow's graph or its absence stays", () => {
-    const definition = workflowDefinition(startedData);
+    const definition = workflowV2Definition(startedData);
     // The history is in effect: with the live selection and no read model, run A is drawn from its events.
     const live = renderPane({ definition }, runAEvents);
     // OF-S2-2: each card's state is in its title (the card shows a mark and a key fact).
@@ -468,7 +469,7 @@ test("READ-WIRE-01: the controller's run selection, with run A's history loaded,
 });
 
 test("READ-WIRE-01: without its own model, the live selection never stands for a run known not to be live, even when its events are the latest", () => {
-    const definition = workflowDefinition(startedData);
+    const definition = workflowV2Definition(startedData);
     const testRun = [inRun("run-2", ev("workflow.started", { ...startedData, mode: "test" })), inRun("run-2", started("poll", 1)),
         inRun("run-2", completed("poll", 1, "unchanged"))];
     // Its start event says it is a test run.

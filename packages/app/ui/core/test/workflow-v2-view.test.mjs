@@ -1,10 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-    workflowDefinition, layoutWorkflowGraph, workflowV2Definition,
-    projectWorkflowV2, projectWorkflowV2ReadModel, compactWorkflowV2Executions, formatWorkflowValue, workflowV2RouteKind,
-    workflowV2WaitingReplies, workflowV2WaitingRepliesLabel, workflowV2WaitingRepliesNotice,
-} from "../src/workflow-view.js";
+import { workflowV2Definition, layoutWorkflowGraph, projectWorkflowV2, projectWorkflowV2ReadModel, compactWorkflowV2Executions, formatWorkflowValue, workflowV2RouteKind, workflowV2WaitingReplies, workflowV2WaitingRepliesLabel, workflowV2WaitingRepliesNotice } from "../src/workflow-v2-view.js";
 import {
     RUN, states, requestStates, startedData, ev, started, completed, runtimeError, ended, row, done, readModel,
 } from "./workflow-v2-fixtures.mjs";
@@ -13,19 +9,19 @@ import {
 // result depends on the zone of the machine that runs it.
 process.env.TZ = "UTC";
 
-const definition = workflowDefinition(startedData);
+const definition = workflowV2Definition(startedData);
 const byId = (projection, id) => projection.nodes.find(node => node.id === id);
 
 test("a definition is checked: unsupported or mixed payloads are refused with a reason", () => {
     assert.deepEqual(definition.states, states);
     assert.equal(definition.name, "watch-v2");
-    assert.throws(() => workflowDefinition({ ...startedData, states: [...states, { id: "x", type: "teleport", next: {} }] }), /invalid or unsupported node/);
-    assert.throws(() => workflowDefinition({ ...startedData, states: [{ id: "poll", type: "script", runtime: "node", next: {} }, states[4]] }), /valid script node/);
-    assert.throws(() => workflowDefinition({ ...startedData, states: [{ ...states[0], next: { changed: "nowhere" } }] }), /node that is not defined/);
-    assert.throws(() => workflowDefinition({ ...startedData, states: [states[2], states[4], states[5]], initial: "elsewhere" }), /start node/);
+    assert.throws(() => workflowV2Definition({ ...startedData, states: [...states, { id: "x", type: "teleport", next: {} }] }), /invalid or unsupported node/);
+    assert.throws(() => workflowV2Definition({ ...startedData, states: [{ id: "poll", type: "script", runtime: "node", next: {} }, states[4]] }), /valid script node/);
+    assert.throws(() => workflowV2Definition({ ...startedData, states: [{ ...states[0], next: { changed: "nowhere" } }] }), /node that is not defined/);
+    assert.throws(() => workflowV2Definition({ ...startedData, states: [states[2], states[4], states[5]], initial: "elsewhere" }), /start node/);
     assert.throws(() => workflowV2Definition({ states: [{ id: "m", type: "messaging", mode: "teleport", contract: "A@1", outcomes: [], next: {} }] }), /messaging mode/);
     // A payload that names no outcomes for its script state (the first engine's shape) is not a Workflow's.
-    assert.throws(() => workflowDefinition({ name: "watch", initial: "poll", states: [
+    assert.throws(() => workflowV2Definition({ name: "watch", initial: "poll", states: [
         { id: "poll", type: "script", runtime: "node", next: { changed: "end" } }, { id: "end", type: "terminal", outcome: "succeeded" }] }), /lists no outcomes/);
 });
 

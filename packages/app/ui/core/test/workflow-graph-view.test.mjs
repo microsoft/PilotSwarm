@@ -1,19 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { workflowDefinition as checkedDefinition, layoutWorkflowGraph } from "../src/workflow-view.js";
+import { workflowV2Definition as checkedDefinition, layoutWorkflowGraph } from "../src/workflow-v2-view.js";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 
 /** A graph's states as the runtime describes them: a script state lists its outcomes (the keys of its next). */
 const described = list => list.map(node => (node && typeof node === "object" && node.type !== "terminal"
     ? { type: "script", runtime: "node", timeoutSeconds: 300, outcomes: Object.keys(node.next ?? {}), ...node } : node));
-const workflowDefinition = data => checkedDefinition(data && Array.isArray(data.states) ? { ...data, states: described(data.states) } : data);
+const definitionOf = data => checkedDefinition(data && Array.isArray(data.states) ? { ...data, states: described(data.states) } : data);
 
 const start = { eventType: "workflow.started", data: { name: "watch", initial: "poll", definitionHash: "h1", states: described([
     { id: "poll", type: "script", next: { unchanged: "poll", changed: "end", limit: "limit" } },
     { id: "end", type: "terminal", outcome: "succeeded" },
     { id: "limit", type: "terminal", outcome: "blocked" },
 ]) } };
-const definition = workflowDefinition(start.data);
+const definition = definitionOf(start.data);
 
 test("definition projection preserves transitions without executing source or accepting empty definitions", () => {
     assert.deepEqual(definition.states, start.data.states);
@@ -41,7 +41,7 @@ test("phone graphs retain sibling branches instead of folding them into a false 
     assert.ok(phone.width > 390, "wide topology uses pan/zoom instead of wrapping");
 });
 
-const branching = workflowDefinition({ name: "branching-workflow-test", initial: "collect_metrics", states: [
+const branching = definitionOf({ name: "branching-workflow-test", initial: "collect_metrics", states: [
     { id: "collect_metrics", type: "script", next: { success: "evaluate_quality", failure: "failed" } },
     { id: "evaluate_quality", type: "script", next: { approved: "approved", blocked: "blocked", failure: "failed" } },
     { id: "approved", type: "terminal", outcome: "succeeded" },
@@ -79,7 +79,7 @@ test("the reported five-node quality gate preserves every edge and all three ter
 });
 
 test("skip edges and cycles use routes outside unrelated node rectangles", () => {
-    const graph = workflowDefinition({ initial: "a", states: [
+    const graph = definitionOf({ initial: "a", states: [
         { id: "a", type: "script", next: { next: "b", skip: "end", loop: "a" } },
         { id: "b", type: "script", next: { next: "c" } },
         { id: "c", type: "script", next: { back: "b", finish: "end" } },
@@ -94,7 +94,7 @@ test("skip edges and cycles use routes outside unrelated node rectangles", () =>
 });
 
 test("return edges have separate arrival tracks rather than merging into misleading branches", () => {
-    const graph = workflowDefinition({ initial: "a", states: [
+    const graph = definitionOf({ initial: "a", states: [
         { id: "a", type: "script", next: { cycle: "b", finish: "done" } },
         { id: "b", type: "script", next: { cycle: "a" } },
         { id: "done", type: "terminal", outcome: "succeeded" },
@@ -111,7 +111,7 @@ test("return edges have separate arrival tracks rather than merging into mislead
 });
 
 test("layout terminates for cycles, disconnected states and special object-key IDs", () => {
-    const graph = workflowDefinition({ initial: "__proto__", states: [
+    const graph = definitionOf({ initial: "__proto__", states: [
         { id: "__proto__", type: "script", next: { next: "constructor" } },
         { id: "constructor", type: "script", next: { again: "__proto__" } },
         { id: "isolated", type: "terminal", outcome: "succeeded" },
@@ -122,7 +122,7 @@ test("layout terminates for cycles, disconnected states and special object-key I
 });
 
 test("parallel transitions share a labelled edge rather than drawing overlapping labels", () => {
-    const graph = workflowDefinition({ states: [
+    const graph = definitionOf({ states: [
         { id: "poll", type: "script", next: { unchanged: "poll", retry: "poll" } },
     ] });
     const layout = layoutWorkflowGraph(graph);

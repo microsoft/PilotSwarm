@@ -12,7 +12,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { workflowV2Definition } from "../src/workflow-v2-view.js";
+import {
+    workflowV2Definition, workflowV2ReplayFrames,
+} from "../src/workflow-v2-view.js";
 import { workflowGraphEdgeKey, workflowGraphEdgeKeys, workflowGroupId, workflowJoinId } from "../src/workflow-graph-layout.js";
 import { WORKFLOW_LIT_TRANSITIONS, workflowLitLevel, workflowV2LitTransitions, workflowV2Transitions } from "../src/workflow-v2-transitions.js";
 import { WorkflowGraph } from "../../react/src/workflow-graph.js";
@@ -168,7 +170,6 @@ test("both renderers draw the lit parts: data-lit, data-lit-age and the current 
 import {
     ReplayBar, TIMELINE_PLAY_LIVE_TITLE, timelineIndexAt, timelineScale, timelineVisitAt, workflowTimelineVisits,
 } from "../../react/src/workflow-tab.js";
-import { workflowV2ReplayFrames } from "../src/workflow-v2-view.js";
 
 const FRAMES = workflowV2ReplayFrames(loopVisits(["check", "wait", "check", "done"]));
 

@@ -16,9 +16,10 @@ import {
     workflowShortTime, workflowStateMark, workflowTime, workflowTimeTitle, workflowVisitBadge,
 } from "../src/workflow-words.js";
 import { workflowElapsedText } from "../src/workflow-owner.js";
-import { formatSeconds } from "../src/workflow-v2-view.js";
+import {
+    formatSeconds, projectWorkflowV2,
+} from "../src/workflow-v2-view.js";
 import { layoutWorkflowGraphTB, WORKFLOW_ERROR_EDGE_LABEL } from "../src/workflow-graph-layout.js";
-import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
 import { WorkflowEdgeShape, WorkflowStepCard } from "../../react/src/workflow-graph.js";
 import { listedState } from "../../react/src/workflow-chat-tab.js";
 import { done, readModel, row } from "./workflow-v2-fixtures.mjs";

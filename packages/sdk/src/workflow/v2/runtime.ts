@@ -945,7 +945,7 @@ export function* workflowV2Controller(ctx: OrchestrationContext, rawInput: unkno
     }
 }
 
-type WorkflowCommand = NonNullable<ReturnType<typeof parseWorkflowCommand>>;
+type QueuedWorkflowCommand = NonNullable<ReturnType<typeof parseWorkflowCommand>>;
 
 /**
  * Read the messages already queued, without waiting for more, at most WORKFLOW_V2_COMMAND_READ_BATCH of them (review
@@ -954,7 +954,7 @@ type WorkflowCommand = NonNullable<ReturnType<typeof parseWorkflowCommand>>;
  * done or delete has already ended the run in the store, which every store call of the controller finds; a command read
  * here (also one an older build queued) is applied to the run as it is (applyCommand), and wakes are dropped.
  */
-function* takeQueuedCommand(ctx: OrchestrationContext): Generator<ScheduledTask, WorkflowCommand | null, unknown> {
+function* takeQueuedCommand(ctx: OrchestrationContext): Generator<ScheduledTask, QueuedWorkflowCommand | null, unknown> {
     for (let read = 0; read < WORKFLOW_V2_COMMAND_READ_BATCH; read += 1) {
         const polled = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(WORKFLOW_V2_COMMAND_POLL_MS)));
         if (polled.index === 1) return null;
@@ -982,7 +982,7 @@ function* endedElsewhere(ctx: OrchestrationContext, runId: string): Generator<Sc
 }
 
 /** Apply one lifecycle command (cancel, done or delete) and end the controller. */
-function* applyCommand(ctx: OrchestrationContext, input: ControllerInput, command: WorkflowCommand)
+function* applyCommand(ctx: OrchestrationContext, input: ControllerInput, command: QueuedWorkflowCommand)
     : Generator<ScheduledTask, ControllerResult, unknown> {
     const applied = parseEndResult(yield* persist(ctx, "cancel", {
         runId: input.runId, command: command.cmd, reason: command.reason ?? null, requestedBy: command.requestedBy ?? null,

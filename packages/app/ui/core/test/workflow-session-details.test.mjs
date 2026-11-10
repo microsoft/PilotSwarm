@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { workflowSessionDetails, workflowStepParent } from "../src/workflow-view.js";
+import { workflowSessionDetails, workflowStepParent } from "../src/workflow-v2-view.js";
 
 const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 

@@ -6,9 +6,10 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
-import { workflowDefinition } from "../src/workflow-view.js";
+import {
+    workflowV2Definition, projectWorkflowV2, workflowV2IntakeOutcome,
+} from "../src/workflow-v2-view.js";
 import { WorkflowNodePane } from "../../react/src/workflow-workspace.js";
-import { projectWorkflowV2, workflowV2IntakeOutcome } from "../src/workflow-v2-view.js";
 import { RUN, startedData, row, done, readModel } from "./workflow-v2-fixtures.mjs";
 
 const AT = "2026-11-01T20:00:00.123456Z";
@@ -25,7 +26,7 @@ function panel(readModelValue) {
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf",
-        view: { definition: workflowDefinition(startedData), readModel: readModelValue, selectedNodeId: "notify" } });
+        view: { definition: workflowV2Definition(startedData), readModel: readModelValue, selectedNodeId: "notify" } });
     return renderToStaticMarkup(React.createElement(WorkflowNodePane, { controller: new PilotSwarmUiController({ store, transport: {} }) }));
 }
 

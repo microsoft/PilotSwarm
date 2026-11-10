@@ -6,11 +6,12 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
-import { workflowDefinition } from "../src/workflow-view.js";
+import {
+    workflowV2Definition, projectWorkflowV2,
+} from "../src/workflow-v2-view.js";
 import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
 import { workflowGraphKey } from "../../react/src/workflow-graph.js";
 import { WorkflowV2NodeContent } from "../../react/src/workflow-v2-panels.js";
-import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
 import { startedData, started, completed, runtimeError, row, done, readModel } from "./workflow-v2-fixtures.mjs";
 
 function mount({ view = {}, events = [] } = {}) {
@@ -27,7 +28,7 @@ const node = controller => renderToStaticMarkup(React.createElement(WorkflowNode
 
 test("a v2 graph shows typed state labels, runtime-error routes and run status from the read model", () => {
     const model = readModel({ nodeExecutions: [row("pause", 1, "pending", { deadline: "2026-11-01T12:00:30.000Z" }), done("poll", 1, "changed")] });
-    const html = main(mount({ view: { definition: workflowDefinition(startedData), readModel: model } }));
+    const html = main(mount({ view: { definition: workflowV2Definition(startedData), readModel: model } }));
     assert.ok(html.includes("Wait · 30 s"));
     assert.ok(html.includes("Send · Alert@1"));
     assert.ok(html.includes("Receive · Ack@1"));
@@ -43,14 +44,14 @@ test("a v2 graph shows typed state labels, runtime-error routes and run status f
 
 test("a v2 graph is drawn from durable events alone, and an unrecognized read model is reported, not drawn", () => {
     const events = [started("poll", 1), completed("poll", 1, "unchanged"), started("pause", 1)];
-    const html = main(mount({ view: { definition: workflowDefinition(startedData) }, events }));
+    const html = main(mount({ view: { definition: workflowV2Definition(startedData) }, events }));
     assert.ok(html.includes("Done · unchanged"));
     // OF-S2-2: a card's state is its title's last words; the card shows a mark and a key fact.
     assert.ok(html.includes("· Waiting\""));
     const refused = main(mount({ view: { readModel: { nope: true } } }));
     assert.ok(refused.includes("No graph to show"));
     assert.ok(refused.includes("Workflow&#x27;s data has an unknown format"));
-    const kept = main(mount({ view: { definition: workflowDefinition(startedData), readModel: { nope: true } } }));
+    const kept = main(mount({ view: { definition: workflowV2Definition(startedData), readModel: { nope: true } } }));
     assert.ok(kept.includes("Wait · 30 s"), "a bad read model never hides the definition from the workflow's own start");
 });
 
@@ -80,7 +81,7 @@ test("node details explain a send accurately and show values as escaped text, ne
         outbox: [{ exchangeId: "nx-notify-1", nodeExecutionId: "nx-notify-1", recipientSessionId: "parent-1", recipientKind: "agent",
             contract: "Alert@1", state: "delivered", attempts: 1, payloadPreview: payload }],
     });
-    const html = node(mount({ view: { definition: workflowDefinition(startedData), readModel: model, selectedNodeId: "notify" } }));
+    const html = node(mount({ view: { definition: workflowV2Definition(startedData), readModel: model, selectedNodeId: "notify" } }));
     assert.ok(html.includes("Done · sent, queued at recipient"));
     assert.ok(html.includes("does not show that the recipient read, answered or acted on it"));
     assert.ok(html.includes("&lt;b&gt;bold&lt;/b&gt;"));
@@ -93,7 +94,7 @@ test("output and history tabs show the right result kind, truncation, and combin
         completed("poll", 1, "unchanged", "<img src=x onerror=alert(1)>"), completed("poll", 2, "unchanged", "<img src=x onerror=alert(1)>"),
         completed("poll", 3, "unchanged", "<img src=x onerror=alert(1)>"), runtimeError("poll", 4, "timed_out", "cut off…"),
     ];
-    const view = projectWorkflowV2({ definition: workflowDefinition(startedData), events });
+    const view = projectWorkflowV2({ definition: workflowV2Definition(startedData), events });
     const selected = view.nodes[0];
     const render = tab => renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, { tab, selected, nodes: view.nodes, select() {}, runOutput: null, runError: null }));
     const output = render("output");
@@ -104,7 +105,7 @@ test("output and history tabs show the right result kind, truncation, and combin
     assert.ok(history.includes("1–3 (×3)"));
     assert.ok(history.includes("Every loaded visit (4)"));
     assert.ok(history.includes("Runtime error"));
-    const business = projectWorkflowV2({ definition: workflowDefinition(startedData), events: events.slice(0, 1) }).nodes[0];
+    const business = projectWorkflowV2({ definition: workflowV2Definition(startedData), events: events.slice(0, 1) }).nodes[0];
     const businessOutput = renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, { tab: "output", selected: business, nodes: [], select() {}, runOutput: null, runError: null }));
     assert.ok(businessOutput.includes("&lt;img src=x onerror=alert(1)&gt;"));
     assert.ok(!businessOutput.includes("<img"));
@@ -118,14 +119,14 @@ test("output and history tabs show the right result kind, truncation, and combin
 test("a v2 definition is not redrawn once the read model says there is no graph", () => {
     const invalid = readModel({ noRun: true, graph: null, definition: { state: "draft", publishedRevision: null, publishedDefinitionHash: null },
         revision: { revision: 2, valid: false, irSha256: null, diagnostics: [{ severity: "error", code: "BAD", path: "states[0]", message: "state is not valid", line: 3 }] } });
-    const controller = mount({ view: { definition: workflowDefinition(startedData), readModel: invalid } });
+    const controller = mount({ view: { definition: workflowV2Definition(startedData), readModel: invalid } });
     const html = main(controller);
     assert.ok(html.includes("This definition is not valid"));
     assert.ok(html.includes("state is not valid"));
     assert.ok(!html.includes("data-node-id"), "the older graph is not drawn");
     assert.ok(!html.includes("Send · Alert@1"));
     assert.ok(node(controller).includes("This definition is not valid"));
-    const withGraph = main(mount({ view: { definition: workflowDefinition(startedData), readModel: readModel({ noRun: true }) } }));
+    const withGraph = main(mount({ view: { definition: workflowV2Definition(startedData), readModel: readModel({ noRun: true }) } }));
     assert.ok(withGraph.includes("data-node-id"));
 });
 
@@ -145,7 +146,7 @@ const slots = html => [...html.matchAll(/<div class="ps-workflow-node-slot" styl
     .map(match => ({ id: match[3], x: Number(match[1]), y: Number(match[2]) }));
 
 test("the graph is drawn top to bottom: each step below the one that leads to it, its card a button, its edges curves", () => {
-    const html = main(mount({ view: { definition: workflowDefinition(startedData), readModel: readModel({ nodeExecutions: [done("poll", 1, "changed")] }) } }));
+    const html = main(mount({ view: { definition: workflowV2Definition(startedData), readModel: readModel({ nodeExecutions: [done("poll", 1, "changed")] }) } }));
     assert.ok(html.includes("role=\"group\" aria-label=\"Workflow graph\" data-renderer=\"static\""));
     const at = Object.fromEntries(slots(html).map(slot => [slot.id, slot]));
     assert.deepEqual(Object.keys(at).sort(), ["await_ack", "done", "failed", "notify", "pause", "poll"]);
@@ -161,7 +162,7 @@ test("the graph is drawn top to bottom: each step below the one that leads to it
 });
 
 test("the graph's key changes with the graph, never with a run's progress, so the view is fitted again only for a new graph", () => {
-    const definition = workflowDefinition(startedData);
+    const definition = workflowV2Definition(startedData);
     const before = projectWorkflowV2({ definition, events: [started("poll", 1)] });
     const after = projectWorkflowV2({ definition, events: [started("poll", 1), completed("poll", 1, "changed"), started("notify", 1)] });
     assert.notEqual(before.nodes.find(item => item.id === "poll").state, after.nodes.find(item => item.id === "poll").state);

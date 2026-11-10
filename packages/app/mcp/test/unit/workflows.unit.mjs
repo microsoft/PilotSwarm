@@ -134,8 +134,8 @@ const webClient = (bootstrap) => new WebPilotSwarmManagementClient({ api: { getB
 {
     const mgmt = directClient();
     const advertised = await mgmt.getWorkflowCapabilities();
-    assert.deepEqual(advertised.v2.commands, { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } });
-    assert.equal(advertised.v2.read, true);
+    assert.deepEqual(advertised.commands, { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } });
+    assert.equal(advertised.read, true);
     const { tool, resource } = await describedBy(capabilityCtx(mgmt));
     assert.deepEqual(tool.workflows, advertised, "the management client's own answer, which a bootstrap carries");
     assert.deepEqual(resource.workflows, advertised);
@@ -151,9 +151,9 @@ for (const [workflowCommands, controllerVersion, stop] of [[{}, "1.0.0", true]])
     const { tool, resource } = await describedBy(capabilityCtx(mgmt, { workflowCommands: true }));
     assert.deepEqual(tool.workflows, advertised);
     assert.deepEqual(resource.workflows, advertised);
-    assert.equal(tool.workflows.v2.commands.available, true);
-    assert.equal(tool.workflows.v2.commands.controllerVersion, controllerVersion);
-    assert.equal(tool.workflows.v2.commands.operations.includes("stop"), stop);
+    assert.equal(tool.workflows.commands.available, true);
+    assert.equal(tool.workflows.commands.controllerVersion, controllerVersion);
+    assert.equal(tool.workflows.commands.operations.includes("stop"), stop);
     assert.deepEqual(tool.workflow_tools, { read: true, commands: true });
     assert.equal(toolsWith({ mgmt, workflowCommands: true }).has("update_workflow"), true);
 }
@@ -164,17 +164,16 @@ for (const [workflowCommands, controllerVersion, stop] of [[{}, "1.0.0", true]])
 {
     const advertised = {
         schema: 1,
-        v2: { apiVersion: "pilotswarm.dev/v2-draft", read: true, create: false, input: false,
-            commands: { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } } },
-        legacyCreate: { workflowVersion: 1, draft: false },
+        apiVersion: "pilotswarm.dev/v2-draft", read: true, create: false, input: false,
+        commands: { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
     };
     const { tool, resource } = await describedBy(capabilityCtx(webClient({ ok: true, workflows: advertised }), { workflowCommands: true, webMode: true }));
     assert.equal(tool.mode, "web");
     assert.deepEqual(tool.workflows, advertised);
     assert.deepEqual(resource.workflows, advertised);
     assert.deepEqual(tool.workflow_tools, { read: true, commands: true });
-    assert.equal(tool.workflows.v2.commands.available, false);
-    assert.equal(tool.workflows.v2.read, true);
+    assert.equal(tool.workflows.commands.available, false);
+    assert.equal(tool.workflows.read, true);
 }
 
 // 5d. An older host advertises none: null, and the rest still answers. A host whose getter answers null is an older one too.
@@ -199,8 +198,8 @@ for (const mgmt of [
 for (const [mgmt, message] of [
     [{ getWorkflowCapabilities: async () => { throw new Error("bootstrap unavailable"); } }, /bootstrap unavailable/],
     [{ getWorkflowCapabilities: async () => ["not", "an", "advertisement"] }, /The workflow advertisement is a list, not an object/],
-    [{ getWorkflowCapabilities: async () => "v2" }, /The workflow advertisement is a string, not an object/],
-    [webClient({ ok: true, workflows: ["v2"] }), /bootstrap advertises workflows as a list/],
+    [{ getWorkflowCapabilities: async () => "read" }, /The workflow advertisement is a string, not an object/],
+    [webClient({ ok: true, workflows: ["read"] }), /bootstrap advertises workflows as a list/],
     [new WebPilotSwarmManagementClient({ api: { getBootstrap: async () => { throw Object.assign(new Error("HTTP 503"), { status: 503 }); } } }), /HTTP 503/],
 ]) {
     const ctx = capabilityCtx(mgmt, { webMode: true });

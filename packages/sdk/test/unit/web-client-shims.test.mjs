@@ -123,7 +123,7 @@ test("every shim maps its positional arguments onto the right wire call", async 
 });
 
 test("getWorkflowCapabilities reads the server's bootstrap advertisement, null from a server that has none, and rejects one that is not an object", async () => {
-    const workflows = { schema: 1, v2: { read: true, commands: { available: false } } };
+    const workflows = { schema: 1, read: true, commands: { available: false } };
     for (const [bootstrap, expected] of [
         [{ ok: true, workflows }, workflows],
         [{ ok: true }, null],
@@ -135,7 +135,7 @@ test("getWorkflowCapabilities reads the server's bootstrap advertisement, null f
         assert.deepEqual(calls, [], "no operation call: the bootstrap is the source");
     }
     // A malformed advertisement, or a bootstrap that cannot be read, is not an older server.
-    for (const [bootstrap, kind] of [[{ ok: true, workflows: ["v2"] }, "a list"], [{ ok: true, workflows: "v2" }, "a string"], [{ ok: true, workflows: 2 }, "a number"]]) {
+    for (const [bootstrap, kind] of [[{ ok: true, workflows: ["read"] }, "a list"], [{ ok: true, workflows: "read" }, "a string"], [{ ok: true, workflows: 2 }, "a number"]]) {
         const { client } = clientWithFakeApi();
         client._api.getBootstrap = async () => bootstrap;
         await assert.rejects(client.getWorkflowCapabilities(),

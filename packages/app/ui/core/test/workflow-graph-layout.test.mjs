@@ -8,14 +8,15 @@ import {
     layoutWorkflowGraphTB, workflowEdgeCurve, workflowEdgeLabelText, workflowGraphBodies, workflowGraphPlaces, workflowPlaceKey,
     WORKFLOW_GRAPH_GROUP_HEADER, WORKFLOW_GRAPH_NODE_WIDTH, WORKFLOW_GRAPH_NODE_HEIGHT,
 } from "../src/workflow-graph-layout.js";
-import { workflowDefinition as checkedDefinition } from "../src/workflow-view.js";
-import { workflowV2Definition } from "../src/workflow-v2-view.js";
+import {
+    workflowV2Definition as checkedDefinition, workflowV2Definition,
+} from "../src/workflow-v2-view.js";
 import { startedData } from "./workflow-v2-fixtures.mjs";
 
 /** A graph's states as the runtime describes them: a script state lists its outcomes (the keys of its next). */
 const described = list => list.map(node => (node && typeof node === "object" && node.type !== "terminal"
     ? { type: "script", runtime: "node", timeoutSeconds: 300, outcomes: Object.keys(node.next ?? {}), ...node } : node));
-const workflowDefinition = data => checkedDefinition(data && Array.isArray(data.states) ? { ...data, states: described(data.states) } : data);
+const definitionOf = data => checkedDefinition(data && Array.isArray(data.states) ? { ...data, states: described(data.states) } : data);
 
 const edgeOf = (layout, from, to) => layout.edges.find(edge => edge.from === from && edge.to === to);
 const top = (layout, id) => layout.positions.get(id).y;
@@ -72,7 +73,7 @@ function assertInside(layout) {
 const upward = layout => layout.edges.filter(edge => edge.back).map(name).sort();
 
 // The owner's case (batch 5): tell a joke, ask for more (yes goes back to the joke, no ends), and a review branch.
-const jokes = workflowDefinition({ name: "jokes", initial: "tell_joke", states: [
+const jokes = definitionOf({ name: "jokes", initial: "tell_joke", states: [
     { id: "tell_joke", type: "script", next: { told: "ask_more", flagged: "review" } },
     { id: "review", type: "script", next: { approved: "ask_more", rejected: "failed" } },
     { id: "ask_more", type: "script", next: { yes: "tell_joke", no: "done" } },
@@ -81,7 +82,7 @@ const jokes = workflowDefinition({ name: "jokes", initial: "tell_joke", states: 
 ] });
 
 // A four-step retry loop: the old layout put all four on one row.
-const retry = workflowDefinition({ name: "retry", initial: "fetch", states: [
+const retry = definitionOf({ name: "retry", initial: "fetch", states: [
     { id: "fetch", type: "script", next: { ok: "validate" } },
     { id: "validate", type: "script", next: { valid: "done", invalid: "backoff" } },
     { id: "backoff", type: "script", next: { elapsed: "count" } },
@@ -90,7 +91,7 @@ const retry = workflowDefinition({ name: "retry", initial: "fetch", states: [
     { id: "failed", type: "terminal", outcome: "failed" },
 ] });
 
-const quality = workflowDefinition({ name: "branching-workflow-test", initial: "collect_metrics", states: [
+const quality = definitionOf({ name: "branching-workflow-test", initial: "collect_metrics", states: [
     { id: "collect_metrics", type: "script", next: { success: "evaluate_quality", failure: "failed" } },
     { id: "evaluate_quality", type: "script", next: { approved: "approved", blocked: "blocked", failure: "failed" } },
     { id: "approved", type: "terminal", outcome: "succeeded" },
@@ -145,7 +146,7 @@ test("forward edges go downward, siblings share a row, and nothing is drawn out 
 });
 
 test("version 2: merged outcomes, runtime-error routes, the loop back to poll, and no edge out of a terminal", () => {
-    const layout = layoutWorkflowGraphTB(workflowDefinition(startedData));
+    const layout = layoutWorkflowGraphTB(definitionOf(startedData));
     assert.equal(layout.positions.size, 6);
     assert.equal(layout.edges.length, 7);
     assert.equal(edgeOf(layout, "poll", "failed").kind, "error");
@@ -234,7 +235,7 @@ test("bodies: a parallel step's body steps in body order, each step in one body;
     // A parallel step whose body names no step of the graph keeps the old 'each branch' edge and no box.
     const empty = workflowGraphBodies([{ id: "p", type: "parallel", body: { initial: "x", states: ["x"] } }]);
     assert.equal(empty.bodies.size, 0);
-    for (const definition of [jokes, retry, quality, workflowDefinition(startedData)]) {
+    for (const definition of [jokes, retry, quality, definitionOf(startedData)]) {
         const layout = layoutWorkflowGraphTB(definition);
         assert.deepEqual([layout.groups.size, layout.joins.size], [0, 0]);
         assert.ok(layout.edges.every(edge => !edge.join && !edge.owner && edge.labelWidth > 0));
@@ -270,7 +271,7 @@ test("a moved branch box carries its steps and join bar; a step inside it is pla
 });
 
 test("a step that loops on itself keeps one edge with its outcomes joined, beside the step", () => {
-    const layout = layoutWorkflowGraphTB(workflowDefinition({ initial: "poll", states: [
+    const layout = layoutWorkflowGraphTB(definitionOf({ initial: "poll", states: [
         { id: "poll", type: "script", next: { unchanged: "poll", retry: "poll", changed: "end" } },
         { id: "end", type: "terminal", outcome: "succeeded" },
     ] }));
@@ -289,14 +290,14 @@ test("a long outcome is drawn to 20 characters, and its box is sized to what is 
     assert.equal(workflowEdgeLabelText("short"), "short");
     assert.equal(workflowEdgeLabelText("exactly_twenty_chars"), "exactly_twenty_chars");
     assert.equal(workflowEdgeLabelText("a_very_long_outcome_name_indeed"), "a_very_long_outcome…");
-    const layout = layoutWorkflowGraphTB(workflowDefinition({ initial: "a", states: [
+    const layout = layoutWorkflowGraphTB(definitionOf({ initial: "a", states: [
         { id: "a", type: "script", next: { a_very_long_outcome_name_indeed: "b" } },
         { id: "b", type: "terminal", outcome: "succeeded" },
     ] }));
     const edge = edgeOf(layout, "a", "b");
     assert.equal(edge.outcome, "a_very_long_outcome_name_indeed");
     assert.equal(edge.labelText, "a_very_long_outcome…");
-    assert.ok(edge.labelWidth > edgeOf(layoutWorkflowGraphTB(workflowDefinition({ initial: "a", states: [
+    assert.ok(edge.labelWidth > edgeOf(layoutWorkflowGraphTB(definitionOf({ initial: "a", states: [
         { id: "a", type: "script", next: { ok: "b" } }, { id: "b", type: "terminal", outcome: "succeeded" },
     ] })), "a", "b").labelWidth);
     assertInside(layout);
@@ -304,7 +305,7 @@ test("a long outcome is drawn to 20 characters, and its box is sized to what is 
 
 test("the same definition always gives the same layout", () => {
     const snapshot = layout => JSON.stringify({ width: layout.width, height: layout.height, positions: [...layout.positions], edges: layout.edges });
-    for (const definition of [jokes, retry, quality, workflowDefinition(startedData), fanned()]) {
+    for (const definition of [jokes, retry, quality, definitionOf(startedData), fanned()]) {
         assert.equal(snapshot(layoutWorkflowGraphTB(definition)), snapshot(layoutWorkflowGraphTB(definition)));
     }
 });
@@ -313,11 +314,11 @@ test("an empty graph, a single step, disconnected steps and object-key ids lay o
     const empty = layoutWorkflowGraphTB({ states: [] });
     assert.deepEqual([empty.positions.size, empty.edges.length, empty.width, empty.height], [0, 0, 300, 150]);
     assert.equal(layoutWorkflowGraphTB(null).positions.size, 0);
-    const single = layoutWorkflowGraphTB(workflowDefinition({ initial: "only", states: [{ id: "only", type: "terminal", outcome: "succeeded" }] }));
+    const single = layoutWorkflowGraphTB(definitionOf({ initial: "only", states: [{ id: "only", type: "terminal", outcome: "succeeded" }] }));
     assert.equal(single.positions.size, 1);
     assert.deepEqual(single.edges, []);
     assertInside(single);
-    const special = layoutWorkflowGraphTB(workflowDefinition({ initial: "__proto__", states: [
+    const special = layoutWorkflowGraphTB(definitionOf({ initial: "__proto__", states: [
         { id: "__proto__", type: "script", next: { next: "constructor" } },
         { id: "constructor", type: "script", next: { again: "__proto__" } },
         { id: "isolated", type: "terminal", outcome: "succeeded" },

@@ -1,15 +1,15 @@
 import { workflowFailure, workflowNodeChatTitle } from "./workflow-owner.js";
 import { WORKFLOW_STATE_MARKS, workflowFailureDetail, workflowItemsFraction, workflowOutcomeWord, workflowRunStateWord, workflowRunsText,
     workflowSessionModel } from "./workflow-words.js";
-import { layoutWorkflowGraph, workflowReadModelView } from "./workflow-view.js";
-import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
-import { workflowFirstSentence, workflowNodeNext, workflowNodeWhat } from "./workflow-node-summary.js";
 import {
-    compactWorkflowV2Executions, formatSeconds, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentChatMode, workflowV2AgentTools, workflowV2AgentTask, workflowV2ExecutionResult,
-    workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2RunRows, workflowV2ShownExecution,
+    layoutWorkflowGraph, workflowReadModelView, compactWorkflowV2Executions, formatSeconds, projectWorkflowV2, workflowV2AgentBindingRows,
+    workflowV2AgentChatMode, workflowV2AgentTools, workflowV2AgentTask, workflowV2ExecutionResult, workflowV2ExecutionValue,
+    workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2RunRows, workflowV2ShownExecution,
     workflowV2Activity, workflowV2SessionSubtree, workflowV2VisitEnding, workflowV2WholeValue, workflowV2BranchNumber, workflowV2ItemList,
     workflowV2JoinWords,
 } from "./workflow-v2-view.js";
+import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
+import { workflowFirstSentence, workflowNodeNext, workflowNodeWhat } from "./workflow-node-summary.js";
 import {
     WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks,
     workflowV2PublicationEvidenceRows, workflowV2RestrictionText, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables, workflowV2TestControls,
@@ -134,47 +134,47 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
     const { readModel, readModelAfterSeq, workflowModel, error, selectedRunId } = workflowReadModelView(safeView);
     // Review 19:27Z: the TUI has no tooltips, so a session is named by its title (as loaded here), never by its id.
     const sessionName = id => sessionTitle(sessionsById, id);
-    let v2 = null;
+    let flow = null;
     if (safeView.definition || readModel || workflowModel) {
         // OF-S2-7: the model of the chat that owns the Workflow, which its agent nodes use unless their start chose one.
         const chatModel = workflowSessionModel(sessionsById?.[session?.parentSessionId] ?? null);
-        v2 = projectWorkflowV2({ definition: safeView.definition, readModel, workflowModel, selectedRunId, events: list, readModelAfterSeq,
+        flow = projectWorkflowV2({ definition: safeView.definition, readModel, workflowModel, selectedRunId, events: list, readModelAfterSeq,
             olderHistory: safeView.olderHistory ?? null, sessionName, chatModel });
     }
-    const definition = v2 ? v2.definition : null;
-    const nodes = v2 ? v2.nodes : [];
+    const definition = flow ? flow.definition : null;
+    const nodes = flow ? flow.nodes : [];
     const terminal = list.findLast(event => ["workflow.completed", "workflow.failed", "workflow.cancelled"].includes(event?.eventType));
     // Review 19:27Z (D-W13): before anything is read, the Workflow's status in its one word too, never a raw status ("cancelled").
-    const status = v2 ? v2.status.label : workflowRunStateWord(terminal?.eventType.slice("workflow.".length)
+    const status = flow ? flow.status.label : workflowRunStateWord(terminal?.eventType.slice("workflow.".length)
         || (["completed", "failed", "cancelled"].includes(session?.status) ? session.status : session?.status || "running"));
-    // The runs a person can choose (v2): the portal's run picker model, from the workflow's last read model. Test runs only
+    // The runs a person can choose: the portal's run picker model, from the workflow's last read model. Test runs only
     // while the server's test mode is on (Workflow Simplified, spec 16).
-    const runPicker = v2 ? workflowV2RunPickerModel({ workflowModel, selectedRunId, ownModelLoaded: readModel != null, error,
+    const runPicker = flow ? workflowV2RunPickerModel({ workflowModel, selectedRunId, ownModelLoaded: readModel != null, error,
         tests: workflowV2TestRunsShown(readModel ?? workflowModel) }) : null;
     // A person's run controls for the shown run, and the notice about the last one: the portal's, from the selection's own
     // read model only (its run is the one shown), and only when it says which commands the workflow takes from people.
     const runCommand = safeView.runCommand ?? null;
-    const runControls = v2 ? workflowV2RunControls(readModel, runCommand) : null;
-    const runNotice = v2 ? workflowV2RunCommandNotice(runCommand) : null;
+    const runControls = flow ? workflowV2RunControls(readModel, runCommand) : null;
+    const runNotice = flow ? workflowV2RunCommandNotice(runCommand) : null;
     // The shown run's variables as the portal's panel lists them and a person changes them (set_vars), from the same model.
-    const runVariables = v2 ? workflowV2RunVariables(readModel, runCommand) : null;
+    const runVariables = flow ? workflowV2RunVariables(readModel, runCommand) : null;
     // The draft's YAML as the portal's editor edits it (the definition is the workflow's, whichever run is shown), the
     // person's edit of it (kept in the view, so closing the editor loses nothing) and what that edit is: against the
     // revision it started from, which is one this person just saved when the read model does not show it yet.
-    const draftEditor = v2 ? workflowV2DraftEditor(readModel ?? workflowModel, runCommand) : null;
+    const draftEditor = flow ? workflowV2DraftEditor(readModel ?? workflowModel, runCommand) : null;
     const draftBuffer = workflowDraftBuffer(safeView.draftEdit, draftEditor);
     const draftEdit = draftBuffer ? workflowV2DraftEdit(draftBuffer.base, draftBuffer.text,
         draftBuffer.base.revision > draftEditor.revision ? { ...draftEditor, revision: draftBuffer.base.revision } : draftEditor) : null;
     // The definition's publication as the portal's publication panel offers it (publish, publish and start, start), and a
     // test of its current revision as the portal's test review offers it.
-    const publication = v2 ? workflowV2DefinitionControls(readModel ?? workflowModel, runCommand) : null;
-    const testControls = v2 ? workflowV2TestControls(readModel ?? workflowModel, runCommand) : null;
+    const publication = flow ? workflowV2DefinitionControls(readModel ?? workflowModel, runCommand) : null;
+    const testControls = flow ? workflowV2TestControls(readModel ?? workflowModel, runCommand) : null;
     // The shown test run's answers and clock, from that run's own read model only, as the portal's answer form and clock.
-    const testResponder = v2 ? workflowV2TestResponder(readModel, runCommand) : null;
+    const testResponder = flow ? workflowV2TestResponder(readModel, runCommand) : null;
     return {
-        definition, nodes, v2, status, runPicker, sessionName, runControls, runCommand: v2 ? runCommand : null, runNotice, runVariables,
-        runReadModel: v2 ? readModel ?? null : null,
-        draftEditor, draftBuffer, draftEdit, publication, testControls, testResponder, definitionModel: v2 ? readModel ?? workflowModel ?? null : null,
+        definition, nodes, flow, status, runPicker, sessionName, runControls, runCommand: flow ? runCommand : null, runNotice, runVariables,
+        runReadModel: flow ? readModel ?? null : null,
+        draftEditor, draftBuffer, draftEdit, publication, testControls, testResponder, definitionModel: flow ? readModel ?? workflowModel ?? null : null,
         // The execution whose own result a person chose ({ runId, stateId, executionId }; it applies only to that run and state).
         selectedExecution: isPlainRecord(safeView.selectedExecution) ? safeView.selectedExecution : null,
         // The whole values read (by run and execution; workflowV2ExecutionValue picks exactly one).
@@ -186,11 +186,11 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
         revisionCompare: isPlainRecord(safeView.revisionCompare) ? safeView.revisionCompare : null,
         definitionRevisions: isPlainRecord(safeView.definitionRevisions) ? safeView.definitionRevisions : null,
         name: definition?.name || String(session?.title || "").replace(/^Workflow: /, "") || "Workflow",
-        banners: v2?.banners || [],
+        banners: flow?.banners || [],
         readError: error,
         loading: Boolean(safeView.loading) && !definition,
         error: typeof safeView.error === "string" && safeView.error ? safeView.error : null,
-        noGraph: Boolean(v2 && !v2.definition),
+        noGraph: Boolean(flow && !flow.definition),
         // The workflow's events as loaded: the activity of a run and of one visit (owner decision q14).
         events: list,
     };
@@ -822,7 +822,7 @@ export function selectWorkflowDraftModal(state, maxWidth = 100, viewportHeight =
         if (notice.retry) add("ctrl-o sends the same save again; the server applies it once.", "gray");
     }
     if (unread) add(`Saved as revision ${buffer.base.revision}; the view has not read it yet.`, "gray");
-    const diagnostics = (projection.v2?.diagnostics || []).filter(item => item && typeof item === "object");
+    const diagnostics = (projection.flow?.diagnostics || []).filter(item => item && typeof item === "object");
     if (diagnostics.length && editor.current && !unread) {
         const errors = diagnostics.filter(item => item.severity !== "warning").length;
         add(`Revision ${editor.revision}: ${errors} error${errors === 1 ? "" : "s"}${diagnostics.length > errors ? `, ${diagnostics.length - errors} warning${diagnostics.length - errors === 1 ? "" : "s"}` : ""}.`,
@@ -1490,7 +1490,7 @@ function wholeValueLines(entry) {
  */
 function executionResultLines(node, projection) {
     const executions = Array.isArray(node.executions) ? node.executions : [];
-    const runId = projection.v2?.runId ?? null;
+    const runId = projection.flow?.runId ?? null;
     const shown = workflowV2ShownExecution(node, runId, projection.selectedExecution);
     if (!shown.chosen && !shown.execution) return [];
     // Review 19:27Z (rows 12 to 14, C): a visit, never a run; no id; no parentheses.
@@ -1530,8 +1530,8 @@ const ACTIVITY_ROWS = 6;
  * + added, - removed, ~ changed (values as read: whole up to 256 KiB in all, else previews), unchanged ones counted.
  */
 function kvLines(execution, projection) {
-    const run = projection.v2?.readModel?.run ?? null;
-    const runId = projection.v2?.runId ?? null;
+    const run = projection.flow?.readModel?.run ?? null;
+    const runId = projection.flow?.runId ?? null;
     const kv = workflowV2KvApplied(execution, run);
     if (!kv) return [];
     const lines = [{ text: `Variables applied: revision ${kv.applied}${kv.accepted === null ? "" : kv.same ? " · accepted" : ` · accepted now: revision ${kv.accepted}`} — i compares them`,
@@ -1570,7 +1570,7 @@ export function workflowViewExecutionStep(selection, delta) {
     if (!node) return { ok: false, selection: null, status: "This node's visits have no results of their own here" };
     const executions = Array.isArray(node.executions) ? node.executions : [];
     if (!executions.length) return { ok: false, selection: null, status: "No visit of this node is loaded" };
-    const runId = selection.projection.v2?.runId ?? null;
+    const runId = selection.projection.flow?.runId ?? null;
     const shown = workflowV2ShownExecution(node, runId, selection.projection.selectedExecution);
     const target = shown.index + (delta > 0 ? 1 : -1);
     if (delta < 0 && target < 0) {
@@ -1613,7 +1613,7 @@ function historyLines(node) {
  * portal answers them. Null when the shown run has none.
  */
 function testEffectLines(projection, selectedId) {
-    const test = projection.v2?.readModel?.run?.test;
+    const test = projection.flow?.readModel?.run?.test;
     const items = Array.isArray(test?.interceptions) ? test.interceptions.filter(item => item && typeof item === "object" && !Array.isArray(item)) : [];
     if (!items.length) return null;
     const waiting = items.filter(item => !item.response).length;
@@ -1657,14 +1657,14 @@ function detailLines(selection, width) {
     for (const banner of projection.banners) add(`! ${banner.text}`, banner.level === "error" ? "red" : "yellow");
     // Review 19:27Z (D-W13): the title says the state in one word; its detail is a notice line ("Canceled at once",
     // "Pausing · waiting for started nodes to finish"), unless why it ended says it. Why it is not certain is its banner.
-    const status = projection.v2?.status ?? null;
-    if (status?.detail && !projection.v2?.ending && status.phase !== "unverified") add(`! ${status.detail}`, "yellow");
+    const status = projection.flow?.status ?? null;
+    if (status?.detail && !projection.flow?.ending && status.phase !== "unverified") add(`! ${status.detail}`, "yellow");
     // Review UI-D10: a failed Workflow's failure first, in the portal's plain words (workflowFailure), wrapped.
     const shownRun = projection.runReadModel?.run ?? null;
     const failure = shownRun && shownRun.mode !== "test" ? workflowFailure(shownRun) : null;
     if (failure) for (const text of wrapped(failure.headline, Math.max(20, width))) add(text, "red");
     // Why the shown run ended (owner decision q14), wrapped: it is read whole.
-    if (projection.v2?.ending) for (const text of wrapped(projection.v2.ending.text, Math.max(20, width))) add(text, "yellow");
+    if (projection.flow?.ending) for (const text of wrapped(projection.flow.ending.text, Math.max(20, width))) add(text, "yellow");
     if (projection.readError) add(`The Workflow's status could not be read: ${projection.readError}`, "red");
     if (!selected) {
         if (projection.noGraph) add("No graph to show: the definition is not valid or not available.", "yellow");
@@ -1682,7 +1682,7 @@ function detailLines(selection, width) {
     add(`Visits: ${workflowRunsText(selected.runs, selected.partial)}`);
     add(`Outcome: ${node.outcome ? node.resultKind === "runtime_error" ? visitResultWords(node, node.kind) : workflowOutcomeWord(node.outcome) : "not recorded"}`);
     // Why the visit the details show ended (owner decision q14; mock M14 "Inspect cancellation").
-    const ending = workflowV2VisitEnding(workflowV2ShownExecution(node, projection.v2?.runId ?? null, projection.selectedExecution).execution);
+    const ending = workflowV2VisitEnding(workflowV2ShownExecution(node, projection.flow?.runId ?? null, projection.selectedExecution).execution);
     if (ending) for (const text of wrapped(`Why it ended: ${ending.text}`, Math.max(20, width))) add(text);
     // An agent state's task, the workflow interface it names and what the shown run pins it to, as the portal says them.
     if (node.kind === "agent") {
@@ -1768,18 +1768,18 @@ function detailLines(selection, width) {
     for (const line of executionResultLines(node, projection)) {
         for (const text of wrapped(line.text, Math.max(20, width), line.indent)) add(text, line.color);
     }
-    if (node.type === "terminal" && projection.v2?.status?.terminalState === selected.id) {
-        const runValue = projection.v2.error ?? projection.v2.output;
-        if (runValue !== null && runValue !== undefined) add(`Workflow ${projection.v2.error != null ? "error" : "output"}: ${bounded(valueText(runValue), VALUE_LIMIT)}`);
+    if (node.type === "terminal" && projection.flow?.status?.terminalState === selected.id) {
+        const runValue = projection.flow.error ?? projection.flow.output;
+        if (runValue !== null && runValue !== undefined) add(`Workflow ${projection.flow.error != null ? "error" : "output"}: ${bounded(valueText(runValue), VALUE_LIMIT)}`);
     }
     const history = historyLines(node);
     add(history.title, "cyan");
     if (history.lines.length) for (const line of history.lines) add(line);
     else add("  No visits loaded.", "gray");
     // Who did what in the visit the details show, from the workflow's events (owner decision q14; mock M09 "Inspect audit").
-    const shownVisit = workflowV2ShownExecution(node, projection.v2?.runId ?? null, projection.selectedExecution).execution;
-    const activity = shownVisit?.id && projection.v2?.bound
-        ? workflowV2Activity(projection.events, { runId: projection.v2.runId, nodeExecutionId: shownVisit.id, limit: ACTIVITY_ROWS }) : [];
+    const shownVisit = workflowV2ShownExecution(node, projection.flow?.runId ?? null, projection.selectedExecution).execution;
+    const activity = shownVisit?.id && projection.flow?.bound
+        ? workflowV2Activity(projection.events, { runId: projection.flow.runId, nodeExecutionId: shownVisit.id, limit: ACTIVITY_ROWS }) : [];
     if (activity.length) {
         add("Activity of this visit · newest first:", "cyan");
         for (const row of activity) {
@@ -1787,7 +1787,7 @@ function detailLines(selection, width) {
         }
     }
     // The shown run's older history: o reads its next, older page (the read model holds its newest rows and open ones).
-    const runHistory = projection.v2?.readModel?.run?.history ?? null;
+    const runHistory = projection.flow?.readModel?.run?.history ?? null;
     if (runHistory?.loading) add("  Reading older visits…", "yellow");
     else if (runHistory?.more) add("  Older visits not loaded · o loads older visits", "gray");
     const effects = testEffectLines(projection, selected.id);

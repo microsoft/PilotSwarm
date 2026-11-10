@@ -1,7 +1,8 @@
 import React from "react";
 import { useControllerSelector } from "./use-controller-state.js";
-import { workflowParentWorking } from "../../core/src/workflow-view.js";
-import { projectWorkflowV2 } from "../../core/src/workflow-v2-view.js";
+import {
+    workflowParentWorking, projectWorkflowV2,
+} from "../../core/src/workflow-v2-view.js";
 import { workflowV2DraftMarks, workflowV2RunInputs } from "../../core/src/workflow-v2-commands.js";
 import {
     workflowChildModel, workflowElapsedText, workflowFailure, workflowRunTimes, workflowStateOf, workflowTabButtonTip,

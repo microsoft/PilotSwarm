@@ -71,7 +71,7 @@ test("always on: the bootstrap says enabled with the version 2 fields; a read re
         const boot = await h.call("/bootstrap");
         assert.equal(boot.status, 200);
         assert.equal(boot.body.workflows.enabled, true);
-        assert.equal(boot.body.workflows.v2.read, true);
+        assert.equal(boot.body.workflows.read, true);
         const read = await h.call("/sessions/wf1/workflow");
         assert.notEqual(read.body?.error?.code, "WORKFLOWS_DISABLED");
         assert.ok(h.counts.reads > 0, "the read reached the catalog");

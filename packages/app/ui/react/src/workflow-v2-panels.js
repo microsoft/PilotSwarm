@@ -4,11 +4,11 @@ import {
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2SessionSubtree, workflowV2ShownExecution,
     workflowV2AgentEndText, workflowV2EventTime, workflowV2ShortHash, workflowV2ShownNotices, workflowV2VisitEnding, workflowV2WholeValue,
     describeWorkflowV2Execution, workflowV2BranchChoice, workflowV2BranchNumber, workflowV2BranchSteps, workflowV2ForEachText,
-    workflowV2RevisionErrorsText, workflowV2JoinWords, workflowV2VisitScope, workflowV2NotReachedText, workflowV2ItemList, workflowV2OutcomeWord,
+    workflowV2RevisionErrorsText, workflowV2JoinWords, workflowV2VisitScope, workflowV2NotReachedText, workflowV2ItemList,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
-import { workflowShortTime, workflowTimeTitle } from "../../core/src/workflow-words.js";
+import { workflowOutcomeWord, workflowShortTime, workflowTimeTitle } from "../../core/src/workflow-words.js";
 import { WORKFLOW_BASE_INSTRUCTIONS_CHANGED, WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY } from "../../core/src/workflow-agent-log.js";
 import { workflowTabButtonTip, workflowVersionCompareSides } from "../../core/src/workflow-owner.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
@@ -295,7 +295,7 @@ function BranchEvidence({ evidence, openSession = null }) {
             h("tbody", null, evidence.rows.map(row => h("tr", { key: row.index, "data-branch": row.index, "data-status": row.status },
                 h("td", null, row.name ?? String(workflowV2BranchNumber(row.index))), h("td", null, row.step ?? "—"), h("td", null, row.status),
                 h("td", { title: row.deadline ? workflowTimeTitle(row.deadline) ?? undefined : undefined }, row.deadline ? workflowShortTime(row.deadline) ?? row.deadline : "—"),
-                h("td", null, row.why ?? row.result ?? (row.outcome ? workflowV2OutcomeWord(row.outcome) : "—")),
+                h("td", null, row.why ?? row.result ?? (row.outcome ? workflowOutcomeWord(row.outcome) : "—")),
                 h("td", null, !row.agent ? "—" : openSession ? h("button", { type: "button", className: "ps-mini-button", "data-action": "open-branch-chat",
                     "data-session": row.agent, onClick: () => openSession(row.agent) }, "Open") : row.agent))))) : null);
 }

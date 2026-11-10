@@ -64,50 +64,40 @@ export const WORKFLOW_CAPABILITIES_SCHEMA = 1;
  * configured with and changes nothing: no controller or orchestration version
  * is served or activated by it, and the server decides every read and command
  * again.
- * - enabled: always true. Workflows are always on (owner 2026-11-08T08:03Z); the field stays for an older client, which
- *   showed no Workflow surface when it was false.
- * - v2.apiVersion: the workflow document version this build compiles.
- * - v2.read: readWorkflow (GET /sessions/{id}/workflow) reads version 2
- *   workflows; false where the host has no workflow store (each read is then
- *   WORKFLOW_NOT_FOUND).
- * - v2.create and v2.input: false. A person creates no version 2 workflow and
- *   sends one no typed input over this API; the workflow's parent agent does
- *   (spawn_workflow, send_workflow_input).
- * - v2.commands: a person's commands (updateWorkflow, POST
- *   /sessions/{id}/workflow/commands). On unless the host has no
- *   workflowCommands (a management client created with `workflowCommands:
- *   null`): then it names the refusal every command gets (501
- *   WORKFLOW_COMMANDS_UNAVAILABLE). On: the
- *   controller version the runs they start run at, and the operations they
- *   take (a workflow in a workflow agent state's subtree takes fewer; its read
- *   model's personCommands names them).
- * - There is no create for people: a Workflow needs a parent agent.
- * - The test operations are listed only while workflow test mode is on
- *   (`commands.testMode`, or else the deployment flag; spec 16): off, a client
- *   offers no test control and shows no test run. `v2.testMode: true` says it
- *   is on (absent when off), with or without commands (review SF-D5).
+ * - enabled: always true. Workflows are always on (owner 2026-11-08T08:03Z).
+ * - apiVersion: the workflow document version this build compiles.
+ * - read: readWorkflow (GET /sessions/{id}/workflow) reads workflows; false where the host has no workflow store (each
+ *   read is then WORKFLOW_NOT_FOUND).
+ * - create and input: false. A person creates no workflow and sends one no typed input over this API; the workflow's
+ *   parent agent does (workflow_definition, send_workflow_input).
+ * - commands: a person's commands (updateWorkflow, POST /sessions/{id}/workflow/commands). On unless the host has no
+ *   workflowCommands (a management client created with `workflowCommands: null`): then it names the refusal every
+ *   command gets (501 WORKFLOW_COMMANDS_UNAVAILABLE). On: the controller version the runs they start run at, and the
+ *   operations they take (a workflow in a workflow agent state's subtree takes fewer; its read model's personCommands
+ *   names them).
+ * - The test operations are listed only while workflow test mode is on (`commands.testMode`, or else the deployment
+ *   flag; spec 16): off, a client offers no test control and shows no test run. `testMode: true` says it is on (absent
+ *   when off), with or without commands (review SF-D5).
  */
 export function workflowCapabilities(options: { read: boolean; commands: { testMode?: boolean } | null | undefined }): { [key: string]: JsonValue } {
     const commands = options.commands ?? null;
     return {
         schema: WORKFLOW_CAPABILITIES_SCHEMA,
         enabled: true,
-        v2: {
-            apiVersion: WORKFLOW_V2_API_VERSION,
-            read: options.read === true,
-            // Review SF-D5: the server's word that workflow test mode is on, only then, so a client shows stored test
-            // notices (a parent chat's "test waiting" card) only while it is; absent: hidden.
-            ...(resolveWorkflowTestMode(commands?.testMode) ? { testMode: true } : {}),
-            create: false,
-            input: false,
-            commands: commands
-                ? {
-                    available: true,
-                    controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION,
-                    operations: [...WORKFLOW_HUMAN_OPERATIONS, ...workflowHumanMilestoneOperations(resolveWorkflowTestMode(commands.testMode))],
-                }
-                : { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
-        },
+        apiVersion: WORKFLOW_V2_API_VERSION,
+        read: options.read === true,
+        // Review SF-D5: the server's word that workflow test mode is on, only then, so a client shows stored test notices (a
+        // parent chat's "test waiting" card) only while it is; absent: hidden.
+        ...(resolveWorkflowTestMode(commands?.testMode) ? { testMode: true } : {}),
+        create: false,
+        input: false,
+        commands: commands
+            ? {
+                available: true,
+                controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION,
+                operations: [...WORKFLOW_HUMAN_OPERATIONS, ...workflowHumanMilestoneOperations(resolveWorkflowTestMode(commands.testMode))],
+            }
+            : { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
     };
 }
 

@@ -212,12 +212,12 @@ test("a person's commands (Web API, MCP): with test mode off a test operation an
     // The bootstrap's capabilities: stop, and the test operations only with test mode on.
     assert.deepEqual(workflowHumanMilestoneOperations(false), ["stop"]);
     assert.deepEqual(workflowHumanMilestoneOperations(true), ["stop", "test", "test_respond", "test_advance"]);
-    assert.deepEqual(workflowCapabilities({ read: true, commands: { requests: true } }).v2.commands.operations, [...WORKFLOW_HUMAN_OPERATIONS, "stop"],
+    assert.deepEqual(workflowCapabilities({ read: true, commands: { requests: true } }).commands.operations, [...WORKFLOW_HUMAN_OPERATIONS, "stop"],
         "off by default");
-    assert.deepEqual(workflowCapabilities({ read: true, commands: { requests: true, testMode: true } }).v2.commands.operations,
+    assert.deepEqual(workflowCapabilities({ read: true, commands: { requests: true, testMode: true } }).commands.operations,
         [...WORKFLOW_HUMAN_OPERATIONS, "stop", "test", "test_respond", "test_advance"]);
     await withFlag("on", () => {
-        assert.ok(workflowCapabilities({ read: true, commands: { requests: true } }).v2.commands.operations.includes("test"));
+        assert.ok(workflowCapabilities({ read: true, commands: { requests: true } }).commands.operations.includes("test"));
     });
     // A read model's personCommands: what a screen offers, so no test control and no test run while it is off.
     const store = {

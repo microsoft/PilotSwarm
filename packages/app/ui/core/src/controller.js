@@ -1,7 +1,5 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
-import { workflowDefinition, workflowReadModelView, workflowV2ExecutionValueKey, workflowV2KvApplied, workflowV2KvRevisionKey, workflowV2OlderStart,
-    workflowV2RunHistory, workflowV2RunRows,
-    workflowV2ShownExecution } from "./workflow-view.js";
+import { workflowV2Definition, workflowReadModelView, workflowV2ExecutionValueKey, workflowV2KvApplied, workflowV2KvRevisionKey, workflowV2OlderStart, workflowV2RunHistory, workflowV2RunRows, workflowV2ShownExecution } from "./workflow-v2-view.js";
 import {
     normalizeWorkflowInputPolicy, selectWorkflowInputCheck, selectWorkflowInputNote, WORKFLOW_INPUT_CHECKING_TEXT, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
     workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
@@ -2739,7 +2737,7 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Review SF-D5: whether the server says workflow test mode is on (its workflow capabilities' `v2.testMode: true`),
+     * Review SF-D5: whether the server says workflow test mode is on (its workflow capabilities' `testMode: true`),
      * kept as state.ui.workflowTestMode; a missing, older or failed answer is off. Never throws.
      */
     async readWorkflowTestMode() {
@@ -2748,7 +2746,7 @@ export class PilotSwarmUiController {
         try {
             const capabilities = typeof this.transport.getWorkflowCapabilities === "function"
                 ? await this.transport.getWorkflowCapabilities() : null;
-            on = capabilities?.v2?.testMode === true;
+            on = capabilities?.testMode === true;
         } catch {
             on = false;
         }
@@ -6668,7 +6666,7 @@ export class PilotSwarmUiController {
         if (loaded) {
             try {
                 this.dispatch({ type: "ui/workflowView", sessionId,
-                    view: { definition: workflowDefinition(loaded.data), loading: false, error: null } });
+                    view: { definition: workflowV2Definition(loaded.data), loading: false, error: null } });
             } catch (error) {
                 this.dispatch({ type: "ui/workflowView", sessionId, view: { loading: false, error: error.message } });
             }
@@ -6689,7 +6687,7 @@ export class PilotSwarmUiController {
                 const start = rows.find(event => event.eventType === "workflow.started");
                 if (!start) throw new Error("The workflow definition is not available yet. Retry after the workflow starts.");
                 this.dispatch({ type: "ui/workflowView", sessionId,
-                    view: { definition: workflowDefinition(start.data), loading: false, error: null } });
+                    view: { definition: workflowV2Definition(start.data), loading: false, error: null } });
             } catch (error) {
                 this.dispatch({ type: "ui/workflowView", sessionId,
                     view: { loading: false, error: error?.message || String(error) } });
@@ -8434,15 +8432,15 @@ export class PilotSwarmUiController {
      */
     async askParentAboutStep(sessionId, { stateId = null, executionId = null, kind = null, note = "" } = {}) {
         const projection = workflowViewProjectionFor(this.getState(), sessionId);
-        const v2 = projection.v2;
-        const node = v2?.bound ? v2.nodes.find(item => item.id === stateId) ?? null : null;
+        const flow = projection.flow;
+        const node = flow?.bound ? flow.nodes.find(item => item.id === stateId) ?? null : null;
         const execution = node ? (executionId ? (node.executions ?? []).find(item => item?.id === executionId) ?? null : node.current) : null;
         const refuse = reason => {
             this.dispatch({ type: "ui/status", text: reason });
             return { ok: false, reason };
         };
         if (!execution) return refuse(`Step '${stateId}' has no visit in the shown run to ask about.`);
-        const text = workflowV2StepQuestion({ workflowName: projection.name, workflowSessionId: sessionId, runId: v2.runId, stateId, execution, kind, note });
+        const text = workflowV2StepQuestion({ workflowName: projection.name, workflowSessionId: sessionId, runId: flow.runId, stateId, execution, kind, note });
         if (!text) return refuse("Choose what to ask: findings, rework or approval.");
         return this.askWorkflowParent(sessionId, text);
     }
@@ -10441,9 +10439,9 @@ export class PilotSwarmUiController {
         const selection = selectWorkflowViewSelection(this.getState());
         if (!selection) return;
         const node = selection.selected?.node ?? null;
-        const runId = selection.projection.v2?.runId ?? null;
+        const runId = selection.projection.flow?.runId ?? null;
         const shown = node ? workflowV2ShownExecution(node, runId, selection.projection.selectedExecution) : null;
-        const kv = workflowV2KvApplied(shown?.execution, selection.projection.v2?.readModel?.run);
+        const kv = workflowV2KvApplied(shown?.execution, selection.projection.flow?.readModel?.run);
         if (typeof runId !== "string" || !runId || !kv || kv.accepted === null) {
             this.dispatch({ type: "ui/status", text: "This visit names no variables revision to compare" });
             return;
@@ -10510,7 +10508,7 @@ export class PilotSwarmUiController {
     async loadWorkflowViewOlderHistory() {
         const selection = selectWorkflowViewSelection(this.getState());
         if (!selection) return;
-        const history = selection.projection.v2?.readModel?.run?.history ?? null;
+        const history = selection.projection.flow?.readModel?.run?.history ?? null;
         await this.loadOlderWorkflowHistory(selection.modal.sessionId, { restart: Boolean(history?.staleOlder) });
     }
 
@@ -10522,7 +10520,7 @@ export class PilotSwarmUiController {
         const selection = selectWorkflowViewSelection(this.getState());
         if (!selection) return;
         const node = selection.selected?.node ?? null;
-        const runId = selection.projection.v2?.runId ?? null;
+        const runId = selection.projection.flow?.runId ?? null;
         const shown = node ? workflowV2ShownExecution(node, runId, selection.projection.selectedExecution) : null;
         const execution = shown?.execution ?? null;
         if (typeof runId !== "string" || !runId || typeof execution?.id !== "string" || !execution.id) {

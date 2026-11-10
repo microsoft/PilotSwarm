@@ -10,7 +10,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { WorkflowStore, WorkflowStoreError } from "../../dist/workflow/v2/store.js";
 import { createWorkflowV2 } from "../../dist/workflow/v2/service.js";
-import { spawnWorkflowV2FromTool, updateWorkflowFromTool } from "../../dist/workflow/v2/tools.js";
+import { updateWorkflowFromTool } from "../../dist/workflow/v2/tools.js";
 import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
 
 const YAML = (version, seconds = 60) => [
@@ -180,21 +180,6 @@ test("a replay of a creation that named no owner is compared with the owner it i
     const other = await refusal(createWorkflowV2(replayHost({ provider: "test", subject: "bob" }), request({ refuseVersionReuse: true })));
     assert.equal(other.code, "WORKFLOW_EXISTS", "the parent's owner changed: not the same request");
     assert.equal(compiled.valid, true);
-});
-
-test("spawn_workflow asks for the check and answers SEMVER_REUSED in its coded JSON", async () => {
-    const { host, calls } = createHost({ guard: async () => {
-        throw new WorkflowStoreError("SEMVER_REUSED", "monitor 1.1.3 is already Workflow wf-old of this session (published, revision 1) with other YAML.",
-            { name: "monitor", version: "1.1.3", workflowId: "wf-old", state: "published", revision: 1 });
-    } });
-    const answer = JSON.parse(await spawnWorkflowV2FromTool({ yaml: YAML("1.1.3"), state: "published", start: true },
-        { callerSessionId: "chat", workflowSessionId: "wf-new", operationId: "spawn:call:1", owner: null, binding: null, host }));
-    assert.equal(answer.ok, false);
-    assert.equal(answer.error.code, "SEMVER_REUSED");
-    assert.match(answer.error.message, /^monitor 1\.1\.3 is already Workflow wf-old/);
-    assert.deepEqual(answer.error.details, { name: "monitor", version: "1.1.3", workflowId: "wf-old", state: "published", revision: 1 });
-    assert.equal(calls.guard.length, 1);
-    assert.equal(calls.claims.length, 1, "refused inside the claim, which rolls back");
 });
 
 test("update_workflow replace_definition asks the store to refuse a reused version", async () => {

@@ -1,5 +1,3 @@
-import type { SessionOwnerInfo } from "../../types.js";
-import type { WorkflowToolBinding } from "../tool-policy.js";
 import { isMap, isNode, isScalar, parseDocument, visit } from "yaml";
 import {
     assertJsonValue, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, previewJson, sha256Hex, utf8ByteLength, WORKFLOW_PAYLOAD_MAX_BYTES,
@@ -26,7 +24,6 @@ import {
     advanceWorkflowV2Test,
     compileWorkflowV2Definition,
     controlWorkflowV2Run,
-    createWorkflowV2,
     inspectWorkflowV2Controller,
     previewWorkflowV2AgentVersions,
     recoverWorkflowV2Run,
@@ -1627,42 +1624,3 @@ export async function sendWorkflowInputFromTool(args: Record<string, unknown>, c
     }
 }
 
-/** spawn_workflow for a v2 document: a draft by default, or published (and started) when asked. */
-export async function spawnWorkflowV2FromTool(
-    args: { yaml: string; inputs?: Record<string, unknown>; vars?: Record<string, unknown>; notify_on_completion?: boolean; key?: string; state?: string; start?: boolean },
-    context: {
-        callerSessionId: string;
-        workflowSessionId: string;
-        operationId: string;
-        owner: SessionOwnerInfo | null;
-        binding: WorkflowToolBinding;
-        host: WorkflowToolHost;
-    },
-): Promise<string> {
-    try {
-        if (args.state !== undefined && args.state !== "draft" && args.state !== "published") {
-            throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "state must be draft or published.");
-        }
-        const publish = args.state === "published";
-        if (args.start === true && !publish) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "start needs state: published.");
-        const inputs = args.inputs === undefined ? {} : args.inputs;
-        if (!isJsonObject(inputs)) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "inputs must be a JSON object.");
-        const vars = kvObjectArg({ vars: args.vars }, "vars");
-        if (vars !== null && args.start !== true) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "vars needs start: true (they are the run's initial KV).");
-        const stored = await createWorkflowV2(context.host, {
-            workflowSessionId: context.workflowSessionId, parentSessionId: context.callerSessionId, owner: context.owner,
-            yaml: args.yaml, actor: { kind: "agent", sessionId: context.callerSessionId }, operationId: context.operationId,
-            publish, start: args.start === true ? { inputs, ...(vars !== null ? { vars } : {}) } : null, notifyParent: args.notify_on_completion !== false,
-            binding: context.binding, refuseVersionReuse: true,
-        });
-        return payload({
-            ok: true, ...receiptJson(stored.receipt, stored.replayed),
-            next: stored.receipt.run ? "The live run started; its result arrives as a system message when it ends."
-                : stored.receipt.state === "published" ? "Published; start it with update_workflow operation start."
-                    : stored.receipt.valid ? "Draft saved; nothing runs. Review it, then update_workflow publish or publish_and_start with this definitionHash."
-                        : "Draft saved with diagnostics; nothing runs. Fix it with update_workflow replace_definition.",
-        });
-    } catch (error) {
-        return errorPayload(error);
-    }
-}

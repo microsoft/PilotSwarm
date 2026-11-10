@@ -1,9 +1,9 @@
 import React from "react";
 import { useControllerSelector } from "./use-controller-state.js";
 import { workflowModelFromKey, workflowSessionModelKey } from "../../core/src/workflow-words.js";
-import { selectWorkflowViewSnapshot, workflowReadModelView, workflowViewSnapshotEqual } from "../../core/src/workflow-view.js";
 import {
-    projectWorkflowV2, workflowV2Activity, workflowV2BranchPickKey, workflowV2DraftInProgress, workflowV2NoticeBadge, workflowV2OpenCalls, workflowV2ShownNotices,
+    selectWorkflowViewSnapshot, workflowReadModelView, workflowViewSnapshotEqual, projectWorkflowV2, workflowV2Activity,
+    workflowV2BranchPickKey, workflowV2DraftInProgress, workflowV2NoticeBadge, workflowV2OpenCalls, workflowV2ShownNotices,
     workflowV2SelectionAfterBranchChange,
 } from "../../core/src/workflow-v2-view.js";
 import {
@@ -53,20 +53,20 @@ function useWorkflowView(controller) {
     const chatModelKey = useControllerSelector(controller, state => workflowSessionModelKey(state.sessions.byId,
         state.sessions.byId?.[sessionId]?.parentSessionId ?? null));
     const chatModel = React.useMemo(() => workflowModelFromKey(chatModelKey), [chatModelKey]);
-    const v2 = React.useMemo(() => {
+    const flow = React.useMemo(() => {
         if (!view.definition && !readModel && !workflowModel) return null;
         // A definition is never redrawn once the read model says there is no graph (invalid or unavailable); the no-graph
         // panel explains why.
         return projectWorkflowV2({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq, olderHistory, chatModel });
     }, [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory, chatModel]);
-    const definition = v2 ? v2.definition : null;
-    const nodes = v2 ? v2.nodes : EMPTY_EVENTS;
+    const definition = flow ? flow.definition : null;
+    const nodes = flow ? flow.nodes : EMPTY_EVENTS;
     const selected = nodes.find(node => node.id === view.selectedNodeId)
         || nodes.find(node => node.pending)
         || nodes.find(node => node.id === definition?.initial)
         || nodes[0];
     const terminal = events.findLast(event => ["workflow.completed", "workflow.failed", "workflow.cancelled"].includes(event?.eventType));
-    const status = v2 ? v2.status.label : terminal?.eventType.slice("workflow.".length)
+    const status = flow ? flow.status.label : terminal?.eventType.slice("workflow.".length)
         || (["completed", "failed", "cancelled"].includes(session?.status) ? session.status : session?.status || "Starting");
     // Brings the side pane up on its canvas side (on a phone, the details layer), showing what the view says it shows.
     const openSide = () => {
@@ -85,39 +85,39 @@ function useWorkflowView(controller) {
     // A person's run controls: only the selection's own read model can offer them, for the run it shows, and only
     // when it says which commands the workflow takes from people.
     const runCommand = view.runCommand ?? null;
-    const runControls = React.useMemo(() => v2 ? workflowV2RunControls(readModel, runCommand) : null, [v2, readModel, runCommand]);
-    const variables = React.useMemo(() => v2 ? workflowV2RunVariables(readModel, runCommand) : null, [v2, readModel, runCommand]);
+    const runControls = React.useMemo(() => flow ? workflowV2RunControls(readModel, runCommand) : null, [flow, readModel, runCommand]);
+    const variables = React.useMemo(() => flow ? workflowV2RunVariables(readModel, runCommand) : null, [flow, readModel, runCommand]);
     // The definition is the workflow's, whichever run is selected: the last read model of any selection says it.
-    const publication = React.useMemo(() => v2 ? workflowV2DefinitionControls(readModel ?? workflowModel, runCommand) : null,
-        [v2, readModel, workflowModel, runCommand]);
+    const publication = React.useMemo(() => flow ? workflowV2DefinitionControls(readModel ?? workflowModel, runCommand) : null,
+        [flow, readModel, workflowModel, runCommand]);
     // The draft editor's model names the session it was read for (UI-1), so the YAML editor never takes another's.
     const draftEditor = React.useMemo(() => {
-        const editor = v2 ? workflowV2DraftEditor(readModel ?? workflowModel, runCommand) : null;
+        const editor = flow ? workflowV2DraftEditor(readModel ?? workflowModel, runCommand) : null;
         return editor ? { ...editor, sessionId } : null;
-    }, [v2, readModel, workflowModel, runCommand, sessionId]);
-    const testControls = React.useMemo(() => v2 ? workflowV2TestControls(readModel ?? workflowModel, runCommand) : null,
-        [v2, readModel, workflowModel, runCommand]);
+    }, [flow, readModel, workflowModel, runCommand, sessionId]);
+    const testControls = React.useMemo(() => flow ? workflowV2TestControls(readModel ?? workflowModel, runCommand) : null,
+        [flow, readModel, workflowModel, runCommand]);
     // The shown test run's answers and clock: only the selection's own read model says which run that is.
-    const testResponder = React.useMemo(() => v2 ? workflowV2TestResponder(readModel, runCommand) : null, [v2, readModel, runCommand]);
+    const testResponder = React.useMemo(() => flow ? workflowV2TestResponder(readModel, runCommand) : null, [flow, readModel, runCommand]);
     const runNotice = workflowV2RunCommandNotice(runCommand);
     // The definition's read model, whichever run is shown (the YAML tab reads its revision).
-    const definitionModel = v2 ? readModel ?? workflowModel ?? null : null;
+    const definitionModel = flow ? readModel ?? workflowModel ?? null : null;
     // What the side pane offers now (r-3): the run's activity once it has some, the notices (and a failed read), a test
     // run's calls, and the panels the commands above offer.
-    const activity = v2?.bound && v2.runId && (v2.ending || workflowV2Activity(events, { runId: v2.runId }).length) ? v2.runId : null;
+    const activity = flow?.bound && flow.runId && (flow.ending || workflowV2Activity(events, { runId: flow.runId }).length) ? flow.runId : null;
     // Owner batch 7 (H1): while the parent agent is still writing the latest revision, its errors are said calmly and not counted.
-    const drafting = v2 ? workflowV2DraftInProgress(v2, parentWorking) : null;
-    const notices = workflowV2ShownNotices(v2?.banners, { draftInProgress: drafting });
+    const drafting = flow ? workflowV2DraftInProgress(flow, parentWorking) : null;
+    const notices = workflowV2ShownNotices(flow?.banners, { draftInProgress: drafting });
     // A test run's calls only while the server's test mode is on (Workflow Simplified, spec 16).
-    const test = workflowV2TestRunsShown(v2?.readModel) ? v2?.readModel?.run?.test ?? null : null;
+    const test = workflowV2TestRunsShown(flow?.readModel) ? flow?.readModel?.run?.test ?? null : null;
     const offered = { definition: Boolean(publication?.controls.length), test: Boolean(testControls), calls: Boolean(test),
         variables: Boolean(variables), draft: Boolean(draftEditor), activity: Boolean(activity), notices: Boolean(notices.length || readError), log: true };
     const sidePanel = typeof view.sidePanel === "string" && offered[view.sidePanel] === true ? view.sidePanel : null;
     // r-1: the main pane shows the graph or the YAML. Graph by default.
-    const mainTab = v2 && view.mainTab === "yaml" ? "yaml" : "graph";
+    const mainTab = flow && view.mainTab === "yaml" ? "yaml" : "graph";
     // The answer to a save from the YAML tab shows in that tab; every other command's answer shows in the side pane.
     const noticeInYaml = Boolean(runNotice?.operation === "replace_definition" && mainTab === "yaml" && sidePanel !== "draft");
-    return { sessionId, session, view, places, nodes, selected, select, openSide, showSide, status, v2, definition, readError,
+    return { sessionId, session, view, places, nodes, selected, select, openSide, showSide, status, flow, definition, readError,
         workflowModel, selectedRunId, ownModelLoaded: readModel != null, runControls, variables, publication, draftEditor, testControls, testResponder,
         runNotice, events, definitionModel, activity, notices, drafting, test, sidePanel, mainTab, noticeInYaml };
 }
@@ -144,7 +144,7 @@ const MAIN_TABS = [["graph", "Graph"], ["yaml", "YAML"]];
  * mounted while the YAML is shown, so it comes back at the same zoom and place.
  */
 export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = false, onOpenSide = null }) {
-    const { sessionId, session, view, places, nodes, selected, select, openSide, showSide, status, v2, definition, readError, workflowModel, selectedRunId,
+    const { sessionId, session, view, places, nodes, selected, select, openSide, showSide, status, flow, definition, readError, workflowModel, selectedRunId,
         ownModelLoaded, runControls, variables, publication, draftEditor, testControls, runNotice, definitionModel, activity, notices, drafting, test,
         sidePanel, mainTab, noticeInYaml } = useWorkflowView(controller);
     const tabsId = `wf-tabs-${React.useId().replace(/:/g, "")}`;
@@ -214,12 +214,12 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
         h("header", { className: "ps-workflow-main-header" },
             h("strong", { className: "ps-workflow-main-title" }, icon, h("span", { className: "ps-workflow-main-name", title }, title)),
             // Review 19:27Z (D-W13): one word; its detail ("Canceled at once", why it is not certain) is its tooltip.
-            h("span", { className: "ps-workflow-status", ...(v2?.status?.detail ? { title: v2.status.detail } : {}) }, status),
-            v2 ? h("div", { className: "ps-workflow-main-tabs", role: "tablist", "aria-label": "Workflow view", onKeyDown: onTabKey },
+            h("span", { className: "ps-workflow-status", ...(flow?.status?.detail ? { title: flow.status.detail } : {}) }, status),
+            flow ? h("div", { className: "ps-workflow-main-tabs", role: "tablist", "aria-label": "Workflow view", onKeyDown: onTabKey },
                 MAIN_TABS.map(([id, label]) => h("button", { key: id, id: `${tabsId}-${id}`, type: "button", role: "tab", "aria-selected": mainTab === id,
                     "aria-controls": `${tabsId}-${id}-panel`, tabIndex: mainTab === id ? 0 : -1, onClick: () => setTab(id) }, label))) : null,
             h("div", { className: "ps-workflow-main-tools" },
-                v2 ? h(WorkflowV2RunPicker, { controller, sessionId, workflowModel, selectedRunId, ownModelLoaded, error: readError }) : null,
+                flow ? h(WorkflowV2RunPicker, { controller, sessionId, workflowModel, selectedRunId, ownModelLoaded, error: readError }) : null,
                 runControls ? h(WorkflowV2RunControls, { controller, sessionId, model: runControls }) : null,
                 variables ? panelButton("variables", { label: "Variables", glyph: "variables" }) : null,
                 // "Publish…" for a draft, "Start…" for a published workflow without its live run.
@@ -236,11 +236,11 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
                 h(WorkflowToolButton, { label: "Step details", glyph: "details", disabled: !selected, "aria-expanded": sideShown && sidePanel === null,
                     onClick: () => selectNode(selected.id, { open: true }) }))),
         h("div", { id: `${tabsId}-graph-panel`, className: "ps-workflow-graph-region", hidden: mainTab !== "graph" || undefined,
-            ...(v2 ? { role: "tabpanel", "aria-labelledby": `${tabsId}-graph` } : {}) },
+            ...(flow ? { role: "tabpanel", "aria-labelledby": `${tabsId}-graph` } : {}) },
             definition
                 ? h(WorkflowGraph, { definition, nodes, selected, select: selectNode, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView,
                     places, onPlaces })
-                : v2 ? h(WorkflowV2NoGraph, { projection: v2, drafting })
+                : flow ? h(WorkflowV2NoGraph, { projection: flow, drafting })
                 : h("div", { className: "ps-workflow-empty", role: view.error ? "alert" : "status" },
                     view.error || "Loading workflow graph…",
                     view.error ? h("button", { type: "button", className: "ps-mini-button",
@@ -257,7 +257,7 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
 
 /** One side-pane panel (r-3): its title and a way back to Step details, the answer to the last command, then the panel. */
 function WorkflowSidePanel({ controller, workflow, log, notice }) {
-    const { sessionId, session, view, v2, events, sidePanel: panel, readError, publication, testControls, testResponder, variables, draftEditor,
+    const { sessionId, session, view, flow, events, sidePanel: panel, readError, publication, testControls, testResponder, variables, draftEditor,
         definition, activity, notices, test } = workflow;
     const title = panel === "definition" ? (publication.state === "draft" ? "Publish review" : "Start the live run")
         : panel === "variables" && Number.isSafeInteger(variables.revision) ? `Variables · revision ${variables.revision}`
@@ -267,7 +267,7 @@ function WorkflowSidePanel({ controller, workflow, log, notice }) {
         // A test run's held calls, its virtual clock and the answer form for the call being answered.
         : panel === "calls" ? h("div", { className: "ps-workflow-test-calls" },
             h(WorkflowV2TestInterceptions, { test, controller, sessionId,
-                responder: testResponder, answering: view.answeringInterceptionId ?? null, history: v2.readModel.run.history ?? null,
+                responder: testResponder, answering: view.answeringInterceptionId ?? null, history: flow.readModel.run.history ?? null,
                 onLoadOlder: restart => controller.loadOlderWorkflowHistory(sessionId, { restart }), parentSessionId: session?.parentSessionId ?? null }),
             testResponder?.advance ? h(WorkflowV2TestClock, { controller, sessionId, responder: testResponder }) : null,
             testResponder?.respond && view.answeringInterceptionId
@@ -279,7 +279,7 @@ function WorkflowSidePanel({ controller, workflow, log, notice }) {
             agentSteps: (definition?.states || []).filter(state => state?.type === "agent").map(state => state.id),
             stepInput: view.stepInput ?? null, stepInputPreview: view.stepInputPreview ?? null, unsaved: Boolean(view.draftDirty) })
         // Why the shown run ended, and who did what in it (owner decision q14; mocks M09, M14).
-        : panel === "activity" ? h(WorkflowV2RunActivity, { ending: v2.ending, events, runId: activity })
+        : panel === "activity" ? h(WorkflowV2RunActivity, { ending: flow.ending, events, runId: activity })
         : panel === "notices" ? h("div", { className: "ps-workflow-notices" },
             h(WorkflowReadError, { controller, sessionId, message: readError }), h(WorkflowV2Banners, { banners: notices }))
         : log ? h("div", { className: "ps-workflow-log" }, log)
@@ -300,7 +300,7 @@ function WorkflowSidePanel({ controller, workflow, log, notice }) {
  */
 export function WorkflowNodePane({ controller, log = null }) {
     const workflow = useWorkflowView(controller);
-    const { sessionId, session, view, selected, select, nodes, v2, events, sidePanel, runNotice, noticeInYaml, drafting } = workflow;
+    const { sessionId, session, view, selected, select, nodes, flow, events, sidePanel, runNotice, noticeInYaml, drafting } = workflow;
     // The session rows loaded: the sessions under an agent step (owner decision q14; mock M14 "View owned subtree").
     const sessionsById = useControllerSelector(controller, state => state.sessions.byId);
     const [tab, setTab] = React.useState("details");
@@ -311,7 +311,7 @@ export function WorkflowNodePane({ controller, log = null }) {
     const notice = runNotice && !noticeInYaml ? h(WorkflowV2RunCommandNotice, { controller, sessionId, notice: runNotice }) : null;
     if (sidePanel) return h(WorkflowSidePanel, { controller, workflow, log, notice });
     const details = () => {
-        if (!selected && v2) return React.createElement(WorkflowV2NoGraph, { projection: v2, drafting });
+        if (!selected && flow) return React.createElement(WorkflowV2NoGraph, { projection: flow, drafting });
         if (!selected) return React.createElement("div", { className: "ps-workflow-empty" },
             view.error || "Select a workflow step to see its details.");
         return React.createElement("section", { className: "ps-workflow-node-details", "aria-label": "Workflow step details" },
@@ -326,35 +326,35 @@ export function WorkflowNodePane({ controller, log = null }) {
             React.createElement("div", { className: "ps-workflow-detail-content", role: "tabpanel", "aria-labelledby": `${tabId}-${tab}` },
                 React.createElement(WorkflowV2NodeContent, {
                     tab, selected, nodes, select, openSession: sessionId => { controller.loadSession(sessionId).catch(() => {}); },
-                    runOutput: v2?.status.terminalState === selected.id ? v2.output : null,
-                    runError: v2?.status.terminalState === selected.id ? v2.error : null,
+                    runOutput: flow?.status.terminalState === selected.id ? flow.output : null,
+                    runError: flow?.status.terminalState === selected.id ? flow.error : null,
                     // One execution's own result, chosen in History for exactly the shown run and this state.
-                    runId: v2?.runId ?? null, selection: view.selectedExecution ?? null, onTab: setTab,
+                    runId: flow?.runId ?? null, selection: view.selectedExecution ?? null, onTab: setTab,
                     // Why the visit ended, its activity and the sessions under an agent step (owner decision q14).
-                    events: v2?.bound ? events : null, sessionsById,
+                    events: flow?.bound ? events : null, sessionsById,
                     // Ask the workflow's parent agent about the visit shown (owner decision q16): only for a workflow with a parent.
-                    onAskParent: session?.parentSessionId && v2?.bound
+                    onAskParent: session?.parentSessionId && flow?.bound
                         ? (kind, note, executionId) => controller.askParentAboutStep(sessionId, { stateId: selected.id, executionId, kind, note }) : null,
                     onSelectExecution: (executionId, bound) => controller.selectWorkflowExecution(sessionId,
-                        executionId === null ? null : { runId: v2?.runId ?? null, stateId: selected.id, executionId, ...(bound ?? {}) }),
+                        executionId === null ? null : { runId: flow?.runId ?? null, stateId: selected.id, executionId, ...(bound ?? {}) }),
                     // That execution's whole value (read for exactly the shown run), and the run's older history.
                     executionValues: view.executionValues ?? null,
-                    onReadWholeValue: executionId => { controller.loadWorkflowExecutionValue(sessionId, { runId: v2?.runId ?? null, executionId }).catch(() => {}); },
-                    history: v2?.bound ? v2?.readModel?.run?.history ?? null : null,
+                    onReadWholeValue: executionId => { controller.loadWorkflowExecutionValue(sessionId, { runId: flow?.runId ?? null, executionId }).catch(() => {}); },
+                    history: flow?.bound ? flow?.readModel?.run?.history ?? null : null,
                     onLoadOlder: restart => { controller.loadOlderWorkflowHistory(sessionId, { restart }).catch(() => {}); },
                     // A branch step's details show the branch chosen by its picker (owner batch 7, H2).
-                    branchIndex: branchPick?.key === workflowV2BranchPickKey(sessionId, v2?.runId ?? null, selected) ? branchPick.index : null,
+                    branchIndex: branchPick?.key === workflowV2BranchPickKey(sessionId, flow?.runId ?? null, selected) ? branchPick.index : null,
                     // Re-check UI-RC2-3: another branch ends a result chosen in History for this step, so coming back does not revive it.
                     onBranch: index => {
-                        setBranchPick({ key: workflowV2BranchPickKey(sessionId, v2?.runId ?? null, selected), index });
+                        setBranchPick({ key: workflowV2BranchPickKey(sessionId, flow?.runId ?? null, selected), index });
                         if (workflowV2SelectionAfterBranchChange(view.selectedExecution ?? null, selected.id) === null && view.selectedExecution) {
                             controller.selectWorkflowExecution(sessionId, null);
                         }
                     },
                     // The variables the current visit applied and the accepted ones, compared on request (mock M15).
-                    kv: v2?.bound && v2?.runId ? {
-                        accepted: v2.readModel?.run?.kvRevision ?? null, snapshots: view.kvRevisions ?? null, compare: view.kvCompare ?? null,
-                        onCompare: (from, to) => { controller.compareWorkflowKvRevisions(sessionId, { runId: v2.runId, from, to }).catch(() => {}); },
+                    kv: flow?.bound && flow?.runId ? {
+                        accepted: flow.readModel?.run?.kvRevision ?? null, snapshots: view.kvRevisions ?? null, compare: view.kvCompare ?? null,
+                        onCompare: (from, to) => { controller.compareWorkflowKvRevisions(sessionId, { runId: flow.runId, from, to }).catch(() => {}); },
                     } : null,
                 })));
     }

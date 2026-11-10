@@ -9,9 +9,9 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
-import { selectWorkflowViewSnapshot, workflowParentWorking, workflowViewSnapshotEqual } from "../src/workflow-view.js";
 import {
-    projectWorkflowV2, workflowV2DraftInProgress, workflowV2NoticeBadge, workflowV2NoticeCount, workflowV2RevisionErrorsText, workflowV2ShownNotices,
+    selectWorkflowViewSnapshot, workflowParentWorking, workflowViewSnapshotEqual, projectWorkflowV2, workflowV2DraftInProgress,
+    workflowV2NoticeBadge, workflowV2NoticeCount, workflowV2RevisionErrorsText, workflowV2ShownNotices,
 } from "../src/workflow-v2-view.js";
 import { WorkflowTab } from "../../react/src/workflow-tab.js";
 import { readModel } from "./workflow-v2-fixtures.mjs";

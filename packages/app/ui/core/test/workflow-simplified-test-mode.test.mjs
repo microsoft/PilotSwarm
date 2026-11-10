@@ -99,16 +99,16 @@ test("SF-D5: the Workflow Log never lists a test run's events, also when its wor
     assert.deepEqual(workflowLogEvents(null, { runId: null, runs: offRuns }), []);
 });
 
-// Review SF-D5: the controller keeps the server's word on test mode (its bootstrap's workflows.v2.testMode). Workflows are
+// Review SF-D5: the controller keeps the server's word on test mode (its bootstrap's workflows.testMode). Workflows are
 // always on (owner 2026-11-08T08:03Z), so the answer's `enabled` is not read and keeps no switch in the state.
 test("SF-D5: the controller reads the server's test mode at start; a missing, older or failed answer is off", async () => {
     const answers = [
-        [{ enabled: true, v2: { testMode: true } }, true],
-        [{ enabled: true, v2: { read: true } }, false],
-        [{ enabled: true, v2: { testMode: "true" } }, false],
-        [{ v2: { testMode: true } }, true],
+        [{ enabled: true, testMode: true }, true],
+        [{ enabled: true, read: true }, false],
+        [{ enabled: true, testMode: "true" }, false],
+        [{ testMode: true }, true],
         [{ enabled: false }, false],
-        [{ enabled: false, v2: { testMode: true } }, true],
+        [{ enabled: false, testMode: true }, true],
         [null, false],
         [new Error("WORKFLOW_CAPABILITIES_MALFORMED"), false],
         [undefined, false],

@@ -1,10 +1,10 @@
 import React from "react";
 import { createPortal } from "react-dom";
 import { useControllerSelector } from "./use-controller-state.js";
-import { selectWorkflowViewSnapshotFor, workflowParentWorking, workflowReadModelView, workflowViewSnapshotEqual } from "../../core/src/workflow-view.js";
 import {
-    formatSeconds, projectWorkflowV2, workflowLogEvents, workflowLogWindow, workflowV2Activity, workflowV2BranchPickKey, workflowV2ExecutionOfRow, workflowV2ReplayBranchIndex, workflowV2ReplayFrames,
-    workflowV2ReplayLabel, workflowV2SelectionAfterBranchChange,
+    selectWorkflowViewSnapshotFor, workflowParentWorking, workflowReadModelView, workflowViewSnapshotEqual, formatSeconds,
+    projectWorkflowV2, workflowLogEvents, workflowLogWindow, workflowV2Activity, workflowV2BranchPickKey, workflowV2ExecutionOfRow,
+    workflowV2ReplayBranchIndex, workflowV2ReplayFrames, workflowV2ReplayLabel, workflowV2SelectionAfterBranchChange,
 } from "../../core/src/workflow-v2-view.js";
 import {
     WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT, workflowV2DefinitionControls, workflowV2DraftEditor, workflowV2JsonObjectDraft, workflowV2RunCommandNotice,

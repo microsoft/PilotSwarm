@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { EMPTY_WORKFLOW_VIEW, selectWorkflowViewSnapshot, workflowViewSnapshotEqual } from "../src/workflow-view.js";
+import { EMPTY_WORKFLOW_VIEW, selectWorkflowViewSnapshot, workflowViewSnapshotEqual } from "../src/workflow-v2-view.js";
 import { WorkflowV2DraftEditor } from "../../react/src/workflow-v2-panels.js";
 
 const A = "wf-a";

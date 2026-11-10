@@ -71,7 +71,7 @@ export function buildCapabilities(ctx: ServerContext) {
         // edge, which direct mode does not run).
         prompt: { imageAttachments: ctx.webMode },
         // The workflow tools this server registers, keyed as the deployment's
-        // advertisement (`workflows.v2`, which get_capabilities and the
+        // advertisement (`workflows`, which get_capabilities and the
         // capabilities resource add) so a client compares them: read_workflow
         // always (the Web API's GET /sessions/:id/workflow and the direct
         // client's readWorkflow: the view, its pages and an execution's whole

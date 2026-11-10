@@ -5,13 +5,12 @@
  * is refused. It is the management client's own answer
  * (getWorkflowCapabilities) through the real NodeSdkTransport and
  * PortalRuntime.getBootstrap, over a stand-in catalog (no database):
- * - as a deployment is configured today (no workflowCommands): version 2
- *   reads on, a person's commands off, with the refusal that every command
- *   then gets, which is the refusal the real adapter gives;
+ * - as a deployment is configured today (no workflowCommands): reads on, a
+ *   person's commands off, with the refusal that every command then gets,
+ *   which is the refusal the real adapter gives;
  * - with a person's commands on: the controller version the runs start at
  *   and the operations a person may send (stop, and with test mode the test
  *   operations);
- * - the legacy create keeps its version 1 semantics (never a v2 draft);
  * - an older host without the getter advertises nothing (null).
  * Both HTTP-backed clients read the same value back over real fetch. The
  * route names are unchanged (their final names are API review item D11).
@@ -80,14 +79,12 @@ test("a deployment as configured today advertises version 2 reads and a person's
         assert.deepEqual(body.workflows, {
             schema: 1,
             enabled: true,
-            v2: {
-                apiVersion: "pilotswarm.dev/v2-draft", read: true, create: false, input: false,
-                commands: { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
-            },
+            apiVersion: "pilotswarm.dev/v2-draft", read: true, create: false, input: false,
+            commands: { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
         });
         // The advertised refusal is the adapter's own: a person's command to this deployment changes nothing and gets it.
         await assert.rejects(h.mgmt.updateWorkflow("wf1", { operation: "pause", operation_id: "p-1" }, { principal: null }), (error) => {
-            assert.deepEqual({ code: error.code, status: error.status }, body.workflows.v2.commands.refusal);
+            assert.deepEqual({ code: error.code, status: error.status }, body.workflows.commands.refusal);
             return true;
         });
     } finally {
@@ -108,13 +105,11 @@ test("with a person's commands on, it advertises the controller version and the 
             const h = await bootstrapHarness({ config });
             try {
                 const { workflows } = await h.bootstrap();
-                assert.deepEqual(workflows.v2.commands, { available: true, controllerVersion, operations }, JSON.stringify(config));
-                assert.equal(workflows.v2.read, true);
+                assert.deepEqual(workflows.commands, { available: true, controllerVersion, operations }, JSON.stringify(config));
+                assert.equal(workflows.read, true);
                 // Review SF-D5: the server's word that test mode is on, only then.
-                assert.equal(workflows.v2.testMode, config.workflowCommands.testMode === true ? true : undefined, JSON.stringify(config));
-                assert.ok(!workflows.v2.commands.operations.includes("recover"), "recover stays the agent's");
-                // Stage 2.5 (PR 235 8055fcd8): no legacy create is described.
-                assert.equal(Object.hasOwn(workflows, "legacyCreate"), false);
+                assert.equal(workflows.testMode, config.workflowCommands.testMode === true ? true : undefined, JSON.stringify(config));
+                assert.ok(!workflows.commands.operations.includes("recover"), "recover stays the agent's");
             } finally {
                 await h.close();
             }
@@ -125,8 +120,8 @@ test("with a person's commands on, it advertises the controller version and the 
             const h = await bootstrapHarness({ config: { workflowCommands: {} } });
             try {
                 const { workflows } = await h.bootstrap();
-                assert.deepEqual(workflows.v2.commands.operations, listed ? [...EVERY_HOST, ...MILESTONE] : [...EVERY_HOST, "stop"], value);
-                assert.equal(workflows.v2.testMode, listed ? true : undefined, value);
+                assert.deepEqual(workflows.commands.operations, listed ? [...EVERY_HOST, ...MILESTONE] : [...EVERY_HOST, "stop"], value);
+                assert.equal(workflows.testMode, listed ? true : undefined, value);
             } finally {
                 await h.close();
             }
@@ -134,8 +129,8 @@ test("with a person's commands on, it advertises the controller version and the 
             const plain = await bootstrapHarness({ config: {} });
             try {
                 const { workflows } = await plain.bootstrap();
-                assert.equal(workflows.v2.commands.available, false);
-                assert.equal(workflows.v2.testMode, listed ? true : undefined, value);
+                assert.equal(workflows.commands.available, false);
+                assert.equal(workflows.testMode, listed ? true : undefined, value);
             } finally {
                 await plain.close();
             }
@@ -196,7 +191,7 @@ test("both HTTP-backed clients read the advertisement back, and an older host ad
 });
 
 test("an advertisement that is not an object is malformed, never an older host: both HTTP-backed clients reject it", async () => {
-    for (const workflows of [["v2"], "v2", 2, true]) {
+    for (const workflows of [["read"], "read", 2, true]) {
         const transport = new HttpApiTransport({ apiUrl: "http://127.0.0.1:9" });
         transport.bootstrap = { ok: true, workflows };
         await assert.rejects(transport.getWorkflowCapabilities(), (error) => error.code === "WORKFLOW_CAPABILITIES_MALFORMED", JSON.stringify(workflows));
