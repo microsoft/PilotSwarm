@@ -34,7 +34,7 @@ is frozen in `orchestration_1_0_82/` and stays registered for the sessions still
 on it. The modules that describe 1.0.82's queue and turn are bound to the line
 numbers of `198ad79a`; 1.0.83 keeps that behaviour. The intake ships switched
 off: no worker sets the workflowIntake capability. The intake protocol itself is modelled in
-`../workflow-v2/paired/recipient/`. The 1.0.83 run-loop changes around it (the
+`../workflow/paired/recipient/`. The 1.0.83 run-loop changes around it (the
 owned retry, the intake write as a drain deadline, the carried arrival flag,
 the refused continue-as-new at the history cap, the continue-as-new target and
 the turn routing) are modelled here by `OwnedRetry` and `IntakeDrain`, and the
@@ -232,7 +232,7 @@ time, and the close can cut a legacy upload (its local copy stays). `WorkerShutd
 expected: committed sessions stay recoverable, only marked copies are deleted, the worker exits; the legacy loss at
 exit stays the accepted limit (`ws.legacy-cut`). A unit test records the same order of starts.
 
-so5b (48 cases at `bb162ed8`, with the controller idle-wake model in `../workflow-v2/idle-wake/`): 48 of 48 as
+so5b (48 cases at `bb162ed8`, with the controller idle-wake model in `../workflow/idle-wake/`): 48 of 48 as
 expected. Known limits, accepted: a marker dropped because the item would be too large cannot be given back; and when
 an older queued prompt carries a rehydration notice, the pass's newer notice is kept back (the older notice is already
 in that prompt's text, so the model is told once and nothing is lost).
