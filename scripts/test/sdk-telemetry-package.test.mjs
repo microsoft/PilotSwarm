@@ -65,15 +65,22 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
                 const chunks = [];
                 request.on("data", chunk => chunks.push(chunk));
                 request.on("end", () => {
-                    response.writeHead(200, { "content-type": "application/json" });
-                    response.end(JSON.stringify({
-                        choices: [{ message: { role: "assistant", content: "scripted response" }, finish_reason: "stop" }],
-                        usage: {
-                            prompt_tokens: 11,
-                            completion_tokens: 7,
-                            prompt_tokens_details: { cached_tokens: 3, cache_creation_tokens: 2 },
-                        },
-                    }));
+                    const body = JSON.parse(Buffer.concat(chunks).toString());
+                    const usage = {
+                        prompt_tokens: 11,
+                        completion_tokens: 7,
+                        prompt_tokens_details: { cached_tokens: 3, cache_creation_tokens: 2 },
+                    };
+                    response.writeHead(200, { "content-type": "text/event-stream" });
+                    response.write("data: " + JSON.stringify({
+                        id: "scripted-turn", object: "chat.completion.chunk", model: body.model,
+                        choices: [{ index: 0, delta: { role: "assistant", content: "scripted response" }, finish_reason: null }],
+                    }) + "\\n\\n");
+                    response.write("data: " + JSON.stringify({
+                        id: "scripted-turn", object: "chat.completion.chunk", model: body.model,
+                        choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage,
+                    }) + "\\n\\n");
+                    response.end("data: [DONE]\\n\\n");
                 });
             });
             server.listen(0, "127.0.0.1", () => resolve(server));
