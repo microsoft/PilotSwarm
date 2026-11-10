@@ -391,7 +391,7 @@ export interface ControllerParallel {
 }
 
 export interface ControllerInput {
-    v: 2;
+    v: 1;
     workflowSessionId: string;
     runId: string;
     /** Set only by continue-as-new: the exact state the previous execution activated. */
@@ -494,8 +494,8 @@ function isRunStatus(value: unknown): value is WorkflowRunStatus {
 
 function parseControllerInput(value: unknown): ControllerInput {
     const input = record(value, "controller input");
-    expect(input.v === 2, "controller input version is not 2");
-    const parsed: ControllerInput = { v: 2, workflowSessionId: text(input.workflowSessionId, "workflowSessionId"), runId: text(input.runId, "runId") };
+    expect(input.v === 1, "controller input version is not 1");
+    const parsed: ControllerInput = { v: 1, workflowSessionId: text(input.workflowSessionId, "workflowSessionId"), runId: text(input.runId, "runId") };
     if (input.state !== undefined) parsed.state = parseControllerState(input.state);
     return parsed;
 }
@@ -823,7 +823,7 @@ function publishStatus(ctx: OrchestrationContext, input: ControllerInput, plan: 
         status,
         sessionKind: "workflow",
         workflow: {
-            v: 2,
+            v: 1,
             runId: input.runId,
             name: plan?.name ?? null,
             stateId: cursor?.nodeId ?? null,
@@ -899,7 +899,7 @@ function* reportEnded(ctx: OrchestrationContext, runId: string, result: Controll
     yield* persist(ctx, "notifyParent", { runId });
     // A stopped run shows as cancelled, as its session row does (the session statuses have no "stopped").
     ctx.setCustomStatus(JSON.stringify({ status: result.status === "failed" ? "failed" : result.status === "cancelled" || result.status === "stopped" ? "cancelled" : "completed",
-        sessionKind: "workflow", workflow: { v: 2, runId, outcome: result.outcome } }));
+        sessionKind: "workflow", workflow: { v: 1, runId, outcome: result.outcome } }));
     return result;
 }
 
@@ -996,7 +996,7 @@ function* applyCommand(ctx: OrchestrationContext, input: ControllerInput, comman
         yield* persist(ctx, "notifyParent", { runId: input.runId, requestedBy: command.requestedBy ?? null });
     }
     ctx.setCustomStatus(JSON.stringify({ status: ended.status === "cancelled" ? "cancelled" : ended.status === "failed" ? "failed" : "completed",
-        sessionKind: "workflow", workflow: { v: 2, runId: input.runId, outcome: ended.outcome } }));
+        sessionKind: "workflow", workflow: { v: 1, runId: input.runId, outcome: ended.outcome } }));
     return ended;
 }
 
@@ -1074,7 +1074,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
     };
     // S7-DX2: a lifecycle command is store state, not a queued message, so continue-as-new may drop unread wakes.
     const continueAsNew = function* (): Generator<ScheduledTask, null, unknown> {
-        yield ctx.continueAsNewVersioned({ v: 2, workflowSessionId: input.workflowSessionId, runId: input.runId, state } satisfies ControllerInput,
+        yield ctx.continueAsNewVersioned({ v: 1, workflowSessionId: input.workflowSessionId, runId: input.runId, state } satisfies ControllerInput,
             WORKFLOW_CONTROLLER_VERSION);
         return null;
     };

@@ -103,7 +103,7 @@ function execute({ controller, collected }, input, { next = () => undefined, hol
     throw new Error("the controller did not stop");
 }
 
-const START = { v: 2, workflowSessionId: "wf-1", runId: RUN };
+const START = { v: 1, workflowSessionId: "wf-1", runId: RUN };
 
 for (const c of CONTROLLERS) {
     test(`${c.version}: a running controller whose cursor waits continues as new at its 50th wait under a steady stream of no-op wakes`, () => {

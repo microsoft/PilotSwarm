@@ -436,7 +436,7 @@ export async function dispatchWorkflowRun(host: WorkflowHost, receipt: WorkflowD
     if (!admitted) return;
     const run = await host.store.readRun(admitted.runId);
     if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) return;
-    const input: ControllerInput = { v: 2, workflowSessionId: receipt.workflowSessionId, runId: admitted.runId };
+    const input: ControllerInput = { v: 1, workflowSessionId: receipt.workflowSessionId, runId: admitted.runId };
     // At the version the run was admitted for (a replayed admission may reach a host that does not run it: refused).
     await host.duroxideClient.startOrchestrationVersioned(admitted.controllerInstanceId, WORKFLOW_CONTROLLER_NAME, input, requireRunsController(run));
 }
@@ -559,7 +559,7 @@ async function finishRecoveredRun(host: Pick<WorkflowHost, "store" | "duroxideCl
  */
 async function dispatchRecoveredRun(host: Pick<WorkflowHost, "duroxideClient">, run: WorkflowRunRow): Promise<void> {
     if (!runNotBegun(run)) return;
-    const input: ControllerInput = { v: 2, workflowSessionId: run.workflowSessionId, runId: run.runId };
+    const input: ControllerInput = { v: 1, workflowSessionId: run.workflowSessionId, runId: run.runId };
     await host.duroxideClient.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_CONTROLLER_NAME, input, requireRunsController(run));
 }
 

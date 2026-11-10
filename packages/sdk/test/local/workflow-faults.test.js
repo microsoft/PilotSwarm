@@ -471,8 +471,9 @@ states:
                 actor: ACTOR, operationId: "start", start: { inputs: {} } });
             const { runId, controllerInstanceId } = created.receipt.run;
             expect((await h.store.readRun(runId)).status).toBe("admitted");
+            // Another input version than the controller's (1).
             await h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_CONTROLLER_NAME,
-                { v: 1, workflowSessionId: id, runId }, WORKFLOW_CONTROLLER_VERSION);
+                { v: 2, workflowSessionId: id, runId }, WORKFLOW_CONTROLLER_VERSION);
             const run = await finished(h, runId, 60_000);
             expect(run.status).toBe("failed");
             expect(run.terminalError).toMatchObject({ code: "controller_error" });
@@ -916,7 +917,7 @@ states:
                 if (deliveryFails) failDelivery.add(clientMessageId);
                 beginStarts.set(run.runId, 0);
                 await h.client.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_CONTROLLER_NAME,
-                    { v: 2, workflowSessionId: run.id, runId: run.runId }, WORKFLOW_CONTROLLER_VERSION);
+                    { v: 1, workflowSessionId: run.id, runId: run.runId }, WORKFLOW_CONTROLLER_VERSION);
                 return { ...run, ended, receipt, clientMessageId };
             };
             /** The run and the cancel's receipt are as the cancel stored them: nothing began, and the notifier never started. */
@@ -1099,7 +1100,7 @@ states:
                 const lost = runs.find(item => item.run.controllerInstanceId === start.instanceId);
                 expect(start.instanceId).toBe(workflowLiveControllerInstanceId(lost.id));
                 expect(start).toMatchObject({ name: WORKFLOW_CONTROLLER_NAME, version: WORKFLOW_CONTROLLER_VERSION,
-                    input: { v: 2, workflowSessionId: lost.id, runId: lost.run.runId } });
+                    input: { v: 1, workflowSessionId: lost.id, runId: lost.run.runId } });
             }
         } finally { await h.stop(); }
     });

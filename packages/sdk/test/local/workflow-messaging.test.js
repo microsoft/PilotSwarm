@@ -351,7 +351,7 @@ async function started(h, parent, yaml, { inputs = { buildId: 7 }, vars = {}, di
     return {
         id, runId, controllerInstanceId,
         startController: () => h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_CONTROLLER_NAME,
-            { v: 2, workflowSessionId: id, runId }, WORKFLOW_CONTROLLER_VERSION),
+            { v: 1, workflowSessionId: id, runId }, WORKFLOW_CONTROLLER_VERSION),
     };
 }
 

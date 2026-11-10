@@ -497,7 +497,7 @@ describe("workflow run control on the real runtime", () => {
             // The parent asked for the cancel, so it is not notified (the controller's rule).
             expect((await h.client.getStatus(workflowNotifyInstanceId(runId))).status).toBe("NotFound");
             // The original dispatch arrives late and starts the instance: begin finds the run ended and admits nothing.
-            await h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_CONTROLLER_NAME, { v: 2, workflowSessionId: id, runId },
+            await h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_CONTROLLER_NAME, { v: 1, workflowSessionId: id, runId },
                 WORKFLOW_CONTROLLER_VERSION);
             expect((await h.client.waitForOrchestration(controllerInstanceId, 30_000)).status).toBe("Completed");
             expect(await h.store.readRun(runId)).toMatchObject({ status: "cancelled", terminalError: { details: { operationId: "cancel-1" } } });
@@ -575,7 +575,7 @@ describe("workflow run control on the real runtime", () => {
                 const held = gate();
                 gates.set(run.runId, { ...held, when });
                 await h.client.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_CONTROLLER_NAME,
-                    { v: 2, workflowSessionId: id, runId: run.runId }, WORKFLOW_CONTROLLER_VERSION);
+                    { v: 1, workflowSessionId: id, runId: run.runId }, WORKFLOW_CONTROLLER_VERSION);
                 await held.reached;
                 return { id, ...run, open: held.open };
             };
@@ -779,7 +779,7 @@ describe("workflow run control on the real runtime", () => {
             const runW = await lost(w);
             await pausedByPerson(w);
             await seedEarlierCancel(w, runW);
-            await h.client.startOrchestrationVersioned(runW.controllerInstanceId, WORKFLOW_CONTROLLER_NAME, { v: 2, workflowSessionId: w, runId: runW.runId },
+            await h.client.startOrchestrationVersioned(runW.controllerInstanceId, WORKFLOW_CONTROLLER_NAME, { v: 1, workflowSessionId: w, runId: runW.runId },
                 WORKFLOW_CONTROLLER_VERSION);
             await endedByBegin(w, runW);
         } finally {
@@ -829,7 +829,7 @@ describe("workflow run control on the real runtime", () => {
             // The original dispatch arrives late. Its begin changes nothing, is interrupted after its transaction, and its
             // retry starts the notifier: the parent is told once, with the stable client message id.
             interruptBeginOf = runId;
-            await h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_CONTROLLER_NAME, { v: 2, workflowSessionId: id, runId },
+            await h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_CONTROLLER_NAME, { v: 1, workflowSessionId: id, runId },
                 WORKFLOW_CONTROLLER_VERSION);
             expect((await h.client.waitForOrchestration(controllerInstanceId, 30_000)).status).toBe("Completed");
             expect(interruptBeginOf).toBeNull();
@@ -967,7 +967,7 @@ describe("workflow run control on the real runtime", () => {
             change = (revision, n) => parent.update(id, { operation: "set_vars", operation_id: `change-${n}`, set: { mode: `m${n}` },
                 expected_kv_revision: revision });
             target = runId;
-            await h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_CONTROLLER_NAME, { v: 2, workflowSessionId: id, runId },
+            await h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_CONTROLLER_NAME, { v: 1, workflowSessionId: id, runId },
                 WORKFLOW_CONTROLLER_VERSION);
             const run = await finished(h, runId);
             expect(run.status, JSON.stringify(run)).toBe("failed");
