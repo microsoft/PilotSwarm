@@ -6,7 +6,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { timeScaleFor, timeScaler } from "../helpers/time-scale.js";
+import { runtimeProviderFromEnv, timeScaleFor, timeScaler, vitestTimeouts } from "../helpers/time-scale.js";
 
 test("the scale per provider, and the override", () => {
     assert.equal(timeScaleFor("postgres", {}), 1);
@@ -23,4 +23,21 @@ test("a scaler rounds up to whole milliseconds and seconds", () => {
     assert.equal(scaled.ms(1_001), 1_502);
     assert.equal(scaled.seconds(3), 5);
     assert.equal(timeScaler(1).ms(250), 250);
+});
+
+test("the provider an environment selects, as the storage config resolves it", () => {
+    assert.equal(runtimeProviderFromEnv({}), "postgres");
+    assert.equal(runtimeProviderFromEnv({ HORIZON_DATABASE_URL: "postgres://h" }), "horizondb");
+    assert.equal(runtimeProviderFromEnv({ HORIZON_DATABASE_URL: "  " }), "postgres");
+    assert.equal(runtimeProviderFromEnv({ PILOTSWARM_RUNTIME_PROVIDER: "horizon" }), "horizondb");
+    assert.equal(runtimeProviderFromEnv({ PILOTSWARM_RUNTIME_PROVIDER: "pg", HORIZON_DATABASE_URL: "postgres://h" }), "postgres");
+    assert.equal(runtimeProviderFromEnv({ PILOTSWARM_RUNTIME_PROVIDER: "horizondb" }), "horizondb");
+});
+
+test("vitest limits grow by the time scale on HorizonDB only", () => {
+    assert.deepEqual(vitestTimeouts("postgres", {}), { testTimeout: 300_000, hookTimeout: 120_000 });
+    assert.deepEqual(vitestTimeouts("postgres", { PS_TEST_TIME_SCALE: "4" }), { testTimeout: 300_000, hookTimeout: 120_000 });
+    assert.deepEqual(vitestTimeouts("horizondb", {}), { testTimeout: 3_000_000, hookTimeout: 1_200_000 });
+    assert.deepEqual(vitestTimeouts("horizondb", { PS_TEST_TIME_SCALE: "2" }), { testTimeout: 600_000, hookTimeout: 240_000 });
+    assert.deepEqual(vitestTimeouts("horizondb", { PS_TEST_TIME_SCALE: "0.5" }), { testTimeout: 150_000, hookTimeout: 60_000 });
 });

@@ -25,3 +25,17 @@ export function timeScaler(scale) {
         seconds: value => Math.ceil(value * scale),
     };
 }
+
+/** The runtime storage provider an environment selects, as storage-config.ts resolves it: PILOTSWARM_RUNTIME_PROVIDER, else HorizonDB when HORIZON_DATABASE_URL is set. */
+export function runtimeProviderFromEnv(env = process.env) {
+    const raw = String(env?.PILOTSWARM_RUNTIME_PROVIDER ?? "").trim();
+    if (raw) return raw === "pg" ? "postgres" : raw === "horizon" ? "horizondb" : raw;
+    return String(env?.HORIZON_DATABASE_URL ?? "").trim() ? "horizondb" : "postgres";
+}
+
+/** Vitest's test and hook time limits: the given limits unchanged on every provider but HorizonDB, where they grow by the time scale. */
+export function vitestTimeouts(provider, env = process.env, base = { testTimeout: 300_000, hookTimeout: 120_000 }) {
+    if (provider !== "horizondb") return { ...base };
+    const scaled = timeScaler(timeScaleFor(provider, env));
+    return { testTimeout: scaled.ms(base.testTimeout), hookTimeout: scaled.ms(base.hookTimeout) };
+}
