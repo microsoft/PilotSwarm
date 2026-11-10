@@ -100,7 +100,7 @@ const shutdownProviders = createTelemetryShutdown(providers, () => shutdownExpor
  */
 export const telemetryEnabled = Boolean(config && (config.metrics === "otlp" || config.traces === "otlp"));
 
-if (telemetryEnabled) {
+if (config && telemetryEnabled) {
     const { diag, DiagLogLevel, metrics, trace } = await import("@opentelemetry/api");
     const { metrics: sdkMetrics, tracing: sdkTracing } = await import("@opentelemetry/sdk-node");
     const { envDetector, resourceFromAttributes } = await import("@opentelemetry/resources");
