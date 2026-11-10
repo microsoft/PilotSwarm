@@ -52,6 +52,8 @@ const GOLDEN_SURFACE = [
     "runtime.manager.loadKnowledgeIndex",
     "runtime.manager.recordRegenerated",
     "runtime.manager.recordSessionEvent",
+    // 1.0.83 (unreleased, changed in place): a Workflow agent chat's failed turn is reported to its Workflow.
+    "runtime.manager.reportWorkflowAgentTurnFailure",
     "runtime.manager.resolveAgentConfig",
     "runtime.manager.runRegenArchive",
     "runtime.manager.runRegenCancelDistiller",
