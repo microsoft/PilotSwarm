@@ -1174,9 +1174,10 @@ describe("J3 robust joins, part 2: the Workflow controller (test-only)", () => {
         const base = await joinBaseOf(getEnv());
         const workers = [];
         try {
-            // A 100 ms backstop: 50 idle waits (the continue-as-new bound) pass in seconds.
+            // Each of the 50 idle passes also needs store activities; the backstop alone is not its duration.
             workers.push(await joinRuntimeOn(base, { wakeBackstopMs: 100 }));
-            const run = await startJoin(base, joinDoc({ items: WAITS(3), join: { first: 2 }, concurrency: 3, timeoutSeconds: testTime.seconds(120) }));
+            const items = Array.from({ length: 3 }, () => ({ seconds: testTime.seconds(600) }));
+            const run = await startJoin(base, joinDoc({ items, join: { first: 2 }, concurrency: 3, timeoutSeconds: testTime.seconds(120) }));
             await persisted(base, [0, 1, 2].map(index => run.at(index, "hold")), "every wait pending");
             const deadline = await deadlineText(base, run.fan);
             expect(await base.store.completeNode(run.at(2, "hold"), elapsedResult({ seconds: 2 }))).toMatchObject({ won: true });
@@ -1196,11 +1197,15 @@ describe("J3 robust joins, part 2: the Workflow controller (test-only)", () => {
             expect(decisionsOf(await eventsOf(base, run.workflowSessionId), run.fan)).toHaveLength(1);
 
             // The time limit crosses in a later execution: decided once, by the deadline set at entry.
-            const timed = await startJoin(base, joinDoc({ items: WAITS(3), join: { first: 2 }, concurrency: 3, timeoutSeconds: testTime.seconds(20) }));
+            // At 41 ms/query the 50 passes did not fit in 200 s. Keep the local 20 s window, with room for
+            // those database round trips remotely; branch waits must outlive the fork's limit.
+            const timed = await startJoin(base, joinDoc({ items, join: { first: 2 }, concurrency: 3,
+                timeoutSeconds: testTime.seconds(testTime.scale > 1 ? 60 : 20) }));
             await persisted(base, [0, 1, 2].map(index => timed.at(index, "hold")), "every wait pending");
             const timedDeadline = await deadlineText(base, timed.fan);
             const timedFan = await base.store.readNodeExecution(timed.fan);
             expect(await base.store.completeNode(timed.at(2, "hold"), elapsedResult({ seconds: 2 }))).toMatchObject({ won: true });
+            await persisted(base, [timed.at(2, "done")], "the timed run's first winner's end", "completed");
             const executionsAtStart = (await executionsOf(base, timed.controller)).length;
             await until(async () => (await executionsOf(base, timed.controller)).length > executionsAtStart || null, "a continue-as-new before the deadline", 60_000);
             expect(Date.now(), "VOID: the continue-as-new came after the deadline; run it again").toBeLessThan(timedFan.deadlineAt.getTime());
@@ -1224,13 +1229,24 @@ describe("J3 robust joins, part 2: the Workflow controller (test-only)", () => {
         let dropped = 0;
         const drop = () => async () => { dropped += 1; return { woke: false }; };
         const workers = [];
+        const started = gate();
+        const winnersMayFinish = gate();
+        let run;
         try {
-            workers.push(await joinRuntimeOn(base, { wrap: { [R.wake]: drop, "workflow.wake": drop } }));
-            // CI run 114 (HorizonDB): the join came before the third branch's wait was admitted. The first two scripts' lengths
-            // are scaled, so the third branch is in its wait by then.
-            const run = await startJoin(base, joinDoc({ items: [{ ms: testTime.ms(200) }, { ms: testTime.ms(900) }, { seconds: 600 }], join: { first: 2 },
-                concurrency: 3, timeoutSeconds: 120 }));
+            workers.push(await joinRuntimeOn(base, { wrap: {
+                [R.wake]: drop,
+                [R.recordEffectResult]: fn => async (ctx, input) => {
+                    await started.wait();
+                    if (input.nodeExecutionId !== run.at(2, "work")) await winnersMayFinish.wait();
+                    return fn(ctx, input);
+                },
+            } }));
+            // A barrier, not a script duration, keeps the join behind the losing branch's admission.
+            run = await startJoin(base, joinDoc({ items: [{ ms: 200 }, { ms: 900 }, { seconds: 600 }], join: { first: 2 },
+                concurrency: 3, timeoutSeconds: testTime.seconds(120) }));
+            started.open();
             await persisted(base, [run.fan], "the parallel state pending");
+            await persisted(base, [run.at(2, "hold")], "the losing branch's wait pending");
             const deadline = await deadlineText(base, run.fan);
             // Stray notices on the controller's queue: duplicate wakes, wakes of no state and of another run, and others.
             for (let n = 0; n < 3; n += 1) {
@@ -1239,6 +1255,7 @@ describe("J3 robust joins, part 2: the Workflow controller (test-only)", () => {
                     await base.client.enqueueEvent(run.controller, "messages", JSON.stringify(notice));
                 }
             }
+            winnersMayFinish.open();
             const ended = await endOf(base, run.runId);
             expect(dropped, "precondition: the scripts' wakes were sent and lost").toBeGreaterThan(0);
             const works = [0, 1].map(index => run.at(index, "work"));
@@ -1252,6 +1269,8 @@ describe("J3 robust joins, part 2: the Workflow controller (test-only)", () => {
             expect(await base.store.readNodeExecution(run.at(2, "hold"))).toMatchObject({ outcome: "cancelled", winner: "join" });
             expect(decisionsOf(await eventsOf(base, run.workflowSessionId), run.fan)).toHaveLength(1);
         } finally {
+            started.open();
+            winnersMayFinish.open();
             for (const worker of workers) await worker.stop();
             await base.close();
         }
@@ -1376,14 +1395,20 @@ describe("J3 robust joins, part 4: reports and payload sizes in the store", () =
             expect(Number(stored.bytes)).toBeLessThan(256 * 1024);
 
             // A timed-out report over its limit: truncated too, with each branch's cause.
-            const timed = await storedRun(h, joinDoc({ items: WAITS(4), join: { first: 4 }, timeoutSeconds: 3 }));
-            await timed.enterFan(WAITS(4), 3);
+            const timeoutSeconds = testTime.seconds(3);
+            const timed = await storedRun(h, joinDoc({ items: WAITS(4), join: { first: 4 }, timeoutSeconds }));
+            await timed.enterFan(WAITS(4), timeoutSeconds);
             for (let index = 0; index < 4; index += 1) await timed.hold(index);
             for (let index = 0; index < 3; index += 1) {
                 await timed.succeed(index);
-                await confirmWith(h, timed, index, bulky(`jk25-timed-${index}`, 100_000));
+                expect(await confirmWith(h, timed, index, bulky(`jk25-timed-${index}`, 100_000))).toMatchObject({ won: true });
             }
             const { deadlineAt } = await h.store.readNodeExecution(timed.fan);
+            for (const index of [0, 1, 2]) {
+                const done = await h.store.readNodeExecution(timed.at(index, "done"));
+                expect(done).toMatchObject({ outcome: "succeeded", state: "completed" });
+                expect(done.completedAt.getTime(), `VOID: branch ${index} finished after the time limit`).toBeLessThan(deadlineAt.getTime());
+            }
             await until(async () => Date.now() > deadlineAt.getTime() + 300 || null, "the time limit to pass", 10_000);
             const elapsed = await h.store.elapseParallelNode(timed.fan);
             expect(elapsed).toMatchObject({ result: "elapsed", node: { outcome: "timed_out" } });
