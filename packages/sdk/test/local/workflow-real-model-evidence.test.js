@@ -30,7 +30,7 @@ function standIn({ failNodes = false, fail = null } = {}) {
                 { nodeId: "hold", ordinal: 1, nodeType: "wait", state: "pending", outcome: null, resultKind: null, winner: null, error: null },
             ] : [];
         },
-        session: {
+        sessionDefinitions: {
             listDefinitions: async () => {
                 if (fail?.definitions) throw new Error(fail.definitions);
                 return [{ definitionId: "def-1", name: "counter" }];
