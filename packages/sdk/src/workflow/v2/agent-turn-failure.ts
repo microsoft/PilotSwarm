@@ -25,7 +25,6 @@
  */
 import type { ActivityContext } from "duroxide";
 import { isTransientCmsError } from "../../cms-retry.js";
-import { WORKFLOW_REQUEST_CAPABILITY } from "../../activity-routing.js";
 import { WORKFLOW_COMMAND_QUEUE } from "../orchestration.js";
 import { workflowAgentChatContinues } from "./agent-ids.js";
 import { workflowErrorWords } from "./error-words.js";
@@ -33,11 +32,11 @@ import { canonicalJson } from "./json.js";
 import { redactErrorThenClip, redactThenClip } from "./redact.js";
 import { workflowVisitOfPromptId, type NodeResultInput, type WorkflowStore } from "./store.js";
 
-/** The activity session orchestration 1.0.83 schedules (with the workflow-request tag) for a chat's failed turn. */
+/**
+ * The activity session orchestration 1.0.83 schedules for a chat's failed turn. The session proxy routes it with the
+ * workflow-request tag (routeWorkflowRequestActivity), which every worker that runs 1.0.83 declares (milestone-worker.ts).
+ */
 export const WORKFLOW_AGENT_TURN_FAILURE_ACTIVITY = "reportWorkflowAgentTurnFailure";
-
-/** The tag the activity is routed with: every worker that runs 1.0.83 declares it (milestone-worker.ts). */
-export const WORKFLOW_AGENT_TURN_FAILURE_TAG = WORKFLOW_REQUEST_CAPABILITY;
 
 /** The in-activity waits before each retry of a transient store error. */
 export const WORKFLOW_AGENT_TURN_FAILURE_RETRY_DELAYS_MS: readonly number[] = [1_000, 5_000, 15_000];
