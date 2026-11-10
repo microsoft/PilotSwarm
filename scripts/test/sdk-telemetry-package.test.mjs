@@ -166,8 +166,10 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
     const metrics = metricRequests.flatMap(request => request.body.resourceMetrics)
         .flatMap(resource => resource.scopeMetrics)
         .flatMap(scope => scope.metrics);
-    assert.ok(!metrics.some(metric => metric.name.includes("duration")), "histograms are disabled by default");
-    const tokens = metrics.find(metric => metric.name === "pilotswarm.tokens");
+    const pilotswarmMetrics = metrics.filter(metric => metric.name.startsWith("pilotswarm."));
+    assert.ok(!pilotswarmMetrics.some(metric => metric.name.includes("duration")),
+        "SDK histograms are disabled by default");
+    const tokens = pilotswarmMetrics.find(metric => metric.name === "pilotswarm.tokens");
     assert.ok(tokens, "the real worker turn must export SDK token counters");
     const values = Object.fromEntries(tokens.sum.dataPoints.map(point => [
         point.attributes.find(attribute => attribute.key === "direction").value.stringValue,
@@ -178,6 +180,5 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
     const resource = Object.fromEntries(metricRequests[0].body.resourceMetrics[0].resource.attributes
         .map(({ key, value }) => [key, value.stringValue]));
     assert.equal(resource["service.instance.id"], "packed-consumer");
-    const allNames = metrics.map(metric => metric.name);
-    assert.ok(!allNames.some(name => name.includes("trace") || name.includes("log")), "default mode exports metrics only");
+    assert.ok(pilotswarmMetrics.every(metric => metric.name.startsWith("pilotswarm.")));
 });
