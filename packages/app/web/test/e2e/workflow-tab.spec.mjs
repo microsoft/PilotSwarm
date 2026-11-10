@@ -5084,6 +5084,62 @@ test("Run again: Start another… asks the chat once to start the same definitio
 // Workflow tab stays, through several polls.
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "stays on the Workflow tab" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
+test("fresh canvas draws and presentations replace Workflow, but data ticks and profile reads do not", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", collectPageErrors(errors));
+    const sockets = [];
+    let subscribed = false;
+    await routeApi(page, {
+        onSocket: socket => {
+            sockets.push(socket);
+            socket.onMessage(raw => {
+                const message = JSON.parse(raw);
+                if (message.type === "subscribeSession" && message.sessionId === AGENT_ID) subscribed = true;
+            });
+        },
+    });
+    const html = `<!doctype html><html><body><p id="canvas">Canvas in front</p><p id="tick">waiting</p><script>
+        addEventListener("message", e => {
+            if (e.data?.type === "canvas-data") document.getElementById("tick").textContent = String(e.data.data.x);
+        });
+    </script></body></html>`;
+    await page.route("**/api/v1/**", async route => {
+        const url = new URL(route.request().url());
+        if (url.pathname.includes("/artifacts/") && url.pathname.includes("canvas.html")) {
+            return route.fulfill({ contentType: "text/html", body: html });
+        }
+        return route.fallback();
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    await expect(workflowTab(page)).toBeVisible();
+    await expect.poll(() => subscribed).toBe(true);
+    const send = (seq, eventType, data) => {
+        for (const socket of sockets) socket.send(JSON.stringify({ type: "sessionEvent", sessionId: AGENT_ID,
+            event: { sessionId: AGENT_ID, seq, eventType, data, createdAt: new Date().toISOString() } }));
+    };
+    const canvas = page.locator(".ps-side-pane-layer:not(.is-parked) iframe.ps-html-preview-frame:not(.is-staging)");
+    send(100, "session.canvas_updated", { slot: 1, rev: 1, sizeBytes: html.length });
+    await expect(canvas).toBeVisible();
+    await expect(page.locator(".ps-wf-tab").filter({ visible: true })).toHaveCount(0);
+
+    await showWorkflowPane(page);
+    await expect(workflowTab(page)).toBeVisible();
+    send(101, "session.canvas_data", { slot: 1, dataRev: 1, payload: { x: 1 } });
+    send(102, "session.canvas_updated", { slot: 1, rev: 1, sizeBytes: html.length });
+    send(103, "session.canvas_data", { slot: 1, dataRev: 2, payload: { x: 2 } });
+    const parked = page.getByRole("region", { name: "Session canvas" }).locator(".ps-side-pane-layer.is-parked iframe");
+    await expect(parked).toHaveCount(1);
+    await expect(parked.contentFrame().locator("#tick")).toHaveText("2");
+    await expect(workflowTab(page)).toBeVisible();
+
+    send(104, "session.canvas_presented", { slot: 1 });
+    await expect(canvas).toBeVisible();
+    await expect(canvas.contentFrame().locator("#canvas")).toHaveText("Canvas in front");
+    await expect(page.locator(".ps-wf-tab").filter({ visible: true })).toHaveCount(0);
+    expect(errors).toEqual([]);
+});
+
 test("the right block stays on the Workflow tab through profile reads, and the profile keeps it", async ({ page }) => {
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 900 });

@@ -4,7 +4,7 @@
  * Workspace tab was kept), so every profile read that changed anything else (each 5 s poll after a save) turned the
  * right block back to the canvas. Now:
  * - the profile keeps the side tab as it is: canvas, Workspace or Workflow;
- * - while a Workflow row is selected and its Workflow tab shows, a profile read never turns the block to the canvas.
+ * - after a local selection or an agent pop, a profile read never replaces the pane in front.
  *
  * Run: node --test test/workflow-simplified-side-tab.test.mjs
  */
@@ -64,10 +64,10 @@ test("once this tab chose the Workflow tab, a profile read keeps it whatever row
     shown = appReducer(shown, { type: "ui/sidePaneTab", tab: WORKFLOW_SIDE_TAB });
     shown = apply(shown, { desktopPanes: { canvasOpen: true, diagnosticsOpen: false, zen: false, sideTab: "canvas" } });
     assert.equal(shown.ui.sidePaneTab, WORKFLOW_SIDE_TAB);
-    // The canvas and Workspace tabs follow another device's saved choice as before (desktop-panes.test.mjs).
+    // Local Canvas and Workspace choices are protected from profile polling too.
     shown = appReducer(shown, { type: "ui/sidePaneTab", tab: "canvas" });
     shown = apply(shown, { desktopPanes: { canvasOpen: true, diagnosticsOpen: false, zen: false, sideTab: "workspace" } });
-    assert.equal(shown.ui.sidePaneTab, "workspace");
+    assert.equal(shown.ui.sidePaneTab, "canvas");
 });
 
 test("the portal saves and reads the side tab as it is: no profile path maps the Workflow tab to the canvas", () => {

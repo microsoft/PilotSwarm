@@ -1329,11 +1329,9 @@ function baseReducer(state, action) {
                 state.sessions.navigationIntent
                 && state.sessions.navigationIntent.status !== "failed",
             );
-            // Workflow Simplified (L1, S4; review UI-7): once this tab chose the Workflow tab (the person's choice, or a
-            // Workflow opened), a profile read never turns it away (owner feedback 2026-11-06, "the canvas pops back up"),
-            // whatever row is selected: a Workflow's, its parent's, or none while a definition is shown. Before this tab chose
-            // it (hydration), and for the canvas and Workspace tabs, a profile's side tab applies as before.
-            const keepSideTab = state.ui.sidePaneTabChosen === true && state.ui.sidePaneTab === WORKFLOW_SIDE_TAB;
+            // Hydrate the saved tab once. After a local choice or an agent's
+            // pop, profile polling must not replace the pane in front.
+            const keepSideTab = state.ui.sidePaneTabChosen === true;
             // Saved selection is a boot preference. Once this tab navigates,
             // a slow profile read (or another device) must not navigate it back.
             const hasActive = Object.prototype.hasOwnProperty.call(settings, "activeSessionId")
@@ -4380,7 +4378,8 @@ function baseReducer(state, action) {
                 // Opens the canvas column ON THE SLOT THAT DREW; leaves
                 // Diagnostics exactly as the user left it. An agent drawing
                 // must not close their panels.
-                ui: { ...state.ui, rightPaneMode: "canvas", canvasOpen: true, canvasSlot: slot },
+                ui: { ...state.ui, rightPaneMode: "canvas", canvasOpen: true, canvasSlot: slot,
+                    sidePaneTab: "canvas", sidePaneTabChosen: true },
                 canvas: { ...state.canvas, flipSeq: (state.canvas.flipSeq || 0) + 1 },
             };
         }

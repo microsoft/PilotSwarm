@@ -54,6 +54,29 @@ test("B (one rule with d, review F1): in the chat, its first definition opens th
     assert.equal(ui(reload).canvasOpen, true);
 });
 
+test("the first Workflow auto-open replaces Canvas; progress, attention and profile reads do not pop it back", () => {
+    const store = storeWith();
+    store.dispatch({ type: "profileSettings/apply", settings: {} });
+    store.dispatch({ type: "canvas/flip", sessionId: OWNER, slot: 1 });
+    assert.equal(ui(store).sidePaneTab, "canvas");
+    store.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER,
+        patch: loaded([definition("watch", [{ createdAt: iso(NOW) }])]) });
+    assert.equal(ui(store).sidePaneTab, "workflow");
+
+    store.dispatch({ type: "canvas/flip", sessionId: OWNER, slot: 1 });
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf-1", view: {
+        readModel: { workflowId: "wf-1", run: { runId: "r1", status: "running" }, executions: [] },
+    } });
+    store.dispatch({ type: "ui/chatDefinitions", ownerId: OWNER,
+        patch: loaded([definition("watch", [{ createdAt: iso(NOW + 1_000) }])]) });
+    assert.equal(ui(store).sidePaneTab, "canvas", "later Workflow updates do not replace Canvas");
+    store.dispatch({ type: "ui/sidePaneTab", tab: "workflow" });
+    store.dispatch({ type: "profileSettings/apply", settings: {
+        themeId: "terminal-green", desktopPanes: { canvasOpen: true, sideTab: "canvas" },
+    } });
+    assert.equal(ui(store).sidePaneTab, "workflow", "UI-7: a profile read never brings Canvas back");
+});
+
 const VIEWED = NOW - 60_000;
 const row = (id, status, { createdAt = NOW - 3_600_000, updatedAt = NOW - 3_000_000 } = {}) => ({ sessionId: id, sessionKind: "workflow",
     title: "Workflow: watch", status, parentSessionId: OWNER, createdAt: iso(createdAt), updatedAt: iso(updatedAt) });

@@ -6489,7 +6489,7 @@ export class PilotSwarmUiController {
      * flip the right column only when it is unmistakably appropriate.
      *
      * Flip guards (the artifact-presented set, plus the user's own choices):
-     * active session only, fresh only, not already in canvas mode, and never
+     * active session only, fresh new draw only, and never
      * after the user has manually toggled away this session — their explicit
      * choice downgrades flips to the unseen-changes badge.
      */
@@ -6498,6 +6498,13 @@ export class PilotSwarmUiController {
         if (!sessionId || !Number.isFinite(rev) || rev <= 0) return false;
         const rawSlot = Number(event?.data?.slot);
         const slot = Number.isInteger(rawSlot) && rawSlot >= 1 && rawSlot <= 5 ? rawSlot : 1;
+        const key = canvasPrefKey(sessionId, slot);
+        const previousRev = this.getState().canvas.bySessionId[key]?.latestRev || 0;
+        // A sessions-list seed can learn this revision before its event.
+        // Deduplicate events separately so that seed does not swallow a pop.
+        if (!this.canvasDrawEventRevisions) this.canvasDrawEventRevisions = new Map();
+        const previousEventRev = this.canvasDrawEventRevisions.get(key) || 0;
+        this.canvasDrawEventRevisions.set(key, Math.max(rev, previousEventRev));
         this.dispatch({
             type: "canvas/updated",
             sessionId,
@@ -6510,6 +6517,7 @@ export class PilotSwarmUiController {
         });
 
         const state = this.getState();
+        if (rev < previousRev || rev <= previousEventRev) return true;
         if (sessionId !== state.sessions.activeSessionId) return true;
         // The opt-out is PER SLOT: leaving one canvas by hand must not
         // silence a different canvas's first draw.
@@ -6521,7 +6529,8 @@ export class PilotSwarmUiController {
         // canvas/flip rather than a plain mode change: it ticks flipSeq even
         // when the mode is already "canvas", because a phone can be off its
         // canvas tab while the mode state still says canvas — the tick is
-        // what brings the tab back. On desktop the repeat dispatch is a no-op.
+        // what brings the tab back. On desktop it also replaces the Workflow
+        // tab; only a new draw or an explicit presentation may do that.
         this.dispatch({ type: "canvas/flip", sessionId, slot });
         return true;
     }
