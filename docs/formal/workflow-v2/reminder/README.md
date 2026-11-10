@@ -69,4 +69,4 @@ each case's `tlc.log`. Exit code 0 means no violation in the bounded search,
 12 a safety violation, 13 a liveness violation, 124 a timeout (PARTIAL, never
 PASS); other codes are setup or model errors. Every settings file states
 `CHECK_DEADLOCK TRUE`. A TLC pass is a bounded check, not a proof.
-`gen-cases.py` regenerates the settings files, `cases.tsv` and `cases.json`.
+`gen-cases.py` regenerates `cases.tsv`, `cases.json` and `tlc-templates.json`. The settings files (`.cfg`) are generated from `cases.json` and `tlc-templates.json` (`../../tlc_cases.py`) and are not committed.

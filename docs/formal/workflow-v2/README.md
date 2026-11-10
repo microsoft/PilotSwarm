@@ -493,8 +493,8 @@ PASS); other codes are setup or model errors.
 Every settings file states `CHECK_DEADLOCK FALSE`: the cases were written for
 TLC's `-deadlock` option, which turns deadlock checking off, so a finished run
 is a final state. Lock order and freedom from deadlock are not checked.
-`SHA256SUMS` pins every `.tla`, `.cfg`, `cases.*`, the runners and this
-README. Comments of some modules in the sub-folders were edited for the public
+`SHA256SUMS` pins every `.tla`, `cases.*`, `tlc-templates.json`, the runners and this
+README; the settings files are generated from the case tables (`../tlc_cases.py`) and not committed. Comments of some modules in the sub-folders were edited for the public
 repository (internal references removed); no definition changed.
 
 ## Regressions
@@ -721,7 +721,7 @@ failed with KV_CHANGING" runs that budget on the real runtime.
 | `adm-df-paused-refusal-exits` | the controller ends on a paused refusal | `Inv_ExitEndedRun` | safety violation |
 | `adm-df-refusal-counts-ordinal` | a refusal counts the ordinal | `Inv_OrdinalCountsAdmissions` | safety violation |
 | `adm-df-begin-keeps-admitted` | begin leaves `paused_from` admitted | `Inv_BegunStaysBegun` | safety violation |
-| `adm-df-trigger-0090` | the 0090 deletion trigger | `Inv_DeletedNotActive` | safety violation |
+| `adm-df-trigger-0090` (retired) | the 0090 deletion trigger | `Inv_DeletedNotActive` | safety violation; retired: the migrations were collapsed into one 0089 with the final trigger |
 | `adm-df-no-paused-backstop` | no backstop timer in the paused wait, lost wakes | `Live_Terminates` | liveness violation |
 | `adm-hd-liveness-wake-kept` | no backstop timer, no lost wake (positive control) | `Live_Terminates` | PASS |
 
@@ -858,10 +858,10 @@ lost notice: a cancelled run is not active, so recover does not act on it
 | `lc-lim-outcome-needs-repeat` | as `lc-hd-notify-faults-qualified`, no repeat | `Live_OtherOutcomeVisible` | liveness violation: the stated limit (A5) |
 | `lc-lim-other-told-needs-repeat` | this commit, A6, no repeat | `Live_OtherTold` | liveness violation: the stated limit (a notice lost after the commit stays lost when no controller starts and the requester does not repeat) |
 | `lc-rv-183bb0b0` | the cancel is queued and dropped | `Inv_AcceptedCancelWins` | safety violation (C1) |
-| `lc-rv-369beaf0` | an earlier build's receipt and a late start | `Inv_AcceptedCancelWins` | safety violation |
-| `lc-rv-31dc9888` | begin's repair records no requester; the parent repeats | `Inv_NoSelfNotice` | safety violation (C2) |
+| `lc-rv-369beaf0` (retired) | an earlier build's receipt and a late start | `Inv_AcceptedCancelWins` | safety violation; retired: no earlier build's receipt can exist (Workflow V2 was deployed nowhere) |
+| `lc-rv-31dc9888` (retired) | begin's repair records no requester; the parent repeats | `Inv_NoSelfNotice` | safety violation (C2); retired as `lc-rv-369beaf0` |
 | `lc-rv-31dc9888-live-other-started` | 31dc9888, no repeat | `Live_OtherToldOnceStarted` | liveness violation (C2) |
-| `lc-df-m1-broken` | this commit with an earlier build's receipt by another requester | `Inv_AttributionTruthful` | safety violation |
+| `lc-df-m1-broken` (retired) | this commit with an earlier build's receipt by another requester | `Inv_AttributionTruthful` | safety violation; retired as `lc-rv-369beaf0` |
 | `wit-lc-skip-completes` | as `lc-hd-notify-faults-qualified` without `NotifyFaults` | `Wit_SkipCompletes` | safety violation (witness) |
 | `wit-lc-error-repeated` | as `lc-hd-notify-faults-qualified` without `Interrupts` | `Wit_ErrorRepeated` | safety violation (witness) |
 | `wit-lc-fallback-tells` | as `lc-hd-notify-faults-qualified` | `Wit_FallbackTells` | safety violation (witness) |

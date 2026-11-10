@@ -109,4 +109,5 @@ each case's `tlc.log`. Exit code 0 means no violation in the bounded search,
 PASS); other codes are setup or model errors. Every settings file states
 `CHECK_DEADLOCK TRUE`: deadlock checking was on in all recorded runs. Comments
 of `WorkflowV2RequestSpecB.tla` were edited to remove an internal reference; no
-definition changed. `SHA256SUMS` pins every file named above.
+definition changed. `SHA256SUMS` pins every file named above. The settings files are generated from `cases.json` and
+`tlc-templates.json` (`../../../tlc_cases.py`) and are not committed.

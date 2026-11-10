@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""Cases of WfContinuedChat (the continued agent session lifecycle). Usage: gen-cases.py <bound commit>"""
+"""Cases of WfContinuedChat (the continued agent session lifecycle): writes cases.tsv, cases.json and tlc-templates.json.
+Usage: gen-cases.py <bound commit>. The .cfg files are generated from these by run-tlc.sh (../../tlc_cases.py)."""
 import json, os, sys
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
+import tlc_cases   # docs/formal/tlc_cases.py: the settings (.cfg) are generated from the tables, not committed
 H = sys.argv[1] if len(sys.argv) > 1 else "a1772a01"
 def b(x): return "TRUE" if x else "FALSE"
 def q(x): return f'"{x}"'
@@ -248,10 +252,12 @@ def cfg(cid, spec, consts, invs, props, dl, note, exp):
     if props: l += ["PROPERTIES"] + [f"    {p}" for p in props]
     l.append(f"CHECK_DEADLOCK {'TRUE' if dl else 'FALSE'}")
     return "\n".join(l) + "\n"
-tsv, out = [], []
+tsv, out, texts = [], [], []
 for cid, mode, meaning, spec, consts, invs, props, exp, dl, note in CASES:
-    open(f"{cid}.cfg", "w").write(cfg(cid, spec, consts, invs, props, dl, note, exp))
+    texts.append(cfg(cid, spec, consts, invs, props, dl, note, exp))
     tsv.append(f"{cid}\t{cid}.cfg\t{M}")
     out.append(dict(id=cid, module=M, config=f"{cid}.cfg", mode=mode, meaning=meaning, spec=spec, expected=exp,
                     invariants=invs, properties=props, deadlock=dl, note=note))
-open("cases.tsv", "w").write("\n".join(tsv) + "\n"); json.dump(out, open("cases.json", "w"), indent=1); print(len(tsv), "cases")
+templates = tlc_cases.attach(out, texts)
+open("cases.tsv", "w").write("\n".join(tsv) + "\n"); json.dump(out, open("cases.json", "w"), indent=1)
+tlc_cases.dump_json("tlc-templates.json", templates, 2); print(len(tsv), "cases")

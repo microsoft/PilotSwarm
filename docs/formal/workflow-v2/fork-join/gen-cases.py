@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""Generates every TLC settings file, cases.tsv and cases.json for the fork + join models (no TLC is run here)."""
+"""Writes cases.tsv, cases.json and tlc-templates.json for the fork + join models (no TLC is run here). The .cfg
+files are generated from these by run-tlc.sh (../../tlc_cases.py)."""
 import json, os
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
+import tlc_cases   # docs/formal/tlc_cases.py: the settings (.cfg) are generated from the tables, not committed
 
 BATCH = "fj3"
 
@@ -238,15 +242,15 @@ def cfg(cid, spec, consts, invs, props, deadlock, note, expected):
     return "\n".join(lines) + "\n"
 
 def main():
-    rows, meta = [], []
+    rows, meta, texts = [], [], []
     for cid, mod, group, spec, consts, invs, props, expected, deadlock, note in CASES:
         name = f"{cid}.cfg"
-        with open(name, "w") as f:
-            f.write(cfg(cid, spec, consts, invs, props, deadlock, note, expected))
+        texts.append(cfg(cid, spec, consts, invs, props, deadlock, note, expected))
         rows.append(f"{cid}\t{name}\t{mod}")
         meta.append(dict(id=cid, module=mod, group=group, spec=spec, config=name, invariants=invs, properties=props,
                          expected=expected, deadlock=deadlock, note=note, batch=BATCH, head="design"))
     assert len({r.split()[0] for r in rows}) == len(rows)
+    tlc_cases.dump_json("tlc-templates.json", tlc_cases.attach(meta, texts), 2)
     with open("cases.tsv", "w") as f:
         f.write("\n".join(rows) + "\n")
     with open("cases.json", "w") as f:

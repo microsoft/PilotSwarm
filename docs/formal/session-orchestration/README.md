@@ -297,4 +297,5 @@ state. The so2 and so3 cases that expect PASS or a witness state
 `CHECK_DEADLOCK TRUE`: their modules have an explicit final stutter, so a
 deadlock there is a model error. The recorded run above used one worker; the
 runner uses two, which can change the state counts of cases that stop at a
-violation but not the verdicts. `SHA256SUMS` pins every file named above.
+violation but not the verdicts. `SHA256SUMS` pins every file named above. The settings files are generated from `cases.json` and
+`tlc-templates.json` (`../tlc_cases.py`) and are not committed.

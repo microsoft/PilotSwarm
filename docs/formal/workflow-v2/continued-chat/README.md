@@ -32,11 +32,13 @@ two (the mark, the command), so that other steps can run between them; `CheckAll
 `AllowSpawnCrash`, `MarkFail`, `Withdraw`, `Outbox`, `Carry`, `CarryDelete`, `TurnGuard`, `MarkCreating` and `CarryNotFound` describe the DRR-1 and DRR-2 code and fixes (see the module
 header). `Inv_OneLive` does not count an agent session whose end command is on its way.
 `RecheckSeesEnding` says whether the spawn's check sees an agent session whose end was asked while one of its turns
-runs (the code: no, its orchestration reads Running until the turn ends). The settings files, `cases.tsv` and
-`cases.json` (89 cases) are written by
+runs (the code: no, its orchestration reads Running until the turn ends). `cases.tsv`, `cases.json` and
+`tlc-templates.json` (89 cases) are written by
 
     G1B_HEAD=7024ef6f DRR1_HEAD=69d07073 DRR2_HEAD=5451a22e DRR1B_HEAD=7bd79a46 \
       DRR1C_HEAD=9b2ca643 DR2FIX_HEAD=781441bf python3 gen-cases.py 9a8d0f66
+
+The settings files (`.cfg`) are generated from `cases.json` and `tlc-templates.json` (`../../tlc_cases.py`) and are not committed.
 
 ## Results
 

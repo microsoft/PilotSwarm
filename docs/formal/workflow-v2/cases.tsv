@@ -4,7 +4,6 @@ adm-df-no-pause-guard	adm-df-no-pause-guard.cfg	WorkflowV2Admission
 adm-df-no-paused-backstop	adm-df-no-paused-backstop.cfg	WorkflowV2Admission
 adm-df-paused-refusal-exits	adm-df-paused-refusal-exits.cfg	WorkflowV2Admission
 adm-df-refusal-counts-ordinal	adm-df-refusal-counts-ordinal.cfg	WorkflowV2Admission
-adm-df-trigger-0090	adm-df-trigger-0090.cfg	WorkflowV2Admission
 adm-hd-liveness-wake-kept	adm-hd-liveness-wake-kept.cfg	WorkflowV2Admission
 adm-hd-liveness	adm-hd-liveness.cfg	WorkflowV2Admission
 adm-hd-safety	adm-hd-safety.cfg	WorkflowV2Admission
@@ -42,7 +41,6 @@ hd-liveness-faults	hd-liveness-faults.cfg	WorkflowV2Run
 hd-liveness	hd-liveness.cfg	WorkflowV2Run
 hd-safety-loops2	hd-safety-loops2.cfg	WorkflowV2Run
 hd-safety	hd-safety.cfg	WorkflowV2Run
-lc-df-m1-broken	lc-df-m1-broken.cfg	WorkflowV2Lifecycle
 lc-hd-live-other-started	lc-hd-live-other-started.cfg	WorkflowV2Lifecycle
 lc-hd-live-other	lc-hd-live-other.cfg	WorkflowV2Lifecycle
 lc-hd-live-system-started	lc-hd-live-system-started.cfg	WorkflowV2Lifecycle
@@ -57,8 +55,6 @@ lc-lim-other-told-needs-repeat	lc-lim-other-told-needs-repeat.cfg	WorkflowV2Life
 lc-lim-outcome-needs-repeat	lc-lim-outcome-needs-repeat.cfg	WorkflowV2Lifecycle
 lc-rv-183bb0b0	lc-rv-183bb0b0.cfg	WorkflowV2Lifecycle
 lc-rv-31dc9888-live-other-started	lc-rv-31dc9888-live-other-started.cfg	WorkflowV2Lifecycle
-lc-rv-31dc9888	lc-rv-31dc9888.cfg	WorkflowV2Lifecycle
-lc-rv-369beaf0	lc-rv-369beaf0.cfg	WorkflowV2Lifecycle
 rcv-df-latest-first	rcv-df-latest-first.cfg	WorkflowV2Receive
 rcv-df-no-cas	rcv-df-no-cas.cfg	WorkflowV2Receive
 rcv-df-no-consume	rcv-df-no-consume.cfg	WorkflowV2Receive

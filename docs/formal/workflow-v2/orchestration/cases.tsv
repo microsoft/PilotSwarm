@@ -173,8 +173,6 @@ graph.pause-pending-root	graph.pause-pending-root.cfg	WfGraph
 cmp.graph-pause-on-collect	cmp.graph-pause-on-collect.cfg	WfGraph
 graph.srt1-par	graph.srt1-par.cfg	WfGraph
 graph.srt1-loop	graph.srt1-loop.cfg	WfGraph
-graph.srt1b-linear	graph.srt1b-linear.cfg	WfGraph
-graph.srt1b-loop-residual	graph.srt1b-loop-residual.cfg	WfGraph
 cmp.graph-limit-paused-8d5	cmp.graph-limit-paused-8d5.cfg	WfGraph
 graph.dx2-linear	graph.dx2-linear.cfg	WfGraph
 graph.dx2-loop	graph.dx2-loop.cfg	WfGraph

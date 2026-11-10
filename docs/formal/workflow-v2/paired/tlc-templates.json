@@ -1,0 +1,122 @@
+{
+  "MCWorkflowV2RequestCode8021Clock": {
+    "indent": 2,
+    "constants": [
+      "Deadline",
+      "MaxTime",
+      "Ops",
+      "Vals",
+      "MaxBindings",
+      "Caller"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "MCWorkflowV2RequestSpec57Late": {
+    "indent": 2,
+    "constants": [
+      "Deadline",
+      "MaxTime",
+      "Ops",
+      "Vals",
+      "MaxBindings",
+      "MaxAttempts",
+      "Workers",
+      "AllowPurge",
+      "ClockMode",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "MCWorkflowV2RequestSpecView": {
+    "indent": 2,
+    "constants": [
+      "Deadline",
+      "MaxTime",
+      "Ops",
+      "Vals",
+      "MaxBindings",
+      "MaxAttempts",
+      "Workers",
+      "AllowPurge",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WorkflowV2RequestCode": {
+    "indent": 2,
+    "constants": [
+      "Deadline",
+      "MaxTime",
+      "Ops",
+      "Vals",
+      "MaxBindings",
+      "Caller"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WorkflowV2RequestCode57": {
+    "indent": 2,
+    "constants": [
+      "Deadline",
+      "MaxTime",
+      "Ops",
+      "Vals",
+      "MaxBindings",
+      "Caller",
+      "ClockMode"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WorkflowV2RequestCodeAuth": {
+    "indent": 2,
+    "constants": [
+      "Deadline",
+      "MaxTime",
+      "Ops",
+      "Vals",
+      "MaxBindings",
+      "Caller",
+      "AuthEnv"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WorkflowV2RequestSpec": {
+    "indent": 2,
+    "constants": [
+      "Deadline",
+      "MaxTime",
+      "Ops",
+      "Vals",
+      "MaxBindings",
+      "MaxAttempts",
+      "Workers",
+      "AllowPurge",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WorkflowV2RequestSpec57": {
+    "indent": 2,
+    "constants": [
+      "Deadline",
+      "MaxTime",
+      "Ops",
+      "Vals",
+      "MaxBindings",
+      "MaxAttempts",
+      "Workers",
+      "AllowPurge",
+      "ClockMode",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}

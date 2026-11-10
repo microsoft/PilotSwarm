@@ -278,4 +278,5 @@ PASS); other codes are setup or model errors. Every settings file states
 `CHECK_DEADLOCK TRUE`: deadlock checking was on in all recorded runs. Some
 module comments name notes that are not in this folder (they were review
 notes); comments of a few modules were edited to remove internal references,
-and no definition changed. `SHA256SUMS` pins every file named above.
+and no definition changed. `SHA256SUMS` pins every file named above. The settings files are generated from `cases.json` and
+`tlc-templates.json` (`../../../tlc_cases.py`) and are not committed.

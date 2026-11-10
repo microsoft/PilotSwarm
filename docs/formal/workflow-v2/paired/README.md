@@ -186,6 +186,7 @@ PASS); other codes are setup or model errors. Every settings file states
 `CHECK_DEADLOCK TRUE`: deadlock checking was on in all recorded runs of this
 folder. A bounded pass is not a proof.
 
-`SHA256SUMS` pins every `.tla`, `.cfg`, `cases.*`, runner and this README.
+`SHA256SUMS` pins every `.tla`, `cases.*`, `tlc-templates.json`, runner and this README; the settings files
+are generated from the case tables (`../../tlc_cases.py`) and not committed.
 Comments of some modules were edited when this folder was prepared for the
 repository (internal references removed); no definition changed.

@@ -55,17 +55,47 @@ Work in this order. Each step names what it produces.
 4. **Abstract specification and refinement (for larger features).** Write a small module of
    the intended behavior and check the detailed model against it as a TLC `PROPERTY`
    (`Abs!Spec` with a refinement mapping). The fork + join models do this.
-5. **Write the cases** (next section) with bounds small enough to finish.
+5. **Table the cases** (next sections) with bounds small enough to finish.
 6. **Run TLC with the repo runner** and classify every result.
 7. **Turn every unexpected result into a finding**, then a fix and a regression test.
 8. **Write the correspondence notes**: for each model action, the code file:line at the bound
    head, and whether it is code behavior, a rule to evaluate, or a model simplification.
 9. **Re-run after fixes** and update the folder README and the index.
 
+## Case tables and generated settings
+
+A case is a row in its folder's tables, never a hand-written file:
+
+- `cases.tsv`: `case_id<TAB>case_id.cfg<TAB>Module`, the cases to run, in order (a batch may list a
+  subset of `cases.json`, in the same order).
+- `cases.json`: one record per case: its expected result, its note and, under `tlc`, its TLC
+  settings (`comment`, `spec`, `constants`, `invariants`, `properties`, optional `view`, `deadlock`,
+  and `layout` only where the case departs from its module's template).
+- `tlc-templates.json`: per module, the order of its constants, the indentation and the layout.
+- `cases-retired.json`: cases whose code no longer exists, each with its reason; kept for the
+  record, never run.
+
+The TLC settings files (`<case>.cfg`) are **generated, never committed**
+(`docs/formal/.gitignore`). `docs/formal/tlc_cases.py` renders them; `run-tlc.sh` and
+`check-packet.sh` call it before they read them.
+
+```bash
+python3 docs/formal/tlc_cases.py gen docs/formal/<folder>      # write the settings to look at them
+python3 docs/formal/tlc_cases.py gen --with-retired --all      # every folder, retired cases too
+python3 docs/formal/tlc_cases.py import docs/formal/<folder>   # table .cfg files written by hand
+python3 docs/formal/tlc_cases.py retire docs/formal/<folder> <case_id> "<reason>"
+```
+
+- A folder with `gen-cases.py` (the case table is a Python list there): edit the list and run the
+  script; it writes `cases.tsv`, `cases.json` and `tlc-templates.json` through `tlc_cases.attach()`.
+  Retire a case by listing it in the script's `RETIRED`. Never edit its `cases.json` by hand.
+- Any other folder: edit `cases.json` and `cases.tsv` (or write the settings by hand, then `import`).
+- A new model: write its settings as before, then `import`; the template comes from them.
+
 ## Case taxonomy
 
-Every case is one `.cfg` and one line in `cases.tsv` (`case_id<TAB>config.cfg<TAB>Module`).
-Name the expected result in the cfg's first comment line and in `cases.json`.
+Every case is one record in `cases.json` and one line in `cases.tsv`. Name the expected result
+in the record's `expected` and in its first comment line (`tlc.comment`).
 
 | Kind | Expected | Purpose |
 |---|---|---|
@@ -77,7 +107,7 @@ Name the expected result in the cfg's first comment line and in `cases.json`.
 | refinement | PASS | The detailed model implements the abstract specification. |
 | implementation-shaped | violation (code) and PASS (fix) | When review or TLC finds a code divergence: one case reproduces the current code and must fail, one models the fix and must pass. |
 
-## Writing models and cfgs
+## Writing models and cases
 
 - Group `VARIABLES` by owner: store, work (effects, children), controller, history (ghost
   flags read by no action). Every action states every variable it does not change
@@ -88,7 +118,7 @@ Name the expected result in the cfg's first comment line and in `cases.json`.
 - Guard every function application whose argument may be outside the domain with `IF`; do
   not rely on short-circuit evaluation. Parenthesize mixed `/\` and `\/`, and `[][P]_v` when
   `P` starts with a quantifier. Assign a primed variable before you read it.
-- Every cfg states `CHECK_DEADLOCK TRUE` or `CHECK_DEADLOCK FALSE`. Use `TRUE` for safety
+- Every case states `CHECK_DEADLOCK TRUE` or `CHECK_DEADLOCK FALSE` (`tlc.deadlock`). Use `TRUE` for safety
   cases of a model with an explicit idle/done stutter, so a stuck state is reported. Use
   `FALSE` for fault and hazard cases.
 - Module names use letters and digits; case ids use `[a-z0-9.-]`. The runner rejects others.
@@ -101,14 +131,20 @@ Name the expected result in the cfg's first comment line and in `cases.json`.
 ## Running TLC
 
 Each model folder has `run-tlc.sh` (tla2tools v1.7.4, TLC 2.19, pinned by sha256),
-`check-packet.sh` and `SHA256SUMS`.
+`check-packet.sh` and `SHA256SUMS` (the committed inputs only: no `.cfg`). Both scripts are
+byte-identical in every folder; change them everywhere at once. They need Java 17+ and Python 3.
 
 ```bash
 cd docs/formal/<folder>
-./check-packet.sh                                   # guard, cfgs, CHECK_DEADLOCK, hashes
-TLA_TOOLS=/path/to/tools ./run-tlc.sh /tmp/tlc-out  # SANY first, then every case
+./check-packet.sh                                   # generate, guard, CHECK_DEADLOCK, hashes
+TLA_TOOLS=/path/to/tools ./run-tlc.sh /tmp/tlc-out  # generate, SANY first, then every case
 # TLC_CASE_SECONDS=1200 only for a case documented as long
 ```
+
+Both find `tlc_cases.py` in the folder or above it. To run a folder on another machine (a
+packet), copy the folder, put `tlc_cases.py` in it, cut `cases.tsv` (and `cases.json`) to the
+cases to run, regenerate `SHA256SUMS`, and run `check-packet.sh`. The runner records the
+generator's and every settings file's sha256 in `<out>/generated.sha256`.
 
 Run TLC locally or on demand, on an isolated machine, with the repo runner. TLC does not run in
 CI yet. The script's exit code is not the verdict. Read
@@ -154,7 +190,9 @@ Never claim that a model covers a code version it was not checked against.
 
 ## Before you finish
 
-- `./check-packet.sh` passes in every changed folder; `SHA256SUMS` is regenerated last.
+- `./check-packet.sh` passes in every changed folder; `SHA256SUMS` is regenerated last, over the
+  committed inputs only. No `.cfg` is committed; `python3 docs/formal/tlc_cases.py check --all`
+  (after `gen --with-retired --all`) shows that every case's settings generate.
 - The folder README and `docs/formal/README.md` show the new head, date and counts.
 - Every unexpected result is classified, and every code finding has a fix and a regression
   test that fails without it.

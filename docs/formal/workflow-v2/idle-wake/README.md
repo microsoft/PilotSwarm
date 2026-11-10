@@ -5,8 +5,8 @@
 share that queue, in order. An idle wait is counted; at `WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION` (50) the controller
 continues as new. A TLC pass is a bounded check, not a proof.
 
-In this line every new run starts at controller 1.9.0; 1.8.0 stays registered but no run reaches it. The
-1.8.0 cases are kept as a record; the 1.9.0 cases bind the live controller.
+The Workflow V2 version collapse removes controller 1.8.0: its four cases (`iw-180.*`) are retired
+(`cases-retired.json`, kept for the record, never run), and the `iw-190.*` cases bind the surviving loop.
 
 ## Status
 
@@ -35,12 +35,14 @@ and the next execution's first pass collects it.
 
 | Case | Expected | Meaning |
 |---|---|---|
-| `iw-180.fix`, `iw-180.fix-live`, `iw-190.fix`, `iw-190.fix-live` | PASS | A command is applied first; every other wait counts; the controller continues as new under wakes; every command is applied. |
-| `iw-180.old-history`, `iw-190.old-history` | `Inv_HistoryBounded` violated | `d2274e0d`: an execution makes more passes than the cap. |
-| `iw-180.old-live`, `iw-190.old-live` | `Prop_ContinuesAsNew` violated | `d2274e0d`: under a steady wake stream it never continues as new. |
+| `iw-190.fix`, `iw-190.fix-live` | PASS | A command is applied first; every other wait counts; the controller continues as new under wakes; every command is applied. |
+| `iw-190.old-history` | `Inv_HistoryBounded` violated | `d2274e0d`: an execution makes more passes than the cap. |
+| `iw-190.old-live` | `Prop_ContinuesAsNew` violated | `d2274e0d`: under a steady wake stream it never continues as new. |
 | `fault.iw-count-then-can` | `Inv_CommandsKept` violated | Counting before parsing, then continuing as new with a dequeued command, loses it. |
 | `fault.iw-swallow` | `Inv_CommandsKept` violated | A command counted as a wake and dropped. |
 | `wit.iw-can-by-wake` | witness violated | A continue-as-new reached through wakes. |
+| `iw-180.*` (4, retired) | as their `iw-190` twins | Controller 1.8.0, removed; the same settings as the `iw-190` cases. |
 
 `Cap` is 3 in the cases (50 in code). Run with `TLA_TOOLS=<dir with tla2tools.jar> ./run-tlc.sh [out]` after
-`./check-packet.sh`, as in `../../session-orchestration/README.md`.
+`./check-packet.sh`, as in `../../session-orchestration/README.md`. The settings files are generated from `cases.json` and
+`tlc-templates.json` (`../../tlc_cases.py`) and are not committed.

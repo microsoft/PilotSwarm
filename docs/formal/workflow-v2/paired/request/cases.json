@@ -5,7 +5,28 @@
   "config": "rq-df-abandon-twice.cfg",
   "expected": "VIOLATION",
   "witness": false,
-  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault abandon_twice. Expected VIOLATION of Inv_OneAbandonEvent, 6 states: Call, Commit, WakeLease w1 (attempt cap 1), WakeAbandon, WakeAbandon again."
+  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault abandon_twice. Expected VIOLATION of Inv_OneAbandonEvent, 6 states: Call, Commit, WakeLease w1 (attempt cap 1), WakeAbandon, WakeAbandon again.",
+  "tlc": {
+   "comment": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault abandon_twice. Expected VIOLATION of Inv_OneAbandonEvent, 6 states: Call, Commit, WakeLease w1 (attempt cap 1), WakeAbandon, WakeAbandon again.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{\"w1\"}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"abandon_twice\""
+   },
+   "invariants": [
+    "Inv_OneAbandonEvent"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rq-df-bind-on-deleted",
@@ -13,7 +34,28 @@
   "config": "rq-df-bind-on-deleted.cfg",
   "expected": "VIOLATION",
   "witness": false,
-  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault bind_on_deleted. Expected VIOLATION of Prop_DeletedRequesterReadOnly, 3 states: DeleteRequester, then a responder Call binds o1 closed."
+  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault bind_on_deleted. Expected VIOLATION of Prop_DeletedRequesterReadOnly, 3 states: DeleteRequester, then a responder Call binds o1 closed.",
+  "tlc": {
+   "comment": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault bind_on_deleted. Expected VIOLATION of Prop_DeletedRequesterReadOnly, 3 states: DeleteRequester, then a responder Call binds o1 closed.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"bind_on_deleted\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_DeletedRequesterReadOnly"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "rq-df-no-lock",
@@ -21,7 +63,28 @@
   "config": "rq-df-no-lock.cfg",
   "expected": "VIOLATION",
   "witness": false,
-  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault no_lock. Expected VIOLATION of Prop_EarlyDecisionWinsEligible, 4 states: Call at 0 (lock held), a producer that ignores the lock (RunEnd, DeleteRequester or DeliveryFail) decides, Commit finds the node decided."
+  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault no_lock. Expected VIOLATION of Prop_EarlyDecisionWinsEligible, 4 states: Call at 0 (lock held), a producer that ignores the lock (RunEnd, DeleteRequester or DeliveryFail) decides, Commit finds the node decided.",
+  "tlc": {
+   "comment": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault no_lock. Expected VIOLATION of Prop_EarlyDecisionWinsEligible, 4 states: Call at 0 (lock held), a producer that ignores the lock (RunEnd, DeleteRequester or DeliveryFail) decides, Commit finds the node decided.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"no_lock\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_EarlyDecisionWinsEligible"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "rq-df-no-token",
@@ -29,7 +92,28 @@
   "config": "rq-df-no-token.cfg",
   "expected": "VIOLATION",
   "witness": false,
-  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault no_token. Expected VIOLATION of Prop_SettledWakeFinal, 7 states: Call, Commit, WakeLease w1 (attempt 1 = cap), WakeDue, WakeAbandon, then w1 completes without the token condition and changes the abandoned row."
+  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault no_token. Expected VIOLATION of Prop_SettledWakeFinal, 7 states: Call, Commit, WakeLease w1 (attempt 1 = cap), WakeDue, WakeAbandon, then w1 completes without the token condition and changes the abandoned row.",
+  "tlc": {
+   "comment": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault no_token. Expected VIOLATION of Prop_SettledWakeFinal, 7 states: Call, Commit, WakeLease w1 (attempt 1 = cap), WakeDue, WakeAbandon, then w1 completes without the token condition and changes the abandoned row.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{\"w1\"}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"no_token\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_SettledWakeFinal"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "rq-df-replay-first",
@@ -37,7 +121,28 @@
   "config": "rq-df-replay-first.cfg",
   "expected": "VIOLATION",
   "witness": false,
-  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault replay_first. Expected VIOLATION of Inv_NoLeak, 4 states: responder Call o1 and Commit decide; actor other replays o1 and gets the receipt."
+  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault replay_first. Expected VIOLATION of Inv_NoLeak, 4 states: responder Call o1 and Commit decide; actor other replays o1 and gets the receipt.",
+  "tlc": {
+   "comment": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault replay_first. Expected VIOLATION of Inv_NoLeak, 4 states: responder Call o1 and Commit decide; actor other replays o1 and gets the receipt.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"replay_first\""
+   },
+   "invariants": [
+    "Inv_NoLeak"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rq-df-wake-separate",
@@ -45,7 +150,28 @@
   "config": "rq-df-wake-separate.cfg",
   "expected": "VIOLATION",
   "witness": false,
-  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault wake_separate. Expected VIOLATION of Inv_WakeWithRecord, 3 states: Call, Commit decides without its wake intent."
+  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault wake_separate. Expected VIOLATION of Inv_WakeWithRecord, 3 states: Call, Commit decides without its wake intent.",
+  "tlc": {
+   "comment": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Deliberate fault wake_separate. Expected VIOLATION of Inv_WakeWithRecord, 3 states: Call, Commit decides without its wake intent.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"wake_separate\""
+   },
+   "invariants": [
+    "Inv_WakeWithRecord"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rq-hd-decide-rollback",
@@ -53,7 +179,42 @@
   "config": "rq-hd-decide-rollback.cfg",
   "expected": "PASS",
   "witness": false,
-  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Expected PASS, complete. Decision and bindings with the clock stepping back (durable expiry): two operations, two result identities, limit 2, no purge, no dispatchers. Completion within the cap is uncertain (the checkpoint 1b decide bound with one dispatcher timed out at 120 s); a timeout is INCONCLUSIVE."
+  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Expected PASS, complete. Decision and bindings with the clock stepping back (durable expiry): two operations, two result identities, limit 2, no purge, no dispatchers. Completion within the cap is uncertain (the checkpoint 1b decide bound with one dispatcher timed out at 120 s); a timeout is INCONCLUSIVE.",
+  "tlc": {
+   "comment": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Expected PASS, complete. Decision and bindings with the clock stepping back (durable expiry): two operations, two result identities, limit 2, no purge, no dispatchers. Completion within the cap is uncertain (the checkpoint 1b decide bound with one dispatcher timed out at 120 s); a timeout is INCONCLUSIVE.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"rollback\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StatusTotal",
+    "Inv_Deadline",
+    "Inv_WinnerBinding",
+    "Inv_NoDecisionAfterExpiry",
+    "Inv_NoLeak",
+    "Inv_WakeWithRecord"
+   ],
+   "properties": [
+    "Prop_NodeFinal",
+    "Prop_RecordImmutable",
+    "Prop_BindingImmutable",
+    "Prop_DeletedRequesterReadOnly",
+    "Prop_DecideNeedsLiveParties",
+    "Prop_EarlyDecisionWinsEligible",
+    "Prop_PeerUntouched"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "rq-hd-liveness-small",
@@ -61,7 +222,30 @@
   "config": "rq-hd-liveness-small.cfg",
   "expected": "PASS",
   "witness": false,
-  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Expected PASS, complete, temporal properties under LiveSpec (A-SCHED, A-RESUME, A-BACKSTOP; with A-CLK only: liveness is not claimed with rollback)."
+  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Expected PASS, complete, temporal properties under LiveSpec (A-SCHED, A-RESUME, A-BACKSTOP; with A-CLK only: liveness is not claimed with rollback).",
+  "tlc": {
+   "comment": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Expected PASS, complete, temporal properties under LiveSpec (A-SCHED, A-RESUME, A-BACKSTOP; with A-CLK only: liveness is not claimed with rollback).",
+   "spec": "LiveSpec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{\"w1\"}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Decides",
+    "Live_WakeSettles",
+    "Live_Collected"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "rq-hd-wake",
@@ -69,7 +253,46 @@
   "config": "rq-hd-wake.cfg",
   "expected": "PASS",
   "witness": false,
-  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Expected PASS, complete. Wake races: one operation, two result identities, two dispatchers (stale holders), attempt cap 2, A-CLK."
+  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Expected PASS, complete. Wake races: one operation, two result identities, two dispatchers (stale holders), attempt cap 2, A-CLK.",
+  "tlc": {
+   "comment": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Expected PASS, complete. Wake races: one operation, two result identities, two dispatchers (stale holders), attempt cap 2, A-CLK.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StatusTotal",
+    "Inv_Deadline",
+    "Inv_WinnerBinding",
+    "Inv_NoDecisionAfterExpiry",
+    "Inv_NoLeak",
+    "Inv_WakeWithRecord",
+    "Inv_OneAbandonEvent",
+    "Inv_ExpiryImpliesLate"
+   ],
+   "properties": [
+    "Prop_NodeFinal",
+    "Prop_RecordImmutable",
+    "Prop_BindingImmutable",
+    "Prop_DeletedRequesterReadOnly",
+    "Prop_DecideNeedsLiveParties",
+    "Prop_EarlyDecisionWins",
+    "Prop_EarlyDecisionWinsEligible",
+    "Prop_SettledWakeFinal",
+    "Prop_PeerUntouched"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "rq-wit-abandoned-after-enqueue",
@@ -77,7 +300,28 @@
   "config": "rq-wit-abandoned-after-enqueue.cfg",
   "expected": "VIOLATION",
   "witness": true,
-  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_AbandonedAfterEnqueue (F3: a lost acknowledgement, then abandonment): EXPECTED VIOLATION, 7 states: Call, Commit, WakeLease w1 (cap 1), WakeEnqueue w1, WakeDue (lease expired), WakeAbandon with one hint already enqueued."
+  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_AbandonedAfterEnqueue (F3: a lost acknowledgement, then abandonment): EXPECTED VIOLATION, 7 states: Call, Commit, WakeLease w1 (cap 1), WakeEnqueue w1, WakeDue (lease expired), WakeAbandon with one hint already enqueued.",
+  "tlc": {
+   "comment": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_AbandonedAfterEnqueue (F3: a lost acknowledgement, then abandonment): EXPECTED VIOLATION, 7 states: Call, Commit, WakeLease w1 (cap 1), WakeEnqueue w1, WakeDue (lease expired), WakeAbandon with one hint already enqueued.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{\"w1\"}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_AbandonedAfterEnqueue"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rq-wit-closed-after-delete",
@@ -85,7 +329,28 @@
   "config": "rq-wit-closed-after-delete.cfg",
   "expected": "VIOLATION",
   "witness": true,
-  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_ClosedAfterResponseThenDelete (F2; optional): EXPECTED VIOLATION, 5 states: Call o1, Commit decides, DeleteRequester, Call o2 gets the read-only REQUEST_CLOSED."
+  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_ClosedAfterResponseThenDelete (F2; optional): EXPECTED VIOLATION, 5 states: Call o1, Commit decides, DeleteRequester, Call o2 gets the read-only REQUEST_CLOSED.",
+  "tlc": {
+   "comment": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_ClosedAfterResponseThenDelete (F2; optional): EXPECTED VIOLATION, 5 states: Call o1, Commit decides, DeleteRequester, Call o2 gets the read-only REQUEST_CLOSED.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_ClosedAfterResponseThenDelete"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rq-wit-delivery-failed-after-deadline",
@@ -93,7 +358,28 @@
   "config": "rq-wit-delivery-failed-after-deadline.cfg",
   "expected": "VIOLATION",
   "witness": true,
-  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_DeliveryFailedAfterDeadline (F4; optional): EXPECTED VIOLATION, 3 states: Tick, DeliveryFail decides at a reading at or after the deadline."
+  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_DeliveryFailedAfterDeadline (F4; optional): EXPECTED VIOLATION, 3 states: Tick, DeliveryFail decides at a reading at or after the deadline.",
+  "tlc": {
+   "comment": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_DeliveryFailedAfterDeadline (F4; optional): EXPECTED VIOLATION, 3 states: Tick, DeliveryFail decides at a reading at or after the deadline.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_DeliveryFailedAfterDeadline"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rq-wit-observed-after-expiry",
@@ -101,7 +387,28 @@
   "config": "rq-wit-observed-after-expiry.cfg",
   "expected": "VIOLATION",
   "witness": true,
-  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_ObservedAfterExpiry (decision D-REQ-1): EXPECTED VIOLATION, 7 states: Tick, Call o1 (reading 1), Commit binds expired, ClockBack, DeleteResponder or LoseAuthority, Observe decides unavailable or forbidden after the expiry point."
+  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_ObservedAfterExpiry (decision D-REQ-1): EXPECTED VIOLATION, 7 states: Tick, Call o1 (reading 1), Commit binds expired, ClockBack, DeleteResponder or LoseAuthority, Observe decides unavailable or forbidden after the expiry point.",
+  "tlc": {
+   "comment": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_ObservedAfterExpiry (decision D-REQ-1): EXPECTED VIOLATION, 7 states: Tick, Call o1 (reading 1), Commit binds expired, ClockBack, DeleteResponder or LoseAuthority, Observe decides unavailable or forbidden after the expiry point.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"rollback\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_ObservedAfterExpiry"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rq-wit-op-conflict",
@@ -109,7 +416,28 @@
   "config": "rq-wit-op-conflict.cfg",
   "expected": "VIOLATION",
   "witness": true,
-  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_OpConflict (stable operation id): EXPECTED VIOLATION, 4 states: Call o1 with one result, Commit decides, Call o1 with the other result (response X or the decline) gets OPERATION_CONFLICT; the binding stays."
+  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_OpConflict (stable operation id): EXPECTED VIOLATION, 4 states: Call o1 with one result, Commit decides, Call o1 with the other result (response X or the decline) gets OPERATION_CONFLICT; the binding stays.",
+  "tlc": {
+   "comment": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_OpConflict (stable operation id): EXPECTED VIOLATION, 4 states: Call o1 with one result, Commit decides, Call o1 with the other result (response X or the decline) gets OPERATION_CONFLICT; the binding stays.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_OpConflict"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rq-wit-stale-holder",
@@ -117,7 +445,28 @@
   "config": "rq-wit-stale-holder.cfg",
   "expected": "VIOLATION",
   "witness": true,
-  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_StaleHolder (lease reclaim, lost acknowledgement): EXPECTED VIOLATION, 6 states: Call, Commit, WakeLease w1, WakeDue (lease expired), WakeLease w2; w1 still holds the old token."
+  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_StaleHolder (lease reclaim, lost acknowledgement): EXPECTED VIOLATION, 6 states: Call, Commit, WakeLease w1, WakeDue (lease expired), WakeLease w2; w1 still holds the old token.",
+  "tlc": {
+   "comment": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_StaleHolder (lease reclaim, lost acknowledgement): EXPECTED VIOLATION, 6 states: Call, Commit, WakeLease w1, WakeDue (lease expired), WakeLease w2; w1 still holds the old token.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_StaleHolder"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rq-wit-timed-out-while-paused",
@@ -125,7 +474,28 @@
   "config": "rq-wit-timed-out-while-paused.cfg",
   "expected": "VIOLATION",
   "witness": true,
-  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_TimedOutWhilePaused (F5; optional): EXPECTED VIOLATION, 4 states: Pause, Tick, Elapse decides timed_out while paused, before collection."
+  "note": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_TimedOutWhilePaused (F5; optional): EXPECTED VIOLATION, 4 states: Pause, Tick, Elapse decides timed_out while paused, before collection.",
+  "tlc": {
+   "comment": "Entry module MCRequestCandidate (EXTENDS WorkflowV2RequestSpec57, unchanged). Witness Wit_TimedOutWhilePaused (F5; optional): EXPECTED VIOLATION, 4 states: Pause, Tick, Elapse decides timed_out while paused, before collection.",
+   "spec": "Spec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_TimedOutWhilePaused"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-as-raw-deadline",
@@ -133,7 +503,28 @@
   "config": "rqb-as-raw-deadline.cfg",
   "expected": "VIOLATION",
   "witness": true,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1). Timestamp honesty control: Spec57's raw-clock Inv_Deadline is EXPECTED to be VIOLATED, 6 states (the witness trace above): the timed_out keeps its actual reading 0 below the deadline; B never manufactures a reading. Inv_DeadlineB holds instead (rqb-hd-expiry-small)."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1). Timestamp honesty control: Spec57's raw-clock Inv_Deadline is EXPECTED to be VIOLATED, 6 states (the witness trace above): the timed_out keeps its actual reading 0 below the deadline; B never manufactures a reading. Inv_DeadlineB holds instead (rqb-hd-expiry-small).",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1). Timestamp honesty control: Spec57's raw-clock Inv_Deadline is EXPECTED to be VIOLATED, 6 states (the witness trace above): the timed_out keeps its actual reading 0 below the deadline; B never manufactures a reading. Inv_DeadlineB holds instead (rqb-hd-expiry-small).",
+   "spec": "SpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"rollback\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_Deadline"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-df-abandon-twice",
@@ -141,7 +532,28 @@
   "config": "rqb-df-abandon-twice.cfg",
   "expected": "VIOLATION",
   "witness": false,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault abandon_twice. Expected VIOLATION of Inv_OneAbandonEvent, 6 states: Call, Commit, WakeLease w1 (attempt cap 1), WakeAbandon, WakeAbandon again."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault abandon_twice. Expected VIOLATION of Inv_OneAbandonEvent, 6 states: Call, Commit, WakeLease w1 (attempt cap 1), WakeAbandon, WakeAbandon again.",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault abandon_twice. Expected VIOLATION of Inv_OneAbandonEvent, 6 states: Call, Commit, WakeLease w1 (attempt cap 1), WakeAbandon, WakeAbandon again.",
+   "spec": "SpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{\"w1\"}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"abandon_twice\""
+   },
+   "invariants": [
+    "Inv_OneAbandonEvent"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-df-bind-on-deleted",
@@ -149,7 +561,28 @@
   "config": "rqb-df-bind-on-deleted.cfg",
   "expected": "VIOLATION",
   "witness": false,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault bind_on_deleted. Expected VIOLATION of Prop_DeletedRequesterReadOnly, 3 states: DeleteRequester, then a responder Call binds o1 closed."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault bind_on_deleted. Expected VIOLATION of Prop_DeletedRequesterReadOnly, 3 states: DeleteRequester, then a responder Call binds o1 closed.",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault bind_on_deleted. Expected VIOLATION of Prop_DeletedRequesterReadOnly, 3 states: DeleteRequester, then a responder Call binds o1 closed.",
+   "spec": "SpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"bind_on_deleted\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_DeletedRequesterReadOnly"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-df-no-lock",
@@ -157,7 +590,28 @@
   "config": "rqb-df-no-lock.cfg",
   "expected": "VIOLATION",
   "witness": false,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault no_lock. Expected VIOLATION of Prop_EarlyDecisionWinsEligible, 4 states: Call at 0 (lock held), a producer that ignores the lock (RunEnd, DeleteRequester or DeliveryFail) decides, Commit finds the node decided."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault no_lock. Expected VIOLATION of Prop_EarlyDecisionWinsEligible, 4 states: Call at 0 (lock held), a producer that ignores the lock (RunEnd, DeleteRequester or DeliveryFail) decides, Commit finds the node decided.",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault no_lock. Expected VIOLATION of Prop_EarlyDecisionWinsEligible, 4 states: Call at 0 (lock held), a producer that ignores the lock (RunEnd, DeleteRequester or DeliveryFail) decides, Commit finds the node decided.",
+   "spec": "SpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"no_lock\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_EarlyDecisionWinsEligible"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-df-no-token",
@@ -165,7 +619,28 @@
   "config": "rqb-df-no-token.cfg",
   "expected": "VIOLATION",
   "witness": false,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault no_token. Expected VIOLATION of Prop_SettledWakeFinal, 7 states: Call, Commit, WakeLease w1 (attempt 1 = cap), WakeDue, WakeAbandon, then w1 completes without the token condition and changes the abandoned row."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault no_token. Expected VIOLATION of Prop_SettledWakeFinal, 7 states: Call, Commit, WakeLease w1 (attempt 1 = cap), WakeDue, WakeAbandon, then w1 completes without the token condition and changes the abandoned row.",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault no_token. Expected VIOLATION of Prop_SettledWakeFinal, 7 states: Call, Commit, WakeLease w1 (attempt 1 = cap), WakeDue, WakeAbandon, then w1 completes without the token condition and changes the abandoned row.",
+   "spec": "SpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{\"w1\"}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"no_token\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_SettledWakeFinal"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-df-replay-first",
@@ -173,7 +648,28 @@
   "config": "rqb-df-replay-first.cfg",
   "expected": "VIOLATION",
   "witness": false,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault replay_first. Expected VIOLATION of Inv_NoLeak, 4 states: responder Call o1 and Commit decide; actor other replays o1 and gets the receipt."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault replay_first. Expected VIOLATION of Inv_NoLeak, 4 states: responder Call o1 and Commit decide; actor other replays o1 and gets the receipt.",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault replay_first. Expected VIOLATION of Inv_NoLeak, 4 states: responder Call o1 and Commit decide; actor other replays o1 and gets the receipt.",
+   "spec": "SpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"replay_first\""
+   },
+   "invariants": [
+    "Inv_NoLeak"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-df-wake-separate",
@@ -181,7 +677,28 @@
   "config": "rqb-df-wake-separate.cfg",
   "expected": "VIOLATION",
   "witness": false,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault wake_separate. Expected VIOLATION of Inv_WakeWithRecord, 3 states: Call, Commit decides without its wake intent."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault wake_separate. Expected VIOLATION of Inv_WakeWithRecord, 3 states: Call, Commit decides without its wake intent.",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Deliberate fault wake_separate. Expected VIOLATION of Inv_WakeWithRecord, 3 states: Call, Commit decides without its wake intent.",
+   "spec": "SpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"wake_separate\""
+   },
+   "invariants": [
+    "Inv_WakeWithRecord"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-hd-decide-rollback",
@@ -189,7 +706,43 @@
   "config": "rqb-hd-decide-rollback.cfg",
   "expected": "PASS",
   "witness": false,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Expected PASS, complete, including Inv_NoObserveAfterExpiry. Decision and bindings with the clock stepping back (durable expiry): two operations, two result identities, limit 2, no purge, no dispatchers. Completion within the cap is uncertain (the checkpoint 1b decide bound with one dispatcher timed out at 120 s); a timeout is INCONCLUSIVE."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Expected PASS, complete, including Inv_NoObserveAfterExpiry. Decision and bindings with the clock stepping back (durable expiry): two operations, two result identities, limit 2, no purge, no dispatchers. Completion within the cap is uncertain (the checkpoint 1b decide bound with one dispatcher timed out at 120 s); a timeout is INCONCLUSIVE.",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Expected PASS, complete, including Inv_NoObserveAfterExpiry. Decision and bindings with the clock stepping back (durable expiry): two operations, two result identities, limit 2, no purge, no dispatchers. Completion within the cap is uncertain (the checkpoint 1b decide bound with one dispatcher timed out at 120 s); a timeout is INCONCLUSIVE.",
+   "spec": "SpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"rollback\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StatusTotal",
+    "Inv_DeadlineB",
+    "Inv_NoObserveAfterExpiry",
+    "Inv_WinnerBinding",
+    "Inv_NoDecisionAfterExpiry",
+    "Inv_NoLeak",
+    "Inv_WakeWithRecord"
+   ],
+   "properties": [
+    "Prop_NodeFinal",
+    "Prop_RecordImmutable",
+    "Prop_BindingImmutable",
+    "Prop_DeletedRequesterReadOnly",
+    "Prop_DecideNeedsLiveParties",
+    "Prop_EarlyDecisionWinsEligible",
+    "Prop_PeerUntouched"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-hd-expiry-small",
@@ -197,7 +750,36 @@
   "config": "rqb-hd-expiry-small.cfg",
   "expected": "PASS",
   "witness": false,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Expected PASS, complete: with the clock stepping back, no responder observation decides after the durable expiry point, and timestamps stay honest (Inv_DeadlineB). Same bounds as variant A's rq-wit-observed-after-expiry, which is expected to fail."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Expected PASS, complete: with the clock stepping back, no responder observation decides after the durable expiry point, and timestamps stay honest (Inv_DeadlineB). Same bounds as variant A's rq-wit-observed-after-expiry, which is expected to fail.",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Expected PASS, complete: with the clock stepping back, no responder observation decides after the durable expiry point, and timestamps stay honest (Inv_DeadlineB). Same bounds as variant A's rq-wit-observed-after-expiry, which is expected to fail.",
+   "spec": "SpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"rollback\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoObserveAfterExpiry",
+    "Inv_DeadlineB",
+    "Inv_StatusTotal",
+    "Inv_WinnerBinding",
+    "Inv_NoDecisionAfterExpiry"
+   ],
+   "properties": [
+    "Prop_NodeFinal",
+    "Prop_EarlyDecisionWinsEligible"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-hd-liveness-small",
@@ -205,7 +787,30 @@
   "config": "rqb-hd-liveness-small.cfg",
   "expected": "PASS",
   "witness": false,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Expected PASS, complete, temporal properties under LiveSpec (A-SCHED, A-RESUME, A-BACKSTOP; with A-CLK only: liveness is not claimed with rollback)."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Expected PASS, complete, temporal properties under LiveSpec (A-SCHED, A-RESUME, A-BACKSTOP; with A-CLK only: liveness is not claimed with rollback).",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Expected PASS, complete, temporal properties under LiveSpec (A-SCHED, A-RESUME, A-BACKSTOP; with A-CLK only: liveness is not claimed with rollback).",
+   "spec": "LiveSpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{\"w1\"}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Live_Decides",
+    "Live_WakeSettles",
+    "Live_Collected"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-hd-wake",
@@ -213,7 +818,46 @@
   "config": "rqb-hd-wake.cfg",
   "expected": "PASS",
   "witness": false,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Expected PASS, complete. Wake races: one operation, two result identities, two dispatchers (stale holders), attempt cap 2, A-CLK."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Expected PASS, complete. Wake races: one operation, two result identities, two dispatchers (stale holders), attempt cap 2, A-CLK.",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Expected PASS, complete. Wake races: one operation, two result identities, two dispatchers (stale holders), attempt cap 2, A-CLK.",
+   "spec": "SpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StatusTotal",
+    "Inv_DeadlineB",
+    "Inv_WinnerBinding",
+    "Inv_NoDecisionAfterExpiry",
+    "Inv_NoLeak",
+    "Inv_WakeWithRecord",
+    "Inv_OneAbandonEvent",
+    "Inv_ExpiryImpliesLate"
+   ],
+   "properties": [
+    "Prop_NodeFinal",
+    "Prop_RecordImmutable",
+    "Prop_BindingImmutable",
+    "Prop_DeletedRequesterReadOnly",
+    "Prop_DecideNeedsLiveParties",
+    "Prop_EarlyDecisionWins",
+    "Prop_EarlyDecisionWinsEligible",
+    "Prop_SettledWakeFinal",
+    "Prop_PeerUntouched"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-wit-abandoned-after-enqueue",
@@ -221,7 +865,28 @@
   "config": "rqb-wit-abandoned-after-enqueue.cfg",
   "expected": "VIOLATION",
   "witness": true,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_AbandonedAfterEnqueue (F3: a lost acknowledgement, then abandonment): EXPECTED VIOLATION, 7 states: Call, Commit, WakeLease w1 (cap 1), WakeEnqueue w1, WakeDue (lease expired), WakeAbandon with one hint already enqueued."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_AbandonedAfterEnqueue (F3: a lost acknowledgement, then abandonment): EXPECTED VIOLATION, 7 states: Call, Commit, WakeLease w1 (cap 1), WakeEnqueue w1, WakeDue (lease expired), WakeAbandon with one hint already enqueued.",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_AbandonedAfterEnqueue (F3: a lost acknowledgement, then abandonment): EXPECTED VIOLATION, 7 states: Call, Commit, WakeLease w1 (cap 1), WakeEnqueue w1, WakeDue (lease expired), WakeAbandon with one hint already enqueued.",
+   "spec": "SpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{\"w1\"}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_AbandonedAfterEnqueue"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-wit-closed-after-delete",
@@ -229,7 +894,28 @@
   "config": "rqb-wit-closed-after-delete.cfg",
   "expected": "VIOLATION",
   "witness": true,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_ClosedAfterResponseThenDelete (F2; optional): EXPECTED VIOLATION, 5 states: Call o1, Commit decides, DeleteRequester, Call o2 gets the read-only REQUEST_CLOSED."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_ClosedAfterResponseThenDelete (F2; optional): EXPECTED VIOLATION, 5 states: Call o1, Commit decides, DeleteRequester, Call o2 gets the read-only REQUEST_CLOSED.",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_ClosedAfterResponseThenDelete (F2; optional): EXPECTED VIOLATION, 5 states: Call o1, Commit decides, DeleteRequester, Call o2 gets the read-only REQUEST_CLOSED.",
+   "spec": "SpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\", \"o2\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "2",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_ClosedAfterResponseThenDelete"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-wit-delivery-failed-after-deadline",
@@ -237,7 +923,28 @@
   "config": "rqb-wit-delivery-failed-after-deadline.cfg",
   "expected": "VIOLATION",
   "witness": true,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_DeliveryFailedAfterDeadline (F4; optional): EXPECTED VIOLATION, 3 states: Tick, DeliveryFail decides at a reading at or after the deadline."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_DeliveryFailedAfterDeadline (F4; optional): EXPECTED VIOLATION, 3 states: Tick, DeliveryFail decides at a reading at or after the deadline.",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_DeliveryFailedAfterDeadline (F4; optional): EXPECTED VIOLATION, 3 states: Tick, DeliveryFail decides at a reading at or after the deadline.",
+   "spec": "SpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_DeliveryFailedAfterDeadline"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-wit-op-conflict",
@@ -245,7 +952,28 @@
   "config": "rqb-wit-op-conflict.cfg",
   "expected": "VIOLATION",
   "witness": true,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_OpConflict (stable operation id): EXPECTED VIOLATION, 4 states: Call o1 with one result, Commit decides, Call o1 with the other result (response X or the decline) gets OPERATION_CONFLICT; the binding stays."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_OpConflict (stable operation id): EXPECTED VIOLATION, 4 states: Call o1 with one result, Commit decides, Call o1 with the other result (response X or the decline) gets OPERATION_CONFLICT; the binding stays.",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_OpConflict (stable operation id): EXPECTED VIOLATION, 4 states: Call o1 with one result, Commit decides, Call o1 with the other result (response X or the decline) gets OPERATION_CONFLICT; the binding stays.",
+   "spec": "SpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_OpConflict"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-wit-stale-holder",
@@ -253,7 +981,28 @@
   "config": "rqb-wit-stale-holder.cfg",
   "expected": "VIOLATION",
   "witness": true,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_StaleHolder (lease reclaim, lost acknowledgement): EXPECTED VIOLATION, 6 states: Call, Commit, WakeLease w1, WakeDue (lease expired), WakeLease w2; w1 still holds the old token."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_StaleHolder (lease reclaim, lost acknowledgement): EXPECTED VIOLATION, 6 states: Call, Commit, WakeLease w1, WakeDue (lease expired), WakeLease w2; w1 still holds the old token.",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_StaleHolder (lease reclaim, lost acknowledgement): EXPECTED VIOLATION, 6 states: Call, Commit, WakeLease w1, WakeDue (lease expired), WakeLease w2; w1 still holds the old token.",
+   "spec": "SpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "2",
+    "Workers": "{\"w1\", \"w2\"}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_StaleHolder"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-wit-strict-elapsed-while-paused",
@@ -261,7 +1010,28 @@
   "config": "rqb-wit-strict-elapsed-while-paused.cfg",
   "expected": "VIOLATION",
   "witness": true,
-  "note": "Entry module MCRequestBStrict (EXTENDS WorkflowV2RequestSpecB, unchanged). Strict witness Wit_ElapsedWhilePaused (F5): EXPECTED VIOLATION, 4 states: Pause, Tick, ElapseB decides timed_out from a paused state, not collected."
+  "note": "Entry module MCRequestBStrict (EXTENDS WorkflowV2RequestSpecB, unchanged). Strict witness Wit_ElapsedWhilePaused (F5): EXPECTED VIOLATION, 4 states: Pause, Tick, ElapseB decides timed_out from a paused state, not collected.",
+  "tlc": {
+   "comment": "Entry module MCRequestBStrict (EXTENDS WorkflowV2RequestSpecB, unchanged). Strict witness Wit_ElapsedWhilePaused (F5): EXPECTED VIOLATION, 4 states: Pause, Tick, ElapseB decides timed_out from a paused state, not collected.",
+   "spec": "HSpec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_ElapsedWhilePaused"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-wit-strict-op-conflict",
@@ -269,7 +1039,28 @@
   "config": "rqb-wit-strict-op-conflict.cfg",
   "expected": "VIOLATION",
   "witness": true,
-  "note": "Entry module MCRequestBStrict (EXTENDS WorkflowV2RequestSpecB, unchanged). Strict witness Wit_ConflictOnDecided: EXPECTED VIOLATION, 4 states: Call o1 with result 1 at reading 0, Commit decides (o1 bound decided, record written), Call o1 with the other result answers OPERATION_CONFLICT; record, binding and node unchanged."
+  "note": "Entry module MCRequestBStrict (EXTENDS WorkflowV2RequestSpecB, unchanged). Strict witness Wit_ConflictOnDecided: EXPECTED VIOLATION, 4 states: Call o1 with result 1 at reading 0, Commit decides (o1 bound decided, record written), Call o1 with the other result answers OPERATION_CONFLICT; record, binding and node unchanged.",
+  "tlc": {
+   "comment": "Entry module MCRequestBStrict (EXTENDS WorkflowV2RequestSpecB, unchanged). Strict witness Wit_ConflictOnDecided: EXPECTED VIOLATION, 4 states: Call o1 with result 1 at reading 0, Commit decides (o1 bound decided, record written), Call o1 with the other result answers OPERATION_CONFLICT; record, binding and node unchanged.",
+   "spec": "HSpec",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_ConflictOnDecided"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-wit-timed-out-after-rollback",
@@ -277,7 +1068,28 @@
   "config": "rqb-wit-timed-out-after-rollback.cfg",
   "expected": "VIOLATION",
   "witness": true,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1). Positive witness Wit_TimedOutAfterRollback: EXPECTED VIOLATION, 6 states: Tick, Call o1 (reading 1), Commit binds expired, ClockBack, ElapseB decides timed_out at reading 0 by the durable expiry point (actual reading kept)."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1). Positive witness Wit_TimedOutAfterRollback: EXPECTED VIOLATION, 6 states: Tick, Call o1 (reading 1), Commit binds expired, ClockBack, ElapseB decides timed_out at reading 0 by the durable expiry point (actual reading kept).",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1). Positive witness Wit_TimedOutAfterRollback: EXPECTED VIOLATION, 6 states: Tick, Call o1 (reading 1), Commit binds expired, ClockBack, ElapseB decides timed_out at reading 0 by the durable expiry point (actual reading kept).",
+   "spec": "SpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"rollback\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_TimedOutAfterRollback"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "rqb-wit-timed-out-while-paused",
@@ -285,6 +1097,27 @@
   "config": "rqb-wit-timed-out-while-paused.cfg",
   "expected": "VIOLATION",
   "witness": true,
-  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_TimedOutWhilePaused (F5; optional): EXPECTED VIOLATION, 4 states: Pause, Tick, Elapse decides timed_out while paused, before collection."
+  "note": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_TimedOutWhilePaused (F5; optional): EXPECTED VIOLATION, 4 states: Pause, Tick, Elapse decides timed_out while paused, before collection.",
+  "tlc": {
+   "comment": "Entry module WorkflowV2RequestSpecB (variant B, D-REQ-1; EXTENDS MCRequestCandidate, unchanged). Witness Wit_TimedOutWhilePaused (F5; optional): EXPECTED VIOLATION, 4 states: Pause, Tick, Elapse decides timed_out while paused, before collection.",
+   "spec": "SpecB",
+   "constants": {
+    "Deadline": "1",
+    "MaxTime": "2",
+    "Ops": "{\"o1\"}",
+    "Vals": "{\"X\"}",
+    "MaxBindings": "1",
+    "MaxAttempts": "1",
+    "Workers": "{}",
+    "AllowPurge": "FALSE",
+    "ClockMode": "\"monotone\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_TimedOutWhilePaused"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  }
 ]

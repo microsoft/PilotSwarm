@@ -1,0 +1,53 @@
+{
+  "MCRequestBStrict": {
+    "indent": 2,
+    "constants": [
+      "Deadline",
+      "MaxTime",
+      "Ops",
+      "Vals",
+      "MaxBindings",
+      "MaxAttempts",
+      "Workers",
+      "AllowPurge",
+      "ClockMode",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "MCRequestCandidate": {
+    "indent": 2,
+    "constants": [
+      "Deadline",
+      "MaxTime",
+      "Ops",
+      "Vals",
+      "MaxBindings",
+      "MaxAttempts",
+      "Workers",
+      "AllowPurge",
+      "ClockMode",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WorkflowV2RequestSpecB": {
+    "indent": 2,
+    "constants": [
+      "Deadline",
+      "MaxTime",
+      "Ops",
+      "Vals",
+      "MaxBindings",
+      "MaxAttempts",
+      "Workers",
+      "AllowPurge",
+      "ClockMode",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}

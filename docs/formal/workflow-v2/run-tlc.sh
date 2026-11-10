@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Runs this folder's TLA+ models: SANY on every module named in cases.tsv, then TLC on every case, in order.
-# Usage: run-tlc.sh [<out-dir>]   (default: ./results). Requires Java 17+ (21 used), bash, GNU timeout, sha256sum.
+# Usage: run-tlc.sh [<out-dir>]   (default: ./results). Requires Java 17+ (21 used), python3, bash, GNU timeout, sha256sum.
+# The settings files (<case>.cfg) are generated first from cases.json and tlc-templates.json by tlc_cases.py (found in
+# this folder, as in a packet, or above it: docs/formal/tlc_cases.py); they are never committed (docs/formal/.gitignore).
 # Tools: TLA_TOOLS must hold tla2tools.jar v1.7.4 (TLC 2.19), checked against its sha256 below. Download:
 #   https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
 # Settings: -workers 2, -Xmx2g, a per-case limit TLC_CASE_SECONDS (default 300 s; rc 124 = timed out = PARTIAL, never PASS).
-# Deadlock policy: each .cfg states CHECK_DEADLOCK explicitly. The exit code of this script is not the verdict:
+# Deadlock policy: each case states CHECK_DEADLOCK explicitly. The exit code of this script is not the verdict:
 # read <out>/executions.tsv and each case's tlc.log (rc 0 = no violation in the bounded search, 12 = safety violation,
 # 13 = liveness violation, 124 = timeout, others = setup error).
 set -uo pipefail
@@ -19,6 +21,12 @@ mkdir -p "$out" && out=$(cd "$out" && pwd)
 cd "$here" || exit 2
 printf '%s  %s\n' "$jar_sha" "$jar" | sha256sum --check --quiet || { echo "tla2tools.jar is not v1.7.4"; exit 3; }
 sha256sum --check --quiet SHA256SUMS > "$out/inputs-check.txt" 2>&1 || { echo "input hash mismatch"; exit 3; }
+# 0. Generate the settings files of every case in cases.tsv (and remove any other .cfg here); record their hashes.
+gen=; d=$here
+for _ in 1 2 3 4 5; do [[ -f "$d/tlc_cases.py" ]] && { gen=$d/tlc_cases.py; break; }; d=$(dirname "$d"); done
+[[ -n "$gen" ]] || { echo "tlc_cases.py not found in this folder or above it"; exit 2; }
+"${PYTHON:-python3}" "$gen" gen "$here" > "$out/generate.txt" 2>&1 || { cat "$out/generate.txt"; echo "settings not generated"; exit 2; }
+sha256sum "$gen" $(cut -f2 cases.tsv) > "$out/generated.sha256"
 "$java" -version > "$out/java-version.txt" 2>&1
 printf 'step\tkind\ttarget\texit_code\tstarted_at\tfinished_at\telapsed_seconds\n' > "$out/executions.tsv"
 

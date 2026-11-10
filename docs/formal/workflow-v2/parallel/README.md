@@ -107,7 +107,7 @@ or before the deadline (`wAt = "before"`).
   admitted; the model joins at once with the same winners (same outcome).
 
 `cases.tsv` lists every case; `BATCH=<p1..p5> python3 gen-cases.py` regenerates
-the settings and a one-batch list. The settings of the p1 batch also name
+the tables with a one-batch list. The settings files (`.cfg`) are generated from `cases.json` and `tlc-templates.json` (`../../tlc_cases.py`) and are not committed. The settings of the p1 batch also name
 `Rules = "p1"`.
 
 ## p3: R2-RT-1, a pause committed while every cursor is pending
@@ -181,9 +181,10 @@ p2c (15 of 15 PASS). The code findings H1, J1-R1, J1-R2, J1C-1 and R2-RT-1 were 
 (J1b to J1e, S-RT1) and their cases re-ran. The expected outcomes are in `cases.json` (94 cases
 listed in `cases.tsv`: 52 PASS, 36 safety violation, 6 liveness violation). These are batch
 runs; one complete run of all 94 cases with this folder's `run-tlc.sh` is not recorded. Two older settings
-files (`wit.par2-checked-join.cfg`, `cmp.par2-late-join.cfg`) are not produced
+files (`wit.par2-checked-join`, `cmp.par2-late-join`) are not produced
 by `gen-cases.py` any more and are not in `cases.tsv`; they belong to an earlier
-form of the join check (PJ-Q1, PJ-Q4) and are kept for the record. A case that
+form of the join check (PJ-Q1, PJ-Q4) and are kept for the record in
+`cases-retired.json` (`python3 ../../tlc_cases.py gen --with-retired .` writes them). A case that
 exceeds its time or memory cap is PARTIAL (VOID if it stops on an error),
 never PASS.
 

@@ -21,7 +21,55 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "9a8d0f66: three visits, stop and cancel, no person action, no failure (the run-end Stop of G5 assumed): one agent session goes on at a time, results bind to their own visit, ends are sent once."
+  "note": "9a8d0f66: three visits, stop and cancel, no person action, no failure (the run-end Stop of G5 assumed): one agent session goes on at a time, results bind to their own visit, ends are sent once.",
+  "tlc": {
+   "comment": "cc.safety (expected PASS): 9a8d0f66: three visits, stop and cancel, no person action, no failure (the run-end Stop of G5 assumed): one agent session goes on at a time, results bind to their own visit, ends are sent once.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "cc.live",
@@ -45,7 +93,55 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "9a8d0f66: every visit is decided; after the run ends every agent session is ended; an owed end is sent."
+  "note": "9a8d0f66: every visit is decided; after the run ends every agent session is ended; an owed end is sent.",
+  "tlc": {
+   "comment": "cc.live (expected PASS): 9a8d0f66: every visit is decided; after the run ends every agent session is ended; an owed end is sent.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "cc.stop",
@@ -72,7 +168,58 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "9a8d0f66: a graceful stop: started visits finish, idle agent sessions are ended, then the run ends."
+  "note": "9a8d0f66: a graceful stop: started visits finish, idle agent sessions are ended, then the run ends.",
+  "tlc": {
+   "comment": "cc.stop (expected PASS): 9a8d0f66: a graceful stop: started visits finish, idle agent sessions are ended, then the run ends.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "FALSE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "cc.cancel",
@@ -96,7 +243,55 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "9a8d0f66: a cancel decides pending visits; an agent session being created is owed and ended later."
+  "note": "9a8d0f66: a cancel decides pending visits; an agent session being created is owed and ended later.",
+  "tlc": {
+   "comment": "cc.cancel (expected PASS): 9a8d0f66: a cancel decides pending visits; an agent session being created is owed and ended later.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "FALSE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "cc.person-rest",
@@ -116,7 +311,51 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "9a8d0f66: a person ends or deletes the agent session: one goes on at a time, a replacement only after it ended, results bind to their own visit."
+  "note": "9a8d0f66: a person ends or deletes the agent session: one goes on at a time, a replacement only after it ended, results bind to their own visit.",
+  "tlc": {
+   "comment": "cc.person-rest (expected PASS): 9a8d0f66: a person ends or deletes the agent session: one goes on at a time, a replacement only after it ended, results bind to their own visit.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "cc.person-live",
@@ -140,7 +379,55 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "9a8d0f66: with a person's end or delete, every visit is still decided and every agent session ended."
+  "note": "9a8d0f66: with a person's end or delete, every visit is still decided and every agent session ended.",
+  "tlc": {
+   "comment": "cc.person-live (expected PASS): 9a8d0f66: with a person's end or delete, every visit is still decided and every agent session ended.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "3",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "cc.late-reply-binding",
@@ -160,7 +447,51 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "9a8d0f66: a visit's turn runs on after its visit was decided (time limit, Stop not sent): its result is refused, never taken by the next visit."
+  "note": "9a8d0f66: a visit's turn runs on after its visit was decided (time limit, Stop not sent): its result is refused, never taken by the next visit.",
+  "tlc": {
+   "comment": "cc.late-reply-binding (expected PASS): 9a8d0f66: a visit's turn runs on after its visit was decided (time limit, Stop not sent): its result is refused, never taken by the next visit.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "finding.g1-silent",
@@ -175,7 +506,46 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "G1 at 9a8d0f66: the visit's agent session is chosen at admission and frozen; deleted before the spawn, it is brought back as a row that says running and the prompt is dropped; the visit waits out its time limit."
+  "note": "G1 at 9a8d0f66: the visit's agent session is chosen at admission and frozen; deleted before the spawn, it is brought back as a row that says running and the prompt is dropped; the visit waits out its time limit.",
+  "tlc": {
+   "comment": "finding.g1-silent (expected safety): G1 at 9a8d0f66: the visit's agent session is chosen at admission and frozen; deleted before the spawn, it is brought back as a row that says running and the prompt is dropped; the visit waits out its time limit.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "Inv_PromptNotDropped"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "finding.g1-loud",
@@ -190,7 +560,46 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "G1 at 9a8d0f66: ended before the spawn, the agent session refuses the prompt; the spawn retries about 31 minutes, then the visit fails unavailable."
+  "note": "G1 at 9a8d0f66: ended before the spawn, the agent session refuses the prompt; the spawn retries about 31 minutes, then the visit fails unavailable.",
+  "tlc": {
+   "comment": "finding.g1-loud (expected safety): G1 at 9a8d0f66: ended before the spawn, the agent session refuses the prompt; the spawn retries about 31 minutes, then the visit fails unavailable.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "Inv_NoLoudFail"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fix.g1-recheck",
@@ -214,7 +623,55 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "G1 fix: the spawn checks the frozen agent session before it sends; an ended or deleted one fails the visit at once."
+  "note": "G1 fix: the spawn checks the frozen agent session before it sends; an ended or deleted one fails the visit at once.",
+  "tlc": {
+   "comment": "fix.g1-recheck (expected PASS): G1 fix: the spawn checks the frozen agent session before it sends; an ended or deleted one fails the visit at once.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "finding.g2-stale-turn",
@@ -229,7 +686,46 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "G2 at 9a8d0f66: a visit's cycle Stop fails past its retries; nothing sends it again during the run; the next visit's prompt waits behind the old turn."
+  "note": "G2 at 9a8d0f66: a visit's cycle Stop fails past its retries; nothing sends it again during the run; the next visit's prompt waits behind the old turn.",
+  "tlc": {
+   "comment": "finding.g2-stale-turn (expected safety): G2 at 9a8d0f66: a visit's cycle Stop fails past its retries; nothing sends it again during the run; the next visit's prompt waits behind the old turn.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "Inv_NoPromptBehindStaleTurn"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fix.g2-stop-before-spawn",
@@ -257,7 +753,59 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "G2 fix: the next visit's spawn first sends the earlier visit's Stop again."
+  "note": "G2 fix: the next visit's spawn first sends the earlier visit's Stop again.",
+  "tlc": {
+   "comment": "fix.g2-stop-before-spawn (expected PASS): G2 fix: the next visit's spawn first sends the earlier visit's Stop again.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "finding.g3-other-chat",
@@ -279,7 +827,53 @@
    "Prop_OthersEnded"
   ],
   "deadlock": false,
-  "note": "G3 at 9a8d0f66: the first agent session's end fails past every retry; the loop stops there, so the replacement session is never ended."
+  "note": "G3 at 9a8d0f66: the first agent session's end fails past every retry; the loop stops there, so the replacement session is never ended.",
+  "tlc": {
+   "comment": "finding.g3-other-chat (expected liveness): G3 at 9a8d0f66: the first agent session's end fails past every retry; the loop stops there, so the replacement session is never ended.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "3",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "1",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_OthersEnded"
+   ],
+   "deadlock": false
+  }
  },
  {
   "id": "limit.g3-failed-chat",
@@ -301,7 +895,53 @@
    "Prop_AllEnded"
   ],
   "deadlock": false,
-  "note": "The agent session whose end fails past every retry stays open until a person runs recover (recover is on request)."
+  "note": "The agent session whose end fails past every retry stays open until a person runs recover (recover is on request).",
+  "tlc": {
+   "comment": "limit.g3-failed-chat (expected liveness): The agent session whose end fails past every retry stays open until a person runs recover (recover is on request).",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "1",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_AllEnded"
+   ],
+   "deadlock": false
+  }
  },
  {
   "id": "fix.g3-per-chat",
@@ -324,7 +964,54 @@
    "Prop_AllEnded"
   ],
   "deadlock": true,
-  "note": "G3 fix: each agent session's end is tried on its own; the others are ended; a recover ends the failed one."
+  "note": "G3 fix: each agent session's end is tried on its own; the others are ended; a recover ends the failed one.",
+  "tlc": {
+   "comment": "fix.g3-per-chat (expected PASS): G3 fix: each agent session's end is tried on its own; the others are ended; a recover ends the failed one.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "3",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "1",
+    "RecoverFair": "TRUE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_OthersEnded",
+    "Prop_AllEnded"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "finding.g5-no-stop-at-end",
@@ -339,7 +1026,46 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "G5 at 9a8d0f66: a run cancelled during a visit's turn sends no Stop; the end command waits for the turn's natural end."
+  "note": "G5 at 9a8d0f66: a run cancelled during a visit's turn sends no Stop; the end command waits for the turn's natural end.",
+  "tlc": {
+   "comment": "finding.g5-no-stop-at-end (expected safety): G5 at 9a8d0f66: a run cancelled during a visit's turn sends no Stop; the end command waits for the turn's natural end.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "FALSE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "Inv_StopAtRunEnd"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fix.g5-stop-at-end",
@@ -363,7 +1089,55 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "G5 fix: the visit's end at the run's end also stops its running turn."
+  "note": "G5 fix: the visit's end at the run's end also stops its running turn.",
+  "tlc": {
+   "comment": "fix.g5-stop-at-end (expected PASS): G5 fix: the visit's end at the run's end also stops its running turn.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "FALSE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "fix.all",
@@ -391,7 +1165,59 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "Every proposed fix together, with a person's action and failing Stops."
+  "note": "Every proposed fix together, with a person's action and failing Stops.",
+  "tlc": {
+   "comment": "fix.all (expected PASS): Every proposed fix together, with a person's action and failing Stops.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "3",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-safety",
@@ -415,7 +1241,55 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "a9f60db7: every fix, a person's delete, failing Stops: one agent session at a time, results bound, no prompt dropped, no 31-minute wait, no prompt behind a stale turn, the run's end stops a running turn."
+  "note": "a9f60db7: every fix, a person's delete, failing Stops: one agent session at a time, results bound, no prompt dropped, no 31-minute wait, no prompt behind a stale turn, the run's end stops a running turn.",
+  "tlc": {
+   "comment": "impl.cc-safety (expected PASS): a9f60db7: every fix, a person's delete, failing Stops: one agent session at a time, results bound, no prompt dropped, no 31-minute wait, no prompt behind a stale turn, the run's end stops a running turn.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-live",
@@ -439,7 +1313,55 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "a9f60db7: with a person's end or delete and failing Stops, every visit is decided and every agent session ended."
+  "note": "a9f60db7: with a person's end or delete and failing Stops, every visit is decided and every agent session ended.",
+  "tlc": {
+   "comment": "impl.cc-live (expected PASS): a9f60db7: with a person's end or delete and failing Stops, every visit is decided and every agent session ended.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "3",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-g1",
@@ -457,7 +1379,49 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "G1 at a9f60db7 (feeb321e): an agent session ended or deleted after admission fails the visit at once; the next visit gets a replacement."
+  "note": "G1 at a9f60db7 (feeb321e): an agent session ended or deleted after admission fails the visit at once; the next visit gets a replacement.",
+  "tlc": {
+   "comment": "impl.cc-g1 (expected PASS): G1 at a9f60db7 (feeb321e): an agent session ended or deleted after admission fails the visit at once; the next visit gets a replacement.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoLoudFail",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_OneLive"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-g1-deleted",
@@ -473,7 +1437,47 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "G1 at a9f60db7: a deleted agent session gets no prompt and is not brought back."
+  "note": "G1 at a9f60db7: a deleted agent session gets no prompt and is not brought back.",
+  "tlc": {
+   "comment": "impl.cc-g1-deleted (expected PASS): G1 at a9f60db7: a deleted agent session gets no prompt and is not brought back.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_PromptNotDropped"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "limit.cc-g1-end-during-turn",
@@ -488,7 +1492,46 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "Prediction at a9f60db7: a person ends the agent session while a turn runs; the status stays Running until that turn ends, so the next visit's prompt is sent and then dropped when the end lands; the visit waits out its time limit."
+  "note": "Prediction at a9f60db7: a person ends the agent session while a turn runs; the status stays Running until that turn ends, so the next visit's prompt is sent and then dropped when the end lands; the visit waits out its time limit.",
+  "tlc": {
+   "comment": "limit.cc-g1-end-during-turn (expected safety): Prediction at a9f60db7: a person ends the agent session while a turn runs; the status stays Running until that turn ends, so the next visit's prompt is sent and then dropped when the end lands; the visit waits out its time limit.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "Inv_PromptNotDropped"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "impl.cc-g1b-end-during-turn",
@@ -506,7 +1549,49 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "7024ef6f: a person ends the agent session while a turn runs; the end is recorded before its command, so the next visit gets a replacement (or fails at once) and no prompt is dropped."
+  "note": "7024ef6f: a person ends the agent session while a turn runs; the end is recorded before its command, so the next visit gets a replacement (or fails at once) and no prompt is dropped.",
+  "tlc": {
+   "comment": "impl.cc-g1b-end-during-turn (expected PASS): 7024ef6f: a person ends the agent session while a turn runs; the end is recorded before its command, so the next visit gets a replacement (or fails at once) and no prompt is dropped.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_PromptNotDropped",
+    "Inv_OneLive",
+    "Inv_ReplaceOnlyEnded"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-g1b-safety",
@@ -530,7 +1615,55 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "7024ef6f: every fix, a person's end or delete, failing Stops: all safety properties."
+  "note": "7024ef6f: every fix, a person's end or delete, failing Stops: all safety properties.",
+  "tlc": {
+   "comment": "impl.cc-g1b-safety (expected PASS): 7024ef6f: every fix, a person's end or delete, failing Stops: all safety properties.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-g1b-live",
@@ -554,7 +1687,55 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "7024ef6f: every visit decided, every agent session ended, owed ends sent."
+  "note": "7024ef6f: every visit decided, every agent session ended, owed ends sent.",
+  "tlc": {
+   "comment": "impl.cc-g1b-live (expected PASS): 7024ef6f: every visit decided, every agent session ended, owed ends sent.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "3",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-g2",
@@ -582,7 +1763,59 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "G2 at a9f60db7 (6ab43450): an earlier visit's Stop that failed is sent again before the next prompt, and at the run's end."
+  "note": "G2 at a9f60db7 (6ab43450): an earlier visit's Stop that failed is sent again before the next prompt, and at the run's end.",
+  "tlc": {
+   "comment": "impl.cc-g2 (expected PASS): G2 at a9f60db7 (6ab43450): an earlier visit's Stop that failed is sent again before the next prompt, and at the run's end.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-g3",
@@ -605,7 +1838,54 @@
    "Prop_AllEnded"
   ],
   "deadlock": true,
-  "note": "G3 at a9f60db7 (d227a0e6): each agent session's end is tried on its own; the others are ended; a recover ends the failed one."
+  "note": "G3 at a9f60db7 (d227a0e6): each agent session's end is tried on its own; the others are ended; a recover ends the failed one.",
+  "tlc": {
+   "comment": "impl.cc-g3 (expected PASS): G3 at a9f60db7 (d227a0e6): each agent session's end is tried on its own; the others are ended; a recover ends the failed one.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "3",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "1",
+    "RecoverFair": "TRUE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_OthersEnded",
+    "Prop_AllEnded"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-g5",
@@ -629,7 +1909,55 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "G5 at a9f60db7 (1066e995): a run cancelled during a visit's turn stops that turn."
+  "note": "G5 at a9f60db7 (1066e995): a run cancelled during a visit's turn stops that turn.",
+  "tlc": {
+   "comment": "impl.cc-g5 (expected PASS): G5 at a9f60db7 (1066e995): a run cancelled during a visit's turn stops that turn.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "FALSE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.cc-recheck-fails-visit",
@@ -644,7 +1972,46 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "a9f60db7: the spawn's check fails a visit whose agent session ended after admission."
+  "note": "a9f60db7: the spawn's check fails a visit whose agent session ended after admission.",
+  "tlc": {
+   "comment": "wit.cc-recheck-fails-visit (expected safety): a9f60db7: the spawn's check fails a visit whose agent session ended after admission.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "W_NoRecheckFail"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "limit.cc-drr1-delete-after-check",
@@ -660,7 +2027,47 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "DRR-1 at 7024ef6f: a person deletes the agent session after the spawn's check and before the child create; the create's upsert brings the deleted row back."
+  "note": "DRR-1 at 7024ef6f: a person deletes the agent session after the spawn's check and before the child create; the create's upsert brings the deleted row back.",
+  "tlc": {
+   "comment": "limit.cc-drr1-delete-after-check (expected safety): DRR-1 at 7024ef6f: a person deletes the agent session after the spawn's check and before the child create; the create's upsert brings the deleted row back.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoRevive"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "limit.cc-drr1-retry-revives",
@@ -676,7 +2083,47 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "DRR-1 at 7024ef6f: a first visit's attempt creates its agent session and fails before it is recorded; a person deletes the session; the retry is not checked and its create brings the row back."
+  "note": "DRR-1 at 7024ef6f: a first visit's attempt creates its agent session and fails before it is recorded; a person deletes the session; the retry is not checked and its create brings the row back.",
+  "tlc": {
+   "comment": "limit.cc-drr1-retry-revives (expected safety): DRR-1 at 7024ef6f: a first visit's attempt creates its agent session and fails before it is recorded; a person deletes the session; the retry is not checked and its create brings the row back.",
+   "spec": "Spec",
+   "constants": {
+    "V": "1",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoRevive"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "limit.cc-drr1-end-after-check",
@@ -693,7 +2140,48 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "DRR-1 at 7024ef6f: a person ends the agent session after the spawn's check; the prompt is sent to an ended session (refused, the spawn retries) or queued behind the end (dropped)."
+  "note": "DRR-1 at 7024ef6f: a person ends the agent session after the spawn's check; the prompt is sent to an ended session (refused, the spawn retries) or queued behind the end (dropped).",
+  "tlc": {
+   "comment": "limit.cc-drr1-end-after-check (expected safety): DRR-1 at 7024ef6f: a person ends the agent session after the spawn's check; the prompt is sent to an ended session (refused, the spawn retries) or queued behind the end (dropped).",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fix.cc-drr1-create-norevive",
@@ -710,7 +2198,48 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "DRR-1 fix (proposed), the create part: a create refuses a deleted row without reviving it; every attempt is checked."
+  "note": "DRR-1 fix (proposed), the create part: a create refuses a deleted row without reviving it; every attempt is checked.",
+  "tlc": {
+   "comment": "fix.cc-drr1-create-norevive (expected PASS): DRR-1 fix (proposed), the create part: a create refuses a deleted row without reviving it; every attempt is checked.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"create\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoRevive",
+    "Inv_PromptNotDropped"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "limit.cc-drr1-create-then-end",
@@ -727,7 +2256,48 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "DRR-1 fix (proposed) with the create fenced but not the send: an end between the create and the send still meets the prompt."
+  "note": "DRR-1 fix (proposed) with the create fenced but not the send: an end between the create and the send still meets the prompt.",
+  "tlc": {
+   "comment": "limit.cc-drr1-create-then-end (expected safety): DRR-1 fix (proposed) with the create fenced but not the send: an end between the create and the send still meets the prompt.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"create\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fix.cc-drr1-fence",
@@ -752,7 +2322,56 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "DRR-1 fix (proposed): the create refuses a tombstone and the send is fenced with its check; every attempt checked: no revival, no prompt dropped, no 31-minute wait."
+  "note": "DRR-1 fix (proposed): the create refuses a tombstone and the send is fenced with its check; every attempt checked: no revival, no prompt dropped, no 31-minute wait.",
+  "tlc": {
+   "comment": "fix.cc-drr1-fence (expected PASS): DRR-1 fix (proposed): the create refuses a tombstone and the send is fenced with its check; every attempt checked: no revival, no prompt dropped, no 31-minute wait.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd",
+    "Inv_NoRevive"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "fix.cc-drr1-live",
@@ -777,7 +2396,56 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "DRR-1 fix (proposed): every visit decided, every agent session ended, owed ends sent."
+  "note": "DRR-1 fix (proposed): every visit decided, every agent session ended, owed ends sent.",
+  "tlc": {
+   "comment": "fix.cc-drr1-live (expected PASS): DRR-1 fix (proposed): every visit decided, every agent session ended, owed ends sent.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_NoRevive"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "cc.drr2-no-fail",
@@ -805,7 +2473,59 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "DRR-2 at 7024ef6f (with the DRR-1 fence): the mark before the command alone leaves no agent session abandoned and fails no visit on a live one."
+  "note": "DRR-2 at 7024ef6f (with the DRR-1 fence): the mark before the command alone leaves no agent session abandoned and fails no visit on a live one.",
+  "tlc": {
+   "comment": "cc.drr2-no-fail (expected PASS): DRR-2 at 7024ef6f (with the DRR-1 fence): the mark before the command alone leaves no agent session abandoned and fails no visit on a live one.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_NoAbandonedLive",
+    "Inv_NoFailOnLive",
+    "TypeOK",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd",
+    "Inv_NoRevive"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "limit.cc-drr2-throw",
@@ -823,7 +2543,49 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "DRR-2 at 7024ef6f: the end's command fails after its mark; the mark stays; the next visit replaces a live agent session (abandoned) or fails at once on it."
+  "note": "DRR-2 at 7024ef6f: the end's command fails after its mark; the mark stays; the next visit replaces a live agent session (abandoned) or fails at once on it.",
+  "tlc": {
+   "comment": "limit.cc-drr2-throw (expected safety): DRR-2 at 7024ef6f: the end's command fails after its mark; the mark stays; the next visit replaces a live agent session (abandoned) or fails at once on it.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"throw\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_NoAbandonedLive",
+    "Inv_NoFailOnLive"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "limit.cc-drr2-throw-withdraw",
@@ -841,7 +2603,49 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "DRR-2 with a withdrawal on a thrown command: between the mark and its withdrawal a visit can still replace the live agent session or fail on it."
+  "note": "DRR-2 with a withdrawal on a thrown command: between the mark and its withdrawal a visit can still replace the live agent session or fail on it.",
+  "tlc": {
+   "comment": "limit.cc-drr2-throw-withdraw (expected safety): DRR-2 with a withdrawal on a thrown command: between the mark and its withdrawal a visit can still replace the live agent session or fail on it.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"throw\"",
+    "Withdraw": "TRUE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_NoAbandonedLive",
+    "Inv_NoFailOnLive"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "limit.cc-drr2-crash",
@@ -859,7 +2663,49 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "DRR-2 at 7024ef6f: the process stops after the mark; no command, no withdrawal: the agent session stays live and is abandoned for the rest of the run."
+  "note": "DRR-2 at 7024ef6f: the process stops after the mark; no command, no withdrawal: the agent session stays live and is abandoned for the rest of the run.",
+  "tlc": {
+   "comment": "limit.cc-drr2-crash (expected safety): DRR-2 at 7024ef6f: the process stops after the mark; no command, no withdrawal: the agent session stays live and is abandoned for the rest of the run.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "TRUE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_NoAbandonedLive",
+    "Inv_NoFailOnLive"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "cc.drr2-crash-prompt",
@@ -883,7 +2729,55 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "DRR-2 at 7024ef6f (with the DRR-1 fence): the crash window drops no prompt, makes no visit wait out the spawn retries, and revives nothing."
+  "note": "DRR-2 at 7024ef6f (with the DRR-1 fence): the crash window drops no prompt, makes no visit wait out the spawn retries, and revives nothing.",
+  "tlc": {
+   "comment": "cc.drr2-crash-prompt (expected PASS): DRR-2 at 7024ef6f (with the DRR-1 fence): the crash window drops no prompt, makes no visit wait out the spawn retries, and revives nothing.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd",
+    "Inv_NoRevive"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "cc.drr2-crash-live",
@@ -906,7 +2800,54 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "DRR-2 at 7024ef6f (with the DRR-1 fence): after a crash window every visit is decided and the abandoned agent session is ended by the run's end."
+  "note": "DRR-2 at 7024ef6f (with the DRR-1 fence): after a crash window every visit is decided and the abandoned agent session is ended by the run's end.",
+  "tlc": {
+   "comment": "cc.drr2-crash-live (expected PASS): DRR-2 at 7024ef6f (with the DRR-1 fence): after a crash window every visit is decided and the abandoned agent session is ended by the run's end.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "3",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "fix.cc-drr2-outbox",
@@ -934,7 +2875,59 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "DRR-2 fix (proposed), a durable outbox: the end command is sent after a crash; no agent session is abandoned and no visit fails on a live one."
+  "note": "DRR-2 fix (proposed), a durable outbox: the end command is sent after a crash; no agent session is abandoned and no visit fails on a live one.",
+  "tlc": {
+   "comment": "fix.cc-drr2-outbox (expected PASS): DRR-2 fix (proposed), a durable outbox: the end command is sent after a crash; no agent session is abandoned and no visit fails on a live one.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "TRUE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_NoAbandonedLive",
+    "Inv_NoFailOnLive",
+    "TypeOK",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd",
+    "Inv_NoRevive"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "fix.cc-drr2-outbox-throw",
@@ -962,7 +2955,59 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "DRR-2 fix (proposed), a durable outbox: the end command is sent after its enqueue failed."
+  "note": "DRR-2 fix (proposed), a durable outbox: the end command is sent after its enqueue failed.",
+  "tlc": {
+   "comment": "fix.cc-drr2-outbox-throw (expected PASS): DRR-2 fix (proposed), a durable outbox: the end command is sent after its enqueue failed.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"throw\"",
+    "Withdraw": "FALSE",
+    "Outbox": "TRUE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_NoAbandonedLive",
+    "Inv_NoFailOnLive",
+    "TypeOK",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd",
+    "Inv_NoRevive"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "fix.cc-drr2-outbox-live",
@@ -986,7 +3031,55 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "DRR-2 fix (proposed): every visit decided, every agent session ended, owed ends sent."
+  "note": "DRR-2 fix (proposed): every visit decided, every agent session ended, owed ends sent.",
+  "tlc": {
+   "comment": "fix.cc-drr2-outbox-live (expected PASS): DRR-2 fix (proposed): every visit decided, every agent session ended, owed ends sent.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "TRUE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "fix.cc-drr2-carry-throw",
@@ -1014,7 +3107,59 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "DRR-2 fix (proposed), the Workflow carries the end: the person's command failed; a visit that acts on the mark first queues its end, so no agent session is abandoned and no visit fails on a live one."
+  "note": "DRR-2 fix (proposed), the Workflow carries the end: the person's command failed; a visit that acts on the mark first queues its end, so no agent session is abandoned and no visit fails on a live one.",
+  "tlc": {
+   "comment": "fix.cc-drr2-carry-throw (expected PASS): DRR-2 fix (proposed), the Workflow carries the end: the person's command failed; a visit that acts on the mark first queues its end, so no agent session is abandoned and no visit fails on a live one.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"throw\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_NoAbandonedLive",
+    "Inv_NoFailOnLive",
+    "TypeOK",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd",
+    "Inv_NoRevive"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "fix.cc-drr2-carry-crash",
@@ -1042,7 +3187,59 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "DRR-2 fix (proposed), the Workflow carries the end after a crash between the mark and the command."
+  "note": "DRR-2 fix (proposed), the Workflow carries the end after a crash between the mark and the command.",
+  "tlc": {
+   "comment": "fix.cc-drr2-carry-crash (expected PASS): DRR-2 fix (proposed), the Workflow carries the end after a crash between the mark and the command.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_NoAbandonedLive",
+    "Inv_NoFailOnLive",
+    "TypeOK",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd",
+    "Inv_NoRevive"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "fix.cc-drr2-carry-live",
@@ -1066,7 +3263,55 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "DRR-2 fix (proposed), the Workflow carries the end: every visit decided, every agent session ended, owed ends sent."
+  "note": "DRR-2 fix (proposed), the Workflow carries the end: every visit decided, every agent session ended, owed ends sent.",
+  "tlc": {
+   "comment": "fix.cc-drr2-carry-live (expected PASS): DRR-2 fix (proposed), the Workflow carries the end: every visit decided, every agent session ended, owed ends sent.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "3",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.cc-drr2-carried",
@@ -1081,7 +3326,46 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "A Workflow step carries a person's end whose command was lost."
+  "note": "A Workflow step carries a person's end whose command was lost.",
+  "tlc": {
+   "comment": "wit.cc-drr2-carried (expected safety): A Workflow step carries a person's end whose command was lost.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "W_NoCarry"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-drr1-fence",
@@ -1106,7 +3390,56 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "DRR-1 at 69d07073: the create refuses a deleted row (locked), every attempt is checked, and the check after the send decides the visit: no revival, no prompt dropped, no 31-minute wait."
+  "note": "DRR-1 at 69d07073: the create refuses a deleted row (locked), every attempt is checked, and the check after the send decides the visit: no revival, no prompt dropped, no 31-minute wait.",
+  "tlc": {
+   "comment": "impl.cc-drr1-fence (expected PASS): DRR-1 at 69d07073: the create refuses a deleted row (locked), every attempt is checked, and the check after the send decides the visit: no revival, no prompt dropped, no 31-minute wait.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd",
+    "Inv_NoRevive"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-drr1-live",
@@ -1131,7 +3464,56 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "DRR-1 at 69d07073: every visit decided, every agent session ended, owed ends sent."
+  "note": "DRR-1 at 69d07073: every visit decided, every agent session ended, owed ends sent.",
+  "tlc": {
+   "comment": "impl.cc-drr1-live (expected PASS): DRR-1 at 69d07073: every visit decided, every agent session ended, owed ends sent.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_NoRevive"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "limit.cc-drr1-orphan-run",
@@ -1147,7 +3529,47 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "At 5451a22e: a person deletes a just-created agent session (row, no orchestration yet) between the create and the send; the send starts its orchestration, and the check after the send decides the visit but leaves that orchestration running."
+  "note": "At 5451a22e: a person deletes a just-created agent session (row, no orchestration yet) between the create and the send; the send starts its orchestration, and the check after the send decides the visit but leaves that orchestration running.",
+  "tlc": {
+   "comment": "limit.cc-drr1-orphan-run (expected safety): At 5451a22e: a person deletes a just-created agent session (row, no orchestration yet) between the create and the send; the send starts its orchestration, and the check after the send decides the visit but leaves that orchestration running.",
+   "spec": "Spec",
+   "constants": {
+    "V": "1",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoOrphanRun"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fix.cc-drr1-carry-delete",
@@ -1166,7 +3588,50 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "Proposed (DRR-1b with the owed look): when the check after the send finds the session deleted, it ends an orchestration the send started, also when that start does not read as existing yet (the attempt retries until it does)."
+  "note": "Proposed (DRR-1b with the owed look): when the check after the send finds the session deleted, it ends an orchestration the send started, also when that start does not read as existing yet (the attempt retries until it does).",
+  "tlc": {
+   "comment": "fix.cc-drr1-carry-delete (expected PASS): Proposed (DRR-1b with the owed look): when the check after the send finds the session deleted, it ends an orchestration the send started, also when that start does not read as existing yet (the attempt retries until it does).",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"owed\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoOrphanRun",
+    "Inv_NoRevive",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-drr2-carry-throw",
@@ -1194,7 +3659,59 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "DRR-2 at 5451a22e: the person's command failed after its mark; the Workflow carries the end when it acts on the mark."
+  "note": "DRR-2 at 5451a22e: the person's command failed after its mark; the Workflow carries the end when it acts on the mark.",
+  "tlc": {
+   "comment": "impl.cc-drr2-carry-throw (expected PASS): DRR-2 at 5451a22e: the person's command failed after its mark; the Workflow carries the end when it acts on the mark.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"throw\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_NoAbandonedLive",
+    "Inv_NoFailOnLive",
+    "TypeOK",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd",
+    "Inv_NoRevive"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-drr2-carry-crash",
@@ -1222,7 +3739,59 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "DRR-2 at 5451a22e: the asker's process stopped after the mark; the Workflow carries the end."
+  "note": "DRR-2 at 5451a22e: the asker's process stopped after the mark; the Workflow carries the end.",
+  "tlc": {
+   "comment": "impl.cc-drr2-carry-crash (expected PASS): DRR-2 at 5451a22e: the asker's process stopped after the mark; the Workflow carries the end.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_NoAbandonedLive",
+    "Inv_NoFailOnLive",
+    "TypeOK",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd",
+    "Inv_NoRevive"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-drr2-carry-live",
@@ -1246,7 +3815,55 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "DRR-2 at 5451a22e: every visit decided, every agent session ended, owed ends sent."
+  "note": "DRR-2 at 5451a22e: every visit decided, every agent session ended, owed ends sent.",
+  "tlc": {
+   "comment": "impl.cc-drr2-carry-live (expected PASS): DRR-2 at 5451a22e: every visit decided, every agent session ended, owed ends sent.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "3",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-drr-safety",
@@ -1274,7 +3891,59 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "5451a22e: DRR-1 and DRR-2 together, a person's end or delete, a lost command, a crashed spawn attempt, failing Stops: all safety properties."
+  "note": "5451a22e: DRR-1 and DRR-2 together, a person's end or delete, a lost command, a crashed spawn attempt, failing Stops: all safety properties.",
+  "tlc": {
+   "comment": "impl.cc-drr-safety (expected PASS): 5451a22e: DRR-1 and DRR-2 together, a person's end or delete, a lost command, a crashed spawn attempt, failing Stops: all safety properties.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_NoAbandonedLive",
+    "Inv_NoFailOnLive",
+    "TypeOK",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd",
+    "Inv_NoRevive"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "fix.cc-drr1-live-n",
@@ -1299,7 +3968,56 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "fix.cc-drr1-live reduced: a person's delete, a crashed spawn attempt, no failing Stops."
+  "note": "fix.cc-drr1-live reduced: a person's delete, a crashed spawn attempt, no failing Stops.",
+  "tlc": {
+   "comment": "fix.cc-drr1-live-n (expected PASS): fix.cc-drr1-live reduced: a person's delete, a crashed spawn attempt, no failing Stops.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_NoRevive"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "cc.drr2-crash-live-n",
@@ -1322,7 +4040,54 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "cc.drr2-crash-live reduced: two visits, no failing Stops."
+  "note": "cc.drr2-crash-live reduced: two visits, no failing Stops.",
+  "tlc": {
+   "comment": "cc.drr2-crash-live-n (expected PASS): cc.drr2-crash-live reduced: two visits, no failing Stops.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "fix.cc-drr2-carry-live-n",
@@ -1346,7 +4111,55 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "fix.cc-drr2-carry-live reduced: two visits, a person's end, no failing Stops."
+  "note": "fix.cc-drr2-carry-live reduced: two visits, a person's end, no failing Stops.",
+  "tlc": {
+   "comment": "fix.cc-drr2-carry-live-n (expected PASS): fix.cc-drr2-carry-live reduced: two visits, a person's end, no failing Stops.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"both\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-drr1-live-n",
@@ -1371,7 +4184,56 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "impl.cc-drr1-live reduced (69d07073): a person's delete, a crashed spawn attempt, no failing Stops."
+  "note": "impl.cc-drr1-live reduced (69d07073): a person's delete, a crashed spawn attempt, no failing Stops.",
+  "tlc": {
+   "comment": "impl.cc-drr1-live-n (expected PASS): impl.cc-drr1-live reduced (69d07073): a person's delete, a crashed spawn attempt, no failing Stops.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_NoRevive"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-drr2-carry-live-n",
@@ -1395,7 +4257,55 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "impl.cc-drr2-carry-live reduced (5451a22e): two visits, a person's end, no failing Stops."
+  "note": "impl.cc-drr2-carry-live reduced (5451a22e): two visits, a person's end, no failing Stops.",
+  "tlc": {
+   "comment": "impl.cc-drr2-carry-live-n (expected PASS): impl.cc-drr2-carry-live reduced (5451a22e): two visits, a person's end, no failing Stops.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "limit.cc-drr1b-start-not-visible",
@@ -1411,7 +4321,47 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "At 7bd79a46: the check after the send finds the just-created session deleted; the start the send queued does not read as existing yet (NotFound), so the deletion is not carried and the orchestration runs on."
+  "note": "At 7bd79a46: the check after the send finds the just-created session deleted; the start the send queued does not read as existing yet (NotFound), so the deletion is not carried and the orchestration runs on.",
+  "tlc": {
+   "comment": "limit.cc-drr1b-start-not-visible (expected safety): At 7bd79a46: the check after the send finds the just-created session deleted; the start the send queued does not read as existing yet (NotFound), so the deletion is not carried and the orchestration runs on.",
+   "spec": "Spec",
+   "constants": {
+    "V": "1",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"visible\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoOrphanRun"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "impl.cc-drr1b-orphan-ended",
@@ -1437,7 +4387,57 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "7bd79a46: such an orchestration is ended at the latest by the run's end (endContinuedChatLocked reads its status)."
+  "note": "7bd79a46: such an orchestration is ended at the latest by the run's end (endContinuedChatLocked reads its status).",
+  "tlc": {
+   "comment": "impl.cc-drr1b-orphan-ended (expected PASS): 7bd79a46: such an orchestration is ended at the latest by the run's end (endContinuedChatLocked reads its status).",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"visible\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_NoRevive"
+   ],
+   "properties": [
+    "Prop_OrphanEnded",
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-drr1b-safety",
@@ -1465,7 +4465,59 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "7bd79a46: DRR-1, DRR-1b and DRR-2 together: all safety properties but the orphan."
+  "note": "7bd79a46: DRR-1, DRR-1b and DRR-2 together: all safety properties but the orphan.",
+  "tlc": {
+   "comment": "impl.cc-drr1b-safety (expected PASS): 7bd79a46: DRR-1, DRR-1b and DRR-2 together: all safety properties but the orphan.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"visible\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_NoAbandonedLive",
+    "Inv_NoFailOnLive",
+    "TypeOK",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd",
+    "Inv_NoRevive"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-drr1b-live-n",
@@ -1489,7 +4541,55 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "7bd79a46: every visit decided, every agent session ended, owed ends sent (two visits, a person's end)."
+  "note": "7bd79a46: every visit decided, every agent session ended, owed ends sent (two visits, a person's end).",
+  "tlc": {
+   "comment": "impl.cc-drr1b-live-n (expected PASS): 7bd79a46: every visit decided, every agent session ended, owed ends sent (two visits, a person's end).",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"visible\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-drr1c-no-orphan",
@@ -1508,7 +4608,50 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "9b2ca643: the check after the send enqueues the deletion's delete even when the start does not read as existing yet; it is delivered with the start, before any turn."
+  "note": "9b2ca643: the check after the send enqueues the deletion's delete even when the start does not read as existing yet; it is delivered with the start, before any turn.",
+  "tlc": {
+   "comment": "impl.cc-drr1c-no-orphan (expected PASS): 9b2ca643: the check after the send enqueues the deletion's delete even when the start does not read as existing yet; it is delivered with the start, before any turn.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"queued\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoOrphanRun",
+    "Inv_NoRevive",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-drr1c-safety",
@@ -1537,7 +4680,60 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "9b2ca643: DRR-1, DRR-1c and DRR-2 together: all safety properties."
+  "note": "9b2ca643: DRR-1, DRR-1c and DRR-2 together: all safety properties.",
+  "tlc": {
+   "comment": "impl.cc-drr1c-safety (expected PASS): 9b2ca643: DRR-1, DRR-1c and DRR-2 together: all safety properties.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"queued\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_NoAbandonedLive",
+    "Inv_NoFailOnLive",
+    "TypeOK",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd",
+    "Inv_NoRevive",
+    "Inv_NoOrphanRun"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-drr1c-live-n",
@@ -1563,7 +4759,57 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "9b2ca643: every visit decided, every agent session ended, owed ends sent (two visits, a person's delete)."
+  "note": "9b2ca643: every visit decided, every agent session ended, owed ends sent (two visits, a person's delete).",
+  "tlc": {
+   "comment": "impl.cc-drr1c-live-n (expected PASS): 9b2ca643: every visit decided, every agent session ended, owed ends sent (two visits, a person's delete).",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"queued\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_NoRevive",
+    "Inv_NoOrphanRun"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "limit.cc-drr1c-clock-skew",
@@ -1579,7 +4825,47 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "9b2ca643: when the event becomes visible before the start (hosts' clocks apart), it is fetched alone and dropped; the orchestration runs on."
+  "note": "9b2ca643: when the event becomes visible before the start (hosts' clocks apart), it is fetched alone and dropped; the orchestration runs on.",
+  "tlc": {
+   "comment": "limit.cc-drr1c-clock-skew (expected safety): 9b2ca643: when the event becomes visible before the start (hosts' clocks apart), it is fetched alone and dropped; the orchestration runs on.",
+   "spec": "Spec",
+   "constants": {
+    "V": "1",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"queued-skew\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoOrphanRun"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "impl.cc-drr1c-skew-ended",
@@ -1604,7 +4890,56 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "9b2ca643: even then the run's end ends it."
+  "note": "9b2ca643: even then the run's end ends it.",
+  "tlc": {
+   "comment": "impl.cc-drr1c-skew-ended (expected PASS): 9b2ca643: even then the run's end ends it.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"queued-skew\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_OrphanEnded",
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "limit.cc-dr2-001-turn-before-delete",
@@ -1620,7 +4955,47 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "DR2-001 at 9b2ca643: a person deletes a just-created agent session before its send; the send queues the start and the prompt, the check after it queues the delete; a worker fetches the start and the prompt first and runs a model turn on the deleted session."
+  "note": "DR2-001 at 9b2ca643: a person deletes a just-created agent session before its send; the send queues the start and the prompt, the check after it queues the delete; a worker fetches the start and the prompt first and runs a model turn on the deleted session.",
+  "tlc": {
+   "comment": "limit.cc-dr2-001-turn-before-delete (expected safety): DR2-001 at 9b2ca643: a person deletes a just-created agent session before its send; the send queues the start and the prompt, the check after it queues the delete; a worker fetches the start and the prompt first and runs a model turn on the deleted session.",
+   "spec": "Spec",
+   "constants": {
+    "V": "1",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"queued-race\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoTurnOnDeleted"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fix.cc-dr2-001-turn-guard",
@@ -1639,7 +5014,50 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "DR2-001 fix (781441bf): a turn's admission reads the row's deletion first; a deleted session runs no model turn and ends."
+  "note": "DR2-001 fix (781441bf): a turn's admission reads the row's deletion first; a deleted session runs no model turn and ends.",
+  "tlc": {
+   "comment": "fix.cc-dr2-001-turn-guard (expected PASS): DR2-001 fix (781441bf): a turn's admission reads the row's deletion first; a deleted session runs no model turn and ends.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"queued-race\"",
+    "TurnGuard": "TRUE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoTurnOnDeleted",
+    "Inv_NoRevive",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "fix.cc-dr2-001-guard-skew",
@@ -1655,7 +5073,47 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "DR2-001 fix (781441bf): the guard also covers a delete fetched alone and dropped (hosts' clocks apart)."
+  "note": "DR2-001 fix (781441bf): the guard also covers a delete fetched alone and dropped (hosts' clocks apart).",
+  "tlc": {
+   "comment": "fix.cc-dr2-001-guard-skew (expected PASS): DR2-001 fix (781441bf): the guard also covers a delete fetched alone and dropped (hosts' clocks apart).",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"queued-skew\"",
+    "TurnGuard": "TRUE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoTurnOnDeleted"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "fix.cc-dr2-001-live-n",
@@ -1682,7 +5140,58 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "DR2-001 fix (781441bf): every orchestration on a deleted session ends; every visit decided; every agent session ended."
+  "note": "DR2-001 fix (781441bf): every orchestration on a deleted session ends; every visit decided; every agent session ended.",
+  "tlc": {
+   "comment": "fix.cc-dr2-001-live-n (expected PASS): DR2-001 fix (781441bf): every orchestration on a deleted session ends; every visit decided; every agent session ended.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"delete\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"queued-race\"",
+    "TurnGuard": "TRUE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_NoRevive",
+    "Inv_NoTurnOnDeleted"
+   ],
+   "properties": [
+    "Prop_OrphanEnded",
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "limit.cc-dr2-003-mark-notfound",
@@ -1700,7 +5209,49 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "DR2-003 at 9b2ca643: a parent's end is marked on an agent session whose start does not read as existing yet and its command is lost; the Workflow acts on the mark but carries nothing (NotFound), so the session goes on beside its replacement or a visit fails on it."
+  "note": "DR2-003 at 9b2ca643: a parent's end is marked on an agent session whose start does not read as existing yet and its command is lost; the Workflow acts on the mark but carries nothing (NotFound), so the session goes on beside its replacement or a visit fails on it.",
+  "tlc": {
+   "comment": "limit.cc-dr2-003-mark-notfound (expected safety): DR2-003 at 9b2ca643: a parent's end is marked on an agent session whose start does not read as existing yet and its command is lost; the Workflow acts on the mark but carries nothing (NotFound), so the session goes on beside its replacement or a visit fails on it.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"queued-race\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "TRUE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_NoAbandonedLive",
+    "Inv_NoFailOnLive"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fix.cc-dr2-003-carry-notfound",
@@ -1719,7 +5270,50 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "DR2-003 fix (781441bf): the marked end is queued to a session that reads NotFound too."
+  "note": "DR2-003 fix (781441bf): the marked end is queued to a session that reads NotFound too.",
+  "tlc": {
+   "comment": "fix.cc-dr2-003-carry-notfound (expected PASS): DR2-003 fix (781441bf): the marked end is queued to a session that reads NotFound too.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"queued-race\"",
+    "TurnGuard": "TRUE",
+    "MarkCreating": "TRUE",
+    "CarryNotFound": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_NoAbandonedLive",
+    "Inv_NoFailOnLive",
+    "Inv_NoTurnOnDeleted"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "fix.cc-dr2-safety",
@@ -1748,7 +5342,60 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "781441bf: every DRR and DR2 fix together: all safety properties."
+  "note": "781441bf: every DRR and DR2 fix together: all safety properties.",
+  "tlc": {
+   "comment": "fix.cc-dr2-safety (expected PASS): 781441bf: every DRR and DR2 fix together: all safety properties.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"queued-race\"",
+    "TurnGuard": "TRUE",
+    "MarkCreating": "TRUE",
+    "CarryNotFound": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_NoAbandonedLive",
+    "Inv_NoFailOnLive",
+    "TypeOK",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd",
+    "Inv_NoRevive",
+    "Inv_NoTurnOnDeleted"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.cc-final-live",
@@ -1775,7 +5422,58 @@
    "Prop_OwedSent"
   ],
   "deadlock": true,
-  "note": "781441bf: every DRR and DR2 fix, a person's or a parent's end or delete, a lost command, a crashed spawn attempt: every visit decided, every agent session ended, owed ends sent, no orchestration left on a deleted session."
+  "note": "781441bf: every DRR and DR2 fix, a person's or a parent's end or delete, a lost command, a crashed spawn attempt: every visit decided, every agent session ended, owed ends sent, no orchestration left on a deleted session.",
+  "tlc": {
+   "comment": "impl.cc-final-live (expected PASS): 781441bf: every DRR and DR2 fix, a person's or a parent's end or delete, a lost command, a crashed spawn attempt: every visit decided, every agent session ended, owed ends sent, no orchestration left on a deleted session.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerChatEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "TRUE",
+    "CheckAll": "TRUE",
+    "Fence": "\"after\"",
+    "Backstop": "TRUE",
+    "AllowSpawnCrash": "TRUE",
+    "MarkSplit": "TRUE",
+    "MarkFail": "\"crash\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "TRUE",
+    "CarryDelete": "\"queued-race\"",
+    "TurnGuard": "TRUE",
+    "MarkCreating": "TRUE",
+    "CarryNotFound": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_NoRevive",
+    "Inv_NoTurnOnDeleted"
+   ],
+   "properties": [
+    "Prop_OrphanEnded",
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "fault.bind-newest",
@@ -1790,7 +5488,46 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "A result bound to the newest pending visit instead of its own: an old turn decides the next visit."
+  "note": "A result bound to the newest pending visit instead of its own: an old turn decides the next visit.",
+  "tlc": {
+   "comment": "fault.bind-newest (expected safety): A result bound to the newest pending visit instead of its own: an old turn decides the next visit.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"bind-newest\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "Inv_ResultOwnVisit"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fault.replace-without-check",
@@ -1805,7 +5542,46 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "A replacement agent session while the previous one goes on: two at once."
+  "note": "A replacement agent session while the previous one goes on: two at once.",
+  "tlc": {
+   "comment": "fault.replace-without-check (expected safety): A replacement agent session while the previous one goes on: two at once.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"replace-without-check\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "Inv_OneLive"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fault.no-owed-mark",
@@ -1827,7 +5603,53 @@
    "Prop_AllEnded"
   ],
   "deadlock": false,
-  "note": "An agent session not visible yet at the run's end is marked ended instead of owed: it starts later and is never ended."
+  "note": "An agent session not visible yet at the run's end is marked ended instead of owed: it starts later and is never ended.",
+  "tlc": {
+   "comment": "fault.no-owed-mark (expected liveness): An agent session not visible yet at the run's end is marked ended instead of owed: it starts later and is never ended.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "FALSE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"no-owed-mark\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_AllEnded"
+   ],
+   "deadlock": false
+  }
  },
  {
   "id": "fault.end-without-lock",
@@ -1842,7 +5664,46 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "Two lookers end the same agent session without the end lock: two end commands."
+  "note": "Two lookers end the same agent session without the end lock: two end commands.",
+  "tlc": {
+   "comment": "fault.end-without-lock (expected safety): Two lookers end the same agent session without the end lock: two end commands.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "FALSE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"end-without-lock\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "Inv_EndOnce"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fault.run-decided",
@@ -1857,7 +5718,46 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "A turn starts for a visit already decided (no visit check at turn start)."
+  "note": "A turn starts for a visit already decided (no visit check at turn start).",
+  "tlc": {
+   "comment": "fault.run-decided (expected safety): A turn starts for a visit already decided (no visit check at turn start).",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"run-decided\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "Inv_NoTurnForDecided"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "wit.replacement",
@@ -1872,7 +5772,46 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "A replacement agent session after a person ended the previous one."
+  "note": "A replacement agent session after a person ended the previous one.",
+  "tlc": {
+   "comment": "wit.replacement (expected safety): A replacement agent session after a person ended the previous one.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"end\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "W_NoReplacement"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.owed-end",
@@ -1887,7 +5826,46 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "An agent session not visible yet at the run's end is owed."
+  "note": "An agent session not visible yet at the run's end is owed.",
+  "tlc": {
+   "comment": "wit.owed-end (expected safety): An agent session not visible yet at the run's end is owed.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "FALSE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "W_NoOwedEnd"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.cycle-stop",
@@ -1902,7 +5880,46 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "A cycle Stop ends a decided visit's running turn."
+  "note": "A cycle Stop ends a decided visit's running turn.",
+  "tlc": {
+   "comment": "wit.cycle-stop (expected safety): A cycle Stop ends a decided visit's running turn.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "W_NoCycleStop"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.skip-decided",
@@ -1917,6 +5934,45 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "A queued prompt of a decided visit is skipped at turn start."
+  "note": "A queued prompt of a decided visit is skipped at turn start.",
+  "tlc": {
+   "comment": "wit.skip-decided (expected safety): A queued prompt of a decided visit is skipped at turn start.",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailChat": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "FALSE",
+    "RecheckSeesEnding": "TRUE",
+    "EndMark": "FALSE",
+    "StopBeforeSpawn": "FALSE",
+    "PerChatEnd": "FALSE",
+    "StopAtRunEnd": "FALSE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE"
+   },
+   "invariants": [
+    "W_NoSkip"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  }
 ]

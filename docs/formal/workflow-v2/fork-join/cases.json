@@ -17,7 +17,28 @@
   "deadlock": true,
   "note": "The abstract fork + join: first 1 of 3, a time limit, failFast false; no run end, so a stuck undecided state is a deadlock.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "abs.k1-timer (fj3; expected PASS): The abstract fork + join: first 1 of 3, a time limit, failFast false; no run end, so a stuck undecided state is a deadlock.",
+   "spec": "ASpec",
+   "constants": {
+    "NB": "3",
+    "Kneed": "1",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "AllowRunEnd": "FALSE",
+    "AllowEntryError": "FALSE"
+   },
+   "invariants": [
+    "ATypeOK",
+    "AInv_Joined",
+    "AInv_Decided",
+    "AInv_WinnersOnlyWhenJoined",
+    "AInv_TimedOutNotImpossible"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "abs.all-ff",
@@ -37,7 +58,28 @@
   "deadlock": true,
   "note": "Join all of 3, failFast true, no time limit.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "abs.all-ff (fj3; expected PASS): Join all of 3, failFast true, no time limit.",
+   "spec": "ASpec",
+   "constants": {
+    "NB": "3",
+    "Kneed": "3",
+    "FailFast": "TRUE",
+    "HasTimer": "FALSE",
+    "AllowRunEnd": "FALSE",
+    "AllowEntryError": "FALSE"
+   },
+   "invariants": [
+    "ATypeOK",
+    "AInv_Joined",
+    "AInv_Decided",
+    "AInv_WinnersOnlyWhenJoined",
+    "AInv_TimedOutNotImpossible"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "abs.k2-noff",
@@ -57,7 +99,28 @@
   "deadlock": true,
   "note": "First 2 of 3, failFast false, no time limit, a run end.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "abs.k2-noff (fj3; expected PASS): First 2 of 3, failFast false, no time limit, a run end.",
+   "spec": "ASpec",
+   "constants": {
+    "NB": "3",
+    "Kneed": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "AllowRunEnd": "TRUE",
+    "AllowEntryError": "FALSE"
+   },
+   "invariants": [
+    "ATypeOK",
+    "AInv_Joined",
+    "AInv_Decided",
+    "AInv_WinnersOnlyWhenJoined",
+    "AInv_TimedOutNotImpossible"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "abs.entry-error",
@@ -77,7 +140,28 @@
   "deadlock": true,
   "note": "fj2: first 2 of 3 with an entry error, a time limit and a run end.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "abs.entry-error (fj3; expected PASS): fj2: first 2 of 3 with an entry error, a time limit and a run end.",
+   "spec": "ASpec",
+   "constants": {
+    "NB": "3",
+    "Kneed": "2",
+    "FailFast": "TRUE",
+    "HasTimer": "TRUE",
+    "AllowRunEnd": "TRUE",
+    "AllowEntryError": "TRUE"
+   },
+   "invariants": [
+    "ATypeOK",
+    "AInv_Joined",
+    "AInv_Decided",
+    "AInv_WinnersOnlyWhenJoined",
+    "AInv_TimedOutNotImpossible"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "a.one-all",
@@ -117,7 +201,66 @@
   "deadlock": true,
   "note": "Join all of two one-state branches (one an agent), errors possible, a crash after a transaction, a pause.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "a.one-all (fj3; expected PASS): Join all of two one-state branches (one an agent), errors possible, a crash after a transaction, a pause.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "TRUE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "1",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "a.shapes-ff",
@@ -157,7 +300,66 @@
   "deadlock": true,
   "note": "Two different body graphs (W1 -> W2 -> End; W1 with a branch-local error route to E), join all, failFast.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "a.shapes-ff (fj3; expected PASS): Two different body graphs (W1 -> W2 -> End; W1 with a branch-local error route to E), join all, failFast.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{1}",
+    "Err": "{2}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "TRUE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "7",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "a.loop-k1",
@@ -197,7 +399,66 @@
   "deadlock": true,
   "note": "First 1 of 2 with a branch-local loop; the global node limit bounds it.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "a.loop-k1 (fj3; expected PASS): First 1 of 2 with a branch-local loop; the global node limit bounds it.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{1}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "a.k1-timer",
@@ -237,7 +498,66 @@
   "deadlock": true,
   "note": "First 1 of 3, two at a time, a time limit, a hung agent branch, a crash.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "a.k1-timer (fj3; expected PASS): First 1 of 3, two at a time, a time limit, a hung agent branch, a crash.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "3",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1, 3}",
+    "CanFail": "{1}",
+    "Hang": "{3}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "7",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "1",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "a.k2-ff-timer",
@@ -277,7 +597,66 @@
   "deadlock": true,
   "note": "First 2 of 3, failFast, a time limit: joined, blocked, due, timed_out and late all reachable.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "a.k2-ff-timer (fj3; expected PASS): First 2 of 3, failFast, a time limit: joined, blocked, due, timed_out and late all reachable.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "3",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2, 3}",
+    "Hang": "{}",
+    "K": "2",
+    "JoinAll": "FALSE",
+    "Conc": "3",
+    "FailFast": "TRUE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "7",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "a.stop-pause",
@@ -317,7 +696,66 @@
   "deadlock": true,
   "note": "A graceful stop and a pause during the fork, with a hung agent branch.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "a.stop-pause (fj3; expected PASS): A graceful stop and a pause during the fork, with a hung agent branch.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{2}",
+    "CanFail": "{1, 2}",
+    "Hang": "{2}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "TRUE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "TRUE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "a.cancel-timer",
@@ -357,7 +795,66 @@
   "deadlock": true,
   "note": "Cancel now during the fork, a time limit, two agent branches, a crash.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "a.cancel-timer (fj3; expected PASS): Cancel now during the fork, a time limit, two agent branches, a crash.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1, 2}",
+    "CanFail": "{1, 2}",
+    "Hang": "{2}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "TRUE",
+    "MaxCrash": "1",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "a.retry-limit",
@@ -397,7 +894,66 @@
   "deadlock": true,
   "note": "blocked and the fork's error route lead back to the fork: a second visit; the global limit ends the run.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "a.retry-limit (fj3; expected PASS): blocked and the fork's error route lead back to the fork: a second visit; the global limit ends the run.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "TRUE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"retry\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "8",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "a.catchall",
@@ -437,7 +993,66 @@
   "deadlock": true,
   "note": "fj3 (NB-R6): timed_out always has its own route, so the catch-all is checked with the entry error; branch errors never reach it.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "a.catchall (fj3; expected PASS): fj3 (NB-R6): timed_out always has its own route, so the catch-all is checked with the entry error; branch errors never reach it.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{2}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"noTimeout\"",
+    "HasCatchAll": "TRUE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "1",
+    "EntryErr": "TRUE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "a.conc1",
@@ -477,7 +1092,66 @@
   "deadlock": true,
   "note": "First 2 of 3, one at a time: queued branches become not_started.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "a.conc1 (fj3; expected PASS): First 2 of 3, one at a time: queued branches become not_started.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "3",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2, 3}",
+    "Hang": "{}",
+    "K": "2",
+    "JoinAll": "FALSE",
+    "Conc": "1",
+    "FailFast": "TRUE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "8",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "r.one-all",
@@ -519,7 +1193,68 @@
   "deadlock": true,
   "note": "Refinement of AbsForkJoin: join all, a crash, cancel now.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "r.one-all (fj3; expected PASS): Refinement of AbsForkJoin: join all, a crash, cancel now.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "TRUE",
+    "MaxCrash": "1",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [
+    "Prop_RefinesAbs"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "r.k1-timer",
@@ -561,7 +1296,68 @@
   "deadlock": true,
   "note": "Refinement: first 1 of 2, a time limit, a two-state branch, a hung branch (due, late, timed_out).",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "r.k1-timer (fj3; expected PASS): Refinement: first 1 of 2, a time limit, a two-state branch, a hung branch (due, late, timed_out).",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{1}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{2}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [
+    "Prop_RefinesAbs"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "r.ff-stop",
@@ -603,7 +1399,68 @@
   "deadlock": true,
   "note": "Refinement: failFast, a branch-local error route, a graceful stop.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "r.ff-stop (fj3; expected PASS): Refinement: failFast, a branch-local error route, a graceful stop.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{1}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "TRUE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "TRUE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [
+    "Prop_RefinesAbs"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "l.one-all",
@@ -648,7 +1505,71 @@
   "deadlock": true,
   "note": "Join all: decided, the run ends, every effect settles; a crash and a pause.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "l.one-all (fj3; expected PASS): Join all: decided, the run ends, every effect settles; a crash and a pause.",
+   "spec": "LiveSpec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "TRUE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "1",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [
+    "Prop_ForkDecided",
+    "Prop_RunEnds",
+    "Prop_EffectsSettle",
+    "Prop_StopEnds"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "l.k1-timer-hang",
@@ -693,7 +1614,71 @@
   "deadlock": true,
   "note": "First 1 of 2 with a hung agent branch: the loser is cut and its child ended.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "l.k1-timer-hang (fj3; expected PASS): First 1 of 2 with a hung agent branch: the loser is cut and its child ended.",
+   "spec": "LiveSpec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{2}",
+    "CanFail": "{1, 2}",
+    "Hang": "{2}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [
+    "Prop_ForkDecided",
+    "Prop_RunEnds",
+    "Prop_EffectsSettle",
+    "Prop_StopEnds"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "l.stop-hang",
@@ -736,7 +1721,69 @@
   "deadlock": true,
   "note": "A graceful stop with a hung branch: its grace deadline ends the run and every effect settles (fj2, MF-FJ1: the stop is the environment's choice, so only properties conditioned on it are checked here; without a stop see cmp.a-hang-no-timer).",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "l.stop-hang (fj3; expected PASS): A graceful stop with a hung branch: its grace deadline ends the run and every effect settles (fj2, MF-FJ1: the stop is the environment's choice, so only properties conditioned on it are checked here; without a stop see cmp.a-hang-no-timer).",
+   "spec": "LiveSpec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{2}",
+    "CanFail": "{1, 2}",
+    "Hang": "{2}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "TRUE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [
+    "Prop_StopEnds",
+    "Prop_StopSettles"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "l.retry",
@@ -781,7 +1828,71 @@
   "deadlock": true,
   "note": "The retry loop around the fork ends (the global limit).",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "l.retry (fj3; expected PASS): The retry loop around the fork ends (the global limit).",
+   "spec": "LiveSpec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "TRUE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"retry\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "7",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [
+    "Prop_ForkDecided",
+    "Prop_RunEnds",
+    "Prop_EffectsSettle",
+    "Prop_StopEnds"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "l.cancel-timer",
@@ -826,7 +1937,71 @@
   "deadlock": true,
   "note": "Cancel now or the time limit; every effect settles.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "l.cancel-timer (fj3; expected PASS): Cancel now or the time limit; every effect settles.",
+   "spec": "LiveSpec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1, 2}",
+    "CanFail": "{1, 2}",
+    "Hang": "{2}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "TRUE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [
+    "Prop_ForkDecided",
+    "Prop_RunEnds",
+    "Prop_EffectsSettle",
+    "Prop_StopEnds"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "cmp.a-hang-no-timer",
@@ -871,7 +2046,71 @@
   "deadlock": true,
   "note": "Join all with a branch that never ends and no time limit: the join waits until someone cancels (design-true).",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "cmp.a-hang-no-timer (fj3; expected VIOLATION:Prop_ForkDecided): Join all with a branch that never ends and no time limit: the join waits until someone cancels (design-true).",
+   "spec": "LiveSpec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{2}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [
+    "Prop_ForkDecided",
+    "Prop_RunEnds",
+    "Prop_EffectsSettle",
+    "Prop_StopEnds"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.a-joined",
@@ -887,7 +2126,42 @@
   "deadlock": true,
   "note": "Joined.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.a-joined (fj3; expected VIOLATION:W_NotJoined): Joined.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NotJoined"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.a-blocked",
@@ -903,7 +2177,42 @@
   "deadlock": true,
   "note": "Blocked by failFast.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.a-blocked (fj3; expected VIOLATION:W_NotBlocked): Blocked by failFast.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "TRUE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NotBlocked"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.a-timed-out",
@@ -919,7 +2228,42 @@
   "deadlock": true,
   "note": "timed_out.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.a-timed-out (fj3; expected VIOLATION:W_NotTimedOut): timed_out.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{2}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NotTimedOut"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.a-due",
@@ -935,7 +2279,42 @@
   "deadlock": true,
   "note": "Past the time limit with a success committed in time but its terminal not admitted: join due.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.a-due (fj3; expected VIOLATION:W_NoDue): Past the time limit with a success committed in time but its terminal not admitted: join due.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoDue"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.a-late",
@@ -951,7 +2330,42 @@
   "deadlock": true,
   "note": "A branch ends after the time limit and is reported late.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.a-late (fj3; expected VIOLATION:W_NoLate): A branch ends after the time limit and is reported late.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoLate"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.a-second-visit",
@@ -967,7 +2381,42 @@
   "deadlock": true,
   "note": "The fork is visited again.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.a-second-visit (fj3; expected VIOLATION:W_NoSecondVisit): The fork is visited again.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "TRUE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"retry\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "7",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoSecondVisit"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.a-local-error-route",
@@ -983,7 +2432,42 @@
   "deadlock": true,
   "note": "A branch error takes its branch-local error route.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.a-local-error-route (fj3; expected VIOLATION:W_NoLocalErrorRoute): A branch error takes its branch-local error route.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{1}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoLocalErrorRoute"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.a-local-loop",
@@ -999,7 +2483,42 @@
   "deadlock": true,
   "note": "A branch-local loop.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.a-local-loop (fj3; expected VIOLATION:W_NoLocalLoop): A branch-local loop.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{1}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoLocalLoop"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.a-limit",
@@ -1015,7 +2534,42 @@
   "deadlock": true,
   "note": "The global node limit ends the run.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.a-limit (fj3; expected VIOLATION:W_NoLimitEnd): The global node limit ends the run.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{1}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "5",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoLimitEnd"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.a-catchall",
@@ -1031,7 +2585,42 @@
   "deadlock": true,
   "note": "The catch-all handles the entry error (fj3: timed_out is always routed).",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.a-catchall (fj3; expected VIOLATION:W_NoCatchAll): The catch-all handles the entry error (fj3: timed_out is always routed).",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"noTimeout\"",
+    "HasCatchAll": "TRUE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "TRUE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoCatchAll"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.a-not-started",
@@ -1047,7 +2636,42 @@
   "deadlock": true,
   "note": "A queued branch is not_started.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.a-not-started (fj3; expected VIOLATION:W_NoNotStarted): A queued branch is not_started.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "3",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2, 3}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "1",
+    "FailFast": "TRUE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "7",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoNotStarted"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.a-cancelled-loser",
@@ -1063,7 +2687,42 @@
   "deadlock": true,
   "note": "A losing branch is cancelled.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.a-cancelled-loser (fj3; expected VIOLATION:W_NoCancelledLoser): A losing branch is cancelled.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoCancelledLoser"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.a-commit-order",
@@ -1079,7 +2738,42 @@
   "deadlock": true,
   "note": "The winner is branch 2, which committed first, though branch 1 also succeeded.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.a-commit-order (fj3; expected VIOLATION:W_WinnersIndexOrder): The winner is branch 2, which committed first, though branch 1 also succeeded.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_WinnersIndexOrder"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.a-stop-after-work",
@@ -1095,7 +2789,42 @@
   "deadlock": true,
   "note": "A stop lets started work finish, then ends the run.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.a-stop-after-work (fj3; expected VIOLATION:W_NoStopAfterWork): A stop lets started work finish, then ends the run.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "TRUE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoStopAfterWork"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.a-completed",
@@ -1111,7 +2840,42 @@
   "deadlock": true,
   "note": "The run completes.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.a-completed (fj3; expected VIOLATION:W_NotCompleted): The run completes.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NotCompleted"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "fault.a-per-branch-limit",
@@ -1127,7 +2891,42 @@
   "deadlock": false,
   "note": "maxNodeExecutions counted per branch lets the run exceed it.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "fault.a-per-branch-limit (fj3; expected VIOLATION:Inv_StepsBound): maxNodeExecutions counted per branch lets the run exceed it.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "3",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"per-branch-limit\""
+   },
+   "invariants": [
+    "Inv_StepsBound"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fault.a-exec-id",
@@ -1143,7 +2942,42 @@
   "deadlock": false,
   "note": "Node ids without the branch scope: two branches share one node execution.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "fault.a-exec-id (fj3; expected VIOLATION:Inv_RowsOwned): Node ids without the branch scope: two branches share one node execution.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"exec-id-unqualified\""
+   },
+   "invariants": [
+    "Inv_RowsOwned"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fault.a-model-key",
@@ -1159,7 +2993,42 @@
   "deadlock": false,
   "note": "Per-node model choices keyed by the state name only: two branches share one.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "fault.a-model-key (fj3; expected VIOLATION:Inv_ModelKeysDistinct): Per-node model choices keyed by the state name only: two branches share one.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1, 2}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"model-key-unqualified\""
+   },
+   "invariants": [
+    "Inv_ModelKeysDistinct"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fault.a-route-global",
@@ -1175,7 +3044,42 @@
   "deadlock": false,
   "note": "Route targets resolved in one name space: a branch routes into another branch.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "fault.a-route-global (fj3; expected VIOLATION:Inv_BranchConfined): Route targets resolved in one name space: a branch routes into another branch.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"route-global\""
+   },
+   "invariants": [
+    "Inv_BranchConfined"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fault.a-branch-catchall",
@@ -1191,7 +3095,42 @@
   "deadlock": false,
   "note": "A branch error goes to the workflow's catch-all.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "fault.a-branch-catchall (fj3; expected VIOLATION:Inv_BranchConfined): A branch error goes to the workflow's catch-all.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "TRUE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"branch-catchall\""
+   },
+   "invariants": [
+    "Inv_BranchConfined"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fault.a-no-cas",
@@ -1207,7 +3146,42 @@
   "deadlock": false,
   "note": "The join's decision without compare-and-swap: a retried transaction decides twice.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "fault.a-no-cas (fj3; expected VIOLATION:Inv_OneDecision): The join's decision without compare-and-swap: a retried transaction decides twice.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "1",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"no-cas\""
+   },
+   "invariants": [
+    "Inv_OneDecision"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fault.a-admit-after-decision",
@@ -1224,7 +3198,43 @@
   "deadlock": false,
   "note": "The controller keeps the losers' cursors after the decision.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "fault.a-admit-after-decision (fj3; expected VIOLATION:Inv_NoStartAfterDecision|Inv_NoRouteAfterDecision): The controller keeps the losers' cursors after the decision.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{1, 2}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"admit-after-decision\""
+   },
+   "invariants": [
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fault.a-cut-new-only",
@@ -1240,7 +3250,42 @@
   "deadlock": false,
   "note": "The cut returns only what it cancelled itself: the decision already cut the loser, whose child is never ended.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "fault.a-cut-new-only (fj3; expected VIOLATION:Inv_CutMeansAsked): The cut returns only what it cancelled itself: the decision already cut the loser, whose child is never ended.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{2}",
+    "CanFail": "{1, 2}",
+    "Hang": "{2}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"cut-returns-new-only\""
+   },
+   "invariants": [
+    "Inv_CutMeansAsked"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fault.a-stop-cuts",
@@ -1256,7 +3301,42 @@
   "deadlock": false,
   "note": "A graceful stop that cancels started work at once.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "fault.a-stop-cuts (fj3; expected VIOLATION:Inv_StopLetsStartedFinish): A graceful stop that cancels started work at once.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "TRUE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"stop-cuts-started\""
+   },
+   "invariants": [
+    "Inv_StopLetsStartedFinish"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fault.a-count-late",
@@ -1272,7 +3352,42 @@
   "deadlock": false,
   "note": "A success committed after the time limit counts.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "fault.a-count-late (fj3; expected VIOLATION:Inv_WinnersOnTime): A success committed after the time limit counts.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"count-late\""
+   },
+   "invariants": [
+    "Inv_WinnersOnTime"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fault.a-winners-by-index",
@@ -1288,7 +3403,42 @@
   "deadlock": false,
   "note": "First k by branch order, not commit order.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "fault.a-winners-by-index (fj3; expected VIOLATION:Inv_WinnersCommitOrder): First k by branch order, not commit order.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"winners-by-index\""
+   },
+   "invariants": [
+    "Inv_WinnersCommitOrder"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fault.a-old-visit",
@@ -1304,7 +3454,42 @@
   "deadlock": false,
   "note": "Branch scopes not per fork visit: a second visit counts the first one's success.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "fault.a-old-visit (fj3; expected VIOLATION:Inv_VisitIsolated): Branch scopes not per fork visit: a second visit counts the first one's success.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "TRUE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"retry\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "8",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"count-old-visit\""
+   },
+   "invariants": [
+    "Inv_VisitIsolated"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "fault.a-no-cut",
@@ -1320,7 +3505,42 @@
   "deadlock": false,
   "note": "The losers are never cancelled.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "fault.a-no-cut (fj3; expected VIOLATION:Inv_DroppedNoPending): The losers are never cancelled.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{2}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"no-cut\""
+   },
+   "invariants": [
+    "Inv_DroppedNoPending"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "impl.past-cut",
@@ -1360,7 +3580,66 @@
   "deadlock": true,
   "note": "Past the time limit the store refuses a branch's next work state; the controller ends the branch and asks the join.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "impl.past-cut (fj3; expected PASS): Past the time limit the store refuses a branch's next work state; the controller ends the branch and asks the join.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{1, 2}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "7",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.past-cut-refines",
@@ -1402,7 +3681,68 @@
   "deadlock": true,
   "note": "As above, against the intended specification.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "impl.past-cut-refines (fj3; expected PASS): As above, against the intended specification.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{1}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{2}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [
+    "Prop_RefinesAbs"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.past-cut-live",
@@ -1446,7 +3786,70 @@
   "deadlock": true,
   "note": "As above: decided, ended, effects settled (fj3: smaller than fj2's, which timed out at 300 s with 51,100 distinct states).",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "impl.past-cut-live (fj3; expected PASS): As above: decided, ended, effects settled (fj3: smaller than fj2's, which timed out at 300 s with 51,100 distinct states).",
+   "spec": "LiveSpec",
+   "constants": {
+    "NB": "2",
+    "Two": "{1}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [
+    "Prop_ForkDecided",
+    "Prop_RunEnds",
+    "Prop_EffectsSettle"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.entry-error",
@@ -1486,7 +3889,66 @@
   "deadlock": true,
   "note": "A branch input or the inputSchema fails at entry: invalid_input, no branch starts, the fork's error route takes it.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "impl.entry-error (fj3; expected PASS): A branch input or the inputSchema fails at entry: invalid_input, no branch starts, the fork's error route takes it.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "1",
+    "EntryErr": "TRUE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.entry-error-catchall",
@@ -1526,7 +3988,66 @@
   "deadlock": true,
   "note": "The entry error with no error route: the catch-all, once.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "impl.entry-error-catchall (fj3; expected PASS): The entry error with no error route: the catch-all, once.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"noTimeout\"",
+    "HasCatchAll": "TRUE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "TRUE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.entry-error-refines",
@@ -1568,7 +4089,68 @@
   "deadlock": true,
   "note": "The entry error against the intended specification.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "impl.entry-error-refines (fj3; expected PASS): The entry error against the intended specification.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "TRUE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "TRUE",
+    "MaxCrash": "0",
+    "EntryErr": "TRUE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [
+    "Prop_RefinesAbs"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.entry-error-live",
@@ -1612,7 +4194,70 @@
   "deadlock": true,
   "note": "The entry error with a retry route back to the fork: the run ends.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "impl.entry-error-live (fj3; expected PASS): The entry error with a retry route back to the fork: the run ends.",
+   "spec": "LiveSpec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "TRUE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"retry\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "TRUE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [
+    "Prop_ForkDecided",
+    "Prop_RunEnds",
+    "Prop_EffectsSettle"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.impl-past-cut",
@@ -1628,7 +4273,42 @@
   "deadlock": true,
   "note": "A branch is refused past the time limit.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.impl-past-cut (fj3; expected VIOLATION:W_NoPastCut): A branch is refused past the time limit.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{1, 2}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "7",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoPastCut"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.impl-entry-error",
@@ -1644,7 +4324,42 @@
   "deadlock": true,
   "note": "The fork fails at entry.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.impl-entry-error (fj3; expected VIOLATION:W_NoEntryError): The fork fails at entry.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "TRUE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoEntryError"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "fault.impl-r2-stop-settles",
@@ -1660,7 +4375,42 @@
   "deadlock": false,
   "note": "NB-R2, code at 3f3e96fb: after an accepted graceful stop the fork's time limit (or join) still decides, cuts started work and writes a report.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "fault.impl-r2-stop-settles (fj3; expected VIOLATION:Inv_NoSettleAfterStop): NB-R2, code at 3f3e96fb: after an accepted graceful stop the fork's time limit (or join) still decides, cuts started work and writes a report.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{2}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "TRUE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"none\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_NoSettleAfterStop"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "impl.r2-stop-fenced",
@@ -1700,7 +4450,66 @@
   "deadlock": true,
   "note": "NB-R2 rule: after an accepted stop the fork settles nothing; started work runs on; the stop cancels the fork without a report.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "impl.r2-stop-fenced (fj3; expected PASS): NB-R2 rule: after an accepted stop the fork settles nothing; started work runs on; the stop cancels the fork without a report.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{2}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "TRUE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "1",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.r2-stop-fenced-ff",
@@ -1740,7 +4549,66 @@
   "deadlock": true,
   "note": "NB-R2 rule with failFast: a branch failure after the stop does not decide the fork.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "impl.r2-stop-fenced-ff (fj3; expected PASS): NB-R2 rule with failFast: a branch failure after the stop does not decide the fork.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{2}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "TRUE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "7",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "TRUE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.r2-stop-fenced-refines",
@@ -1782,7 +4650,68 @@
   "deadlock": true,
   "note": "NB-R2 rule against the intended specification.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "impl.r2-stop-fenced-refines (fj3; expected PASS): NB-R2 rule against the intended specification.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{2}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "TRUE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [
+    "Prop_RefinesAbs"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.r2-stop-fenced-live",
@@ -1825,7 +4754,69 @@
   "deadlock": true,
   "note": "NB-R2 rule: a requested stop still ends the run and settles every effect.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "impl.r2-stop-fenced-live (fj3; expected PASS): NB-R2 rule: a requested stop still ends the run and settles every effect.",
+   "spec": "LiveSpec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{2}",
+    "CanFail": "{1, 2}",
+    "Hang": "{2}",
+    "K": "1",
+    "JoinAll": "FALSE",
+    "Conc": "2",
+    "FailFast": "FALSE",
+    "HasTimer": "TRUE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "TRUE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [
+    "Prop_StopEnds",
+    "Prop_StopSettles"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "fault.impl-r5-two-step",
@@ -1841,7 +4832,42 @@
   "deadlock": false,
   "note": "NB-R5, code at 3f3e96fb: join all with failFast and no time limit cuts the other branches in one transaction and decides in a later one.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "fault.impl-r5-two-step (fj3; expected VIOLATION:Inv_CutOnlyWithDecision): NB-R5, code at 3f3e96fb: join all with failFast and no time limit cuts the other branches in one transaction and decides in a later one.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "TRUE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"two-step\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "impl.r5-one-tx",
@@ -1881,7 +4907,66 @@
   "deadlock": true,
   "note": "NB-R5 rule: the store's verdict, the cut and the decision in one transaction, with a crash and cancel now.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "impl.r5-one-tx (fj3; expected PASS): NB-R5 rule: the store's verdict, the cut and the decision in one transaction, with a crash and cancel now.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{2}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "TRUE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "7",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "TRUE",
+    "MaxCrash": "1",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.r5-one-tx-stop",
@@ -1921,7 +5006,66 @@
   "deadlock": true,
   "note": "NB-R5 rule with a graceful stop between a branch failure and the decision.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "impl.r5-one-tx-stop (fj3; expected PASS): NB-R5 rule with a graceful stop between a branch failure and the decision.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{2}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "TRUE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "TRUE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "0",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "impl.r5-one-tx-refines",
@@ -1963,7 +5107,68 @@
   "deadlock": true,
   "note": "NB-R5 rule against the intended specification.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "impl.r5-one-tx-refines (fj3; expected PASS): NB-R5 rule against the intended specification.",
+   "spec": "Spec",
+   "constants": {
+    "NB": "2",
+    "Two": "{}",
+    "Err": "{}",
+    "Loop": "{}",
+    "AgentBr": "{1}",
+    "CanFail": "{1, 2}",
+    "Hang": "{}",
+    "K": "1",
+    "JoinAll": "TRUE",
+    "Conc": "2",
+    "FailFast": "TRUE",
+    "HasTimer": "FALSE",
+    "ForkRoutes": "\"all\"",
+    "HasCatchAll": "FALSE",
+    "Limit": "6",
+    "AllowPause": "FALSE",
+    "ResumeFair": "TRUE",
+    "AllowStop": "FALSE",
+    "AllowCancel": "FALSE",
+    "MaxCrash": "1",
+    "EntryErr": "FALSE",
+    "StopFence": "\"fork\"",
+    "AllJoinPath": "\"store\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneDecision",
+    "Inv_JoinedK",
+    "Inv_WinnersCommitOrder",
+    "Inv_WinnersOnTime",
+    "Inv_VisitIsolated",
+    "Inv_BlockedOnlyWhenImpossible",
+    "Inv_FailFastFalseWaits",
+    "Inv_ReportComplete",
+    "Inv_ReportKeepsFinished",
+    "Inv_NoStartAfterDecision",
+    "Inv_NoRouteAfterDecision",
+    "Inv_QueuedNeverStarted",
+    "Inv_Concurrency",
+    "Inv_StepsBound",
+    "Inv_LimitExact",
+    "Inv_BranchConfined",
+    "Inv_RowsOwned",
+    "Inv_ModelKeysDistinct",
+    "Inv_StopLetsStartedFinish",
+    "Inv_EndedNothingPending",
+    "Inv_DroppedNoPending",
+    "Inv_CutMeansAsked",
+    "Inv_NoSettleAfterStop",
+    "Inv_CutOnlyWithDecision"
+   ],
+   "properties": [
+    "Prop_RefinesAbs"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "b.clean-arcs",
@@ -1985,7 +5190,31 @@
   "deadlock": true,
   "note": "A well-formed fork and join: no hazard.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "b.clean-arcs (fj3; expected PASS): A well-formed fork and join: no hazard.",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"clean\"",
+    "Sem": "\"free\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "FALSE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoSiblingDiscarded",
+    "Inv_ErrorBranchLocal",
+    "Inv_JoinExact",
+    "Inv_NoCross",
+    "Inv_NoTwoOnNode",
+    "Inv_NoLoopFork"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "b.chain-count",
@@ -2007,7 +5236,31 @@
   "deadlock": true,
   "note": "A well-formed fork with a two-state branch, count join.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "b.chain-count (fj3; expected PASS): A well-formed fork with a two-state branch, count join.",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"chain\"",
+    "Sem": "\"free\"",
+    "JoinWaits": "\"count\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "FALSE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoSiblingDiscarded",
+    "Inv_ErrorBranchLocal",
+    "Inv_JoinExact",
+    "Inv_NoCross",
+    "Inv_NoTwoOnNode",
+    "Inv_NoLoopFork"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "b.clean-live",
@@ -2031,7 +5284,33 @@
   "deadlock": true,
   "note": "The well-formed run ends.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "b.clean-live (fj3; expected PASS): The well-formed run ends.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Graph": "\"clean\"",
+    "Sem": "\"free\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "FALSE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoSiblingDiscarded",
+    "Inv_ErrorBranchLocal",
+    "Inv_JoinExact",
+    "Inv_NoCross",
+    "Inv_NoTwoOnNode",
+    "Inv_NoLoopFork"
+   ],
+   "properties": [
+    "Prop_RunEnds"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "b.dangling-ends",
@@ -2047,7 +5326,25 @@
   "deadlock": false,
   "note": "A terminal inside a branch ends the run while the other branch runs.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "b.dangling-ends (fj3; expected VIOLATION:Inv_NoSiblingDiscarded): A terminal inside a branch ends the run while the other branch runs.",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"dangling\"",
+    "Sem": "\"free\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "FALSE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "Inv_NoSiblingDiscarded"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "b.dangling-waits",
@@ -2065,7 +5362,27 @@
   "deadlock": false,
   "note": "The terminal ends only its token: the join waits forever for it.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "b.dangling-waits (fj3; expected VIOLATION:Prop_RunEnds): The terminal ends only its token: the join waits forever for it.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Graph": "\"dangling\"",
+    "Sem": "\"free\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "FALSE",
+    "ErrOn": "FALSE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "TypeOK"
+   ],
+   "properties": [
+    "Prop_RunEnds"
+   ],
+   "deadlock": false
+  }
  },
  {
   "id": "b.loop-joins-mixed",
@@ -2081,7 +5398,25 @@
   "deadlock": false,
   "note": "A loop back over the fork: the join consumes tokens of two different fork visits.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "b.loop-joins-mixed (fj3; expected VIOLATION:Inv_JoinExact): A loop back over the fork: the join consumes tokens of two different fork visits.",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"loop\"",
+    "Sem": "\"free\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "FALSE",
+    "MaxTok": "5",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "Inv_JoinExact"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "b.loop-crosses-fork",
@@ -2097,7 +5432,25 @@
   "deadlock": false,
   "note": "A branch token re-enters the fork.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "b.loop-crosses-fork (fj3; expected VIOLATION:Inv_NoLoopFork): A branch token re-enters the fork.",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"loop\"",
+    "Sem": "\"free\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "FALSE",
+    "MaxTok": "5",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "Inv_NoLoopFork"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "b.cross-count",
@@ -2113,7 +5466,25 @@
   "deadlock": false,
   "note": "A branch routes into the other branch: the count join fires with branch A's result missing.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "b.cross-count (fj3; expected VIOLATION:Inv_JoinExact): A branch routes into the other branch: the count join fires with branch A's result missing.",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"cross\"",
+    "Sem": "\"free\"",
+    "JoinWaits": "\"count\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "FALSE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "Inv_JoinExact"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "b.cross-node",
@@ -2129,7 +5500,25 @@
   "deadlock": false,
   "note": "A branch routes into the other branch.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "b.cross-node (fj3; expected VIOLATION:Inv_NoCross): A branch routes into the other branch.",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"cross\"",
+    "Sem": "\"free\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "FALSE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "Inv_NoCross"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "b.cross-twice",
@@ -2145,7 +5534,25 @@
   "deadlock": false,
   "note": "One state runs for two tokens at once.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "b.cross-twice (fj3; expected VIOLATION:Inv_NoTwoOnNode): One state runs for two tokens at once.",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"cross\"",
+    "Sem": "\"free\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "FALSE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "Inv_NoTwoOnNode"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "b.cross-waits",
@@ -2163,7 +5570,27 @@
   "deadlock": false,
   "note": "The arcs join waits forever for branch A's arc.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "b.cross-waits (fj3; expected VIOLATION:Prop_RunEnds): The arcs join waits forever for branch A's arc.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Graph": "\"cross\"",
+    "Sem": "\"free\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "FALSE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "TypeOK"
+   ],
+   "properties": [
+    "Prop_RunEnds"
+   ],
+   "deadlock": false
+  }
  },
  {
   "id": "b.error-escapes",
@@ -2179,7 +5606,25 @@
   "deadlock": false,
   "note": "An unrouted error in one branch fails the run while the other runs.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "b.error-escapes (fj3; expected VIOLATION:Inv_ErrorBranchLocal): An unrouted error in one branch fails the run while the other runs.",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"clean\"",
+    "Sem": "\"free\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "TRUE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "Inv_ErrorBranchLocal"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "c.refuses-dangling",
@@ -2195,7 +5640,25 @@
   "deadlock": false,
   "note": "Refused: a terminal inside a branch.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "c.refuses-dangling (fj3; expected PASS): Refused: a terminal inside a branch.",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"dangling\"",
+    "Sem": "\"free\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "FALSE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "Inv_CompileRefuses"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "c.refuses-loop",
@@ -2211,7 +5674,25 @@
   "deadlock": false,
   "note": "Refused: a loop over the fork.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "c.refuses-loop (fj3; expected PASS): Refused: a loop over the fork.",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"loop\"",
+    "Sem": "\"free\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "FALSE",
+    "MaxTok": "5",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "Inv_CompileRefuses"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "c.refuses-cross",
@@ -2227,7 +5708,25 @@
   "deadlock": false,
   "note": "Refused: a cross edge.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "c.refuses-cross (fj3; expected PASS): Refused: a cross edge.",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"cross\"",
+    "Sem": "\"free\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "FALSE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "Inv_CompileRefuses"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
  },
  {
   "id": "c.accepts-clean",
@@ -2243,7 +5742,25 @@
   "deadlock": true,
   "note": "Accepted.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "c.accepts-clean (fj3; expected PASS): Accepted.",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"clean\"",
+    "Sem": "\"free\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "FALSE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "Inv_CompileAccepts"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "c.accepts-chain",
@@ -2259,7 +5776,25 @@
   "deadlock": true,
   "note": "Accepted.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "c.accepts-chain (fj3; expected PASS): Accepted.",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"chain\"",
+    "Sem": "\"free\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "FALSE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "Inv_CompileAccepts"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  },
  {
   "id": "c.clean-refines",
@@ -2283,7 +5818,33 @@
   "deadlock": true,
   "note": "Option C on an accepted graph refines AbsForkJoin (join all of two).",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "c.clean-refines (fj3; expected PASS): Option C on an accepted graph refines AbsForkJoin (join all of two).",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"clean\"",
+    "Sem": "\"compiled\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "FALSE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoSiblingDiscarded",
+    "Inv_ErrorBranchLocal",
+    "Inv_JoinExact",
+    "Inv_NoCross",
+    "Inv_NoTwoOnNode",
+    "Inv_NoLoopFork"
+   ],
+   "properties": [
+    "Prop_RefinesAbs"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "c.chain-refines",
@@ -2307,7 +5868,33 @@
   "deadlock": true,
   "note": "As above, a two-state branch.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "c.chain-refines (fj3; expected PASS): As above, a two-state branch.",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"chain\"",
+    "Sem": "\"compiled\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "FALSE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoSiblingDiscarded",
+    "Inv_ErrorBranchLocal",
+    "Inv_JoinExact",
+    "Inv_NoCross",
+    "Inv_NoTwoOnNode",
+    "Inv_NoLoopFork"
+   ],
+   "properties": [
+    "Prop_RefinesAbs"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "c.error-refines",
@@ -2331,7 +5918,33 @@
   "deadlock": true,
   "note": "As above, with a branch error: branch-local, the join is blocked.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "c.error-refines (fj3; expected PASS): As above, with a branch error: branch-local, the join is blocked.",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"clean\"",
+    "Sem": "\"compiled\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "TRUE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoSiblingDiscarded",
+    "Inv_ErrorBranchLocal",
+    "Inv_JoinExact",
+    "Inv_NoCross",
+    "Inv_NoTwoOnNode",
+    "Inv_NoLoopFork"
+   ],
+   "properties": [
+    "Prop_RefinesAbs"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "c.clean-live",
@@ -2355,7 +5968,33 @@
   "deadlock": true,
   "note": "The compiled run ends.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "c.clean-live (fj3; expected PASS): The compiled run ends.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Graph": "\"clean\"",
+    "Sem": "\"compiled\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "TRUE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoSiblingDiscarded",
+    "Inv_ErrorBranchLocal",
+    "Inv_JoinExact",
+    "Inv_NoCross",
+    "Inv_NoTwoOnNode",
+    "Inv_NoLoopFork"
+   ],
+   "properties": [
+    "Prop_RunEnds"
+   ],
+   "deadlock": true
+  }
  },
  {
   "id": "wit.c-blocked",
@@ -2371,6 +6010,24 @@
   "deadlock": true,
   "note": "A compiled branch error blocks the join.",
   "batch": "fj3",
-  "head": "design"
+  "head": "design",
+  "tlc": {
+   "comment": "wit.c-blocked (fj3; expected VIOLATION:W_NotBlocked): A compiled branch error blocks the join.",
+   "spec": "Spec",
+   "constants": {
+    "Graph": "\"clean\"",
+    "Sem": "\"compiled\"",
+    "JoinWaits": "\"arcs\"",
+    "TerminalEnds": "TRUE",
+    "ErrOn": "TRUE",
+    "MaxTok": "4",
+    "MaxSteps": "6"
+   },
+   "invariants": [
+    "W_NotBlocked"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  }
 ]

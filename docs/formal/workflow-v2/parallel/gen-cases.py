@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""Generates every TLC settings file, cases.tsv and cases.json for WorkflowV2Parallel (no TLC is run here)."""
+"""Writes cases.tsv, cases.json and tlc-templates.json for WorkflowV2Parallel (no TLC is run here). The .cfg
+files are generated from these by run-tlc.sh (../../tlc_cases.py)."""
 import json, os
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
+import tlc_cases   # docs/formal/tlc_cases.py: the settings (.cfg) are generated from the tables, not committed
 
 MOD = "WorkflowV2Parallel"
 HEAD = "design"   # p1: the design of 20:07Z; p2: with the decided answers of 20:33Z; J1 correspondence follows
@@ -270,7 +274,7 @@ def val(v):
     if isinstance(v, bool): return "TRUE" if v else "FALSE"
     return str(v)
 
-out = []
+out, texts = [], []
 for batch, rows in (("p1", CASES), ("p2", P2), ("p3", P3), ("p4", P4), ("p5", P5)):
   for (cid, group, mode, spec, consts, invs, props, expected, note) in rows:
       assert cid == cid.lower()
@@ -279,12 +283,14 @@ for batch, rows in (("p1", CASES), ("p2", P2), ("p3", P3), ("p4", P4), ("p5", P5
       if invs: lines += ["INVARIANTS"] + [f"    {i}" for i in invs]
       if props: lines += ["PROPERTIES"] + [f"    {x}" for x in props]
       lines += ["CHECK_DEADLOCK TRUE"]
-      with open(f"{cid}.cfg", "w") as f: f.write("\n".join(lines) + "\n")
+      texts.append("\n".join(lines) + "\n")
       out.append({"id": cid, "module": MOD, "group": group, "mode": mode, "spec": spec, "config": f"{cid}.cfg", "head": HEAD,
                   "properties": invs + props, "expected": expected, "note": note, "batch": batch})
 only = [x for x in os.environ.get("ONLY", "").split(",") if x]
 with open("cases.tsv", "w") as f:
     for c_ in out:
         if (c_["id"] in only) if only else os.environ.get("BATCH") in (None, "", c_["batch"]): f.write(f"{c_['id']}\t{c_['config']}\t{c_['module']}\n")
+templates = tlc_cases.attach(out, texts)
 with open("cases.json", "w") as f: json.dump(out, f, indent=1)
+tlc_cases.dump_json("tlc-templates.json", templates, 2)
 print(len(out), "cases")

@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""Generates every TLC settings file, cases.tsv and cases.json for WorkflowV2Reminder (no TLC is run here)."""
+"""Writes cases.tsv, cases.json and tlc-templates.json for WorkflowV2Reminder (no TLC is run here). The .cfg
+files are generated from these by run-tlc.sh (../../tlc_cases.py)."""
 import json, os
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
+import tlc_cases   # docs/formal/tlc_cases.py: the settings (.cfg) are generated from the tables, not committed
 
 MOD = "WorkflowV2Reminder"
 HEAD = "8d568890"   # the reminder chain 052c0174..8a5b0b7d, live in 8d568890
@@ -58,7 +62,7 @@ def val(v):
     if isinstance(v, bool): return "TRUE" if v else "FALSE"
     return str(v)
 
-out = []
+out, texts = [], []
 for (cid, group, mode, spec, consts, invs, props, expected, note) in CASES:
     assert cid == cid.lower()
     lines = [f"\\* {cid} ({mode}; expected {expected}): {note}", f"SPECIFICATION {spec}", "CONSTANTS"]
@@ -66,10 +70,12 @@ for (cid, group, mode, spec, consts, invs, props, expected, note) in CASES:
     if invs: lines += ["INVARIANTS"] + [f"    {i}" for i in invs]
     if props: lines += ["PROPERTIES"] + [f"    {x}" for x in props]
     lines += ["CHECK_DEADLOCK TRUE"]
-    with open(f"{cid}.cfg", "w") as f: f.write("\n".join(lines) + "\n")
+    texts.append("\n".join(lines) + "\n")
     out.append({"id": cid, "module": MOD, "group": group, "mode": mode, "spec": spec, "config": f"{cid}.cfg", "head": HEAD,
                 "properties": invs + props, "expected": expected, "note": note, "batch": "r1"})
 with open("cases.tsv", "w") as f:
     for c_ in out: f.write(f"{c_['id']}\t{c_['config']}\t{c_['module']}\n")
+templates = tlc_cases.attach(out, texts)
 with open("cases.json", "w") as f: json.dump(out, f, indent=1)
+tlc_cases.dump_json("tlc-templates.json", templates, 2)
 print(len(out), "cases")

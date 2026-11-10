@@ -1,0 +1,144 @@
+[
+ {
+  "id": "adm-df-trigger-0090",
+  "module": "WorkflowV2Admission",
+  "config": "adm-df-trigger-0090.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "adm-df-trigger-0090: this commit with the 0090 deletion trigger (paused runs not ended); expected safety violation",
+  "tlc": {
+   "comment": "adm-df-trigger-0090: this commit with the 0090 deletion trigger (paused runs not ended); expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Steps": "2",
+    "MaxKv": "3",
+    "MaxEvals": "2",
+    "MaxAttempts": "1",
+    "MaxPauses": "2",
+    "KvCheck": "TRUE",
+    "PauseGuard": "TRUE",
+    "InactiveFirst": "TRUE",
+    "PausedRefusalWaits": "TRUE",
+    "PausedBackstop": "TRUE",
+    "CountOnAdmitted": "TRUE",
+    "BeginMarksBegun": "TRUE",
+    "TriggerEndsPaused": "FALSE",
+    "LoseWake": "FALSE",
+    "PauseBeforeBegin": "FALSE",
+    "Cancels": "FALSE",
+    "Deletes": "TRUE"
+   },
+   "invariants": [
+    "Inv_DeletedNotActive"
+   ],
+   "properties": [],
+   "deadlock": false
+  },
+  "retired": "The 0090 deletion trigger never ships: the CMS migrations were collapsed into one migration 0089, which holds the final trigger (the 0091 form)."
+ },
+ {
+  "id": "lc-df-m1-broken",
+  "module": "WorkflowV2Lifecycle",
+  "config": "lc-df-m1-broken.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "lc-df-m1-broken: this commit with an earlier build's receipt written by another requester (M1 does not hold); expected safety violation",
+  "tlc": {
+   "comment": "lc-df-m1-broken: this commit with an earlier build's receipt written by another requester (M1 does not hold); expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\"}",
+    "LegacyWriter": "\"other\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "TRUE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "FALSE",
+    "Repeats": "FALSE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "FALSE",
+    "AuthorityLoss": "FALSE",
+    "MaxCrashes": "0"
+   },
+   "invariants": [
+    "Inv_AttributionTruthful"
+   ],
+   "properties": [],
+   "deadlock": false
+  },
+  "retired": "Receipts stored by an earlier build (migration assumption M1) cannot exist: Workflow V2 was deployed nowhere before its migrations were collapsed into one."
+ },
+ {
+  "id": "lc-rv-31dc9888",
+  "module": "WorkflowV2Lifecycle",
+  "config": "lc-rv-31dc9888.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "lc-rv-31dc9888: begin's repair records no requester; the parent's repeat tells it of its own cancel (31dc9888); expected safety violation (C2)",
+  "tlc": {
+   "comment": "lc-rv-31dc9888: begin's repair records no requester; the parent's repeat tells it of its own cancel (31dc9888); expected safety violation (C2)",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\"}",
+    "LegacyWriter": "\"parent\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "TRUE",
+    "C2Fix": "FALSE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "FALSE",
+    "Repeats": "TRUE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "FALSE",
+    "AuthorityLoss": "FALSE",
+    "MaxCrashes": "0"
+   },
+   "invariants": [
+    "Inv_NoSelfNotice"
+   ],
+   "properties": [],
+   "deadlock": false
+  },
+  "retired": "Receipts stored by an earlier build (migration assumption M1) cannot exist: Workflow V2 was deployed nowhere before its migrations were collapsed into one."
+ },
+ {
+  "id": "lc-rv-369beaf0",
+  "module": "WorkflowV2Lifecycle",
+  "config": "lc-rv-369beaf0.cfg",
+  "expected": "SAFETY_VIOLATION",
+  "witness": false,
+  "note": "lc-rv-369beaf0: an earlier build's receipt and a late start (369beaf0 to 0f373abc); expected safety violation",
+  "tlc": {
+   "comment": "lc-rv-369beaf0: an earlier build's receipt and a late start (369beaf0 to 0f373abc); expected safety violation",
+   "spec": "Spec",
+   "constants": {
+    "Cancellers": "{\"parent\"}",
+    "LegacyWriter": "\"parent\"",
+    "CancelEndsBeforeBegin": "TRUE",
+    "BeginHonorsReceipt": "FALSE",
+    "C2Fix": "FALSE",
+    "LoseDispatch": "TRUE",
+    "DropOrphans": "TRUE",
+    "Interrupts": "FALSE",
+    "Repeats": "FALSE",
+    "Recovery": "TRUE",
+    "ControllerDeath": "FALSE",
+    "NotifyEnabled": "TRUE",
+    "NotifyFaults": "FALSE",
+    "AuthorityLoss": "FALSE",
+    "MaxCrashes": "0"
+   },
+   "invariants": [
+    "Inv_AcceptedCancelWins"
+   ],
+   "properties": [],
+   "deadlock": false
+  },
+  "retired": "Receipts stored by an earlier build (migration assumption M1) cannot exist: Workflow V2 was deployed nowhere before its migrations were collapsed into one."
+ }
+]

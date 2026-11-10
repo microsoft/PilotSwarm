@@ -54,9 +54,11 @@ ids, expiry and wake dispatch are checked in `../paired/request/`.
 
 ## Cases
 
-`gen-cases.py` writes every settings file, `cases.tsv` (every case, in run
-order) and `cases.json` (mode, rules, expected outcome and the development
-batch `r2d` or `r2e`) from one table (`BATCH=r2e` or `ONLY=<ids>` select a
+`gen-cases.py` writes `cases.tsv` (every case, in run order), `cases.json`
+(mode, rules, expected outcome, the development batch and, under `tlc`, the
+case's TLC settings), `tlc-templates.json` and `cases-retired.json` from one
+table; the settings files are generated from these by `run-tlc.sh`
+(`../../tlc_cases.py`) and not committed (`BATCH=r2e` or `ONLY=<ids>` select a
 subset of `cases.tsv`). Modes:
 `reviewed` (the code as written), `deliberate` (a planned break of one
 protection, expected to fail), and witnesses (reachability checks, expected to
@@ -371,7 +373,7 @@ liveness check, which r3 had to leave out because of R3-GR1.
 
 ## Case taxonomy
 
-`cases.json` gives each of the 285 cases a `mode`: `reviewed` (236: the code as
+`cases.json` gives each of the 283 cases a `mode`: `reviewed` (234: the code as
 written at the head named in `head`), `deliberate` (16: a planned break of one
 protection, expected to fail), `comparison` (25: an earlier code behavior or a
 proposed fix, kept for comparison) and `witness` (8: reachability). `expected` is `PASS`
@@ -385,7 +387,7 @@ that checks its fix).
 | Module | Cases | Heads modeled |
 |---|---|---|
 | `WfParent` | 88 | `efe44835`, `1f7bdc77`, `a10c2e07`, `fc6d7a65`, `9a8d0f66`, `a9f60db7` (the code at `0df9e8a4`), proposed variants |
-| `WfGraph` | 73 | `efe44835`, `1f7bdc77`, S7-DX2 (`1ef53967` on `dbf99086`), `9a8d0f66`, `a9f60db7` |
+| `WfGraph` | 71 | `efe44835`, `1f7bdc77`, S7-DX2 (`1ef53967` on `dbf99086`), `9a8d0f66`, `a9f60db7` |
 | `WfPaused` | 42 | `1c117a47`, `a99cd382`, `9a8d0f66`, `a9f60db7` |
 | `WfExecShare` | 32 | `8dd3eae1`, `412f7b00`, `9a8d0f66` |
 | `WfAgent` | 23 | `efe44835`, `1f7bdc77`, `a10c2e07` |
@@ -432,7 +434,9 @@ state space showed no difference.
 `cases.tsv` lists the 160 cases above, 28 that were added after that packet and 64 of batch r3. The 28 are r2f
 (`WfExecShare`, `412f7b00`), r2g (`WfParent`, `fc6d7a65`, `a10c2e07`), o3 (`WfGraph`, `8d568890`), o4 (`WfGraph`,
 `07c29b05`, `c4481682`) and o5 (`WfGraph`, `1ef53967`, `dbf99086`); `cases.json` gives each its batch and head. Their
-first run is recorded in section r3.
+first run is recorded in section r3. The two o4 cases of controller 1.8.0 (`graph.srt1b-linear`,
+`graph.srt1b-loop-residual`, `c4481682`) are retired: the Workflow V2 version collapse removes 1.8.0. They are in
+`cases-retired.json` (`RETIRED` in `gen-cases.py`), kept for the record and never run; 283 cases remain.
 
 ## How to run
 

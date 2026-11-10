@@ -1,0 +1,110 @@
+[
+ {
+  "id": "graph.srt1b-linear",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.srt1b-linear.cfg",
+  "head": "c4481682",
+  "properties": [
+   "TypeOK",
+   "Inv_StepsBound",
+   "Inv_EndedNothingPending",
+   "Inv_ControllerEndsOnlyEndedRun",
+   "Inv_CatchAllOnce",
+   "Inv_JoinAccountsAll",
+   "Inv_JoinedOnlyAllSucceeded",
+   "Inv_NoProtocolFault",
+   "Inv_BranchConfined",
+   "Inv_NoAdmissionAfterStop",
+   "Inv_ParallelBranchesBounded",
+   "Inv_OneReport",
+   "Inv_NoRouteWhilePaused"
+  ],
+  "expected": "PASS",
+  "note": "S-RT1b at c4481682 (1.8.0): a paused run's collection returns no result, so nothing is routed while paused.",
+  "batch": "o4",
+  "tlc": {
+   "comment": "graph.srt1b-linear (reviewed; expected PASS): S-RT1b at c4481682 (1.8.0): a paused run's collection returns no result, so nothing is routed while paused.",
+   "spec": "Spec",
+   "constants": {
+    "Plan": "\"linear\"",
+    "Limit": "4",
+    "K": "1",
+    "Conc": "1",
+    "FailFast": "FALSE",
+    "AllowCancel": "TRUE",
+    "AllowStop": "TRUE",
+    "AllowPause": "TRUE",
+    "AllowDeadline": "TRUE",
+    "AllowDelete": "TRUE",
+    "Cmd": "\"queue\"",
+    "AllowLoseHint": "FALSE",
+    "Fault": "\"srt1b\"",
+    "Elsewhere": "\"command\"",
+    "OtherEnds": "{}"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StepsBound",
+    "Inv_EndedNothingPending",
+    "Inv_ControllerEndsOnlyEndedRun",
+    "Inv_CatchAllOnce",
+    "Inv_JoinAccountsAll",
+    "Inv_JoinedOnlyAllSucceeded",
+    "Inv_NoProtocolFault",
+    "Inv_BranchConfined",
+    "Inv_NoAdmissionAfterStop",
+    "Inv_ParallelBranchesBounded",
+    "Inv_OneReport",
+    "Inv_NoRouteWhilePaused"
+   ],
+   "properties": [],
+   "deadlock": true
+  },
+  "retired": "Controller 1.8.0 (S-RT1b, c4481682) was removed when the Workflow V2 orchestration versions were collapsed into one (controller 1.0.0, the former 1.9.0); the graph.srt1-* cases bind the surviving behaviour."
+ },
+ {
+  "id": "graph.srt1b-loop-residual",
+  "module": "WfGraph",
+  "mode": "reviewed",
+  "spec": "Spec",
+  "config": "graph.srt1b-loop-residual.cfg",
+  "head": "c4481682",
+  "properties": [
+   "TypeOK",
+   "Inv_NoFailWhilePaused"
+  ],
+  "expected": "safety",
+  "note": "S-RT1b residual (stated by the commit): a pause between a collection and the next admission lets 1.8.0 end the run at its node limit.",
+  "batch": "o4",
+  "tlc": {
+   "comment": "graph.srt1b-loop-residual (reviewed; expected safety): S-RT1b residual (stated by the commit): a pause between a collection and the next admission lets 1.8.0 end the run at its node limit.",
+   "spec": "Spec",
+   "constants": {
+    "Plan": "\"loop\"",
+    "Limit": "4",
+    "K": "1",
+    "Conc": "1",
+    "FailFast": "FALSE",
+    "AllowCancel": "FALSE",
+    "AllowStop": "FALSE",
+    "AllowPause": "TRUE",
+    "AllowDeadline": "FALSE",
+    "AllowDelete": "FALSE",
+    "Cmd": "\"queue\"",
+    "AllowLoseHint": "FALSE",
+    "Fault": "\"srt1b\"",
+    "Elsewhere": "\"command\"",
+    "OtherEnds": "{}"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoFailWhilePaused"
+   ],
+   "properties": [],
+   "deadlock": true
+  },
+  "retired": "Controller 1.8.0 (S-RT1b, c4481682) was removed when the Workflow V2 orchestration versions were collapsed into one (controller 1.0.0, the former 1.9.0); the graph.srt1-* cases bind the surviving behaviour."
+ }
+]

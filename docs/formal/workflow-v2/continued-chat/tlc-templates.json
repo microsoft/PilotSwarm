@@ -1,0 +1,37 @@
+{
+  "WfContinuedChat": {
+    "indent": 4,
+    "constants": [
+      "V",
+      "Person",
+      "AllowStop",
+      "AllowCancel",
+      "AllowStopFail",
+      "FailChat",
+      "RecoverFair",
+      "SpawnRecheck",
+      "RecheckSeesEnding",
+      "EndMark",
+      "StopBeforeSpawn",
+      "PerChatEnd",
+      "StopAtRunEnd",
+      "Fault",
+      "SplitSpawn",
+      "CheckAll",
+      "Fence",
+      "Backstop",
+      "AllowSpawnCrash",
+      "MarkSplit",
+      "MarkFail",
+      "Withdraw",
+      "Outbox",
+      "Carry",
+      "CarryDelete",
+      "TurnGuard",
+      "MarkCreating",
+      "CarryNotFound"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}

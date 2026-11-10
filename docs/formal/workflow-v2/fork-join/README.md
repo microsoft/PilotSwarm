@@ -121,6 +121,6 @@ each case's `tlc.log`. Exit code 0 means no violation in the bounded search,
 12 a safety violation, 13 a liveness violation, 124 a timeout (PARTIAL, never
 PASS); other codes are setup or model errors. Each settings file states
 `CHECK_DEADLOCK` explicitly.
-`gen-cases.py` regenerates every `.cfg`, `cases.tsv` and `cases.json`.
+`gen-cases.py` regenerates `cases.tsv`, `cases.json` and `tlc-templates.json`. The settings files (`.cfg`) are generated from `cases.json` and `tlc-templates.json` (`../../tlc_cases.py`) and are not committed.
 Comments of `AbsForkJoin.tla`, `WfForkJoin.tla` and `WfForkTokens.tla` were
 edited to remove internal references; no definition changed.

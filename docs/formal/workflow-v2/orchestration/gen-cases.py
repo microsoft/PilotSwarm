@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""Generates every TLC settings file and cases.tsv from one table (no TLC is run here)."""
+"""Writes cases.tsv, cases.json and tlc-templates.json from one table (no TLC is run here). The .cfg files are
+generated from these by run-tlc.sh (../../tlc_cases.py)."""
 import json, os
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
+import tlc_cases   # docs/formal/tlc_cases.py: the settings (.cfg) are generated from the tables, not committed
 
 G_INV = ["TypeOK", "Inv_StepsBound", "Inv_EndedNothingPending", "Inv_ControllerEndsOnlyEndedRun", "Inv_CatchAllOnce",
          "Inv_JoinAccountsAll", "Inv_JoinedOnlyAllSucceeded", "Inv_NoProtocolFault", "Inv_BranchConfined",
@@ -345,7 +349,7 @@ def head_of(cid, mod, consts, b):
     if b == "o5": return "dbf99086" if cid.startswith("cmp.graph-queue") else "1ef53967"
     if b == "r3": return "9a8d0f66" if str(consts.get("Elsewhere", '"command"')).strip('"') == "any" else "1ef53967"
     return "efe44835"
-out = []
+out, texts = [], []
 for n, (cid, mod, mode, spec, consts, invs, props, expected, note) in enumerate(CASES):
     cid = cid.lower()   # the runner accepts ^[a-z0-9.-]+$ only
     lines = [f"\\* {cid} ({mode}; expected {expected}): {note}", f"SPECIFICATION {spec}", "CONSTANTS"]
@@ -353,14 +357,23 @@ for n, (cid, mod, mode, spec, consts, invs, props, expected, note) in enumerate(
     if invs: lines += ["INVARIANTS"] + [f"    {i}" for i in invs]
     if props: lines += ["PROPERTIES"] + [f"    {x}" for x in props]
     lines += ["CHECK_DEADLOCK TRUE"]
-    with open(f"{cid}.cfg", "w") as f: f.write("\n".join(lines) + "\n")
+    texts.append("\n".join(lines) + "\n")
     b = batch_of(n)
     head = head_of(cid, mod, consts, b)
     out.append({"id": cid, "module": mod, "mode": mode, "spec": spec, "config": f"{cid}.cfg", "head": head,
                 "properties": invs + props, "expected": expected, "note": note, "batch": b})
+templates = tlc_cases.attach(out, texts)
+# Retired cases: the code they bind no longer exists; they move to cases-retired.json (kept for the record, never run).
+RETIRED_WHY = ("Controller 1.8.0 (S-RT1b, c4481682) was removed when the Workflow V2 orchestration versions were collapsed "
+               "into one (controller 1.0.0, the former 1.9.0); the graph.srt1-* cases bind the surviving behaviour.")
+RETIRED = {"graph.srt1b-linear": RETIRED_WHY, "graph.srt1b-loop-residual": RETIRED_WHY}
+retired = [dict(c, retired=RETIRED[c["id"]]) for c in out if c["id"] in RETIRED]
+out = [c for c in out if c["id"] not in RETIRED]
+with open("cases.json", "w") as f: json.dump(out, f, indent=1)
+tlc_cases.dump_json("cases-retired.json", retired, 1)
+tlc_cases.dump_json("tlc-templates.json", templates, 2)
 with open("cases.tsv", "w") as f:
     for c in out:
         only = [x for x in os.environ.get("ONLY", "").split(",") if x]
         if (c["id"] in only) if only else os.environ.get("BATCH") in (None, "", c["batch"]): f.write(f"{c['id']}\t{c['config']}\t{c['module']}\n")
-with open("cases.json", "w") as f: json.dump(out, f, indent=1)
 print(len(out), "cases")
