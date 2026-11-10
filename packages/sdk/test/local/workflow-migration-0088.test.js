@@ -1,9 +1,10 @@
 /**
  * Migration 0088 (workflow), the one Workflow migration, on PostgreSQL:
  * - Equivalence: after main's 0001-0087, it leaves the same schema as the 24 migrations it replaced (0088-0111 as PR 270
- *   had them at 01caf109, frozen in test/fixtures/workflow-migration-chain-01caf109.sql). Both run on fresh schemas of the
- *   same database; the catalog snapshots (helpers/schema-snapshot.js: relations, ordered live columns, constraints,
- *   indexes, functions, triggers, views, sequences, types, policies, comments, privileges and seeded rows) are equal.
+ *   had them at 01caf109, frozen in test/fixtures/workflow-migration-chain-01caf109.sql and read with today's object
+ *   names, as helpers/workflow-migration-chain.js says). Both run on fresh schemas of the same database; the
+ *   catalog snapshots (helpers/schema-snapshot.js: relations, ordered live columns, constraints, indexes, functions,
+ *   triggers, views, sequences, types, policies, comments, privileges and seeded rows) are equal.
  * - A fresh create records 0088 once, and its steps run again change nothing.
  * - The lookups by parent_session_id (the chat-ended and deletion triggers, the child budget) use its index.
  * - Review DS2-004: a concurrent build that failed leaves an invalid index. A run again takes no lock on sessions until
