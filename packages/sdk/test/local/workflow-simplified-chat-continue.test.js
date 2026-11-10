@@ -1,11 +1,11 @@
 /**
  * Workflow Simplified: an agent node that continues its chat (owner decision agent-node-continue-20261106; the
- * parent's design verdict: YAML key `session: new | continue` (owner 2026-11-09T06:30Z renamed it from `chat`), migration 0106, and
- * the formal answers Q1 to Q5).
+ * parent's design verdict: YAML key `session: new | continue` (owner 2026-11-09T06:30Z renamed it from `chat`), and the formal
+ * answers Q1 to Q5).
  *
- * - The store: migration 0106 applies on a 0105 database (the UNIQUE on a child session is dropped, an index added);
- *   two visits share one chat; a completion of a continued chat binds ONLY by the node execution id it gives (none, or
- *   one that is not the chat's, is refused in words; a late one binds to its own decided visit and is refused there,
+ * - The store: a child session is not unique among the visits (it is indexed); two visits share one chat; a completion
+ *   of a continued chat binds ONLY by the node execution id it gives (none, or one that is not the chat's, is refused in
+ *   words; a late one binds to its own decided visit and is refused there,
  *   the open visit unaffected); a reminder binds to the open visit and names it.
  * - Controller 1.9.0 with a test-double host (as workflow-v2-agent-node.test.js): two visits go to ONE chat; the
  *   second prompt says cycle 2 with the variables now, which changed and the previous result; a visit's time limit stops
@@ -22,8 +22,6 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { CMS_MIGRATIONS } from "../../src/cms-migrations.ts";
-import { runMigrations } from "../../src/pg-migrator.ts";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson } from "../../src/workflow/v2/json.ts";
 import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
@@ -45,7 +43,6 @@ const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
 const ACTOR = { kind: "system", name: "workflow-simplified-chat-continue-test" };
 const TASK = "Tell one new fact about PostgreSQL.";
-const CMS_LOCK_SEED = 0x63_6D_73;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function until(check, label, timeoutMs = 60_000) {
@@ -171,23 +168,19 @@ describe("review DR2-002: Workflow agent session creates of one id take turns", 
 
 // ─── The store ────────────────────────────────────────────────
 
-describe("chat: continue in the store (migration 0106)", () => {
-    it("0106 applies on a 0105 database; a completion binds only by its node execution id; a reminder binds to the open visit", { timeout: TIMEOUT }, async () => {
+describe("chat: continue in the store", () => {
+    it("a chat's visits are rows of one child session; a completion binds only by its node execution id; a reminder binds to the open visit", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const direct = new pg.Pool({ connectionString: env.store, max: 2 });
         const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
         try {
-            await runMigrations(direct, env.cmsSchema, CMS_MIGRATIONS(env.cmsSchema).filter(m => m.version <= "0105"), CMS_LOCK_SEED);
-            const uniques = async () => (await direct.query(
-                `SELECT count(*)::int AS n FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
-                  WHERE n.nspname = $1 AND t.relname = 'workflow_agent_invocations' AND c.contype = 'u'`, [env.cmsSchema])).rows[0].n;
-            expect(await uniques()).toBe(1);
             await catalog.initialize();
-            expect(await uniques()).toBe(0);
+            // child_session_id is not unique (a chat that continues has one row per visit), and is indexed.
+            expect((await direct.query(
+                `SELECT count(*)::int AS n FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
+                  WHERE n.nspname = $1 AND t.relname = 'workflow_agent_invocations' AND c.contype = 'u'`, [env.cmsSchema])).rows[0].n).toBe(0);
             expect((await direct.query(`SELECT indexname FROM pg_indexes WHERE schemaname = $1 AND indexname = 'workflow_agent_invocations_by_child'`,
                 [env.cmsSchema])).rows).toHaveLength(1);
-            const versions = (await direct.query(`SELECT version FROM "${env.cmsSchema}".schema_migrations ORDER BY version`)).rows.map(row => row.version);
-            expect(versions).toContain("0106");
 
             const store = catalog.workflowStore();
             const yaml = CHAT_YAML();
@@ -333,39 +326,6 @@ describe("chat: continue in the store (migration 0106)", () => {
             await direct.end();
         }
     });
-});
-
-describe("migration 0106 finds the child session's uniqueness by what it is (review RT-6)", () => {
-    const uniqueness = async (direct, schema) => (await direct.query(
-        `SELECT x.relname FROM pg_index i JOIN pg_class x ON x.oid = i.indexrelid JOIN pg_class t ON t.oid = i.indrelid
-           JOIN pg_namespace n ON n.oid = t.relnamespace JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = i.indkey[0]
-          WHERE n.nspname = $1 AND t.relname = 'workflow_agent_invocations' AND i.indisunique AND NOT i.indisprimary
-            AND i.indnkeyatts = 1 AND a.attname = 'child_session_id'`, [schema])).rows.map(row => row.relname);
-    for (const [label, drift] of [
-        ["a renamed UNIQUE constraint", schema => `ALTER TABLE "${schema}".workflow_agent_invocations
-            RENAME CONSTRAINT workflow_agent_invocations_child_session_id_key TO legacy_child_unique`],
-        ["a unique index that no constraint owns", schema => `ALTER TABLE "${schema}".workflow_agent_invocations
-            DROP CONSTRAINT workflow_agent_invocations_child_session_id_key;
-            CREATE UNIQUE INDEX legacy_child_index ON "${schema}".workflow_agent_invocations (child_session_id)`],
-    ]) {
-        it(`drops ${label} on a 0105 database, then records 0106`, { timeout: TIMEOUT }, async () => {
-            const env = getEnv();
-            const direct = new pg.Pool({ connectionString: env.store, max: 2 });
-            const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
-            try {
-                await runMigrations(direct, env.cmsSchema, CMS_MIGRATIONS(env.cmsSchema).filter(m => m.version <= "0105"), CMS_LOCK_SEED);
-                await direct.query(drift(env.cmsSchema));
-                expect(await uniqueness(direct, env.cmsSchema)).toHaveLength(1);
-                await catalog.initialize();
-                expect(await uniqueness(direct, env.cmsSchema)).toEqual([]);
-                const versions = (await direct.query(`SELECT version FROM "${env.cmsSchema}".schema_migrations ORDER BY version`)).rows.map(row => row.version);
-                expect(versions).toContain("0106");
-            } finally {
-                await catalog.close();
-                await direct.end();
-            }
-        });
-    }
 });
 
 // ─── Controller 1.9.0 ─────────────────────────────────────────

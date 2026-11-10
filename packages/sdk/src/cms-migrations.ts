@@ -18,51 +18,7 @@ import { motdMigration } from "./migrations/motd-0084.js";
 import { motdHistoryMigration } from "./migrations/motd-history-0085.js";
 import { motdSchedulingMigration } from "./migrations/motd-scheduling-0086.js";
 import { motdSupersessionMigration } from "./migrations/motd-supersession-0087.js";
-import { workflowV2Migration } from "./migrations/workflow-v2-0089.js";
-import { workflowV2SessionLifecycleMigration } from "./migrations/workflow-v2-0090.js";
-import { workflowV2KvPauseMigration } from "./migrations/workflow-v2-0091.js";
-import { workflowV2WaitMigration } from "./migrations/workflow-v2-0092.js";
-import { workflowV2InboxMigration } from "./migrations/workflow-v2-0093.js";
-import { workflowV2InputReceiptMigration } from "./migrations/workflow-v2-0094.js";
-import { workflowV2OutboxMigration } from "./migrations/workflow-v2-0095.js";
-import { workflowV2OutboxRecipientMigration } from "./migrations/workflow-v2-0096.js";
-import { workflowV2RequestsMigration } from "./migrations/workflow-v2-0097.js";
-import { workflowV2IntakeMigration } from "./migrations/workflow-v2-0098.js";
-import { workflowV2IntakeExposuresMigration } from "./migrations/workflow-v2-0099.js";
-import { workflowV2StopMigration } from "./migrations/workflow-v2-0100.js";
-import { workflowV2AgentStatesMigration } from "./migrations/workflow-v2-0101.js";
-import { workflowV2TestRunsMigration } from "./migrations/workflow-v2-0102.js";
-import { workflowV2PublicationPinsMigration } from "./migrations/workflow-v2-0103.js";
-import { workflowV2RunDeadlineMigration } from "./migrations/workflow-v2-0104.js";
-import { workflowV2TestAgentPinsMigration } from "./migrations/workflow-v2-0105.js";
-import { workflowV2AgentChatContinuesMigration } from "./migrations/workflow-v2-0106.js";
-import { workflowChatDefinitionsMigration } from "./migrations/workflow-v2-0107.js";
-import { workflowPackageDefinitionsMigration } from "./migrations/workflow-v2-0108.js";
-import { workflowChatEndedLockOrderMigration } from "./migrations/workflow-v2-0109.js";
-import { workflowRunAgentModelsMigration } from "./migrations/workflow-v2-0110.js";
-import { sessionsParentSessionIndexMigration } from "./migrations/workflow-v2-0111.js";
-
-function workflowSessionKindMigration(schema: string): string {
-    const s = `"${schema}"`;
-    return `
-ALTER TABLE ${s}.sessions
-    ADD COLUMN IF NOT EXISTS session_kind TEXT NOT NULL DEFAULT 'agent';
-
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-          FROM pg_constraint
-         WHERE conname = 'sessions_session_kind_check'
-           AND conrelid = '${schema}.sessions'::regclass
-    ) THEN
-        ALTER TABLE ${s}.sessions
-            ADD CONSTRAINT sessions_session_kind_check
-            CHECK (session_kind IN ('agent', 'workflow'));
-    END IF;
-END $$;
-`;
-}
+import { workflowMigration } from "./migrations/workflow-0088.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -461,32 +417,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0085", name: "motd_history", sql: motdHistoryMigration(schema) },
         { version: "0086", name: "motd_scheduling", sql: motdSchedulingMigration(schema) },
         { version: "0087", name: "motd_supersession", sql: motdSupersessionMigration(schema) },
-        { version: "0088", name: "workflow_session_kind", sql: workflowSessionKindMigration(schema) },
-        { version: "0089", name: "workflow_v2", sql: workflowV2Migration(schema) },
-        { version: "0090", name: "workflow_v2_session_lifecycle", sql: workflowV2SessionLifecycleMigration(schema) },
-        { version: "0091", name: "workflow_v2_kv_pause", sql: workflowV2KvPauseMigration(schema) },
-        { version: "0092", name: "workflow_v2_wait", sql: workflowV2WaitMigration(schema) },
-        { version: "0093", name: "workflow_v2_inbox", sql: workflowV2InboxMigration(schema) },
-        { version: "0094", name: "workflow_v2_input_receipt", sql: workflowV2InputReceiptMigration(schema) },
-        { version: "0095", name: "workflow_v2_outbox", sql: workflowV2OutboxMigration(schema) },
-        { version: "0096", name: "workflow_v2_outbox_recipient", sql: workflowV2OutboxRecipientMigration(schema) },
-        { version: "0097", name: "workflow_v2_requests", sql: workflowV2RequestsMigration(schema) },
-        { version: "0098", name: "workflow_v2_intake", sql: workflowV2IntakeMigration(schema) },
-        { version: "0099", name: "workflow_v2_intake_exposures", sql: workflowV2IntakeExposuresMigration(schema) },
-        { version: "0100", name: "workflow_v2_stop", sql: workflowV2StopMigration(schema) },
-        { version: "0101", name: "workflow_v2_agent_states", sql: workflowV2AgentStatesMigration(schema) },
-        { version: "0102", name: "workflow_v2_test_runs", sql: workflowV2TestRunsMigration(schema) },
-        { version: "0103", name: "workflow_v2_publication_pins", sql: workflowV2PublicationPinsMigration(schema) },
-        { version: "0104", name: "workflow_v2_run_deadline", sql: workflowV2RunDeadlineMigration(schema) },
-        { version: "0105", name: "workflow_v2_test_agent_pins", sql: workflowV2TestAgentPinsMigration(schema) },
-        { version: "0106", name: "workflow_v2_agent_chat_continues", sql: workflowV2AgentChatContinuesMigration(schema) },
-        { version: "0107", name: "workflow_chat_definitions", sql: workflowChatDefinitionsMigration(schema) },
-        { version: "0108", name: "workflow_package_definitions", sql: workflowPackageDefinitionsMigration(schema) },
-        { version: "0109", name: "workflow_chat_ended_lock_order", sql: workflowChatEndedLockOrderMigration(schema) },
-        // OF-S2-7: per-node models chosen at start, stored with the run.
-        { version: "0110", name: "workflow_run_agent_models", sql: workflowRunAgentModelsMigration(schema) },
-        // Release safety: the Workflow triggers' and the child budget's lookups by parent_session_id use an index.
-        { version: "0111", name: "sessions_parent_session_index", steps: sessionsParentSessionIndexMigration(schema) },
+        { version: "0088", name: "workflow", steps: workflowMigration(schema) },
     ];
 }
 

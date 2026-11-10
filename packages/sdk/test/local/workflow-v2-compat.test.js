@@ -2,11 +2,6 @@
  * Workflow v2 data written by an earlier build stays usable after an upgrade,
  * on real PostgreSQL and the real durable runtime:
  *
- * - A schema migrated only up to 0089 (as an earlier build recorded it) gets
- *   the exclusive-creation function and the deletion trigger from 0090, and
- *   the open KV and pause columns from 0091, when the current catalog
- *   initializes; its rows are kept (an earlier run gets an empty KV at
- *   revision 1) and the trigger acts on them.
  * - An immutable revision compiled to IR version 1 (no root outputSchema;
  *   each succeeded terminal carries the contract it was compiled with) or
  *   version 2 (no catchAll) is read and run as stored: its text and hash are
@@ -21,11 +16,8 @@ import { describe, it, expect, afterAll } from "vitest";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { DATABASE_URL, TEST_SCHEMA_PREFIX, useSuiteEnv } from "../helpers/local-env.js";
-import { cmsVersionsAfter } from "../helpers/cms-versions.js";
+import { DATABASE_URL, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { CMS_MIGRATIONS } from "../../src/cms-migrations.ts";
-import { runMigrations } from "../../src/pg-migrator.ts";
 import { compileWorkflowV2, parseWorkflowIr, WORKFLOW_V2_API_VERSION } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson, jsonSha256, sha256Hex } from "../../src/workflow/v2/json.ts";
 import { createWorkflowV2, dispatchWorkflowV2Run } from "../../src/workflow/v2/service.ts";
@@ -34,13 +26,10 @@ import { registerWorkflowV2, workflowLiveControllerInstanceId } from "../../src/
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
-const CMS_LOCK_SEED = 0x63_6D_73;
 const ACTOR = { kind: "system", name: "workflow-v2-compat-test" };
 
 const pool = new pg.Pool({ connectionString: DATABASE_URL, max: 4 });
-const schemas = [];
 afterAll(async () => {
-    for (const schema of schemas) await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
     await pool.end();
 });
 
@@ -79,91 +68,6 @@ function versionOneIr(ir) {
 }
 
 describe("workflow v2 data from an earlier build", () => {
-    it("adds the 0090 creation function and deletion trigger to a schema recorded at 0089 and keeps its rows", { timeout: TIMEOUT }, async () => {
-        const schema = `${TEST_SCHEMA_PREFIX}_wfv2_up_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
-        schemas.push(schema);
-        await runMigrations(pool, schema, CMS_MIGRATIONS(schema).filter(m => m.version <= "0089"), CMS_LOCK_SEED);
-        const q = (text, values) => pool.query(text.replaceAll("SCHEMA", `"${schema}"`), values);
-        const has = async () => {
-            const [fn, trigger] = await Promise.all([
-                q("SELECT count(*)::int AS n FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1 AND p.proname = 'cms_create_workflow_session_v2'", [schema]),
-                q("SELECT count(*)::int AS n FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND t.tgname = 'workflow_v2_session_deleted'", [schema]),
-            ]);
-            return { fn: fn.rows[0].n, trigger: trigger.rows[0].n };
-        };
-        // Control: the recorded schema really lacks both objects.
-        expect(await has()).toEqual({ fn: 0, trigger: 0 });
-
-        // Rows an earlier build wrote: a workflow session, its published definition, an active run and a pending node.
-        const id = randomUUID();
-        const runId = randomUUID();
-        const compiled = compileWorkflowV2(CONTRACT);
-        expect(compiled.valid).toBe(true);
-        await q("SELECT SCHEMA.cms_create_session($1, 'm', NULL, NULL, false, NULL, NULL, NULL, NULL, 'private')", [id]);
-        await q(`UPDATE SCHEMA.sessions SET session_kind = 'workflow', creation_config = $2::jsonb WHERE session_id = $1`,
-            [id, JSON.stringify({ workflowV2: { apiVersion: WORKFLOW_V2_API_VERSION, requestSha256: "earlier", operationId: "create" } })]);
-        await q(`INSERT INTO SCHEMA.workflow_definitions (workflow_session_id, api_version, semver, state, current_revision, published_revision,
-                    published_yaml_sha256, published_ir_sha256) VALUES ($1, $2, '1.0.0', 'published', 1, 1, $3, $4)`,
-            [id, WORKFLOW_V2_API_VERSION, compiled.yamlSha256, compiled.irSha256]);
-        await q(`INSERT INTO SCHEMA.workflow_revisions (workflow_session_id, revision, yaml, yaml_sha256, valid, diagnostics, name, semver, ir, ir_sha256, actor)
-                 VALUES ($1, 1, $2, $3, true, '[]', 'old-contract', '1.0.0', $4, $5, $6)`,
-            [id, CONTRACT, compiled.yamlSha256, canonicalJson(compiled.ir), compiled.irSha256, canonicalJson(ACTOR)]);
-        await q(`INSERT INTO SCHEMA.workflow_runs (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, start_operation_id)
-                 VALUES ($1, $2, 'live', 1, $3, $4, '{}', $5, 'running', 'create')`,
-            [runId, id, compiled.yamlSha256, compiled.irSha256, workflowLiveControllerInstanceId(id)]);
-        await q(`INSERT INTO SCHEMA.workflow_node_executions (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state)
-                 VALUES ($1, $2, 'root', 'step', 1, 'script', 'null', $3, 'pending')`,
-            ["nx-earlier", runId, sha256Hex("null")]);
-        const before = (await q("SELECT version FROM SCHEMA.schema_migrations ORDER BY version")).rows.map(row => row.version);
-        expect(before.at(-1)).toBe("0089");
-
-        // The current build initializes the same schema.
-        const catalog = await PgSessionCatalog.create(DATABASE_URL, schema);
-        try {
-            await catalog.initialize();
-            const after = (await q("SELECT version FROM SCHEMA.schema_migrations ORDER BY version")).rows.map(row => row.version);
-            // Every registered migration after 0089, 0090 (the creation function) first.
-            expect(cmsVersionsAfter("0089")[0]).toBe("0090");
-            expect(after).toEqual([...before, ...cmsVersionsAfter("0089")]);
-            expect(await has()).toEqual({ fn: 1, trigger: 1 });
-            const store = catalog.workflowStore();
-            expect((await store.readDefinition(id)).state).toBe("published");
-            // 0091: the earlier run gets an empty open KV at revision 1 (kept as an immutable revision);
-            // its earlier node execution pinned no revision.
-            expect(await store.readRun(runId)).toMatchObject({ status: "running", kv: {}, kvRevision: 1, pausedFrom: null });
-            // 0100: an earlier run records no controller version and no stop, so it cannot be stopped gracefully.
-            expect(await store.readRun(runId)).toMatchObject({ controllerVersion: null, stop: null });
-            expect(await store.readKv(runId, 1)).toEqual({});
-            expect((await store.readNodeExecution("nx-earlier")).kvRevision).toBeNull();
-            // 0093: an earlier node execution accepts no typed input, and the inbox starts empty.
-            expect((await store.readNodeExecution("nx-earlier")).receive).toBeNull();
-            expect((await q("SELECT count(*)::int AS n FROM SCHEMA.workflow_inbox")).rows[0].n).toBe(0);
-            // 0095, 0096: the outbox starts empty; an earlier node execution sends nothing.
-            expect((await q("SELECT count(*)::int AS n FROM SCHEMA.workflow_outbox")).rows[0].n).toBe(0);
-            // 0097: the request tables start empty; an earlier node execution requests nothing.
-            for (const table of ["workflow_requests", "workflow_request_responses", "workflow_request_operations", "workflow_response_wakes"]) {
-                expect((await q(`SELECT count(*)::int AS n FROM SCHEMA.${table}`)).rows[0].n, table).toBe(0);
-            }
-            // 0098, 0099: the intake tables and the exposure record start empty.
-            for (const table of ["workflow_intake", "workflow_intake_invocations", "workflow_intake_exposures"]) {
-                expect((await q(`SELECT count(*)::int AS n FROM SCHEMA.${table}`)).rows[0].n, table).toBe(0);
-            }
-
-            // Exclusive creation now works on this schema, and never takes an existing row.
-            const fresh = randomUUID();
-            expect(await catalog.createWorkflowSessionV2(fresh, { parentSessionId: null, owner: null, creationConfig: { workflowV2: { requestSha256: "x" } } }))
-                .toEqual({ created: true });
-            expect(await catalog.createWorkflowSessionV2(id, { parentSessionId: null, owner: null, creationConfig: { workflowV2: { requestSha256: "y" } } }))
-                .toEqual({ created: false });
-
-            // Deleting the earlier session ends its earlier run through the new trigger.
-            await catalog.softDeleteSession(id);
-            expect((await store.readDefinition(id)).state).toBe("deleted");
-            expect(await store.readRun(runId)).toMatchObject({ status: "cancelled", terminalError: { code: "cancelled" } });
-            expect(await store.readNodeExecution("nx-earlier")).toMatchObject({ state: "completed", outcome: "cancelled", winner: "delete" });
-        } finally { await catalog.close(); }
-    });
-
     it("reads and runs an IR version 1 revision as stored, with the contract it was compiled with", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);

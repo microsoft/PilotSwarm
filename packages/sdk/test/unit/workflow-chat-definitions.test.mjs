@@ -1,9 +1,9 @@
 /**
  * Workflow Simplified stage 2.1, without a database: the workflow_definition tool's declaration and its refusals of an
- * invalid call before anything is read; a person's codes map to HTTP statuses; migration 0107's shape (the live name key,
- * the chat-ended trigger, the lock that keeps Workflows from being created during the import); the declarations (with
- * Workflows on, inside a Workflow, off). The store's rules run on PostgreSQL in test/local/workflow-chat-definitions.test.js,
- * the import in test/local/workflow-v2-migration-0107.test.js and the save note in test/local/workflow-chat-notes-turn.test.js.
+ * invalid call before anything is read; a person's codes map to HTTP statuses; the chat definition tables' shape (the
+ * live name key, the chat-ended trigger); the declarations (with Workflows on, inside a Workflow, off). The store's rules
+ * run on PostgreSQL in test/local/workflow-chat-definitions.test.js and the save note in
+ * test/local/workflow-chat-notes-turn.test.js.
  *
  * Run: node --test test/unit/workflow-chat-definitions.test.mjs
  */
@@ -14,8 +14,7 @@ import { ManagedSession } from "../../dist/managed-session.js";
 import { WORKFLOW_DEFINITION_TOOL, WORKFLOW_DEFINITION_TOOL_SPEC, workflowDefinitionFromTool, workflowDefinitionToolSpec } from "../../dist/workflow/v2/definition-tool.js";
 import { chatActorWords, chatSaveRequestSha256, CHAT_ENDED_STATES } from "../../dist/workflow/v2/chat-definition-store.js";
 import { workflowCommandStatus } from "../../dist/workflow/v2/human-commands.js";
-import { workflowChatDefinitionsMigration } from "../../dist/migrations/workflow-v2-0107.js";
-import { CMS_MIGRATIONS } from "../../dist/cms-migrations.js";
+import { workflowMigration } from "../../dist/migrations/workflow-0088.js";
 import { WORKFLOW_DEFINITION_TOOLS } from "../../dist/workflow/v2/input-policy.js";
 
 /** A host whose store must not be read: every refusal here comes before it. */
@@ -112,22 +111,13 @@ test("words and digests: who saved a revision, the chat's ended states, a save's
     assert.notEqual(digest, chatSaveRequestSha256({ name: "n", yamlSha256: "h", expected: null }));
 });
 
-test("migration 0107: registered before 0108; one live definition per name; the chat-ended trigger; the import holds Workflow creation", () => {
-    const list = CMS_MIGRATIONS("s");
-    const at = list.findIndex(item => item.version === "0107");
-    assert.equal(list[at].name, "workflow_chat_definitions");
-    // Stage 2.3: 0108 (package definitions) follows it; stage 2 review: 0109 (the chat-ended trigger's lock order).
-    assert.deepEqual(list.slice(at + 1, at + 3).map(item => item.version), ["0108", "0109"]);
-    const sql = workflowChatDefinitionsMigration("s");
+test("the chat definition tables (migration 0088): one live definition per name; the chat-ended trigger", () => {
+    const sql = workflowMigration("s")[0];
     assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS workflow_chat_definitions_live_name\s+ON "s"\.workflow_chat_definitions \(owner_session_id, name\) WHERE deleted_at IS NULL;/);
     assert.match(sql, /CONSTRAINT workflow_chat_revisions_valid_ir CHECK \(valid = \(ir IS NOT NULL AND ir_sha256 IS NOT NULL\)\)/);
     assert.match(sql, /CREATE TRIGGER workflow_v2_chat_ended\s+AFTER UPDATE OF state, deleted_at ON "s"\.sessions/);
     assert.match(sql, /WHEN \(NEW\.session_kind IS DISTINCT FROM 'workflow'/);
     assert.match(sql, /ELSIF NEW\.state IN \('completed', 'cancelled', 'failed'\)/);
-    assert.match(sql, /LOCK TABLE "s"\.workflow_definitions IN SHARE ROW EXCLUSIVE MODE;/);
-    // D3: deduplicated by YAML hash, never by metadata.version.
-    assert.match(sql, /PARTITION BY c\.owner_session_id, c\.name, r\.yaml_sha256/);
-    assert.ok(!/PARTITION BY[^)]*semver/.test(sql));
 });
 
 test("declarations: workflow_definition is a definition tool, declared (spawn_workflow is not), and not inside a Workflow (A1)", () => {
