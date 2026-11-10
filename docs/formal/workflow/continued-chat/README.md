@@ -115,7 +115,9 @@ Runs of the implementation cases (TLC 2.19, two workers):
 Every one of the 89 cases has a TLC result as expected; none is left unchecked (`cc.drr2-crash-live`, not checked
 within 1,800 s in cc6l, passed at 3,600 s in cc9l).
 
-## tf1 (2026-11-10): a turn that fails terminally (design)
+## tf1 (2026-11-10): a turn that fails terminally (bound to bd405420)
+
+The code binding of this fix (all three models) is `../orchestration/CORRESPONDENCE-tf1-bd405420.md`.
 
 A turn can fail with its retries spent: the agent session goes idle with an error. Before the fix the visit waits for
 its time limit. The fix: the session reports the failure, and the store decides the turn's own visit

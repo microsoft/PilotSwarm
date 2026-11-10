@@ -277,7 +277,9 @@ Known limits, accepted:
   write is due holds for the idle continue-as-new only.
 - A given-back digest that holds only a newer entry waits out that entry's batch window (`dw.*`).
 
-### tf1 (2026-11-10): a terminal turn failure reported to the Workflow (design)
+### tf1 (2026-11-10): a terminal turn failure reported to the Workflow (bound to bd405420)
+
+The code binding of this fix (all three models) is `../workflow/orchestration/CORRESPONDENCE-tf1-bd405420.md`.
 
 1.0.83 is changed in place (it is deployed nowhere). `OwnedRetry` gains `AllowExhaust` (the retry fails with its
 retries spent: the turn is terminal and the session goes idle with an error) and `Report` (`"none"`: the code before

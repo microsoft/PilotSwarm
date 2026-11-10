@@ -371,7 +371,7 @@ and `-cut-done-running` (R3-PS1), `impl.graph-delete-after-cmd` and `-delete-aft
 `impl.parent-told-once` (R3-PA1) pass. `impl.graph-live-linear-all` adds the deletion after another end to the
 liveness check, which r3 had to leave out because of R3-GR1.
 
-## tf1 (2026-11-10): an agent child whose turn fails terminally (design)
+## tf1 (2026-11-10): an agent child whose turn fails terminally (bound to bd405420)
 
 A child's turn can fail with its retries spent: its session goes idle with an error and never completes the state.
 Before the fix nothing tells the store, so the state waits for its deadline. The fix (owner decision 2026-11-10): the
@@ -391,7 +391,7 @@ the child succeeds (no report after a success): `AllowRecover` and `ChildRecover
 and `-recovers-safety` pass (the state is still decided: by the report, the agent's completion or the deadline), the
 witnesses show a dropped report's state completed by the agent and decided by its deadline, and
 `limit.agent-fail-recovered-no-deadline` records that without the deadline such a state may stay pending. The child session's side is in `../../session-orchestration/` (`OwnedRetry`)
-and a continued session's in `../continued-chat/`.
+and a continued session's in `../continued-chat/`. The code binding of all three models is `CORRESPONDENCE-tf1-bd405420.md`.
 
 ## Case taxonomy
 
