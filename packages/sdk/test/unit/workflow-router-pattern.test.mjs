@@ -19,7 +19,8 @@ import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { requireAgentModelsForRevision } from "../../dist/workflow/agent-models.js";
 import { loadSkillsSync } from "../../dist/skills.js";
 import { WORKFLOW_SESSION_GUIDANCE, WORKFLOW_SKILLS_DIR } from "../../dist/workflow/guidance.js";
-const read = relative => fs.readFileSync(new URL(relative, import.meta.url), "utf8");
+// As the skill loader reads it (skills.ts: a Windows checkout's CRLF line ends are LF).
+const read = relative => fs.readFileSync(new URL(relative, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const AUTHORING = read("../../plugins/workflow/skills/workflow-authoring/SKILL.md");
 const REFERENCE = read("../../plugins/workflow/skills/workflow-reference/SKILL.md");
 const PATTERNS = read("../../plugins/workflow/skills/workflow-patterns/SKILL.md");

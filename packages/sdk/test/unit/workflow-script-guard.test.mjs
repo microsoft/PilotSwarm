@@ -99,7 +99,10 @@ test("d) a script node sees only the documented environment variables, none of t
         const result = await run(`await setResult("done", Object.keys(process.env).sort());`);
         const documented = new Set(["PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "HOME", "USERPROFILE", "TMPDIR", "TEMP",
             "TMP", "NO_COLOR", "PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE", "PILOTSWARM_WORKFLOW_ENDPOINT", "PILOTSWARM_WORKFLOW_TOKEN",
-            "PILOTSWARM_WORKFLOW_SESSION_ID", "PILOTSWARM_WORKFLOW_NODE_ID"]);
+            "PILOTSWARM_WORKFLOW_SESSION_ID", "PILOTSWARM_WORKFLOW_NODE_ID",
+            // On Windows, Node (libuv, src/win/process.c required_vars) copies these from the worker into any explicit
+            // environment that lacks them; the runner passes none of them.
+            ...(process.platform === "win32" ? ["HOMEDRIVE", "HOMEPATH", "LOGONSERVER", "SYSTEMDRIVE", "USERDOMAIN", "USERNAME"] : [])]);
         const extra = result.output.filter(key => !documented.has(key));
         assert.deepEqual(extra, [], `undocumented variables: ${extra.join(", ")}`);
         for (const key of Object.keys(planted)) assert.ok(!result.output.includes(key), key);

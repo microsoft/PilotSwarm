@@ -514,7 +514,8 @@ test("G5: an unanswered call's fixture skeleton is exact: parsed and matched, it
 
 // ─── What the chat reads: the tool, the guidance, the skills, the service's words ───
 
-const skillText = name => fs.readFileSync(new URL(`../../plugins/workflow/skills/${name}/SKILL.md`, import.meta.url), "utf8");
+// As the skill loader reads it (skills.ts: a Windows checkout's CRLF line ends are LF).
+const skillText = name => fs.readFileSync(new URL(`../../plugins/workflow/skills/${name}/SKILL.md`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const flat = text => text.replace(/\s+/g, " ");
 
 test("the test's fixtures declaration names the load_skill call; the guidance says expect and receive fixtures, within its budget", () => {
