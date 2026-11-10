@@ -35,7 +35,7 @@
 (* deletion is reported; a finish, finishRun or cancel answer `elsewhere` *)
 (* goes to endedElsewhere; observeEnd's `deleted` is the session's        *)
 (* deletion mark when it runs). OtherEnds adds writers and faults:        *)
-(* "chat" (the owning chat ended: migrations 0107/0109 cancel the run,   *)
+(* "owner_session" (the owning session ended: migrations 0107/0109 cancel the run, *)
 (* no command, no deletion), "delete_after" (the workflow is deleted     *)
 (* after its run ended), "retry" (an end activity's commit is followed by *)
 (* a worker crash; its retry answers `elsewhere`; only finish, finishRun  *)
@@ -61,7 +61,7 @@ CONSTANTS
     Fault,          \* "none" or a deliberate fault
     Elsewhere,      \* r3: endedElsewhere's rule: "command" (1ef53967) or "any" (9a8d0f66, S7-DX3);
                     \* r4: "a9f60db7" ("any" with the R3-GR1 fix 5a7be64b)
-    OtherEnds       \* r3: subset of {"chat", "delete_after", "retry"} (see the header)
+    OtherEnds       \* r3: subset of {"owner_session", "delete_after", "retry"} (see the header)
 
 Faults == {"none", "no_limit", "branch_catchall", "join_early", "no_dropped",
            "catchall_twice", "store_admits_stopping", "fix_pause_on_collect", "srt1", "srt1b"}
@@ -69,7 +69,7 @@ ASSUME Fault \in Faults
 ASSUME Cmd \in {"queue", "direct"} /\ AllowLoseHint \in BOOLEAN
 ASSUME Limit \in Nat \ {0} /\ K \in Nat \ {0} /\ Conc \in 1..K
 ASSUME Plan \in {"linear", "catch", "catchf", "loop", "par", "parc"}
-ASSUME Elsewhere \in {"command", "any", "a9f60db7"} /\ OtherEnds \subseteq {"chat", "delete_after", "retry"}
+ASSUME Elsewhere \in {"command", "any", "a9f60db7"} /\ OtherEnds \subseteq {"owner_session", "delete_after", "retry"}
 
 NONE == "none"
 \* S7-DX3 (9a8d0f66) and every later head: a store answer `elsewhere` goes to endedElsewhere
@@ -79,8 +79,8 @@ GR1 == Elsewhere = "a9f60db7"
 Ids == 1..(Limit + 1)
 Branches == 1..K
 Scopes == 0..K
-\* "chat_cancelled": the store's status is cancelled; the model tells it from a command's end
-Ended == {"completed", "failed", "cancelled", "stopped", "deleted", "chat_cancelled"}
+\* "owner_session_cancelled": the store's status is cancelled; the model tells it from a command's end
+Ended == {"completed", "failed", "cancelled", "stopped", "deleted", "owner_session_cancelled"}
 Live == {"running", "paused"}
 
 ----------------------------------------------------------------------------
@@ -668,18 +668,18 @@ Delete ==
     /\ wfDel' = TRUE
     /\ UNCHANGED <<stopReq, stopDue, runDue, cmdq, pauses, ctlVars, histVars, childEnded, loserNotice>>
 
-(* r3 "chat": the chat that owns the workflow completed, was cancelled or *)
+(* r3 "owner_session": the session that owns the workflow completed, was cancelled or *)
 (* failed (migrations 0107, 0109): its trigger ends the active run        *)
 (* cancelled (pending work winner delete), with no command and no         *)
 (* deletion. A deleted test definition ends its test runs the same way.  *)
-ChatEnds ==
-    /\ "chat" \in OtherEnds /\ runSt \in Live
-    /\ EndRunTx("chat_cancelled")
+OwnerSessionEnds ==
+    /\ "owner_session" \in OtherEnds /\ runSt \in Live
+    /\ EndRunTx("owner_session_cancelled")
     /\ UNCHANGED <<stopReq, stopDue, runDue, cmdq, pauses, ctlVars, histVars, r3Vars>>
 
 (* r3 "delete_after": the workflow is deleted after its run ended (a       *)
 (* delete on an ended run soft-deletes the session and keeps the run's    *)
-(* result; the chat's deletion soft-deletes its workflows, 0109).         *)
+(* result; the session's deletion soft-deletes its workflows, 0109).      *)
 DeleteEnded ==
     /\ AllowDelete /\ "delete_after" \in OtherEnds
     /\ runSt \in Ended /\ ~wfDel
@@ -698,11 +698,11 @@ Controller ==
 Environment ==
     \/ \E i \in Ids : Decide(i)
     \/ SendCancel \/ LoseHint \/ RequestStop \/ StopGraceEnds \/ RunDeadline \/ Pause \/ Resume \/ Delete
-    \/ ChatEnds \/ DeleteEnded
+    \/ OwnerSessionEnds \/ DeleteEnded
 
 (* The S7-DX2 history of every step. A command's end is the only end with *)
 (* status cancelled (applyCommand or an accepted command's store end); r3  *)
-(* names the owning chat's end "chat_cancelled".                           *)
+(* names the owning session's end "owner_session_cancelled".               *)
 H ==
     /\ accepted' = (accepted \/ (AllowCancel /\ cmdq = NONE /\ cmdq' = "cancel"))
     /\ cmdEnd' = (cmdEnd \/ (runSt \in Live /\ runSt' = "cancelled"))
@@ -783,9 +783,9 @@ Prop_RunEnds == <>(runSt \in Ended)
 Prop_CommandEnds == accepted ~> (cmdEnd /\ pc = "ended")
 Prop_CommandTold == cmdEnd ~> (notified >= 1)
 (* r3 (S7-DX3): an end by another writer that is not a deletion (an       *)
-(* accepted command's, the owning chat's) is reconciled: the children are *)
+(* accepted command's, the owning session's) is reconciled: the children are *)
 (* ended and the parent is told (once: Inv_OneReport).                    *)
-ElsewhereEnd == runSt = "chat_cancelled" \/ (runSt = "cancelled" /\ Cmd = "direct")
+ElsewhereEnd == runSt = "owner_session_cancelled" \/ (runSt = "cancelled" /\ Cmd = "direct")
 Prop_EndedElsewhereReported == ElsewhereEnd ~> (notified = 1 /\ childEnded)
 (* Every end but a deletion is told to the parent ("whatever ended the    *)
 (* run first decides who is told"; the requester is WfParent's).          *)
@@ -804,6 +804,6 @@ Wit_CatchAllEntered == ~caEntered
 Wit_StoppedWithWork == ~(runSt = "stopped" /\ \E i \in Ids : ne[i].win = "end")
 Wit_DroppedResultSkipped == ~(pc = "route" /\ \E i \in batch : i \in dropped)
 Wit_CommandEndsBusyRun == ~(cmdEnd /\ pc = "ended" /\ steps > 0 /\ notified = 1)
-Wit_ChatEndReported == ~(runSt = "chat_cancelled" /\ pc = "ended" /\ notified = 1)
+Wit_OwnerSessionEndReported == ~(runSt = "owner_session_cancelled" /\ pc = "ended" /\ notified = 1)
 Wit_RetryObserved == ~(pc = "observe" /\ runSt \in {"completed", "failed"})
 =============================================================================

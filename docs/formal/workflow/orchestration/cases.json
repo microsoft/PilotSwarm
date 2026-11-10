@@ -8114,10 +8114,10 @@
    "Prop_FirstEndWins"
   ],
   "expected": "PASS",
-  "note": "S7-DX3 at 9a8d0f66: with direct commands, the owning chat's end, deletions (also after the end) and end retries, the parent is told at most once, only of an ended run, after its children, never of a deleted run, never by a losing command.",
+  "note": "S7-DX3 at 9a8d0f66: with direct commands, the owning session's end, deletions (also after the end) and end retries, the parent is told at most once, only of an ended run, after its children, never of a deleted run, never by a losing command.",
   "batch": "r3",
   "tlc": {
-   "comment": "graph.r3-linear (reviewed; expected PASS): S7-DX3 at 9a8d0f66: with direct commands, the owning chat's end, deletions (also after the end) and end retries, the parent is told at most once, only of an ended run, after its children, never of a deleted run, never by a losing command.",
+   "comment": "graph.r3-linear (reviewed; expected PASS): S7-DX3 at 9a8d0f66: with direct commands, the owning session's end, deletions (also after the end) and end retries, the parent is told at most once, only of an ended run, after its children, never of a deleted run, never by a losing command.",
    "spec": "Spec",
    "constants": {
     "Plan": "\"linear\"",
@@ -8134,7 +8134,7 @@
     "AllowLoseHint": "TRUE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"any\"",
-    "OtherEnds": "{\"chat\", \"retry\", \"delete_after\"}"
+    "OtherEnds": "{\"owner_session\", \"retry\", \"delete_after\"}"
    },
    "invariants": [
     "TypeOK",
@@ -8215,7 +8215,7 @@
     "AllowLoseHint": "TRUE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"any\"",
-    "OtherEnds": "{\"chat\", \"retry\", \"delete_after\"}"
+    "OtherEnds": "{\"owner_session\", \"retry\", \"delete_after\"}"
    },
    "invariants": [
     "TypeOK",
@@ -8296,7 +8296,7 @@
     "AllowLoseHint": "TRUE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"any\"",
-    "OtherEnds": "{\"chat\", \"retry\", \"delete_after\"}"
+    "OtherEnds": "{\"owner_session\", \"retry\", \"delete_after\"}"
    },
    "invariants": [
     "TypeOK",
@@ -8364,7 +8364,7 @@
     "AllowLoseHint": "TRUE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"any\"",
-    "OtherEnds": "{\"chat\", \"retry\"}"
+    "OtherEnds": "{\"owner_session\", \"retry\"}"
    },
    "invariants": [],
    "properties": [
@@ -8418,7 +8418,7 @@
     "AllowLoseHint": "TRUE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"any\"",
-    "OtherEnds": "{\"chat\", \"retry\"}"
+    "OtherEnds": "{\"owner_session\", \"retry\"}"
    },
    "invariants": [],
    "properties": [
@@ -8472,7 +8472,7 @@
     "AllowLoseHint": "TRUE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"any\"",
-    "OtherEnds": "{\"chat\", \"retry\"}"
+    "OtherEnds": "{\"owner_session\", \"retry\"}"
    },
    "invariants": [],
    "properties": [
@@ -8499,10 +8499,10 @@
    "Prop_EndedElsewhereReported"
   ],
   "expected": "PASS",
-  "note": "S7-DX3 N-1: a run its owning chat's end cancelled (no command, no deletion) is reported by its controller (endedElsewhere -> reportEnded).",
+  "note": "S7-DX3 N-1: a run its owning session's end cancelled (no command, no deletion) is reported by its controller (endedElsewhere -> reportEnded).",
   "batch": "r3",
   "tlc": {
-   "comment": "graph.r3-chat-reported (reviewed; expected PASS): S7-DX3 N-1: a run its owning chat's end cancelled (no command, no deletion) is reported by its controller (endedElsewhere -> reportEnded).",
+   "comment": "graph.r3-chat-reported (reviewed; expected PASS): S7-DX3 N-1: a run its owning session's end cancelled (no command, no deletion) is reported by its controller (endedElsewhere -> reportEnded).",
    "spec": "LiveSpec",
    "constants": {
     "Plan": "\"linear\"",
@@ -8519,7 +8519,7 @@
     "AllowLoseHint": "FALSE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"any\"",
-    "OtherEnds": "{\"chat\"}"
+    "OtherEnds": "{\"owner_session\"}"
    },
    "invariants": [],
    "properties": [
@@ -8539,10 +8539,10 @@
    "Prop_EndedElsewhereReported"
   ],
   "expected": "liveness",
-  "note": "1ef53967's endedElsewhere told the parent only after an accepted command's end (commandEndOf): the chat's end, found by the collection, ends the children only.",
+  "note": "1ef53967's endedElsewhere told the parent only after an accepted command's end (commandEndOf): the session's end, found by the collection, ends the children only.",
   "batch": "r3",
   "tlc": {
-   "comment": "cmp.graph-r3-chat-unreported-1ef (comparison; expected liveness): 1ef53967's endedElsewhere told the parent only after an accepted command's end (commandEndOf): the chat's end, found by the collection, ends the children only.",
+   "comment": "cmp.graph-r3-chat-unreported-1ef (comparison; expected liveness): 1ef53967's endedElsewhere told the parent only after an accepted command's end (commandEndOf): the session's end, found by the collection, ends the children only.",
    "spec": "LiveSpec",
    "constants": {
     "Plan": "\"linear\"",
@@ -8559,7 +8559,7 @@
     "AllowLoseHint": "FALSE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"command\"",
-    "OtherEnds": "{\"chat\"}"
+    "OtherEnds": "{\"owner_session\"}"
    },
    "invariants": [],
    "properties": [
@@ -8672,10 +8672,10 @@
    "Inv_NoCollectAfterEnd"
   ],
   "expected": "PASS",
-  "note": "S7-DX3 N-2: an older build's queued cancel read after the chat's end or a deletion won: applyCommand's cancel answers elsewhere and the stored end decides the notice.",
+  "note": "S7-DX3 N-2: an older build's queued cancel read after the session's end or a deletion won: applyCommand's cancel answers elsewhere and the stored end decides the notice.",
   "batch": "r3",
   "tlc": {
-   "comment": "graph.r3-queue-loser (reviewed; expected PASS): S7-DX3 N-2: an older build's queued cancel read after the chat's end or a deletion won: applyCommand's cancel answers elsewhere and the stored end decides the notice.",
+   "comment": "graph.r3-queue-loser (reviewed; expected PASS): S7-DX3 N-2: an older build's queued cancel read after the session's end or a deletion won: applyCommand's cancel answers elsewhere and the stored end decides the notice.",
    "spec": "Spec",
    "constants": {
     "Plan": "\"linear\"",
@@ -8692,7 +8692,7 @@
     "AllowLoseHint": "FALSE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"any\"",
-    "OtherEnds": "{\"chat\"}"
+    "OtherEnds": "{\"owner_session\"}"
    },
    "invariants": [
     "TypeOK",
@@ -8738,7 +8738,7 @@
     "AllowLoseHint": "FALSE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"command\"",
-    "OtherEnds": "{\"chat\"}"
+    "OtherEnds": "{\"owner_session\"}"
    },
    "invariants": [
     "TypeOK",
@@ -8877,13 +8877,13 @@
   "head": "9a8d0f66",
   "properties": [
    "TypeOK",
-   "Wit_ChatEndReported"
+   "Wit_OwnerSessionEndReported"
   ],
   "expected": "safety",
-  "note": "S7-DX3: the chat's end is found and reported by the controller (reachable).",
+  "note": "S7-DX3: the session's end is found and reported by the controller (reachable).",
   "batch": "r3",
   "tlc": {
-   "comment": "wit.graph-r3-chat-reported (witness; expected safety): S7-DX3: the chat's end is found and reported by the controller (reachable).",
+   "comment": "wit.graph-r3-chat-reported (witness; expected safety): S7-DX3: the session's end is found and reported by the controller (reachable).",
    "spec": "Spec",
    "constants": {
     "Plan": "\"linear\"",
@@ -8900,11 +8900,11 @@
     "AllowLoseHint": "FALSE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"any\"",
-    "OtherEnds": "{\"chat\"}"
+    "OtherEnds": "{\"owner_session\"}"
    },
    "invariants": [
     "TypeOK",
-    "Wit_ChatEndReported"
+    "Wit_OwnerSessionEndReported"
    ],
    "properties": [],
    "deadlock": true
@@ -11418,7 +11418,7 @@
     "AllowLoseHint": "TRUE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"a9f60db7\"",
-    "OtherEnds": "{\"chat\", \"retry\", \"delete_after\"}"
+    "OtherEnds": "{\"owner_session\", \"retry\", \"delete_after\"}"
    },
    "invariants": [
     "TypeOK",
@@ -11499,7 +11499,7 @@
     "AllowLoseHint": "TRUE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"a9f60db7\"",
-    "OtherEnds": "{\"chat\", \"retry\", \"delete_after\"}"
+    "OtherEnds": "{\"owner_session\", \"retry\", \"delete_after\"}"
    },
    "invariants": [
     "TypeOK",
@@ -11580,7 +11580,7 @@
     "AllowLoseHint": "TRUE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"a9f60db7\"",
-    "OtherEnds": "{\"chat\", \"retry\", \"delete_after\"}"
+    "OtherEnds": "{\"owner_session\", \"retry\", \"delete_after\"}"
    },
    "invariants": [
     "TypeOK",
@@ -11648,7 +11648,7 @@
     "AllowLoseHint": "TRUE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"a9f60db7\"",
-    "OtherEnds": "{\"chat\", \"retry\"}"
+    "OtherEnds": "{\"owner_session\", \"retry\"}"
    },
    "invariants": [],
    "properties": [
@@ -11702,7 +11702,7 @@
     "AllowLoseHint": "TRUE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"a9f60db7\"",
-    "OtherEnds": "{\"chat\", \"retry\"}"
+    "OtherEnds": "{\"owner_session\", \"retry\"}"
    },
    "invariants": [],
    "properties": [
@@ -11756,7 +11756,7 @@
     "AllowLoseHint": "TRUE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"a9f60db7\"",
-    "OtherEnds": "{\"chat\", \"retry\"}"
+    "OtherEnds": "{\"owner_session\", \"retry\"}"
    },
    "invariants": [],
    "properties": [
@@ -11810,7 +11810,7 @@
     "AllowLoseHint": "TRUE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"a9f60db7\"",
-    "OtherEnds": "{\"chat\", \"retry\", \"delete_after\"}"
+    "OtherEnds": "{\"owner_session\", \"retry\", \"delete_after\"}"
    },
    "invariants": [],
    "properties": [
@@ -11837,10 +11837,10 @@
    "Prop_EndedElsewhereReported"
   ],
   "expected": "PASS",
-  "note": "a9f60db7: the owning chat's end is reported by the controller (endedElsewhere -> reportEnded).",
+  "note": "a9f60db7: the owning session's end is reported by the controller (endedElsewhere -> reportEnded).",
   "batch": "r4",
   "tlc": {
-   "comment": "impl.graph-chat-reported (reviewed; expected PASS): a9f60db7: the owning chat's end is reported by the controller (endedElsewhere -> reportEnded).",
+   "comment": "impl.graph-chat-reported (reviewed; expected PASS): a9f60db7: the owning session's end is reported by the controller (endedElsewhere -> reportEnded).",
    "spec": "LiveSpec",
    "constants": {
     "Plan": "\"linear\"",
@@ -11857,7 +11857,7 @@
     "AllowLoseHint": "FALSE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"a9f60db7\"",
-    "OtherEnds": "{\"chat\"}"
+    "OtherEnds": "{\"owner_session\"}"
    },
    "invariants": [],
    "properties": [
@@ -11928,10 +11928,10 @@
    "Inv_NoCollectAfterEnd"
   ],
   "expected": "PASS",
-  "note": "a9f60db7: a queued cancel that lost to the chat's end or a deletion: the stored end decides the notice.",
+  "note": "a9f60db7: a queued cancel that lost to the session's end or a deletion: the stored end decides the notice.",
   "batch": "r4",
   "tlc": {
-   "comment": "impl.graph-queue-loser (reviewed; expected PASS): a9f60db7: a queued cancel that lost to the chat's end or a deletion: the stored end decides the notice.",
+   "comment": "impl.graph-queue-loser (reviewed; expected PASS): a9f60db7: a queued cancel that lost to the session's end or a deletion: the stored end decides the notice.",
    "spec": "Spec",
    "constants": {
     "Plan": "\"linear\"",
@@ -11948,7 +11948,7 @@
     "AllowLoseHint": "FALSE",
     "Fault": "\"srt1\"",
     "Elsewhere": "\"a9f60db7\"",
-    "OtherEnds": "{\"chat\"}"
+    "OtherEnds": "{\"owner_session\"}"
    },
    "invariants": [
     "TypeOK",

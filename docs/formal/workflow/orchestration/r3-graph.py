@@ -5,13 +5,13 @@
 
 def g(plan, limit, k=1, conc=1, ff=False, cancel=True, stop=True, pause=True, deadline=True, delete=True, fault="none",
       cmd="queue", lose=False, elsewhere="command", others=()):
-    assert elsewhere in ("command", "any") and set(others) <= {"chat", "delete_after", "retry"}
+    assert elsewhere in ("command", "any") and set(others) <= {"owner_session", "delete_after", "retry"}
     return dict(Plan=f'"{plan}"', Limit=limit, K=k, Conc=conc, FailFast=ff, AllowCancel=cancel, AllowStop=stop,
                 AllowPause=pause, AllowDeadline=deadline, AllowDelete=delete, Cmd=f'"{cmd}"', AllowLoseHint=lose, Fault=f'"{fault}"',
                 Elsewhere=f'"{elsewhere}"', OtherEnds="{" + ", ".join(f'"{o}"' for o in others) + "}")
 
-R3_ALL = ("chat", "retry", "delete_after")
-R3_LIVEENDS = ("chat", "retry")
+R3_ALL = ("owner_session", "retry", "delete_after")
+R3_LIVEENDS = ("owner_session", "retry")
 R3_INV = G_INV + ["Inv_NoAdmitAfterAccept", "Inv_NoCollectAfterEnd", "Inv_NoRouteWhilePaused", "Inv_NoFailWhilePaused",
                   "Inv_ReportOnlyEnded", "Inv_ReportAfterChildren", "Inv_DeletedNotReported", "Inv_NoticeFollowsWinner"]
 R3_LIVE = ["Prop_ControllerEnds", "Prop_RunEnds", "Prop_CommandEnds", "Prop_CommandTold", "Prop_EndedElsewhereReported",
@@ -28,7 +28,7 @@ R3_GRAPH = [
  # ---- 9a8d0f66 (Elsewhere = "any"): every source of another end, direct commands, S-RT1 ----
  ("graph.r3-linear", "WfGraph", "reviewed", "Spec",
   g("linear", 4, fault="srt1", cmd="direct", lose=True, elsewhere="any", others=R3_ALL), R3_INV, ["Prop_FirstEndWins"], "PASS",
-  "S7-DX3 at 9a8d0f66: with direct commands, the owning chat's end, deletions (also after the end) and end retries, the parent is told at most once, only of an ended run, after its children, never of a deleted run, never by a losing command."),
+  "S7-DX3 at 9a8d0f66: with direct commands, the owning session's end, deletions (also after the end) and end retries, the parent is told at most once, only of an ended run, after its children, never of a deleted run, never by a losing command."),
  ("graph.r3-loop", "WfGraph", "reviewed", "Spec",
   g("loop", 4, fault="srt1", cmd="direct", lose=True, elsewhere="any", others=R3_ALL), R3_INV, ["Prop_FirstEndWins"], "PASS",
   "S7-DX3 at 9a8d0f66 on a loop that reaches its node limit (finishRun's elsewhere answer): the same rules."),
@@ -46,11 +46,11 @@ R3_GRAPH = [
   "S7-DX3 at 9a8d0f66 on a parallel state, one branch at a time, failFast: the same progress rules."),
  # ---- what changed: minimal pairs, 9a8d0f66 (PASS) and 1ef53967 (comparison) ----
  ("graph.r3-chat-reported", "WfGraph", "reviewed", "LiveSpec",
-  g("linear", 4, cmd="direct", elsewhere="any", others=("chat",), **r3q()), [], ["Prop_EndedElsewhereReported"], "PASS",
-  "S7-DX3 N-1: a run its owning chat's end cancelled (no command, no deletion) is reported by its controller (endedElsewhere -> reportEnded)."),
+  g("linear", 4, cmd="direct", elsewhere="any", others=("owner_session",), **r3q()), [], ["Prop_EndedElsewhereReported"], "PASS",
+  "S7-DX3 N-1: a run its owning session's end cancelled (no command, no deletion) is reported by its controller (endedElsewhere -> reportEnded)."),
  ("cmp.graph-r3-chat-unreported-1ef", "WfGraph", "comparison", "LiveSpec",
-  g("linear", 4, cmd="direct", elsewhere="command", others=("chat",), **r3q()), [], ["Prop_EndedElsewhereReported"], "liveness",
-  "1ef53967's endedElsewhere told the parent only after an accepted command's end (commandEndOf): the chat's end, found by the collection, ends the children only."),
+  g("linear", 4, cmd="direct", elsewhere="command", others=("owner_session",), **r3q()), [], ["Prop_EndedElsewhereReported"], "liveness",
+  "1ef53967's endedElsewhere told the parent only after an accepted command's end (commandEndOf): the session's end, found by the collection, ends the children only."),
  ("graph.r3-finish-deleted", "WfGraph", "reviewed", "Spec",
   g("linear", 4, cmd="direct", elsewhere="any", **r3q(delete=True)), ["TypeOK", "Inv_DeletedNotReported", "Inv_OneReport", "Inv_ReportOnlyEnded"], [], "PASS",
   "S7-DX3 N-1: a terminal's finish that finds the run deleted answers elsewhere; endedElsewhere ends the children and tells no one."),
@@ -58,11 +58,11 @@ R3_GRAPH = [
   g("linear", 4, cmd="direct", elsewhere="command", **r3q(delete=True)), ["TypeOK", "Inv_DeletedNotReported"], [], "safety",
   "1ef53967 (Q1): a terminal's finish that found the run ended reported it (reportEnded), a deleted run's too: the parent was told of a deletion."),
  ("graph.r3-queue-loser", "WfGraph", "reviewed", "Spec",
-  g("linear", 4, cmd="queue", elsewhere="any", others=("chat",), **r3q(cancel=True, delete=True)),
+  g("linear", 4, cmd="queue", elsewhere="any", others=("owner_session",), **r3q(cancel=True, delete=True)),
   ["TypeOK", "Inv_NoticeFollowsWinner", "Inv_DeletedNotReported", "Inv_OneReport", "Inv_ReportOnlyEnded", "Inv_NoCollectAfterEnd"], [], "PASS",
-  "S7-DX3 N-2: an older build's queued cancel read after the chat's end or a deletion won: applyCommand's cancel answers elsewhere and the stored end decides the notice."),
+  "S7-DX3 N-2: an older build's queued cancel read after the session's end or a deletion won: applyCommand's cancel answers elsewhere and the stored end decides the notice."),
  ("cmp.graph-r3-queue-loser-1ef", "WfGraph", "comparison", "Spec",
-  g("linear", 4, cmd="queue", elsewhere="command", others=("chat",), **r3q(cancel=True, delete=True)),
+  g("linear", 4, cmd="queue", elsewhere="command", others=("owner_session",), **r3q(cancel=True, delete=True)),
   ["TypeOK", "Inv_NoticeFollowsWinner"], [], "safety",
   "1ef53967 (N-2): applyCommand told the parent with the requester of a queued command that lost to another end (and of a deleted run)."),
  # ---- finding R3-G1 at 9a8d0f66: a deletion after another end drops that end's notice ----
@@ -77,8 +77,8 @@ R3_GRAPH = [
   "Finding R3-G1, own end: the terminal's finish commits completed, the worker crashes, the workflow is deleted, the retry answers elsewhere: the completion is never told."),
  # ---- reachability of the new paths ----
  ("wit.graph-r3-chat-reported", "WfGraph", "witness", "Spec",
-  g("linear", 4, cmd="direct", elsewhere="any", others=("chat",), **r3q()), ["TypeOK", "Wit_ChatEndReported"], [], "safety",
-  "S7-DX3: the chat's end is found and reported by the controller (reachable)."),
+  g("linear", 4, cmd="direct", elsewhere="any", others=("owner_session",), **r3q()), ["TypeOK", "Wit_OwnerSessionEndReported"], [], "safety",
+  "S7-DX3: the session's end is found and reported by the controller (reachable)."),
  ("wit.graph-r3-retry-observed", "WfGraph", "witness", "Spec",
   g("linear", 4, elsewhere="any", others=("retry",), **r3q()), ["TypeOK", "Wit_RetryObserved"], [], "safety",
   "S7-DX3: a retried finish of the controller's own end reaches endedElsewhere (reachable)."),

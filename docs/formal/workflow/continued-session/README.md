@@ -1,7 +1,7 @@
 # The continued agent session (session lifecycle "continue")
 
-`WfContinuedChat.tla` models an agent state whose visits in one run go to one agent session, the default for an
-agent state in the outer graph. `CORRESPONDENCE-840dd954.md` maps it to the code. A TLC pass is a bounded check, not a
+`WfContinuedSession.tla` models an agent state whose visits in one run go to one agent session, the default for an
+agent state in the outer graph. `CORRESPONDENCE-2a6e6912.md` maps it to the code. A TLC pass is a bounded check, not a
 proof.
 
 ## What is checked
@@ -26,7 +26,7 @@ proof.
 | `Prop_VisitsDecided` | Every visit is decided (guaranteed by the time limit). |
 
 Constants switch on a person's end or delete, a stop or cancel, failing Stops and a failing end, and each proposed
-fix (`SpawnRecheck`, `StopBeforeSpawn`, `PerChatEnd`, `StopAtRunEnd`, and `EndMark` for the G1 residual).
+fix (`SpawnRecheck`, `StopBeforeSpawn`, `PerAgentSessionEnd`, `StopAtRunEnd`, and `EndMark` for the G1 residual).
 `SplitSpawn` takes the spawn as three steps (the check, the child create, the send) and `MarkSplit` a person's end as
 two (the mark, the command), so that other steps can run between them; `CheckAll`, `Fence`, `Backstop`,
 `AllowSpawnCrash`, `MarkFail`, `Withdraw`, `Outbox`, `Carry`, `CarryDelete`, `TurnGuard`, `MarkCreating` and `CarryNotFound` describe the DRR-1 and DRR-2 code and fixes (see the module
@@ -115,11 +115,11 @@ Runs of the implementation cases (TLC 2.19, two workers):
 Every one of the 89 cases has a TLC result as expected; none is left unchecked (`cc.drr2-crash-live`, not checked
 within 1,800 s in cc6l, passed at 3,600 s in cc9l).
 
-## tf1 (2026-11-10): a turn that fails terminally (bound to 840dd954)
+## tf1 (2026-11-10): a turn that fails terminally (bound to 2a6e6912)
 
 Runs (2026-11-10, TLC 2.19, two workers, 600 s per case): the design run, 63 of 63 as expected (the three findings of the code before the fix violate their liveness property; every fix case passes), and the run with the drop on success, 72 of 72 as expected.
 
-The code binding of this fix (all three models) is `../orchestration/CORRESPONDENCE-tf1-840dd954.md`.
+The code binding of this fix (all three models) is `../orchestration/CORRESPONDENCE-tf1-2a6e6912.md`.
 
 A turn can fail with its retries spent: the agent session goes idle with an error. Before the fix the visit waits for
 its time limit. The fix: the session reports the failure, and the store decides the turn's own visit

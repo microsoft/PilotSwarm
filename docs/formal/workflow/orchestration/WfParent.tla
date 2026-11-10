@@ -34,17 +34,17 @@
 (* r3 adds "9a8d0f66" (fc6d7a65's notice path plus deployed check DS-2,   *)
 (* b3c58aa9 in the squash d7c3ca68): the worker's parent notifier says    *)
 (* notStarted when the parent's session orchestration is NotFound; the    *)
-(* notice is then kept as a chat note (keepNote, once per text) and a     *)
+(* notice is then kept as a session note (keepNote, once per text) and a  *)
 (* skip is recorded (reason "kept as a note", evNoted). The parent's next *)
 (* turn reads its pending notes at the start of its prompt; they are      *)
 (* consumed only when that turn succeeds. AllowLateStart: the parent's    *)
-(* session has not started when the run begins (a chat made without a     *)
+(* session has not started when the run begins (a session made without a  *)
 (* first message); it starts later (its first turn), or is deleted first. *)
 (* A started parent that is deleted may have its orchestration deleted    *)
 (* too (pPurged): NotFound again. "proposedNoteTx" is 9a8d0f66 with the   *)
 (* note and the skip in one transaction (the r3 finding's fix).           *)
 (* r4 adds "a9f60db7" (the branch head, R3-PA1 fix 30660458): the code    *)
-(* of proposedNoteTx (store.keepNoticeAsNote: chat.keepNoteIn and the     *)
+(* of proposedNoteTx (store.keepNoticeAsNote: sessionDefinitions.keepNoteIn and the *)
 (* skip event projected in one transaction); otherwise as 9a8d0f66.       *)
 (*                                                                         *)
 (* Only the prompt path is live: a send is a WORKFLOW_UPDATE prompt        *)
@@ -92,14 +92,14 @@ ASSUME AllowRecover => (Code \in {"a10c2e07", "fc6d7a65", "9a8d0f66", "proposedN
 ASSUME AllowNtZombie => Code \in {"a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx", "a9f60db7"}
 ASSUME AllowLateStart \in BOOLEAN /\ (AllowLateStart => Code \in {"a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx", "a9f60db7"})
 NONE == "none"
-\* the state's message (its exchange id), the run's end ("...:terminal") and (r3) the run's end read from a chat note
+\* the state's message (its exchange id), the run's end ("...:terminal") and (r3) the run's end read from a session note
 Ids == {"M", "E", "N"}
 FixD == Code = "proposedD"
 D1 == Code \in {"1f7bdc77", "proposedE3"}   \* group D as committed (E3 builds on it)
 E3 == Code = "proposedE3"
 A10 == Code \in {"a10c2e07", "fc6d7a65", "9a8d0f66", "proposedNoteTx", "a9f60db7"}   \* batch E3 as committed (and E3b on top of it)
 E3B == Code \in {"fc6d7a65", "9a8d0f66", "proposedNoteTx", "a9f60db7"}               \* E3b: a held lock fails the attempt, which runs again
-DS2 == Code \in {"9a8d0f66", "proposedNoteTx", "a9f60db7"}   \* r3: a NotFound parent keeps the notice as a chat note
+DS2 == Code \in {"9a8d0f66", "proposedNoteTx", "a9f60db7"}   \* r3: a NotFound parent keeps the notice as a session note
 NoteTx == Code \in {"proposedNoteTx", "a9f60db7"}  \* r3 fix: the note and its skip are one transaction (a9f60db7: 30660458)
 E3L == E3 \/ A10                            \* the count of failed rows; the skip with earlierAttempt
 NI == 1..NumNotifiers
@@ -137,10 +137,10 @@ VARIABLES
     holder,      \* a10c2e07: the process that holds the run's notice lock (0: none)
     recovers,    \* a10c2e07: recover calls
     \* r3 (DS-2)
-    pStarted,    \* the parent's session orchestration was ever started (FALSE: NotFound, a chat with no first message yet)
+    pStarted,    \* the parent's session orchestration was ever started (FALSE: NotFound, a session with no first message yet)
     pPurged,     \* the ended parent's orchestration was deleted too (a forced delete): its status reads NotFound
     pAsk,        \* a turn of the started parent is due (its first message, or a later message after a note was kept)
-    note,        \* the end's chat note: "none", "kept" (pending), "consumed" (a turn that read it succeeded)
+    note,        \* the end's session note: "none", "kept" (pending), "consumed" (a turn that read it succeeded)
     evNoted,     \* the skip was recorded with the reason "kept as a note"
     noteForGone  \* history: the note was kept while the parent had ended or was deleted
 
@@ -437,8 +437,8 @@ NtAttemptA(i) ==
     /\ UNCHANGED <<NtOther, ntSaw, evVars, holder>>
 
 (* r3, 9a8d0f66 (DS-2): workflowParentNotifier reads NotFound as         *)
-(* notStarted: the notice is kept as the parent chat's note (keepNote:    *)
-(* once per chat, definition and text, consumed or not), then the skip    *)
+(* notStarted: the notice is kept as the parent session's note (keepNote: *)
+(* once per session, definition and text, consumed or not), then the skip *)
 (* "kept as a note" is recorded (with earlierAttempt after a marker): two *)
 (* writes, step "note" between them. proposedNoteTx: one transaction.     *)
 (* Completed, Failed, Terminated: the skip "parent is gone", as before.   *)
@@ -594,14 +594,14 @@ ParentRowEnds ==
                    pLive, pq, fifo, window, seen, turnFails, histVars, lockVars, dsVars>>
 
 ----------------------------------------------------------------------------
-(* r3: a parent chat that has not started (no first message): its first  *)
+(* r3: a parent session that has not started (no first message): its first *)
 (* message starts its orchestration and its first turn (pAsk). A person's *)
-(* action never makes the chat take a turn on its own; PersonAsks is a    *)
+(* action never makes the session take a turn on its own; PersonAsks is a *)
 (* later message (a person's, or any item queued to it) given while the   *)
 (* note is pending. A turn reads the pending notes at the start of its    *)
 (* prompt (a turn for a queued item too) and consumes them when it        *)
 (* succeeds; a turn that fails before its model call (ParentTurnFails)     *)
-(* keeps them. A deleted chat takes no turn.                               *)
+(* keeps them. A deleted session takes no turn.                            *)
 ParentStarts ==
     /\ AllowLateStart /\ ~pStarted /\ pRow
     /\ pStarted' = TRUE /\ pLive' = TRUE /\ pAsk' = TRUE
@@ -687,7 +687,7 @@ TypeOK ==
 
 (* Safety rules (desired contracts; PI-7).                                *)
 (* The parent's model is never given a message of the run after its end  *)
-(* (r3: its end as a queued notice, E, or as a chat note, N).             *)
+(* (r3: its end as a queued notice, E, or as a session note, N).         *)
 Inv_EndedIsLast == \A i, j \in 1..Len(seen) : (seen[i] \in {"E", "N"} /\ seen[j] = "M") => j < i
 (* The parent's model is given each message once.                          *)
 Inv_GivenOnce == \A id \in Ids : Count(id) <= 1
@@ -717,7 +717,7 @@ Inv_ToldMeansAccepted == ToldEv => eAccepted
 Inv_NoDecisionAfterExpiry == expiredBound => mNode # "answered"
 
 (* r3 (DS-2). The parent's model is given the run's end at most once, as  *)
-(* the queued notice or as the chat note, never both.                      *)
+(* the queued notice or as the session note, never both.                  *)
 Inv_ToldOnce == Count("E") + Count("N") <= 1
 (* A skip "kept as a note" is recorded only after the note was kept.       *)
 Inv_NotedMeansKept == evNoted => note # "none"

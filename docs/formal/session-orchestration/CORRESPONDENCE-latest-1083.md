@@ -33,7 +33,7 @@ Tests the correspondence relies on: the four harness tests ported to 1.0.83 in t
 | Model | Code at 91def26a |
 |---|---|
 | `Forced` | `orchestration/turn.ts` 1362-1366: a completed result with `forceContinuePrompt` continues as new with it as a bootstrap prompt (`continueInputWithPrompt`, `lifecycle.ts` 785; `buildContinueInputWithPrompt` 693-706 merges the pending prompt) through `versionedContinueAsNew` (`lifecycle.ts` 724-783: intake state, owed retry, retry marker, arrival flag, `activeTimerState`); the FIFO stays in KV |
-| sources | `enable_workflows` (`managed-session.ts` 3312-3335, ef41ef20: saves the chat's flag through `capabilityServices.enableWorkflows`, then pushes a completed action with `forceContinuePrompt`); `use_package` 2610; agent unload and load 3589, 3596; failed model switch `turn.ts` 760 |
+| sources | `enable_workflows` (`managed-session.ts` 3312-3335, ef41ef20: saves the session's flag through `capabilityServices.enableWorkflows`, then pushes a completed action with `forceContinuePrompt`); `use_package` 2610; agent unload and load 3589, 3596; failed model switch `turn.ts` 760 |
 | `wit.fr-forced-while-due` | an intake turn records its attempt (`turn.ts` 1320) before the result switch |
 
 `orchestration/turn.ts` is unchanged 2422c33e..91def26a. ef41ef20 changes no file under `orchestration/` or

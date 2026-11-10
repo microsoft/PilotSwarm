@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cases of WfContinuedChat (the continued agent session lifecycle): writes cases.tsv, cases.json and tlc-templates.json.
+"""Cases of WfContinuedSession (the continued agent session lifecycle): writes cases.tsv, cases.json and tlc-templates.json.
 Usage: gen-cases.py <bound commit>. The .cfg files are generated from these by run-tlc.sh (../../tlc_cases.py)."""
 import json, os, sys
 import sys as _sys, os as _os
@@ -8,24 +8,24 @@ import tlc_cases   # docs/formal/tlc_cases.py: the settings (.cfg) are generated
 H = sys.argv[1] if len(sys.argv) > 1 else "a1772a01"
 def b(x): return "TRUE" if x else "FALSE"
 def q(x): return f'"{x}"'
-def cc(v=3, person="none", stop=True, cancel=True, stopfail=False, failchat=0, recover=False,
-       recheck=False, stopspawn=False, perchat=False, stopend=False, fault="none", seesending=True, endmark=False,
+def cc(v=3, person="none", stop=True, cancel=True, stopfail=False, failagentsession=0, recover=False,
+       recheck=False, stopspawn=False, peragentsession=False, stopend=False, fault="none", seesending=True, endmark=False,
        split=False, checkall=False, fence="none", backstop=False, crash=False, marksplit=False, markfail="none",
        withdraw=False, outbox=False, carry=False, carrydelete="none",
        turnguard=False, markcreating=False, carrynotfound=False, turnfail=False, failreport="none", tofair=True, tfrecover=False):
-    return dict(V=v, Person=q(person), AllowStop=b(stop), AllowCancel=b(cancel), AllowStopFail=b(stopfail), FailChat=failchat,
-                RecoverFair=b(recover), SpawnRecheck=b(recheck), RecheckSeesEnding=b(seesending), EndMark=b(endmark), StopBeforeSpawn=b(stopspawn), PerChatEnd=b(perchat),
+    return dict(V=v, Person=q(person), AllowStop=b(stop), AllowCancel=b(cancel), AllowStopFail=b(stopfail), FailAgentSession=failagentsession,
+                RecoverFair=b(recover), SpawnRecheck=b(recheck), RecheckSeesEnding=b(seesending), EndMark=b(endmark), StopBeforeSpawn=b(stopspawn), PerAgentSessionEnd=b(peragentsession),
                 StopAtRunEnd=b(stopend), Fault=q(fault), SplitSpawn=b(split), CheckAll=b(checkall), Fence=q(fence),
                 Backstop=b(backstop), AllowSpawnCrash=b(crash), MarkSplit=b(marksplit), MarkFail=q(markfail),
                 Withdraw=b(withdraw), Outbox=b(outbox), Carry=b(carry), CarryDelete=q(carrydelete),
                 TurnGuard=b(turnguard), MarkCreating=b(markcreating), CarryNotFound=b(carrynotfound),
                 AllowTurnFail=b(turnfail), FailReport=q(failreport), TimeoutFair=b(tofair), AllowRecover=b(tfrecover))
-M = "WfContinuedChat"
+M = "WfContinuedSession"
 CORE = ["TypeOK", "Inv_OneLive", "Inv_ResultOwnVisit", "Inv_ReplaceOnlyEnded", "Inv_NoTurnForDecided", "Inv_EndOnce"]
 ALL = CORE + ["Inv_PromptNotDropped", "Inv_NoLoudFail", "Inv_NoPromptBehindStaleTurn", "Inv_StopAtRunEnd"]
 NOEND = [i for i in ALL if i != "Inv_StopAtRunEnd"]
 LIVE = ["Prop_VisitsDecided", "Prop_AllEnded", "Prop_OwedSent"]
-FIX = dict(recheck=True, stopspawn=True, perchat=True, stopend=True)
+FIX = dict(recheck=True, stopspawn=True, peragentsession=True, stopend=True)
 IMPL = dict(FIX, seesending=False)   # the fixes as written at a9f60db7 (feeb321e, 6ab43450, 1066e995, d227a0e6)
 I = "a9f60db7"
 G1B = os.environ.get("G1B_HEAD", "G1B")   # the developer's commit for the G1 residual
@@ -82,11 +82,11 @@ CASES = [
  ("fix.g2-stop-before-spawn", "proposal", "proposed-fix", "LiveSpec", cc(stopfail=True, stopspawn=True, stopend=True), ALL, LIVE, "PASS", True,
   "G2 fix: the next visit's spawn first sends the earlier visit's Stop again."),
  # G3
- ("finding.g3-other-chat", "reviewed", "finding", "LiveSpec", cc(person="end", failchat=1), CORE, ["Prop_OthersEnded"], "liveness", False,
+ ("finding.g3-other-chat", "reviewed", "finding", "LiveSpec", cc(person="end", failagentsession=1), CORE, ["Prop_OthersEnded"], "liveness", False,
   f"G3 at {H}: the first agent session's end fails past every retry; the loop stops there, so the replacement session is never ended."),
- ("limit.g3-failed-chat", "reviewed", "design-limit", "LiveSpec", cc(failchat=1, perchat=True), CORE, ["Prop_AllEnded"], "liveness", False,
+ ("limit.g3-failed-chat", "reviewed", "design-limit", "LiveSpec", cc(failagentsession=1, peragentsession=True), CORE, ["Prop_AllEnded"], "liveness", False,
   "The agent session whose end fails past every retry stays open until a person runs recover (recover is on request)."),
- ("fix.g3-per-chat", "proposal", "proposed-fix", "LiveSpec", cc(person="end", failchat=1, perchat=True, recover=True), CORE, ["Prop_OthersEnded", "Prop_AllEnded"], "PASS", True,
+ ("fix.g3-per-chat", "proposal", "proposed-fix", "LiveSpec", cc(person="end", failagentsession=1, peragentsession=True, recover=True), CORE, ["Prop_OthersEnded", "Prop_AllEnded"], "PASS", True,
   "G3 fix: each agent session's end is tried on its own; the others are ended; a recover ends the failed one."),
  # G5
  ("finding.g5-no-stop-at-end", "reviewed", "finding", "Spec", cc(stop=False), ["Inv_StopAtRunEnd"], [], "safety", False,
@@ -94,7 +94,7 @@ CASES = [
  ("fix.g5-stop-at-end", "proposal", "proposed-fix", "Spec", cc(stop=False, stopend=True), ALL, [], "PASS", True,
   "G5 fix: the visit's end at the run's end also stops its running turn."),
  # all fixes together
- ("fix.all", "proposal", "proposed-fix", "LiveSpec", cc(person="any", stopfail=True, failchat=0, **FIX), ALL, LIVE, "PASS", True,
+ ("fix.all", "proposal", "proposed-fix", "LiveSpec", cc(person="any", stopfail=True, failagentsession=0, **FIX), ALL, LIVE, "PASS", True,
   "Every proposed fix together, with a person's action and failing Stops."),
  # implementation: the fixes as written, bound to a9f60db7
  ("impl.cc-safety", "impl", "confirmed", "Spec", cc(person="delete", stopfail=True, **IMPL), ALL, [], "PASS", True,
@@ -116,7 +116,7 @@ CASES = [
   f"{G1B}: every visit decided, every agent session ended, owed ends sent."),
  ("impl.cc-g2", "impl", "confirmed", "LiveSpec", cc(stopfail=True, **IMPL), ALL, LIVE, "PASS", True,
   f"G2 at {I} (6ab43450): an earlier visit's Stop that failed is sent again before the next prompt, and at the run's end."),
- ("impl.cc-g3", "impl", "confirmed", "LiveSpec", cc(person="end", failchat=1, recover=True, **IMPL), CORE, ["Prop_OthersEnded", "Prop_AllEnded"], "PASS", True,
+ ("impl.cc-g3", "impl", "confirmed", "LiveSpec", cc(person="end", failagentsession=1, recover=True, **IMPL), CORE, ["Prop_OthersEnded", "Prop_AllEnded"], "PASS", True,
   f"G3 at {I} (d227a0e6): each agent session's end is tried on its own; the others are ended; a recover ends the failed one."),
  ("impl.cc-g5", "impl", "confirmed", "Spec", cc(stop=False, **IMPL), ALL, [], "PASS", True,
   f"G5 at {I} (1066e995): a run cancelled during a visit's turn stops that turn."),
@@ -196,7 +196,7 @@ CASES = [
  ("limit.cc-drr1b-start-not-visible", "impl", "design-limit", "Spec", cc(v=1, person="delete", **IMPLD3), ["TypeOK", "Inv_NoOrphanRun"], [], "safety", False,
   f"At {DRR1B}: the check after the send finds the just-created session deleted; the start the send queued does not read as existing yet (NotFound), so the deletion is not carried and the orchestration runs on."),
  ("impl.cc-drr1b-orphan-ended", "impl", "confirmed", "LiveSpec", cc(v=2, person="delete", crash=True, **IMPLD3), CORE + ["Inv_NoRevive"], ["Prop_OrphanEnded"] + LIVE, "PASS", True,
-  f"{DRR1B}: such an orchestration is ended at the latest by the run's end (endContinuedChatLocked reads its status)."),
+  f"{DRR1B}: such an orchestration is ended at the latest by the run's end (endContinuedSessionLocked reads its status)."),
  ("impl.cc-drr1b-safety", "impl", "confirmed", "Spec", cc(v=2, person="any", markfail="crash", stopfail=True, crash=True, **IMPLD3), DR2 + NOONE, [], "PASS", True,
   f"{DRR1B}: DRR-1, DRR-1b and DRR-2 together: all safety properties but the orphan."),
  ("impl.cc-drr1b-live-n", "impl", "confirmed", "LiveSpec", cc(v=2, person="end", markfail="crash", **IMPLD3), CORE, LIVE, "PASS", True,

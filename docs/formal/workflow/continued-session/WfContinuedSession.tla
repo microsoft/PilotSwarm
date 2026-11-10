@@ -1,15 +1,15 @@
----------------------------- MODULE WfContinuedChat ----------------------------
+---------------------------- MODULE WfContinuedSession ----------------------------
 (***************************************************************************)
 (* The session lifecycle "continue" of a Workflow agent state: its visits  *)
 (* in one run go to one agent session (packages/sdk/src/workflow,       *)
 (* runtime.ts and store.ts; the default for an agent state in the outer    *)
 (* graph). A visit's agent session is chosen at its admission and frozen   *)
-(* (continuedChatOf): the previous visit's session while it goes on, else  *)
+(* (continuedSessionOf): the previous visit's session while it goes on, else *)
 (* a replacement session. The spawn sends the visit's prompt to it. A      *)
 (* turn takes the prompts in order, skips a visit that is already decided, *)
 (* and its result binds only to its own visit (agentInvocationOfCompletion *)
 (* by node execution id). When a visit ends, its turn gets a cycle Stop    *)
-(* and the session stays open (ChatContinues). When the run ends (stop,    *)
+(* and the session stays open (AgentSessionContinues). When the run ends (stop, *)
 (* cancel, done) every agent session is ended under its end lock; one not  *)
 (* visible yet is marked owed and a detached retry (wfc) ends it later.    *)
 (* A person can end or delete an agent session.                            *)
@@ -25,7 +25,7 @@ CONSTANTS
     AllowStop,      \* the run may be stopped (graceful: started visits finish)
     AllowCancel,    \* the run may be cancelled (pending visits decided at once)
     AllowStopFail,  \* a visit's cycle Stop may fail past its retries (a database error)
-    FailChat,       \* 0, or the agent session whose end fails past every retry after the run ended
+    FailAgentSession,       \* 0, or the agent session whose end fails past every retry after the run ended
     RecoverFair,    \* a person runs recover after a failed end (it is only on request)
     SpawnRecheck,   \* fix G1: the spawn checks the frozen agent session is not ended or deleted before sending
     RecheckSeesEnding, \* the check also sees an agent session whose end was asked while a turn runs (FALSE: the code at
@@ -33,7 +33,7 @@ CONSTANTS
     EndMark,        \* fix G1b: a person's end of an agent session is recorded before its command, and admission and
                     \* the spawn's check treat an agent session whose end was asked as ended
     StopBeforeSpawn,\* fix G2: the next visit's spawn first ends earlier visits whose Stop was not sent
-    PerChatEnd,     \* fix G3: one agent session's failed end does not keep the others from being ended
+    PerAgentSessionEnd,     \* fix G3: one agent session's failed end does not keep the others from being ended
     StopAtRunEnd,   \* fix G5: a visit ended by the run's end also stops its running turn
     Fault,          \* "none", "bind-newest", "replace-without-check", "no-owed-mark", "end-without-lock", "run-decided"
     \* DRR-1 and DRR-2 (the delta review of the G1 fixes): the spawn and a person's end in separate steps.
@@ -74,8 +74,8 @@ CONSTANTS
                     \* the report is dropped (no report after a success); the agent may complete the visit in that turn
 
 ASSUME V \in 1..3 /\ Person \in {"none", "end", "delete", "any"}
-ASSUME {AllowStop, AllowCancel, AllowStopFail, RecoverFair, SpawnRecheck, RecheckSeesEnding, EndMark, StopBeforeSpawn, PerChatEnd, StopAtRunEnd} \subseteq BOOLEAN
-ASSUME FailChat \in 0..V
+ASSUME {AllowStop, AllowCancel, AllowStopFail, RecoverFair, SpawnRecheck, RecheckSeesEnding, EndMark, StopBeforeSpawn, PerAgentSessionEnd, StopAtRunEnd} \subseteq BOOLEAN
+ASSUME FailAgentSession \in 0..V
 ASSUME Fault \in {"none", "bind-newest", "replace-without-check", "no-owed-mark", "end-without-lock", "run-decided"}
 ASSUME {SplitSpawn, CheckAll, Backstop, AllowSpawnCrash, MarkSplit, Withdraw, Outbox, Carry} \subseteq BOOLEAN
 ASSUME CarryDelete \in {"none", "visible", "owed", "queued", "queued-skew", "queued-race"}
@@ -95,7 +95,7 @@ VARIABLES
     run,        \* "active", "stopping", "ended"
     nv,         \* visits admitted
     vis,        \* visit -> [node, how, s, sent, endReq, stopOk, gaveUp]
-    ses,        \* agent session -> [st, turn, q, chat, ends]
+    ses,        \* agent session -> [st, turn, q, endState, ends]
     readers,    \* agent sessions an unlocked looker has read as live (fault "end-without-lock")
     afterDone,  \* the run's end looked at every agent session (afterEnd)
     acted,      \* a person acted
@@ -107,7 +107,7 @@ vars == <<marked, run, nv, vis, ses, readers, afterDone, acted, pend, reports, f
 
 NoVisit == [node |-> "none", how |-> "none", s |-> 0, sent |-> FALSE, endReq |-> FALSE, stopOk |-> FALSE, gaveUp |-> FALSE,
             ph |-> "idle", cr |-> FALSE]
-NoSes == [st |-> "none", turn |-> 0, q |-> {}, chat |-> "open", ends |-> 0]
+NoSes == [st |-> "none", turn |-> 0, q |-> {}, endState |-> "open", ends |-> 0]
 
 Init == /\ marked = {} /\ run = "active" /\ nv = 0 /\ vis = [v \in Vis |-> NoVisit] /\ ses = [s \in Ses |-> NoSes]
         /\ readers = {} /\ afterDone = FALSE /\ acted = FALSE /\ pend = [ph |-> "none", s |-> 0] /\ gh = {}
@@ -136,7 +136,7 @@ Carried(s) == IF Carry /\ s \in marked THEN ses[s].st = "live" \/ (CarryNotFound
 CarryEnd(s) == IF Carried(s) THEN [ses EXCEPT ![s] = [EndCmd(ses[s]) EXCEPT !.ends = @ + 1]] ELSE ses
 
 (* Admission (enter): the previous visit decided and its end attempted     *)
-(* (collect ends a child before routing on). continuedChatOf reads the     *)
+(* (collect ends a child before routing on). continuedSessionOf reads the  *)
 (* previous agent session without a lock; the choice is frozen.            *)
 Admit ==
     /\ run = "active" /\ nv < V
@@ -364,25 +364,25 @@ RetryStop(u) ==
     /\ ses' = IF ses[vis[u].s].turn = u THEN [ses EXCEPT ![vis[u].s].turn = 0] ELSE ses
     /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, gh, reports, failedV>>
 
-(* The end of one agent session under its end lock (endContinuedChatLocked). *)
-Due(s) == Used(s) /\ ses[s].chat = "open" /\ vis[Newest(s)].node = "decided"
-ChatEnd(r) ==
+(* The end of one agent session under its end lock (endContinuedSessionLocked). *)
+Due(s) == Used(s) /\ ses[s].endState = "open" /\ vis[Newest(s)].node = "decided"
+AgentSessionEnd(r) ==
     IF r.st \in {"none", "row", "creating"}
-    THEN IF r.st = "creating" /\ Fault # "no-owed-mark" THEN [r EXCEPT !.chat = "owed"] ELSE [r EXCEPT !.chat = "ended"]
+    THEN IF r.st = "creating" /\ Fault # "no-owed-mark" THEN [r EXCEPT !.endState = "owed"] ELSE [r EXCEPT !.endState = "ended"]
     ELSE IF r.st = "live"
-    THEN [r EXCEPT !.chat = "ended", !.ends = @ + 1, !.st = IF r.turn = 0 THEN "ended" ELSE "ending"]
-    \* an orchestration running on a deleted row is ended too (endContinuedChatLocked reads its status, not the row)
+    THEN [r EXCEPT !.endState = "ended", !.ends = @ + 1, !.st = IF r.turn = 0 THEN "ended" ELSE "ending"]
+    \* an orchestration running on a deleted row is ended too (endContinuedSessionLocked reads its status, not the row)
     ELSE IF r.st = "orphan"
-    THEN [r EXCEPT !.chat = "ended", !.ends = @ + 1, !.st = "deleted"]
-    ELSE [r EXCEPT !.chat = "ended"]
+    THEN [r EXCEPT !.endState = "ended", !.ends = @ + 1, !.st = "deleted"]
+    ELSE [r EXCEPT !.endState = "ended"]
 
 (* afterEnd: once the run ended, every agent session in order; one whose   *)
-(* end keeps failing stops the loop (G3) unless PerChatEnd; it is then     *)
+(* end keeps failing stops the loop (G3) unless PerAgentSessionEnd; it is then *)
 (* swallowed (only a recover looks again).                                 *)
-Looked(s) == s # FailChat /\ (FailChat = 0 \/ PerChatEnd \/ s < FailChat)
+Looked(s) == s # FailAgentSession /\ (FailAgentSession = 0 \/ PerAgentSessionEnd \/ s < FailAgentSession)
 AfterEnd ==
     /\ run = "ended" /\ ~afterDone /\ (\A v \in Vis : vis[v].node # "pending")
-    /\ ses' = [s \in Ses |-> IF Looked(s) /\ Due(s) THEN ChatEnd(ses[s]) ELSE ses[s]]
+    /\ ses' = [s \in Ses |-> IF Looked(s) /\ Due(s) THEN AgentSessionEnd(ses[s]) ELSE ses[s]]
     /\ afterDone' = TRUE
     /\ UNCHANGED <<pend, marked, run, nv, vis, readers, acted, gh, reports, failedV>>
 
@@ -391,8 +391,8 @@ AfterEnd ==
 LookLocked(s) ==
     /\ Fault # "end-without-lock"
     /\ \/ run = "stopping" /\ Due(s)
-       \/ ses[s].chat = "owed" /\ ses[s].st # "creating"
-    /\ ses' = [ses EXCEPT ![s] = ChatEnd([ses[s] EXCEPT !.chat = "open"])]
+       \/ ses[s].endState = "owed" /\ ses[s].st # "creating"
+    /\ ses' = [ses EXCEPT ![s] = AgentSessionEnd([ses[s] EXCEPT !.endState = "open"])]
     /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, gh, reports, failedV>>
 LookRead(s) ==
     /\ Fault = "end-without-lock" /\ s \notin readers
@@ -401,14 +401,14 @@ LookRead(s) ==
     /\ UNCHANGED <<pend, marked, run, nv, vis, ses, afterDone, acted, gh, reports, failedV>>
 LookSend(s) ==
     /\ s \in readers /\ readers' = readers \ {s}
-    /\ ses' = [ses EXCEPT ![s].ends = @ + 1, ![s].chat = "ended",
+    /\ ses' = [ses EXCEPT ![s].ends = @ + 1, ![s].endState = "ended",
                            ![s].st = IF @ = "live" THEN (IF ses[s].turn = 0 THEN "ended" ELSE "ending") ELSE @]
     /\ UNCHANGED <<pend, marked, run, nv, vis, afterDone, acted, gh, reports, failedV>>
 
 (* A person runs recover after a failed end: every agent session looked at. *)
 Recover ==
     /\ run = "ended" /\ afterDone /\ (\E s \in Ses : Due(s))
-    /\ ses' = [s \in Ses |-> IF Due(s) THEN ChatEnd(ses[s]) ELSE ses[s]]
+    /\ ses' = [s \in Ses |-> IF Due(s) THEN AgentSessionEnd(ses[s]) ELSE ses[s]]
     /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, gh, reports, failedV>>
 
 (* An ended session's command lands after its running turn.                *)
@@ -491,7 +491,7 @@ LiveSpec == Spec /\ Fairness
 TypeOK == /\ run \in {"active", "stopping", "ended"} /\ nv \in 0..V
           /\ \A v \in Vis : vis[v].node \in {"none", "pending", "decided"} /\ vis[v].s \in 0..V
           /\ \A s \in Ses : ses[s].st \in {"none", "row", "creating", "live", "ending", "ended", "deleted", "zombie", "revived", "tomb0", "orphan", "orphanq"}
-                            /\ ses[s].turn \in 0..V /\ ses[s].q \subseteq Vis /\ ses[s].chat \in {"open", "owed", "ended"}
+                            /\ ses[s].turn \in 0..V /\ ses[s].q \subseteq Vis /\ ses[s].endState \in {"open", "owed", "ended"}
 (* One agent session per agent state goes on at a time.                    *)
 (* An agent session whose end command is on its way does not count.       *)
 Inv_OneLive == Cardinality({s \in Ses : ses[s].st \in Alive /\ ~EndComing(s)}) <= 1
@@ -518,14 +518,14 @@ Inv_StopAtRunEnd == "noStopAtEnd" \notin gh
 
 Prop_VisitsDecided == \A v \in Vis : (vis[v].node = "pending") ~> (vis[v].node = "decided")
 Prop_AllEnded == <>[](run = "ended" => \A s \in Ses : ses[s].st \notin {"live", "ending", "creating"} \/ ~Used(s))
-Prop_OthersEnded == <>[](run = "ended" => \A s \in Ses \ {FailChat} : ses[s].st \notin {"live", "ending", "creating"} \/ ~Used(s))
+Prop_OthersEnded == <>[](run = "ended" => \A s \in Ses \ {FailAgentSession} : ses[s].st \notin {"live", "ending", "creating"} \/ ~Used(s))
 (* tf1: a visit whose turn failed terminally is decided without its time   *)
 (* limit (checked with TimeoutFair FALSE).                                  *)
 Prop_FailedVisitDecided == \A v \in Vis : (v \in failedV /\ vis[v].node = "pending") ~> (vis[v].node = "decided")
 Prop_OrphanEnded == \A s \in Ses : (ses[s].st \in {"orphan", "orphanq"}) ~> (ses[s].st \notin {"orphan", "orphanq"})
 (* DR2-001: no model turn runs on a deleted agent session.                 *)
 Inv_NoTurnOnDeleted == "turnOnDeleted" \notin gh
-Prop_OwedSent == \A s \in Ses : (ses[s].chat = "owed") ~> (ses[s].chat = "ended")
+Prop_OwedSent == \A s \in Ses : (ses[s].endState = "owed") ~> (ses[s].endState = "ended")
 
 (* DRR-1: a deleted agent session is never brought back.                  *)
 Inv_NoRevive == "revived" \notin gh
@@ -538,7 +538,7 @@ Inv_NoAbandonedLive == "abandoned" \notin gh
 Inv_NoFailOnLive == "failOnLive" \notin gh
 
 W_NoReplacement == "replaced" \notin gh
-W_NoOwedEnd == \A s \in Ses : ~(ses[s].chat = "owed")
+W_NoOwedEnd == \A s \in Ses : ~(ses[s].endState = "owed")
 W_NoCycleStop == "cycleStop" \notin gh
 W_NoSkip == "skipped" \notin gh
 W_NoCarry == "carried" \notin gh

@@ -68,7 +68,7 @@ by `RehydrationNotice` and `SnapshotWarmDrop`, bound to `e76a6133`
 | `RollingDeploy.tla` | A deploy that makes 1.0.83 the latest: duroxide has no version routing, so an old worker abandons a 1.0.83 item with backoff and fails it past 10 attempts; a stop-upgrade-start (recreate) deploy never reaches that | 2 |
 | `DigestWindow.tla` | The child-update batch window with the late give-back: a given-back digest is delivered once, never after a newer entry, and no later than its entry's arrival plus the window; the digest's own turn runs only after queued prompts | 5 (including 1 fault) |
 | `MergeRule.tla` | decide's prompt batching with the rule that a person's words never share a turn with an agent's or the runtime's prompt, decided by the sender (every runtime enqueue stamps one; a client cannot set one); a prompt with no sender that starts with a runtime header (a runtime prompt queued on 1.0.82, or a person's words quoting one) is of unknown author and merges with nothing | 15 (including 5 references to earlier code, 1 design limit) |
-| `ForcedRefresh.tla` | A turn that ends with a forced continue-as-new (turning Workflows on in a chat, `use_package`, loading or unloading an agent, a failed model switch) keeps everything the session holds, an intake write that is due included | 6 (including 3 faults) |
+| `ForcedRefresh.tla` | A turn that ends with a forced continue-as-new (turning Workflows on in a session, `use_package`, loading or unloading an agent, a failed model switch) keeps everything the session holds, an intake write that is due included | 6 (including 3 faults) |
 | `WorkerShutdown.tla` | Every worker: graceful shutdown under one deadline (drain, workspace release, release sweep, close). As written, each step is started even after the deadline, with a zero budget, and only its wait is abandoned, so later steps can overlap a still-running one and the close can cut a legacy upload; the sweep deletes only marked (committed) sessions' local copies and dehydrates unmarked legacy ones | 11 (including 2 faults, 1 comparison and 4 witnesses) |
 
 ## 2. The code these models are bound to
@@ -103,7 +103,7 @@ N02, N04-N07 and N10):
 |---|---|
 | `OwnedRetry` | `orchestration_1_0_83/state.ts` 255-410 (`ownedRetry`), 759-761; `queue.ts` 620-629, 749-760 (`releaseTimerForOwnedRetry`), 1495-1517 (`decide`); `turn.ts` 159, 194, 364, 549-553; `lifecycle.ts` 733-740 |
 | `IntakeDrain` | `orchestration_1_0_83/queue.ts` 482-520, 797-812; `runtime.ts` 253-278, 303; `lifecycle.ts` 724-776; `intake-state.ts` 534-545; `intake-wiring.ts` 326, 584; `state.ts` 804; `orchestration-version.ts` 15, 33; `activity-routing.ts` 10-22, 93-128; `session-proxy.ts` 5778 |
-| `WorkerShutdown` | `worker.ts` 1307-1404 (`gracefulShutdown`; `bounded` 1317-1338 starts every step and races it against the time left; workspace release 1374, release sweep 1394, stop 1403). Updated to `bb162ed8` in batch ws2 (`CORRESPONDENCE-bb162ed8-ws2.md`). At `840dd954` the same steps are at 1263-1361 (`bounded` 1273-1293, release sweep 1350-1358, stop 1360). The release sweep is now `sweepIdleSessions(1, { final: true })` (DRR-3b `3432b239`, DR2-006 `781441bf`; D3-002 takes legacy sessions first): a session whose close in the Copilot CLI is not confirmed (DRR-3, `4d564f47`) is still uploaded and its local copy deleted, as at `bb162ed8`, and such sessions are taken last. Without `final` (the periodic sweep) such a session is kept and evicted again later. So the model's sweep and its `closeCut` limit (a legacy upload cut by the close) are unchanged |
+| `WorkerShutdown` | `worker.ts` 1307-1404 (`gracefulShutdown`; `bounded` 1317-1338 starts every step and races it against the time left; workspace release 1374, release sweep 1394, stop 1403). Updated to `bb162ed8` in batch ws2 (`CORRESPONDENCE-bb162ed8-ws2.md`). At `2a6e6912` the same steps are at 1263-1361 (`bounded` 1273-1293, release sweep 1350-1358, stop 1360). The release sweep is now `sweepIdleSessions(1, { final: true })` (DRR-3b `3432b239`, DR2-006 `781441bf`; D3-002 takes legacy sessions first): a session whose close in the Copilot CLI is not confirmed (DRR-3, `4d564f47`) is still uploaded and its local copy deleted, as at `bb162ed8`, and such sessions are taken last. Without `final` (the periodic sweep) such a session is kept and evicted again later. So the model's sweep and its `closeCut` limit (a legacy upload cut by the close) are unchanged |
 
 Bound to `bb162ed8` (`CORRESPONDENCE-bb162ed8-so5b.md`):
 
@@ -277,11 +277,11 @@ Known limits, accepted:
   write is due holds for the idle continue-as-new only.
 - A given-back digest that holds only a newer entry waits out that entry's batch window (`dw.*`).
 
-### tf1 (2026-11-10): a terminal turn failure reported to the Workflow (bound to 840dd954)
+### tf1 (2026-11-10): a terminal turn failure reported to the Workflow (bound to 2a6e6912)
 
 Runs (2026-11-10, TLC 2.19, two workers, 600 s per case): the design run, 63 of 63 as expected (the three findings of the code before the fix violate their liveness property; every fix case passes), and the run with the drop on success, 72 of 72 as expected.
 
-The code binding of this fix (all three models) is `../workflow/orchestration/CORRESPONDENCE-tf1-840dd954.md`.
+The code binding of this fix (all three models) is `../workflow/orchestration/CORRESPONDENCE-tf1-2a6e6912.md`.
 
 1.0.83 is changed in place (it is deployed nowhere). `OwnedRetry` gains `AllowExhaust` (the retry fails with its
 retries spent: the turn is terminal and the session goes idle with an error) and `Report` (`"none"`: the code before

@@ -1,5 +1,5 @@
 {
-  "WfContinuedChat": {
+  "WfContinuedSession": {
     "indent": 4,
     "constants": [
       "V",
@@ -7,13 +7,13 @@
       "AllowStop",
       "AllowCancel",
       "AllowStopFail",
-      "FailChat",
+      "FailAgentSession",
       "RecoverFair",
       "SpawnRecheck",
       "RecheckSeesEnding",
       "EndMark",
       "StopBeforeSpawn",
-      "PerChatEnd",
+      "PerAgentSessionEnd",
       "StopAtRunEnd",
       "Fault",
       "SplitSpawn",
