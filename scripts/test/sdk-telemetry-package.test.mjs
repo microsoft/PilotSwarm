@@ -158,8 +158,11 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
     assert.match(location.telemetryPath, /node_modules[/\\]pilotswarm-sdk[/\\]dist[/\\]telemetry\.js$/);
     assert.match(location.sdkPath, /node_modules[/\\]pilotswarm-sdk[/\\]dist[/\\]index\.js$/);
     assert.ok(requests.length > 0, "the packed consumer must flush to the local receiver");
-    assert.ok(requests.every(request => request.path === "/v1/metrics"));
-    const metrics = requests.flatMap(request => request.body.resourceMetrics)
+    const metricRequests = requests.filter(request => request.path === "/v1/metrics");
+    assert.ok(metricRequests.length > 0, "the packaged preload must use the OTLP metrics endpoint");
+    assert.ok(!requests.some(request => request.path === "/v1/traces" || request.path === "/v1/logs"),
+        "default mode must not export traces or logs");
+    const metrics = metricRequests.flatMap(request => request.body.resourceMetrics)
         .flatMap(resource => resource.scopeMetrics)
         .flatMap(scope => scope.metrics);
     assert.ok(!metrics.some(metric => metric.name.includes("duration")), "histograms are disabled by default");
@@ -171,7 +174,7 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
     ]));
     assert.deepEqual(values, { input: 11, output: 7, cache_read: 3, cache_write: 2 });
     assert.equal(tokens.sum.aggregationTemporality, 2, "the default Sum temporality is cumulative");
-    const resource = Object.fromEntries(requests[0].body.resourceMetrics[0].resource.attributes
+    const resource = Object.fromEntries(metricRequests[0].body.resourceMetrics[0].resource.attributes
         .map(({ key, value }) => [key, value.stringValue]));
     assert.equal(resource["service.instance.id"], "packed-consumer");
     const allNames = metrics.map(metric => metric.name);
