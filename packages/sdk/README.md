@@ -68,6 +68,29 @@ gets a meter; use `--import` as shown, or dynamically import the application
 only after importing `pilotswarm-sdk/telemetry`. The internal metric hook is
 not a consumer API.
 
+### Packed-consumer smoke test
+
+The repository's package smoke needs Node `24.22.1` or later, npm, and an
+isolated disposable PostgreSQL server. It deliberately fails when
+`PILOTSWARM_SMOKE_DATABASE_URL` is absent; it never falls back to a local or
+shared database.
+
+```bash
+docker run --rm --name pilotswarm-sdk-telemetry-smoke \
+  -e POSTGRES_HOST_AUTH_METHOD=trust \
+  -p 127.0.0.1:5432:5432 postgres:17-trixie
+
+npm ci --ignore-scripts --force
+npm run build --workspace=packages/sdk
+PILOTSWARM_SMOKE_DATABASE_URL=postgres://postgres@127.0.0.1:5432/postgres \
+  npm run test:sdk-telemetry-package
+```
+
+The test packs the built SDK, installs it into an empty temporary consumer,
+imports only `pilotswarm-sdk` and `pilotswarm-sdk/telemetry`, then uses
+localhost model and OTLP receivers. It removes the temporary consumer, worker
+state, local servers, and isolated database schemas when it completes.
+
 Client apps connect to a deployment's Web API (web mode):
 
 ```ts

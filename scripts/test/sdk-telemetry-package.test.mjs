@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
@@ -28,18 +29,17 @@ async function withCollector(t) {
 test("packed SDK telemetry preload exports actual worker turn usage without repository scripts", { timeout: 120_000 }, async t => {
     const store = process.env.PILOTSWARM_SMOKE_DATABASE_URL;
     if (!store) {
-        t.skip("set PILOTSWARM_SMOKE_DATABASE_URL to an isolated temporary PostgreSQL database");
-        return;
+        throw new Error("PILOTSWARM_SMOKE_DATABASE_URL must point to an isolated disposable PostgreSQL database.");
     }
     const dir = await mkdtemp(path.join(os.tmpdir(), "pilotswarm-sdk-telemetry-package-"));
     t.after(() => rm(dir, { recursive: true, force: true }));
     const { requests, endpoint } = await withCollector(t);
-    const packageDir = new URL("../../packages/sdk/", import.meta.url);
+    const packageDir = fileURLToPath(new URL("../../packages/sdk/", import.meta.url));
     const { stdout } = await execute("npm", ["pack", "--ignore-scripts", "--json"], {
         cwd: packageDir, maxBuffer: 1_000_000,
     });
     const [{ filename }] = JSON.parse(stdout);
-    const archive = path.join(packageDir.pathname, filename);
+    const archive = path.join(packageDir, filename);
     t.after(() => rm(archive, { force: true }));
     await execute("npm", ["init", "--yes"], { cwd: dir });
     await execute("npm", ["install", "--ignore-scripts", archive], { cwd: dir, maxBuffer: 1_000_000 });

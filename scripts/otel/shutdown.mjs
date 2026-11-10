@@ -1,1 +1,1 @@
-export { createTelemetryShutdown } from "pilotswarm-sdk/telemetry";
+export { createTelemetryShutdown } from "../../packages/sdk/dist/telemetry-shutdown.js";
