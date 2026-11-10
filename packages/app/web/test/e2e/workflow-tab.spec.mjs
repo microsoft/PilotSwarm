@@ -2738,8 +2738,10 @@ test("n-2: the Log says the session was not told when notifications are off", as
 test("f-03: a moved step's own loop curves beside it", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const loopEvents = [{ sessionId: WORKFLOW_ID, seq: 1, eventType: "workflow.started", createdAt: new Date().toISOString(), data: {
-        name: "query-watch", version: "1", initial: "poll_query", states: [
-            { id: "poll_query", type: "script", runtime: "node", next: { unchanged: "poll_query", changed: "end" } },
+        runId: "run-1", mode: "live", revision: 1, definitionHash: "hash-loop-1", irSha256: "ir-loop-1",
+        name: "query-watch", version: "1.0.0", initial: "poll_query", states: [
+            { id: "poll_query", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["unchanged", "changed"],
+                next: { unchanged: "poll_query", changed: "end" } },
             { id: "end", type: "terminal", outcome: "succeeded" },
         ] } }];
     await routeApi(page, { workflowEvents: loopEvents, workflowState: { title: "Workflow: query-watch", status: "running" } });
