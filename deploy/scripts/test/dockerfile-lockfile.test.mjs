@@ -78,6 +78,18 @@ test("starter image stages every workspace manifest before npm ci", () => {
   assert.match(stripComments(source), /RUN\s+npm\s+ci\b/);
 });
 
+test("starter image allows organizations to select an npm registry", () => {
+  const source = readDockerfile("Dockerfile.starter");
+  assert.match(
+    source,
+    /^ARG NPM_REGISTRY=https:\/\/registry\.npmjs\.org\/$/m,
+  );
+  assert.match(
+    stripComments(source),
+    /RUN\s+npm\s+ci\s+--force\s+--registry\s+"\$\{NPM_REGISTRY\}"/,
+  );
+});
+
 // Session workspaces: the manifests in gitops/*/components/workspaces and
 // gitops/repo-cache name files and programs these images must carry. The
 // render tests in workspaces.test.mjs check that the paths exist in the
