@@ -75,6 +75,9 @@ isolated disposable PostgreSQL server. It deliberately fails when
 `PILOTSWARM_SMOKE_DATABASE_URL` is absent; it never falls back to a local or
 shared database.
 
+Run PostgreSQL in a separate terminal. Stop that terminal with `Ctrl-C` after
+the smoke test completes; `--rm` removes the disposable container.
+
 ```bash
 docker run --rm --name pilotswarm-sdk-telemetry-smoke \
   -e POSTGRES_HOST_AUTH_METHOD=trust \
