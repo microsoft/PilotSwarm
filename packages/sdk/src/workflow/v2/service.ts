@@ -706,20 +706,13 @@ export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | 
 }
 
 /**
- * Digests of one creation request, by the version of the fingerprint that
- * recorded it. A claim marker or receipt is never rewritten; a retry is
- * compared with the digest its record used, and the stored owner, parent
- * and first grant must match the request as well.
- * - 1 (c218d1bc..87549e10): content, parent and notification; the claim
- *   marker held no digest.
- * - 2 (159bdce5, ba30c8c2): version 1 plus the owner; the marker held the
- *   digest without stating its version.
- * - 3: version 2 plus the tool grant. 3a7ca2dd..547d1bf5 wrote it without
- *   stating the version; from 3833ba61 on the marker states `fingerprint: 3`.
+ * The version of a creation request's digest, which its claim marker states: the request's content, parent,
+ * notification, owner and tool grant. A claim marker or receipt is never rewritten; a retry is compared with the digest
+ * its record used, and the stored owner, parent and first grant must match the request as well.
  */
-export const WORKFLOW_V2_CREATE_FINGERPRINT = 3;
+export const WORKFLOW_V2_CREATE_FINGERPRINT = 1;
 
-function createFingerprints(request: CreateWorkflowV2Request, yamlSha256: string, publish: boolean, startInputs: JsonValue): { v1: string; v2: string; v3: string } {
+function createFingerprint(request: CreateWorkflowV2Request, yamlSha256: string, publish: boolean, startInputs: JsonValue): string {
     const content = {
         kind: "create", yamlSha256, publish,
         start: request.start ? { inputs: startInputs, ...varsDigestPart(request.start.vars), ...agentModelsDigestPart(request.start.agentModels) } : null,
@@ -729,7 +722,7 @@ function createFingerprints(request: CreateWorkflowV2Request, yamlSha256: string
     // The tool grant is part of the request: a retry with another grant is
     // another request, so it can never continue (or be told it created) this one.
     const binding = request.binding ? jsonSha256(JSON.parse(JSON.stringify(request.binding))) : null;
-    return { v1: jsonSha256(content), v2: jsonSha256({ ...content, owner }), v3: jsonSha256({ ...content, owner, binding }) };
+    return jsonSha256({ ...content, owner, binding });
 }
 
 /** The same tool grant: both absent, or the same JSON (the stored copy went through JSONB). */
@@ -791,10 +784,7 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
     // A definition published at creation pins its named agents first: one that cannot be resolved refuses the request
     // before anything is written.
     const agentPinsText = publish && compiled.valid ? await publicationAgentPins(host, compiled.ir, request.parentSessionId ?? request.workflowSessionId) : null;
-    const fingerprints = createFingerprints(request, compiled.yamlSha256, publish, startInputs);
-    const requestSha256 = fingerprints.v3;
-    // Digests a stored receipt of this request may carry (receipts are never rewritten).
-    let acceptedRequestSha256: string[] = [requestSha256];
+    const requestSha256 = createFingerprint(request, compiled.yamlSha256, publish, startInputs);
     // A deleted workflow keeps its definition tombstone; its id is never reused.
     const tombstone = await host.store.readDefinition(request.workflowSessionId);
     if (tombstone?.state === "deleted") throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow id was deleted and cannot be reused.");
@@ -861,21 +851,10 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
         // A creation that named no owner took its parent's (the claim inherits it): its replay is compared with that owner.
         const inherited = !request.owner && request.parentSessionId ? (await host.catalog.getSession(request.parentSessionId))?.owner ?? null : null;
         const ownerMatches = sameOwner(row.owner, request.owner ?? inherited);
-        let sameRequest: boolean;
-        if (marker.fingerprint === WORKFLOW_V2_CREATE_FINGERPRINT) {
-            sameRequest = marker.requestSha256 === fingerprints.v3 && marker.operationId === request.operationId && grantMatches && ownerMatches;
-        } else if (marker.fingerprint === undefined && typeof marker.requestSha256 === "string") {
-            // An unstated version is version 2 or version 3: accept only the
-            // digest this request has under one of them.
-            const asVersion = marker.requestSha256 === fingerprints.v3 ? 3 : marker.requestSha256 === fingerprints.v2 ? 2 : null;
-            sameRequest = asVersion !== null && marker.operationId === request.operationId && grantMatches && ownerMatches;
-            acceptedRequestSha256 = asVersion === 2 ? [fingerprints.v3, fingerprints.v2] : [fingerprints.v3];
-        } else if (marker.fingerprint === undefined && marker.requestSha256 === undefined && marker.operationId === undefined) {
-            sameRequest = grantMatches && ownerMatches;
-            acceptedRequestSha256 = [fingerprints.v3, fingerprints.v1];
-        } else {
+        if (marker.fingerprint !== WORKFLOW_V2_CREATE_FINGERPRINT) {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Workflow ${request.workflowSessionId} has a creation record this build cannot read.`);
         }
+        let sameRequest = marker.requestSha256 === requestSha256 && marker.operationId === request.operationId && grantMatches && ownerMatches;
         // S2RT-F5: a claim that recorded a chat pin continues only with that pin (a claim of an earlier build records none).
         if (sameRequest && isJsonObject(marker.chatPin) && (!request.chatPin || marker.chatPin.definitionId !== request.chatPin.definitionId
             || marker.chatPin.revision !== request.chatPin.revision)) {
@@ -901,7 +880,6 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
         actor: request.actor,
         operationId: request.operationId,
         requestSha256,
-        acceptedRequestSha256,
         publish,
         start: admission,
         title: `Workflow: ${compiled.name ?? "draft"}`,

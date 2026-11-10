@@ -34,7 +34,7 @@ function hostWith(pinnedBy, { yaml = null, running = 0, requests = false } = {})
         ? { workflowSessionId: "w", parentSessionId: "chat", state: "published", chatDefinitionId: "def-1", chatRevision: 1 } : null) },
     { get: (target, name) => { if (name in target) return target[name]; throw new Error(`store.${String(name)} was used`); } });
     const catalog = new Proxy({ getSessionCreationConfig: async () => (pinnedBy === "claim"
-        ? { workflowV2: { fingerprint: 3, requestSha256: "x", operationId: "start:op", chatPin: { definitionId: "def-1", revision: 1 } } } : null) },
+        ? { workflowV2: { fingerprint: 1, requestSha256: "x", operationId: "start:op", chatPin: { definitionId: "def-1", revision: 1 } } } : null) },
     { get: (target, name) => { if (name in target) return target[name]; throw new Error(`catalog.${String(name)} was used`); } });
     return { host: { catalog, store, duroxideClient: {}, scripts: true, ...(requests ? { requests: true } : {}) }, reads };
 }

@@ -2237,12 +2237,10 @@ export class WorkflowStore {
     /**
      * A stored receipt for this operation, or null. Throws OPERATION_CONFLICT
      * for a different request with the same id. A receipt keeps the request
-     * digest it was written with; `requestSha256` may list the digests of
-     * every fingerprint version that describes this same request
-     * (WORKFLOW_V2_CREATE_FINGERPRINT in service.ts).
+     * digest it was written with.
      */
-    private async priorReceipt(client: PoolClient, workflowSessionId: string, operationId: string, kind: string, requestSha256: string | readonly string[]): Promise<WorkflowDefinitionReceipt | null> {
-        const accepted: readonly string[] = typeof requestSha256 === "string" ? [requestSha256] : requestSha256;
+    private async priorReceipt(client: PoolClient, workflowSessionId: string, operationId: string, kind: string, requestSha256: string): Promise<WorkflowDefinitionReceipt | null> {
+        const accepted: readonly string[] = [requestSha256];
         const { rows } = await client.query(
             `SELECT kind, request_sha256, receipt FROM ${this.t.operations} WHERE workflow_session_id = $1 AND operation_id = $2`,
             [workflowSessionId, operationId],
@@ -2513,8 +2511,6 @@ export class WorkflowStore {
         actor: WorkflowActor;
         operationId: string;
         requestSha256: string;
-        /** Digests a stored receipt of this same request may carry (earlier fingerprint versions); default: requestSha256. */
-        acceptedRequestSha256?: readonly string[];
         publish: boolean;
         start: RunAdmission | null;
         /** Session title, written with the definition under the session lock. */
@@ -2538,7 +2534,7 @@ export class WorkflowStore {
             if (input.chatPin) {
                 // Stage 2.1 (Q3): a replay of a stored Start is answered first (its chat may have ended since); otherwise the
                 // chat, the definition and the revision are checked under their locks, before this Workflow's own rows.
-                const replay = await this.priorReceipt(client, input.workflowSessionId, input.operationId, "create", input.acceptedRequestSha256 ?? input.requestSha256);
+                const replay = await this.priorReceipt(client, input.workflowSessionId, input.operationId, "create", input.requestSha256);
                 if (replay) return { receipt: replay, replayed: true };
                 await requireChatStartLocked(client, this.schema, input.chatPin, input.compiled.yamlSha256);
             }
@@ -2553,7 +2549,7 @@ export class WorkflowStore {
             );
             if (!created.rows[0]) {
                 await this.lockDefinition(client, input.workflowSessionId);
-                const prior = await this.priorReceipt(client, input.workflowSessionId, input.operationId, "create", input.acceptedRequestSha256 ?? input.requestSha256);
+                const prior = await this.priorReceipt(client, input.workflowSessionId, input.operationId, "create", input.requestSha256);
                 if (prior) return { receipt: prior, replayed: true };
                 throw new WorkflowStoreError("WORKFLOW_EXISTS", `Workflow ${input.workflowSessionId} already exists with a different creation request.`);
             }
