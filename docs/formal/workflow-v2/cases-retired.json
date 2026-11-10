@@ -34,7 +34,7 @@
    "properties": [],
    "deadlock": false
   },
-  "retired": "The 0090 deletion trigger never ships: the CMS migrations were collapsed into one migration 0089, which holds the final trigger (the 0091 form)."
+  "retired": "The 0090 deletion trigger never ships: the CMS migrations were collapsed into one migration, 0088, which holds the final trigger (the 0091 form)."
  },
  {
   "id": "lc-df-m1-broken",

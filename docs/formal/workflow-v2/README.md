@@ -721,7 +721,7 @@ failed with KV_CHANGING" runs that budget on the real runtime.
 | `adm-df-paused-refusal-exits` | the controller ends on a paused refusal | `Inv_ExitEndedRun` | safety violation |
 | `adm-df-refusal-counts-ordinal` | a refusal counts the ordinal | `Inv_OrdinalCountsAdmissions` | safety violation |
 | `adm-df-begin-keeps-admitted` | begin leaves `paused_from` admitted | `Inv_BegunStaysBegun` | safety violation |
-| `adm-df-trigger-0090` (retired) | the 0090 deletion trigger | `Inv_DeletedNotActive` | safety violation; retired: the migrations were collapsed into one 0089 with the final trigger |
+| `adm-df-trigger-0090` (retired) | the 0090 deletion trigger | `Inv_DeletedNotActive` | safety violation; retired: the migrations were collapsed into one, 0088, with the final trigger |
 | `adm-df-no-paused-backstop` | no backstop timer in the paused wait, lost wakes | `Live_Terminates` | liveness violation |
 | `adm-hd-liveness-wake-kept` | no backstop timer, no lost wake (positive control) | `Live_Terminates` | PASS |
 
