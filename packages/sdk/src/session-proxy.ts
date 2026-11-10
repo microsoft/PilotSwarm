@@ -4405,6 +4405,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                                     slot,
                                     sizeBytes,
                                     payload: mergedPayload,
+                                    ...(planeSeq !== undefined ? { planeSeq } : {}),
                                     ...(isPatch ? { patched: true } : {}),
                                     ...(crossSession ? { by: input.sessionId } : {}),
                                     ...(args.note ? { note: String(args.note) } : {}),

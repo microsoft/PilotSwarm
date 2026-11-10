@@ -715,13 +715,17 @@ export class HttpApiTransport {
         // (patch pings off the database's NOTIFY) are mirrored into complete
         // `session.canvas_data`-shaped events, so every consumer keeps its
         // whole-state contract at ~30 ms instead of the 500 ms poll floor.
-        // Once a slot is plane-fed, the dual-written legacy tick events for
-        // it are suppressed here — the plane already delivered fresher state
-        // (same writer, written first). Everything degrades: a server
-        // without the plane just never sends canvasLive messages.
+        // A dual-written tick is suppressed only after the mirror applied
+        // its shared planeSeq. A pointer or doc ping proves no data arrived.
+        // A server without the plane just never sends canvasLive messages.
         if (!this._canvasMirror) {
             this._canvasMirror = createCanvasLiveMirror({
                 fetchSnapshot: (sid) => this.getCanvasLive(sid),
+                reset: (sid, update) => {
+                    for (const h of this._canvasEmitHandlers?.get(sid) || []) {
+                        h({ eventType: "session.canvas_plane_document", sessionId: sid, transient: true, data: update });
+                    }
+                },
                 emit: (sid, update) => {
                     const handlers = this._canvasEmitHandlers?.get(sid);
                     if (!handlers) return;
@@ -753,12 +757,21 @@ export class HttpApiTransport {
         this._canvasEmitHandlers.get(sessionId).add(handler);
         const wrapped = (event) => {
             if (event?.eventType === "session.canvas_data"
-                && this._canvasMirror.covers(sessionId, Number(event?.data?.slot) || 1)) {
-                return; // plane-fed slot: the mirror already delivered this state
+                && this._canvasMirror.covers(sessionId, Number(event?.data?.slot) || 1, event?.data?.planeSeq)) {
+                return; // this tick (not merely this slot) was already applied
             }
             handler(event);
         };
-        const unsubscribeEvents = this.api.subscribeSession(sessionId, wrapped, onResubscribe);
+        const unsubscribeEvents = this.api.subscribeSession(sessionId, wrapped, () => {
+            // Reconnect may follow a plane reset. Release the old lineage and
+            // re-read the subscribed session even if no new ping follows.
+            this._canvasMirror.forget(sessionId);
+            for (const h of this._canvasEmitHandlers?.get(sessionId) || []) {
+                h({ eventType: "session.canvas_plane_released", sessionId, transient: true });
+            }
+            void this._canvasMirror.prime(sessionId);
+            onResubscribe?.();
+        });
         const unsubscribeCanvas = this.api.subscribeCanvasLive(sessionId, (message) => {
             if (message?.kind === "kv") {
                 // A KV change: not part of the tick mirror (per-key rev, not

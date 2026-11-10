@@ -8624,6 +8624,8 @@ export class PilotSwarmUiController {
                         sessionId,
                         slot,
                         dataRev: Number(tick.data.dataRev),
+                        ...(Number(tick.data.planeSeq) > 0 ? { planeSeq: Number(tick.data.planeSeq) } : {}),
+                        durable: true,
                         payload: tick.data.payload,
                         note: typeof tick.data.note === "string" ? tick.data.note : "",
                     });
@@ -8679,10 +8681,9 @@ export class PilotSwarmUiController {
             slot: Number(event?.data?.slot) || 1,
             dataRev: Number(event?.data?.dataRev),
             payload: event?.data?.payload,
-            // Plane-fed ticks (the canvas data plane's live mirror) carry
-            // their own seq lineage and the patch that produced them — the
-            // reducer orders plane ticks by planeSeq and hands the patch to
-            // pages that opt into targeted updates.
+            durable: event?.transient !== true,
+            // Both paths share the plane sequence when available. Legacy
+            // events still have their independent durable dataRev counter.
             ...(Number.isFinite(Number(event?.data?.planeSeq)) ? { planeSeq: Number(event.data.planeSeq) } : {}),
             ...(event?.data?.patch && typeof event.data.patch === "object" ? { patch: event.data.patch } : {}),
             note: typeof event?.data?.note === "string" ? event.data.note : "",
@@ -8774,6 +8775,9 @@ export class PilotSwarmUiController {
             }
             if (event.eventType === "session.canvas_data") {
                 this.applyCanvasDataEvent(sessionId, event);
+            }
+            if (event.eventType === "session.canvas_plane_document") {
+                this.dispatch({ type: "canvas/planeDocument", sessionId, slot: event.data?.slot, planeSeq: event.data?.seq });
             }
             if (event.eventType === "session.canvas_kv") {
                 // KV changes never touch the reducer: they go straight to

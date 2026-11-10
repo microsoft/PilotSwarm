@@ -31,12 +31,88 @@ test("session subscription hands the reconnect replay hook to the API client", (
     transport.api.subscribeSession = (_sessionId, _handler, onResubscribe) => { hook = onResubscribe; return () => {}; };
     transport.api.subscribeCanvasLive = () => () => {};
     transport.api.subscribeLive = () => () => {};
+    transport.getCanvasLive = async () => [];
     const replays = [];
     const off = transport.subscribeSession("s1", () => {}, () => replays.push("s1"));
     assert.equal(typeof hook, "function");
     hook();
     assert.deepEqual(replays, ["s1"]);
     off();
+});
+
+function canvasTransport(snapshot = async () => []) {
+    const { transport } = createTransport();
+    const handlers = {};
+    transport.api.subscribeSession = (_sid, handler, onResubscribe) => {
+        handlers.event = handler;
+        handlers.reconnect = onResubscribe;
+        return () => {};
+    };
+    transport.api.subscribeCanvasLive = (_sid, handler) => { handlers.ping = handler; return () => {}; };
+    transport.api.subscribeLive = () => () => {};
+    transport.getCanvasLive = snapshot;
+    const events = [];
+    const off = transport.subscribeSession("s1", event => events.push(event));
+    const ticks = () => events.filter(event => event.eventType === "session.canvas_data");
+    return { transport, handlers, events, ticks, off };
+}
+const durableTick = (planeSeq, dataRev = 1, payload = { x: 1 }) => ({
+    eventType: "session.canvas_data", seq: 20 + dataRev, sessionId: "s1",
+    data: { slot: 1, dataRev, payload, ...(planeSeq ? { planeSeq } : {}) },
+});
+
+test("a doc ping with no later data ping never suppresses the durable fallback", () => {
+    const h = canvasTransport();
+    h.handlers.ping({ slot: 1, seq: 1, kind: "doc" });
+    const event = durableTick(2);
+    h.handlers.event(event);
+    assert.deepEqual(h.ticks(), [event]);
+    h.off();
+});
+
+test("a failed data-pointer fetch retries, then its durable payload still reaches the consumer", async () => {
+    let reads = 0;
+    const h = canvasTransport(async () => { reads++; throw new Error("HTTP 500"); });
+    h.handlers.ping({ slot: 1, seq: 1, kind: "doc" });
+    h.handlers.ping({ slot: 1, seq: 2, kind: "data" });
+    assert.equal(await h.transport._canvasMirror.prime("s1"), false);
+    assert.equal(reads, 3);
+    const event = durableTick(2);
+    h.handlers.event(event);
+    assert.deepEqual(h.ticks(), [event]);
+    h.off();
+});
+
+test("applied plane sequences suppress duplicate and older durable ticks, not newer or legacy ones", () => {
+    const h = canvasTransport();
+    h.handlers.ping({ slot: 1, seq: 1, kind: "doc" });
+    h.handlers.ping({ slot: 1, seq: 2, kind: "data", patch: { x: 1 } });
+    h.handlers.event(durableTick(2));
+    h.handlers.event(durableTick(1));
+    assert.equal(h.ticks().length, 1, "the plane delivery is the only data event");
+    const newer = durableTick(3, 2, { x: 2 });
+    h.handlers.event(newer);
+    assert.equal(h.ticks().at(-1), newer, "a missed later ping cannot freeze a plane-fed slot");
+    const legacy = durableTick(undefined, 3, { x: 3 });
+    h.handlers.event(legacy);
+    assert.equal(h.ticks().at(-1), legacy, "different counters must never be compared");
+    h.off();
+});
+
+test("reconnect re-primes subscribed canvas state even when no new ping follows", async () => {
+    let reads = 0;
+    const h = canvasTransport(async () => {
+        reads++;
+        return [{ slot: 1, seq: 3, payload: { x: 2 } }];
+    });
+    h.handlers.ping({ slot: 1, seq: 1, kind: "doc" });
+    h.handlers.ping({ slot: 1, seq: 2, kind: "data", patch: { x: 1 } });
+    h.handlers.reconnect();
+    await h.transport._canvasMirror.prime("s1");
+    assert.equal(reads, 1);
+    assert.deepEqual(h.ticks().at(-1).data.payload, { x: 2 });
+    assert.equal(h.ticks().at(-1).data.planeSeq, 3);
+    h.off();
 });
 
 test("session subscription forwards native task snapshots transiently and releases both live topics", () => {

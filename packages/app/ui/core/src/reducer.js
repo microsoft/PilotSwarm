@@ -4502,17 +4502,20 @@ function baseReducer(state, action) {
             const existing = state.canvas.bySessionId[key] || {};
             const planeSeq = Number(action.planeSeq);
             const isPlane = Number.isFinite(planeSeq) && planeSeq > 0;
-            // Plane takeover: once a slot has seen ONE plane-fed tick, that
-            // lineage owns the slot. Plane ticks order by planeSeq (their
-            // numbering restarts relative to legacy dataRev, so the numeric
-            // guard below would wrongly starve them); legacy dual-written
-            // events for a plane-owned slot are strictly staler copies of
-            // state the plane already delivered — drop them.
+            const durable = action.durable === true || !isPlane;
+            const durableDataRev = durable ? Math.max(dataRev, existing.durableDataRev || 0) : (existing.durableDataRev || 0);
+            // Shared sequences order both delivery paths. Older servers lack
+            // that key: keep their durable counter separate from the plane's
+            // doc+data counter, and prefer delivery over silently losing state.
             if (isPlane) {
-                if ((existing.planeSeq || 0) >= planeSeq) return state;
-            } else {
-                if (existing.planeSeq) return state;
-                if ((existing.latestDataRev || 0) >= dataRev) return state;
+                if (Math.max(existing.planeSeq || 0, existing.planeDocSeq || 0) >= planeSeq) {
+                    if (durableDataRev === (existing.durableDataRev || 0)) return state;
+                    return { ...state, canvas: { ...state.canvas, bySessionId: {
+                        ...state.canvas.bySessionId, [key]: { ...existing, durableDataRev },
+                    } } };
+                }
+            } else if ((existing.durableDataRev || 0) >= dataRev) {
+                return state;
             }
             return {
                 ...state,
@@ -4528,6 +4531,7 @@ function baseReducer(state, action) {
                             // as "already seen".
                             latestDataRev: Math.max(dataRev, existing.latestDataRev || 0),
                             ...(isPlane ? { planeSeq } : {}),
+                            ...(durable ? { durableDataRev } : {}),
                             dataPayload: action.payload && typeof action.payload === "object" ? action.payload : null,
                             // The patch that produced this state, for pages
                             // that opt into targeted updates. Whole-state
@@ -4539,11 +4543,27 @@ function baseReducer(state, action) {
             };
         }
 
+        case "canvas/planeDocument": {
+            // A positive seq bounds a new document; zero releases a failover
+            // lineage without clearing the last usable payload.
+            const sessionId = String(action.sessionId || "").trim();
+            const slot = Number(action.slot);
+            const seq = Number(action.planeSeq);
+            if (!sessionId || !Number.isInteger(slot) || slot < 1 || slot > 5 || !Number.isFinite(seq) || seq < 0) return state;
+            const key = canvasKey(sessionId, slot);
+            const existing = state.canvas.bySessionId[key] || {};
+            if (seq > 0 && Math.max(existing.planeSeq || 0, existing.planeDocSeq || 0) >= seq) return state;
+            return { ...state, canvas: { ...state.canvas, bySessionId: {
+                ...state.canvas.bySessionId,
+                [key]: { ...existing, planeSeq: 0, planeDocSeq: seq,
+                    ...(seq > 0 ? { dataPayload: null, dataPatch: null } : {}) },
+            } } };
+        }
+
         case "canvas/planeReleased": {
             // The plane died for this session: release the takeover on every
-            // slot so legacy durable ticks resume applying. Displayed tick
-            // numbers (latestDataRev) survive, so stale legacy dupes still
-            // drop by ordinary ordering while fresh ones flow.
+            // slot so durable ticks resume in a rebuilt lineage. The durable
+            // counter survives, so stale legacy duplicates still drop.
             const sessionId = String(action.sessionId || "").trim();
             if (!sessionId) return state;
             let changed = false;
@@ -4551,8 +4571,8 @@ function baseReducer(state, action) {
             for (let slot = 1; slot <= 5; slot++) {
                 const key = canvasKey(sessionId, slot);
                 const entry = nextBySession[key];
-                if (entry && entry.planeSeq) {
-                    const { planeSeq: _released, ...rest } = entry;
+                if (entry && (entry.planeSeq || entry.planeDocSeq)) {
+                    const { planeSeq: _released, planeDocSeq: _document, ...rest } = entry;
                     nextBySession[key] = rest;
                     changed = true;
                 }
