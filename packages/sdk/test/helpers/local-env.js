@@ -15,6 +15,7 @@ import { afterAll, afterEach, beforeAll } from "vitest";
 import { createTempSessionLayout } from "./temp-session-layout.js";
 import { resolveStorageConfig, getRuntimeStorageProvider, createFactStoreForUrl, isEnhancedFactStore } from "../../src/index.ts";
 import { timeScaleFor, timeScaler } from "./time-scale.js";
+import { cleanupConnectPolicy, connectWithRetry, createRefCounted, probeIntervalFor, startConnectionProbe } from "./hdb-connectivity.js";
 
 // ─── Constants ───────────────────────────────────────────────────
 
@@ -56,6 +57,27 @@ export const TEST_RUNTIME_PROVIDER = resolveStorageConfig({ options: { store: DA
  */
 export const testTime = timeScaler(timeScaleFor(TEST_RUNTIME_PROVIDER));
 const TEST_SCHEMA_PREFIX = "ps_test";
+
+/** A cleanup client's connect: bounded and retried once on HorizonDB, one plain attempt on PostgreSQL. */
+async function connectCleanupClient(connectionString, label) {
+    const pg = await import("pg");
+    return connectWithRetry({
+        label,
+        policy: cleanupConnectPolicy(TEST_RUNTIME_PROVIDER),
+        createClient: connectionTimeoutMillis => new pg.default.Client(
+            connectionTimeoutMillis ? { connectionString, connectionTimeoutMillis } : { connectionString }),
+    });
+}
+
+/** HorizonDB runs only: one probe per test process, started with the first test environment and stopped with the last. */
+const connectionProbe = createRefCounted(() => startConnectionProbe({
+    label: `pid=${process.pid}`,
+    intervalMs: probeIntervalFor(TEST_RUNTIME_PROVIDER),
+    createClient: async connectionTimeoutMillis => {
+        const pg = await import("pg");
+        return new pg.default.Client({ connectionString: DATABASE_URL, connectionTimeoutMillis });
+    },
+}));
 
 // ─── Schema Isolation ────────────────────────────────────────────
 
@@ -107,10 +129,8 @@ async function dropTestSchemas({ duroxideSchema, cmsSchema, factsSchema }) {
         }
 
     }
-    const pg = await import("pg");
-    const client = new pg.default.Client({ connectionString: DATABASE_URL });
+    const client = await connectCleanupClient(DATABASE_URL, "schema cleanup");
     try {
-        await client.connect();
         await client.query(`DROP SCHEMA IF EXISTS "${duroxideSchema}" CASCADE`);
         await client.query(`DROP SCHEMA IF EXISTS "${cmsSchema}" CASCADE`);
         await client.query(`DROP SCHEMA IF EXISTS "${factsSchema}" CASCADE`);
@@ -119,9 +139,8 @@ async function dropTestSchemas({ duroxideSchema, cmsSchema, factsSchema }) {
     }
 
     if (enhancedUrl && enhancedUrl !== DATABASE_URL) {
-        const horizonClient = new pg.default.Client({ connectionString: normalizeHorizonDbUrl(enhancedUrl) });
+        const horizonClient = await connectCleanupClient(normalizeHorizonDbUrl(enhancedUrl), "facts schema cleanup");
         try {
-            await horizonClient.connect();
             await horizonClient.query(`DROP SCHEMA IF EXISTS "${factsSchema}" CASCADE`);
         } finally {
             try { await horizonClient.end(); } catch {}
@@ -165,6 +184,8 @@ export function createTestEnv(suiteName = "test") {
     const cmsSchema = uniqueSchemaName("cms", suiteName, runId);
     const factsSchema = uniqueSchemaName("facts", suiteName, runId);
     const tempLayout = createTempSessionLayout(`pilotswarm-test-${runId}-`);
+    if (probeIntervalFor(TEST_RUNTIME_PROVIDER) > 0) connectionProbe.acquire();
+    let probeReleased = false;
     const { baseDir, sessionStateDir } = tempLayout;
 
     // Create temp directory
@@ -214,8 +235,15 @@ export function createTestEnv(suiteName = "test") {
 
         /** Drop schemas and remove temp files. */
         async cleanup() {
-            await reset();
-            tempLayout.cleanup();
+            try {
+                await reset();
+                tempLayout.cleanup();
+            } finally {
+                if (!probeReleased && probeIntervalFor(TEST_RUNTIME_PROVIDER) > 0) {
+                    probeReleased = true;
+                    await connectionProbe.release();
+                }
+            }
         },
     };
 }
