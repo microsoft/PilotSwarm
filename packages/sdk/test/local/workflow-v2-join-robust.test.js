@@ -84,7 +84,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { openWorkflowStore } from "../helpers/workflow-v2-request-fixture.js";
 import {
     commitOrder, elapsedResult, endOf, eventsOf, executionsOf, gate, joinBaseOf, joinDoc, joinRuntimeOn, pause, persisted, startJoin, until, within, yamlOf,
@@ -97,7 +97,7 @@ import { canonicalJson } from "../../src/workflow/v2/json.ts";
 import { controlWorkflowV2Run } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
 import { createManagementClient } from "../helpers/local-workers.js";
-import { projectWorkflowV2, workflowV2BranchNumber } from "../../../app/ui/core/src/workflow-v2-view.js";
+import { formatSeconds, projectWorkflowV2, workflowV2BranchNumber } from "../../../app/ui/core/src/workflow-v2-view.js";
 import {
     BRANCH_ROUTE, branchScopeId, registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_REQUEST_ACTIVITIES, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
     WORKFLOW_V2_STOP_CONTROLLER_VERSIONS, workflowEffectInstanceId, workflowLiveControllerInstanceId,
@@ -106,7 +106,9 @@ import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 
 const R = WORKFLOW_V2_REQUEST_ACTIVITIES;
 const getEnv = useSuiteEnv(import.meta.url);
-const TIMEOUT = 180_000;
+// CI run 114 (HorizonDB, about ten times slower): the test's own bounds grow with the database (test/helpers/time-scale.js;
+// the harness's until() and within() scale theirs). Time limits that must leave room for branches to start are scaled too.
+const TIMEOUT = testTime.ms(180_000);
 const PARALLEL = { enableRequests: true, enableAgents: true, enableParallel: true };
 const WAITS = n => Array.from({ length: n }, () => ({ seconds: 600 }));
 const joinedValue = value => ({ outcome: "joined", resultKind: "business", valueText: canonicalJson(value), winner: "controller" });
@@ -506,7 +508,7 @@ describe("J3 robust joins: commit order, repeats and lost acknowledgements (cont
             expect(await base.store.readNodeExecution(endHolds[1])).toMatchObject({ outcome: "cancelled", winner: "join" });
 
             // The time limit: decided once; a join after it never writes joined.
-            runs.elapse = await startJoin(base, joinDoc({ items: WAITS(2), join: { first: 1 }, concurrency: 2, timeoutSeconds: 8 }));
+            runs.elapse = await startJoin(base, joinDoc({ items: WAITS(2), join: { first: 1 }, concurrency: 2, timeoutSeconds: testTime.seconds(8) }));
             await persisted(base, [0, 1].map(index => runs.elapse.at(index, "hold")), "both waits pending");
             const timedOut = await endOf(base, runs.elapse.runId);
             expect(timedOut).toMatchObject({ status: "completed", terminalNodeId: "late" });
@@ -531,11 +533,11 @@ describe("J3 robust joins: commit order, repeats and lost acknowledgements (cont
         try {
             workers.push(await joinRuntimeOn(base));
             // Each case starts its own run when it begins, so its time limit (8 s, room for the scripts to start) is its own.
-            const doc = () => joinDoc({ items: WAITS(3), join: { first: 1 }, concurrency: 2, timeoutSeconds: 8 });
+            const doc = () => joinDoc({ items: WAITS(3), join: { first: 1 }, concurrency: 2, timeoutSeconds: testTime.seconds(8) });
             const ready = async run => {
                 await persisted(base, [0, 1].map(index => run.at(index, "hold")), "two branches' waits pending");
                 const fanRow = await base.store.readNodeExecution(run.fan);
-                expect(Date.now(), "VOID (not a product result): set up after the time limit; run it again").toBeLessThan(fanRow.deadlineAt.getTime() - 1_000);
+                expect(Date.now(), "VOID (not a product result): set up after the time limit; run it again").toBeLessThan(fanRow.deadlineAt.getTime() - testTime.ms(1_000));
                 return fanRow;
             };
 
@@ -1054,12 +1056,12 @@ describe("J3 robust joins, part 2: controller 1.9.0 (test-only)", () => {
                 },
             } }));
             // The first 2 of 4, two at a time: branch 1 waits, branch 2's script runs a minute, branches 3 and 4 are queued.
-            const run = await startJoin(base, joinDoc({ join: { first: 2 }, concurrency: 2, timeoutSeconds: 8,
-                items: [{ seconds: 600 }, { ms: 60_000 }, { seconds: 600 }, { seconds: 600 }] }));
+            const run = await startJoin(base, joinDoc({ join: { first: 2 }, concurrency: 2, timeoutSeconds: testTime.seconds(8),
+                items: [{ seconds: 600 }, { ms: testTime.ms(60_000) }, { seconds: 600 }, { seconds: 600 }] }));
             await persisted(base, [run.at(0, "hold"), run.at(1, "work")], "branch 1's wait and branch 2's script at work");
             const fanBefore = await base.store.readNodeExecution(run.fan);
             const deadline = await deadlineText(base, run.fan);
-            expect(Date.now(), "VOID (not a product result): set up after the time limit; run it again").toBeLessThan(fanBefore.deadlineAt.getTime() - 2_000);
+            expect(Date.now(), "VOID (not a product result): set up after the time limit; run it again").toBeLessThan(fanBefore.deadlineAt.getTime() - testTime.ms(2_000));
             await command(run, "pause", "pause-1");
             // One success while paused, before the time limit.
             expect(await base.store.completeNode(run.at(0, "hold"), elapsedResult())).toMatchObject({ won: true });
@@ -1097,7 +1099,7 @@ describe("J3 robust joins, part 2: controller 1.9.0 (test-only)", () => {
             for (const index of [2, 3]) expect(await branchRowsOf(base, run, index)).toEqual([]);
 
             // A pause between the decision and its route: the join that cuts the branches is held while the run is paused.
-            const between = await startJoin(base, joinDoc({ items: WAITS(2), join: { first: 1 }, concurrency: 2, timeoutSeconds: 8 }));
+            const between = await startJoin(base, joinDoc({ items: WAITS(2), join: { first: 1 }, concurrency: 2, timeoutSeconds: testTime.seconds(8) }));
             await persisted(base, [0, 1].map(index => between.at(index, "hold")), "both waits pending");
             held.runId = between.runId;
             await within(held.gate.reached, 40_000, "the join after the time limit to reach the gate");
@@ -1178,7 +1180,7 @@ describe("J3 robust joins, part 2: controller 1.9.0 (test-only)", () => {
         try {
             // A 100 ms backstop: 50 idle waits (the continue-as-new bound) pass in seconds.
             workers.push(await joinRuntimeOn(base, { wakeBackstopMs: 100 }));
-            const run = await startJoin(base, joinDoc({ items: WAITS(3), join: { first: 2 }, concurrency: 3, timeoutSeconds: 120 }));
+            const run = await startJoin(base, joinDoc({ items: WAITS(3), join: { first: 2 }, concurrency: 3, timeoutSeconds: testTime.seconds(120) }));
             await persisted(base, [0, 1, 2].map(index => run.at(index, "hold")), "every wait pending");
             const deadline = await deadlineText(base, run.fan);
             expect(await base.store.completeNode(run.at(2, "hold"), elapsedResult({ seconds: 2 }))).toMatchObject({ won: true });
@@ -1198,7 +1200,7 @@ describe("J3 robust joins, part 2: controller 1.9.0 (test-only)", () => {
             expect(decisionsOf(await eventsOf(base, run.workflowSessionId), run.fan)).toHaveLength(1);
 
             // The time limit crosses in a later execution: decided once, by the deadline set at entry.
-            const timed = await startJoin(base, joinDoc({ items: WAITS(3), join: { first: 2 }, concurrency: 3, timeoutSeconds: 20 }));
+            const timed = await startJoin(base, joinDoc({ items: WAITS(3), join: { first: 2 }, concurrency: 3, timeoutSeconds: testTime.seconds(20) }));
             await persisted(base, [0, 1, 2].map(index => timed.at(index, "hold")), "every wait pending");
             const timedDeadline = await deadlineText(base, timed.fan);
             const timedFan = await base.store.readNodeExecution(timed.fan);
@@ -1228,7 +1230,10 @@ describe("J3 robust joins, part 2: controller 1.9.0 (test-only)", () => {
         const workers = [];
         try {
             workers.push(await joinRuntimeOn(base, { wrap: { [R.wake]: drop, "workflow.v2.wake": drop } }));
-            const run = await startJoin(base, joinDoc({ items: [{ ms: 200 }, { ms: 900 }, { seconds: 600 }], join: { first: 2 }, concurrency: 3, timeoutSeconds: 120 }));
+            // CI run 114 (HorizonDB): the join came before the third branch's wait was admitted. The first two scripts' lengths
+            // are scaled, so the third branch is in its wait by then.
+            const run = await startJoin(base, joinDoc({ items: [{ ms: testTime.ms(200) }, { ms: testTime.ms(900) }, { seconds: 600 }], join: { first: 2 },
+                concurrency: 3, timeoutSeconds: 120 }));
             await persisted(base, [run.fan], "the parallel state pending");
             const deadline = await deadlineText(base, run.fan);
             // Stray notices on the controller's queue: duplicate wakes, wakes of no state and of another run, and others.
@@ -1306,7 +1311,7 @@ describe("J3 robust joins, part 2: controller 1.9.0 (test-only)", () => {
             // The run's own deadline before the parallel time limit: the run fails timed_out; the parallel state is cancelled by
             // the run's deadline, not timed out by its own.
             const expiring = await startJoin(base, { ...joinDoc({ items: WAITS(2), join: { first: 1 }, concurrency: 2, timeoutSeconds: 120 }),
-                limits: { timeoutSeconds: 6 } });
+                limits: { timeoutSeconds: testTime.seconds(6) } });
             await persisted(base, [0, 1].map(index => expiring.at(index, "hold")), "both waits pending");
             const expired = await endOf(base, expiring.runId);
             expect(expired).toMatchObject({ status: "failed", terminalError: { code: "timed_out" } });
@@ -1891,7 +1896,7 @@ describe("J3 robust joins, part 6: the decision's transaction (no controller)", 
 // ─── Part 7: a worker process killed after a store write (JK-07) ───
 
 describe("J3 robust joins, part 7: a worker process killed between a store write and its acknowledgement (controller 1.9.0, built code)", () => {
-    it("JK-07 (HG-2): killed after the join, a branch's end or the time limit was stored: another worker process takes over; one decision, one route, the cut made", { timeout: 240_000 }, async () => {
+    it("JK-07 (HG-2): killed after the join, a branch's end or the time limit was stored: another worker process takes over; one decision, one route, the cut made", { timeout: testTime.ms(240_000) }, async () => {
         const env = getEnv();
         const base = await joinBaseOf(env);
         const workers = [];
@@ -1951,7 +1956,7 @@ describe("J3 robust joins, part 7: a worker process killed between a store write
             expect(await rootIdsOf(base, ended.run.runId)).toEqual(["fan", "finished"]);
 
             // After the time limit was stored: timed_out stays; the cut and the route follow once.
-            const timed = await killedAt("workflow.v2.elapse.after-store", waits({ timeoutSeconds: 6 }), async () => {});
+            const timed = await killedAt("workflow.v2.elapse.after-store", waits({ timeoutSeconds: testTime.seconds(6) }), async () => {});
             expect(timed.before.fan, "precondition: the time limit was stored before the death").toMatchObject({ state: "completed", outcome: "timed_out" });
             expect(timed.ended).toMatchObject({ status: "completed", terminalNodeId: "late" });
             expect(decisionOf(await base.store.readNodeExecution(timed.run.fan))).toEqual(decisionOf(timed.before.fan));
@@ -1989,7 +1994,7 @@ describe("J3 robust joins, part 8: reads and the portal's projection of real res
             await persisted(base, holdsOf(blocked, 2), "the third run's waits pending");
             await base.store.completeNode(blocked.at(0, "hold"), failedHold);
             // Timed out, the first 1 of 3, two at a time, 6 s: both running branches cut at the time limit, the third never starts.
-            const timed = await startJoin(base, joinDoc({ items: WAITS(3), join: { first: 1 }, concurrency: 2, timeoutSeconds: 6 }));
+            const timed = await startJoin(base, joinDoc({ items: WAITS(3), join: { first: 1 }, concurrency: 2, timeoutSeconds: testTime.seconds(6) }));
             await persisted(base, holdsOf(timed, 2), "the fourth run's waits pending");
             const cases = { first, all, blocked, timed };
             for (const run of Object.values(cases)) await endOf(base, run.runId);
@@ -2044,8 +2049,10 @@ describe("J3 robust joins, part 8: reads and the portal's projection of real res
             expect(blockedFan.evidence.rows.map(item => [item.index, item.status])).toEqual([[0, "failed"], [1, "canceled"]]);
             const timedFan = await project(timed);
             expect(timedFan.joinBar.state).toBe("timed_out");
-            expect(timedFan.joinBar.limit.text).toBe("limit 6 s");
-            expect(timedFan.joinBar.limit.title).toMatch(/^Time limit 6 s from the node's start\. It passed before the join, at /);
+            // The limit is scaled with the database (6 s on PostgreSQL), in the portal's own words for its length.
+            const limitWords = formatSeconds(testTime.seconds(6));
+            expect(timedFan.joinBar.limit.text).toBe(`limit ${limitWords}`);
+            expect(timedFan.joinBar.limit.title.startsWith(`Time limit ${limitWords} from the node's start. It passed before the join, at `)).toBe(true);
             expect(timedFan.evidence).toMatchObject({ total: 3, needed: 1, succeeded: 0, timedOut: true });
             expect(timedFan.evidence.rows.map(item => [item.index, item.status])).toEqual([[0, "canceled · limit"], [1, "canceled · limit"], [2, "not started"]]);
             // The data counts branches from 0; people read them from 1.

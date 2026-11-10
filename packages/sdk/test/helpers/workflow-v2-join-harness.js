@@ -26,6 +26,7 @@ import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { branchScopeId, registerWorkflowV2, sessionQueueTransport, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
+import { testTime } from "./local-env.js";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 
@@ -36,9 +37,12 @@ export const JOIN_WORKER_SLOTS = 16;
 
 export const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-/** Wait until `check` gives a truthy value; fail naming `label` and the last value seen. */
+/**
+ * Wait until `check` gives a truthy value; fail naming `label` and the last value seen. CI run 114: the bound grows with
+ * the database the suite runs on (testTime, test/helpers/time-scale.js), as within()'s does.
+ */
 export async function until(check, label, timeoutMs = 60_000) {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = Date.now() + testTime.ms(timeoutMs);
     let last;
     while (Date.now() < deadline) {
         last = await check();
@@ -48,10 +52,10 @@ export async function until(check, label, timeoutMs = 60_000) {
     throw new Error(`timed out waiting for ${label}: ${JSON.stringify(last)}`);
 }
 
-/** `promise`, or a failure naming `label` after `ms`. */
+/** `promise`, or a failure naming `label` after `ms` (scaled with the database, as until()'s bound). */
 export function within(promise, ms, label) {
     let timer;
-    return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), ms); })])
+    return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), testTime.ms(ms)); })])
         .finally(() => clearTimeout(timer));
 }
 
