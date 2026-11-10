@@ -5264,6 +5264,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     bootstrap: input.bootstrap,
                     ...(quietEmptyAnswer ? { quietEmptyAnswer: true } : {}),
                     ...(quietWorkflowNotice ? { quietEmptyAnswerKind: "workflow_notice" as const } : {}),
+                    // PR 270: a Workflow agent chat's turn ends as an error on a session.error, even after text.
+                    ...(workflowAgentChild ? { sessionErrorEndsTurn: true } : {}),
                     requiredTool: input.requiredTool,
                     ...(stepReminder ? { stepReminder } : {}),
                     cycleOrigin: input.cycleOrigin,

@@ -260,6 +260,13 @@ export interface TurnOptions {
      * F-C3 system-only turn.
      */
     quietEmptyAnswerKind?: "workflow_notice";
+    /**
+     * PR 270: the turn of a Workflow agent state's own chat. A session.error that is not benign ends the turn as an error
+     * even when the model already gave text, so the turn's retries run and, when they are spent, the session reports the
+     * failed turn to its Workflow (orchestration/workflow-turn-failure.ts) instead of ending "completed" in silence.
+     * Set by the runTurn activity only.
+     */
+    sessionErrorEndsTurn?: boolean;
     /** Require a real execution event for this tool; correct once, then fail the turn if still absent. */
     requiredTool?: string;
     /**

@@ -4830,8 +4830,10 @@ export class ManagedSession {
 
         // Check if the SDK emitted a session.error — if so, treat as an error
         // even though session.idle fired (the SDK fires idle after retries exhaust).
+        // PR 270: a Workflow agent chat's turn (opts.sessionErrorEndsTurn) ends as an error even after text: a step whose
+        // chat's model failed must not end its turn "completed" in silence, so its retries and failure report apply.
         const sessionError = collectedEvents.find(e => e.eventType === "session.error");
-        if (sessionError && !finalContent) {
+        if (sessionError && (!finalContent || opts?.sessionErrorEndsTurn === true)) {
             const errData: any = sessionError.data ?? {};
             const errMsg = errData.message ?? errData.stack ?? "Unknown session error";
             // An extra-folder change accepted before the error still counts
