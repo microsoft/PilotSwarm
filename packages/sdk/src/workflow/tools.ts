@@ -82,9 +82,8 @@ export function operationWords(operations: readonly string[]): string {
  * The workflow tools' declarations carry their contract only (owner 2026-11-08T16:55Z); the workflow-tools skill has
  * every argument and the operations' details. update_workflow on a frozen 1.0.82 turn: its run operations and recover.
  * The definition operations (UPDATE_WORKFLOW_OPERATIONS.definition: replace_definition, publish, publish_and_start, start)
- * and their arguments are not declared: they serve only a Workflow made before revisions (spawn_workflow's version 1,
- * never released), and workflow_definition changes and starts definitions. Their handlers stay, so a stale call is still
- * answered (runUpdateWorkflowCommand), as spawn_workflow's is.
+ * and their arguments are not declared: workflow_definition changes and starts definitions. Their handlers stay
+ * (runUpdateWorkflowCommand): a person's commands use them.
  */
 function updateWorkflowDescription(options: { stop: boolean; test: boolean }): string {
     return "Control one of your Workflows: workflow_id, operation, and a new operation_id for each change (a retry reuses it). "

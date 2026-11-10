@@ -4185,7 +4185,7 @@ export class WorkflowStore {
                 const receiptText = strOrNull(priorRows[0], "receipt");
                 if (receiptText === null) {
                     throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT",
-                        `Input ${input.operationId} was accepted by a pre-release build that stored no receipt; it cannot be repeated.`);
+                        `Input ${input.operationId} has no stored receipt; it cannot be repeated.`);
                 }
                 const { rows: runRows } = await client.query(`SELECT * FROM ${this.t.runs} WHERE run_id = $1`, [str(priorRows[0], "run_id")]);
                 if (!runRows[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Input ${input.operationId} names a missing run.`);

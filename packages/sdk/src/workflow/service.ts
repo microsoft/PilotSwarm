@@ -596,8 +596,7 @@ async function notifyCancelledBeforeBegin(host: { store: WorkflowStore; duroxide
  *   start, so the receipt of a request that started the controller always
  *   says dispatched; a repeat starts it again;
  * - the controller ended, or its instance is gone, while the run is still
- *   active (its finalization attempts ran out, it was terminated, or its
- *   history is from an unsupported pre-release controller): end the run as
+ *   active (its finalization attempts ran out, or it was terminated): end the run as
  *   failed with the controller's state, and notify the parent of that end
  *   when the workflow asked for it. Pending node executions lose to that
  *   end, so a running script's liveness check stops it.

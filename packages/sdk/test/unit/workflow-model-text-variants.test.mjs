@@ -39,8 +39,8 @@ const {
 
 const REQUEST_SENTENCE = "`request`: answer it once with `respond_session_request` before its deadline, never in chat.";
 const TEST_LINE = "Test a revision only when the user asks, or before you publish it in a package; `start` never needs a test.";
-const V1 = { version: "v1", fingerprint: "test", revision: null };
-const V2 = { version: "v2", fingerprint: "test", revision: null };
+const BASE_V1 = { version: "v1", fingerprint: "test", revision: null };
+const BASE_V2 = { version: "v2", fingerprint: "test", revision: null };
 const named = (defs, name) => defs.find(def => def.name === name);
 
 // ─── G-1: inside a Workflow ───
@@ -70,7 +70,7 @@ test("G-1: inside a Workflow the guidance has one sentence for the definition pa
 
 test("G-1 (wiring): a session inside a Workflow carries the inside guidance; a chat outside every Workflow, the full guidance", () => {
     const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "Legacy base." });
-    for (const version of [V1, V2]) {
+    for (const version of [BASE_V1, BASE_V2]) {
         const inside = JSON.stringify(manager._buildSystemMessage("inside", { baseAgentPolicy: version, workflowMilestoneTurn: true,
             workflowInsideWorkflow: true, workflowAgentChild: true, workflowContext: "on" }));
         assert.ok(inside.includes(WORKFLOW_INSIDE_GUIDANCE), version.version);
@@ -125,10 +125,10 @@ test("G-3: the request sentence names respond_session_request only where it is d
 
 test("G-3 (wiring): a frozen 1.0.82 turn's guidance does not name respond_session_request; a 1.0.83 turn's does", () => {
     const manager = new SessionManager(undefined, null, { frameworkBasePrompt: "Legacy base." });
-    const frozen = JSON.stringify(manager._buildSystemMessage("frozen", { baseAgentPolicy: V2, workflowContext: "on" }));
+    const frozen = JSON.stringify(manager._buildSystemMessage("frozen", { baseAgentPolicy: BASE_V2, workflowContext: "on" }));
     assert.ok(frozen.includes("## Workflows") && !frozen.includes("respond_session_request"));
     assert.equal(named(ManagedSession.subAgentToolDefs(), "respond_session_request"), undefined, "not declared there");
-    const current = JSON.stringify(manager._buildSystemMessage("current", { baseAgentPolicy: V2, workflowMilestoneTurn: true, workflowContext: "on" }));
+    const current = JSON.stringify(manager._buildSystemMessage("current", { baseAgentPolicy: BASE_V2, workflowMilestoneTurn: true, workflowContext: "on" }));
     assert.ok(current.includes("respond_session_request"));
 });
 
@@ -210,7 +210,7 @@ test("G-6: a base without a skills index gets one with the Workflow skills; othe
 test("G-6 (wiring): a Base V1 chat lists the Workflow skills in its skills index only while Workflows are on in it", () => {
     const worker = buildWorker();
     const manager = new SessionManager(undefined, null, { frameworkBasePrompt: worker._frameworkBasePrompt, skills: worker._loadableSkills });
-    const prompt = context => JSON.parse(JSON.stringify(manager._buildSystemMessage(`v1-${context}`, { baseAgentPolicy: V1, workflowContext: context })));
+    const prompt = context => JSON.parse(JSON.stringify(manager._buildSystemMessage(`v1-${context}`, { baseAgentPolicy: BASE_V1, workflowContext: context })));
     const text = value => JSON.stringify(value);
     for (const name of WORKFLOW_SKILLS) {
         assert.ok(text(prompt("on")).includes(`- \`${name}\``), `on: ${name}`);

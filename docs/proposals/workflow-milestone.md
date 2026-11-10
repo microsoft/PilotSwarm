@@ -1651,8 +1651,8 @@ it rely on:
 - **Unchanged and already explicit.** A build reads only the IR versions it
   runs (`parseWorkflowIr`'s `maxIrVersion`), refuses store rows it does not
   know (the outbox's request mode), never fetches tagged activity work it
-  lacks, and fails the instances of pre-release controller versions with a
-  reason (`needsRecovery`, then `recover`). Migrations are additive and run
+  lacks, and fails the instances of controller versions it does not run with
+  a reason (`needsRecovery`, then `recover`). Migrations are additive and run
   at every process start, so an older reader meets newer columns, which it
   ignores, never a missing one.
 
@@ -1662,7 +1662,7 @@ can still fetch, abandon and finally poison a 1.9.0 controller item. The
 request design's activation gate (8.4: an enforced serving-set fence, or a
 verified routing mechanism in the dependency) remains the open requirement
 for that; an activity tag, a heartbeat advertisement or this admission
-fence is not it. Replay of a history that a pre-release build wrote remains
+fence is not it. Replay of a history that an earlier build wrote remains
 blocked (fenced), not migrated.
 
 ## The owner's screen-control decisions (3 November 2026)

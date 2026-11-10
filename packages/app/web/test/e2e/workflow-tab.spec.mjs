@@ -1,5 +1,5 @@
 // The Workflow tab in the portal, in a real browser (Workflow Simplified, stage 1; spec draft 3, sections 06 to 12, 16,
-// 17). Moved here from workflow-session.spec.mjs, which drove the old workflow screen:
+// 17). Moved here from workflow-session.spec.mjs:
 //   - a link to a Workflow (`?session=<workflow>`) opens its session's chat in the middle and the Workflow in the right
 //     block's Workflow tab (S4, S8; on a phone, the Workflow pane over the chat); a Workflow whose session is not loaded
 //     shows the same tab in the middle;

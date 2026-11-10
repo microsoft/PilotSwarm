@@ -203,11 +203,11 @@ describe("workflow: a person's publication matches a state's contract against it
             const store = catalog.workflowStore();
             const kit = `contract-kit-${randomUUID().slice(0, 8)}`;
             const [R1, R2] = [hex(), hex()];
-            const v1 = exportOf(["accepted"]);
+            const contractExport = exportOf(["accepted"]);
             const kitV1 = await catalog.publishAgentPackage(packageInput(kit, "1.0.0", R1, [
-                { name: "contract-reviewer", workflowInterface: v1 },
+                { name: "contract-reviewer", workflowInterface: contractExport },
                 { name: "plain-reviewer" },
-                { name: "forged-reviewer", workflowInterface: { ...v1, digest: "0".repeat(64) } },
+                { name: "forged-reviewer", workflowInterface: { ...contractExport, digest: "0".repeat(64) } },
                 { name: "loose-reviewer", workflowInterface: exportOf(["accepted"], { type: "object" }) },
             ], { scope: "shared" }));
             const parent = randomUUID();
@@ -220,7 +220,7 @@ describe("workflow: a person's publication matches a state's contract against it
             const matching = await draftOf(catalog, store, parent, contracted("contract-reviewer"));
             expect(await publish(matching, "pub-1")).toMatchObject({ operation: "publish", state: "published", publishedRevision: 1 });
             const pins = { only: { name: "contract-reviewer", package: kit, version: "1.0.0", packageId: kitV1.packageId, revision: R1,
-                interface: { name: "review_change", version: "1", digest: v1.digest } } };
+                interface: { name: "review_change", version: "1", digest: contractExport.digest } } };
             expect((await store.readDefinition(matching.workflowSessionId)).publishedAgentPins).toEqual(pins);
 
             // Anything else refuses the publication with every problem, and the draft stays a draft: nothing is inferred.

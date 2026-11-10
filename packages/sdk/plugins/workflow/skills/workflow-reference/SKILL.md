@@ -281,10 +281,10 @@ What the engine guarantees. Do not rely on more.
 
 ## Not supported: do not write
 
-`transition.function`, `transition.delaySeconds` (version 1 only; use a wait
-state), join states, a parallel state in a body, `inputSchema` or `outputSchema` on a receive,
-`parentNotification`, the request field `request`
-and the route `timeout`, and text around a binding.
+`transition.function`, `transition.delaySeconds` (use a wait state), join
+states, a parallel state in a body, `inputSchema` or `outputSchema` on a
+receive, `parentNotification`, the request field `request` and the route
+`timeout`, and text around a binding.
 
 ## Tools
 

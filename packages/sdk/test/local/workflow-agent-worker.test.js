@@ -639,8 +639,8 @@ describe("workflow agent states on a real worker (test-only option, inactive)", 
         };
         try {
             // 1.0.0 is the active version when the worker starts.
-            const v1 = await publishVersion("1.0.0");
-            const pinnedId = pinnedAgentPackageId(v1.packageId, v1.sha256);
+            const release1 = await publishVersion("1.0.0");
+            const pinnedId = pinnedAgentPackageId(release1.packageId, release1.sha256);
             await withScriptedModel(env, { respond: completingModel(turns, { verdict: "pinned" }), worker }, async ({ client, model, worker: running }) => {
                 const duroxide = client._getDuroxideClient();
                 const store = catalog.workflowStore();
@@ -657,14 +657,14 @@ describe("workflow agent states on a real worker (test-only option, inactive)", 
                     publish: true, notifyParent: false,
                 });
                 expect(created.receipt, JSON.stringify(created.receipt.diagnostics)).toMatchObject({ valid: true, state: "published", run: null });
-                const pin = { name: reviewer, package: kit, version: "1.0.0", packageId: v1.packageId, revision: v1.sha256 };
+                const pin = { name: reviewer, package: kit, version: "1.0.0", packageId: release1.packageId, revision: release1.sha256 };
                 expect((await store.readDefinition(workflowSessionId)).publishedAgentPins).toEqual({ review: pin });
 
                 // The package is republished: 1.1.0 is the registry's and this worker's active version, and the pinned revision is
                 // not served yet. The publication keeps its pin.
-                const v11 = await publishVersion("1.1.0");
-                expect(v11.packageId).toBe(v1.packageId);
-                expect(v11.sha256).not.toBe(v1.sha256);
+                const release11 = await publishVersion("1.1.0");
+                expect(release11.packageId).toBe(release1.packageId);
+                expect(release11.sha256).not.toBe(release1.sha256);
                 await running.refreshAgentPackages();
                 expect(versionOf(pickAgentCopyForOwner(copies(), null))).toBe("1.1.0");
                 expect(pickAgentCopyByPackageIdForOwner(copies(), pinnedId, null)).toBeUndefined();
@@ -720,9 +720,9 @@ describe("workflow agent states on a real worker (test-only option, inactive)", 
                 // The worker installed that revision for the child, beside the active version; everyone else keeps the active one.
                 const served = pickAgentCopyByPackageIdForOwner(copies(), pinnedId, null);
                 expect(versionOf(served)).toBe("1.0.0");
-                expect(served.pinnedRevision).toBe(v1.sha256);
+                expect(served.pinnedRevision).toBe(release1.sha256);
                 expect(versionOf(pickAgentCopyForOwner(copies(), null))).toBe("1.1.0");
-                expect(versionOf(pickAgentCopyByPackageIdForOwner(copies(), v1.packageId, null))).toBe("1.1.0");
+                expect(versionOf(pickAgentCopyByPackageIdForOwner(copies(), release1.packageId, null))).toBe("1.1.0");
 
                 // A later publication pins the revision the package is at now (1.1.0); the frozen publication keeps its own pin
                 // (a published workflow is immutable: a later revision is a later workflow's publication).
@@ -732,8 +732,8 @@ describe("workflow agent states on a real worker (test-only option, inactive)", 
                     operationId: "create-later", publish: true, notifyParent: false,
                 });
                 expect(later.receipt, JSON.stringify(later.receipt.diagnostics)).toMatchObject({ valid: true, state: "published", run: null });
-                const laterPin = { ...pin, version: "1.1.0", revision: v11.sha256 };
-                const laterPinnedId = pinnedAgentPackageId(v11.packageId, v11.sha256);
+                const laterPin = { ...pin, version: "1.1.0", revision: release11.sha256 };
+                const laterPinnedId = pinnedAgentPackageId(release11.packageId, release11.sha256);
                 expect((await store.readDefinition(laterSessionId)).publishedAgentPins).toEqual({ review: laterPin });
                 expect((await store.readDefinition(workflowSessionId)).publishedAgentPins).toEqual({ review: pin });
 
@@ -763,7 +763,7 @@ describe("workflow agent states on a real worker (test-only option, inactive)", 
                 expect(laterTurn.system).not.toContain(marker("1.0.0"));
                 expect(JSON.parse(laterTurn.result)).toMatchObject({ ok: true, kind: "result", outcome: "accepted", nodeExecutionId: laterNode, runId: laterRunId });
                 // Each revision is served to its own binding only; the default copy stays the active version.
-                expect(pickAgentCopyByPackageIdForOwner(copies(), laterPinnedId, null)?.pinnedRevision).toBe(v11.sha256);
+                expect(pickAgentCopyByPackageIdForOwner(copies(), laterPinnedId, null)?.pinnedRevision).toBe(release11.sha256);
                 expect(versionOf(pickAgentCopyByPackageIdForOwner(copies(), laterPinnedId, null))).toBe("1.1.0");
                 expect(versionOf(pickAgentCopyByPackageIdForOwner(copies(), pinnedId, null))).toBe("1.0.0");
                 expect(versionOf(pickAgentCopyForOwner(copies(), null))).toBe("1.1.0");
@@ -820,11 +820,11 @@ describe("workflow agent states on a real worker (test-only option, inactive)", 
         };
         try {
             // 1.0.0 exports review_change@1 and is the active version when the worker starts.
-            const v1 = await publishVersion("1.0.0", CONTRACT_1);
-            const export1 = exportOf(v1);
+            const release1 = await publishVersion("1.0.0", CONTRACT_1);
+            const export1 = exportOf(release1);
             expect(export1).toMatchObject({ name: "review_change", version: "1", inputSchema: null, outcomes: ["accepted"] });
             expect(export1.digest).toMatch(/^[0-9a-f]{64}$/);
-            const pinnedId = pinnedAgentPackageId(v1.packageId, v1.sha256);
+            const pinnedId = pinnedAgentPackageId(release1.packageId, release1.sha256);
             await withScriptedModel(env, { respond: contractModel(turns), worker }, async ({ client, model, worker: running }) => {
                 const duroxide = client._getDuroxideClient();
                 const store = catalog.workflowStore();
@@ -841,15 +841,15 @@ describe("workflow agent states on a real worker (test-only option, inactive)", 
                     operationId: "create", publish: true, notifyParent: false,
                 });
                 expect(created.receipt, JSON.stringify(created.receipt.diagnostics)).toMatchObject({ valid: true, state: "published", run: null });
-                const pin = { name: reviewer, package: kit, version: "1.0.0", packageId: v1.packageId, revision: v1.sha256,
+                const pin = { name: reviewer, package: kit, version: "1.0.0", packageId: release1.packageId, revision: release1.sha256,
                     interface: { name: "review_change", version: "1", digest: export1.digest } };
                 expect((await store.readDefinition(workflowSessionId)).publishedAgentPins).toEqual({ review: pin });
 
                 // Republished with review_change@2: 1.1.0 is the registry's and this worker's active version. The publication keeps its pin.
-                const v11 = await publishVersion("1.1.0", CONTRACT_2);
-                const export2 = exportOf(v11);
-                expect(v11.packageId).toBe(v1.packageId);
-                expect(v11.sha256).not.toBe(v1.sha256);
+                const release11 = await publishVersion("1.1.0", CONTRACT_2);
+                const export2 = exportOf(release11);
+                expect(release11.packageId).toBe(release1.packageId);
+                expect(release11.sha256).not.toBe(release1.sha256);
                 expect(export2).toMatchObject({ name: "review_change", version: "2", outcomes: ["accepted", "changes_required"] });
                 expect(export2.digest).not.toBe(export1.digest);
                 await running.refreshAgentPackages();
@@ -910,7 +910,7 @@ describe("workflow agent states on a real worker (test-only option, inactive)", 
 
                 // The run kept its publication's revision: the child is bound to it and its real turn ran that revision's prompt.
                 const invocation = await store.readAgentInvocation(nodeExecutionId);
-                expect(invocation.task).toEqual({ source: "agent", name: reviewer, package: kit, version: "1.0.0", packageId: v1.packageId, revision: v1.sha256 });
+                expect(invocation.task).toEqual({ source: "agent", name: reviewer, package: kit, version: "1.0.0", packageId: release1.packageId, revision: release1.sha256 });
                 expect(await catalog.getSessionCreationConfig(invocation.childSessionId)).toMatchObject({ boundAgentName: reviewer, boundAgentPackageId: pinnedId });
                 const turn = turnOf(nodeExecutionId);
                 expect(turn.system).toContain(marker("1.0.0"));
@@ -936,8 +936,8 @@ describe("workflow agent states on a real worker (test-only option, inactive)", 
                     operationId: "create-later", publish: true, notifyParent: false,
                 });
                 expect(later.receipt, JSON.stringify(later.receipt.diagnostics)).toMatchObject({ valid: true, state: "published", run: null });
-                const laterPin = { ...pin, version: "1.1.0", revision: v11.sha256, interface: { name: "review_change", version: "2", digest: export2.digest } };
-                const laterPinnedId = pinnedAgentPackageId(v11.packageId, v11.sha256);
+                const laterPin = { ...pin, version: "1.1.0", revision: release11.sha256, interface: { name: "review_change", version: "2", digest: export2.digest } };
+                const laterPinnedId = pinnedAgentPackageId(release11.packageId, release11.sha256);
                 expect((await store.readDefinition(laterSessionId)).publishedAgentPins).toEqual({ review: laterPin });
                 expect((await store.readDefinition(workflowSessionId)).publishedAgentPins).toEqual({ review: pin });
 
@@ -959,7 +959,7 @@ describe("workflow agent states on a real worker (test-only option, inactive)", 
                 expect(await store.readNodeExecution(laterNode)).toMatchObject({ outcome: "changes_required", winner: "agent",
                     output: { verdict: "rework", notes: "rename it everywhere" } });
                 const laterInvocation = await store.readAgentInvocation(laterNode);
-                expect(laterInvocation.task).toEqual({ source: "agent", name: reviewer, package: kit, version: "1.1.0", packageId: v11.packageId, revision: v11.sha256 });
+                expect(laterInvocation.task).toEqual({ source: "agent", name: reviewer, package: kit, version: "1.1.0", packageId: release11.packageId, revision: release11.sha256 });
                 expect(laterInvocation.childSessionId).not.toBe(invocation.childSessionId);
                 expect(await catalog.getSessionCreationConfig(laterInvocation.childSessionId))
                     .toMatchObject({ boundAgentName: reviewer, boundAgentPackageId: laterPinnedId });

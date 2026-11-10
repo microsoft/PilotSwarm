@@ -14,8 +14,7 @@
  * - The workflow support a server advertises in its bootstrap (design 04,
  *   D11): what the host was configured with, a person's commands off by
  *   default with the refusal each then gets, the controller version and
- *   operations when they are on, and the legacy create's version 1 semantics;
- *   the management client answers from its own configuration and catalog.
+ *   operations when they are on; the management client answers from its own configuration and catalog.
  *
  * Run: node --test test/unit/workflow-human-commands.test.mjs
  */

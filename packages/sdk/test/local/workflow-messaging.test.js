@@ -483,7 +483,7 @@ states:
             expect(await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "late" }))
                 .toMatchObject({ ok: false, error: { code: "RUN_ENDED" } });
             expect((await h.store.listInbox(run.runId)).length).toBe(3);
-            // An input stored without a receipt (a pre-release build) is not repeated from what it is now.
+            // An input whose receipt is missing is not repeated from what it is now: the store is corrupt.
             await h.q("UPDATE SCHEMA.workflow_inbox SET receipt = NULL WHERE message_id = $1", [later.messageId]);
             expect(await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: { buildId: 7, state: "failed" }, operation_id: "third" }))
                 .toMatchObject({ ok: false, error: { code: "WORKFLOW_STORE_CORRUPT" } });

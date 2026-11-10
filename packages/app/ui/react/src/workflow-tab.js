@@ -60,9 +60,8 @@ export const TIMELINE_PLAY_LIVE_TITLE = "Play — step back first; live view alr
  * definition's graph or its Workflows, and a bottom panel (L5), closed by default. On a phone the bottom panel is a
  * sheet with a visible way back (12).
  *
- * On the tested engine each Workflow is still a workflow child session; this tab reads them through the same reads the
- * old workflow screen made (ensureWorkflowDefinition, ensureWorkflowReadModel, the session's events) and sends the same
- * commands (sendWorkflowRunCommand). Every command is the server's decision.
+ * Each Workflow is a workflow child session; this tab reads it (ensureWorkflowDefinition, ensureWorkflowReadModel, the
+ * session's events) and sends its commands (sendWorkflowRunCommand). Every command is the server's decision.
  */
 
 /** One workflow child's view parts, fresh for `sessionId` (a store change for another child is never paired with it). */
