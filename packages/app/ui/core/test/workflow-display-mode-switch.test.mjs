@@ -41,7 +41,7 @@ for (const mode of ["full", "zen"]) {
         // Another definition (the definition picker): only the tab moves (workflow-tab.js, workflowPickerChoicePatch); no
         // session is selected.
         store.dispatch({ type: "ui/workflowTab", ownerId: "owner",
-            patch: { versionChild: null, versionKey: null, version: null, definitionChild: null, definition: "digest", workflowId: null } });
+            patch: { versionChild: null, definitionChild: null, definition: "digest", workflowId: null } });
         assert.equal(store.getState().ui.workflowTabs?.owner?.definition, "digest");
         assert.equal(store.getState().sessions.workflowRowId, "wf-2", "the definition picker selects no session");
         assert.deepEqual(modeOf(store), want, "a definition chosen");

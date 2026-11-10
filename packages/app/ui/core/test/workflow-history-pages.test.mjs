@@ -3,7 +3,7 @@
 // loads join that run's own model only while they still join its page. When newer rows push the page past every loaded
 // row, what lies between was never read: the loaded rows are not shown, the gap is said, and reading starts again from
 // the page, so no row is skipped. An older row that was open when it was read and is no longer open is left out and
-// counted, never shown as it was. An older server's model (no pages) keeps its first-200 notice.
+// counted, never shown as it was.
 //
 // Run: node --test packages/app/ui/core/test/workflow-history-pages.test.mjs
 import test from "node:test";
@@ -81,15 +81,11 @@ test("an older row open when read and no longer open is left out and counted; on
     assert.ok(projected.banners.some(banner => banner.text.startsWith("1 row loaded from older history changed")), JSON.stringify(projected.banners));
 });
 
-test("an older server's model without pages keeps the first-200 notice; a paged one says only that older executions are not loaded", () => {
-    const legacy = { ...runOf({ page: Array.from({ length: 200 }, (_, i) => exec(i + 1)) }), pages: undefined };
-    const projected = projectWorkflowReadModel(modelOf(legacy));
-    assert.ok(projected.banners.some(banner => banner.text === "Only the first 200 visits are listed, so counts may be incomplete."));
-    assert.equal(workflowRunHistory(legacy).paged, false);
-    assert.equal(workflowRunHistory(legacy).more, false, "an older server pages no further");
+test("a model whose page names no older one has no older-visits notice; one that names an older page says so", () => {
+    const whole = projectWorkflowReadModel(modelOf(runOf({ page: Array.from({ length: 200 }, (_, i) => exec(i + 1)) })));
+    assert.ok(!whole.banners.some(banner => banner.text === "Older visits are not loaded, so counts may be incomplete."));
     const paged = projectWorkflowReadModel(modelOf(runOf({ page: [exec(10)], next: cursor("after-e10") })));
     assert.ok(paged.banners.some(banner => banner.text === "Older visits are not loaded, so counts may be incomplete."));
-    assert.ok(!paged.banners.some(banner => banner.text.startsWith("Only the first")));
 });
 
 test("the controller reads older history from the page again after a gap, for exactly the shown run, and keeps what it read", async () => {

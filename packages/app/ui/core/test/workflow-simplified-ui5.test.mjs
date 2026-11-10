@@ -100,6 +100,4 @@ test("UI5-F1: the reconciliation changes nothing when the stored child is the on
     assert.equal(workflowVersionChoicePatch(versions, {}, definition.children), null, "no choice");
     assert.equal(workflowVersionChoicePatch(versions, { versionChild: "wf-b" }, definition.children), null, "the shown child");
     assert.equal(workflowVersionChoicePatch(versions, { versionChild: "wf-gone" }, definition.children), null, "gone: the view says so");
-    // An earlier shape is stored as its entry's newest child (UI4-F3).
-    assert.deepEqual(workflowVersionChoicePatch(versions, { version: "1.1.0" }, definition.children), { versionChild: "wf-b", versionKey: null, version: null });
 });

@@ -71,7 +71,7 @@ test("UI3-F1: with an older run shown, the newest option (its key) shows the new
     // The newest option chosen: the handler stores its key (workflowNewestVersionKey); the run shown does not take it back.
     const { versions, definition } = versionsOf(h);
     const newest = versions.find(entry => entry.children.includes(definition.newestId)).key;
-    const chosen = render(h, { view: "definition", versionKey: newest });
+    const chosen = render(h, { view: "definition", versionChild: versions.find(entry => entry.key === newest).newestId });
     assert.match(chosen, /data-definition-child="wf-2"/);
     assert.deepEqual(options(chosen).map(option => [option.words, option.selected]),
         [[`${NAME} · 1.1.0 · draft`, true], [`${NAME} · 1.0.0`, false]]);

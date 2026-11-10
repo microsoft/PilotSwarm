@@ -255,10 +255,6 @@ test("history counts are marked partial unless the whole run is loaded, and trun
     assert.equal(byId(whole, "poll").runs, 5);
     assert.equal(byId(whole, "poll").partial, false);
     assert.equal(byId(whole, "pause").partial, false);
-    const many = Array.from({ length: 200 }, (_, i) => done("poll", i + 1, "unchanged"));
-    const bounded = projectWorkflow({ readModel: readModel({ nodeExecutions: many }) });
-    assert.equal(byId(bounded, "poll").partial, true);
-    assert.ok(bounded.banners.some(banner => /first 200 visits/.test(banner.text)));
     assert.deepEqual(formatWorkflowValue("abc…"), { text: "abc…", truncated: true });
     assert.deepEqual(formatWorkflowValue('{"a":1}'), { text: '{\n  "a": 1\n}', truncated: false });
     assert.deepEqual(formatWorkflowValue("<b>not json</b>"), { text: "<b>not json</b>", truncated: false });

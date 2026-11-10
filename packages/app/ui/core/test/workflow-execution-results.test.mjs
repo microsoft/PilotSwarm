@@ -249,7 +249,7 @@ test("a refused read shows its error and no result; an ordinary session is not t
     assert.equal(h.store.getState().ui.workflowViews?.chat, undefined);
 });
 
-test("f reads the whole value of exactly the visit shown, of exactly the shown run; o says when the server reads no older history", async () => {
+test("f reads the whole value of exactly the visit shown, of exactly the shown run; o says when every visit is loaded", async () => {
     const whole = { n: 3, text: "line" };
     const h = await viewing(LOOP, "poll", { read: async (sessionId, options) => {
         if (options?.executionId === "nx-poll-5") return { workflowId: "wf", runId: RUN, execution: { nodeExecutionId: "nx-poll-5", result: { kind: "output", bytes: 23, whole: true, value: whole } } };
@@ -289,9 +289,9 @@ test("f reads the whole value of exactly the visit shown, of exactly the shown r
     assert.equal(statusOf(h.store), "This visit has not ended; it has no value yet");
     assert.equal(h.calls.length, calls);
 
-    // o: this read model has no pages (an older server), so no older history is read.
+    // o: this read model names no older page, so no older history is read.
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_OLDER_HISTORY);
-    assert.equal(statusOf(h.store), "This server reads no older visits");
+    assert.equal(statusOf(h.store), "Every visit is loaded");
     assert.equal(h.calls.length, calls);
 });
 

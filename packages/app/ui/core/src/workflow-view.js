@@ -26,12 +26,9 @@ const END_EVENTS = { "workflow.completed": "completed", "workflow.failed": "fail
 
 /**
  * The sections of a run that the read pages (design 04 read_workflow "Bounded history pagination"; readWorkflowView
- * run.pages): node executions, inbox, outbox and a test run's held calls. A read model without run.pages is an
- * older server's, which listed a run's first rows by entry and paged no further.
+ * run.pages): node executions, inbox, outbox and a test run's held calls.
  */
 export const WORKFLOW_READ_SECTIONS = Object.freeze(["executions", "inbox", "outbox", "interceptions"]);
-/** An older server's read model lists at most this many node executions of a run. */
-const LEGACY_EXECUTION_LIMIT = 200;
 const ROW_KEYS = { executions: "nodeExecutionId", inbox: "messageId", outbox: "exchangeId", interceptions: "interceptionId" };
 
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -492,9 +489,7 @@ export function workflowRunRows(run, older = null) {
  * this run): `next` names, per section, the cursor of the next older page (the last loaded older page's while it joins
  * the read model's page, else the read model's), absent once its oldest row is loaded; `complete` says every node
  * execution of the run is loaded (no older page, and every open one listed); `openComplete` that every open row of
- * every section is listed (at most 500 each); `loading` and `error` are the last older-page read's. A read model
- * without pages (an older server) lists a run's first node executions and pages no further: complete only below its
- * limit of 200. Pure.
+ * every section is listed (at most 500 each); `loading` and `error` are the last older-page read's. Pure.
  */
 export function workflowRunHistory(run, older = null) {
     const pages = isRecord(run?.pages) ? run.pages : null;
@@ -507,13 +502,11 @@ export function workflowRunHistory(run, older = null) {
         if (isRecord(cursor)) next[section] = cursor;
     }
     const mine = isRecord(older) && isRecord(run) && older.runId === run.runId;
-    const executions = Array.isArray(run?.nodeExecutions) ? run.nodeExecutions.length : 0;
     return {
-        paged: pages !== null,
         next,
         more: Object.keys(next).length > 0,
-        complete: pages ? !next.executions && pages.executions?.openComplete !== false : executions < LEGACY_EXECUTION_LIMIT,
-        openComplete: pages ? WORKFLOW_READ_SECTIONS.every(section => pages[section]?.openComplete !== false) : true,
+        complete: !next.executions && pages?.executions?.openComplete !== false,
+        openComplete: WORKFLOW_READ_SECTIONS.every(section => pages?.[section]?.openComplete !== false),
         loading: mine && older.loading === true,
         error: mine && typeof older.error === "string" && older.error ? older.error : null,
     };
@@ -685,12 +678,10 @@ export function projectWorkflowReadModel(model, { older = null, now = Date.now()
     // How much of the run's history is loaded: the read pages a run newest first and lists its open rows apart, so its
     // current states are read however long its history is; older history is loaded on request (loadOlderWorkflowHistory).
     const history = run?.history;
-    if (history && !history.paged && !history.complete) {
-        banners.push({ level: "info", text: `Only the first ${LEGACY_EXECUTION_LIMIT} visits are listed, so counts may be incomplete.` });
-    } else if (history?.next?.executions) {
+    if (history?.next?.executions) {
         banners.push({ level: "info", text: "Older visits are not loaded, so counts may be incomplete." });
     }
-    if (history?.paged && !history.openComplete) {
+    if (history && !history.openComplete) {
         banners.push({ level: "warning", text: "This Workflow has more open nodes, inputs, deliveries or waiting calls than one read lists (500 of each), so some are not shown." });
     }
     if (history?.staleOlder) {

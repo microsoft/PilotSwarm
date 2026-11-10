@@ -645,64 +645,48 @@ export function workflowMadeNumbers(items, madeOf = () => null) {
 /**
  * The entry the Workflow tab's Definition view shows (owner, 2026-11-07T00:03Z), from `versions`
  * (workflowDefinitionVersions): the one that holds `child` (a child the person chose to show, or the Workflow shown, whose
- * own definition the view shows: review UI3-F9), else the one the person chose (`key`: its handle; review UI3-F1, every
- * choice is explicit), else the one of the Workflow shown (`workflowId`), else the one that holds the definition's newest
- * child (`newestId`), else the first. Null when there are none. Pure.
+ * own definition the view shows: review UI3-F9), else the one of the Workflow shown (`workflowId`), else the one that
+ * holds the definition's newest child (`newestId`), else the first. Null when there are none. Pure.
  */
-export function workflowChosenVersion(versions, { child = null, key = null, workflowId = null, newestId = null } = {}) {
+export function workflowChosenVersion(versions, { child = null, workflowId = null, newestId = null } = {}) {
     const list = Array.isArray(versions) ? versions : [];
     const holding = id => (id ? list.find(entry => entry.children.includes(id)) ?? null : null);
-    return holding(child)
-        ?? (typeof key === "string" ? list.find(entry => entry.key === key) ?? null : null)
-        ?? holding(workflowId) ?? holding(newestId) ?? list[0] ?? null;
+    return holding(child) ?? holding(workflowId) ?? holding(newestId) ?? list[0] ?? null;
 }
 
 const VERSION_VALUE_SEPARATOR = "\u001f";
 
 /**
- * Review UI4-F1, UI4-F3: the child a version choice in the Workflow tab stands for. A choice is stored as a child
+ * Review UI4-F1: the child a version choice in the Workflow tab stands for. A choice is stored as a child
  * (`tab.versionChild`: the newest child of the entry chosen), so it keeps its place when that child is read for the first
  * time or a draft's new revision gives it another hash (another entry key); the view shows the newest child of the entry
  * that holds it. `children`: the definition's children. Returns:
- * - { child, legacy: false, gone: false } for a stored child that is still one of them;
- * - { child: null, legacy: false, gone: true } when it no longer is (it was deleted: the view says so and shows the newest,
- *   never a Workflow shown before, which the person did not choose);
- * - { child, legacy: true, gone: false } for a choice in an earlier shape, resolved to its entry's newest child so it can be
- *   stored as a child: an entry key (`tab.versionKey`), a bare version (`tab.version`, or an old option's "1.0.0"), or an
- *   entry key whose hash is gone (its version); a version is the entry of that version that holds `tab.workflowId` (the
- *   Workflow shown with it), else its newest;
- * - null for no choice, or one in an earlier shape that cannot be resolved yet (its version not read).
+ * - { child, gone: false } for a stored child that is still one of them;
+ * - { child: null, gone: true } when it no longer is (it was deleted: the view says so and shows the newest, never a
+ *   Workflow shown before, which the person did not choose);
+ * - null for no choice.
  * Pure.
  */
 export function workflowVersionChoice(versions, tab, children = []) {
-    const list = Array.isArray(versions) ? versions : [];
     const own = Array.isArray(children) ? children : [];
     const stored = typeof tab?.versionChild === "string" && tab.versionChild ? tab.versionChild : null;
-    if (stored) return own.includes(stored) ? { child: stored, legacy: false, gone: false } : { child: null, legacy: false, gone: true };
-    const key = typeof tab?.versionKey === "string" && tab.versionKey ? tab.versionKey : null;
-    const byKey = key ? list.find(entry => entry.key === key) ?? null : null;
-    const version = text(tab?.version) ?? (key ? text(key.split(VERSION_VALUE_SEPARATOR)[0]) : null);
-    const ofVersion = !byKey && version ? list.filter(entry => entry.version === version) : [];
-    const known = typeof tab?.workflowId === "string" ? ofVersion.find(entry => entry.children.includes(tab.workflowId)) ?? null : null;
-    const entry = byKey ?? known ?? ofVersion[0] ?? null;
-    return entry?.newestId ? { child: entry.newestId, legacy: true, gone: false } : null;
+    if (!stored) return null;
+    return own.includes(stored) ? { child: stored, gone: false } : { child: null, gone: true };
 }
 
 /**
  * The Workflow tab's change for an option chosen in its definition picker (`value`: workflowVersionOptionValue's), with the
  * tab's definitions, the definition shown and its versions. Review UI3-F1: a bare name is its newest entry, so a Workflow
  * shown or last shown never takes the choice back. Review UI4-F1: the choice is stored as the entry's newest child, which
- * keeps its place when that child is read or revised (an earlier option's value, a bare version, resolves the same way:
- * UI4-F3). Another entry of the same name shows in the Definition view (there the picker's entry is the one shown); another
- * name keeps the view. Pure.
+ * keeps its place when that child is read or revised. Another entry of the same name shows in the Definition view (there
+ * the picker's entry is the one shown); another name keeps the view. Pure.
  */
 export function workflowPickerChoicePatch(value, { definitions = [], definition = null, versions = [], byId = {}, views = {} } = {}) {
     const picked = workflowVersionFromOptionValue(value);
     const pickedDefinition = (Array.isArray(definitions) ? definitions : []).find(item => item.name === picked.name) ?? null;
     const list = pickedDefinition === definition ? versions : pickedDefinition ? workflowDefinitionVersions(byId, pickedDefinition, views) : [];
-    const child = (picked.key ? workflowVersionChoice(list, { versionKey: picked.key }, pickedDefinition?.children)?.child : null)
-        ?? pickedDefinition?.newestId ?? null;
-    const choice = { versionChild: child, versionKey: null, version: null, definitionChild: null };
+    const child = (picked.key ? list.find(entry => entry.key === picked.key)?.newestId : null) ?? pickedDefinition?.newestId ?? null;
+    const choice = { versionChild: child, definitionChild: null };
     return picked.name === definition?.name ? { ...choice, view: "definition" } : { ...choice, definition: picked.name, workflowId: null };
 }
 
@@ -710,16 +694,15 @@ export function workflowPickerChoicePatch(value, { definitions = [], definition 
  * Review UI5-F1: the change to the Workflow tab's stored version choice that keeps it on the child the view shows, or null
  * when none is needed. The view shows the newest child of the entry that holds the stored child (a newer child with the same
  * version and definition joins that entry); when that newest child is another, it becomes the stored choice, so a later
- * revision of the shown child (which may move it to an entry of its own) keeps the view, its YAML and its Start on it. A
- * choice in an earlier shape (review UI4-F3) is stored as its child. Nothing while a run is shown, for no choice, or for a
- * chosen child that is gone (the view says so). Pure: the tab applies the change (setTab) after it renders.
+ * revision of the shown child (which may move it to an entry of its own) keeps the view, its YAML and its Start on it.
+ * Nothing while a run is shown, for no choice, or for a chosen child that is gone (the view says so). Pure: the tab
+ * applies the change (setTab) after it renders.
  */
 export function workflowVersionChoicePatch(versions, tab, children = []) {
     const choice = workflowVersionChoice(versions, tab, children);
     if (!choice?.child) return null;
     const entry = (Array.isArray(versions) ? versions : []).find(item => item.children.includes(choice.child)) ?? null;
     const shown = entry?.newestId ?? choice.child;
-    if (choice.legacy) return { versionChild: shown, versionKey: null, version: null };
     return shown !== choice.child ? { versionChild: shown } : null;
 }
 

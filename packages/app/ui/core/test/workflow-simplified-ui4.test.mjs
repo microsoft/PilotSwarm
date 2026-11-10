@@ -5,8 +5,6 @@
  *   before.
  * - UI4-F2 (high): selecting a Workflow row (the session list, a click or the keyboard: one action) clears a child shown with
  *   Show it, and while a run is shown the picker describes that run.
- * - UI4-F3: a choice in an earlier shape (a bare version, an entry key whose hash is gone, an old option value) resolves to
- *   that version's child.
  * - UI4-F4: drafts of one version made in the same second (or with no time) have distinct names in the picker, Compare and
  *   the list of drafts.
  *
@@ -19,13 +17,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 import {
     workflowDefinitionVersions, workflowDefinitionsOf, workflowMadeNumbers, workflowMadeWords, workflowPickerChoicePatch, workflowUnstartedChildren,
-    workflowVersionChoice, workflowVersionDiscriminator, workflowVersionFromOptionValue,
+    workflowVersionDiscriminator,
 } from "../src/workflow-owner.js";
 import { WorkflowTab } from "../../react/src/workflow-tab.js";
 
 process.env.TZ = "UTC";
 const NAME = "hn-top-watch";
-const SEP = "\u001f";
 const STATES = [{ id: "poll", type: "script", runtime: "node", timeoutSeconds: 60, outcomes: ["changed"], next: { changed: "done" } },
     { id: "done", type: "terminal", outcome: "succeeded" }];
 const modelOf = (workflowId, semver, { hash = `h-${semver}`, status = "completed", draft = false, revision = 1 } = {}) => ({
@@ -162,33 +159,6 @@ test("UI4-F2: while a run is shown, a child kept from Show it does not name the 
     const html = render(h, { view: "workflows", workflowId: "wf-1", definitionChild: "wf-2" });
     assert.equal(chosenWords(html), `${NAME} · 1.1.3 · #1`, "equal versions, different definitions: the run's own");
     assert.match(html, /data-view="workflows"/);
-});
-
-test("UI4-F3: a choice in an earlier shape resolves to its version's child", () => {
-    const h = harness([
-        ["wf-1", "completed", modelOf("wf-1", "1.0.0", { hash: "h-a" })],
-        ["wf-2", "completed", modelOf("wf-2", "1.0.0", { hash: "h-b" })],
-        ["wf-3", "pending", modelOf("wf-3", "1.1.0", { draft: true })],
-    ]);
-    const { definition, versions } = versionsOf(h);
-    // A bare version (24948403's tab.version): its newest entry; the one holding the Workflow shown with it when known.
-    assert.deepEqual(workflowVersionChoice(versions, { version: "1.0.0" }, definition.children), { child: "wf-2", legacy: true, gone: false });
-    assert.deepEqual(workflowVersionChoice(versions, { version: "1.0.0", workflowId: "wf-1" }, definition.children), { child: "wf-1", legacy: true, gone: false });
-    // 0d67b8a6's entry key, and one whose hash is gone (its version).
-    const key = versions.find(entry => entry.children.includes("wf-1")).key;
-    assert.deepEqual(workflowVersionChoice(versions, { versionKey: key }, definition.children), { child: "wf-1", legacy: true, gone: false });
-    assert.deepEqual(workflowVersionChoice(versions, { versionKey: `1.0.0${SEP}h-gone` }, definition.children), { child: "wf-2", legacy: true, gone: false });
-    // An old option value: "name␟1.0.0" (a version), and "name␟" (one not read: no choice, so the newest).
-    assert.equal(workflowVersionChoice(versions, { versionKey: workflowVersionFromOptionValue(`${NAME}${SEP}1.0.0`).key }, definition.children).child, "wf-2");
-    assert.equal(workflowVersionChoice(versions, { versionKey: workflowVersionFromOptionValue(`${NAME}${SEP}`).key }, definition.children), null);
-    assert.equal(workflowVersionChoice(versions, { version: "9.9.9" }, definition.children), null, "a version none has: no choice");
-    // The current shape wins over the earlier ones.
-    assert.deepEqual(workflowVersionChoice(versions, { versionChild: "wf-3", version: "1.0.0" }, definition.children), { child: "wf-3", legacy: false, gone: false });
-    // Through the tab, unchanged state: the old shape's version is shown, the run shown before does not take it back.
-    h.store.dispatch({ type: "sessions/selected", sessionId: "chat", workflowRowId: "wf-3" });
-    const html = render(h, { view: "definition", version: "1.0.0", workflowId: "wf-1" });
-    assert.equal(shownChild(html), "wf-1");
-    assert.equal(chosenWords(html), `${NAME} · 1.0.0 · #1`);
 });
 
 test("UI4-F4: drafts of one version made in the same second have distinct names in the picker, Compare and the list", () => {

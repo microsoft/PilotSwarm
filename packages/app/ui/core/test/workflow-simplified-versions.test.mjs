@@ -96,14 +96,13 @@ test("versions order by number, a release above its pre-release; a child not rea
     assert.deepEqual(versionsOf(older).versions.map(entry => entry.version), ["1.1.0", "1.0.0"]);
 });
 
-test("the version shown: a chosen child, else the chosen version, else the Workflow shown, else the newest child's", () => {
+test("the version shown: a chosen child, else the Workflow shown, else the newest child's", () => {
     const { definition, versions } = versionsOf(harness());
     const pick = options => workflowChosenVersion(versions, { newestId: definition.newestId, ...options })?.version ?? null;
     assert.equal(pick({}), "1.1.0", "the newest child's");
     assert.equal(pick({ workflowId: "wf-1" }), "1.0.0", "the Workflow shown");
-    assert.equal(pick({ workflowId: "wf-1", key: KEY("1.1.0") }), "1.1.0", "chosen beats shown");
-    assert.equal(pick({ key: KEY("1.1.0"), child: "wf-1" }), "1.0.0", "a chosen child beats both");
-    assert.equal(pick({ key: KEY("9.9.9") }), "1.1.0", "an unknown choice: the newest");
+    assert.equal(pick({ workflowId: "wf-1", child: "wf-2" }), "1.1.0", "a chosen child beats the Workflow shown");
+    assert.equal(pick({ child: "wf-gone" }), "1.1.0", "an unknown child: the newest");
     assert.equal(workflowChosenVersion([], {}), null);
     assert.deepEqual(versions.map(entry => entry.key), [KEY("1.1.0"), KEY("1.0.0")]);
     assert.equal(workflowNewestVersionKey(versions, definition.newestId), KEY("1.1.0"));
@@ -125,7 +124,7 @@ test("the picker lists each version; the Definition view follows the chosen one,
     assert.match(newest, /data-definition-child="wf-2"/);
     assert.match(text(newest), /Revision 1 · 1\.1\.0 /);
     // 1.0.0 chosen: its newest child is shown, and the picker says 1.0.0.
-    const chosen = render(h, { view: "definition", versionKey: KEY("1.0.0") });
+    const chosen = render(h, { view: "definition", versionChild: "wf-1" });
     assert.deepEqual(definitionOptions(chosen).map(option => [option.words, option.selected]),
         [[`${NAME} · 1.1.0`, false], [`${NAME} · 1.0.0`, true]]);
     assert.match(chosen, /data-definition-child="wf-1"/);
@@ -137,7 +136,7 @@ test("the picker lists each version; the Definition view follows the chosen one,
 
 test("a Workflow shown is its own version: the picker says 1.0.0 for #1; the Workflow picker says each one's version", () => {
     const h = harness();
-    const html = render(h, { view: "workflows", workflowId: "wf-1", versionKey: KEY("1.1.0") }, { row: "wf-1" });
+    const html = render(h, { view: "workflows", workflowId: "wf-1", versionChild: "wf-2" }, { row: "wf-1" });
     assert.deepEqual(definitionOptions(html).map(option => [option.words, option.selected]).slice(0, 2),
         [[`${NAME} · 1.1.0`, false], [`${NAME} · 1.0.0`, true]]);
     assert.match(html, /<optgroup label="2 Workflows"><option value="wf-2">#2 · 1\.1\.0 · Completed<\/option><option value="wf-1"[^>]*>#1 · 1\.0\.0 · Canceled<\/option><\/optgroup>/);
@@ -152,7 +151,7 @@ test("the Workflows list says each Workflow's version", () => {
 
 test("Compare compares two versions' YAML: from the version below the one shown, each its newest child's revision", () => {
     const h = harness();
-    const closed = render(h, { view: "definition", definitionPanel: "revisions", versionKey: null });
+    const closed = render(h, { view: "definition", definitionPanel: "revisions", versionChild: null });
     assert.match(closed, /aria-label="Compare two versions" data-from="1\.0\.0" data-to="1\.1\.0" data-compare="versions"/);
     assert.match(text(closed), /Reading versions 1\.0\.0 and 1\.1\.0…/);
     // Both read: the summary counts the lines.
@@ -162,7 +161,7 @@ test("Compare compares two versions' YAML: from the version below the one shown,
     read("wf-2", "1.1.0");
     assert.match(text(render(h, { view: "definition", definitionPanel: "revisions" })), /Version 1\.0\.0 → 1\.1\.0: \+1 −1 lines/);
     // The lowest version shown: it compares with the one above.
-    assert.match(render(h, { view: "definition", definitionPanel: "revisions", versionKey: KEY("1.0.0") }), /data-from="1\.1\.0" data-to="1\.0\.0"/);
+    assert.match(render(h, { view: "definition", definitionPanel: "revisions", versionChild: "wf-1" }), /data-from="1\.1\.0" data-to="1\.0\.0"/);
 });
 
 test("workflowVersionCompare: reading, the same YAML, and a failed read", () => {
@@ -184,21 +183,21 @@ test("two children of one version: the older one says it is not the newest, and 
         ["wf-4", "pending", at(4), draftOf("wf-4", "1.2.0")],
         ["wf-5", "pending", at(5), draftOf("wf-5", "1.3.0")],
     ] });
-    const older = render(h, { view: "definition", definitionChild: "wf-3", versionKey: null });
+    const older = render(h, { view: "definition", definitionChild: "wf-3", versionChild: null });
     assert.match(older, /data-definition-child="wf-3"/);
     assert.match(older, /data-action="show-newest"/);
     assert.match(older, new RegExp(`<option value="${NAME}\u001f1\\.2\\.0\u001fh-1\\.2\\.0" selected="">${NAME} · 1\\.2\\.0 · draft</option>`));
     // What "show the newest" does: the newest child of 1.2.0, not the definition's newest (1.3.0).
-    const back = render(h, { definitionChild: null, versionKey: KEY("1.2.0") });
+    const back = render(h, { definitionChild: null, versionChild: "wf-4" });
     assert.match(back, /data-definition-child="wf-4"/);
     assert.ok(!back.includes("show-newest"));
 });
 
 test("a Workflow row chosen in the session list: a version chosen in the tab gives way to the Workflow's own", () => {
     const h = harness();
-    h.store.dispatch({ type: "ui/workflowTab", ownerId: "chat", patch: { definition: NAME, view: "definition", versionKey: KEY("1.1.0") } });
+    h.store.dispatch({ type: "ui/workflowTab", ownerId: "chat", patch: { definition: NAME, view: "definition", versionChild: "wf-2" } });
     h.store.dispatch({ type: "sessions/selected", sessionId: "chat", workflowRowId: "wf-1" });
-    assert.equal(h.store.getState().ui.workflowTabs.chat.versionKey, undefined);
+    assert.equal(h.store.getState().ui.workflowTabs.chat.versionChild, undefined);
     h.store.dispatch({ type: "ui/workflowTab", ownerId: "chat", patch: { view: "definition" } });
     const html = renderToStaticMarkup(React.createElement(WorkflowTab, { controller: h.controller, mobile: false }));
     assert.match(html, /data-definition-child="wf-1"/, "the Definition view shows #1's version");

@@ -7076,14 +7076,13 @@ export class PilotSwarmUiController {
         // older page always follows rows already read, never leaving a gap after newer rows arrived.
         const start = { runId: run.runId, sections: continuing ? previous.sections : workflowOlderStart(run, previous) };
         const history = continuing
-            ? { paged: true, next: Object.fromEntries(Object.entries(previous.sections).flatMap(([section, loaded]) =>
+            ? { next: Object.fromEntries(Object.entries(previous.sections).flatMap(([section, loaded]) =>
                 (plain(loaded?.nextCursor) ? [[section, loaded.nextCursor]] : []))) }
             : workflowRunHistory(run, start);
         history.more = Object.keys(history.next).length > 0;
         if (!history.more) {
             // Review 19:10Z (D-W10): a status line names no run id.
-            this.dispatch({ type: "ui/status", text: history.paged ? "Every visit is loaded"
-                : "This server reads no older visits" });
+            this.dispatch({ type: "ui/status", text: "Every visit is loaded" });
             return { ok: false, reason: "none" };
         }
         if (!this.workflowOlderHistoryReads) this.workflowOlderHistoryReads = new Map();

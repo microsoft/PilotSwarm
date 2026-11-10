@@ -990,7 +990,7 @@ function agentNodeOfSelection(state) {
  * 2.1b: and the revision of a chat's definition chosen (`chatRevision`), so the Definition view shows the revision it runs.
  */
 function withoutChosenVersion(tab) {
-    const { version, versionKey, versionChild, definitionChild, chatRevision, ...rest } = tab || {};
+    const { versionChild, definitionChild, chatRevision, ...rest } = tab || {};
     return rest;
 }
 

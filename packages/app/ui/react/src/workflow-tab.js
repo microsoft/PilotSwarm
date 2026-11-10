@@ -217,8 +217,8 @@ function StageOneWorkflowTab({ controller, mobile = false, modeButtons = null, d
     // Review UI4-F2: while a Workflow is shown, the picker and the Definition view describe it, never a child shown before.
     const chosenChild = !runShown && definition && typeof tab.definitionChild === "string" && definition.children.includes(tab.definitionChild)
         ? tab.definitionChild : null;
-    // Review UI4-F1: a version choice is stored as a child (versionChild), stable while that child is read or revised; an
-    // earlier shape is resolved (review UI4-F3). A chosen child that is gone shows the newest, and says so.
+    // Review UI4-F1: a version choice is stored as a child (versionChild), stable while that child is read or revised. A
+    // chosen child that is gone shows the newest, and says so.
     const choice = runShown || !definition ? null : workflowVersionChoice(versions, tab, definition.children);
     const ownChild = runShown || !choice ? workflow?.sessionId ?? null : null;
     const chosenVersion = workflowChosenVersion(versions, { child: chosenChild ?? choice?.child ?? ownChild, workflowId: choice ? null : workflow?.sessionId ?? null,
@@ -226,7 +226,7 @@ function StageOneWorkflowTab({ controller, mobile = false, modeButtons = null, d
     const choiceShown = choice?.child ? (chosenVersion?.children.includes(choice.child) ? chosenVersion.newestId : choice.child) : null;
     const shownChildId = definition ? chosenChild ?? choiceShown ?? ownChild ?? chosenVersion?.newestId ?? definition.newestId : null;
     // Review UI5-F1: the stored choice follows the child the view shows (a newer child of the same version and definition),
-    // so a revision of that child keeps the view on it; an earlier shape is stored as its child (UI4-F3).
+    // so a revision of that child keeps the view on it.
     const choicePatch = runShown || !definition ? null : workflowVersionChoicePatch(versions, tab, definition.children);
     const choicePatchKey = choicePatch ? JSON.stringify(choicePatch) : null;
     React.useEffect(() => {
@@ -255,8 +255,7 @@ function StageOneWorkflowTab({ controller, mobile = false, modeButtons = null, d
     }, [controller, workflow?.sessionId, view, shownState?.key]);
     // Opening one Workflow, here or in the session list, selects its row (W2); going back to the list selects the session.
     const openWorkflow = React.useCallback(id => {
-        setTab({ view: "workflows", workflowId: id, definition: definition?.name ?? null, definitionChild: null, versionChild: null, versionKey: null,
-            version: null });
+        setTab({ view: "workflows", workflowId: id, definition: definition?.name ?? null, definitionChild: null, versionChild: null });
         const target = id ?? ownerId;
         if (target) controller.dispatch({ type: "sessions/selected", sessionId: target });
     }, [controller, setTab, ownerId, definition?.name]);
@@ -290,7 +289,7 @@ function StageOneWorkflowTab({ controller, mobile = false, modeButtons = null, d
             ? h(DefinitionView, { key: shownDefinition.newestId, controller, definition: shownDefinition, tab, setTab, mobile, displayMode,
                 // "Not the newest" only for a child the person chose that is not its entry's newest (one of the same definition).
                 newestId: chosenChild ? chosenVersion?.newestId ?? definition.newestId : shownChildId,
-                onShowNewest: () => setTab({ definitionChild: null, versionChild: chosenVersion?.newestId ?? null, versionKey: null, version: null }),
+                onShowNewest: () => setTab({ definitionChild: null, versionChild: chosenVersion?.newestId ?? null }),
                 ownerTitle: byId?.[ownerId]?.title ?? null, gone: Boolean(choice?.gone) && !chosenChild,
                 versions: versionSides(versions, views, byId, madeNumbersOf(byId, definition, views)), chosenVersion: chosenVersion?.key ?? null,
                 ownerWorking: ownerId ? workflowParentWorking(byId?.[ownerId]) : false, onStarted: id => openWorkflow(id), askChat })
@@ -299,9 +298,8 @@ function StageOneWorkflowTab({ controller, mobile = false, modeButtons = null, d
                     nodeStateId: context.nodeStateId })
                 : h(WorkflowList, { controller, definition, byId, views, onOpen: openWorkflow,
                     // The list is the whole name: its Start… and Start another… are the definition's newest child's.
-                    onStart: () => setTab({ view: "definition", start: true, definitionChild: definition.newestId, versionChild: null, versionKey: null, version: null }),
-                    onAnother: () => setTab({ view: "definition", another: true, definitionChild: definition.newestId, versionChild: null, versionKey: null,
-                        version: null }),
+                    onStart: () => setTab({ view: "definition", start: true, definitionChild: definition.newestId, versionChild: null }),
+                    onAnother: () => setTab({ view: "definition", another: true, definitionChild: definition.newestId, versionChild: null }),
                     // F9: a child not started, shown in the Definition view (and its Start form opened, `start`).
                     onShowChild: (id, { start = false } = {}) => setTab({ view: "definition", definitionChild: id, ...(start ? { start: true } : {}) }) }));
 }
