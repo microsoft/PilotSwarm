@@ -139,18 +139,12 @@ export function resolveDuroxideLockOptions(
     return options;
 }
 
-/** @internal Workflow script switch and runtimes: explicit option > deployment env (an opt-out) > on. */
+/** @internal Workflow script switch: explicit option > deployment env (an opt-out) > on. */
 export function resolveWorkflowScriptSettings(
     config: PilotSwarmWorkerOptions["workflowScripts"],
     env: Record<string, string | undefined> = process.env,
-): { enabled: boolean; executables: Partial<Record<"node" | "python" | "powershell", string>> } {
-    const enabled = config?.enabled ?? workflowScriptsEnabledFromEnv(env);
-    const executables: Partial<Record<"node" | "python" | "powershell", string>> = {
-        ...(env.PILOTSWARM_WORKFLOW_PYTHON ? { python: env.PILOTSWARM_WORKFLOW_PYTHON } : {}),
-        ...(env.PILOTSWARM_WORKFLOW_PWSH ? { powershell: env.PILOTSWARM_WORKFLOW_PWSH } : {}),
-        ...(config?.executables ?? {}),
-    };
-    return { enabled, executables };
+): { enabled: boolean } {
+    return { enabled: config?.enabled ?? workflowScriptsEnabledFromEnv(env) };
 }
 
 /** @internal Resolve the worker-wide turn cap: explicit option > deployment env > SDK default. */
@@ -1058,7 +1052,6 @@ export class PilotSwarmWorker {
                     await this._catalog?.softDeleteSession(sessionId);
                     await this.factStore?.deleteSessionFactsForSession(sessionId);
                 },
-                runnerOptions: { executables: workflowScriptSettings.executables },
                 // This worker's agent host.
                 agentNodes: milestone.workflowMilestoneAgentNodes({
                     catalog: this._catalog,

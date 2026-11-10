@@ -127,10 +127,7 @@ test("workflow scripts are on unless an operator turns them off", () => {
     for (const on of ["1", "true", "yes"]) assert.equal(resolveWorkflowScriptSettings(undefined, { PILOTSWARM_WORKFLOW_SCRIPTS: on }).enabled, true, on);
     assert.equal(resolveWorkflowScriptSettings({ enabled: false }, {}).enabled, false, "the option wins");
     assert.equal(resolveWorkflowScriptSettings({ enabled: true }, { PILOTSWARM_WORKFLOW_SCRIPTS: "0" }).enabled, true, "the option wins");
-    assert.deepEqual(
-        resolveWorkflowScriptSettings({ executables: { powershell: "/opt/pwsh" } }, { PILOTSWARM_WORKFLOW_PYTHON: "/usr/bin/python3.12" }).executables,
-        { python: "/usr/bin/python3.12", powershell: "/opt/pwsh" },
-    );
+    assert.deepEqual(resolveWorkflowScriptSettings(undefined, {}), { enabled: true }, "a switch only: no runtimes or programs");
 });
 
 test("the Web API has no workflow-create route (stage 2.5, PR 235 8055fcd8): a Workflow is created by its parent agent", () => {

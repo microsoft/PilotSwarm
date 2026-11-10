@@ -8,20 +8,11 @@ import type { AddressInfo } from "node:net";
 import { killProcessGroup, killProcessTree } from "../process-tree.js";
 import { assertJsonValue, WorkflowJsonError } from "./json.js";
 
-/** The script runtimes the runner knows. A Workflow's script state runs on node (guarded). */
-export type ScriptRuntime = "node" | "python" | "powershell";
-
-/** The script state the runner runs: its id, runtime, source, timeout and the outcomes it may report. */
+/** The script state the runner runs: its id, its source (a Node ES module) and its timeout. */
 export interface WorkflowScriptState {
     id: string;
-    type: "script";
-    runtime: ScriptRuntime;
     source: string;
     timeoutSeconds: number;
-    /** The outcomes this state may return, in declaration order. */
-    outcomes: string[];
-    /** Outcome -> next state id. */
-    next: Record<string, string>;
 }
 
 /** A tool call a script makes. */
@@ -37,8 +28,6 @@ export class WorkflowExecutionError extends Error {
     }
 }
 
-/** Largest JSON a node may hand to the next node (it is stored in durable history). */
-export const SCRIPT_NODE_MAX_OUTPUT_BYTES = 256 * 1024;
 /** Most tool calls one node execution may make. */
 export const SCRIPT_NODE_MAX_TOOL_CALLS = 500;
 const RPC_MAX_BODY_BYTES = 1024 * 1024;
@@ -48,7 +37,7 @@ const STREAM_TAIL_BYTES = 16 * 1024;
 const INHERITED_ENV = ["PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"];
 
 /**
- * "invalid": a strict-JSON script reported a result that is not plain JSON
+ * "invalid": the script reported a result that is not plain JSON
  * (through setResult, the endpoint or its final stdout line). "not_started":
  * the caller's entry boundary refused to start the script.
  */
@@ -65,32 +54,15 @@ export interface ScriptToolCallRecord {
 
 export interface RunScriptNodeRequest {
     sessionId: string;
-    workflowName: string;
     node: WorkflowScriptState;
-    inputs: Record<string, unknown>;
-    priorOutput: unknown;
-    step: number;
     /** Routes one tool call to the workflow session's tool set. */
     callTool: (call: ScriptToolCall) => Promise<unknown>;
     /** True once the workflow stopped waiting for this node (cancel, complete or delete). */
     isCancelled?: () => boolean;
-    /** New admissions opt in; historical workflows keep the original runner. */
-    guardedNode?: boolean;
     /** Stop brokered work when the script is interrupted. */
     cancelTools?: () => Promise<void>;
-    /** The JSON the script reads as `context`; absent: the legacy context built from the fields above. */
+    /** The JSON the script reads as `context` when there is no entry boundary; absent: {}. */
     context?: Record<string, unknown>;
-    /**
-     * Workflow: results and tool arguments must be plain JSON. setResult
-     * and callTool encode their value from one read of its own data
-     * properties and refuse NaN, Infinity, undefined, functions, symbols,
-     * accessors, holes, extra array properties and non-plain objects; no
-     * toJSON hook runs. The endpoint re-checks parsed bodies (1e400 parses to
-     * Infinity) and a final stdout result line is checked the same way. A
-     * result that fails these checks is reported as resultSource "invalid";
-     * the result channels and their precedence are the legacy runner's.
-     */
-    strictJson?: boolean;
     /**
      * Workflow entry boundary. When set, the runner calls it with `start`,
      * which starts the script process with the given context (its stdin).
@@ -116,31 +88,11 @@ export interface RunScriptNodeResult {
     problem?: string;
 }
 
-export interface ScriptRunnerOptions {
-    /** Executable per runtime. Defaults: node = this Node binary, python = python3, powershell = pwsh. */
-    executables?: Partial<Record<ScriptRuntime, string>>;
-}
-
-const NODE_PRELUDE = `import { readFileSync as __psReadFileSync } from "node:fs";
-import { createRequire as __psCreateRequire } from "node:module";
-const require = __psCreateRequire(import.meta.url);
-const context = JSON.parse(__psReadFileSync(0, "utf8") || "{}");
-async function __psPost(route, body) {
-    const response = await fetch(process.env.PILOTSWARM_WORKFLOW_ENDPOINT + route, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: "Bearer " + process.env.PILOTSWARM_WORKFLOW_TOKEN },
-        body: JSON.stringify(body),
-    });
-    const payload = await response.json();
-    if (!payload.ok) throw new Error(payload.error);
-    return payload.result;
-}
-async function callTool(name, args = {}) { return __psPost("/tool", { name, arguments: args }); }
-async function setResult(outcome, output = null) { await __psPost("/result", { outcome, output }); }
-`;
-
 /**
- * Workflow prelude. setResult and callTool encode a value in one pass over
+ * The script's prelude. Results and tool arguments must be plain JSON: setResult
+ * and callTool refuse NaN, Infinity, undefined, functions, symbols, accessors,
+ * holes, extra array properties and non-plain objects, and no toJSON hook runs.
+ * They encode a value in one pass over
  * its own data properties, reading each property once, so the text sent is
  * exactly the value that was checked: no getter, Proxy trap or toJSON hook
  * can change it between the check and the encoding. The intrinsics are
@@ -148,7 +100,7 @@ async function setResult(outcome, output = null) { await __psPost("/result", { o
  * reported (as invalid), so the node fails with invalid_output, and the
  * script then sees the error.
  */
-const NODE_STRICT_PRELUDE = `import { readFileSync as __psReadFileSync } from "node:fs";
+const SCRIPT_PRELUDE = `import { readFileSync as __psReadFileSync } from "node:fs";
 import { createRequire as __psCreateRequire } from "node:module";
 const require = __psCreateRequire(import.meta.url);
 const context = JSON.parse(__psReadFileSync(0, "utf8") || "{}");
@@ -278,58 +230,13 @@ async function setResult(outcome, output = null) {
 }
 `;
 
-const PYTHON_PRELUDE = `import json as __ps_json, os as __ps_os, sys as __ps_sys, urllib.request as __ps_request
-context = __ps_json.loads(__ps_sys.stdin.read() or "{}")
-__ps_opener = __ps_request.build_opener(__ps_request.ProxyHandler({}))
-def __ps_post(route, body):
-    request = __ps_request.Request(
-        __ps_os.environ["PILOTSWARM_WORKFLOW_ENDPOINT"] + route,
-        data=__ps_json.dumps(body).encode("utf-8"),
-        headers={"content-type": "application/json", "authorization": "Bearer " + __ps_os.environ["PILOTSWARM_WORKFLOW_TOKEN"]},
-        method="POST",
-    )
-    with __ps_opener.open(request) as response:
-        payload = __ps_json.loads(response.read().decode("utf-8"))
-    if not payload.get("ok"):
-        raise RuntimeError(payload.get("error"))
-    return payload.get("result")
-def call_tool(name, arguments=None):
-    return __ps_post("/tool", {"name": name, "arguments": arguments or {}})
-def set_result(outcome, output=None):
-    __ps_post("/result", {"outcome": outcome, "output": output})
-`;
-
-const POWERSHELL_PRELUDE = `$ErrorActionPreference = 'Stop'
-$__psRaw = [Console]::In.ReadToEnd()
-$context = if ($__psRaw) { $__psRaw | ConvertFrom-Json } else { $null }
-function __PsPost([string]$Route, $Body) {
-    $payload = Invoke-RestMethod -Method Post -Uri ($env:PILOTSWARM_WORKFLOW_ENDPOINT + $Route) -NoProxy \`
-        -Headers @{ Authorization = "Bearer $env:PILOTSWARM_WORKFLOW_TOKEN" } -ContentType 'application/json' \`
-        -Body ($Body | ConvertTo-Json -Depth 32 -Compress)
-    if (-not $payload.ok) { throw $payload.error }
-    return $payload.result
-}
-function Invoke-PilotSwarmTool([string]$Name, $Arguments = @{}) { __PsPost '/tool' @{ name = $Name; arguments = $Arguments } }
-function Set-PilotSwarmResult([string]$Outcome, $Output = $null) { [void](__PsPost '/result' @{ outcome = $Outcome; output = $Output }) }
-`;
-
-const RUNTIME_FILES: Record<ScriptRuntime, { file: string; prelude: string; args: (file: string) => string[] }> = {
-    node: { file: "script.mjs", prelude: NODE_PRELUDE, args: (file) => [file] },
-    python: { file: "script.py", prelude: PYTHON_PRELUDE, args: (file) => ["-u", file] },
-    powershell: {
-        file: "script.ps1",
-        prelude: POWERSHELL_PRELUDE,
-        args: (file) => ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", file],
-    },
-};
-
-/** The SDK's `engines.node` range; a guarded Node script runs only on a worker Node inside it. */
+/** The SDK's `engines.node` range; a script runs only on a worker Node inside it. */
 export const WORKFLOW_NODE_ENGINES = "^24.22.1 || >=26.12.1";
 
 /**
  * Whether `version` (a `process.versions.node` string such as "24.22.1") is in
  * {@link WORKFLOW_NODE_ENGINES}. Stage 2.5 (PR 235 1c5b1530): the permission
- * flags a guarded script runs with behave as documented only in that range.
+ * flags a script runs with behave as documented only in that range.
  */
 export function workflowNodeVersionSupported(version: string): boolean {
     const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(version ?? "").trim());
@@ -338,12 +245,6 @@ export function workflowNodeVersionSupported(version: string): boolean {
     if (major === 24) return minor > 22 || (minor === 22 && patch >= 1);
     if (major === 26) return minor > 12 || (minor === 12 && patch >= 1);
     return major > 26;
-}
-
-function defaultExecutable(runtime: ScriptRuntime): string {
-    if (runtime === "node") return process.execPath;
-    if (runtime === "python") return process.platform === "win32" ? "python" : "python3";
-    return "pwsh";
 }
 
 class StreamTail {
@@ -371,18 +272,6 @@ class StreamTail {
 function toJsonSafe(value: unknown): unknown {
     if (value === undefined) return null;
     return JSON.parse(JSON.stringify(value));
-}
-
-function boundedOutput(nodeId: string, output: unknown): unknown {
-    const safe = toJsonSafe(output);
-    const bytes = Buffer.byteLength(JSON.stringify(safe), "utf8");
-    if (bytes > SCRIPT_NODE_MAX_OUTPUT_BYTES) {
-        throw new WorkflowExecutionError(
-            `Script state '${nodeId}' produced ${bytes} bytes of output; the limit is ${SCRIPT_NODE_MAX_OUTPUT_BYTES}. `
-            + "Store large results as an artifact or fact and pass its key instead.",
-        );
-    }
-    return safe;
 }
 
 function lastJsonResultLine(stdout: string): { outcome: string; output: unknown } | null {
@@ -430,7 +319,7 @@ function errorText(error: unknown): string {
 }
 
 /** Why a parsed request value is not plain JSON (e.g. 1e400 parsed to Infinity), or null. */
-function strictJsonProblem(value: unknown, path: string): string | null {
+function plainJsonProblem(value: unknown, path: string): string | null {
     try {
         assertJsonValue(value, path);
         return null;
@@ -441,35 +330,27 @@ function strictJsonProblem(value: unknown, path: string): string | null {
 }
 
 /**
- * Run one script node as a child process on this worker.
+ * Run one script node as a child process on this worker: a Node ES module on
+ * the worker's own Node, with the permission model (file reads and writes in
+ * its own temp folder only, no child processes).
  *
  * The script does not inherit the worker's environment (and therefore none
  * of its credentials). It reaches PilotSwarm only through a loopback HTTP
  * endpoint that accepts the per-run bearer token and serves two routes:
  * `POST /tool` runs a tool from the workflow session's tool set, and
- * `POST /result` reports the node's outcome.
+ * `POST /result` reports the node's outcome. The endpoint re-checks parsed
+ * bodies as plain JSON (1e400 parses to Infinity), and a final stdout result
+ * line is checked the same way; a result that fails is resultSource "invalid".
  *
  * The outcome is the last reported result; otherwise the last stdout line
  * when it is a JSON object with a string `outcome`; otherwise `success` on
  * exit code 0 (output: trimmed stdout) or `failure` on any other exit, and
  * `timeout` when the node ran past its timeout.
  */
-export async function runScriptNode(
-    request: RunScriptNodeRequest,
-    options: ScriptRunnerOptions = {},
-): Promise<RunScriptNodeResult> {
+export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunScriptNodeResult> {
     const { node } = request;
-    const runtime = RUNTIME_FILES[node.runtime];
-    if (!runtime) throw new WorkflowExecutionError(`Script state '${node.id}' uses unsupported runtime '${node.runtime}'.`);
-    const executable = options.executables?.[node.runtime] ?? defaultExecutable(node.runtime);
-    if (request.guardedNode && (node.runtime !== "node" || executable !== process.execPath)) {
-        throw new WorkflowExecutionError("Guarded workflows require the worker's supported Node runtime.");
-    }
-    if (request.strictJson && node.runtime !== "node") {
-        throw new WorkflowExecutionError("Strict-JSON workflow scripts run on the Node runtime only.");
-    }
-    const prelude = request.strictJson ? NODE_STRICT_PRELUDE : runtime.prelude;
-    if (request.guardedNode && !workflowNodeVersionSupported(process.versions.node)) {
+    const executable = process.execPath;
+    if (!workflowNodeVersionSupported(process.versions.node)) {
         throw new WorkflowExecutionError(`Script state '${node.id}' did not run: this worker runs Node ${process.versions.node}, `
             + `and a Workflow script runs only on Node ${WORKFLOW_NODE_ENGINES} (the SDK's engines range), `
             + "whose permission model guards its files. Run the worker on a Node in that range.");
@@ -494,7 +375,7 @@ export async function runScriptNode(
         try { body = await readBody(req); }
         catch (error) { reply(400, { ok: false, error: errorText(error) }); return; }
 
-        if (req.url === "/result" && request.strictJson) {
+        if (req.url === "/result") {
             // A refused result is still the script's latest result: the node
             // fails with invalid_output instead of running on without one.
             // The marker's presence refuses the result, whatever its text.
@@ -503,22 +384,13 @@ export async function runScriptNode(
             const problem: string | null = marked
                 ? (typeof body.invalid === "string" && body.invalid.trim() ? body.invalid : "the script reported a result it could not encode")
                 : !outcome.trim() ? "outcome must be a non-empty string"
-                : strictJsonProblem(Object.hasOwn(body, "output") ? body.output : null, "output");
+                : plainJsonProblem(Object.hasOwn(body, "output") ? body.output : null, "output");
             if (problem !== null) {
                 reported = { outcome, output: null, invalid: problem };
                 reply(400, { ok: false, error: problem });
                 return;
             }
             reported = { outcome, output: Object.hasOwn(body, "output") ? body.output : null };
-            reply(200, { ok: true, result: null });
-            return;
-        }
-        if (req.url === "/result") {
-            if (typeof body?.outcome !== "string" || !body.outcome.trim()) {
-                reply(400, { ok: false, error: "outcome must be a non-empty string" });
-                return;
-            }
-            reported = { outcome: body.outcome, output: Object.hasOwn(body, "output") ? body.output : null };
             reply(200, { ok: true, result: null });
             return;
         }
@@ -530,17 +402,14 @@ export async function runScriptNode(
                 reply(429, { ok: false, error: `a node may make at most ${SCRIPT_NODE_MAX_TOOL_CALLS} tool calls` });
                 return;
             }
-            const args = body?.arguments && typeof body.arguments === "object" && !Array.isArray(body.arguments)
-                ? body.arguments as Record<string, unknown>
-                : {};
             const rawArguments = body?.arguments === undefined ? {} : body.arguments;
-            const argumentsProblem = !request.strictJson ? null
-                : rawArguments === null || typeof rawArguments !== "object" || Array.isArray(rawArguments) ? "arguments must be a JSON object"
-                    : strictJsonProblem(rawArguments, "arguments");
+            const argumentsProblem = rawArguments === null || typeof rawArguments !== "object" || Array.isArray(rawArguments)
+                ? "arguments must be a JSON object" : plainJsonProblem(rawArguments, "arguments");
             if (argumentsProblem) {
                 reply(400, { ok: false, error: argumentsProblem });
                 return;
             }
+            const args = rawArguments as Record<string, unknown>;
             const callStarted = Date.now();
             admittedToolCalls++;
             try {
@@ -564,8 +433,8 @@ export async function runScriptNode(
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-script-"));
 
     try {
-        const scriptPath = path.join(workDir, runtime.file);
-        fs.writeFileSync(scriptPath, `${prelude}\n${node.source}\n`, { mode: 0o600 });
+        const scriptPath = path.join(workDir, "script.mjs");
+        fs.writeFileSync(scriptPath, `${SCRIPT_PRELUDE}\n${node.source}\n`, { mode: 0o600 });
 
         const env: Record<string, string> = {};
         for (const key of INHERITED_ENV) {
@@ -578,8 +447,6 @@ export async function runScriptNode(
             TEMP: workDir,
             TMP: workDir,
             NO_COLOR: "1",
-            PYTHONUNBUFFERED: "1",
-            PYTHONDONTWRITEBYTECODE: "1",
             PILOTSWARM_WORKFLOW_ENDPOINT: `http://127.0.0.1:${port}`,
             PILOTSWARM_WORKFLOW_TOKEN: token,
             PILOTSWARM_WORKFLOW_SESSION_ID: request.sessionId,
@@ -598,9 +465,7 @@ export async function runScriptNode(
         const start = (context: Record<string, unknown>): void => {
             if (launch.exited) throw new WorkflowExecutionError(`Script state '${node.id}' was started twice.`);
             launch.exited = new Promise<number | null>((resolve, reject) => {
-                const args = request.guardedNode
-                    ? ["--permission", `--allow-fs-read=${workDir}`, `--allow-fs-write=${workDir}`, scriptPath]
-                    : runtime.args(scriptPath);
+                const args = ["--permission", `--allow-fs-read=${workDir}`, `--allow-fs-write=${workDir}`, scriptPath];
                 // Stage 2.4 (PR 235 6e2a1fec): on POSIX the script leads its own process group, so stopping it, or its end,
                 // also ends what it started that left its process tree (a daemon reparented to init).
                 const groupLeader = process.platform !== "win32";
@@ -644,9 +509,7 @@ export async function runScriptNode(
                 child.on("error", (error: NodeJS.ErrnoException) => {
                     settle();
                     reject(error.code === "ENOENT"
-                        ? new WorkflowExecutionError(
-                            `Script state '${node.id}' needs the ${node.runtime} runtime, but '${executable}' is not installed on this worker.`,
-                        )
+                        ? new WorkflowExecutionError(`Script state '${node.id}' did not start: this worker's Node ('${executable}') is not there.`)
                         : error);
                 });
                 // When the script's own process ends, what it left running in its group ends with it: a background
@@ -690,14 +553,7 @@ export async function runScriptNode(
                 };
             }
         } else {
-            start(request.context ?? {
-                sessionId: request.sessionId,
-                workflow: request.workflowName,
-                node: node.id,
-                step: request.step,
-                inputs: request.inputs,
-                input: request.priorOutput ?? null,
-            });
+            start(request.context ?? {});
         }
         if (!launch.exited) throw new WorkflowExecutionError(`Script state '${node.id}' did not start.`);
         const exitCode = await launch.exited;
@@ -728,27 +584,16 @@ export async function runScriptNode(
             return { ...common, outcome: "timeout", output: { timeoutSeconds: node.timeoutSeconds }, resultSource: "timeout" };
         }
         const finalReport = reported as { outcome: string; output: unknown; invalid?: string } | null;
-        if (request.strictJson) {
-            // The legacy channels and precedence, with every value checked:
-            // the last setResult, else a final stdout result line, else the exit code.
-            if (finalReport?.invalid !== undefined) {
-                return { ...common, outcome: finalReport.outcome, output: null, resultSource: "invalid", problem: finalReport.invalid };
-            }
-            if (finalReport) return { ...common, outcome: finalReport.outcome, output: finalReport.output, resultSource: "reported" };
-            const line = lastJsonResultLine(stdoutTail);
-            if (line) {
-                const problem = strictJsonProblem(line.output, "output");
-                if (problem) return { ...common, outcome: line.outcome, output: null, resultSource: "invalid", problem };
-                return { ...common, outcome: line.outcome, output: line.output, resultSource: "stdout" };
-            }
-        } else {
-            if (finalReport) {
-                return { ...common, outcome: finalReport.outcome, output: boundedOutput(node.id, finalReport.output), resultSource: "reported" };
-            }
-            const fromStdout = lastJsonResultLine(stdoutTail);
-            if (fromStdout) {
-                return { ...common, outcome: fromStdout.outcome, output: boundedOutput(node.id, fromStdout.output), resultSource: "stdout" };
-            }
+        // The last setResult, else a final stdout result line, else the exit code; every value checked.
+        if (finalReport?.invalid !== undefined) {
+            return { ...common, outcome: finalReport.outcome, output: null, resultSource: "invalid", problem: finalReport.invalid };
+        }
+        if (finalReport) return { ...common, outcome: finalReport.outcome, output: finalReport.output, resultSource: "reported" };
+        const line = lastJsonResultLine(stdoutTail);
+        if (line) {
+            const problem = plainJsonProblem(line.output, "output");
+            if (problem) return { ...common, outcome: line.outcome, output: null, resultSource: "invalid", problem };
+            return { ...common, outcome: line.outcome, output: line.output, resultSource: "stdout" };
         }
         if (exitCode === 0) {
             const text = stdoutTail.trim();

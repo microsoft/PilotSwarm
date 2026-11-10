@@ -1,14 +1,13 @@
 /**
  * Scripts are on by default (owner 2026-11-08T15:45Z, pse/decision/scripts-default-on), so the guard on a script node
- * is what keeps it in its box. Every script node runs on the worker's own Node with the permission model
- * (workflow/runtime.ts passes guardedNode: true; runner.ts gives it `--permission` with file read and write allowed in
- * its own temp folder only). On the real runner, a script node:
+ * is what keeps it in its box. Every script node runs on the worker's own Node with the permission model (runner.ts
+ * gives it `--permission` with file read and write allowed in its own temp folder only). On the real runner, a script
+ * node:
  *   a) cannot read a file outside its folder (one planted under the test's tmp, and /etc/hostname);
  *   b) cannot write outside its folder;
  *   c) cannot start a child process (spawn, spawnSync, exec, execFile, fork);
  *   d) sees only the documented environment variables: none of the worker's DATABASE_URL, keys or tokens.
- * (a), (b) and (c) fail without the guard (guardedNode false). (d) does not depend on the guard: the runner builds a clean
- * environment for every script, guarded or not; with the guard off it still holds.
+ * (d) does not depend on the permission model: the runner builds a clean environment for every script.
  *
  * Run: node --test test/unit/workflow-script-guard.test.mjs (after npm run build).
  */
@@ -20,22 +19,18 @@ import os from "node:os";
 import path from "node:path";
 import { runScriptNode } from "../../dist/workflow/runner.js";
 
-// As workflow/runtime.ts runs a script node (runtime "node", guarded, strict JSON).
-const GUARDED = process.env.PS_TEST_SCRIPT_GUARD === "off" ? false : true;
+// As workflow/runtime.ts runs a script node.
 const run = source => runScriptNode({
-    sessionId: "guard-test", workflowName: "guard",
-    node: { id: "probe", type: "script", runtime: "node", source, timeoutSeconds: 20, outcomes: ["done"], next: { done: "end" } },
-    inputs: {}, priorOutput: null, step: 1, guardedNode: GUARDED, strictJson: true, callTool: async () => null,
+    sessionId: "guard-test",
+    node: { id: "probe", source, timeoutSeconds: 20 },
+    callTool: async () => null,
 });
 
-test("the runtime runs every script node guarded, on the worker's Node, with strict JSON", () => {
-    const runtime = readFileSync(new URL("../../src/workflow/runtime.ts", import.meta.url), "utf8");
-    const call = runtime.slice(runtime.indexOf("ran = await runScriptNode({"), runtime.indexOf("}, deps.runnerOptions);"));
-    assert.match(call, /runtime: "node"/);
-    assert.match(call, /guardedNode: true,/);
-    assert.match(call, /strictJson: true,/);
+test("the runner runs every script on the worker's own Node with the permission model, and has no other mode", () => {
     const runner = readFileSync(new URL("../../src/workflow/runner.ts", import.meta.url), "utf8");
-    assert.match(runner, /\["--permission", `--allow-fs-read=\$\{workDir\}`, `--allow-fs-write=\$\{workDir\}`, scriptPath\]/);
+    assert.match(runner, /const executable = process\.execPath;/);
+    assert.match(runner, /const args = \["--permission", `--allow-fs-read=\$\{workDir\}`, `--allow-fs-write=\$\{workDir\}`, scriptPath\];/);
+    assert.doesNotMatch(runner, /guardedNode|strictJson|executables/);
 });
 
 test("a) a script node cannot read a file outside its folder (a planted file, and /etc/hostname)", async () => {

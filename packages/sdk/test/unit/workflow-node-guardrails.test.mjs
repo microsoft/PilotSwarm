@@ -5,13 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import { runScriptNode } from "../../dist/workflow/runner.js";
 
-const request = source => ({
-    sessionId: "guardrail-test", workflowName: "example",
-    node: { id: "run", type: "script", runtime: "node", source, timeoutSeconds: 10, outcomes: ["done"], next: { done: "end" } },
-    inputs: { value: 7 }, priorOutput: null, step: 1, guardedNode: true,
+const request = (source, input = null) => ({
+    sessionId: "guardrail-test",
+    node: { id: "run", source, timeoutSeconds: 10 },
+    context: { inputs: { value: 7 }, input },
     callTool: async () => ({ value: 9 }),
 });
-test("guarded Node reads stdin, uses scratch and calls the authorized broker", async () => {
+test("a script reads its context from stdin, uses its scratch folder and calls the authorized broker", async () => {
     const result = await runScriptNode(request(`
 const fs = require("node:fs");
 fs.writeFileSync("scratch.txt", String(context.inputs.value));
@@ -21,7 +21,7 @@ await setResult("done", {scratch: fs.readFileSync("scratch.txt", "utf8"), tool})
     assert.equal(result.outcome, "done");
     assert.deepEqual(result.output, { scratch: "7", tool: { value: 9 } });
 });
-test("guarded Node refuses accidental outside-scratch filesystem and child process access", async () => {
+test("a script is refused accidental filesystem access outside its scratch folder, and child processes", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "workflow-guard-test-"));
     try {
         const file = path.join(dir, "outside.txt");
@@ -39,26 +39,14 @@ await setResult("done", codes);
         assert.deepEqual(result.output, ["ERR_ACCESS_DENIED", "ERR_ACCESS_DENIED", "ERR_ACCESS_DENIED"]);
     } finally { await rm(dir, { recursive: true, force: true }); }
 });
-test("guarded policy refuses non-Node and unverified executable overrides", async () => {
-    const r = request("await setResult('done', null)");
-    await assert.rejects(runScriptNode({ ...r, node: { ...r.node, runtime: "python" } }), /supported Node/);
-    await assert.rejects(runScriptNode(r, { executables: { node: "/not-the-worker-node" } }), /supported Node/);
-});
-
 test("the documented previous-output binding works and bare input fails explicitly", async () => {
     const previous = { coverage: 84, criticalFindings: 0 };
-    const good = await runScriptNode({
-        ...request("const metrics = context.input; await setResult('done', { ...metrics, approved: metrics.coverage >= 80 });"),
-        priorOutput: previous, step: 2,
-    });
+    const good = await runScriptNode(request("const metrics = context.input; await setResult('done', { ...metrics, approved: metrics.coverage >= 80 });", previous));
     assert.equal(good.exitCode, 0);
     assert.equal(good.outcome, "done");
     assert.deepEqual(good.output, { ...previous, approved: true });
 
-    const bad = await runScriptNode({
-        ...request("const metrics = input; await setResult('done', metrics);"),
-        priorOutput: previous, step: 2,
-    });
+    const bad = await runScriptNode(request("const metrics = input; await setResult('done', metrics);", previous));
     assert.equal(bad.exitCode, 1);
     assert.equal(bad.resultSource, "exit");
     assert.match(bad.stderrTail, /ReferenceError: input is not defined/);
@@ -79,8 +67,8 @@ test("the runner says when it kept only the end of a script's stderr", async () 
     assert.match(large.stderrTail, /last line\n$/);
 });
 
-// Stage 2.5 (PR 235 1c5b1530): a guarded script runs only on a worker Node in the SDK's engines range.
-test("the guarded Node range is the SDK's engines range, read from package.json", async () => {
+// Stage 2.5 (PR 235 1c5b1530): a script runs only on a worker Node in the SDK's engines range.
+test("the script Node range is the SDK's engines range, read from package.json", async () => {
     const { workflowNodeVersionSupported, WORKFLOW_NODE_ENGINES } = await import("../../dist/workflow/runner.js");
     const { readFile } = await import("node:fs/promises");
     const pkg = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));

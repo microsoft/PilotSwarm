@@ -1,6 +1,6 @@
 import type { ActivityContext, OrchestrationContext, ScheduledTask } from "duroxide";
 import type { SessionCatalog } from "../cms.js";
-import { runScriptNode, type RunScriptNodeResult, type ScriptRunnerOptions, type ScriptToolCall } from "./runner.js";
+import { runScriptNode, type RunScriptNodeResult, type ScriptToolCall } from "./runner.js";
 import { WORKFLOW_COMMAND_QUEUE, parseWorkflowCommand, workflowErrorMessage } from "./commands.js";
 import { SESSION_END_REQUESTED_EVENT } from "../session-end-mark.js";
 import { admittedWorkflowToolGrant, isWorkflowControlTool, validateWorkflowToolArguments, type WorkflowToolBinding } from "./tool-policy.js";
@@ -2050,7 +2050,6 @@ export interface WorkflowRuntimeDeps {
      * created, and nothing else runs.
      */
     agentNodes?: WorkflowAgentNodeHost;
-    runnerOptions?: ScriptRunnerOptions;
     /** Backstop collection interval for new controller executions (default 30 s). */
     wakeBackstopMs?: number;
     /** How often a running script checks that its node is still undecided (default 1 s). */
@@ -4374,18 +4373,12 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         try {
             ran = await runScriptNode({
                 sessionId: run.workflowSessionId,
-                workflowName: ir.name,
-                node: { id: node.id, type: "script", runtime: "node", source: node.source, timeoutSeconds: node.timeoutSeconds, outcomes: node.outcomes, next: node.next },
-                inputs: isJsonObject(run.inputs) ? run.inputs : {},
-                priorOutput: executed.input,
-                step: executed.ordinal,
+                node: { id: node.id, source: node.source, timeoutSeconds: node.timeoutSeconds },
                 callTool,
-                guardedNode: true,
-                strictJson: true,
                 enter: async start => (await store.enterScript(executed.nodeExecutionId, attempt => start(scriptContext(attempt)))).entered,
                 cancelTools: async () => { tools.stop.abort(); if (tools.executor) await tools.executor.close(); },
                 isCancelled: () => actx.isCancelled() || decidedElsewhere,
-            }, deps.runnerOptions);
+            });
         } catch (error) {
             return { kind: "result", result: runtimeError("execution_failed", workflowErrorMessage(error)) };
         } finally {

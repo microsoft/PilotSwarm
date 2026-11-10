@@ -1086,7 +1086,6 @@ default (owner decision, 2026-11-08); an operator can turn them off:
 | Setting | Effect |
 |---|---|
 | `PILOTSWARM_WORKFLOW_SCRIPTS=0` (or `false`, `no`, `off`) or `new PilotSwarmWorker({ workflowScripts: { enabled: false } })` | Run no workflow script states on this worker. Unset, empty, `1`, `true` or `yes`: they run; any other value: they run, with one startup warning. |
-| `PILOTSWARM_WORKFLOW_PYTHON`, `PILOTSWARM_WORKFLOW_PWSH`, or `workflowScripts.executables` | The program for a runtime. Defaults: this worker's Node, `python3`, `pwsh`. |
 
 Turn scripts off on **every** worker of a deployment, or on none: any worker
 may run any state. A worker with scripts off still runs the controller, so a workflow
@@ -1273,8 +1272,8 @@ Isolation, in this version:
   `HOME`, and **none of the worker's environment** except `PATH` and locale
   variables. It reaches PilotSwarm only through a loopback endpoint guarded
   by a per-run token.
-- New runs use Node's `--permission` with filesystem grants limited to their
-  own bootstrap/scratch directory, without direct child-process, worker-thread
+- Every script runs as a Node ES module with Node's `--permission`, with
+  filesystem grants limited to its own bootstrap/scratch directory, without direct child-process, worker-thread
   or native-addon permission. This prevents accidental direct filesystem
   access; it is **not** a hostile-code or network sandbox.
 - Network: on the worker's Node (24.x) the permission model does not limit
@@ -1288,7 +1287,7 @@ Isolation, in this version:
   cluster has no network policy engine, must block that address itself (for
   example, with the AKS IMDS restriction) or turn scripts off with
   `PILOTSWARM_WORKFLOW_SCRIPTS=0`.
-- Such a script runs on the worker's own Node (`process.execPath`), and only
+- A script runs on the worker's own Node (`process.execPath`), and only
   when that Node is in the SDK's engines range, `^24.22.1 || >=26.12.1`.
   Outside it, the state fails with `execution_failed` before its script
   starts, and the error names the worker's Node version and the range.

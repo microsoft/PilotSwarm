@@ -1505,12 +1505,10 @@ export interface PilotSwarmWorkerOptions {
      * Node with its permission model (file access limited to the script's own
      * folder, no child processes) and without the worker's environment. A
      * worker with them off still runs the controller and fails each new
-     * workflow that has script states at its start, with a clear message. `executables` overrides the program per runtime (env
-     * `PILOTSWARM_WORKFLOW_PYTHON`, `PILOTSWARM_WORKFLOW_PWSH`).
+     * workflow that has script states at its start, with a clear message.
      */
     workflowScripts?: {
         enabled?: boolean;
-        executables?: Partial<Record<"node" | "python" | "powershell", string>>;
     };
     /**
      * @internal Test-only tuning. Every worker serves the full Workflow engine (the Workflow controller and session orchestration
