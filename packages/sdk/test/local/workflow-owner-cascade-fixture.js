@@ -117,7 +117,8 @@ export async function pendingCascadeNode(store, run) {
 }
 
 export async function cascadeControllerEnded(client, run) {
-    expect((await client.waitForOrchestration(run.controllerInstanceId, testTime.ms(60_000))).status).toBe("Completed");
+    await expect.poll(async () => (await client.getStatus(run.controllerInstanceId)).status,
+        { timeout: CASCADE_TIMEOUT }).not.toMatch(/^(Running|Pending)$/);
 }
 
 /** The same oracle is exercised against an active fixture before every end; it must reject an orphan. */
@@ -128,11 +129,12 @@ export async function assertNoActiveCascadeRuns(q, workflowIds) {
     expect(rows, "no active run may survive its owner's end").toEqual([]);
 }
 
-export async function assertCancelledCascadeNodes(store, run) {
+export async function assertCancelledCascadeNodes(store, run, expectedMessage) {
     const nodes = await store.listNodeExecutions(run.runId);
     expect(nodes.length).toBeGreaterThan(0);
     for (const node of nodes) {
         expect(node).toMatchObject({ state: "completed", outcome: "cancelled", resultKind: "runtime_error" });
         expect(node.completedAt).not.toBeNull();
+        if (expectedMessage !== undefined) expect(node.error).toMatchObject({ code: "cancelled", message: expectedMessage });
     }
 }

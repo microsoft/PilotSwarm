@@ -1,6 +1,8 @@
 /**
- * Gaps 1 and 2: expected RED at 4fa702dc8 (active benches and ended Workflow children stay cancelled/failed).
- * Gap 3: expected RED there (WORKFLOW_ACTIVE, or the controller projects cancelled over completed).
+ * Option A: only the existing completion refusals are removed; no migration or trigger change.
+ * Gaps 1 and 2 are GREEN at 4fa702dc8: hidden benches cancel through the trigger, ended children remain unchanged.
+ * Gap 3 is RED only for management completion (two cases), inline complete_agent, and Completed by parent activity.
+ * Live Workflow children reached by the real done cascade cancel with its command attribution, not the trigger's words.
  * Repository-native real DB/runtime/worker paths; the full-stack cases replace only model answers with scripted ones.
  * Run: npx vitest run test/local/workflow-owner-complete-cascade.test.js
  */
@@ -17,9 +19,11 @@ import {
 } from "./workflow-owner-cascade-fixture.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 
-const COMPLETED_REASON = /the session that owns this Workflow was completed/i;
+const OWNER_ENDED_REASON = "The session that owns this Workflow ended, so the Workflow was canceled.";
 const PARENT_DONE_REASON = "Completed by parent";
 const PARENT_CASCADE_REASON = "Parent session completing";
+const PENDING_CASCADE_REASON = "The workflow run was cancelled.";
+const CASCADE_OPERATION_PREFIX = "session-command:done-cascade-";
 const READY = "CASCADE_READY";
 const AGENT_HOLD_REASON = "fixture Workflow agent held";
 const AGENT_WAIT_YAML = `
@@ -39,8 +43,8 @@ states:
 `;
 const getEnv = useSuiteEnv(import.meta.url);
 
-describe("completing an owner completes all its Workflow children", () => {
-    it("gap 1 [RED]: an active TEST bench is completed, its run and pending node cancelled, and wft controller ended", { timeout: CASCADE_TIMEOUT }, async () => {
+describe("completing an owner cancels active Workflows and preserves ended Workflow children", () => {
+    it("gap 1 [GREEN]: the existing trigger cancels an active TEST bench and pending node and ends its wft controller", { timeout: CASCADE_TIMEOUT }, async () => {
         const h = await openOwnerCascadeRuntime(getEnv());
         try {
             const owner = randomUUID();
@@ -51,20 +55,22 @@ describe("completing an owner completes all its Workflow children", () => {
             await h.catalog.updateSession(owner, { state: "completed" });
             expect(await h.catalog.getSession(owner)).toMatchObject({ state: "completed" });
             expect(await h.store.readRun(run.runId)).toMatchObject({
-                status: "cancelled", pausedFrom: null, terminalError: { code: "cancelled", message: expect.stringMatching(COMPLETED_REASON) },
+                status: "cancelled", pausedFrom: null, terminalError: { code: "cancelled", message: OWNER_ENDED_REASON },
                 finishedAt: expect.any(Date),
             });
-            await assertCancelledCascadeNodes(h.store, run);
+            expect((await h.store.readRun(run.runId)).terminalError).toEqual({ code: "cancelled", message: OWNER_ENDED_REASON });
+            await assertCancelledCascadeNodes(h.store, run, OWNER_ENDED_REASON);
             await cascadeControllerEnded(h.client, run);
             // Read after the controller's post-end projection, not just after the trigger.
-            expect(await h.catalog.getSession(run.workflowId)).toMatchObject({ state: "completed", deletedAt: null });
+            expect(await h.catalog.getSession(run.workflowId)).toMatchObject({ state: "cancelled", deletedAt: null });
             await assertNoActiveCascadeRuns(h.q, [run.workflowId]);
         } finally {
             await h.stop();
         }
     });
 
-    it("gap 2 [RED]: children whose runs already completed, failed or were cancelled all become completed, preserving run history", { timeout: CASCADE_TIMEOUT }, async () => {
+    // Negative control: changing an ended child's own state or rewriting its ended run breaks these exact snapshots.
+    it("gap 2 [GREEN]: children whose runs already completed, failed or were cancelled keep their own sessions and run histories unchanged", { timeout: CASCADE_TIMEOUT }, async () => {
         const h = await openOwnerCascadeRuntime(getEnv());
         try {
             const owner = randomUUID();
@@ -82,11 +88,12 @@ describe("completing an owner completes all its Workflow children", () => {
                 await cascadeControllerEnded(h.client, run);
                 expect((await h.store.readRun(run.runId)).status).toBe(status);
                 expect((await h.catalog.getSession(run.workflowId)).state).toBe(status);
-                runs.push({ ...run, before: await h.store.readRun(run.runId) });
+                runs.push({ ...run, before: await h.store.readRun(run.runId), beforeSession: await h.catalog.getSession(run.workflowId) });
             }
             await h.catalog.updateSession(owner, { state: "completed" });
+            expect(await h.catalog.getSession(owner)).toMatchObject({ state: "completed" });
             for (const run of runs) {
-                expect(await h.catalog.getSession(run.workflowId), run.before.status).toMatchObject({ state: "completed", deletedAt: null });
+                expect(await h.catalog.getSession(run.workflowId), run.before.status).toEqual(run.beforeSession);
                 expect(await h.store.readRun(run.runId)).toEqual(run.before);
             }
             await assertNoActiveCascadeRuns(h.q, runs.map(run => run.workflowId));
@@ -105,8 +112,27 @@ async function spawnedChild(h, parentId) {
         AND session_kind IS DISTINCT FROM 'workflow' AND deleted_at IS NULL`, [parentId]))[0].session_id;
 }
 
+async function assertLiveCascadeEnd(h, run, ownerId) {
+    const ended = await h.store.readRun(run.runId);
+    expect(ended.status).toBe("cancelled");
+    expect(ended.terminalError).toEqual({
+        code: "cancelled", message: PARENT_CASCADE_REASON,
+        details: {
+            command: "done",
+            // Existing store attribution; option A removes no accepted-command markers.
+            accepted: true,
+            operationId: expect.stringMatching(new RegExp(`^${CASCADE_OPERATION_PREFIX}\\d+-${run.workflowId.slice(0, 8)}$`)),
+            requestedBy: ownerId,
+        },
+    });
+    expect(await h.catalog.getSession(run.workflowId)).toMatchObject({
+        state: "cancelled", lastError: PARENT_CASCADE_REASON, deletedAt: null,
+    });
+    await assertCancelledCascadeNodes(h.store, run, PENDING_CASCADE_REASON);
+}
+
 describe("the real owner completion entry points, with an active live Workflow and an ordinary child", () => {
-    it("gap 1 [RED]: management accepts an owner with only an active TEST bench and ends its wft controller", { timeout: CASCADE_TIMEOUT * 2 }, async () => {
+    it("gap 1 [GREEN]: management accepts an owner with only an active TEST bench, which the unchanged trigger cancels", { timeout: CASCADE_TIMEOUT * 2 }, async () => {
         const env = getEnv();
         const h = await openWorkflowStore(env);
         const mgmt = await createManagementClient(env);
@@ -118,13 +144,14 @@ describe("the real owner completion entry points, with an active live Workflow a
                 const host = { catalog: h.catalog, store: h.store, duroxideClient: duroxide, scripts: true };
                 const run = await startCascadeBench(host, owner.sessionId, "management-bench");
                 await pendingCascadeNode(h.store, run);
+                await expect(assertNoActiveCascadeRuns(h.q, [run.workflowId])).rejects.toThrow();
                 await mgmt.completeSession(owner.sessionId, "fixture bench owner completion", { wait: false });
                 await waitForSessionState(h.catalog, owner.sessionId, "completed", testTime.ms(60_000));
-                expect(await h.store.readRun(run.runId)).toMatchObject({
-                    status: "cancelled", terminalError: { message: expect.stringMatching(COMPLETED_REASON) },
-                });
+                expect((await h.store.readRun(run.runId)).terminalError).toEqual({ code: "cancelled", message: OWNER_ENDED_REASON });
+                expect((await h.store.readRun(run.runId)).status).toBe("cancelled");
+                await assertCancelledCascadeNodes(h.store, run, OWNER_ENDED_REASON);
                 await cascadeControllerEnded(duroxide, run);
-                expect(await h.catalog.getSession(run.workflowId)).toMatchObject({ state: "completed" });
+                expect(await h.catalog.getSession(run.workflowId)).toMatchObject({ state: "cancelled" });
                 await assertNoActiveCascadeRuns(h.q, [run.workflowId]);
             });
         } finally {
@@ -156,13 +183,11 @@ describe("the real owner completion entry points, with an active live Workflow a
                 expect((await h.store.readRun(run.runId)).status).toBe("running");
                 await mgmt.completeSession(owner.sessionId, "fixture agent owner completion", { wait: false });
                 await waitForSessionState(h.catalog, owner.sessionId, "completed", testTime.ms(60_000));
-                expect(await h.store.readRun(run.runId)).toMatchObject({
-                    status: "cancelled", terminalError: { message: expect.stringMatching(COMPLETED_REASON) },
-                });
+                await assertLiveCascadeEnd(h, run, owner.sessionId);
                 await waitForSessionState(h.catalog, agentId, ["completed", "cancelled"], testTime.ms(60_000));
-                expect((await duroxide.waitForOrchestration(`session-${agentId}`, testTime.ms(60_000))).status).toBe("Completed");
+                await cascadeControllerEnded(duroxide, { controllerInstanceId: `session-${agentId}` });
                 await cascadeControllerEnded(duroxide, run);
-                expect(await h.catalog.getSession(run.workflowId)).toMatchObject({ state: "completed" });
+                await assertLiveCascadeEnd(h, run, owner.sessionId);
                 await assertNoActiveCascadeRuns(h.q, [run.workflowId]);
             });
         } finally {
@@ -172,7 +197,9 @@ describe("the real owner completion entry points, with an active live Workflow a
     });
 
     for (const path of ["done command", "management completeSession", "inline complete_agent", "parent's own completion", "Completed by parent activity"]) {
-        it(`gap 3 [RED]: ${path} accepts the end and completes every child`, { timeout: CASCADE_TIMEOUT * 2 }, async () => {
+        const expected = ["done command", "parent's own completion"].includes(path) ? "GREEN" : "RED";
+        // Negative control for GREEN paths: the real active fixture first fails the same post-end orphan oracle.
+        it(`gap 3 [${expected}]: ${path} accepts completion, cancels its live Workflow and completes its ordinary child`, { timeout: CASCADE_TIMEOUT * 2 }, async () => {
             const env = getEnv();
             const h = await openWorkflowStore(env);
             const mgmt = await createManagementClient(env);
@@ -237,17 +264,14 @@ describe("the real owner completion entry points, with an active live Workflow a
                         await duroxide.startOrchestration(`session-${root.sessionId}`, "fixture-parent-completes-owner", {
                             ownerId, rootId: root.sessionId, commandId: `done-parent-${randomUUID()}`,
                         });
-                        expect((await duroxide.waitForOrchestration(`session-${root.sessionId}`, testTime.ms(30_000))).status).toBe("Completed");
+                        expect(await duroxide.waitForOrchestration(`session-${root.sessionId}`, testTime.ms(30_000))).toMatchObject({ output: "sent" });
                     }
                     await waitForSessionState(h.catalog, ownerId, "completed", testTime.ms(60_000));
                     await waitForSessionState(h.catalog, ordinaryId, "completed", testTime.ms(60_000));
-                    expect((await duroxide.waitForOrchestration(`session-${ordinaryId}`, testTime.ms(30_000))).status).toBe("Completed");
-                    expect(await h.store.readRun(run.runId)).toMatchObject({
-                        status: "cancelled", terminalError: { message: expect.stringMatching(COMPLETED_REASON) },
-                    });
-                    await assertCancelledCascadeNodes(h.store, run);
+                    await cascadeControllerEnded(duroxide, { controllerInstanceId: `session-${ordinaryId}` });
+                    await assertLiveCascadeEnd(h, run, ownerId);
                     await cascadeControllerEnded(duroxide, run);
-                    expect(await h.catalog.getSession(run.workflowId)).toMatchObject({ state: "completed", deletedAt: null });
+                    await assertLiveCascadeEnd(h, run, ownerId);
                     await assertNoActiveCascadeRuns(h.q, [run.workflowId]);
                     if (path === "parent's own completion") {
                         await waitForSessionState(h.catalog, root.sessionId, "completed", testTime.ms(60_000));

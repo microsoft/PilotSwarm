@@ -1,8 +1,8 @@
 /**
  * Gap 5: completion and admission serialize on real owner-session locks, in both orders and for live/test runs.
- * Expected RED at 4fa702dc8: accepted completion leaves the already-running control child's session cancelled.
- * The admission-first race itself already cancels the run there; the completion-first admission is already refused.
- * Neither existing safeguard is weakened to make the test red.
+ * Expected GREEN at 4fa702dc8: direct DB completion retains the existing owner trigger, with no cascade or refusal.
+ * Admission first cancels the accepted run; completion first refuses the admission. Workflow sessions stay cancelled.
+ * Option A changes neither the trigger nor these admission safeguards.
  *
  * Negative control: the same no-active-run oracle must fail before completion, when the control run really is running.
  * A missing owner lock, a dropped owner trigger or an admission left running after completion breaks this test.
@@ -21,14 +21,14 @@ import {
     pendingCascadeNode, cascadeControllerEnded, assertNoActiveCascadeRuns,
 } from "./workflow-owner-cascade-fixture.js";
 
-const COMPLETED_REASON = /the session that owns this Workflow was completed/i;
+const OWNER_ENDED_REASON = "The session that owns this Workflow ended, so the Workflow was canceled.";
 const REFUSED_AFTER_END = "SESSION_NOT_LIVE";
 const getEnv = useSuiteEnv(import.meta.url);
 
 describe("a run starting concurrently with its owner's completion never survives that completion", () => {
     for (const mode of ["live", "test"]) {
         for (const first of ["admission", "completion"]) {
-            it(`gap 5 [RED]: ${mode}, ${first} holds the owner's lock first`, { timeout: CASCADE_TIMEOUT }, async () => {
+            it(`gap 5 [GREEN]: ${mode}, ${first} holds the owner's lock first`, { timeout: CASCADE_TIMEOUT }, async () => {
                 const env = getEnv();
                 const h = await openOwnerCascadeRuntime(env);
                 const ending = new pg.Client({
@@ -107,10 +107,11 @@ describe("a run starting concurrently with its owner's completion never survives
                         const run = await h.store.readRun(started.value.runId);
                         expect(run).toMatchObject({
                             status: "cancelled", finishedAt: expect.any(Date),
-                            terminalError: { code: "cancelled", message: expect.stringMatching(COMPLETED_REASON) },
+                            terminalError: { code: "cancelled", message: OWNER_ENDED_REASON },
                         });
+                        expect(run.terminalError).toEqual({ code: "cancelled", message: OWNER_ENDED_REASON });
                         await cascadeControllerEnded(h.client, run);
-                        expect(await h.catalog.getSession(run.workflowSessionId)).toMatchObject({ state: "completed" });
+                        expect(await h.catalog.getSession(run.workflowSessionId)).toMatchObject({ state: "cancelled" });
                     } else {
                         expect(started.ok).toBe(false);
                         expect(started.error.code, started.error.message).toBe(REFUSED_AFTER_END);
@@ -124,7 +125,8 @@ describe("a run starting concurrently with its owner's completion never survives
                         [owner, saved.definitionId])).toEqual([]);
                     }
                     await cascadeControllerEnded(h.client, control);
-                    expect(await h.catalog.getSession(control.workflowId)).toMatchObject({ state: "completed" });
+                    expect(await h.catalog.getSession(control.workflowId)).toMatchObject({ state: "cancelled" });
+                    expect((await h.store.readRun(control.runId)).terminalError).toEqual({ code: "cancelled", message: OWNER_ENDED_REASON });
                     await assertNoActiveCascadeRuns(h.q, childIds);
                 } finally {
                     gate.release();

@@ -36,8 +36,7 @@ async function assertDeletedWorkflow(h, run, client) {
     expect([DELETED_REASON, FAILED_REASON]).toContain(ended.terminalError.message);
     await assertCancelledCascadeNodes(h.store, run);
     // The real force-delete paths may terminate the live instance rather than letting it return normally.
-    await expect.poll(async () => (await client.getStatus(run.controllerInstanceId)).status,
-        { timeout: testTime.ms(60_000) }).toMatch(/^(Completed|Failed|NotFound)$/);
+    await cascadeControllerEnded(client, run);
     await assertNoActiveCascadeRuns(h.q, [run.workflowId]);
 }
 
@@ -126,8 +125,7 @@ describe("failed and deleted owners retain their existing cascades", () => {
                                 .toEqual([{ deleted: true }]);
                         }
                         for (const run of runs) await assertDeletedWorkflow(h, run, duroxide);
-                        await expect.poll(async () => (await duroxide.getStatus(`session-${leaf.sessionId}`)).status,
-                            { timeout: testTime.ms(30_000) }).toMatch(/^(Completed|Failed|NotFound)$/);
+                        await cascadeControllerEnded(duroxide, { controllerInstanceId: `session-${leaf.sessionId}` });
                         await assertNoActiveCascadeRuns(h.q, ids);
                         // All test-schema runs belong to this tree: catches a run omitted from our expected ids.
                         expect(await h.q(`SELECT run.run_id FROM SCHEMA.workflow_runs run JOIN SCHEMA.sessions child
