@@ -128,8 +128,6 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
             await client.start();
             const session = await client.createSession();
             assert.equal(await session.sendAndWait("emit a deterministic turn", 60_000), "scripted response");
-            await client.stop();
-            client = undefined;
             await worker.gracefulShutdown();
             worker = undefined;
             assert.deepEqual(
@@ -140,6 +138,8 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
                 [],
                 "the packed worker shutdown must persist its post-disconnect snapshot without checkpoint fallback",
             );
+            await client.stop();
+            client = undefined;
             await shutdownTelemetry();
             console.log(JSON.stringify({
                 telemetryPath: import.meta.resolve("pilotswarm-sdk/telemetry"),
