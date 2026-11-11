@@ -15,7 +15,7 @@ import { waitForSessionState } from "../helpers/cms-helpers.js";
 import { controlWorkflowRun } from "../../src/workflow/service.ts";
 import {
     CASCADE_OWNER, CASCADE_ACTOR, CASCADE_TIMEOUT, WORKFLOW_SESSION_END_STATE, openOwnerCascadeRuntime, startCascadeLive, startCascadeBench,
-    terminalYaml, pendingCascadeNode, cascadeControllerEnded, assertNoActiveCascadeRuns, assertCancelledCascadeNodes,
+    terminalYaml, pendingCascadeNode, cascadeControllerEnded, cascadeRunEnded, assertNoActiveCascadeRuns, assertCancelledCascadeNodes,
 } from "./workflow-owner-cascade-fixture.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 
@@ -85,6 +85,7 @@ describe("completing an owner cancels active Workflows and preserves ended Workf
                     await controlWorkflowRun(h.host, run.workflowId, { operation: "cancel", runId: run.runId, reason: "fixture cancel" },
                         { actor: CASCADE_ACTOR, operationId: `cancel-${randomUUID()}` });
                 }
+                await cascadeRunEnded(h.store, run);
                 await cascadeControllerEnded(h.client, run);
                 expect((await h.store.readRun(run.runId)).status).toBe(status);
                 expect((await h.catalog.getSession(run.workflowId)).state).toBe(status);

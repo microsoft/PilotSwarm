@@ -27,12 +27,14 @@ states:
   done: { type: terminal, outcome: succeeded }
 `;
 
+/** A Workflow that ends with `outcome` after a one-second wait (an initial state must not be terminal). */
 export const terminalYaml = (name, outcome) => `
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: ${name}, version: "1.0.0" }
-initial: done
+initial: go
 states:
+  go: { type: wait, seconds: 1, transition: { next: { elapsed: done } } }
   done: { type: terminal, outcome: ${outcome} }
 `;
 
@@ -115,6 +117,12 @@ export async function pendingCascadeNode(store, run) {
         { timeout: testTime.ms(30_000) }).toBeGreaterThan(0);
     expect((await store.readRun(run.runId)).status).toBe("running");
     return (await store.listNodeExecutions(run.runId)).find(node => node.state === "pending");
+}
+
+/** Wait until the run has ended in the store (a controller not yet picked up reads NotFound, which is not an end). */
+export async function cascadeRunEnded(store, run) {
+    await expect.poll(async () => (await store.readRun(run.runId)).status, { timeout: CASCADE_TIMEOUT })
+        .not.toMatch(new RegExp(`^(${ACTIVE_RUNS.join("|")})$`));
 }
 
 export async function cascadeControllerEnded(client, run) {
