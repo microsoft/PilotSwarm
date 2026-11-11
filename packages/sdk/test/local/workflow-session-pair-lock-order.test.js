@@ -9,6 +9,11 @@
  * Workflow and its own child are locked Workflow first, so the input waits for W, the creation takes A and commits, and the
  * input goes on. Two real connections; the order is proven from the lock graph (pg_blocking_pids), not from a sleep.
  *
+ * Each side's exact result is asserted (Astra test review of 069eca30), not only the absence of a deadlock: the creation
+ * succeeds, first, and leaves the child under the Workflow, live; the input, after it, gets this fixture's own refusal (a
+ * Workflow with no execution definition): FORBIDDEN, "The sending session or the workflow session is not available."
+ * (TYPED_INPUT_REFUSALS.unavailable). At the pre-09c4e404 lock order (ids ascending) one side is ended with 40P01 instead.
+ *
  * Run: npx vitest run test/local/workflow-session-pair-lock-order.test.js
  */
 import { randomUUID } from "node:crypto";
@@ -16,7 +21,8 @@ import pg from "pg";
 import { describe, it, beforeAll, expect } from "vitest";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
-import { WorkflowStore } from "../../src/workflow/store.ts";
+import { WorkflowStore, WorkflowStoreError } from "../../src/workflow/store.ts";
+import { TYPED_INPUT_REFUSALS } from "../../src/workflow/authority.ts";
 
 const TIMEOUT = 120_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -31,7 +37,7 @@ function gate() {
 describe("a session's creation and a Workflow's typed input lock parent first (review ER-03)", () => {
     beforeAll(async () => { await preflightChecks(); });
 
-    it("re-creating a Workflow's agent session while a typed input from it locks the pair: no deadlock, both finish", { timeout: TIMEOUT }, async () => {
+    it("re-creating a Workflow's agent session while a typed input from it locks the pair: the creation succeeds first, the input gets its exact refusal, no deadlock", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const catalog = await createCatalog(env);
         const db = new pg.Pool({ connectionString: env.store, max: 4 });
@@ -68,7 +74,9 @@ describe("a session's creation and a Workflow's typed input lock parent first (r
                 };
                 return client;
             };
-            const creating = catalog.createSession(child, { parentSessionId: workflow, refuseDeleted: true }).then(() => null, error => error);
+            const settled = [];
+            const creating = catalog.createSession(child, { parentSessionId: workflow, refuseDeleted: true })
+                .then(() => { settled.push("creation"); return null; }, error => { settled.push("creation"); return error; });
             const pid = await held.reached;
 
             // A typed input to the Workflow from its child: the pair lock, on its own connection.
@@ -77,7 +85,7 @@ describe("a session's creation and a Workflow's typed input lock parent first (r
                 workflowSessionId: workflow, runId: randomUUID(), messageId: randomUUID(), senderSessionId: child,
                 operationId: `input-${randomUUID()}`, requestSha256: "x", contract: "Note@1", correlationText: "{}", payloadText: "{}",
                 ttlSeconds: 60, limits: { maxUnconsumed: 10, maxUnconsumedPerSender: 10, windowSeconds: 60, maxPerWindow: 10 },
-            }).then(() => null, error => error);
+            }).then(() => { settled.push("input"); return null; }, error => { settled.push("input"); return error; });
             // The input waits for the creation (it locks the Workflow, which the creation holds).
             let waited = false;
             const deadline = Date.now() + 20_000;
@@ -88,11 +96,20 @@ describe("a session's creation and a Workflow's typed input lock parent first (r
             expect(waited, "the typed input waits for the creation's lock").toBe(true);
             held.open();
             const [createError, acceptError] = await Promise.all([creating, accepting]);
-            // No deadlock: the creation commits, and the input goes on to its own answer (here a refusal: no run, no grant).
-            expect(createError?.code, String(createError?.message ?? createError)).toBeUndefined();
-            expect(acceptError?.code, String(acceptError?.message ?? acceptError)).not.toBe("40P01");
-            expect(String(acceptError?.message ?? "")).not.toMatch(/deadlock/i);
-            expect((await catalog.getSession(child))?.parentSessionId).toBe(workflow);
+            const why = JSON.stringify({ settled, createError: createError && { code: createError.code, message: createError.message },
+                acceptError: acceptError && { code: acceptError.code, message: acceptError.message } });
+            // The creation succeeds, and before the input ends (the input waited for its lock).
+            expect(createError, why).toBeNull();
+            expect(settled, why).toEqual(["creation", "input"]);
+            const row = await catalog.getSession(child);
+            expect(row, why).not.toBeNull();
+            expect(row.parentSessionId, why).toBe(workflow);
+            expect(row.deletedAt, why).toBeNull();
+            // The input goes on to this fixture's exact refusal (its Workflow has no execution definition), never a deadlock.
+            expect(acceptError, why).toBeInstanceOf(WorkflowStoreError);
+            expect(acceptError.code, why).toBe("FORBIDDEN");
+            expect(acceptError.message, why).toBe(TYPED_INPUT_REFUSALS.unavailable);
+            expect(acceptError.message, why).toBe("The sending session or the workflow session is not available.");
         } finally {
             await storePool.end();
             await db.end();
