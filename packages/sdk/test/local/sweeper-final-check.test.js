@@ -36,6 +36,7 @@ import { createCatalog } from "../helpers/cms-helpers.js";
 import { createSweeperTools } from "../../src/sweeper-tools.ts";
 import { WorkflowStore } from "../../src/workflow/store.ts";
 import { PilotSwarmClient } from "../../src/index.ts";
+import { SESSION_START_FENCE_TIMEOUT_MS } from "../../src/cms.ts";
 
 const { Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const TIMEOUT = 120_000;
@@ -132,6 +133,11 @@ async function ageSessions(db, schema, ids, minutes) {
 }
 
 const isLive = async (db, schema, id) => (await db.query(`SELECT deleted_at FROM ${schema}.sessions WHERE session_id = $1`, [id])).rows[0]?.deleted_at === null;
+/** Exactly how the row stands: it exists, and whether it is soft-deleted (a missing row is neither kept nor cleaned). */
+const rowState = async (db, schema, id) => {
+    const { rows } = await db.query(`SELECT deleted_at FROM ${schema}.sessions WHERE session_id = $1`, [id]);
+    return rows[0] ? (rows[0].deleted_at === null ? "kept" : "soft-deleted") : "missing";
+};
 
 /** A draft test bench with one ended (completed) test run; its controller wft-<run>. */
 async function makeBench(catalog, db, schema, owner) {
@@ -528,10 +534,14 @@ describe("the Sweeper's final check and delete under concurrency", () => {
             await catalog.createSession(id);
             const before = (await db.query(`SELECT state, orchestration_id, xmin::text AS version FROM ${schema}.sessions WHERE session_id = $1`, [id])).rows[0];
             const started = Date.now();
-            const stalled = catalog.startSessionFenced(id, { orchestrationId: `session-${id}`, state: "running" }, () => new Promise(() => {}), { timeoutMs: 1_000 })
+            // The barrier: the start callback runs (the row is locked and updated by then) and never answers.
+            let arrived;
+            const atStart = new Promise(resolve => { arrived = resolve; });
+            const stalled = catalog.startSessionFenced(id, { orchestrationId: `session-${id}`, state: "running" },
+                () => { arrived(); return new Promise(() => {}); }, { timeoutMs: 1_000 })
                 .then(() => null, error => error);
+            await atStart;
             // While the start stalls, the row's lock is held: the Sweeper's lock would wait.
-            await new Promise(resolve => setTimeout(resolve, 200));
             const held = await db.query(`SELECT 1 FROM ${schema}.sessions WHERE session_id = $1 FOR NO KEY UPDATE NOWAIT`, [id]).then(() => false, error => error?.code === "55P03");
             expect(held, "the fence holds the row's lock while the start runs").toBe(true);
             const error = await stalled;
@@ -541,6 +551,23 @@ describe("the Sweeper's final check and delete under concurrency", () => {
             await db.query(`SELECT 1 FROM ${schema}.sessions WHERE session_id = $1 FOR NO KEY UPDATE NOWAIT`, [id]);
             const after = (await db.query(`SELECT state, orchestration_id, xmin::text AS version FROM ${schema}.sessions WHERE session_id = $1`, [id])).rows[0];
             expect(after).toEqual(before);
+        });
+
+        it("DR-03: without a bound given, the fenced start waits at most SESSION_START_FENCE_TIMEOUT_MS (30 000 ms) for the provider's start", { timeout: TIMEOUT }, async () => {
+            expect(SESSION_START_FENCE_TIMEOUT_MS).toBe(30_000);
+            const id = randomUUID();
+            await catalog.createSession(id);
+            // The bound the call sets, read from the timer it arms (the start answers at once, so nothing waits 30 s).
+            const delays = [];
+            const setTimer = globalThis.setTimeout;
+            globalThis.setTimeout = (fn, ms, ...rest) => { delays.push(ms); return setTimer(fn, ms, ...rest); };
+            try {
+                await catalog.startSessionFenced(id, { orchestrationId: `session-${id}`, state: "running" }, async () => {});
+            } finally {
+                globalThis.setTimeout = setTimer;
+            }
+            expect(delays).toContain(30_000);
+            expect((await db.query(`SELECT state FROM ${schema}.sessions WHERE session_id = $1`, [id])).rows[0]).toEqual({ state: "running" });
         });
 
         it("DR-01: a session whose first message was accepted and whose start is still queued is kept at any age (StartUnresolved); one shown to have ended is cleaned", { timeout: TIMEOUT }, async () => {
@@ -574,17 +601,17 @@ describe("the Sweeper's final check and delete under concurrency", () => {
                 }
                 const pruned = await findTool(tools, "prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: 0 });
                 expect(pruned.ok, JSON.stringify(pruned)).toBe(true);
-                expect(await isLive(db, schema, fresh)).toBe(true);
-                expect(await isLive(db, schema, stale)).toBe(true);
+                expect(await rowState(db, schema, fresh)).toBe("kept");
+                expect(await rowState(db, schema, stale)).toBe("kept");
                 // The final check under the lock refuses it too (when a caller judged it NotFound on its own).
                 const store = catalog.workflowStore();
                 const version = await store.sweeperRowVersion(stale);
                 expect(await store.sweeperSoftDelete({ sessionId: stale, version: version.version, cascade: true, orchestrationNotFound: true }))
                     .toMatchObject({ refused: { status: "StartUnresolved" } });
-                expect(await isLive(db, schema, stale)).toBe(true);
-                // Shown to have ended, or never started: cleaned (prune took them above).
-                expect(await isLive(db, schema, ended)).toBe(false);
-                expect(await isLive(db, schema, neverStarted)).toBe(false);
+                expect(await rowState(db, schema, stale)).toBe("kept");
+                // Shown to have ended, or never started: cleaned (prune took them above), as a soft delete.
+                expect(await rowState(db, schema, ended)).toBe("soft-deleted");
+                expect(await rowState(db, schema, neverStarted)).toBe("soft-deleted");
             } finally {
                 await client.stop();
             }

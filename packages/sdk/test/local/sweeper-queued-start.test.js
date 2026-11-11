@@ -27,6 +27,12 @@ function findTool(tools, name) {
     return tool;
 }
 
+/** The session row's deletion, read with deleted rows (getSession hides a deleted row, so it cannot tell kept from deleted). */
+async function deletedAtOf(catalog, env, sessionId) {
+    const { rows } = await catalog.pool.query(`SELECT deleted_at FROM "${env.cmsSchema}".sessions WHERE session_id = $1`, [sessionId]);
+    return rows[0] ? { exists: true, deletedAt: rows[0].deleted_at } : { exists: false, deletedAt: null };
+}
+
 async function until(check, label, timeoutMs = 60_000) {
     const deadline = Date.now() + timeoutMs;
     let last;
@@ -67,7 +73,7 @@ describe("an accepted first message whose start waits for a worker (review DR-01
                     const pruned = await findTool(tools, "prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: minutes });
                     expect(pruned.ok, JSON.stringify(pruned)).toBe(true);
                 }
-                expect((await catalog.getSession(sessionId))?.deletedAt ?? null).toBeNull();
+                expect(await deletedAtOf(catalog, env, sessionId), "the row exists and is not deleted").toEqual({ exists: true, deletedAt: null });
                 expect(model.requests.filter(request => JSON.stringify(request.body).includes(marker))).toEqual([]);
 
                 // A worker starts: the queued start runs, and with it the same message.
@@ -81,7 +87,7 @@ describe("an accepted first message whose start waits for a worker (review DR-01
                 await until(async () => (await catalog.getSessionEvents(sessionId, 0, 200, ["assistant.message"]))
                     .some(event => String(event.data?.content ?? "").includes("noted")), "the session's answer to the queued message");
                 expect((await duroxide.getStatus(`session-${sessionId}`)).status).toBe("Running");
-                expect((await catalog.getSession(sessionId))?.deletedAt ?? null).toBeNull();
+                expect(await deletedAtOf(catalog, env, sessionId), "the row exists and is not deleted").toEqual({ exists: true, deletedAt: null });
             });
         } finally {
             if (lateWorker) await lateWorker.stop().catch(() => {});
