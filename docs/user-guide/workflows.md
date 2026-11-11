@@ -113,10 +113,12 @@ recommendation became an **agent** node, and "ask me" became a **request**
 node with a one-hour deadline. You never wrote YAML.
 
 > **Tip.** Say "workflow" in your request. A new session starts with Workflows
-> off, and asking for a workflow (or for a repeated check a script could do)
-> is what turns them on. Then describe the steps the way you would to a
-> colleague: what runs at the same time, where a judgment is needed, where it
-> should wait for you, and how it ends.
+> off, and asking for a workflow is what turns them on. If you ask for
+> something a Workflow would suit, such as a repeated check, the session may
+> suggest one and ask first; it turns Workflows on only if you agree. Then
+> describe the steps the way you would to a colleague: what runs at the same
+> time, where a judgment is needed, where it should wait for you, and how it
+> ends.
 
 ## 2. Look at the definition
 
@@ -404,9 +406,12 @@ directly, and use a sub-agent for open-ended work that needs its own context.
 A Workflow never widens your permissions: its scripts call only the tools
 your session may use.
 
-In a session where Workflows are off, call `enable_workflows` once. The turn ends
-and the next turn starts at once with the Workflow tools and guidance.
-Continue the person's task there.
+In a session where Workflows are off, call `enable_workflows` once, and only
+when the person asks for a Workflow or agrees to your suggestion of one. You
+may suggest one in a sentence when it would suit the task; silence is not
+agreement. The turn ends and the next turn starts at once with the Workflow
+tools and guidance. Continue the person's task there. Once Workflows are on,
+use them wherever they fit, without asking.
 
 ## A.2 The tools
 
