@@ -101,6 +101,12 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
         let management;
         let worker;
         let client;
+        const warnings = [];
+        const originalWarn = console.warn;
+        console.warn = (...args) => {
+            warnings.push(args.map(String).join(" "));
+            originalWarn.apply(console, args);
+        };
         try {
             management = new PilotSwarmManagementClient({ store, modelProvidersPath, disableManagementAgents: true, ...storage });
             await management.start();
@@ -126,12 +132,21 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
             client = undefined;
             await worker.gracefulShutdown();
             worker = undefined;
+            assert.deepEqual(
+                warnings.filter(line =>
+                    line.includes("session-store dehydrate snapshot missing after destroy")
+                    || line.includes("falling back to pre-destroy checkpoint"),
+                ),
+                [],
+                "the packed worker shutdown must persist its post-disconnect snapshot without checkpoint fallback",
+            );
             await shutdownTelemetry();
             console.log(JSON.stringify({
                 telemetryPath: import.meta.resolve("pilotswarm-sdk/telemetry"),
                 sdkPath: import.meta.resolve("pilotswarm-sdk"),
             }));
         } finally {
+            console.warn = originalWarn;
             await client?.stop();
             await worker?.stop();
             await management?.stop();
@@ -167,8 +182,16 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
         .flatMap(resource => resource.scopeMetrics)
         .flatMap(scope => scope.metrics);
     const pilotswarmMetrics = metrics.filter(metric => metric.name.startsWith("pilotswarm."));
-    assert.ok(!pilotswarmMetrics.some(metric => metric.name.includes("duration")),
-        "SDK histograms are disabled by default");
+    const pilotswarmNames = [...new Set(pilotswarmMetrics.map(metric => metric.name))].sort();
+    assert.deepEqual(pilotswarmNames, [
+        "pilotswarm.lifecycle.operations",
+        "pilotswarm.tokens",
+        "pilotswarm.tool.calls",
+        "pilotswarm.turns",
+    ], "the SDK emits only its four counter names when its histogram gate is disabled");
+    assert.ok(!pilotswarmNames.includes("pilotswarm.turn.duration")
+        && !pilotswarmNames.includes("pilotswarm.lifecycle.duration"),
+    "the SDK histogram gate must not be interpreted as a process-wide histogram switch");
     const tokens = pilotswarmMetrics.find(metric => metric.name === "pilotswarm.tokens");
     assert.ok(tokens, "the real worker turn must export SDK token counters");
     const values = Object.fromEntries(tokens.sum.dataPoints.map(point => [
@@ -180,5 +203,4 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
     const resource = Object.fromEntries(metricRequests[0].body.resourceMetrics[0].resource.attributes
         .map(({ key, value }) => [key, value.stringValue]));
     assert.equal(resource["service.instance.id"], "packed-consumer");
-    assert.ok(pilotswarmMetrics.every(metric => metric.name.startsWith("pilotswarm.")));
 });

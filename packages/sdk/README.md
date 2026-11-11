@@ -51,6 +51,12 @@ one the receiver supports. Leave the endpoint unset, or set
 `OTEL_SDK_DISABLED=true`, to disable providers. No automatic HTTP, database,
 model-client, filesystem, or resource collectors are installed.
 
+`PILOTSWARM_OTEL_HISTOGRAMS=false` disables only the two PilotSwarm duration
+histograms. It does not disable instruments registered by other libraries that
+share the process or a provider. Use a dedicated Collector metrics receiver with
+an explicit metric-name allowlist when the destination must receive only the
+four PilotSwarm counters; see the deployment observability guide.
+
 The application owns signal handling. After its worker drains, call the
 idempotent shutdown function before setting a nonzero exit code or exiting:
 

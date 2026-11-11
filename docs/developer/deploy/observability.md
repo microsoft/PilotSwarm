@@ -23,7 +23,7 @@ is enabled. The portal does not preload worker telemetry.
 | `OTEL_METRIC_EXPORT_TIMEOUT` | `5000` | Collection/export budget in milliseconds; must not exceed the interval. |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | `5000` | Bounded HTTP export timeout in milliseconds. |
 | `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` | SDK default | Standard OTLP Sum temporality preference. Use `cumulative` or `delta` only when the receiver supports it. |
-| `PILOTSWARM_OTEL_HISTOGRAMS` | `false` | `true` or `false`. Enables duration histograms only when explicitly requested. |
+| `PILOTSWARM_OTEL_HISTOGRAMS` | `false` | `true` or `false`. Enables only PilotSwarm's two duration histograms when explicitly requested; it does not disable third-party instrumentation in the process. |
 
 This bootstrap uses a shared OTLP HTTP base URL and headers for the selected
 signals. Signal-specific endpoints/headers, OTLP gRPC, and automatic instrumentation
@@ -140,6 +140,51 @@ receiver and a compatible exporter. A reachable receiver or HTTP 200 response
 alone does not prove storage. Confirm that the downstream system has committed
 the exported metrics and can query them. This change adds no collector, storage,
 dashboard, or other backend infrastructure.
+
+### Counters-only Collector receiver
+
+`PILOTSWARM_OTEL_HISTOGRAMS=false` gates only the SDK-owned
+`pilotswarm.turn.duration` and `pilotswarm.lifecycle.duration` instruments.
+Other libraries can register metrics, including histograms, through their own or
+a shared provider. If a destination must receive only the four PilotSwarm
+counters, send PilotSwarm to a dedicated receiver and use this strict allowlist.
+It deliberately drops every metric name that is not listed, including future
+PilotSwarm metrics, rather than accepting a broad prefix.
+
+This example requires the Contrib distribution, which contains
+`filterprocessor`; the core Collector distribution does not. It is pinned to
+`otel/opentelemetry-collector-contrib:0.146.0`.
+
+```yaml
+receivers:
+  otlp/pilotswarm:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  filter/pilotswarm-counters:
+    error_mode: propagate
+    metrics:
+      metric:
+        - 'name != "pilotswarm.turns" and name != "pilotswarm.tokens" and name != "pilotswarm.tool.calls" and name != "pilotswarm.lifecycle.operations"'
+
+exporters:
+  otlphttp/metrics-destination:
+    endpoint: https://metrics.example
+
+service:
+  pipelines:
+    metrics/pilotswarm:
+      receivers: [otlp/pilotswarm]
+      processors: [filter/pilotswarm-counters]
+      exporters: [otlphttp/metrics-destination]
+```
+
+The example declares only a metrics pipeline. Do not add traces or logs to this
+receiver unless their routing, retention, and privacy review are explicit.
+Resource attributes are still operator-supplied metadata; do not place
+credentials, user identifiers, session data, or other sensitive values in them.
 
 ## Targeted source checks and live acceptance
 
