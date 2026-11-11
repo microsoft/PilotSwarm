@@ -25,6 +25,20 @@ const OWNER_ENDED_REASON = "The session that owns this Workflow ended, so the Wo
 const REFUSED_AFTER_END = "SESSION_NOT_LIVE";
 const getEnv = useSuiteEnv(import.meta.url);
 
+/** The backend that `holderPid` blocks while `work` runs (read from pg_blocking_pids); fails if `work` ends first. */
+async function blockedBy(h, holderPid, work, label) {
+    let done = false;
+    work.then(() => { done = true; });
+    const deadline = Date.now() + testTime.ms(20_000);
+    while (Date.now() < deadline) {
+        if (done) throw new Error(`The operation never reached ${label}: it ended without waiting for the completion's lock.`);
+        const rows = await h.q("SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))", [holderPid]);
+        if (rows[0]) return rows[0].pid;
+        await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    throw new Error(`The operation never waited at ${label}.`);
+}
+
 describe("a run starting concurrently with its owner's completion never survives that completion", () => {
     for (const mode of ["live", "test"]) {
         for (const first of ["admission", "completion"]) {
@@ -50,13 +64,6 @@ describe("a run starting concurrently with its owner's completion never survives
                     const saved = await saveCascadeDefinition(h.host, owner, "racing-start");
                     let hooked = false;
                     h.control.hook = async ({ sql, params, query, client }) => {
-                        if (first === "completion" && !hooked && params?.[0] === owner
-                            && /^SELECT/.test(sql) && /FOR (SHARE|NO KEY UPDATE)/.test(sql)) {
-                            hooked = true;
-                            gate.enter(client.processID);
-                            // Observe the waiter before running its real lock statement; no method is substituted.
-                            return query(sql, params);
-                        }
                         const result = await query(sql, params);
                         if (first === "admission" && !hooked && /^INSERT INTO/.test(sql) && sql.includes("workflow_runs")) {
                             hooked = true;
@@ -82,7 +89,13 @@ describe("a run starting concurrently with its owner's completion never survives
                         await ending.query(`UPDATE "${env.cmsSchema}".sessions SET state = 'completed' WHERE session_id = $1`, [owner]);
                     }
                     startWork = admit().then(value => ({ ok: true, value }), error => ({ ok: false, error }));
-                    const admissionPid = await reachedDuring(gate, startWork, `${mode} admission's owner lock`);
+                    // Admission first: its run is inserted through the store, before its commit (the hook above). Completion
+                    // first: the admission's first owner lock is taken by the session's creation, on the catalog's own
+                    // connection (it locks the owner before the Workflow session is made), so the waiter is found in the
+                    // lock graph: the backend that the completion's transaction blocks.
+                    const admissionPid = first === "admission"
+                        ? await reachedDuring(gate, startWork, `${mode} admission's run insert`)
+                        : await blockedBy(h, ending.processID, startWork, `${mode} admission's owner lock`);
                     expect(admissionPid).not.toBe(ending.processID);
                     if (first === "admission") {
                         endWork = ending.query(`UPDATE "${env.cmsSchema}".sessions SET state = 'completed' WHERE session_id = $1`, [owner]);
