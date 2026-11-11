@@ -35,6 +35,21 @@ export function createSweeperTools(opts: {
     const TERMINAL_ORCH = new Set(["Completed", "Failed", "Terminated", "NotFound"]);
 
     /**
+     * A session's orchestration status, or `unreadable` when the read fails. duroxide's getStatus answers
+     * `{ status: "NotFound" }` for an instance that does not exist and throws only on an error (a lost connection, a
+     * timeout), so a thrown read is never taken for NotFound: the Sweeper deletes nothing on a failed read.
+     */
+    async function readOrchestrationStatus(sessionId: string): Promise<{ status: string } | { unreadable: string }> {
+        try {
+            const st = await duroxideClient.getStatus(`session-${sessionId}`);
+            const status = typeof st?.status === "string" && st.status ? st.status : null;
+            return status ? { status } : { unreadable: "the status read returned no status" };
+        } catch (err: any) {
+            return { unreadable: String(err?.message ?? err) };
+        }
+    }
+
+    /**
      * Re-derive whether a session is independently cleanable, mirroring the
      * eligibility rules used by scan_completed_sessions. This is the guardrail
     * that stops cleanup_session from deleting any LIVE session just because it
@@ -55,13 +70,15 @@ export function createSweeperTools(opts: {
                 reason: "Refusing to clean a Workflow session: its own run, or its owner session's end or deletion, ends it.",
             };
         }
-        let orchStatus = "NotFound";
-        try {
-            const st = await duroxideClient.getStatus(`session-${session.sessionId}`);
-            orchStatus = st?.status ?? "NotFound";
-        } catch {
-            orchStatus = "NotFound";
+        const read = await readOrchestrationStatus(session.sessionId);
+        if ("unreadable" in read) {
+            return {
+                eligible: false,
+                status: "Unreadable",
+                reason: `Could not read the target's orchestration status (${read.unreadable}); nothing is deleted on a failed read. Try again later.`,
+            };
         }
+        const orchStatus = read.status;
 
         const isRoot = !session.parentSessionId;
         const terminal = TERMINAL_ORCH.has(orchStatus);
@@ -129,6 +146,8 @@ export function createSweeperTools(opts: {
                 age: string;
                 reason: string;
             }> = [];
+            // Sessions whose status read failed: not candidates (nothing is deleted on a failed read).
+            const unreadable: string[] = [];
 
             try {
                 const allSessions = await catalog.listSessions();
@@ -140,13 +159,12 @@ export function createSweeperTools(opts: {
                     // Nor Workflow sessions: they have no session-<id> orchestration (see evaluateCleanupEligibility).
                     if (session.sessionKind === "workflow") continue;
 
-                    let orchStatus: any = {};
-                    try {
-                        orchStatus = await duroxideClient.getStatus(`session-${session.sessionId}`);
-                    } catch {
-                        // Orchestration not found — treat as completed
-                        orchStatus = { status: "NotFound" };
+                    const read = await readOrchestrationStatus(session.sessionId);
+                    if ("unreadable" in read) {
+                        unreadable.push(session.sessionId);
+                        continue;
                     }
+                    const orchStatus = read;
 
                     const ageMs = Date.now() - session.updatedAt.getTime();
                     const ageStr = ageMs > 3_600_000
@@ -178,6 +196,7 @@ export function createSweeperTools(opts: {
                     found: results.length,
                     graceMinutes,
                     sessions: results,
+                    ...(unreadable.length ? { unreadableCount: unreadable.length, unreadable: unreadable.slice(0, 20) } : {}),
                     guidance:
                         "Only terminal sessions are returned. Clean the returned sessions by their own sessionId — " +
                         "batch them via cleanup_session(sessionIds=[...]) or clean one at a time. " +
@@ -328,6 +347,8 @@ export function createSweeperTools(opts: {
             "Two operations: (1) delete terminal (Completed/Failed/Terminated) orchestration " +
             "instances older than N minutes, and (2) prune old executions from all instances, " +
             "keeping only the last N executions per instance. " +
+            "It then soft-deletes the session rows (older than the same cutoff) whose orchestration is NotFound; " +
+            "a status read that fails deletes nothing (cmsUnreadable counts them). " +
             "This is a system-level operation that cleans up duroxide storage directly.",
         parameters: {
             type: "object" as const,
@@ -373,22 +394,27 @@ export function createSweeperTools(opts: {
                     { keepLast: keepExecutions },
                 );
 
-                // Step 3: Also soft-delete CMS rows for deleted terminal instances
-                // (CMS may have stale rows for instances duroxide just deleted)
+                // Step 3: soft-delete the CMS rows whose orchestration no longer exists (NotFound: step 1 deleted it, or it
+                // was deleted before), once the row is older than the same cutoff. A failed status read is not NotFound
+                // (duroxide's getStatus throws only on an error): such a row is skipped and counted, never deleted.
                 let cmsCleanedUp = 0;
+                let cmsUnreadable = 0;
                 try {
                     const cmsSessions = await catalog.listSessions();
                     for (const s of cmsSessions) {
                         if (s.isSystem) continue;
-                        try {
-                            await duroxideClient.getStatus(`session-${s.sessionId}`);
-                        } catch {
-                            // Instance no longer exists in duroxide — clean up CMS
-                            try {
-                                await catalog.softDeleteSession(s.sessionId);
-                                cmsCleanedUp++;
-                            } catch {}
+                        if (s.updatedAt.getTime() >= cutoffMs) continue;
+                        const read = await readOrchestrationStatus(s.sessionId);
+                        if ("unreadable" in read) {
+                            cmsUnreadable++;
+                            console.warn(`[sweeper] prune: could not read the status of session-${s.sessionId}; not deleted: ${read.unreadable}`);
+                            continue;
                         }
+                        if (read.status !== "NotFound") continue;
+                        try {
+                            await catalog.softDeleteSession(s.sessionId);
+                            cmsCleanedUp++;
+                        } catch {}
                     }
                 } catch {}
 
@@ -405,6 +431,7 @@ export function createSweeperTools(opts: {
                         eventsDeleted: pruneResult.eventsDeleted ?? 0,
                     },
                     cmsCleanedUp,
+                    cmsUnreadable,
                 };
             } catch (err: any) {
                 return { ok: false, error: err.message };

@@ -22,6 +22,9 @@
  *   - a stale Workflow session (a test bench, whose session-<id> status reads
  *     NotFound) is neither listed nor cleaned; its finished owner session's
  *     cleanup still removes it as a descendant
+ *   - a status read that fails deletes nothing: scan, cleanup_session and
+ *     prune_orchestrations skip such a session; prune soft-deletes a stale row
+ *     only when its status is NotFound, and keeps one whose orchestration lives
  *
  * Run: npx vitest run test/local/sweeper-cleanup-guard.test.js
  */
@@ -45,18 +48,24 @@ function findTool(tools, name) {
 
 /**
  * Stub duroxide client whose getStatus is driven by a status map keyed by
- * instance id (`session-<id>`). Anything not in the map is NotFound. This puts
- * a session into a precise live/terminal orchestration state without spinning
- * up a real orchestration — the orchestration status is an external input to
- * the eligibility guard, so controlling it is the point of the test.
+ * instance id (`session-<id>`). Anything not in the map is `fallback` (NotFound
+ * unless given). An Error in the map is thrown, as duroxide's getStatus throws
+ * on a failed read. This puts a session into a precise live/terminal
+ * orchestration state without spinning up a real orchestration — the
+ * orchestration status is an external input to the eligibility guard, so
+ * controlling it is the point of the test.
  */
-function makeStubDuroxide(statusByInstance) {
+function makeStubDuroxide(statusByInstance, fallback = { status: "NotFound" }) {
     const enqueuedEvents = [];
     return {
         enqueuedEvents,
         async getStatus(instanceId) {
-            return statusByInstance.get(instanceId) ?? { status: "NotFound" };
+            const status = statusByInstance.get(instanceId) ?? fallback;
+            if (status instanceof Error) throw status;
+            return status;
         },
+        async deleteInstanceBulk() { return { instancesDeleted: 0, executionsDeleted: 0, eventsDeleted: 0 }; },
+        async pruneExecutionsBulk() { return { instancesProcessed: 0, executionsDeleted: 0, eventsDeleted: 0 }; },
         async enqueueEvent(orchestrationId, eventName, payload) {
             enqueuedEvents.push({ orchestrationId, eventName, payload });
         },
@@ -291,6 +300,79 @@ async function testWorkflowSessionIsNeverSwept(env) {
     }
 }
 
+async function ageSessions(env, ids, minutes) {
+    const db = new pg.Pool({ connectionString: env.store, max: 1 });
+    try {
+        await db.query(`UPDATE "${env.cmsSchema}".sessions SET updated_at = now() - make_interval(mins => $2) WHERE session_id = ANY($1::text[])`,
+            [ids, minutes]);
+    } finally {
+        await db.end();
+    }
+}
+
+async function testFailedReadDeletesNothing(env) {
+    const catalog = await createCatalog(env);
+    try {
+        // Three stale roots: one whose status read fails, one NotFound, one live.
+        const unreadable = randomUUID();
+        const gone = randomUUID();
+        const live = randomUUID();
+        for (const id of [unreadable, gone, live]) await catalog.createSession(id);
+        await ageSessions(env, [unreadable, gone, live], 60);
+        const status = new Map([
+            [`session-${unreadable}`, new Error("connection terminated unexpectedly")],
+            [`session-${gone}`, { status: "NotFound" }],
+            [`session-${live}`, { status: "Running" }],
+        ]);
+        // Anything else in the schema reads as live, so prune touches only these three.
+        const tools = createSweeperTools({ catalog, duroxideClient: makeStubDuroxide(status, { status: "Running" }), factStore: null });
+
+        // scan: the failed read is not a candidate, and is counted; NotFound is.
+        const scanned = await findTool(tools, "scan_completed_sessions").handler({ graceMinutes: 5 });
+        const listed = scanned.sessions.map(s => s.sessionId);
+        assertEqual(listed.includes(unreadable), false, "a failed read is not a scan candidate");
+        assertEqual(listed.includes(gone), true, "a NotFound session is a scan candidate");
+        assertEqual(listed.includes(live), false, "a live session is not a scan candidate");
+        assertEqual(scanned.unreadable?.includes(unreadable), true, "the failed read is reported");
+
+        // cleanup_session: a failed read is refused; the row stays.
+        const refused = await findTool(tools, "cleanup_session").handler({ sessionId: unreadable, graceMinutes: 0 });
+        assertEqual(refused.ok, false, "cleanup_session refuses a session whose status cannot be read");
+        assertEqual(refused.refused, true, "the refusal is explicit");
+        assertEqual(refused.status, "Unreadable", "the refusal names the failed read");
+        assertEqual(await isLive(catalog, unreadable), true, "the row stays after a refused cleanup");
+
+        // prune_orchestrations: soft-deletes only NotFound; a failed read is skipped and counted; a live row stays.
+        const pruned = await findTool(tools, "prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: 5 });
+        assertEqual(pruned.ok, true, "prune ran");
+        assertEqual(pruned.cmsCleanedUp, 1, "prune soft-deleted exactly the NotFound row");
+        assertEqual(pruned.cmsUnreadable, 1, "prune counted the failed read");
+        assertEqual(await isLive(catalog, gone), false, "the NotFound row is soft-deleted");
+        assertEqual(await isLive(catalog, unreadable), true, "the row whose read failed is not deleted");
+        assertEqual(await isLive(catalog, live), true, "the live row is kept");
+        console.log("  ✓ a failed status read deletes nothing; NotFound is deleted; a live session stays");
+    } finally {
+        await catalog.close();
+    }
+}
+
+async function testPruneKeepsRecentNotFound(env) {
+    const catalog = await createCatalog(env);
+    try {
+        // A session created a moment ago has no orchestration until its first turn: NotFound, but not older than the cutoff.
+        const fresh = randomUUID();
+        await catalog.createSession(fresh);
+        const tools = createSweeperTools({ catalog, duroxideClient: makeStubDuroxide(new Map([[`session-${fresh}`, { status: "NotFound" }]]),
+            { status: "Running" }), factStore: null });
+        const pruned = await findTool(tools, "prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: 5 });
+        assertEqual(pruned.cmsCleanedUp, 0, "a recent NotFound row is not deleted");
+        assertEqual(await isLive(catalog, fresh), true, "the new session stays");
+        console.log("  ✓ prune keeps a NotFound row younger than its cutoff");
+    } finally {
+        await catalog.close();
+    }
+}
+
 describe("Sweeper cleanup guardrails", () => {
     beforeAll(async () => { await preflightChecks(); });
 
@@ -316,5 +398,13 @@ describe("Sweeper cleanup guardrails", () => {
 
     it("a stale Workflow session is neither listed nor cleaned; its owner's cleanup removes it", { timeout: TIMEOUT }, async () => {
         await testWorkflowSessionIsNeverSwept(getEnv());
+    });
+
+    it("a failed status read deletes nothing in scan, cleanup or prune; prune deletes NotFound and keeps a live session", { timeout: TIMEOUT }, async () => {
+        await testFailedReadDeletesNothing(getEnv());
+    });
+
+    it("prune keeps a NotFound row younger than its cutoff", { timeout: TIMEOUT }, async () => {
+        await testPruneKeepsRecentNotFound(getEnv());
     });
 });
