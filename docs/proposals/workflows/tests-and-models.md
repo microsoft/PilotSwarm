@@ -137,7 +137,7 @@ Each predicate's definition and line is linked in [formal-modules.md](formal-mod
 | Named fork-join | 2026-11-08 fj3: 91 as expected, 48 pass and 43 expected violations | Bounded graphs, not arbitrary graph proof |
 | Idle-wake | 2026-11-08 so5b: 11 as expected | Four cases now retired with the old controller; seven active remain |
 | Continued session | Earlier 89 cases all checked across batches, including two liveness cases finally passing with 3,600 s limit | Current inventory also contains later failed-turn cases |
-| Terminal agent-turn failure | 2026-11-10 tf1: 63 then 72 as expected across `WfAgent`, `OwnedRetry` and `WfContinuedSession` | Group totals, bound through correspondence to `2a6e6912`, not per-module totals |
+| Terminal agent-turn failure | 2026-11-10 tf1: 63 then 72 as expected across `WfAgent`, `OwnedRetry` and `WfContinuedSession` | Group totals, bound through correspondence to `069eca30`, not per-module totals |
 | Paired request | 2026-11-01/02: 14 of 42 run; three pass, seven expected violations, four partial | 28 not run; full-bound holds timed out |
 | Recipient intake | 2026-11-01/02: 70 of 113 run; 23 pass, 46 expected violations, one model error | 43 not run; exposure code-to-intent refinement has no valid result |
 | Request variant B | 2026-11-02: 21 of 36 run; four pass and 17 expected violations | Fifteen variant-A cases were not run; results do not transfer across variants |
@@ -156,8 +156,8 @@ A **correspondence** maps model actions and invariants to source functions at a 
 | `docs/formal/session-orchestration/CORRESPONDENCE-bb162ed8-ws2.md` | Shutdown deadline and overlap |
 | `docs/formal/session-orchestration/CORRESPONDENCE-latest-1083.md` | Frozen 1.0.82 to current 1.0.83 paths, handoff, refresh and merge |
 | `docs/formal/workflow/fork-join/CORRESPONDENCE-cf2a3141.md` | Named-branch implementation and atomic join/stop fixes |
-| `docs/formal/workflow/continued-session/CORRESPONDENCE-2a6e6912.md` | Continued-agent lifecycle and visit fences |
-| `docs/formal/workflow/orchestration/CORRESPONDENCE-tf1-2a6e6912.md` | Terminal agent-turn failure across three models |
+| `docs/formal/workflow/continued-session/CORRESPONDENCE-069eca30.md` | Continued-agent lifecycle and visit fences |
+| `docs/formal/workflow/orchestration/CORRESPONDENCE-tf1-069eca30.md` | Terminal agent-turn failure across three models |
 
 The paired model folders additionally use `CODE-MODEL`, `CODE-AUTH-AUDIT`, `CLOCKFIX`, `W2-*`, `EXPOSURE-*`, `CANCEL-ORDER` and `SPEC-CANDIDATE-*` notes for their mappings. Their filenames and roles are indexed in their READMEs. Earlier pins can refer to old paths/names; those references must not be read as line numbers at `4fa702dc`.
 
