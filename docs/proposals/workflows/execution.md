@@ -266,16 +266,15 @@ sequenceDiagram
   Sweep->>DX: deleteInstance for eligible controllers
 ```
 
-Evidence at the source pin: `packages/sdk/src/sweeper-tools.ts:65-115`, `:140-184`, `:310-365`; `packages/sdk/src/workflow/store.ts:3366-3400`. A begun or admitted Workflow with a missing controller stays a recovery problem, never a cleanup candidate. Bulk prune also reconciles NotFound CMS rows with the same active-run guard. The ordinary first-start race of the source pin is closed later in this PR (below).
+Evidence at the source pin: `packages/sdk/src/sweeper-tools.ts:65-115`, `:140-184`, `:310-365`; `packages/sdk/src/workflow/store.ts:3366-3400`. A begun or admitted Workflow with a missing controller stays a recovery problem, never a cleanup candidate. Bulk prune also reconciles NotFound CMS rows with the same active-run guard. The ordinary first-start race of the source pin remains, as on main; later in this PR the row-version check narrows it (below).
 
 ### Done in this PR after the source pin: cleanup
 
 These are not represented by `4fa702dc`:
 
-- `bddbd878`: the final check compares the row's exact version (read before the session is judged) under the row's lock; a session's first message writes its row and starts its orchestration in one CMS transaction on that lock, so the first message and the Sweeper serialize; the cascade locks the sessions it would delete without waiting, and refuses when one is held.
+- `bddbd878`: the final check compares the row's exact version (read before the session is judged) under the row's lock, so a first message's row update after that read makes it refuse; the cascade locks the sessions it would delete without waiting, and refuses when one is held. (Its fenced first start, and `50ad6493`'s bound on it, were reverted: a first message starts its orchestration, then updates the row, as on main. A first message can still race the cleanup between those two steps.)
 - `5dcfc349` (**DR-01**): a session whose first message was accepted is never deleted because Duroxide reports NotFound, at any age; only a terminal status or an ended session state shows its end.
 - `6f59403d` (**DR-02**): the cleanup subtree is read again under its locks, and a session is never created under a deleted parent.
-- `50ad6493`: the first start waits at most 30 seconds for Duroxide's answer to the start. That bounds only this wait, not the row lock or the whole path; a start that answers late can still commit, and a retry is best-effort ([issue 291](https://github.com/microsoft/PilotSwarm/issues/291) section 1). The CMS update and the start are serialized, not atomic.
 
 A durable start-intent record is a separate follow-up ([issue 291](https://github.com/microsoft/PilotSwarm/issues/291) section 1), not part of these fixes. See [Done in this PR](known-issues.md#done-in-this-pr-after-the-source-pin).
 

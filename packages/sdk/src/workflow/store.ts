@@ -3381,9 +3381,8 @@ export class WorkflowStore {
     /**
      * The Sweeper's final check and soft delete of one session (reviews AS-02, AR-01..AR-03), in one transaction under the
      * session row's lock (FOR NO KEY UPDATE). Every run admission (startLive, startTest: lockLiveSession) takes that lock
-     * first, so each either commits before the check, which then refuses, or waits for the delete and then finds the
-     * session deleted and does nothing. A session's first message is not fenced: it starts the orchestration, then
-     * updates the row, as on main; that update changes the row's version, so a check that comes after it refuses.
+     * first, so each either commits before the check, which then refuses, or waits for the delete and finds it deleted. A
+     * first message is not fenced (as on main): its row update after the Sweeper's read changes the version: Changed.
      *
      * Under the lock, it refuses (deleting nothing) when the row:
      * - is gone or deleted, or no longer has the exact version the Sweeper read (sweeperRowVersion): Changed;

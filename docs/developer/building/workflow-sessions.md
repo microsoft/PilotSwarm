@@ -1003,37 +1003,29 @@ becomes a tombstone. Cleaning an ended session removes all its descendants
 with it, whatever their state: a parent's lifecycle owns its children's, so
 any run still active under it (a Workflow child's or a test bench's) ends
 with it, as an explicit delete would end it. The final check and the delete
-are one transaction under the session row's lock. Every run admission and a
-session's first message (the start of its orchestration) take that lock
-first, so whichever commits first decides:
+are one transaction under the session row's lock. Every run admission takes
+that lock first, so whichever commits first decides:
 
 - The Sweeper reads the row's version before it judges the session, and
   refuses unless the row still has that exact version (any update changes
-  it, whatever its timestamps). A run admitted, or a first message sent,
-  after that read makes the cleanup refuse and delete nothing.
-- An admission or a first message that comes after the delete finds the
-  session deleted and does nothing (a first message is refused with
-  `SESSION_DELETED`).
-- A first message's row update and its orchestration start are serialized
-  with the delete, not atomic: the start is written to the durable
-  provider's own store, which a rollback of the session row does not undo.
-  The send waits at most 30 seconds for the provider's answer to the start.
-  That bounds only this wait, not the whole first message, and the session
-  row's lock can be held somewhat longer than 30 seconds. When the start
-  fails or does not answer in time, the row is left as it was and the send
-  fails. A start that answers late can still commit in the provider after
-  the send failed. Sending again is a best-effort retry; reconciling such a
-  start is a follow-up
-  ([issue 291](https://github.com/microsoft/PilotSwarm/issues/291), section 1).
-- An ordinary session whose first message was accepted (its orchestration
-  was started) is never taken as ended because its orchestration reads
+  it, whatever its timestamps). A run admitted, or a first message's row
+  update, after that read makes the cleanup refuse and delete nothing.
+- An admission that comes after the delete finds the session deleted and
+  does nothing.
+- A session's first message is not fenced, as on main: it starts the
+  orchestration, then updates the row, then queues the prompt. It can still
+  race a cleanup: a Sweeper whose final check runs between the start and the
+  row update deletes the session, and the started turn then finds it deleted
+  and runs no model. The row-version check narrows that race to that window.
+- An ordinary session whose first message was accepted (its row records its
+  orchestration) is never taken as ended because its orchestration reads
   NotFound, at any age: a start that no worker has picked up yet reads
   NotFound for as long as it waits. Only a terminal status (Completed, Failed,
   Terminated) or an ended session state (completed, cancelled, failed) shows
   that it ended. A session with no first message yet is a candidate after the
   grace, as before.
-- The Sweeper waits for the target's own lock (the lock admissions and first
-  messages take). It then locks every other session the delete would change
+- The Sweeper waits for the target's own lock (the lock admissions take).
+  It then locks every other session the delete would change
   before it changes any, without waiting: when another transaction holds one,
   it refuses at once and deletes nothing. It reads that set again under those
   locks and refuses if it grew. A session is created only after its parent's
