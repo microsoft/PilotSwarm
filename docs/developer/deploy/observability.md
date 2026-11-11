@@ -25,9 +25,10 @@ is enabled. The portal does not preload worker telemetry.
 | `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` | SDK default | Standard OTLP Sum temporality preference. Use `cumulative` or `delta` only when the receiver supports it. |
 | `PILOTSWARM_OTEL_HISTOGRAMS` | `false` | `true` or `false`. Enables only PilotSwarm's two duration histograms when explicitly requested; it does not disable third-party instrumentation in the process. |
 
-This bootstrap uses a shared OTLP HTTP base URL and headers for the selected
-signals. Signal-specific endpoints/headers, OTLP gRPC, and automatic instrumentation
-configuration are not supported here.
+This bootstrap uses only a shared OTLP HTTP base URL and headers for the
+selected signals. Signal-specific endpoint, header, certificate,
+client-certificate, and client-key settings are rejected at startup. OTLP gRPC
+and automatic instrumentation configuration are not supported here.
 
 When an endpoint is configured, unknown signal values, invalid URLs, invalid
 headers, invalid intervals, or invalid histogram settings fail worker startup.
@@ -56,7 +57,7 @@ before deployment.
 | --- | --- | --- | --- |
 | `pilotswarm.turns` | Counter | `result=completed,error,cancelled,stopped,yielded` | Finished activity attempts, including errors and retries. Actions such as wait or input requests are yields, not failures. |
 | `pilotswarm.tokens` | Counter | `direction=input,output,cache_read,cache_write` | Usage increments observed during a turn, added once when the attempt finishes. Partial usage from a failed/cancelled attempt is included. |
-| `pilotswarm.tool.calls` | Counter | `result=success,error` | Observed tool completions. An unfinished tool start is not falsely counted as success. |
+| `pilotswarm.tool.calls` | Counter | `result=success,error` | Observed parent and native-child tool completions. An unfinished tool start is not falsely counted as success. |
 | `pilotswarm.lifecycle.operations` | Counter | `operation=hydration,dehydration`; `result=completed,error,lossy_handoff,checkpoint_fallback,superseded,cancelled` | Legacy hydrate/dehydrate activities and actual modern snapshot restore/commit operations, including lossy recreation. |
 | `pilotswarm.turn.duration` | Histogram, seconds | Same `result` as turns | Monotonic wall duration of the activity attempt, including lock wait, tools, persistence and other runtime work. Explicit opt-in only. |
 | `pilotswarm.lifecycle.duration` | Histogram, seconds | Same lifecycle labels | Monotonic wall duration of the instrumented lifecycle operation. Explicit opt-in only. |

@@ -24,7 +24,16 @@ const run = (env, code = offScript) => execute(process.execPath, [
 ], { env: { PATH: process.env.PATH, ...env }, timeout: 15_000 });
 
 test("no endpoint and SDK disabled leave providers unregistered, including invalid ignored settings", async () => {
-    for (const env of [{}, { OTEL_EXPORTER_OTLP_ENDPOINT: endpoint, OTEL_SDK_DISABLED: "true", OTEL_METRICS_EXPORTER: "invalid" }]) {
+    for (const env of [
+        {},
+        { OTEL_EXPORTER_OTLP_METRICS_HEADERS: "PRIVATE_VALUE" },
+        {
+            OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+            OTEL_SDK_DISABLED: "true",
+            OTEL_METRICS_EXPORTER: "invalid",
+            OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY: "PRIVATE_VALUE",
+        },
+    ]) {
         const { stdout, stderr } = await run(env);
         assert.match(stdout, /"enabled":false/);
         assert.match(stdout, /"spanRecording":false/);
@@ -69,13 +78,37 @@ test("invalid configured values fail without echoing endpoint credentials or hea
     }
 });
 
+test("signal-specific routing and TLS credential settings fail without echoing values", async () => {
+    for (const key of [
+        "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+        "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE",
+        "OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE",
+        "OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE",
+        "OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE",
+        "OTEL_EXPORTER_OTLP_METRICS_CLIENT_KEY",
+        "OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY",
+    ]) {
+        await assert.rejects(run({
+            OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+            [key]: key.endsWith("_ENDPOINT") ? "https://PRIVATE_VALUE.invalid/" : "PRIVATE_VALUE",
+        }), error => {
+            assert.match(error.stderr, new RegExp(`\\[otel\\] Invalid ${key} configuration\\.`));
+            assert.doesNotMatch(error.stderr, /PRIVATE_VALUE/);
+            return true;
+        });
+    }
+});
+
 async function collector(t, status = 200) {
     const requests = [];
     const server = http.createServer((request, response) => {
         const chunks = [];
         request.on("data", chunk => chunks.push(chunk));
         request.on("end", () => {
-            requests.push({ path: request.url, body: JSON.parse(Buffer.concat(chunks).toString()) });
+            requests.push({ path: request.url, headers: request.headers, body: JSON.parse(Buffer.concat(chunks).toString()) });
             response.writeHead(status, { "content-type": "application/json" });
             response.end("{}");
         });
@@ -84,6 +117,24 @@ async function collector(t, status = 200) {
     t.after(() => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
     return { requests, url: `http://127.0.0.1:${server.address().port}` };
 }
+
+test("the loopback receiver receives only configured shared headers", async t => {
+    const { requests, url } = await collector(t);
+    await run({
+        OTEL_EXPORTER_OTLP_ENDPOINT: url,
+        OTEL_EXPORTER_OTLP_HEADERS: "authorization=Shared%20credential",
+        OTEL_METRIC_EXPORT_INTERVAL: "1000000",
+    }, `
+        import { shutdownTelemetry } from ${JSON.stringify(register)};
+        import { metrics } from "@opentelemetry/api";
+        metrics.getMeter("test").createCounter("test.counter").add(1);
+        await shutdownTelemetry();
+    `);
+    const metricRequests = requests.filter(request => request.path === "/v1/metrics");
+    assert.ok(metricRequests.length > 0);
+    assert.ok(metricRequests.every(request => request.headers.authorization === "Shared credential"));
+    assert.ok(metricRequests.every(request => request.headers["x-signal-secret"] === undefined));
+});
 
 test("shutdown flushes real OTLP metrics without traces, logs, broad instrumentation or private labels", async t => {
     const { requests, url } = await collector(t);

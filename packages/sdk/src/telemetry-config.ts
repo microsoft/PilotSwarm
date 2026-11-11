@@ -4,6 +4,25 @@ function configError(key: string): Error {
     return new Error(`[otel] Invalid ${key} configuration.`);
 }
 
+const unsupportedSignalSpecificSettings = [
+    "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE",
+    "OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE",
+    "OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE",
+    "OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE",
+    "OTEL_EXPORTER_OTLP_METRICS_CLIENT_KEY",
+    "OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY",
+] as const;
+
+function rejectUnsupportedSignalSpecificSettings(env: NodeJS.ProcessEnv): void {
+    for (const key of unsupportedSignalSpecificSettings) {
+        if (env[key]?.trim()) throw configError(key);
+    }
+}
+
 function positiveInteger(env: NodeJS.ProcessEnv, key: string, fallback: number): number {
     const raw = env[key] ?? String(fallback);
     if (!/^[1-9]\d*$/.test(raw)) throw configError(key);
@@ -33,6 +52,7 @@ export function telemetryConfig(env: NodeJS.ProcessEnv = process.env): Telemetry
     if (env.OTEL_SDK_DISABLED?.trim().toLowerCase() === "true" || !env.OTEL_EXPORTER_OTLP_ENDPOINT) {
         return null;
     }
+    rejectUnsupportedSignalSpecificSettings(env);
     let endpoint: URL;
     try {
         endpoint = new URL(env.OTEL_EXPORTER_OTLP_ENDPOINT);

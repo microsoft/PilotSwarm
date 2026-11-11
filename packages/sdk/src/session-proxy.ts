@@ -4142,7 +4142,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     const toolName = typeof eventData?.toolName === "string" ? eventData.toolName
                         : typeof eventData?.name === "string" ? eventData.name : undefined;
                     if (toolName) turnTelemetry.toolNames.add(toolName);
-                } else if (event.eventType === "tool.execution_complete") {
+                } else if (event.eventType === "tool.execution_complete" || event.eventType === "native.tool.execution_complete") {
                     const failed = isFailureToolCompletion(event.data);
                     if (failed) turnTelemetry.toolErrors += 1;
                     runtimeMetrics().toolCall(failed ? "error" : "success");

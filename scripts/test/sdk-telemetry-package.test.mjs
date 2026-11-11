@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { Client } from "pg";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
+
+function quotedIdentifier(identifier) {
+    return `"${identifier.replaceAll("\"", "\"\"")}"`;
+}
 
 async function withCollector(t) {
     const requests = [];
@@ -31,6 +37,23 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
     if (!store) {
         throw new Error("PILOTSWARM_SMOKE_DATABASE_URL must point to an isolated disposable PostgreSQL database.");
     }
+    const schemaSuffix = randomUUID().replaceAll("-", "");
+    const storage = {
+        duroxideSchema: "ps_smoke_d_" + schemaSuffix,
+        cmsSchema: "ps_smoke_c_" + schemaSuffix,
+        factsSchema: "ps_smoke_f_" + schemaSuffix,
+    };
+    t.after(async () => {
+        const client = new Client({ connectionString: store });
+        await client.connect();
+        try {
+            for (const schema of Object.values(storage)) {
+                await client.query(`DROP SCHEMA IF EXISTS ${quotedIdentifier(schema)} CASCADE`);
+            }
+        } finally {
+            await client.end();
+        }
+    });
     const dir = await mkdtemp(path.join(os.tmpdir(), "pilotswarm-sdk-telemetry-package-"));
     t.after(() => rm(dir, { recursive: true, force: true }));
     const { requests, endpoint } = await withCollector(t);
@@ -46,7 +69,6 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
 
     const program = `
         import assert from "node:assert/strict";
-        import { randomUUID } from "node:crypto";
         import http from "node:http";
         import { mkdtemp, rm, writeFile } from "node:fs/promises";
         import os from "node:os";
@@ -61,12 +83,7 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
         const temp = await mkdtemp(path.join(os.tmpdir(), "pilotswarm-sdk-consumer-"));
         const store = process.env.PILOTSWARM_SMOKE_DATABASE_URL;
         assert.ok(store, "the smoke database URL is required");
-        const schemaSuffix = randomUUID().replaceAll("-", "");
-        const storage = {
-            duroxideSchema: "ps_smoke_d_" + schemaSuffix,
-            cmsSchema: "ps_smoke_c_" + schemaSuffix,
-            factsSchema: "ps_smoke_f_" + schemaSuffix,
-        };
+        const storage = ${JSON.stringify(storage)};
         const model = await new Promise(resolve => {
             const requests = [];
             const server = http.createServer((request, response) => {

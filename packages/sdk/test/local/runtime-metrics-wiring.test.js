@@ -41,6 +41,21 @@ describe("actual runTurn metric wiring", () => {
         expect(JSON.stringify(observed.records)).not.toMatch(/PRIVATE_|private-session|owner|model|toolName/);
     });
 
+    it("counts parent and native tool completions, but not unfinished starts", async () => {
+        const h = makeRunTurnHarness({ turn: async opts => {
+            opts.onEvent({ eventType: "tool.execution_start", data: { toolName: "PRIVATE_PARENT" } });
+            opts.onEvent({ eventType: "tool.execution_complete", data: { success: true } });
+            opts.onEvent({ eventType: "native.tool.execution_start", data: { toolName: "PRIVATE_NATIVE" } });
+            opts.onEvent({ eventType: "native.tool.execution_complete", data: { success: false } });
+            opts.onEvent({ eventType: "tool.execution_start", data: { toolName: "PRIVATE_UNFINISHED_PARENT" } });
+            opts.onEvent({ eventType: "native.tool.execution_start", data: { toolName: "PRIVATE_UNFINISHED_NATIVE" } });
+            return { type: "completed", content: "PRIVATE_CONTENT" };
+        } });
+        await h.runTurn("private-session");
+        expect(records("pilotswarm.tool.calls").map(record => record.attributes.result)).toEqual(["success", "error"]);
+        expect(JSON.stringify(observed.records)).not.toMatch(/PRIVATE_|private-session|toolName/);
+    });
+
     it.each([
         ["error", "error"], ["wait", "yielded"], ["input_required", "yielded"],
         ["cancelled", "cancelled"], ["stopped", "stopped"],

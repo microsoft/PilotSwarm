@@ -51,6 +51,11 @@ one the receiver supports. Leave the endpoint unset, or set
 `OTEL_SDK_DISABLED=true`, to disable providers. No automatic HTTP, database,
 model-client, filesystem, or resource collectors are installed.
 
+Use only the shared `OTEL_EXPORTER_OTLP_ENDPOINT` and
+`OTEL_EXPORTER_OTLP_HEADERS` routing settings. Signal-specific endpoint,
+header, certificate, client-certificate, and client-key settings are rejected
+at startup so credentials cannot be sent to the wrong receiver.
+
 `PILOTSWARM_OTEL_HISTOGRAMS=false` disables only the two PilotSwarm duration
 histograms. It does not disable instruments registered by other libraries that
 share the process or a provider. Use a dedicated Collector metrics receiver with
