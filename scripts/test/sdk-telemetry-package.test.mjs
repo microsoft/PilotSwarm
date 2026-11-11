@@ -142,13 +142,13 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
             for (const name of ["checkpoint", "dehydrate"]) {
                 const original = sessionStore[name].bind(sessionStore);
                 sessionStore[name] = async (...args) => {
-                    console.log(JSON.stringify({ debug: `store.${name}.start`, args: args.slice(0, 2) }));
+                    console.log(JSON.stringify({ debug: "store." + name + ".start", args: args.slice(0, 2) }));
                     try {
                         const result = await original(...args);
-                        console.log(JSON.stringify({ debug: `store.${name}.complete`, args: args.slice(0, 2) }));
+                        console.log(JSON.stringify({ debug: "store." + name + ".complete", args: args.slice(0, 2) }));
                         return result;
                     } catch (error) {
-                        console.log(JSON.stringify({ debug: `store.${name}.failed`, error: String(error) }));
+                        console.log(JSON.stringify({ debug: "store." + name + ".failed", error: String(error) }));
                         throw error;
                     }
                 };
