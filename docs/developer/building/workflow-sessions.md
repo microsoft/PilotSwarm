@@ -485,9 +485,11 @@ needs a test. People do not run tests themselves.
   `list_sessions` and the portal leave it out), and it never tells the session
   anything: the report is the answer. A call waits up to 4 minutes (a turn
   with no event for 5 minutes is treated as lost), then answers with the
-  test's id; `test` with `test_id` reads it again. A definition keeps its
-  newest 5 ended tests: older ended ones are deleted when a test starts and
-  again when one ends; a running test is never deleted.
+  test's id; `test` with `test_id` reads it again. A definition keeps at most
+  its newest 5 ended tests: older ended ones are deleted when a test starts
+  and again when one ends; a running test is never deleted. An ended test is
+  kept until then or until the Sweeper cleans it, like any finished session
+  (see [Stopping a workflow](#stopping-a-workflow)).
 - A test lives only as long as its session and its definition. A test is made
   only while its session is live and its definition is not deleted (checked
   under their locks). When the owner session ends (completed, canceled, failed) or is
@@ -946,6 +948,20 @@ and tells no one. A paused run ends too, and a graceful stop in progress is
 replaced by the cancel. On a run that already ended, the request is recorded
 with that end and changes nothing. Whatever ended the run first decides who
 is told: a later command that lost changes nothing.
+
+A finished Workflow is kept until the Sweeper cleans it, like any finished
+session. The Sweeper reads a Workflow session's status from its latest run's
+controller (`session-<id>` for its live run, `wft-<run>` for a test bench's
+test run): while that controller runs (or any run the store counts as
+running still has a running controller), the Workflow is live and is kept.
+Once the controller has ended and the session is older than the Sweeper's
+grace, `cleanup_session` deletes it; once the controller instance is gone,
+`prune_orchestrations` deletes it too. A Workflow session with no run yet (a
+draft, or one not yet started) is never a cleanup candidate. A status read
+that fails, of the controller or of the Workflow's runs, deletes nothing.
+Deleting a Workflow session goes through the normal path: its definition
+becomes a tombstone, and its owner session's cleanup removes it with the
+owner's other descendants.
 
 The kill reaches the worker when the running script state next renews its
 activity lock. The lock times out after `PILOTSWARM_WORKER_LOCK_TIMEOUT_MS`

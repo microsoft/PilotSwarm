@@ -19,9 +19,11 @@
  *     sessionId), refuses live/idle children, and preserves the live parent
  *   - cleanup_session batch (sessionIds[]) gates each target independently:
  *     cleans eligible ones, refuses live roots, de-dupes
- *   - a stale Workflow session (a test bench, whose session-<id> status reads
- *     NotFound) is neither listed nor cleaned; its finished owner session's
- *     cleanup still removes it as a descendant
+ *   - a Workflow session is read by its latest run's controller (session-<id>
+ *     for its live run, wft-<run> for a test bench's): a live Workflow and a
+ *     running test stay; a finished Workflow and an ended test are cleaned; one
+ *     with no run yet (a draft) is never a candidate; a failed read of its runs
+ *     deletes nothing; its finished owner session's cleanup removes it
  *   - a status read that fails deletes nothing: scan, cleanup_session and
  *     prune_orchestrations skip such a session; prune soft-deletes a stale row
  *     only when its status is NotFound, and keeps one whose orchestration lives
@@ -249,51 +251,156 @@ async function testBatchCleansAllEligibleAndDedupes(env) {
     }
 }
 
-async function testWorkflowSessionIsNeverSwept(env) {
+/**
+ * A Workflow session with its definition and, for each run given, a run row whose controller is `controller` (as the
+ * store records it: `session-<id>` for its live run, `wft-<run>` for a test run). `status` is the store's run status.
+ */
+async function makeWorkflow(catalog, db, schema, { parent, bench = false, runs = [] }) {
+    const id = randomUUID();
+    const claim = await catalog.createWorkflowSession(id, {
+        parentSessionId: parent, owner: null,
+        creationConfig: bench ? { agentTest: { definitionId: "def-1", revision: 1 } } : {},
+        ...(bench ? { service: { kind: "workflow-test", of: null } } : {}),
+    });
+    assertEqual(claim.created, true, "the Workflow session is claimed");
+    await db.query(`INSERT INTO ${schema}.workflow_definitions (workflow_session_id, parent_session_id, api_version, state, current_revision)
+        VALUES ($1, $2, 'pilotswarm.dev/v1', 'draft', 1)`, [id, parent]);
+    await db.query(`INSERT INTO ${schema}.workflow_revisions (workflow_session_id, revision, yaml, yaml_sha256, valid, diagnostics, ir, ir_sha256, actor)
+        VALUES ($1, 1, 'y', 'ys', TRUE, '[]', '{}', 'is', '{"kind":"system","name":"sweeper-test"}')`, [id]);
+    const runIds = [];
+    for (const [index, run] of runs.entries()) {
+        const runId = randomUUID();
+        const test = run.mode === "test";
+        const controller = test ? `wft-${runId}` : `session-${id}`;
+        const ended = ["completed", "failed", "cancelled", "stopped"].includes(run.status);
+        await db.query(`INSERT INTO ${schema}.workflow_runs (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs,
+                controller_instance_id, status, test_agent_mode, start_operation_id, finished_at, created_at)
+            VALUES ($1, $2, $3, 1, 'ys', 'is', '{}', $4, $5, $6, $7, CASE WHEN $8 THEN now() END, now() - make_interval(secs => $9))`,
+        [runId, id, test ? "test" : "live", controller, run.status, test ? "mocked" : null, `op-${runId}`, ended, 100 - index]);
+        runIds.push({ runId, controller });
+    }
+    return { id, runs: runIds };
+}
+
+const runStatus = async (db, schema, runId) => (await db.query(`SELECT status FROM ${schema}.workflow_runs WHERE run_id = $1`, [runId])).rows[0]?.status;
+const definitionState = async (db, schema, id) => (await db.query(`SELECT state FROM ${schema}.workflow_definitions WHERE workflow_session_id = $1`,
+    [id])).rows[0]?.state;
+
+async function testWorkflowSessionsByTheirControllers(env) {
     const catalog = await createCatalog(env);
     const db = new pg.Pool({ connectionString: env.store, max: 1 });
     const schema = `"${env.cmsSchema}"`;
     try {
-        // A live owner session with a hidden test bench (a Workflow session). The bench's runs use wft-<runId>, so
-        // its own session-<id> status reads NotFound for as long as it is in use.
-        const ownerId = randomUUID();
-        const benchId = randomUUID();
-        await catalog.createSession(ownerId);
-        const claim = await catalog.createWorkflowSession(benchId, {
-            parentSessionId: ownerId, owner: null, creationConfig: { agentTest: { definitionId: "def-1", revision: 1 } },
-            service: { kind: "workflow-test", of: null },
-        });
-        assertEqual(claim.created, true, "the bench is claimed");
-        await db.query(
-            `INSERT INTO ${schema}.workflow_definitions (workflow_session_id, parent_session_id, api_version, state, current_revision)
-             VALUES ($1, $2, 'pilotswarm.dev/v1', 'draft', 1)`, [benchId, ownerId]);
-        // Stale: its row has not moved for an hour (a test waiting in one state does not touch it).
-        await db.query(`UPDATE ${schema}.sessions SET updated_at = now() - interval '1 hour' WHERE session_id IN ($1, $2)`,
-            [benchId, ownerId]);
+        const owner = randomUUID();
+        await catalog.createSession(owner);
+        // A live Workflow (its controller session-<id> runs), a finished one (its controller is gone), a running test bench
+        // (wft-<run> runs), an ended bench (its wft-<run> is gone), and a Workflow with no run yet (a draft).
+        const live = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "running" }] });
+        const finished = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "completed" }] });
+        const benchRunning = await makeWorkflow(catalog, db, schema, { parent: owner, bench: true, runs: [{ mode: "test", status: "running" }] });
+        const benchEnded = await makeWorkflow(catalog, db, schema, { parent: owner, bench: true, runs: [{ mode: "test", status: "completed" }] });
+        const draft = await makeWorkflow(catalog, db, schema, { parent: owner });
+        // A Workflow whose latest run ended while an earlier test run still runs: the running one keeps it live.
+        const mixed = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "test", status: "running" }, { mode: "live", status: "completed" }] });
+        const all = [live, finished, benchRunning, benchEnded, draft, mixed];
+        await ageSessions(env, all.map(w => w.id), 60);
 
-        const status = new Map([[`session-${ownerId}`, { status: "Running" }]]);
-        const tools = createSweeperTools({ catalog, duroxideClient: makeStubDuroxide(status), factStore: null });
-        const scan = findTool(tools, "scan_completed_sessions");
-        const cleanup = findTool(tools, "cleanup_session");
+        // A status read of session-<id> would say NotFound for every bench and draft: only the controllers below exist.
+        const status = new Map([
+            [`session-${owner}`, { status: "Running" }],
+            [live.runs[0].controller, { status: "Running" }],
+            [benchRunning.runs[0].controller, { status: "Running" }],
+            [mixed.runs[0].controller, { status: "Running" }],
+        ]);
+        const duroxide = makeStubDuroxide(status, { status: "NotFound" });
+        const read = [];
+        const getStatus = duroxide.getStatus;
+        duroxide.getStatus = async id => { read.push(id); return getStatus(id); };
+        const tools = createSweeperTools({ catalog, duroxideClient: duroxide, factStore: null });
 
-        const scanned = await scan.handler({ graceMinutes: 5 });
-        assertEqual(scanned.sessions.some(s => s.sessionId === benchId), false, "the scan does not list a Workflow session");
-        const refused = await cleanup.handler({ sessionId: benchId, graceMinutes: 0 });
-        assertEqual(refused.ok, false, "cleanup_session refuses a Workflow session");
-        assertEqual(refused.refused, true, "the refusal is explicit");
-        assertEqual(await isLive(catalog, benchId), true, "the bench's row is intact");
-        const kept = await db.query(`SELECT state FROM ${schema}.workflow_definitions WHERE workflow_session_id = $1`, [benchId]);
-        assertEqual(kept.rows[0]?.state, "draft", "the bench's definition is intact");
+        // scan lists exactly the two whose controllers are gone, and reads each Workflow's own controller.
+        const scanned = await findTool(tools, "scan_completed_sessions").handler({ graceMinutes: 5 });
+        const listed = new Set(scanned.sessions.map(s => s.sessionId));
+        for (const w of all) assertEqual(listed.has(w.id), w === finished || w === benchEnded, `scan lists ${w.id.slice(0, 8)} only when its controller is gone`);
+        assertEqual(read.includes(benchRunning.runs[0].controller), true, "the bench is read by its wft-<run> controller");
+        assertEqual(read.includes(`session-${benchRunning.id}`), false, "the bench's session-<id> is not read");
 
-        // Its owner finishes: cleaning the owner still removes the bench, as a descendant.
-        status.set(`session-${ownerId}`, { status: "Completed" });
-        const cleaned = await cleanup.handler({ sessionId: ownerId, graceMinutes: 0 });
+        // cleanup_session refuses the live ones and the one with no run.
+        for (const w of [live, benchRunning, draft, mixed]) {
+            const refused = await findTool(tools, "cleanup_session").handler({ sessionId: w.id, graceMinutes: 0 });
+            assertEqual(refused.ok, false, `cleanup refuses ${w.id.slice(0, 8)}`);
+            assertEqual(await isLive(catalog, w.id), true, `${w.id.slice(0, 8)} stays`);
+        }
+        assertEqual((await findTool(tools, "cleanup_session").handler({ sessionId: draft.id, graceMinutes: 0 })).status, "NoRun", "a draft is refused for having no run");
+
+        // cleanup_session cleans the finished Workflow through the normal path: soft-deleted, its definition a tombstone,
+        // its ended run unchanged; nothing live is touched.
+        const cleaned = await findTool(tools, "cleanup_session").handler({ sessionId: finished.id, graceMinutes: 0 });
+        assertEqual(cleaned.ok, true, "the finished Workflow is cleaned");
+        assertEqual(await isLive(catalog, finished.id), false, "the finished Workflow is soft-deleted");
+        assertEqual(await definitionState(db, schema, finished.id), "deleted", "its definition is a tombstone");
+        assertEqual(await runStatus(db, schema, finished.runs[0].runId), "completed", "its ended run is unchanged");
+
+        // prune soft-deletes the ended bench (its wft-<run> is NotFound) and keeps every live one and the draft.
+        const pruned = await findTool(tools, "prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: 5 });
+        assertEqual(pruned.ok, true, "prune ran");
+        assertEqual(await isLive(catalog, benchEnded.id), false, "the ended bench is soft-deleted");
+        assertEqual(await runStatus(db, schema, benchEnded.runs[0].runId), "completed", "the ended test run is unchanged");
+        for (const w of [live, benchRunning, draft, mixed]) assertEqual(await isLive(catalog, w.id), true, `prune keeps ${w.id.slice(0, 8)}`);
+        assertEqual(await runStatus(db, schema, live.runs[0].runId), "running", "the live run still runs");
+        assertEqual(await runStatus(db, schema, benchRunning.runs[0].runId), "running", "the running test still runs");
+        assertEqual(await definitionState(db, schema, draft.id), "draft", "the draft's definition is untouched");
+        console.log("  ✓ Workflow sessions are read by their controllers: live and running tests stay, ended ones are cleaned, a draft stays");
+    } finally {
+        await db.end();
+        await catalog.close();
+    }
+}
+
+async function testWorkflowStoreReadFailureDeletesNothing(env) {
+    const catalog = await createCatalog(env);
+    const db = new pg.Pool({ connectionString: env.store, max: 1 });
+    const schema = `"${env.cmsSchema}"`;
+    try {
+        const owner = randomUUID();
+        await catalog.createSession(owner);
+        const finished = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "completed" }] });
+        await ageSessions(env, [finished.id], 60);
+        // The catalog answers, but its Workflow store's read of the runs fails.
+        const failing = Object.create(catalog);
+        failing.workflowStore = () => ({ listRuns: async () => { throw new Error("connection terminated unexpectedly"); } });
+        const tools = createSweeperTools({ catalog: failing,
+            duroxideClient: makeStubDuroxide(new Map([[`session-${owner}`, { status: "Running" }]]), { status: "NotFound" }), factStore: null });
+        const scanned = await findTool(tools, "scan_completed_sessions").handler({ graceMinutes: 5 });
+        assertEqual(scanned.sessions.some(s => s.sessionId === finished.id), false, "a failed store read is not a candidate");
+        assertEqual(scanned.unreadable?.includes(finished.id), true, "the failed store read is reported");
+        const refused = await findTool(tools, "cleanup_session").handler({ sessionId: finished.id, graceMinutes: 0 });
+        assertEqual(refused.status, "Unreadable", "cleanup refuses on a failed store read");
+        const pruned = await findTool(tools, "prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: 5 });
+        assertEqual(pruned.cmsUnreadable >= 1, true, "prune counts the failed store read");
+        assertEqual(await isLive(catalog, finished.id), true, "nothing is deleted on a failed store read");
+        console.log("  ✓ a failed read of a Workflow's runs deletes nothing");
+    } finally {
+        await db.end();
+        await catalog.close();
+    }
+}
+
+async function testWorkflowWithOwnerCleanup(env) {
+    const catalog = await createCatalog(env);
+    const db = new pg.Pool({ connectionString: env.store, max: 1 });
+    const schema = `"${env.cmsSchema}"`;
+    try {
+        // A finished owner session removes its Workflow sessions with it, as any descendant.
+        const owner = randomUUID();
+        await catalog.createSession(owner);
+        const bench = await makeWorkflow(catalog, db, schema, { parent: owner, bench: true, runs: [{ mode: "test", status: "completed" }] });
+        const tools = createSweeperTools({ catalog, duroxideClient: makeStubDuroxide(new Map([[`session-${owner}`, { status: "Completed" }]])), factStore: null });
+        const cleaned = await findTool(tools, "cleanup_session").handler({ sessionId: owner, graceMinutes: 0 });
         assertEqual(cleaned.ok, true, "the finished owner session is cleaned");
-        assertEqual(await isLive(catalog, ownerId), false, "the owner session is deleted");
-        assertEqual(await isLive(catalog, benchId), false, "the bench is deleted with its owner");
-        const ended = await db.query(`SELECT state FROM ${schema}.workflow_definitions WHERE workflow_session_id = $1`, [benchId]);
-        assertEqual(ended.rows[0]?.state, "deleted", "the deleted bench's definition is a tombstone");
-        console.log("  ✓ a Workflow session is never swept on its own; its owner's cleanup removes it");
+        assertEqual(await isLive(catalog, bench.id), false, "its bench is deleted with it");
+        assertEqual(await definitionState(db, schema, bench.id), "deleted", "the bench's definition is a tombstone");
+        console.log("  ✓ a finished owner session's cleanup removes its Workflow sessions");
     } finally {
         await db.end();
         await catalog.close();
@@ -396,8 +503,16 @@ describe("Sweeper cleanup guardrails", () => {
         await testBatchCleansAllEligibleAndDedupes(getEnv());
     });
 
-    it("a stale Workflow session is neither listed nor cleaned; its owner's cleanup removes it", { timeout: TIMEOUT }, async () => {
-        await testWorkflowSessionIsNeverSwept(getEnv());
+    it("a Workflow session's status is its controller's: live Workflows and running tests stay, ended ones are cleaned, a draft stays", { timeout: TIMEOUT }, async () => {
+        await testWorkflowSessionsByTheirControllers(getEnv());
+    });
+
+    it("a failed read of a Workflow session's runs deletes nothing", { timeout: TIMEOUT }, async () => {
+        await testWorkflowStoreReadFailureDeletesNothing(getEnv());
+    });
+
+    it("a finished owner session's cleanup removes its Workflow sessions with it", { timeout: TIMEOUT }, async () => {
+        await testWorkflowWithOwnerCleanup(getEnv());
     });
 
     it("a failed status read deletes nothing in scan, cleanup or prune; prune deletes NotFound and keeps a live session", { timeout: TIMEOUT }, async () => {
