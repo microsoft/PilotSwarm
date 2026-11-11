@@ -1,5 +1,88 @@
 # Changelog
 
+## Unreleased
+
+**Upgrade: stop every worker, deploy, then start them. Do not roll the
+workers.** Session orchestration 1.0.83 becomes the default, and a worker of an
+earlier release does not have it. Such a worker that picks up a 1.0.83 session
+gives it back and tries again, and after 10 tries the session fails. To upgrade:
+
+1. Stop every worker of the deployment (scale it to zero; on the GitOps path,
+   suspend its Flux Kustomization first) and wait until no worker pod runs.
+2. Deploy this release: the workers, then the portal and the MCP server. A
+   portal, MCP server or terminal UI of this release starts new sessions at
+   1.0.83, so do not start one while a worker of an earlier release runs.
+3. Start the workers.
+
+Existing sessions keep running on the frozen 1.0.82 and move to 1.0.83 at their
+next continue-as-new, with their queued prompts, pending child updates,
+notices and model. The commands are in `deploy/scripts/README.md`
+("Upgrading to this release: stop, deploy, start") and
+`docs/developer/deploy/aks.md` ("Upgrading to orchestration 1.0.83").
+
+**Session orchestration 1.0.83 is the default.** New sessions start at 1.0.83 and
+every continue-as-new targets it; 1.0.82 is frozen and stays registered for
+sessions that are still on it. 1.0.83 adds the durable Workflow intake, and a
+person's message no longer merges into one turn with a prompt from an agent
+or the system (prompts of the same kind still merge).
+
+**Workflows are always on, with everything.** Every worker serves the full
+Workflow engine: agent, parallel and request states,
+clock waits, revision tests, named branches, per-node models and a person's
+Workflow commands, on every deployment. Every Workflow run starts at
+the one Workflow controller version, 1.0.0, and the Workflow schema is CMS
+migration 0088, whose owner-side tables migration 0089 names `session_workflow_*`. The Workflow authoring skills load on every worker, and
+every session can load them with `load_skill`, Base V2 sessions included. See
+`docs/developer/building/workflow-sessions.md`.
+
+**Workflows load per session, only when needed.** A session carries the Workflow
+tools and guidance (about 2,000 tokens, trimmed from about 10,000) only when
+Workflows are on in it. Every other session carries one short paragraph and the
+`enable_workflows` tool; when the user asks for a Workflow, or agrees when the
+model suggests one, the model calls it, and the next turn starts at once with
+the Workflow tools and continues the task (one extra model call and one
+prompt-cache miss). Once they are on, the session uses Workflows wherever they
+fit, without asking. Workflows turn on
+by themselves in a session that already has a Workflow Definition or a
+Workflow, when a Workflow's message or request arrives, for a person's saved
+definition and for Agent Smith. The details moved to the Workflow skills,
+including the new `workflow-tools` skill. `spawn_workflow` is no longer
+offered to a model; use `workflow_definition`.
+
+**Script states run by default.** `PILOTSWARM_WORKFLOW_SCRIPTS` is now an
+opt-out: unset, empty, `1`, `true` or `yes` keeps scripts on; `0`, `false`,
+`no` or `off` turns them off; any other value keeps them on, with one
+warning. To turn scripts off, set `PILOTSWARM_WORKFLOW_SCRIPTS=0` on every
+worker, the portal and the MCP server. A script runs on the worker's Node
+with the permission model: it reads and writes only its own folder, starts
+no child process and gets a clean environment. The permission model does not
+limit the network: a script can reach cluster services and the internet.
+
+**Worker egress policy.** Both worker templates now ship a NetworkPolicy,
+`copilot-runtime-worker-egress`, that denies worker pods the instance
+metadata address `169.254.169.254` and the Azure host endpoint
+`168.63.129.16` (except DNS on it) and keeps all other egress (DNS, the
+cluster, Postgres, Blob, Key Vault, model endpoints, the internet). Workflow
+scripts, agent shells and tools share the worker pod's network, and the
+metadata address would give any of them the node's managed identity token. The
+workers do not need it: GitOps workers use workload identity, and
+`deploy/k8s` workers use the keys in their Secret. It is in the GitOps worker
+base and in `deploy/k8s/worker-network-policy.yaml`, which
+`scripts/deploy-aks.sh` applies. A deployment that does not use these
+templates, or whose cluster has no network policy engine, must block worker
+pods from `169.254.169.254` itself (for example, with the AKS IMDS
+restriction) or set `PILOTSWARM_WORKFLOW_SCRIPTS=0`.
+
+`PILOTSWARM_WORKFLOW_TEST_MODE` is off by default.
+
+**Known limits, as on main.** The Copilot CLI keeps a finished session's
+memory until the worker stops: the worker does not ask the CLI to close a
+session it lets go. A session's first message reads its row, starts its
+orchestration and then updates the row, so the Sweeper's cleanup can still
+commit anywhere from that read to the update. The update defeats the cleanup
+only if it lands before the Sweeper's final locked row-version check;
+otherwise that first message is dropped.
+
 ## 0.8.10 — 2026-11-07
 
 **Always-on feature flags.** The code registry can mark a feature flag

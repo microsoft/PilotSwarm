@@ -53,8 +53,10 @@ for (const [name, hash] of Object.entries(selectorFreezeHashes)) {
     });
 }
 
-test("registry retains 1.0.74 through 1.0.81 separately and activates 1.0.82", () => {
-    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.82");
+test("registry retains 1.0.74 through 1.0.82 separately and activates a later latest version", () => {
+    const latest = DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1);
+    assert.equal(latest.handler.name, `durableSessionOrchestration_${latest.version.replaceAll(".", "_")}`);
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.82").handler.name, "durableSessionOrchestration_1_0_82");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.81").handler.name, "durableSessionOrchestration_1_0_81");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.80").handler.name, "durableSessionOrchestration_1_0_80");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.79").handler.name, "durableSessionOrchestration_1_0_79");

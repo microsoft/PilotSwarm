@@ -13,7 +13,11 @@ import { createRuntime, runLoop } from "../../src/orchestration/runtime.ts";
 import { appendToFifo, decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "../../src/orchestration/queue.ts";
 import * as lifecycle from "../../src/orchestration/lifecycle.ts";
 import * as agents from "../../src/orchestration/agents.ts";
-import { FIFO_BUCKET_COUNT, MAX_BUCKET_BYTES, MAX_FIFO_ITEM_BYTES, NON_BLOCKING_TIMER_MS } from "../../src/orchestration/state.ts";
+import { sendInternalSessionMessage, resetSessionMessageRateLimitsForTests } from "../../src/session-messages.ts";
+import { PilotSwarmSession } from "../../src/client.ts";
+import { PROVIDER_BUDGET_WAKE_PROMPT } from "../../src/provider-budgets.ts";
+import { wakeProviderPausedSessions } from "../../src/provider-wake.ts";
+import { CHILD_UPDATE_BATCH_MS, FIFO_BUCKET_COUNT, MAX_BUCKET_BYTES, MAX_FIFO_ITEM_BYTES, NON_BLOCKING_TIMER_MS } from "../../src/orchestration/state.ts";
 
 // The real runtime fails the whole orchestration on a KV value above this many
 // UTF-8 bytes; the fake context below enforces the same limit.
@@ -148,9 +152,10 @@ function harness(overrides = {}) {
         return didWork;
     };
     // The real run loop, until the session parks: on a race whose only exit
-    // is a timer of a second or more (an armed timer), on a blocking dequeue,
-    // or on a continue-as-new.
-    const runUntilParked = () => {
+    // is a timer of a second or more (an armed timer; `throughMs`: a longer
+    // one, such as the child-update batch window, is waited out), on a
+    // blocking dequeue, or on a continue-as-new.
+    const runUntilParked = ({ throughMs = 0 } = {}) => {
         const gen = runLoop(runtime);
         let value;
         let failure;
@@ -159,7 +164,7 @@ function harness(overrides = {}) {
             failure = undefined;
             if (next.done) return { parked: "done", value: next.value };
             const effect = next.value;
-            if (effect?.effect === "race" && effect.left?.effect === "dequeue" && !messages.length && effect.right?.ms >= 1000) {
+            if (effect?.effect === "race" && effect.left?.effect === "dequeue" && !messages.length && effect.right?.ms >= Math.max(1000, throughMs + 1)) {
                 return { parked: "timer", ms: effect.right.ms };
             }
             if (effect?.effect === "dequeue" && !messages.length) return { parked: "blocking" };
@@ -307,6 +312,189 @@ describe("issue 192: one turn takes the backlog", () => {
         h.arm("cron", 0);
         h.drive(drain(h.runtime));
         expect(h.fifo().filter(x => x.kind === "timer")).toHaveLength(1);
+    });
+});
+
+// FU-9 (1.0.83, option b): a person's words never share a turn with a non-person prompt (a workflow message, another
+// session's message). Two persons' prompts still merge, and so do two non-person prompts; child updates still batch.
+describe("FU-9: a person's words and a non-person prompt run as two turns", () => {
+    const PERSON = { kind: "user", provider: "test", subject: "ada", display: "Ada" };
+    const WORKFLOW = { kind: "system", display: "workflow message" };
+    const AGENT = { kind: "agent", sessionId: "other-session", display: "another agent" };
+    const drainAndRun = (h, items, results) => {
+        appendToFifo(h.runtime, items);
+        for (let i = 0; i < results; i++) h.results.push({ type: "completed", content: `turn ${i + 1}` });
+        while (h.turns.length < results && h.step()) { /* one turn per pass */ }
+        return h.turns.map(t => String(t[0]));
+    };
+
+    it("a person's prompt then a workflow message: two turns, in order", () => {
+        const turns = drainAndRun(harness(), [prompt("PERSON-1", { sender: PERSON }), prompt("WORKFLOW-1", { sender: WORKFLOW })], 2);
+        expect(turns).toHaveLength(2);
+        expect(turns[0]).toContain("PERSON-1");
+        expect(turns[0]).not.toContain("WORKFLOW-1");
+        expect(turns[1]).toContain("WORKFLOW-1");
+    });
+
+    it("a workflow message then a person's prompt (no sender stamped): two turns, in order", () => {
+        const turns = drainAndRun(harness(), [prompt("WORKFLOW-1", { sender: WORKFLOW }), prompt("PERSON-1")], 2);
+        expect(turns).toHaveLength(2);
+        expect(turns[0]).toContain("WORKFLOW-1");
+        expect(turns[0]).not.toContain("PERSON-1");
+        expect(turns[1]).toContain("PERSON-1");
+    });
+
+    it("two persons' prompts still merge into one turn", () => {
+        const turns = drainAndRun(harness(), [prompt("PERSON-1", { sender: PERSON }), prompt("PERSON-2")], 1);
+        expect(turns).toHaveLength(1);
+        expect(turns[0]).toMatch(/PERSON-1[\s\S]*PERSON-2/);
+    });
+
+    it("two non-person prompts (a workflow message and another agent's) still merge into one turn", () => {
+        const turns = drainAndRun(harness(), [prompt("WORKFLOW-1", { sender: WORKFLOW }), prompt("AGENT-1", { sender: AGENT })], 1);
+        expect(turns).toHaveLength(1);
+        expect(turns[0]).toMatch(/WORKFLOW-1[\s\S]*AGENT-1/);
+    });
+
+    it("a batch of sub-agent updates still arrives as one digest turn, apart from a person's prompt", () => {
+        const h = harness({ subAgents: [
+            { orchId: "agent-a", sessionId: "child-a", task: "a", status: "running" },
+            { orchId: "agent-b", sessionId: "child-b", task: "b", status: "running" },
+        ] });
+        h.messages.push(
+            { prompt: "[CHILD_UPDATE from=child-a type=completed]\nRESULT-A" },
+            { prompt: "[CHILD_UPDATE from=child-b type=completed]\nRESULT-B" },
+        );
+        for (let i = 0; i < 4; i++) h.results.push({ type: "completed", content: `turn ${i + 1}` });
+        h.runUntilParked({ throughMs: CHILD_UPDATE_BATCH_MS });
+        const turns = h.turns.map(t => String(t[0]));
+        const digest = turns.filter(t => t.includes("RESULT-A") || t.includes("RESULT-B"));
+        expect(digest).toHaveLength(1);
+        expect(digest[0]).toMatch(/RESULT-A[\s\S]*RESULT-B|RESULT-B[\s\S]*RESULT-A/);
+    });
+
+    // Review RLR-F2: 1.0.82 stamped no sender on the runtime's own prompts. One queued before the upgrade and drained on
+    // 1.0.83 has none, so a runtime header at its start marks it as not a person's: it stays apart from a person's words.
+    for (const header of ["[SESSION_MESSAGE request_id=r-1 from=peer subject=ping]", "[SESSION_MESSAGE_RESPONSE request_id=r-1 from=peer verdict=answered]",
+        "[SYSTEM: The budget that paused this session has changed.]", "[WORKFLOW_UPDATE from=wf-1 workflow=w@1.0.0 run=r type=ended]",
+        "[FACTS_INTAKE {}]", "[CHILD_UPDATE from=child-a type=completed]"]) {
+        it(`RLR-F2: an unstamped runtime prompt queued on 1.0.82 (${header.slice(0, 20)}…) and a person's prompt: two turns`, () => {
+            const legacy = `${header}\nLEGACY-RUNTIME`;
+            const after = drainAndRun(harness(), [prompt("PERSON-1", { sender: PERSON }), prompt(legacy)], 2);
+            expect(after).toHaveLength(2);
+            expect(after[0]).toContain("PERSON-1");
+            expect(after[0]).not.toContain("LEGACY-RUNTIME");
+            expect(after[1]).toContain("LEGACY-RUNTIME");
+            const before = drainAndRun(harness(), [prompt(legacy), prompt("PERSON-2")], 2);
+            expect(before[0]).toContain("LEGACY-RUNTIME");
+            expect(before[0]).not.toContain("PERSON-2");
+        });
+    }
+
+    it("RLR-F2: unstamped words without a runtime header are a person's, and still merge with a person's", () => {
+        const turns = drainAndRun(harness(), [prompt("PERSON-1", { sender: PERSON }), prompt("plain words [SYSTEM: later in the text]")], 1);
+        expect(turns).toHaveLength(1);
+        expect(turns[0]).toMatch(/PERSON-1[\s\S]*plain words/);
+    });
+
+    // F-FU9-1: the runtime's own enqueue sites stamp their sender, so their real payloads stay apart from a person's words.
+    const enqueuedBy = async (send) => {
+        const enqueued = [];
+        await send({ enqueueEvent: async (_instance, _queue, payload) => { enqueued.push(JSON.parse(payload)); }, getStatus: async () => ({ status: "Running" }) });
+        return enqueued;
+    };
+
+    it("F-FU9-1: a queued person's prompt then a send_session_message prompt (its real payload) give two turns", async () => {
+        resetSessionMessageRateLimitsForTests();
+        const [message] = await enqueuedBy(client => sendInternalSessionMessage({
+            catalog: { getSession: async id => ({ sessionId: id, title: id === "peer" ? "Peer session" : "This session", state: "running" }) },
+            duroxideClient: client,
+        }, { fromSessionId: "peer", toSessionId: "this", subject: "ping", body: "SESSION-MESSAGE-BODY" }));
+        const h = harness();
+        h.messages.push({ prompt: "PERSON-1", clientMessageIds: ["c-1"] }, message);
+        h.results.push({ type: "completed", content: "turn 1" }, { type: "completed", content: "turn 2" });
+        while (h.turns.length < 2 && h.step()) { /* one turn per pass */ }
+        const turns = h.turns.map(t => String(t[0]));
+        expect(turns).toHaveLength(2);
+        expect(turns[0]).toContain("PERSON-1");
+        expect(turns[0]).not.toContain("SESSION-MESSAGE-BODY");
+        expect(turns[1]).toContain("SESSION-MESSAGE-BODY");
+    });
+
+    it("F-FU9-2: an event that claims the runtime's sender is the person's: it does not merge with an agent update", async () => {
+        const [event] = await enqueuedBy(async client => {
+            const session = Object.assign(Object.create(PilotSwarmSession.prototype), {
+                sessionId: "this", client: { _workflowStoreOrNull: () => null, _getDuroxideClient: () => client } });
+            await session.sendEvent("nudge", { prompt: "CLAIMED-SYSTEM", sender: { kind: "system", display: "workflow message" } });
+        });
+        expect(event.sender).toBeUndefined();
+        const turns = drainAndRun(harness(), [prompt("CLAIMED-SYSTEM", event.sender ? { sender: event.sender } : {}),
+            prompt("AGENT-UPDATE", { sender: AGENT })], 2);
+        expect(turns).toHaveLength(2);
+        expect(turns[0]).toContain("CLAIMED-SYSTEM");
+        expect(turns[0]).not.toContain("AGENT-UPDATE");
+        expect(turns[1]).toContain("AGENT-UPDATE");
+    });
+
+    // Review RLR-F2 residual (ruling: three classes). A stamped sender decides. A senderless prompt that starts with a
+    // runtime header is unknown (a runtime prompt queued on 1.0.82 and a person's words that quote a header look the
+    // same): it never shares a turn with anything, in either order. A senderless prompt without a header is a person's.
+    const QUOTED = "[SESSION_MESSAGE from=example subject=quoted]\nThe person's words";
+    const LEGACY = "[WORKFLOW_UPDATE from=wf-1 workflow=w@1.0.0 run=r type=ended]\nLEGACY-RUNTIME";
+    // Each marker in its own turn, in order, delivered once; nothing left queued. Runs passes while prompts are queued,
+    // so a merge shows as too few turns.
+    const apart = (items, markers) => {
+        const h = harness();
+        appendToFifo(h.runtime, items);
+        for (const _ of markers) h.results.push({ type: "completed", content: "done" });
+        for (let pass = 0; pass < 10 && h.fifo().length > 0; pass++) h.step();
+        const turns = h.turns.map(t => String(t[0]));
+        expect(turns).toHaveLength(markers.length);
+        markers.forEach((marker, i) => {
+            expect(turns[i]).toContain(marker);
+            expect(turns.join("\n").split(marker)).toHaveLength(2);
+        });
+        expect(h.fifo()).toEqual([]);
+    };
+
+    it("RLR-F2: a person's quoted header sent as an event claiming the runtime (sender stripped) and an agent's or the runtime's prompt: two turns, either order", async () => {
+        const [event] = await enqueuedBy(async client => {
+            const session = Object.assign(Object.create(PilotSwarmSession.prototype), {
+                sessionId: "this", client: { _workflowStoreOrNull: () => null, _getDuroxideClient: () => client } });
+            await session.sendEvent("nudge", { prompt: QUOTED, sender: { kind: "system" } });
+        });
+        expect(event).toEqual({ prompt: QUOTED });
+        for (const [label, sender] of [["AGENT-UPDATE", AGENT], ["WORKFLOW-MESSAGE", WORKFLOW]]) {
+            apart([prompt(event.prompt), prompt(label, { sender })], ["The person's words", label]);
+            apart([prompt(label, { sender }), prompt(event.prompt)], [label, "The person's words"]);
+        }
+    });
+
+    it("RLR-F2: an unstamped prompt with a runtime header and a stamped person's prompt: two turns, either order", () => {
+        apart([prompt(QUOTED), prompt("PERSON-1", { sender: PERSON })], ["The person's words", "PERSON-1"]);
+        apart([prompt("PERSON-1", { sender: PERSON }), prompt(QUOTED)], ["PERSON-1", "The person's words"]);
+    });
+
+    it("RLR-F2: two unstamped prompts with a runtime header: two turns, either order", () => {
+        apart([prompt(QUOTED), prompt(LEGACY)], ["The person's words", "LEGACY-RUNTIME"]);
+        apart([prompt(LEGACY), prompt(QUOTED)], ["LEGACY-RUNTIME", "The person's words"]);
+    });
+
+    it("RLR-F2 known limit: a parent agent's plain message queued on 1.0.82 (no sender, no header) counts as a person's and merges with one", () => {
+        const turns = drainAndRun(harness(), [prompt("PARENT-PLAIN please also check the logs"), prompt("PERSON-WORDS")], 1);
+        expect(turns).toHaveLength(1);
+        expect(turns[0]).toMatch(/PARENT-PLAIN[\s\S]*PERSON-WORDS/);
+    });
+
+    it("a provider wake merged with an agent's prompt: when the budget still refuses, the agent's words are stashed and the wake is not", async () => {
+        const [wake] = await enqueuedBy(client => wakeProviderPausedSessions({ providers: { pausedFor: async () => ["this"] } }, client, "azure-openai"));
+        expect(wake).toEqual({ prompt: PROVIDER_BUDGET_WAKE_PROMPT, sender: { kind: "system", display: "provider budget" } });
+        const h = harness();
+        appendToFifo(h.runtime, [prompt(wake.prompt, { sender: wake.sender }), prompt("AGENT-WORDS for the paused session", { sender: AGENT })]);
+        h.results.push({ type: "wait", seconds: 30, reason: "budget", budget: true });
+        h.step();
+        expect(h.turns).toHaveLength(1);
+        expect(h.runtime.state.budgetStash?.map(entry => entry.prompt)).toEqual(["AGENT-WORDS for the paused session"]);
     });
 });
 
@@ -958,7 +1146,9 @@ describe("issue 192 defect E review: refusing an item never loses other owed wor
         h.drive(drain(h.runtime));
         expect(pendingFor(h)).toEqual([["child-a", "completed", "NEWRESULT"]]);
         for (let i = 0; i < 6; i++) h.results.push({ type: "completed", content: "ok" });
-        h.runUntilParked();
+        // 1.0.83 (the latest version) holds the restored digest for the child-update batch window before its own turn;
+        // 1.0.82 gave it to the next turn. Either way it is delivered once, and the older update never.
+        h.runUntilParked({ throughMs: CHILD_UPDATE_BATCH_MS });
         expect(h.turns.filter(t => String(t[0]).includes("NEWRESULT"))).toHaveLength(1);
         expect(h.turns.filter(t => String(t[0]).includes("OLDRESULT"))).toHaveLength(0);
     });

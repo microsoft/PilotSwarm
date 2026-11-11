@@ -1,0 +1,7 @@
+iw-190.old-history	iw-190.old-history.cfg	WfIdleWake
+iw-190.old-live	iw-190.old-live.cfg	WfIdleWake
+iw-190.fix	iw-190.fix.cfg	WfIdleWake
+iw-190.fix-live	iw-190.fix-live.cfg	WfIdleWake
+fault.iw-count-then-can	fault.iw-count-then-can.cfg	WfIdleWake
+fault.iw-swallow	fault.iw-swallow.cfg	WfIdleWake
+wit.iw-can-by-wake	wit.iw-can-by-wake.cfg	WfIdleWake

@@ -24,21 +24,22 @@ import {
 import * as dispatcher from "../../src/orchestration.ts";
 
 describe("orchestration version registry", () => {
-    it("latest is 1.0.82, registered, and exported from the dispatcher", () => {
-        expect(LATEST).toBe("1.0.82");
+    it("the latest is registered last and exported from the dispatcher", () => {
+        const name = `durableSessionOrchestration_${LATEST.replaceAll(".", "_")}`;
         const latest = REGISTRY.find((e) => e.version === LATEST);
         expect(latest?.handler).toBeTypeOf("function");
-        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_82");
-        expect(dispatcher.durableSessionOrchestration_1_0_82).toBeTypeOf("function");
+        expect(REGISTRY.at(-1)).toBe(latest);
+        expect(latest.handler.name).toBe(name);
+        expect(dispatcher[name]).toBe(latest.handler);
     });
 
-    it("freezes 1.0.65 through 1.0.81 as distinct registered handlers", () => {
+    it("freezes 1.0.65 through 1.0.82 as distinct registered handlers", () => {
         const latest = REGISTRY.find((e) => e.version === LATEST);
         // 1.0.72 matters most here: it was the live directory until the 1.0.73
         // bump, so the freeze had to repoint it at orchestration_1_0_72/.
         // Leaving that import on ./orchestration/ would make "frozen" silently
         // track live development — this is the assertion that catches it.
-        for (const version of ["1.0.65", "1.0.66", "1.0.67", "1.0.68", "1.0.69", "1.0.70", "1.0.71", "1.0.72", "1.0.73", "1.0.74", "1.0.75", "1.0.76", "1.0.77", "1.0.78", "1.0.79", "1.0.80", "1.0.81"]) {
+        for (const version of ["1.0.65", "1.0.66", "1.0.67", "1.0.68", "1.0.69", "1.0.70", "1.0.71", "1.0.72", "1.0.73", "1.0.74", "1.0.75", "1.0.76", "1.0.77", "1.0.78", "1.0.79", "1.0.80", "1.0.81", "1.0.82"].filter((version) => version !== LATEST)) {
             const frozen = REGISTRY.find((e) => e.version === version);
             expect(frozen?.handler).toBeTypeOf("function");
             expect(frozen.handler.name).toBe(`durableSessionOrchestration_${version.replaceAll(".", "_")}`);

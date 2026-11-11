@@ -9,7 +9,8 @@ import { registerActivities } from "../../src/session-proxy.ts";
  * Session turn control (runTurnV4) options: `catalogExtras`, `sessionExtras`
  * and `managerExtras` add or override fake methods; `sessionStore` with
  * `sessionStateDir` enables the lifecycle protocol; `workspaceProvider` serves
- * workspace attaches. `runTurn(sessionId, inputOverrides, handlerName)`
+ * workspace attaches; `testOptions` are registerActivities' test-only switches.
+ * `runTurn(sessionId, inputOverrides, handlerName)`
  * selects the input and the registered activity name.
  */
 export function makeRunTurnHarness({
@@ -23,6 +24,8 @@ export function makeRunTurnHarness({
     sessionStateDir = null,
     workspaceProvider = null,
     cancelled = () => false,
+    testOptions = undefined,
+    artifactStore = null,
 } = {}) {
     const handlers = {};
     const runtime = { registerActivity(name, handler) { handlers[name] = handler; } };
@@ -56,7 +59,7 @@ export function makeRunTurnHarness({
         ...catalogExtras,
     };
     registerActivities(runtime, sessionManager, sessionStore, undefined, catalog,
-        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "worker-1");
+        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "worker-1", undefined, artifactStore, testOptions);
 
     const traces = { info: [], warn: [] };
     const activityCtx = {

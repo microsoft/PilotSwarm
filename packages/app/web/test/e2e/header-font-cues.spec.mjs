@@ -10,13 +10,15 @@ test.beforeAll(async () => {
 test.afterAll(async () => { await new Promise(resolve => stub.server.close(resolve)); });
 const sid = i => `1111111${i}-2222-3333-4444-55555555555${i}`;
 
-test("the desktop toolbar changes from two rows to one at 1040 container pixels", async ({ page }) => {
+// 1,090 here (main: 1,040): the navigation holds a third panel button, the Workflow button (Workflow Simplified, L1), so
+// it is 344 px, not 294, and one row needs about 1,050 px; the 40 px margin stays.
+test("the desktop toolbar changes from two rows to one at 1090 container pixels", async ({ page }) => {
     await page.setViewportSize({ width: 1800, height: 1000 });
     await page.goto(base);
     const slot = page.locator(".portal-header-slot");
     const toolbar = slot.locator(".ps-toolbar:not(.is-mobile)");
     await expect(toolbar).toBeVisible();
-    for (const [width, rows] of [[1039, 2], [1041, 1]]) {
+    for (const [width, rows] of [[1089, 2], [1091, 1]]) {
         await slot.evaluate((el, width) => {
             el.style.flex = `0 0 ${width}px`;
             el.style.width = `${width}px`;

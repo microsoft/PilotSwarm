@@ -379,6 +379,7 @@ new PilotSwarmWorker({
     waitThreshold: 30,       // seconds — waits above this become durable timers
     workerNodeId: "pod-1",   // identifier for this worker (default: hostname)
     turnTimeoutMs: 1_200_000, // explicit override; 0 disables the cap
+    workflowScripts: { enabled: true },  // run workflow script states; on by default (env PILOTSWARM_WORKFLOW_SCRIPTS=0 turns them off)
 
     // Blob storage for session dehydration
     blobConnectionString: string,   // Azure Storage connection string
@@ -888,3 +889,18 @@ desired state rather than maintain a second long-lived configuration source.
 | `npm run tui:remote` | TUI client-only against a remote deployment (`.env.remote` carries `PILOTSWARM_API_URL`) |
 | `npm run worker` | Headless worker process |
 | `npm run db:reset` | Reset database schemas |
+
+## Workflow scripts
+
+Workflows are always on, on the portal, every worker and the MCP server; they
+need no setting. Script nodes are on by default: a workflow's script states
+run as processes on the worker, on its Node with the permission model (file
+access limited to the script's own folder, no child processes). See
+[Durable workflows](../building/workflow-sessions.md).
+
+| Variable | Default | Effect |
+|---|---|---|
+| `PILOTSWARM_WORKFLOW_SCRIPTS` | on | An opt-out. Unset or empty: script states run on this worker. `0`, `false`, `no` or `off` turns them off; `1`, `true` or `yes` keeps them on; any other value keeps them on, with one startup warning. The `workflowScripts.enabled` option wins. Off, a definition with a script node is refused at save and Start (`WORKFLOW_SCRIPTS_DISABLED`). Set the same value on the portal and the MCP server, so a person's save or Start is checked there. |
+| `PILOTSWARM_WORKFLOW_TEST_MODE` | off | Exactly `on` turns test mode on: the `update_workflow` operations `test`, `test_respond` and `test_advance`, test runs in reads, and test controls in the portal and the terminal UI. Unset, empty or any other value: off. A session's Workflow Definition tests (`workflow_definition` `test`) run on every deployment without it. See [Durable workflows](../building/workflow-sessions.md). |
+| `PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS` | `15000` | A worker's shutdown waits for its runtime to drain (`PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS`, 60 s by default), then this long for the release of its sessions and the closes; a step still waiting then is left behind and the process exits. |
+| `PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS` | `20000` | The portal's whole shutdown ends within this. Unset with embedded workers: their own budget (`PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS` plus `PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS`) plus 5 s. |

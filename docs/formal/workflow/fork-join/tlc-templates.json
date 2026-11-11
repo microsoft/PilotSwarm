@@ -1,0 +1,60 @@
+{
+  "AbsForkJoin": {
+    "indent": 4,
+    "constants": [
+      "NB",
+      "Kneed",
+      "FailFast",
+      "HasTimer",
+      "AllowRunEnd",
+      "AllowEntryError"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WfForkJoin": {
+    "indent": 4,
+    "constants": [
+      "NB",
+      "Two",
+      "Err",
+      "Loop",
+      "AgentBr",
+      "CanFail",
+      "Hang",
+      "K",
+      "JoinAll",
+      "Conc",
+      "FailFast",
+      "HasTimer",
+      "ForkRoutes",
+      "HasCatchAll",
+      "Limit",
+      "AllowPause",
+      "ResumeFair",
+      "AllowStop",
+      "AllowCancel",
+      "MaxCrash",
+      "EntryErr",
+      "StopFence",
+      "AllJoinPath",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WfForkTokens": {
+    "indent": 4,
+    "constants": [
+      "Graph",
+      "Sem",
+      "JoinWaits",
+      "TerminalEnds",
+      "ErrOn",
+      "MaxTok",
+      "MaxSteps"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}

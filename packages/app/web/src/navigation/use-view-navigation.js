@@ -1,7 +1,12 @@
 import React from "react";
 import { useControllerSelector } from "pilotswarm/ui-react";
-import { activeMoaDashboard, normalizeMoa, moaLeaves, selectArtifactPaneShown, sessionDisplayTitle, updateMoaDashboard } from "pilotswarm/ui-core";
-import { cleanView, createViewHistory, navigationShortcut, viewKey } from "./view-history.js";
+import {
+    activeMoaDashboard, normalizeMoa, moaLeaves, selectArtifactPaneShown, selectWorkflowTabContext, sessionDisplayTitle, updateMoaDashboard,
+    workflowHighlightedSessionId, workflowRowTitle,
+} from "pilotswarm/ui-core";
+import {
+    cleanView, createViewHistory, navigationShortcut, reloadReadySessionId, viewKey, workflowTabOnReload, workflowTabPatch,
+} from "./view-history.js";
 
 function capture(controller, moa) {
     const s = controller.getState(), dashboard = activeMoaDashboard(normalizeMoa(s.ui.moa));
@@ -20,7 +25,22 @@ function capture(controller, moa) {
         artifactFilename: separator >= 0 ? artifact.slice(separator + 1) : null,
         artifactFullscreen: fullscreenShown,
         mobilePane: controller.mobileView?.get() || null,
+        // Review UI-8: a Workflow selected under its session is its own view, as is the right block's tab.
+        workflowRowId: workflowRowOf(s), sidePaneTab: s.ui.sidePaneTab,
+        // Review UI-D3: the Workflow tab's context (the Workflow it shows, its definition and view), apart from the row.
+        workflowTab: workflowTabOf(s),
     });
+}
+/** The Workflow tab's context for the active session: its owner's tab state, or null. */
+function workflowTabOf(state) {
+    const ownerId = selectWorkflowTabContext(state).ownerId;
+    const tab = ownerId ? state.ui.workflowTabs?.[ownerId] : null;
+    return tab ? { ownerId, workflowId: tab.workflowId ?? null, definition: tab.definition ?? null, view: tab.view ?? null } : null;
+}
+/** The Workflow row selected under the active session, or null. */
+function workflowRowOf(state) {
+    const id = workflowHighlightedSessionId(state.sessions);
+    return id && id !== state.sessions.activeSessionId ? id : null;
 }
 const PHONE_PANE_LABELS = { inspector: "Diagnostics", activity: "Activity", canvas: "Canvas" };
 function label(view, state) {
@@ -32,7 +52,14 @@ function label(view, state) {
     const title = (session && sessionDisplayTitle(session, state.agentTitles)) || "Session";
     if (view.artifactFullscreen && view.artifactFilename) return `${title} · ${view.artifactFilename}`;
     if (view.mobilePane && PHONE_PANE_LABELS[view.mobilePane]) return `${title} · ${PHONE_PANE_LABELS[view.mobilePane]}`;
-    return view.artifactFilename ? `${title} · ${view.artifactFilename}` : view.canvasOpen ? `${title} · Canvas ${view.canvasSlot}` : title;
+    // Review UI-8: a Workflow view is named as one, never "Canvas N".
+    const workflow = view.workflowRowId && state.sessions.byId[view.workflowRowId]
+        ? workflowRowTitle(state.sessions.byId, state.sessions.byId[view.workflowRowId], state.ui.workflowViews) : null;
+    if (workflow) return `${title} · Workflow ${workflow}`;
+    if (view.artifactFilename) return `${title} · ${view.artifactFilename}`;
+    if (view.canvasOpen && view.sidePaneTab === "workflow") return `${title} · Workflows`;
+    if (view.canvasOpen && view.sidePaneTab === "workspace") return `${title} · Workspace`;
+    return view.canvasOpen ? `${title} · Canvas ${view.canvasSlot}` : title;
 }
 
 export function useViewNavigation(controller, moa) {
@@ -42,8 +69,13 @@ export function useViewNavigation(controller, moa) {
         return p && (p.subject || p.email) && s.ui.moaLoaded ? JSON.stringify([p.provider || "", p.subject || p.email]) : null;
     });
     const data = React.useRef(null), generation = React.useRef(0), gesture = React.useRef(null);
+    // Review UI-F2: the saved current view of a reload, kept until the initial session is resolved (selected, its row loaded,
+    // no deep link still resolving; the catalog may answer after the profile), then applied once for that session unless a
+    // choice made meanwhile supersedes it.
+    const reloadCandidate = React.useRef(null);
     const [, redraw] = React.useReducer(n => n + 1, 0);
     const createdSessionId = useControllerSelector(controller, s => s.ui.revealedCreatedSessionId);
+    const readySessionId = useControllerSelector(controller, reloadReadySessionId);
     const publish = React.useCallback(() => {
         const current = data.current;
         if (!current) return;
@@ -61,6 +93,15 @@ export function useViewNavigation(controller, moa) {
         // steps is a place: recording one would push the saved history on.
         // With a saved history, a deep link's view is recorded once it has
         // landed; it refreshes the saved stop when it is the same place.
+        //
+        // Review UI-D3 and UI-F2: the saved current view also brings back the Workflow tab context it had, for the session
+        // the page opens on; that waits until the initial session is resolved (reloadReadySessionId), and the startup view
+        // is recorded only then.
+        const savedEntry = history.current ?? null;
+        const reloadTab = () => {
+            const reloaded = workflowTabOnReload(savedEntry, controller.getState());
+            if (reloaded) controller.dispatch({ type: "ui/workflowTab", ownerId: reloaded.ownerId, patch: reloaded.patch });
+        };
         const first = capture(controller, latest.current);
         const landing = history.current ? controller.deepLinkLanding : null;
         let cancelled = false;
@@ -69,14 +110,35 @@ export function useViewNavigation(controller, moa) {
             // a render that follows the canvas flip.
             landing.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))).then(() => {
                 if (cancelled || !data.current || data.current.history !== history) return;
+                reloadTab();
                 history.visit(capture(controller, latest.current)); publish();
             });
-        } else if (!history.current || first.mode !== "workspace" || first.sessionId) {
+        } else if (reloadReadySessionId(controller.getState())) {
+            reloadTab();
+            history.visit(capture(controller, latest.current));
+        } else if (history.current && first.mode === "workspace") {
+            // The initial session is not resolved yet: none is selected (a deep link waits for the catalog), or the profile
+            // selected one whose row is not loaded (its Workflow tab context cannot be taken). Keep the saved view as the
+            // reload candidate, and record no unready startup step over it; the effect below finishes.
+            reloadCandidate.current = { entry: savedEntry };
+        } else {
             history.visit(first);
         }
         data.current = { key, history }; publish();
-        return () => { cancelled = true; generation.current++; data.current = null; };
+        return () => { cancelled = true; generation.current++; data.current = null; reloadCandidate.current = null; };
     }, [controller, scope, publish]);
+
+    // Review UI-F2: the initial session is resolved: apply the reload candidate once, for that session only, and only while
+    // its Workflow tab has nothing chosen yet (workflowTabOnReload); then record the startup view.
+    React.useEffect(() => {
+        const current = data.current, pending = reloadCandidate.current;
+        if (!current || !pending || !readySessionId) return;
+        reloadCandidate.current = null;
+        const reloaded = workflowTabOnReload(pending.entry, controller.getState());
+        if (reloaded) controller.dispatch({ type: "ui/workflowTab", ownerId: reloaded.ownerId, patch: reloaded.patch });
+        current.history.visit(capture(controller, latest.current));
+        publish();
+    }, [readySessionId, controller, publish, scope]);
 
     React.useEffect(() => {
         if (!createdSessionId) return;
@@ -112,12 +174,17 @@ export function useViewNavigation(controller, moa) {
         controller.openWorkspace();
         controller.dispatch({ type: "files/pane", open: false });
         controller.dispatch({ type: "files/fullscreen", fullscreen: false });
-        if (view.sessionId) {
-            controller.loadSession(view.sessionId).catch(unavailable);
-            controller.dispatch({ type: "sessions/navigationIntent", sessionId: view.sessionId });
-            if (wasMoa) currentMoa.restoreSessionDraft(view.sessionId);
+        // Review UI-8: a Workflow view selects that Workflow (its session in the middle, the Workflow in the right block).
+        const target = view.workflowRowId && controller.getState().sessions.byId[view.workflowRowId] ? view.workflowRowId : view.sessionId;
+        if (target) {
+            controller.loadSession(target).catch(unavailable);
+            controller.dispatch({ type: "sessions/navigationIntent", sessionId: target });
+            if (wasMoa && view.sessionId) currentMoa.restoreSessionDraft(view.sessionId);
         }
         controller.dispatch({ type: "ui/canvasOpen", open: view.canvasOpen, manual: true });
+        if (view.canvasOpen) controller.dispatch({ type: "ui/sidePaneTab", tab: view.sidePaneTab ?? "canvas" });
+        // Review UI-D3: the Workflow tab shows what it showed in that view (its Workflow, definition and view).
+        if (view.workflowTab) controller.dispatch({ type: "ui/workflowTab", ownerId: view.workflowTab.ownerId, patch: workflowTabPatch(view.workflowTab) });
         controller.dispatch({ type: "ui/canvasSlot", slot: view.canvasSlot });
         controller.dispatch({ type: "ui/canvasMaximized", on: view.canvasMaximized });
         controller.dispatch({ type: "ui/canvasZen", on: view.canvasZen });

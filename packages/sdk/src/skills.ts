@@ -153,7 +153,8 @@ export function loadSkillsSync(skillsDir: string): Skill[] {
 
         if (!fs.existsSync(skillMdPath)) continue;
 
-        const content = fs.readFileSync(skillMdPath, "utf-8");
+        // A Windows checkout writes the file with CRLF line ends; a skill is the same text on every platform.
+        const content = fs.readFileSync(skillMdPath, "utf-8").replace(/\r\n/g, "\n");
         const { meta, body } = parseFrontmatter(content);
 
         // Read optional tools.json

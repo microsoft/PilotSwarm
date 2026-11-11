@@ -7,7 +7,7 @@ import { startStubServer } from "./stub-server.mjs";
 // so a phone's whole chat scrolled sideways.
 test.use({ browserName: process.env.PS_TEST_BROWSER || "chromium" });
 const sessionId = "11111110-2222-3333-4444-555555555550";
-const longName = "wfv2-interface-worker-mcp-090ad919-r1-results-file-with-every-detail-in-the-name.tgz";
+const longName = "wf-interface-worker-mcp-090ad919-r1-results-file-with-every-detail-in-the-name.tgz";
 let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 1, transcriptTurns: 0 }); });
 test.afterAll(async () => { if (stub) await new Promise(resolve => stub.server.close(resolve)); });

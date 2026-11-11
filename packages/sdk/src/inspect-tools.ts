@@ -38,6 +38,7 @@
  */
 
 import { defineTool } from "@github/copilot-sdk";
+import { isWorkflowTestBench } from "./workflow/test-bench.js";
 import type { Tool } from "@github/copilot-sdk";
 import type { SessionCatalog, SessionEvent, SessionRow } from "./cms.js";
 import { computeSessionFootprint, FootprintCache } from "./footprint.js";
@@ -222,6 +223,8 @@ export interface CreateInspectToolsOptions {
      * `propose_agent_patch` refuses with a clear message rather than throwing.
      */
     artifactStore?: import("./session-store.js").ArtifactStore | null;
+    /** OF-S2-7 review D8: the worker's configured model catalog's ids and names, for Agent Smith's publish (agent-manager-tools). */
+    knownModelNames?: () => string[];
     /** The session these tools act in, used to attach patch artifacts. */
     sessionId?: string;
     /**
@@ -585,6 +588,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
                 // so a filter can only ever narrow an already-legal set.
                 const filterAgent = (args.agent_id_filter || "").toLowerCase();
                 const matches = (r: SessionRow) => {
+                    // Stage 2.2: an agent's test bench is never listed (test-bench.ts).
+                    if (isWorkflowTestBench(r)) return false;
                     if (!matchesSessionOwnerFilters(r, {
                         includeSystem,
                         ownerQuery: args.owner_query,
@@ -1583,6 +1588,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             sessionId: opts.sessionId,
             resolveViewer: viewerFor,
             reservedMcpServerNames: opts.reservedMcpServerNames ?? [],
+            ...(opts.knownModelNames ? { knownModelNames: opts.knownModelNames } : {}),
         }));
     }
 
