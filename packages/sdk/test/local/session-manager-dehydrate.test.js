@@ -51,7 +51,8 @@ describe("SessionManager dehydrate", () => {
             manager.sessionLastTouchedAt.set(sessionId, 0);
 
             await expect(manager.sweepIdleSessions(1)).resolves.toBe(1);
-            expect(events).toEqual(["checkpoint", "destroy", "dehydrate"]);
+            expect(events).toEqual(["checkpoint", "destroy"]);
+            expect(fs.existsSync(path.join(sessionStateDir, sessionId))).toBe(false);
         } finally {
             fs.rmSync(baseDir, { recursive: true, force: true });
         }
