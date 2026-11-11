@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { testTime, useSuiteEnv } from "../helpers/local-env.js";
+import { useSuiteEnv } from "../helpers/local-env.js";
 import {
     requestFixture, REQUEST_ACTOR, REQUEST_TIMEOUT, checkpoint, reachedDuring, holdSession, observeBlocked, requestClock, requestLockSnapshot,
     requestWaitState,
@@ -11,15 +11,6 @@ const getEnv = useSuiteEnv(import.meta.url);
 const YES = { response: { approved: true } };
 const NO = { response: { approved: false } };
 const DECLINE = { decline: { reason: "not now" } };
-/**
- * The deadline of a request these cases expire, and the lock wait that outlasts it. Both grow with the database
- * (test/helpers/time-scale.js: 10 on HorizonDB), so a reading taken after the admission is still before the deadline
- * however slow the database, and the probe's wait still ends after it.
- */
-const EXPIRING_SECONDS = testTime.seconds(2);
-const PAST_DEADLINE_MS = testTime.ms(2_500);
-/** These cases wait for their deadline and then the probe's lock wait: the test's limit grows by both. */
-const EXPIRING_TIMEOUT = REQUEST_TIMEOUT + testTime.ms(5_000);
 
 async function concurrentCalls(h, run, exchangeId, calls) {
     const holder = await holdSession(h, run.workflowSessionId);
@@ -123,12 +114,12 @@ async function expectWinner(h, run, exchangeId, result, call, counts) {
         responderSessionId: h.parent, outcome: status });
 }
 
-/** A real contending lock probe times out after the request's deadline (EXPIRING_SECONDS); there is no wall-clock sleep. */
+/** A real contending lock probe times out after the fixture's two-second deadline; there is no wall-clock sleep. */
 async function expireWhileLocked(h, run, exchangeId) {
     const probe = await h.pool.connect();
     try {
         await probe.query("BEGIN");
-        await probe.query(`SET LOCAL lock_timeout = '${PAST_DEADLINE_MS}ms'`);
+        await probe.query("SET LOCAL lock_timeout = '2500ms'");
         await expect(probe.query(`SELECT session_id FROM "${h.schema}".sessions WHERE session_id = $1 FOR UPDATE`,
             [run.workflowSessionId])).rejects.toMatchObject({ code: "55P03" });
     } finally {
@@ -274,13 +265,13 @@ describe("workflow requests: real-store races, deadlines and rollback", () => {
         } finally { await h.stop(); }
     });
 
-    it("expires after a real session-lock wait crosses its deadline, not from the transaction's early start", { timeout: EXPIRING_TIMEOUT }, async () => {
+    it("expires after a real session-lock wait crosses its deadline, not from the transaction's early start", { timeout: REQUEST_TIMEOUT }, async () => {
         const h = await requestFixture(getEnv());
         let holder;
         let settled;
         try {
             const run = await h.workflow();
-            const exchangeId = await h.admit(run, { timeoutSeconds: EXPIRING_SECONDS });
+            const exchangeId = await h.admit(run, { timeoutSeconds: 2 });
             holder = await holdSession(h, run.workflowSessionId);
             const atLock = checkpoint();
             let lockReturned = false;
@@ -329,13 +320,13 @@ describe("workflow requests: real-store races, deadlines and rollback", () => {
         }
     });
 
-    it("keeps a before-deadline decision held before COMMIT when the commit is after the deadline", { timeout: EXPIRING_TIMEOUT }, async () => {
+    it("keeps a before-deadline decision held before COMMIT when the commit is after the deadline", { timeout: REQUEST_TIMEOUT }, async () => {
         const h = await requestFixture(getEnv());
         const atCommit = checkpoint();
         let settled;
         try {
             const run = await h.workflow();
-            const exchangeId = await h.admit(run, { timeoutSeconds: EXPIRING_SECONDS });
+            const exchangeId = await h.admit(run, { timeoutSeconds: 2 });
             const before = await h.snapshot(run, exchangeId);
             let at;
             let readings = 0;
