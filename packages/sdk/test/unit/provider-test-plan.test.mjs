@@ -47,6 +47,9 @@ test('additive coverage contains CMS, facts, compositions, live workers and reco
     'sweeper-cleanup-guard', 'sweeper-final-check', 'workflow-sweeper-recover']) {
     assert.ok(files.includes(`test/local/${name}.test.js`), name);
   }
+  for (const name of ['workflow-owner-complete-cascade', 'workflow-owner-fail-delete-cascade', 'workflow-owner-complete-race']) {
+    assert.ok(files.includes(`test/local/${name}.test.js`), `${name} must run on HorizonDB too`);
+  }
   assert.ok(!files.includes('test/local/copilot-provider-compatibility.test.js'), 'synthetic HTTP permutations already covered on baseline');
 });
 
