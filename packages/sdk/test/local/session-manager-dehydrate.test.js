@@ -31,17 +31,29 @@ describe("SessionManager dehydrate", () => {
         );
     });
 
-    it("does not dehydrate a session twice after its durable release", async () => {
+    it("checkpoints legacy state before disconnecting it during an idle sweep", async () => {
+        const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-session-manager-"));
+        const sessionStateDir = path.join(baseDir, "session-state");
+        const sessionId = "session-idle-legacy";
+        const events = [];
         const sessionStore = createSessionStoreMock();
-        const manager = new SessionManager(undefined, sessionStore, {}, "/tmp/pilotswarm-session-state");
-        manager.sessions.set("session-dehydrated", {
-            destroy: vi.fn(async () => {}),
-        });
+        sessionStore.checkpoint.mockImplementation(async () => { events.push("checkpoint"); });
+        sessionStore.dehydrate.mockImplementation(async () => { events.push("dehydrate"); });
+        const manager = new SessionManager(undefined, sessionStore, {}, sessionStateDir);
 
-        await manager.dehydrate("session-dehydrated", "eviction");
-        await manager.dehydrate("session-dehydrated", "worker_shutdown");
+        try {
+            fs.mkdirSync(path.join(sessionStateDir, sessionId), { recursive: true });
+            fs.writeFileSync(path.join(sessionStateDir, sessionId, "workspace.yaml"), "session: test\n");
+            manager.sessions.set(sessionId, {
+                destroy: vi.fn(async () => { events.push("destroy"); }),
+            });
+            manager.sessionLastTouchedAt.set(sessionId, 0);
 
-        expect(sessionStore.dehydrate).toHaveBeenCalledTimes(1);
+            await expect(manager.sweepIdleSessions(1)).resolves.toBe(1);
+            expect(events).toEqual(["checkpoint", "destroy", "dehydrate"]);
+        } finally {
+            fs.rmSync(baseDir, { recursive: true, force: true });
+        }
     });
 
     it("bubbles the session-store dehydration failure on the first attempt", async () => {
