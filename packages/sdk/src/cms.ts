@@ -26,8 +26,6 @@ import { WorkflowStore, insertStopNotForTurn, workflowVisitOfStopRequestId } fro
 
 /** Review DRR-1: the code of a create with refuseDeleted that found the row deleted (it stays deleted). */
 export const SESSION_DELETED = "SESSION_DELETED" as const;
-/** Review DR-03: how long a fenced session start may hold the session row's lock while the provider starts it. */
-export const SESSION_START_FENCE_TIMEOUT_MS = 30_000;
 /** Review DR-02: a child is never created under a deleted parent. */
 export const PARENT_DELETED = "PARENT_DELETED" as const;
 
@@ -1239,17 +1237,6 @@ export interface SessionCatalog {
 
     /** Update one or more fields on an existing session. */
     updateSession(sessionId: string, updates: SessionRowUpdates): Promise<void>;
-    /**
-     * Review AR-01: a session orchestration's start, serialized with the Sweeper's delete on the session row (not atomic
-     * with it: review DR-03). In one CMS transaction: lock the row (FOR NO KEY UPDATE), refuse a deleted row (code
-     * SESSION_DELETED: nothing is started), write `updates`, run `start`, and commit. A start that throws, or does not
-     * answer within SESSION_START_FENCE_TIMEOUT_MS (code SESSION_START_TIMEOUT), rolls the CMS update back and releases the
-     * lock; a start the durable provider committed is in its own store, which that rollback does not undo (a later send
-     * starts it again, which the provider ignores for an instance that exists). The Sweeper's final check takes the same
-     * lock and compares the row's version, so whichever commits first decides. Optional: a catalog without it starts
-     * unfenced, as before.
-     */
-    startSessionFenced?(sessionId: string, updates: SessionRowUpdates, start: () => Promise<void>, options?: { timeoutMs?: number }): Promise<void>;
     /** Publish the in-flight turn index (stop-turn targeting). */
     setActiveTurnIndex(sessionId: string, turnIndex: number): Promise<void>;
 
@@ -1700,29 +1687,6 @@ function sqlForSchema(schema: string) {
  * Uses the `pg` package (node-postgres) directly.
  * Must be created via the async `PgSessionCatalog.create()` factory.
  */
-/** The JSON a session row update sends to cms_update_session: only the fields the caller set. */
-function sessionUpdatesJson(updates: SessionRowUpdates): Record<string, unknown> {
-    const jsonUpdates: Record<string, unknown> = {};
-    if (updates.orchestrationId !== undefined) jsonUpdates.orchestrationId = updates.orchestrationId;
-    if (updates.title !== undefined) jsonUpdates.title = updates.title;
-    if (updates.titleLocked !== undefined) jsonUpdates.titleLocked = updates.titleLocked;
-    if (updates.state !== undefined) jsonUpdates.state = updates.state;
-    if (updates.model !== undefined) jsonUpdates.model = updates.model;
-    if (updates.reasoningEffort !== undefined) jsonUpdates.reasoningEffort = updates.reasoningEffort;
-    if (updates.contextTier !== undefined) jsonUpdates.contextTier = updates.contextTier;
-    if (updates.modelResolutionSource !== undefined) jsonUpdates.modelResolutionSource = updates.modelResolutionSource;
-    if (updates.lastActiveAt !== undefined) jsonUpdates.lastActiveAt = updates.lastActiveAt ? updates.lastActiveAt.toISOString() : null;
-    if (updates.currentIteration !== undefined) jsonUpdates.currentIteration = updates.currentIteration;
-    if (updates.lastError !== undefined) jsonUpdates.lastError = updates.lastError;
-    if (updates.waitReason !== undefined) jsonUpdates.waitReason = updates.waitReason;
-    if (updates.isSystem !== undefined) jsonUpdates.isSystem = updates.isSystem;
-    if (updates.agentId !== undefined) jsonUpdates.agentId = updates.agentId;
-    if (updates.splash !== undefined) jsonUpdates.splash = updates.splash;
-    if (updates.splashMobile !== undefined) jsonUpdates.splashMobile = updates.splashMobile;
-    if (updates.closeControls === true) jsonUpdates.closeControls = true;
-    return jsonUpdates;
-}
-
 export class PgSessionCatalog implements SessionCatalog {
     private pool: any;
     private initialized = false;
@@ -2203,58 +2167,31 @@ export class PgSessionCatalog implements SessionCatalog {
     }
 
     async updateSession(sessionId: string, updates: SessionRowUpdates): Promise<void> {
-        const jsonUpdates = sessionUpdatesJson(updates);
+        const jsonUpdates: Record<string, unknown> = {};
+        if (updates.orchestrationId !== undefined) jsonUpdates.orchestrationId = updates.orchestrationId;
+        if (updates.title !== undefined) jsonUpdates.title = updates.title;
+        if (updates.titleLocked !== undefined) jsonUpdates.titleLocked = updates.titleLocked;
+        if (updates.state !== undefined) jsonUpdates.state = updates.state;
+        if (updates.model !== undefined) jsonUpdates.model = updates.model;
+        if (updates.reasoningEffort !== undefined) jsonUpdates.reasoningEffort = updates.reasoningEffort;
+        if (updates.contextTier !== undefined) jsonUpdates.contextTier = updates.contextTier;
+        if (updates.modelResolutionSource !== undefined) jsonUpdates.modelResolutionSource = updates.modelResolutionSource;
+        if (updates.lastActiveAt !== undefined) jsonUpdates.lastActiveAt = updates.lastActiveAt ? updates.lastActiveAt.toISOString() : null;
+        if (updates.currentIteration !== undefined) jsonUpdates.currentIteration = updates.currentIteration;
+        if (updates.lastError !== undefined) jsonUpdates.lastError = updates.lastError;
+        if (updates.waitReason !== undefined) jsonUpdates.waitReason = updates.waitReason;
+        if (updates.isSystem !== undefined) jsonUpdates.isSystem = updates.isSystem;
+        if (updates.agentId !== undefined) jsonUpdates.agentId = updates.agentId;
+        if (updates.splash !== undefined) jsonUpdates.splash = updates.splash;
+        if (updates.splashMobile !== undefined) jsonUpdates.splashMobile = updates.splashMobile;
+        if (updates.closeControls === true) jsonUpdates.closeControls = true;
+
         if (Object.keys(jsonUpdates).length === 0) return;
 
         await this.pool.query(
             `SELECT ${this.sql.fn.updateSession}($1, $2)`,
             [sessionId, JSON.stringify(jsonUpdates)],
         );
-    }
-
-    async startSessionFenced(sessionId: string, updates: SessionRowUpdates, start: () => Promise<void>, options: { timeoutMs?: number } = {}): Promise<void> {
-        const timeoutMs = options.timeoutMs ?? SESSION_START_FENCE_TIMEOUT_MS;
-        const client = await this.pool.connect();
-        let released = false;
-        try {
-            await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
-            // session-start-fence: the lock the Sweeper's final check takes (WorkflowStore.sweeperSoftDelete).
-            const { rows } = await client.query(
-                `SELECT deleted_at FROM "${this.sql.schema}".sessions WHERE session_id = $1 FOR NO KEY UPDATE /* session-start-fence */`, [sessionId]);
-            if (rows[0] && rows[0].deleted_at !== null) {
-                throw Object.assign(new Error(`Session ${sessionId.slice(0, 8)} was deleted. Nothing was started.`), { code: "SESSION_DELETED" });
-            }
-            const jsonUpdates = sessionUpdatesJson(updates);
-            if (Object.keys(jsonUpdates).length > 0) {
-                await client.query(`SELECT ${this.sql.fn.updateSession}($1, $2)`, [sessionId, JSON.stringify(jsonUpdates)]);
-            }
-            // Review DR-03: the row's lock is held while the provider starts the orchestration; a call that does not answer
-            // releases it (the transaction rolls back) instead of holding it.
-            let timer: ReturnType<typeof setTimeout> | undefined;
-            try {
-                await Promise.race([
-                    start(),
-                    new Promise<never>((_, reject) => {
-                        timer = setTimeout(() => reject(Object.assign(
-                            new Error(`The start of session ${sessionId.slice(0, 8)} did not answer within ${Math.round(timeoutMs / 1000)} s. Send the message again.`),
-                            { code: "SESSION_START_TIMEOUT" })), timeoutMs);
-                    }),
-                ]);
-            } finally {
-                if (timer) clearTimeout(timer);
-            }
-            await client.query("COMMIT");
-        } catch (error) {
-            try {
-                await client.query("ROLLBACK");
-            } catch (rollbackError) {
-                released = true;
-                client.release(rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError)));
-            }
-            throw error;
-        } finally {
-            if (!released) client.release();
-        }
     }
 
     async setActiveTurnIndex(sessionId: string, turnIndex: number): Promise<void> {

@@ -12,11 +12,6 @@
  * - AR-03: a session the delete would change that another transaction holds makes the Sweeper refuse at once (Busy),
  *   deleting nothing, never waiting while it holds its own lock: no deadlock with a transaction that locks the held
  *   session first and the target second; the cleanup succeeds once the other transaction ends. Prune counts it.
- * - AR-01: an ordinary session's first message (PilotSwarmClient's start) and the Sweeper serialize on the session row.
- *   A start that holds its fence first makes the Sweeper wait, then refuse (Changed); a Sweeper that holds its final
- *   transaction first makes the start refuse (SESSION_DELETED), and nothing is started.
- * - DR-03 (review of d5118761): a fenced start that does not answer releases the session row's lock within its bound
- *   (SESSION_START_TIMEOUT), leaving the row as it was.
  * - DR-02 (review of d5118761): a new ordinary or Workflow grandchild created between the Sweeper's read of the subtree
  *   and its locks makes the cleanup refuse (Changed) with nothing deleted; a creator that the Sweeper's lock on the parent
  *   blocks refuses after the delete commits (PARENT_DELETED), so no child is left under a deleted parent.
@@ -36,7 +31,6 @@ import { createCatalog } from "../helpers/cms-helpers.js";
 import { createSweeperTools } from "../../src/sweeper-tools.ts";
 import { WorkflowStore } from "../../src/workflow/store.ts";
 import { PilotSwarmClient } from "../../src/index.ts";
-import { SESSION_START_FENCE_TIMEOUT_MS } from "../../src/cms.ts";
 
 const { Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const TIMEOUT = 120_000;
@@ -455,120 +449,6 @@ describe("the Sweeper's final check and delete under concurrency", () => {
             const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
             return new Client(provider);
         }
-
-        for (const entry of ["cleanup", "prune"]) {
-            it(`${entry}: a start that holds its fence first makes the Sweeper wait, then refuse (Changed); the session runs`, { timeout: TIMEOUT }, async () => {
-                const startGate = gate();
-                const { client, starts } = await startedClient(startGate);
-                const observe = gate();
-                let target = null;
-                const sweeperPool = gatedPool(env.store, { matches: (sql, params) => sql.includes("xmin::text AS version, orchestration_id") && params[0] === target, observe });
-                try {
-                    const sessionId = randomUUID();
-                    await catalog.createSession(sessionId);
-                    target = sessionId;
-                    await ageSessions(db, schema, [sessionId], 60);
-                    // The first message stops at its start, holding its fence (the session row's lock).
-                    const sending = client._startTurn(sessionId, "hello");
-                    const sent = sending.then(() => null, error => error);
-                    await Promise.race([startGate.reached, sent]);
-                    const tools = createSweeperTools({ catalog: withStore(catalog, new WorkflowStore(sweeperPool, env.cmsSchema)),
-                        duroxideClient: await sweeperClient(), factStore: null });
-                    const sweeping = sweep(tools, entry, sessionId);
-                    const sweeperPid = await Promise.race([observe.reached, sweeping.then(() => null)]);
-                    const waited = sweeperPid !== null && await untilLockWait(db, "blocked", sweeperPid, sweeping);
-                    startGate.open();
-                    expect(await sent).toBeNull();
-                    const result = await sweeping;
-                    if (entry === "cleanup") expect(result, JSON.stringify(result)).toMatchObject({ ok: false, refused: true, status: "Changed" });
-                    else expect(result.cmsRefused, JSON.stringify(result)).toBeGreaterThanOrEqual(1);
-                    expect(await isLive(db, schema, sessionId)).toBe(true);
-                    expect(waited, "the Sweeper's final check waited for the start's fence").toBe(true);
-                    expect(starts).toEqual([`session-${sessionId}`]);
-                    const row = (await db.query(`SELECT state, orchestration_id FROM ${schema}.sessions WHERE session_id = $1`, [sessionId])).rows[0];
-                    expect(row).toEqual({ state: "running", orchestration_id: `session-${sessionId}` });
-                } finally {
-                    startGate.open();
-                    await sweeperPool.end();
-                    await client.stop();
-                }
-            });
-
-            it(`${entry}: a Sweeper that holds its final transaction first makes the start refuse (SESSION_DELETED); nothing starts`, { timeout: TIMEOUT }, async () => {
-                const { client, starts } = await startedClient(null);
-                const held = gate();
-                let target = null;
-                const sweeperPool = gatedPool(env.store, { matches: (sql, params) => sql.includes("cms_soft_delete_session") && params[0] === target, held });
-                const sweeperDuroxide = await sweeperClient();
-                try {
-                    const sessionId = randomUUID();
-                    await catalog.createSession(sessionId);
-                    target = sessionId;
-                    await ageSessions(db, schema, [sessionId], 60);
-                    const tools = createSweeperTools({ catalog: withStore(catalog, new WorkflowStore(sweeperPool, env.cmsSchema)),
-                        duroxideClient: sweeperDuroxide, factStore: null });
-                    const sweeping = sweep(tools, entry, sessionId);
-                    const sweeperPid = await held.reached;
-                    const sent = client._startTurn(sessionId, "hello").then(() => null, error => error);
-                    const waited = await untilLockWait(db, "blocker", sweeperPid, sent);
-                    held.open();
-                    const result = await sweeping;
-                    if (entry === "cleanup") expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
-                    else expect(result.cmsCleanedUp, JSON.stringify(result)).toBeGreaterThanOrEqual(1);
-                    const error = await sent;
-                    expect(starts, "nothing was started").toEqual([]);
-                    expect(error?.code, String(error?.message ?? error)).toBe("SESSION_DELETED");
-                    expect(waited, "the start waited for the Sweeper's lock").toBe(true);
-                    expect((await sweeperDuroxide.getStatus(`session-${sessionId}`)).status).toBe("NotFound");
-                    expect(await isLive(db, schema, sessionId)).toBe(false);
-                } finally {
-                    held.open();
-                    await sweeperPool.end();
-                    await client.stop();
-                }
-            });
-        }
-
-        it("DR-03: a start that does not answer releases the session row's lock within its bound; the row is left as it was", { timeout: TIMEOUT }, async () => {
-            const id = randomUUID();
-            await catalog.createSession(id);
-            const before = (await db.query(`SELECT state, orchestration_id, xmin::text AS version FROM ${schema}.sessions WHERE session_id = $1`, [id])).rows[0];
-            const started = Date.now();
-            // The barrier: the start callback runs (the row is locked and updated by then) and never answers.
-            let arrived;
-            const atStart = new Promise(resolve => { arrived = resolve; });
-            const stalled = catalog.startSessionFenced(id, { orchestrationId: `session-${id}`, state: "running" },
-                () => { arrived(); return new Promise(() => {}); }, { timeoutMs: 1_000 })
-                .then(() => null, error => error);
-            await atStart;
-            // While the start stalls, the row's lock is held: the Sweeper's lock would wait.
-            const held = await db.query(`SELECT 1 FROM ${schema}.sessions WHERE session_id = $1 FOR NO KEY UPDATE NOWAIT`, [id]).then(() => false, error => error?.code === "55P03");
-            expect(held, "the fence holds the row's lock while the start runs").toBe(true);
-            const error = await stalled;
-            expect(error?.code, String(error?.message ?? error)).toBe("SESSION_START_TIMEOUT");
-            expect(Date.now() - started).toBeLessThan(10_000);
-            // Released, and nothing written.
-            await db.query(`SELECT 1 FROM ${schema}.sessions WHERE session_id = $1 FOR NO KEY UPDATE NOWAIT`, [id]);
-            const after = (await db.query(`SELECT state, orchestration_id, xmin::text AS version FROM ${schema}.sessions WHERE session_id = $1`, [id])).rows[0];
-            expect(after).toEqual(before);
-        });
-
-        it("DR-03: without a bound given, the fenced start waits at most SESSION_START_FENCE_TIMEOUT_MS (30 000 ms) for the provider's start", { timeout: TIMEOUT }, async () => {
-            expect(SESSION_START_FENCE_TIMEOUT_MS).toBe(30_000);
-            const id = randomUUID();
-            await catalog.createSession(id);
-            // The bound the call sets, read from the timer it arms (the start answers at once, so nothing waits 30 s).
-            const delays = [];
-            const setTimer = globalThis.setTimeout;
-            globalThis.setTimeout = (fn, ms, ...rest) => { delays.push(ms); return setTimer(fn, ms, ...rest); };
-            try {
-                await catalog.startSessionFenced(id, { orchestrationId: `session-${id}`, state: "running" }, async () => {});
-            } finally {
-                globalThis.setTimeout = setTimer;
-            }
-            expect(delays).toContain(30_000);
-            expect((await db.query(`SELECT state FROM ${schema}.sessions WHERE session_id = $1`, [id])).rows[0]).toEqual({ state: "running" });
-        });
 
         it("DR-01: a session whose first message was accepted and whose start is still queued is kept at any age (StartUnresolved); one shown to have ended is cleaned", { timeout: TIMEOUT }, async () => {
             const { client, starts } = await startedClient(null);

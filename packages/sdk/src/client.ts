@@ -959,16 +959,6 @@ export class PilotSwarmClient {
             }
         }
 
-        // CMS: state + orchestration ID. A start writes it inside its fence (below), before the start; any other send writes it here.
-        const runningUpdate = {
-            orchestrationId,
-            state: "running",
-            lastError: null,
-            waitReason: null,
-            lastActiveAt: new Date(),
-        } as const;
-        let rowUpdated = false;
-
         if (!this.activeOrchestrations.has(sessionId)) {
             // Review G1 backstop: duroxide ignores a start for an instance that exists and drops what is queued to one that
             // has ended, so a send to an ended orchestration would vanish. Refused in words instead; a status read that
@@ -1013,33 +1003,26 @@ export class PilotSwarmClient {
                 ...(this._allowedAgentNames.length > 0 ? { allowedAgentNames: this._allowedAgentNames } : {}),
             };
             const startAt = Date.now();
-            const duroxideClient = this.duroxideClient;
-            const start = () => duroxideClient.startOrchestrationVersioned(
+            await this.duroxideClient.startOrchestrationVersioned(
                 orchestrationId,
                 DURABLE_SESSION_ORCHESTRATION_NAME,
                 input,
                 startVersion,
             );
-            if (this._catalog.startSessionFenced) {
-                // Review AR-01: the row's update and the start, serialized with the Sweeper on the session row's lock (the lock
-                // its final check takes). A row the Sweeper deleted first refuses (SESSION_DELETED) and nothing starts; a start
-                // that commits first changes the row's version, so the Sweeper refuses. A start that fails or does not answer
-                // in time rolls the row's update back (review DR-03: not atomic with the provider's own store; a later send
-                // starts it again).
-                await this._catalog.startSessionFenced(sessionId, runningUpdate, start);
-                rowUpdated = true;
-            } else {
-                await start();
-            }
             this.activeOrchestrations.set(sessionId, orchestrationId);
-            trace(`[client] startOrchestrationVersioned done (${Date.now() - startAt}ms fenced=${rowUpdated})`);
+            trace(`[client] startOrchestrationVersioned done (${Date.now() - startAt}ms)`);
         }
 
-        if (!rowUpdated) {
-            const updateAt = Date.now();
-            await this._catalog.updateSession(sessionId, runningUpdate);
-            trace(`[client] updateSession running done (${Date.now() - updateAt}ms)`);
-        }
+        // CMS: update state + orchestration ID
+        const updateAt = Date.now();
+        await this._catalog.updateSession(sessionId, {
+            orchestrationId,
+            state: "running",
+            lastError: null,
+            waitReason: null,
+            lastActiveAt: new Date(),
+        });
+        trace(`[client] updateSession running done (${Date.now() - updateAt}ms)`);
 
         const enqueueAt = Date.now();
         await this.duroxideClient.enqueueEvent(
