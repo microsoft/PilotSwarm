@@ -17,6 +17,7 @@ import type { SessionCatalog } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
 import type { Tool } from "@github/copilot-sdk";
 import { WORKFLOW_TEST_BENCH_KIND } from "./workflow/test-bench.js";
+import { SWEEPER_ENDED_SESSION_STATES } from "./workflow/store.js";
 
 /**
  * Create sweeper tools bound to the given CMS catalog and duroxide client.
@@ -47,7 +48,8 @@ export function createSweeperTools(opts: {
         | { status: string; instanceId: string; controllers?: string[] }
         | { unreadable: string }
         | { noRun: true }
-        | { activeRun: { runId: string; status: string } };
+        | { activeRun: { runId: string; status: string } }
+        | { startUnresolved: true };
 
     /** One instance's status, or `unreadable` when the read fails (duroxide answers NotFound itself; it throws only on an error). */
     async function readInstanceStatus(instanceId: string): Promise<{ status: string; instanceId: string } | { unreadable: string }> {
@@ -76,8 +78,17 @@ export function createSweeperTools(opts: {
      *   of the store is `unreadable`, like a failed status read. `controllers` names its runs' controller instances, the
      *   ones a cleanup deletes.
      */
-    async function readOrchestrationStatus(session: { sessionId: string; sessionKind?: string; serviceKind?: string | null }): Promise<OrchestrationRead> {
-        if (session.sessionKind !== "workflow") return readInstanceStatus(`session-${session.sessionId}`);
+    async function readOrchestrationStatus(session: { sessionId: string; sessionKind?: string; serviceKind?: string | null;
+        orchestrationId?: string | null; state?: string }): Promise<OrchestrationRead> {
+        if (session.sessionKind !== "workflow") {
+            const read = await readInstanceStatus(`session-${session.sessionId}`);
+            // Review DR-01: a NotFound read of an ordinary session whose first message was accepted (its orchestration was
+            // started) and that has not been seen to end is a start no worker has picked up yet, not an end, at any age.
+            if ("status" in read && read.status === "NotFound" && session.orchestrationId && !SWEEPER_ENDED_SESSION_STATES.includes(String(session.state))) {
+                return { startUnresolved: true };
+            }
+            return read;
+        }
         let runs: Array<{ runId: string; controllerInstanceId: string; status: string; mode: string }>;
         try {
             if (typeof catalog.workflowStore !== "function") return { unreadable: "this catalog has no Workflow store" };
@@ -116,7 +127,7 @@ export function createSweeperTools(opts: {
      * Reviews AS-02, AR-01..AR-03: the final check and the soft delete, in one transaction under the session row's lock
      * (WorkflowStore.sweeperSoftDelete), which every run admission and a session orchestration's start take first. It
      * refuses, deleting nothing, when the row changed since `version` was read (Changed), a Workflow run was admitted
-     * (ActiveRun), an ordinary session judged NotFound was just started (Starting), or another transaction holds a
+     * (ActiveRun), an ordinary session judged NotFound has an accepted start not seen to end (StartUnresolved), or another transaction holds a
      * session the delete would change (Busy). With `cascade`, all its descendants go with it (a parent's lifecycle owns its
      * children's: a run still active under it ends with it). A catalog without the final check (a test double) deletes as
      * before, one row at a time.
@@ -147,7 +158,7 @@ export function createSweeperTools(opts: {
             case "ActiveRun":
                 return `Refusing to clean Workflow session ${sessionId}: ${refused.detail} (it was admitted after the Sweeper read the session). `
                     + "It ends through its controller; nothing was deleted.";
-            case "Starting":
+            case "StartUnresolved":
                 return `Refusing to clean session ${sessionId}: ${refused.detail}. Nothing was deleted; a later scan reads it again.`;
             case "Busy":
                 return `Refusing to clean session ${sessionId} for now: ${refused.detail}. Nothing was deleted; try again later.`;
@@ -168,6 +179,14 @@ export function createSweeperTools(opts: {
         graceMinutes: number,
     ): Promise<{ eligible: boolean; status: string; reason: string; instanceId?: string; controllers?: string[] }> {
         const read = await readOrchestrationStatus(session);
+        if ("startUnresolved" in read) {
+            return {
+                eligible: false,
+                status: "StartUnresolved",
+                reason: "Refusing to clean a session whose first message was accepted and whose orchestration has not been seen to end: "
+                    + "it reads NotFound because no worker has picked its start up yet. Only a terminal status or an ended state shows its end.",
+            };
+        }
         if ("activeRun" in read) {
             return {
                 eligible: false,
@@ -274,7 +293,7 @@ export function createSweeperTools(opts: {
                     if (session.isSystem) continue;
 
                     const read = await readOrchestrationStatus(session);
-                    if ("noRun" in read || "activeRun" in read) continue;
+                    if ("noRun" in read || "activeRun" in read || "startUnresolved" in read) continue;
                     if ("unreadable" in read) {
                         unreadable.push(session.sessionId);
                         continue;
@@ -400,8 +419,9 @@ export function createSweeperTools(opts: {
             "Removes from CMS (soft-delete) and deletes the duroxide orchestration instance. " +
             "Independently re-verifies EACH target is terminal and REFUSES system sessions plus any live/non-terminal root or child session. " +
             "The final check and the delete are one transaction on the target's lock: a target that changed since it was read " +
-            "(a run admitted, a message that started it), an ordinary session started in the last few minutes, or one with a " +
-            "session another transaction holds is refused and nothing is deleted; leave it for a later scan. " +
+            "(a run admitted, a message that started it), an ordinary session whose accepted start has not been seen to end " +
+            "(it reads NotFound until a worker picks it up), or one with a session another transaction holds is refused and " +
+            "nothing is deleted; leave it for a later scan. " +
             "Only pass sessionIds that scan_completed_sessions returned in sessions[]. Idle/zombie/orphaned live sessions are never cleanup targets.",
         parameters: {
             type: "object" as const,
@@ -487,8 +507,8 @@ export function createSweeperTools(opts: {
             "(a Workflow session's: its latest own run's controller; one with a run the store counts as active, or with no run " +
             "of its own yet, is kept); " +
             "a status read that fails deletes nothing (cmsUnreadable counts them), and a row that changed since its read " +
-            "(a run admitted, a message that started it), was started in the last few minutes, or has a session another " +
-            "transaction holds is kept (cmsRefused counts them). " +
+            "(a run admitted, a message that started it), or has a session another transaction holds is kept (cmsRefused " +
+            "counts them); an ordinary session whose accepted start has not been seen to end is not a candidate. " +
             "This is a system-level operation that cleans up duroxide storage directly.",
         parameters: {
             type: "object" as const,
@@ -549,7 +569,7 @@ export function createSweeperTools(opts: {
                         const version = await readRowVersion(s.sessionId);
                         if (sweeperStore() && (!version || version.deleted || version.updatedAt.getTime() >= cutoffMs)) continue;
                         const read = await readOrchestrationStatus(s);
-                        if ("noRun" in read || "activeRun" in read) continue;
+                        if ("noRun" in read || "activeRun" in read || "startUnresolved" in read) continue;
                         if ("unreadable" in read) {
                             cmsUnreadable++;
                             console.warn(`[sweeper] prune: could not read the status of session ${s.sessionId}; not deleted: ${read.unreadable}`);

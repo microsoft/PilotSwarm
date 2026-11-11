@@ -44,7 +44,7 @@ test('additive coverage contains CMS, facts, compositions, live workers and reco
   const files = horizonSdkFiles();
   // The Sweeper's suites read and lock Workflow and session rows: they run on both providers (re-review of 4fa702dc, T6).
   for (const name of ['cms-state', 'pg-migrator', 'facts', 'facts-access-control', 'facts-provider-selection', 'composition-tiers.integration', 'enhanced-composition.integration', 'contracts', 'smoke-basic', 'durability', 'agent-handoff-routing',
-    'sweeper-cleanup-guard', 'sweeper-final-check', 'workflow-sweeper-recover']) {
+    'sweeper-cleanup-guard', 'sweeper-final-check', 'sweeper-queued-start', 'workflow-sweeper-recover']) {
     assert.ok(files.includes(`test/local/${name}.test.js`), name);
   }
   for (const name of ['workflow-owner-complete-cascade', 'workflow-owner-fail-delete-cascade', 'workflow-owner-complete-race']) {

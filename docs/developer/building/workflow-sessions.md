@@ -997,9 +997,13 @@ first, so whichever commits first decides:
 - An admission or a first message that comes after the delete finds the
   session deleted and does nothing (a first message is refused with
   `SESSION_DELETED`).
-- An ordinary session whose orchestration was started in the last 5 minutes
-  is not taken as ended when its orchestration reads NotFound, whatever the
-  grace: a start that is queued but not yet dispatched reads NotFound.
+- An ordinary session whose first message was accepted (its orchestration
+  was started) is never taken as ended because its orchestration reads
+  NotFound, at any age: a start that no worker has picked up yet reads
+  NotFound for as long as it waits. Only a terminal status (Completed, Failed,
+  Terminated) or an ended session state (completed, cancelled, failed) shows
+  that it ended. A session with no first message yet is a candidate after the
+  grace, as before.
 - The Sweeper locks every session the delete would change before it changes
   any, without waiting. When another transaction holds one, it refuses at
   once and deletes nothing; a later scan tries again.

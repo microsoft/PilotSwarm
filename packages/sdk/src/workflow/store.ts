@@ -65,12 +65,10 @@ export type WorkflowRunMode = "live" | "test";
 /** A run that has not ended: it can still be cancelled, deleted, recovered and finish its admitted work. */
 export const ACTIVE_RUN_STATUSES: readonly WorkflowRunStatus[] = ["admitted", "running", "paused"];
 /**
- * Review AR-01: how long after an ordinary session's orchestration was started (its row's last update) the Sweeper does
- * not take a NotFound read of it as its end. A start that was queued but not yet dispatched reads NotFound.
+ * The states of an ordinary session whose orchestration has ended: positive evidence of its end (review DR-01). "error" is
+ * not one of them: a session whose turn failed may still run.
  */
-export const SWEEPER_START_SETTLE_MINUTES = 5;
-/** The states of an ordinary session whose orchestration has ended. */
-const ENDED_SESSION_STATES: readonly string[] = ["completed", "cancelled", "failed", "error"];
+export const SWEEPER_ENDED_SESSION_STATES: readonly string[] = ["completed", "cancelled", "failed"];
 /** The Sweeper's NOWAIT lock found a session another transaction holds (sweeperSoftDelete). */
 class SweeperBusy extends Error {
     constructor() { super("a session the Sweeper would delete is held by another transaction"); }
@@ -3384,9 +3382,10 @@ export class WorkflowStore {
      * - is gone or deleted, or no longer has the exact version the Sweeper read (sweeperRowVersion): Changed;
      * - is a system session: System;
      * - is a Workflow session with a run the store counts as active: ActiveRun;
-     * - is an ordinary session the Sweeper judged NotFound whose orchestration was started (orchestration_id set, its
-     *   state not ended) within SWEEPER_START_SETTLE_MINUTES: Starting. A start that was queued but not yet dispatched
-     *   reads NotFound, and deleting it would leave the orchestration to run on a deleted row;
+     * - is an ordinary session the Sweeper judged NotFound whose orchestration was started (orchestration_id set: its
+     *   first message was accepted) and has not been seen to end (its state is not completed, cancelled or failed):
+     *   StartUnresolved, at any age (review DR-01). A start that no worker has picked up yet reads NotFound, for as long
+     *   as it waits; only a terminal status or an ended state shows that it ended;
      * - has a session the delete would change that another transaction holds (each one is locked NOWAIT, in session id
      *   order, before anything is changed, so the Sweeper never waits holding a lock): Busy.
      * The sessions locked first: with `cascade`, all its descendants (a parent's lifecycle owns its children's: an active
@@ -3396,23 +3395,22 @@ export class WorkflowStore {
      */
     async sweeperSoftDelete(input: { sessionId: string; version: string; cascade: boolean; orchestrationNotFound: boolean }): Promise<
         | { deleted: string[] }
-        | { refused: { status: "Changed" | "System" | "ActiveRun" | "Starting" | "Busy"; detail: string; runId?: string; runStatus?: WorkflowRunStatus } }> {
+        | { refused: { status: "Changed" | "System" | "ActiveRun" | "StartUnresolved" | "Busy"; detail: string; runId?: string; runStatus?: WorkflowRunStatus } }> {
         const s = `"${this.schema}"`;
         try {
             return await this.transaction(async client => {
                 const { rows } = await client.query(
-                    `SELECT session_kind, is_system, deleted_at, xmin::text AS version, orchestration_id, state,
-                            updated_at > now() - make_interval(mins => $2) AS recent
-                       FROM ${this.t.sessions} WHERE session_id = $1 FOR NO KEY UPDATE`, [input.sessionId, SWEEPER_START_SETTLE_MINUTES]);
+                    `SELECT session_kind, is_system, deleted_at, xmin::text AS version, orchestration_id, state
+                       FROM ${this.t.sessions} WHERE session_id = $1 FOR NO KEY UPDATE`, [input.sessionId]);
                 const row = rows[0];
                 if (!row || row.deleted_at !== null) return { refused: { status: "Changed" as const, detail: "it was deleted since it was read" } };
                 if (row.is_system === true) return { refused: { status: "System" as const, detail: "it is a system session" } };
                 if (str(row, "version") !== input.version) return { refused: { status: "Changed" as const, detail: "it changed since it was read" } };
                 const workflow = row.session_kind === "workflow";
-                if (!workflow && input.orchestrationNotFound && row.orchestration_id !== null && row.recent === true
-                    && !ENDED_SESSION_STATES.includes(String(row.state))) {
-                    return { refused: { status: "Starting" as const,
-                        detail: `its orchestration was started within the last ${SWEEPER_START_SETTLE_MINUTES} minutes and may not have begun yet` } };
+                if (!workflow && input.orchestrationNotFound && row.orchestration_id !== null
+                    && !SWEEPER_ENDED_SESSION_STATES.includes(String(row.state))) {
+                    return { refused: { status: "StartUnresolved" as const,
+                        detail: "its first message was accepted and its orchestration has not been seen to end (a start no worker has picked up yet reads NotFound)" } };
                 }
                 if (workflow) {
                     const active = await client.query(

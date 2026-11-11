@@ -14,9 +14,10 @@
  *   session first and the target second; the cleanup succeeds once the other transaction ends. Prune counts it.
  * - AR-01: an ordinary session's first message (PilotSwarmClient's start) and the Sweeper serialize on the session row.
  *   A start that holds its fence first makes the Sweeper wait, then refuse (Changed); a Sweeper that holds its final
- *   transaction first makes the start refuse (SESSION_DELETED), and nothing is started. A session started moments ago
- *   whose orchestration is still queued (it reads NotFound) is not deleted even with grace 0 (Starting); one started
- *   longer ago than the settle window is.
+ *   transaction first makes the start refuse (SESSION_DELETED), and nothing is started.
+ * - DR-01 (review of d5118761): a session whose first message was accepted and whose start is still queued (it reads
+ *   NotFound) is never taken as ended, at any age and any grace (StartUnresolved), by scan, cleanup, prune and the final
+ *   check; one whose state shows it ended, or that never had a first message, is cleaned.
  *
  * Run: npx vitest run test/local/sweeper-final-check.test.js
  */
@@ -28,7 +29,7 @@ import { describe, it, beforeAll, beforeEach, afterEach, expect } from "vitest";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { createSweeperTools } from "../../src/sweeper-tools.ts";
-import { WorkflowStore, SWEEPER_START_SETTLE_MINUTES } from "../../src/workflow/store.ts";
+import { WorkflowStore } from "../../src/workflow/store.ts";
 import { PilotSwarmClient } from "../../src/index.ts";
 
 const { Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
@@ -447,30 +448,48 @@ describe("the Sweeper's final check and delete under concurrency", () => {
             });
         }
 
-        it("a session started moments ago whose orchestration is still queued is not deleted at grace 0 (Starting); one started long ago is", { timeout: TIMEOUT }, async () => {
+        it("DR-01: a session whose first message was accepted and whose start is still queued is kept at any age (StartUnresolved); one shown to have ended is cleaned", { timeout: TIMEOUT }, async () => {
             const { client, starts } = await startedClient(null);
             try {
                 const fresh = randomUUID();
                 const stale = randomUUID();
-                await catalog.createSession(fresh);
-                await catalog.createSession(stale);
-                // Both first messages commit their start; with no worker, each orchestration stays queued and reads NotFound.
-                await client._startTurn(fresh, "hello");
-                await client._startTurn(stale, "hello");
-                expect(starts).toEqual([`session-${fresh}`, `session-${stale}`]);
-                await ageSessions(db, schema, [stale], (SWEEPER_START_SETTLE_MINUTES ?? 5) + 5);
+                const ended = randomUUID();
+                const neverStarted = randomUUID();
+                for (const id of [fresh, stale, ended, neverStarted]) await catalog.createSession(id);
+                // Three first messages commit their start; with no worker, each orchestration stays queued and reads NotFound.
+                for (const id of [fresh, stale, ended]) await client._startTurn(id, "hello");
+                expect(starts).toEqual([`session-${fresh}`, `session-${stale}`, `session-${ended}`]);
+                await ageSessions(db, schema, [stale, neverStarted], 600);
+                // Positive evidence of an end: the session's state says it ended.
+                await db.query(`UPDATE ${schema}.sessions SET state = 'completed', updated_at = now() - interval '600 minutes' WHERE session_id = $1`, [ended]);
                 const duroxide = await sweeperClient();
-                expect((await duroxide.getStatus(`session-${fresh}`)).status).toBe("NotFound");
+                for (const id of [fresh, stale, ended]) expect((await duroxide.getStatus(`session-${id}`)).status).toBe("NotFound");
                 const tools = createSweeperTools({ catalog, duroxideClient: duroxide, factStore: null });
-                const refused = await findTool(tools, "cleanup_session").handler({ sessionId: fresh, graceMinutes: 0 });
-                expect(refused, JSON.stringify(refused)).toMatchObject({ ok: false, refused: true, status: "Starting" });
-                // Past the settle window, a NotFound session is taken as ended, as before.
-                const cleaned = await findTool(tools, "cleanup_session").handler({ sessionId: stale, graceMinutes: 0 });
-                expect(cleaned, JSON.stringify(cleaned)).toMatchObject({ ok: true });
-                expect(await isLive(db, schema, stale)).toBe(false);
+
+                const scanned = await findTool(tools, "scan_completed_sessions").handler({ graceMinutes: 5 });
+                const listed = scanned.sessions.map(item => item.sessionId);
+                expect(listed).not.toContain(stale);
+                expect(listed).not.toContain(fresh);
+                expect(listed).toEqual(expect.arrayContaining([ended, neverStarted]));
+                for (const id of [fresh, stale]) {
+                    for (const grace of [undefined, 0]) {
+                        const refused = await findTool(tools, "cleanup_session").handler({ sessionId: id, ...(grace === undefined ? {} : { graceMinutes: grace }) });
+                        expect(refused, JSON.stringify(refused)).toMatchObject({ ok: false, refused: true, status: "StartUnresolved" });
+                    }
+                }
                 const pruned = await findTool(tools, "prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: 0 });
-                expect(pruned.cmsRefused, JSON.stringify(pruned)).toBeGreaterThanOrEqual(1);
+                expect(pruned.ok, JSON.stringify(pruned)).toBe(true);
                 expect(await isLive(db, schema, fresh)).toBe(true);
+                expect(await isLive(db, schema, stale)).toBe(true);
+                // The final check under the lock refuses it too (when a caller judged it NotFound on its own).
+                const store = catalog.workflowStore();
+                const version = await store.sweeperRowVersion(stale);
+                expect(await store.sweeperSoftDelete({ sessionId: stale, version: version.version, cascade: true, orchestrationNotFound: true }))
+                    .toMatchObject({ refused: { status: "StartUnresolved" } });
+                expect(await isLive(db, schema, stale)).toBe(true);
+                // Shown to have ended, or never started: cleaned (prune took them above).
+                expect(await isLive(db, schema, ended)).toBe(false);
+                expect(await isLive(db, schema, neverStarted)).toBe(false);
             } finally {
                 await client.stop();
             }
