@@ -86,9 +86,13 @@ test("every tool has a declaration AND a handler", () => {
 test("stage_agent_package_edit lists a Workflow card's modelHints with its model", () => {
     const { byName } = toolsWith();
     const d = byName.get("stage_agent_package_edit").description;
-    assert.match(d, /optional model, optional modelHints/);
+    assert.match(d, /optional output, model and modelHints/);
     assert.match(d, /\{ strength\?, reasoning\?, context\?, note\? \}/);
     assert.match(d, /never a model's name/);
+    // Owner 2026-11-11: the card's maps are keyed by state ID, effects is one text string.
+    assert.match(d, /effects is ONE text string, never a list/);
+    assert.match(d, /outcomes a map keyed by each TERMINAL STATE ID \(e\.g\. done:, failed:\), never by outcome values such as succeeded/);
+    assert.match(d, /asks a map keyed by each request state ID and sends by each send state ID/);
 });
 
 // ── Staging ───────────────────────────────────────────────────────
