@@ -59,8 +59,10 @@ function findTool(tools, name) {
  */
 function makeStubDuroxide(statusByInstance, fallback = { status: "NotFound" }) {
     const enqueuedEvents = [];
+    const deletedInstances = [];
     return {
         enqueuedEvents,
+        deletedInstances,
         async getStatus(instanceId) {
             const status = statusByInstance.get(instanceId) ?? fallback;
             if (status instanceof Error) throw status;
@@ -71,9 +73,8 @@ function makeStubDuroxide(statusByInstance, fallback = { status: "NotFound" }) {
         async enqueueEvent(orchestrationId, eventName, payload) {
             enqueuedEvents.push({ orchestrationId, eventName, payload });
         },
-        // CMS soft-delete is what we assert against; the duroxide instance
-        // delete is best-effort in the tool and irrelevant to the guard.
-        async deleteInstance() {},
+        // The instances a cleanup deletes, in order (a Workflow session's are its runs' controllers).
+        async deleteInstance(instanceId) { deletedInstances.push(instanceId); },
     };
 }
 
@@ -274,9 +275,10 @@ async function makeWorkflow(catalog, db, schema, { parent, bench = false, runs =
         const controller = test ? `wft-${runId}` : `session-${id}`;
         const ended = ["completed", "failed", "cancelled", "stopped"].includes(run.status);
         await db.query(`INSERT INTO ${schema}.workflow_runs (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs,
-                controller_instance_id, status, test_agent_mode, start_operation_id, finished_at, created_at)
-            VALUES ($1, $2, $3, 1, 'ys', 'is', '{}', $4, $5, $6, $7, CASE WHEN $8 THEN now() END, now() - make_interval(secs => $9))`,
-        [runId, id, test ? "test" : "live", controller, run.status, test ? "mocked" : null, `op-${runId}`, ended, 100 - index]);
+                controller_instance_id, status, test_agent_mode, start_operation_id, finished_at, created_at, paused_from)
+            VALUES ($1, $2, $3, 1, 'ys', 'is', '{}', $4, $5, $6, $7, CASE WHEN $8 THEN now() END, now() - make_interval(secs => $9), $10)`,
+        [runId, id, test ? "test" : "live", controller, run.status, test ? "mocked" : null, `op-${runId}`, ended, 100 - index,
+            run.status === "paused" ? (run.pausedFrom ?? "running") : null]);
         runIds.push({ runId, controller });
     }
     return { id, runs: runIds };
@@ -324,8 +326,10 @@ async function testWorkflowSessionsByTheirControllers(env) {
         const scanned = await findTool(tools, "scan_completed_sessions").handler({ graceMinutes: 5 });
         const listed = new Set(scanned.sessions.map(s => s.sessionId));
         for (const w of all) assertEqual(listed.has(w.id), w === finished || w === benchEnded, `scan lists ${w.id.slice(0, 8)} only when its controller is gone`);
-        assertEqual(read.includes(benchRunning.runs[0].controller), true, "the bench is read by its wft-<run> controller");
-        assertEqual(read.includes(`session-${benchRunning.id}`), false, "the bench's session-<id> is not read");
+        assertEqual(read.includes(benchEnded.runs[0].controller), true, "an ended bench is read by its wft-<run> controller");
+        assertEqual(read.includes(`session-${benchEnded.id}`), false, "the bench's session-<id> is not read");
+        // The store decides first: a run it counts as active needs no controller read.
+        assertEqual(read.includes(benchRunning.runs[0].controller), false, "a bench whose test the store counts as running is not read");
 
         // cleanup_session refuses the live ones and the one with no run.
         for (const w of [live, benchRunning, draft, testedDraft, mixed]) {
@@ -484,6 +488,85 @@ async function testPruneKeepsRecentNotFound(env) {
     }
 }
 
+/**
+ * Review of a1443ae7 (major): the store decides. A Workflow session with a run the store still counts as active is never
+ * cleaned, whatever its controller reads: a run admitted before its controller started (a lost dispatch), one paused
+ * before it began, a running run whose controller is gone or has ended, a running test whose wft-<run> is gone. Those are
+ * update_workflow recover's to dispatch again or to end, not the Sweeper's to delete (with any grace, 0 included).
+ */
+async function testActiveRunIsNeverCleaned(env) {
+    const catalog = await createCatalog(env);
+    const db = new pg.Pool({ connectionString: env.store, max: 1 });
+    const schema = `"${env.cmsSchema}"`;
+    try {
+        const owner = randomUUID();
+        await catalog.createSession(owner);
+        const admitted = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "admitted" }] });
+        const pausedBeforeBegin = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "paused", pausedFrom: "admitted" }] });
+        const runningGone = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "running" }] });
+        const runningEnded = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "running" }] });
+        const benchGone = await makeWorkflow(catalog, db, schema, { parent: owner, bench: true, runs: [{ mode: "test", status: "running" }] });
+        const all = [admitted, pausedBeforeBegin, runningGone, runningEnded, benchGone];
+        await ageSessions(env, all.map(w => w.id), 60);
+        // Every controller is NotFound, but runningEnded's, which has Completed.
+        const duroxide = makeStubDuroxide(new Map([[`session-${owner}`, { status: "Running" }], [runningEnded.runs[0].controller, { status: "Completed" }]]),
+            { status: "NotFound" });
+        const tools = createSweeperTools({ catalog, duroxideClient: duroxide, factStore: null });
+
+        const scanned = await findTool(tools, "scan_completed_sessions").handler({ graceMinutes: 5 });
+        const listed = new Set(scanned.sessions.map(s => s.sessionId));
+        for (const w of all) assertEqual(listed.has(w.id), false, `scan does not list ${w.id.slice(0, 8)} (its run is active in the store)`);
+        for (const grace of [undefined, 0]) {
+            for (const w of all) {
+                const refused = await findTool(tools, "cleanup_session").handler({ sessionId: w.id, ...(grace === undefined ? {} : { graceMinutes: grace }) });
+                assertEqual(refused.ok, false, `cleanup refuses ${w.id.slice(0, 8)} (grace ${grace ?? "default"})`);
+                assertEqual(refused.status, "ActiveRun", `the refusal names the active run of ${w.id.slice(0, 8)}`);
+                assertEqual(/recover/.test(refused.error), true, "the refusal points to recover");
+            }
+        }
+        const pruned = await findTool(tools, "prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: 5 });
+        assertEqual(pruned.ok, true, "prune ran");
+        for (const w of all) {
+            assertEqual(await isLive(catalog, w.id), true, `${w.id.slice(0, 8)} stays`);
+            assertEqual(await definitionState(db, schema, w.id), "draft", `${w.id.slice(0, 8)}'s definition is untouched`);
+        }
+        assertEqual(await runStatus(db, schema, admitted.runs[0].runId), "admitted", "the admitted run stays admitted, for recover to dispatch");
+        assertEqual(await runStatus(db, schema, pausedBeforeBegin.runs[0].runId), "paused", "the run paused before it began stays paused");
+        assertEqual(await runStatus(db, schema, runningGone.runs[0].runId), "running", "the running run stays running, for recover to end");
+        assertEqual(await runStatus(db, schema, benchGone.runs[0].runId), "running", "the running test stays running");
+        assertEqual(duroxide.deletedInstances.length, 0, "no instance is deleted");
+        console.log("  ✓ a Workflow session with a run the store counts as active is never cleaned");
+    } finally {
+        await db.end();
+        await catalog.close();
+    }
+}
+
+/** Review of a1443ae7 (minor): cleaning an ended test bench deletes its test run's controller, wft-<run>, not session-<bench>. */
+async function testEndedBenchCleanupDeletesItsController(env) {
+    const catalog = await createCatalog(env);
+    const db = new pg.Pool({ connectionString: env.store, max: 1 });
+    const schema = `"${env.cmsSchema}"`;
+    try {
+        const owner = randomUUID();
+        await catalog.createSession(owner);
+        const bench = await makeWorkflow(catalog, db, schema, { parent: owner, bench: true, runs: [{ mode: "test", status: "completed" }] });
+        await ageSessions(env, [bench.id], 60);
+        const controller = bench.runs[0].controller;
+        const duroxide = makeStubDuroxide(new Map([[`session-${owner}`, { status: "Running" }], [controller, { status: "Completed" }]]), { status: "NotFound" });
+        const tools = createSweeperTools({ catalog, duroxideClient: duroxide, factStore: null });
+        const cleaned = await findTool(tools, "cleanup_session").handler({ sessionId: bench.id });
+        assertEqual(cleaned.ok, true, "the ended bench is cleaned");
+        assertEqual(await isLive(catalog, bench.id), false, "the ended bench is soft-deleted");
+        assertEqual(JSON.stringify(duroxide.deletedInstances), JSON.stringify([controller]), "its wft-<run> controller is deleted, and only it");
+        assertEqual(JSON.stringify(cleaned.instancesDeleted), JSON.stringify([controller]), "the result names the deleted controller");
+        console.log("  ✓ an ended bench's cleanup deletes its wft-<run> controller");
+    } finally {
+        await db.end();
+        await catalog.close();
+    }
+}
+
 describe("Sweeper cleanup guardrails", () => {
     beforeAll(async () => { await preflightChecks(); });
 
@@ -509,6 +592,14 @@ describe("Sweeper cleanup guardrails", () => {
 
     it("a Workflow session's status is its controller's: live Workflows and running tests stay, ended ones are cleaned, a draft stays", { timeout: TIMEOUT }, async () => {
         await testWorkflowSessionsByTheirControllers(getEnv());
+    });
+
+    it("a Workflow session with a run the store counts as active is never cleaned, whatever its controller reads", { timeout: TIMEOUT }, async () => {
+        await testActiveRunIsNeverCleaned(getEnv());
+    });
+
+    it("cleaning an ended test bench deletes its wft-<run> controller, not session-<bench>", { timeout: TIMEOUT }, async () => {
+        await testEndedBenchCleanupDeletesItsController(getEnv());
     });
 
     it("a failed read of a Workflow session's runs deletes nothing", { timeout: TIMEOUT }, async () => {

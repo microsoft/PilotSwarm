@@ -28,8 +28,10 @@ typed messages, requests for an answer, agent steps and fan-out.
 
 - **On demand per session.** A session that has never used a Workflow carries one
   small tool, `enable_workflows`, instead of the Workflow tools. The model
-  calls it when the person asks for a Workflow, or for a repeated check that
-  a script could do. See [Workflows on demand per session](#workflows-on-demand-per-session).
+  calls it when the person asks for a Workflow; when a Workflow would suit
+  the task (a repeated check that a script could do), it suggests one and
+  calls it only if the person agrees. Once they are on, it uses Workflows
+  wherever they fit, without asking. See [Workflows on demand per session](#workflows-on-demand-per-session).
 - **Scripts** run as guarded child processes on the worker. An operator can
   turn them off. See [Scripts](#scripts).
 - **Tests.** When the person asks, a session tests a revision with
@@ -808,13 +810,15 @@ script can catch it.
   (`inputs`, `notify_on_completion?`) make the Workflow a **child** of the
   agent session; `start` returns at once. The agent receives the result as a
   message when the Workflow ends. A user can describe the steps in words; the
-  agent writes the YAML. In a session where Workflows are off, the agent first
-  calls `enable_workflows` (see [Workflows on demand](#workflows-on-demand-per-session)).
+  agent writes the YAML. In a session where Workflows are off, the agent
+  calls `enable_workflows` first, when the person asks for a Workflow or
+  agrees to its suggestion of one (see [Workflows on demand](#workflows-on-demand-per-session)).
 - **On a schedule:** ask an agent to repeat it ("every night at 2, run ...").
-  The agent makes one Workflow that loops through a wait state (a wait's `at`
-  where clock waits run), and starts it once; it does not set `cron` or
-  `cron_at` to start a Workflow on each wake-up (each start would be another
-  Workflow).
+  With Workflows on, the agent makes one Workflow that loops through a wait
+  state (a wait's `at` where clock waits run), and starts it once; it does not
+  set `cron` or `cron_at` to start a Workflow on each wake-up (each start would
+  be another Workflow). With them off, it suggests a Workflow first and turns
+  them on only if the person agrees.
 - **There is no top-level creation:** ask an agent to start the child. The
   Web API has no create route (stage 2.5 removed `POST /sessions/workflow`,
   which refused every call), and no generic tool set is substituted for a
@@ -950,16 +954,19 @@ with that end and changes nothing. Whatever ended the run first decides who
 is told: a later command that lost changes nothing.
 
 A finished Workflow is kept until the Sweeper cleans it, like any finished
-session. The Sweeper reads a Workflow session's status from its latest own
-run's controller (`session-<id>` for its live run, `wft-<run>` for a test
-bench's test run): while that controller runs (or any run the store counts as
-running still has a running controller), the Workflow is live and is kept.
-Once the controller has ended and the session is older than the Sweeper's
-grace, `cleanup_session` deletes it; once the controller instance is gone,
+session. The store decides first: a Workflow session with any run the store
+still counts as active (admitted, running or paused, before or after it
+began) is never a cleanup candidate, whatever its controller reads. A run
+whose controller is gone, or ended while the run is still active, is
+`update_workflow` operation `recover`'s to dispatch again or to end, not the
+Sweeper's. With no run active, the Sweeper reads the session's status from its
+latest own run's controller (`session-<id>` for its live run, `wft-<run>` for
+a test bench's test run). Once that controller has ended and the session is
+older than the Sweeper's grace, `cleanup_session` deletes it, with its runs'
+ended controller instances; once the controller instance is gone,
 `prune_orchestrations` deletes it too. A Workflow session with no run of its
-own yet (a draft, tested or not, or one not yet started) is never a cleanup
-candidate. A status read that fails, of the controller or of the Workflow's
-runs, deletes nothing.
+own yet (a draft, tested or not) is never a cleanup candidate. A status read
+that fails, of the controller or of the Workflow's runs, deletes nothing.
 Deleting a Workflow session goes through the normal path: its definition
 becomes a tombstone, and its owner session's cleanup removes it with the
 owner's other descendants.
