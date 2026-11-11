@@ -220,10 +220,12 @@ test("SDK3-F2: the claim's transaction is READ COMMITTED; the check runs after t
         afterClaim: async (given) => { seen.push(given === client); calls.push("afterClaim"); } });
     assert.deepEqual(seen, [true]);
     assert.equal(calls[0], "BEGIN ISOLATION LEVEL READ COMMITTED");
-    assert.match(calls[1], /cms_create_workflow_session/);
-    assert.equal(calls[2], "afterClaim");
-    assert.match(calls[3], /cms_inherit_session_owner/);
-    assert.deepEqual(calls.slice(4), ["COMMIT", "release"]);
+    // Review DR-02: the parent is locked first (NO KEY UPDATE: afterClaim may take that lock), and a deleted one refused.
+    assert.equal(calls[1], 'SELECT deleted_at FROM "cms".sessions WHERE session_id = $1 FOR NO KEY UPDATE');
+    assert.match(calls[2], /cms_create_workflow_session/);
+    assert.equal(calls[3], "afterClaim");
+    assert.match(calls[4], /cms_inherit_session_owner/);
+    assert.deepEqual(calls.slice(5), ["COMMIT", "release"]);
     // A refusal rolls the claim back.
     calls.length = 0;
     await assert.rejects(catalog.createWorkflowSession("wf-new", { parentSessionId: "chat", owner: null, creationConfig: {},
