@@ -8,6 +8,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
+import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { createWorkflow, applyWorkflowUpdate } from "../../src/workflow/service.ts";
@@ -144,67 +145,87 @@ describe("workflow: one name and version is one definition among a session's Wor
     // Review SDK3-F2: on connections whose default isolation is REPEATABLE READ the claim's transaction still reads what an
     // earlier holder of the version lock committed (it begins READ COMMITTED). Before, the check kept the snapshot of the
     // claim statement, taken before the wait, and both creations could pass.
-    // Review SDK4-F1: the two creations run on two clients and meet after their claims, before either takes the version
-    // lock, so both claim statements have taken their snapshots before either commits. With a plain BEGIN this fails (both
-    // are created); a timing that let one creation finish first could not tell the two apart.
+    // Review SDK4-F1: the two creations run on two clients at once, so both have taken their first snapshot before either
+    // commits. Since DR-02 (6f59403d) a Workflow creation locks its parent first (FOR NO KEY UPDATE), so the second waits
+    // there for the first: the first holds at its version check until the second is seen waiting on its lock
+    // (pg_blocking_pids), then goes on. The second's snapshot predates the first's commit; with a plain BEGIN it would not
+    // see the first's version. A timing that let one creation finish first could not tell the two apart.
     it("SDK3-F2: the same at a REPEATABLE READ default isolation: exactly one of two concurrent creations with other YAML", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
-        // Two creations at once need two clients: with one, the second would wait for the first's client at the meeting point.
+        // Two creations at once need two clients: with one, the second would wait for the first's client while the first holds
+        // at its version check. The observer below has its own connection, outside the pool, so two are enough.
         expect(catalog.pool.options.max, "the CMS pool must give each creation its own client (PILOTSWARM_CMS_PG_POOL_MAX of 2 or more)")
             .toBeGreaterThanOrEqual(2);
-        const setupErrors = [];
-        catalog.pool.on("connect", client => {
-            client.query("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ").catch(error => setupErrors.push(error));
-        });
-        await catalog.initialize();
-        const host = { catalog, store: catalog.workflowStore(), duroxideClient: {} };
-        const check = host.store.requireVersionFreeLocked;
-        let meeting = null;
-        // The version check, after the claim and before the lock: the first two arrivals of a round wait for each other.
-        host.store.requireVersionFreeLocked = async function (client, input) {
-            const round = meeting;
-            if (round && round.arrived.length < 2) {
-                const { rows } = await client.query("SHOW default_transaction_isolation");
-                round.arrived.push({ client, isolation: rows[0].default_transaction_isolation });
-                if (round.arrived.length === 2) round.open();
-                let timer;
-                await Promise.race([round.opened, new Promise((_, reject) => {
-                    timer = setTimeout(() => reject(new Error("the second creation did not reach its version check within 15 s: the two creations did not run at once")), 15_000);
-                })]).finally(() => clearTimeout(timer));
-            }
-            return check.call(this, client, input);
-        };
+        // Watches for the second creation waiting on the first's lock. Its own connection: both pool clients can be held by
+        // the creations, and a third from the pool would wait for one of them. Each read is bounded.
+        const observer = new pg.Client({ connectionString: env.store, connectionTimeoutMillis: 10_000, statement_timeout: 5_000 });
         try {
-            const { rows } = await catalog.pool.query("SHOW default_transaction_isolation");
-            expect(rows[0].default_transaction_isolation).toBe("repeatable read");
-            const spawn = (session, id, yaml) => createWorkflow(host, { workflowSessionId: id, parentSessionId: session, yaml, actor: ACTOR,
-                operationId: `create-${id}`, publish: true, refuseVersionReuse: true });
-            for (let round = 0; round < 5; round += 1) {
-                const session = randomUUID();
-                await catalog.createSession(session, { owner: PERSON });
-                let open;
-                meeting = { arrived: [], opened: new Promise(resolve => { open = resolve; }), open: () => open() };
-                const ids = [randomUUID(), randomUUID()];
-                const results = await Promise.allSettled([spawn(session, ids[0], YAML("3.0.0", 30)), spawn(session, ids[1], YAML("3.0.0", 45))]);
-                const met = meeting;
-                meeting = null;
-                expect(met.arrived.length, `round ${round}: both creations reached the version check after their claims`).toBe(2);
-                expect(met.arrived[0].client, `round ${round}: two clients`).not.toBe(met.arrived[1].client);
-                expect(met.arrived.map(item => item.isolation), `round ${round}`).toEqual(["repeatable read", "repeatable read"]);
-                expect(results.map(result => result.status).sort(), `round ${round}: ${JSON.stringify(results.map(result => result.reason?.message ?? null))}`)
-                    .toEqual(["fulfilled", "rejected"]);
-                const won = results.findIndex(result => result.status === "fulfilled");
-                const lost = results.findIndex(result => result.status === "rejected");
-                expect(results[lost].reason.code).toBe("SEMVER_REUSED");
-                expect(results[lost].reason.details).toMatchObject({ version: "3.0.0", workflowId: ids[won] });
-                expect(await catalog.getSession(ids[lost])).toBeNull();
-                expect(await host.store.readDefinition(ids[lost])).toBeNull();
+            await observer.connect();
+            const setupErrors = [];
+            catalog.pool.on("connect", client => {
+                client.query("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ").catch(error => setupErrors.push(error));
+            });
+            await catalog.initialize();
+            const host = { catalog, store: catalog.workflowStore(), duroxideClient: {} };
+            const check = host.store.requireVersionFreeLocked;
+            let meeting = null;
+            // The version check, after the claim: the first arrival of a round holds there until the other creation is seen
+            // waiting on its parent lock; every arrival records its client and default isolation.
+            host.store.requireVersionFreeLocked = async function (client, input) {
+                const round = meeting;
+                if (round) {
+                    const { rows } = await client.query("SHOW default_transaction_isolation");
+                    round.arrived.push({ client, isolation: rows[0].default_transaction_isolation });
+                    if (round.arrived.length === 1) {
+                        const pid = (await client.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+                        const deadline = Date.now() + 15_000;
+                        for (;;) {
+                            const { rows: blocked } = await observer.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))", [pid]);
+                            if (blocked[0].n > 0) { round.waited = true; break; }
+                            if (Date.now() > deadline) throw new Error("the second creation did not wait on the first's parent lock within 15 s: the two creations did not run at once");
+                            await new Promise(resolve => setTimeout(resolve, 25));
+                        }
+                    }
+                }
+                return check.call(this, client, input);
+            };
+            try {
+                const { rows } = await catalog.pool.query("SHOW default_transaction_isolation");
+                expect(rows[0].default_transaction_isolation).toBe("repeatable read");
+                const spawn = (session, id, yaml) => createWorkflow(host, { workflowSessionId: id, parentSessionId: session, yaml, actor: ACTOR,
+                    operationId: `create-${id}`, publish: true, refuseVersionReuse: true });
+                for (let round = 0; round < 5; round += 1) {
+                    const session = randomUUID();
+                    await catalog.createSession(session, { owner: PERSON });
+                    meeting = { arrived: [], waited: false };
+                    const ids = [randomUUID(), randomUUID()];
+                    const results = await Promise.allSettled([spawn(session, ids[0], YAML("3.0.0", 30)), spawn(session, ids[1], YAML("3.0.0", 45))]);
+                    const met = meeting;
+                    meeting = null;
+                    expect(met.waited, `round ${round}: the second creation waited on the first's parent lock`).toBe(true);
+                    expect(met.arrived.length, `round ${round}: both creations reached the version check after their claims`).toBe(2);
+                    expect(met.arrived[0].client, `round ${round}: two clients`).not.toBe(met.arrived[1].client);
+                    expect(met.arrived.map(item => item.isolation), `round ${round}`).toEqual(["repeatable read", "repeatable read"]);
+                    expect(results.map(result => result.status).sort(), `round ${round}: ${JSON.stringify(results.map(result => result.reason?.message ?? null))}`)
+                        .toEqual(["fulfilled", "rejected"]);
+                    const won = results.findIndex(result => result.status === "fulfilled");
+                    const lost = results.findIndex(result => result.status === "rejected");
+                    expect(results[lost].reason.code).toBe("SEMVER_REUSED");
+                    expect(results[lost].reason.details).toMatchObject({ version: "3.0.0", workflowId: ids[won] });
+                    expect(await catalog.getSession(ids[lost])).toBeNull();
+                    expect(await host.store.readDefinition(ids[lost])).toBeNull();
+                }
+                expect(setupErrors.map(error => error.message)).toEqual([]);
+            } finally {
+                host.store.requireVersionFreeLocked = check;
             }
-            expect(setupErrors.map(error => error.message)).toEqual([]);
         } finally {
-            host.store.requireVersionFreeLocked = check;
-            await catalog.close();
+            try {
+                await observer.end();
+            } finally {
+                await catalog.close();
+            }
         }
     });
 

@@ -163,15 +163,16 @@ describe("stage 2 review: a Start is receipt-first, and the budget of running ch
         }
     });
 
-    // Lock-order check O1: a Start's claim inserts its Workflow, then waits for the session's row (the budget lock) behind the
-    // session's deletion or end. Under that lock the session is no longer live: the claim is refused and rolled back, so no
-    // Workflow session is left under the session.
+    // Lock-order check O1: a Start waits for the session's row behind the session's deletion or end. Since DR-02 (6f59403d)
+    // the Workflow session's creation locks its parent first, before its claim: a deletion is refused there
+    // (PARENT_DELETED); an end passes that lock and is refused at the budget lock (SESSION_NOT_LIVE). Either way the
+    // creation is refused and rolled back, so no Workflow session is left under the session.
     it("O1: a Start that waits on the budget lock behind the session's deletion, or its end, leaves no Workflow session", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const direct = new pg.Pool({ connectionString: env.store, max: 2 });
         const { h, host } = await harness();
         try {
-            for (const [change, code] of [["SET deleted_at = now()", "SESSION_NOT_FOUND"], ["SET state = 'cancelled'", "SESSION_NOT_LIVE"]]) {
+            for (const [change, code] of [["SET deleted_at = now()", "PARENT_DELETED"], ["SET state = 'cancelled'", "SESSION_NOT_LIVE"]]) {
                 const session = randomUUID();
                 await h.catalog.createSession(session, { owner: OWNER });
                 const first = (await save(host, session, YAML(3600), null)).receipt;
