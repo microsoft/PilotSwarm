@@ -490,6 +490,11 @@ An explicit override affects only the child, not the parent or provider defaults
 across worker restarts, scales to zero between turns, and produces an
 artifact at the end.
 
+> **Steps known in advance?** This scenario lets agents decide each step.
+> When you can write the steps down, hand them to a
+> [Workflow](./workflows.md) instead: it runs them on the server, waits for
+> timers and approvals at no model cost, and shows them as a live graph.
+
 **Setup:** DevOps Command Center sample plugin. Watchdog and Janitor
 auto-start.
 
