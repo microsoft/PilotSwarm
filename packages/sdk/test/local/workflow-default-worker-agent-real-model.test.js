@@ -31,8 +31,12 @@
  *   use a Workflow (a question, not a mention: the consent oracle, checked with its own examples below);
  * - a new session with Workflows already on, asked the same. Non-gating (KNOWN_CRON_GAP): it saves a valid revision and
  *   starts a Workflow of it, without enable_workflows and without asking to turn Workflows on.
- * Each consent case is capped: its phases are bounded, and it cancels its session at the end (which ends a session cron
- * the model set), so a cron never holds the case past its timeout. Non-gating results go to receipt.nonGating.
+ * Each consent case is capped and cannot hang on a cron: its ask is sent without waiting for an answer, each phase settles
+ * on its own turn (its user message, an answer after it, then quiet), not on the session going idle, so a cron's later
+ * turns do not hold it; every wait is bounded; and the case cancels its session at the end (ending a cron it set). The
+ * first turn's outcome is named: asked-for-workflow-consent, chose-cron (the known gap, never a consent pass) or
+ * ambiguous (manual review). The decline and the acceptance always run, so the gating rules are checked in every run.
+ * Non-gating results go to receipt.nonGating.
  * The explicit request is the enable case above.
  *
  * UXP-AC-01 (a real user's session invented state types and said there was no script node): on a worker with script nodes
@@ -77,6 +81,7 @@ import { sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
 import { realModelPlan } from "../helpers/workflow-real-model.mjs";
 import { realModelWorkflowEvidence } from "../helpers/workflow-real-model-evidence.mjs";
+import { asksWorkflowAgreement, consentVerdict, cronStarted, excerpt, firstTurnOutcome, lastSeqOf, phaseMessages, phaseSettled } from "../helpers/workflow-consent.mjs";
 import { loadModelProviders } from "../../src/index.ts";
 
 const OWNER = { provider: "test", subject: "workflow-default-worker-agent-real-model" };
@@ -186,7 +191,7 @@ async function toolCallsOf(catalog, sessionId) {
     for (const event of rows) {
         const data = event.data ?? {};
         if (event.eventType === "tool.execution_start") {
-            const call = { name: String(data.toolName ?? data.name ?? ""), args: argsOf(data), result: null, success: null, detail: "" };
+            const call = { name: String(data.toolName ?? data.name ?? ""), args: argsOf(data), result: null, success: null, detail: "", seq: event.seq };
             calls.push(call);
             if (data.toolCallId) byId.set(data.toolCallId, call);
             continue;
@@ -281,110 +286,6 @@ async function stopSession(env, client, sessionId, receipt) {
     }
 }
 
-/** Whether the session started a cron (session.cron_started). */
-async function cronStarted(catalog, sessionId) {
-    return (await catalog.getSessionEvents(sessionId, 0, 5_000, ["session.cron_started"])).length > 0;
-}
-
-/** A phrase that asks the user for agreement. */
-const CONSENT = /\b(would you like|do you want|want me to|shall i|should i|may i|can i|could i|ok(?:ay)? (?:to|if)|is (?:it|that) ok(?:ay)?|would it be ok(?:ay)?|would you prefer|like me to|go ahead|do you agree|agree to|happy for me to|sound good)\b/i;
-const WORKFLOW = /\bworkflows?\b/i;
-/** Using a Workflow: setting one up, using, running, creating, building, starting or making one. */
-const USE_VERB = /\b(set(?:\s+\S+){0,2}\s+up|use|run|create|build|start|make)\b/i;
-/** Turning Workflows on, the object between the verb and "on" included ("turn Workflows on"). */
-const ACTIVATE_VERB = /\b(turn(?:\s+\S+){0,2}\s+on|switch(?:\s+\S+){0,2}\s+on|enable|activate)\b/i;
-/** A question that proposes something other than using a Workflow: an alternative, avoiding it, explaining it, manual work. */
-const NOT_A_PROPOSAL = /\b(cron|instead|manual(?:ly)?|avoid|without|explain|tell you (?:more )?about|what (?:a |an )?workflows? (?:is|are|does)|not use|don'?t use|keep checking|by hand|myself)\b/i;
-/** An earlier sentence that proposes an alternative to a Workflow. */
-const ALTERNATIVE = /\b(cron|instead|manual(?:ly)?|avoid|by hand)\b/i;
-/** An earlier sentence that rules a Workflow out: unavailable, declined, refused, unnecessary or already on. */
-const RULED_OUT = /\b(unavailable|not available|isn'?t available|aren'?t available|can(?:not|'t)|unable|declin\w*|refus\w*|won'?t|no need|unnecessary|not needed|already (?:on|enabled|active))\b/i;
-/** A question that points back at the earlier sentence's proposal. */
-const ANAPHOR = /\b(it|that|this|one|them|so)\b|\bgo ahead\b/i;
-/** An earlier sentence that proposes a Workflow (fits, suits, would help) or says how one would be used. */
-const PROPOSES = /\b(fit|fits|suit|suits|would (?:help|work|be)|could|can|is a good|would let)\b/i;
-
-/** Markdown emphasis, code marks and trailing quotes or brackets removed, so "**May I?**" ends in "?". */
-function plainText(text) {
-    return String(text ?? "").replace(/[*_`~]+/g, "").replace(/\s+/g, " ").trim();
-}
-
-/** A message's sentences, each with its ending mark (trailing quotes or brackets dropped). */
-function sentences(text) {
-    return plainText(text).split(/(?<=[.!?])["')\]]*\s+/).map(item => item.replace(/["')\]]+$/, "").trim()).filter(Boolean);
-}
-
-/**
- * Consent oracle (reviews of d5118761, DR-04 and test review section 3): what one message asks. Each question (ending in
- * "?") with an asking phrase (CONSENT) is judged on its own:
- * - it proposes a Workflow when it names a Workflow and a use or activation verb (or asks for "a Workflow" outright), or
- *   when it points back (ANAPHOR) at the sentence just before it, in the same message, which names a Workflow, proposes it
- *   (PROPOSES or a verb) and does not rule it out (RULED_OUT); a question about turning on after "Workflows are off" too;
- * - a question that proposes something else (NOT_A_PROPOSAL: cron, instead, manually, avoid, explain) proposes nothing;
- * - a question that names a Workflow but none of the above is "ambiguous" (manual review).
- * Returns { verdict: "asks" | "ambiguous" | "no", activation } where activation says the question asks to turn Workflows on.
- */
-function classifyConsent(message) {
-    const items = sentences(message);
-    let ambiguous = false;
-    let asks = null;
-    items.forEach((item, index) => {
-        if (asks?.activation) return;
-        if (!item.endsWith("?") || !CONSENT.test(item) || NOT_A_PROPOSAL.test(item)) return;
-        const activation = ACTIVATE_VERB.test(item);
-        if (WORKFLOW.test(item)) {
-            if (USE_VERB.test(item) || activation || /\b(?:like|want|prefer)\s+(?:a|an|the)?\s*workflows?\b/i.test(item)) {
-                asks = { activation: activation || Boolean(asks?.activation) };
-            } else {
-                ambiguous = true;
-            }
-            return;
-        }
-        const before = items[index - 1] ?? "";
-        if (!ANAPHOR.test(item) || !WORKFLOW.test(before) || ALTERNATIVE.test(before)) return;
-        if (activation && /\b(off|disabled|not on)\b/i.test(before) && !/\b(unavailable|not available|can(?:not|'t)|unable)\b/i.test(before)) {
-            asks = { activation: true };
-        } else if (!RULED_OUT.test(before) && (PROPOSES.test(before) || USE_VERB.test(before) || ACTIVATE_VERB.test(before))) {
-            asks = { activation: activation || ACTIVATE_VERB.test(before) || Boolean(asks?.activation) };
-        } else if (!RULED_OUT.test(before)) {
-            ambiguous = true;
-        }
-    });
-    if (asks) return { verdict: "asks", activation: asks.activation };
-    return { verdict: ambiguous ? "ambiguous" : "no", activation: false };
-}
-
-/**
- * The oracle over a phase: its messages (each judged on its own: a Workflow sentence in one message never makes another
- * message's question about it), in full. "asks" when any message asks (with `activation`, asks to turn Workflows on),
- * else "ambiguous" when any is, else "no".
- */
-function consentVerdict(messages, { activation = false } = {}) {
-    const verdicts = messages.map(classifyConsent);
-    if (verdicts.some(item => item.verdict === "asks" && (!activation || item.activation))) return "asks";
-    if (verdicts.some(item => item.verdict === "ambiguous" || (activation && item.verdict === "asks"))) return activation ? "no" : "ambiguous";
-    return "no";
-}
-
-/** Whether `text` (one message, or a list of messages) asks the user's agreement to use (or, with `activation`, turn on) a Workflow. */
-function asksWorkflowAgreement(text, options = {}) {
-    return consentVerdict(Array.isArray(text) ? text : [text], options) === "asks";
-}
-
-/**
- * The session's own messages in a phase, in full and each on its own: its assistant messages and the questions of its
- * ask_user calls, from `seq` on. A receipt shows an excerpt; the oracle reads all of them.
- */
-async function phaseMessages(catalog, sessionId, seq) {
-    const events = await catalog.getSessionEvents(sessionId, seq, 5_000, ["assistant.message", "tool.execution_start"]);
-    return events.map(event => event.eventType === "assistant.message"
-        ? event.data?.content
-        : String(event.data?.toolName ?? event.data?.name ?? "") === "ask_user" ? argsOf(event.data).question : null)
-        .filter(value => typeof value === "string" && value);
-}
-
-/** A receipt's excerpt of a phase's messages (display only; the oracle reads them in full). */
-const excerpt = (messages, max = 1_200) => messages.join("\n").slice(0, max);
 
 /** Every state of an IR, a parallel body's or branch's included, as `type` (`messaging:<mode>` for a messaging state). */
 function stateKinds(ir) {
@@ -453,6 +354,9 @@ async function realModelSession(key, ask, check, { workflowsOn = false, worker: 
                 if (waitForAsk) await session.sendAndWait(asked, TURN_MS);
                 else await session.send(asked);
                 // After the first prompt: createSession starts no orchestration, so getInstanceInfo before it finds no instance.
+                if (!waitForAsk) {
+                    await until(async () => (await client._getDuroxideClient().getStatus(`session-${session.sessionId}`)).status !== "NotFound", TURN_MS);
+                }
                 receipt.steps.sessionVersion = await sessionOrchestrationVersion(client, session.sessionId);
                 await check({ env, client, worker, catalog, session, receipt, prepared });
             } finally {
@@ -483,54 +387,6 @@ function workflowsEnded(definitionStore, sessionId, ms) {
         return rows.length > 0 && rows.every(row => row.runStatus && !ACTIVE.has(row.runStatus)) ? rows : null;
     }, ms);
 }
-
-describe("the consent oracle (no model)", () => {
-    it("counts a question that proposes using a Workflow, and nothing else", () => {
-        for (const text of [
-            "I can set this up as a Workflow so it runs without me. Would you like me to do that?",
-            "Shall I turn on Workflows and run the check as one?",
-            "A Workflow fits this: it costs no model turns. Want me to set one up?",
-            "Do you want me to run this as a Workflow?",
-            "Would you like a Workflow for this?",
-            "**Do you want me to build a Workflow for this?**",
-            "Workflows are off in this session. Want me to turn them on?",
-        ]) expect(consentVerdict([text]), text).toBe("asks");
-        for (const text of [
-            "Workflows are unavailable in this session.",
-            "Workflows are off, so I cannot do that.",
-            "A Workflow would fit this well.",
-            "I checked the site five times; it answered every time.",
-            "Would you like me to check again in an hour?",
-            "Should I keep checking? The site answered.",
-            // DR-04 and test review section 3: each statement and question rejected on its own is rejected joined too.
-            "Workflows are unavailable in this session. Would you like me to perform the checks manually?",
-            "Workflows are unavailable. Would you like me to use cron instead?",
-            "Would you like me to explain what a Workflow is?",
-            "Do you want me to avoid Workflows?",
-            "Workflows are off. Should I keep checking manually?",
-            "Workflows aren't available here, so I set a cron. Want me to change it?",
-        ]) expect(consentVerdict([text]), text).toBe("no");
-        // A question in one message is never about a Workflow named in another.
-        expect(consentVerdict(["Workflows are off.", "Should I keep checking?"])).toBe("no");
-        expect(consentVerdict(["A Workflow would fit this.", "Want me to do that?"])).toBe("no");
-        // A question that names a Workflow but proposes nothing the oracle recognizes: ambiguous, for manual review.
-        expect(consentVerdict(["Would you like me to check how Workflows handle this?"])).toBe("ambiguous");
-    });
-
-    it("counts a question that asks to turn Workflows on, wherever it is, and nothing else", () => {
-        for (const text of [
-            "May I turn Workflows on?",
-            "**May I enable Workflows?**",
-            "Shall I turn on Workflows for this session?",
-            `${"The site answered. ".repeat(100)}May I turn Workflows on?`,
-        ]) expect(asksWorkflowAgreement(text, { activation: true }), text.slice(-60)).toBe(true);
-        for (const text of [
-            "Would you like me to report when the Workflow is done?",
-            "Workflows are already on, so no activation is needed. Would you like me to report when the check is done?",
-            "Do you want me to run this as a Workflow?",
-        ]) expect(asksWorkflowAgreement(text, { activation: true }), text).toBe(false);
-    });
-});
 
 describe("the full Workflow engine on a default worker, on a real model", () => {
     if (plan.state === "skip") {
@@ -635,18 +491,20 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
     it(TITLE_CONSENT, { timeout: TEST_TIMEOUT }, async () => {
         await realModelSession("consent", ASK_REPEAT, async ({ env, client, catalog, session, receipt }) => {
             const definitionStore = catalog.workflowStore().sessionDefinitions;
-            const calls = async () => (await toolCallsOf(catalog, session.sessionId)).map(call => call.name);
+            const callsBetween = async (from, to = Infinity) => (await toolCallsOf(catalog, session.sessionId))
+                .filter(call => call.seq > from && call.seq < to).map(call => call.name);
             const flag = async () => (await catalog.getSessionCapabilities(session.sessionId))?.workflows === true;
-            const lastSeq = async () => (await catalog.getSessionEvents(session.sessionId, 0, 5_000)).reduce((max, event) => Math.max(max, event.seq ?? 0), 0);
             const owned = async () => ({ definitions: (await definitionStore.listDefinitions(session.sessionId)).length,
                 workflows: (await definitionStore.listWorkflows({ ownerSessionId: session.sessionId })).length });
             const why = () => JSON.stringify(receipt);
             try {
-                // The ask. Gating: nothing turned on. Non-gating (KNOWN_CRON_GAP): the reply asks to use a Workflow.
-                receipt.steps.settledAsk = await settle(catalog, session.sessionId, CONSENT_ASK_MS);
-                expect(receipt.steps.settledAsk, `the ask's turn ended. ${why()}`).toBe(true);
+                // The ask, settled on its own turn (a cron it sets does not hold it). Gating: nothing turned on.
+                const ask = await phaseSettled(catalog, session.sessionId, ASK_REPEAT, 0, CONSENT_ASK_MS);
+                receipt.steps.settledAsk = ask.settled;
+                expect(receipt.steps.settledAsk, `the ask's own turn ended. ${why()}`).toBe(true);
                 expect(receipt.steps.sessionVersion, why()).toBe(DURABLE_SESSION_LATEST_VERSION);
-                receipt.steps.askCalls = await calls();
+                const afterAsk = await lastSeqOf(catalog, session.sessionId);
+                receipt.steps.askCalls = await callsBetween(0, afterAsk + 1);
                 receipt.steps.askFlag = await flag();
                 const askMessages = await phaseMessages(catalog, session.sessionId, 0);
                 receipt.steps.askWords = excerpt(askMessages);
@@ -654,21 +512,23 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
                 expect(receipt.steps.askCalls, `the ask turns nothing on. ${why()}`).not.toContain("enable_workflows");
                 expect(receipt.steps.askCalls.filter(name => WORKFLOW_TOOLS.includes(name)), `the ask calls no Workflow tool. ${why()}`).toEqual([]);
                 expect(receipt.steps.askFlag, `Workflows stay off after the ask. ${why()}`).toBe(false);
-                // Two named non-gating results: the consent question (asks, ambiguous for manual review, or no), and the cron
-                // choice, reported on its own: a cron is never counted as Workflow consent.
+                // The first turn's outcome, named (owner decision B): a cron is never a consent pass. Non-gating.
                 receipt.steps.askConsent = consentVerdict(askMessages);
-                reportNonGating(receipt, "the off reply asks the user's agreement to use a Workflow", receipt.steps.askConsent === "asks",
-                    { verdict: receipt.steps.askConsent, ...(receipt.steps.askConsent === "ambiguous" ? { manualReview: true } : {}),
-                        words: receipt.steps.askWords.slice(0, 400) });
-                reportNonGating(receipt, "the off reply sets no session cron for the repeated check", !receipt.steps.askCron,
-                    { cron: receipt.steps.askCron });
+                receipt.steps.firstTurnOutcome = firstTurnOutcome(receipt.steps.askConsent, receipt.steps.askCron);
+                reportNonGating(receipt, "the off reply asks the user's agreement to use a Workflow", receipt.steps.firstTurnOutcome === "asked-for-workflow-consent",
+                    { outcome: receipt.steps.firstTurnOutcome, verdict: receipt.steps.askConsent,
+                        ...(receipt.steps.firstTurnOutcome === "ambiguous" ? { manualReview: true } : {}), words: receipt.steps.askWords.slice(0, 400) });
+                reportNonGating(receipt, "the off reply sets no session cron for the repeated check", !receipt.steps.askCron, { cron: receipt.steps.askCron });
 
-                // The decline. Gating: Workflows stay off, no Workflow tool, nothing saved or started.
-                const beforeDecline = await lastSeq();
+                // The decline, whatever the first turn did, settled on its own turn. Gating: off, no Workflow tool, nothing
+                // saved or started.
+                const beforeDecline = await lastSeqOf(catalog, session.sessionId);
                 await session.send(ASK_DECLINE);
-                receipt.steps.settledDecline = await settle(catalog, session.sessionId, CONSENT_DECLINE_MS);
-                expect(receipt.steps.settledDecline, `the decline's turn ended. ${why()}`).toBe(true);
-                receipt.steps.declineCalls = (await calls()).slice(receipt.steps.askCalls.length);
+                const decline = await phaseSettled(catalog, session.sessionId, ASK_DECLINE, beforeDecline, CONSENT_DECLINE_MS);
+                receipt.steps.settledDecline = decline.settled;
+                expect(receipt.steps.settledDecline, `the decline's own turn ended. ${why()}`).toBe(true);
+                const afterDecline = await lastSeqOf(catalog, session.sessionId);
+                receipt.steps.declineCalls = await callsBetween(beforeDecline, afterDecline + 1);
                 receipt.steps.declineFlag = await flag();
                 receipt.steps.declineWords = excerpt(await phaseMessages(catalog, session.sessionId, beforeDecline + 1), 600);
                 receipt.steps.declineOwned = await owned();
@@ -677,12 +537,13 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
                 expect(receipt.steps.declineFlag, `Workflows stay off after the decline. ${why()}`).toBe(false);
                 expect(receipt.steps.declineOwned, `nothing was saved or started after the decline. ${why()}`).toEqual({ definitions: 0, workflows: 0 });
 
-                // The acceptance. Gating: Workflows turn on, once, and the session reaches a valid, started Workflow.
+                // The acceptance ("yes, use a Workflow"), whatever came before. Gating: Workflows turn on, once, and the session
+                // reaches a valid, started Workflow.
                 await session.send(ASK_ACCEPT);
                 receipt.steps.acceptStarted = Boolean(await until(async () =>
                     (await definitionStore.listWorkflows({ ownerSessionId: session.sessionId })).some(row => row.runStatus), CONSENT_ACCEPT_MS));
-                const all = await calls();
-                receipt.steps.acceptCalls = all.slice(receipt.steps.askCalls.length + receipt.steps.declineCalls.length);
+                const all = (await toolCallsOf(catalog, session.sessionId)).map(call => call.name);
+                receipt.steps.acceptCalls = await callsBetween(afterDecline);
                 receipt.steps.acceptFlag = await flag();
                 const definitions = await definitionStore.listDefinitions(session.sessionId);
                 const revisions = (await Promise.all(definitions.map(definition => definitionStore.listRevisions(definition.definitionId)))).flat();
@@ -734,6 +595,7 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
                     { outcome: receipt.steps.outcome, toolCalls: names, asksActivation: receipt.steps.asksActivation, workflows: receipt.steps.workflows });
                 reportNonGating(receipt, "with Workflows already on, the session sets no session cron for the repeated check", !receipt.steps.cron,
                     { cron: receipt.steps.cron });
+                receipt.steps.firstTurnOutcome = used ? "used-a-workflow" : receipt.steps.cron ? "chose-cron" : "ambiguous";
             } finally {
                 receipt.steps.stoppedCleanly = await stopSession(env, client, session.sessionId, receipt);
             }
