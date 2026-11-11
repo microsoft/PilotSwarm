@@ -240,7 +240,7 @@ The SQL cascade is synchronous inside the original CMS transaction; it does not 
 
 ### Done in this PR after the source pin: direct completion
 
-Commit `ac3fef7b` removes the `WORKFLOW_ACTIVE` refusal on direct completion (the management API's `completeSession`, the portal's Complete, `complete_agent`, and the `Completed by parent` command). Completing a session that owns an active Workflow now uses the same existing child cascade and owner-session trigger, with the outcomes described above: the active run and its Workflow session end cancelled with "Parent session completing". **No migration was needed.** The refusal is still present at `4fa702dc`.
+Commit `ac3fef7b` removes the `WORKFLOW_ACTIVE` refusal on direct completion (the management API's `completeSession`, the portal's Complete, `complete_agent`, and the `Completed by parent` command). Completing a session that owns an active Workflow now uses the same existing child cascade and owner-session trigger, with the outcomes described above: the active run and its Workflow session end cancelled with "Parent session completing". Two exceptions are filed, not fixed ([issue 290](https://github.com/microsoft/PilotSwarm/issues/290) sections 2 and 3): a Workflow whose controller already failed is skipped, and its agent session stays alive; a direct `updateWorkflow` operation `test` on a retained test bench can still start after the owner completed. **No migration was needed.** The refusal is still present at `4fa702dc`.
 
 The live-run cascade was also observed on a test deployment. That observation did not exercise hidden test benches; their behavior follows the source paths above.
 
@@ -275,9 +275,9 @@ These are not represented by `4fa702dc`:
 - `bddbd878`: the final check compares the row's exact version (read before the session is judged) under the row's lock; a session's first message writes its row and starts its orchestration in one CMS transaction on that lock, so the first message and the Sweeper serialize; the cascade locks the sessions it would delete without waiting, and refuses when one is held.
 - `5dcfc349` (**DR-01**): a session whose first message was accepted is never deleted because Duroxide reports NotFound, at any age; only a terminal status or an ended session state shows its end.
 - `6f59403d` (**DR-02**): the cleanup subtree is read again under its locks, and a session is never created under a deleted parent.
-- `50ad6493`: the first start's wait for Duroxide is bounded; the CMS update and the start are serialized, not atomic.
+- `50ad6493`: the first start waits at most 30 seconds for Duroxide's answer to the start. That bounds only this wait, not the row lock or the whole path; a start that answers late can still commit, and a retry is best-effort ([issue 291](https://github.com/microsoft/PilotSwarm/issues/291) section 1). The CMS update and the start are serialized, not atomic.
 
-A durable start-intent record is a separate follow-up, not part of these fixes. See [Done in this PR](known-issues.md#done-in-this-pr-after-the-source-pin).
+A durable start-intent record is a separate follow-up ([issue 291](https://github.com/microsoft/PilotSwarm/issues/291) section 1), not part of these fixes. See [Done in this PR](known-issues.md#done-in-this-pr-after-the-source-pin).
 
 ## Lost-dispatch recovery
 

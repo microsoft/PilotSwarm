@@ -955,9 +955,21 @@ cancelled with the reason "Parent session completing", its agent steps end,
 and the Workflow session ends cancelled. A test bench is not in the session's
 child list, so the done does not reach it; when the owner's state becomes
 completed, its active test run is cancelled ("The session that owns this
-Workflow ended, so the Workflow was canceled."). A Workflow whose runs had
-already ended keeps its state. Cancelling the owner, or its failure, ends
-them the same way; deleting it deletes them.
+Workflow ended, so the Workflow was canceled."), not with "Parent session
+completing". A Workflow whose runs had already ended keeps its state.
+Cancelling the owner, or its failure, ends them the same way; deleting it
+deletes them.
+
+Known exceptions, filed and not fixed in this release
+([issue 290](https://github.com/microsoft/PilotSwarm/issues/290)):
+
+- A child session that was never sent a first message has no orchestration,
+  so a live delete, cancel or complete of its parent waits for it and the
+  parent ends failed, with its subtree left as it was (section 1).
+- Completing the owner skips a Workflow whose controller had already failed;
+  that Workflow's agent session stays alive (section 2).
+- A direct `updateWorkflow` operation `test` on a retained test bench can
+  still start a test run after the owner completed (section 3).
 
 For a Workflow, a cancel or complete ends the run in the store when
 it is accepted, from every entry point: `update_workflow`, the parent agent,
@@ -1005,9 +1017,14 @@ first, so whichever commits first decides:
 - A first message's row update and its orchestration start are serialized
   with the delete, not atomic: the start is written to the durable
   provider's own store, which a rollback of the session row does not undo.
-  When the start fails, or does not answer within 30 seconds (the session
-  row's lock is not held longer), the row is left as it was and the send
-  fails; sending again starts it.
+  The send waits at most 30 seconds for the provider's answer to the start.
+  That bounds only this wait, not the whole first message, and the session
+  row's lock can be held somewhat longer than 30 seconds. When the start
+  fails or does not answer in time, the row is left as it was and the send
+  fails. A start that answers late can still commit in the provider after
+  the send failed. Sending again is a best-effort retry; reconciling such a
+  start is a follow-up
+  ([issue 291](https://github.com/microsoft/PilotSwarm/issues/291), section 1).
 - An ordinary session whose first message was accepted (its orchestration
   was started) is never taken as ended because its orchestration reads
   NotFound, at any age: a start that no worker has picked up yet reads
