@@ -1,0 +1,160 @@
+{
+  "WorkflowAdmission": {
+    "indent": 4,
+    "constants": [
+      "Steps",
+      "MaxKv",
+      "MaxEvals",
+      "MaxAttempts",
+      "MaxPauses",
+      "KvCheck",
+      "PauseGuard",
+      "InactiveFirst",
+      "PausedRefusalWaits",
+      "PausedBackstop",
+      "CountOnAdmitted",
+      "BeginMarksBegun",
+      "TriggerEndsPaused",
+      "LoseWake",
+      "PauseBeforeBegin",
+      "Cancels",
+      "Deletes"
+    ],
+    "lists": "lines",
+    "deadlockFirst": false
+  },
+  "WorkflowLifecycle": {
+    "indent": 4,
+    "constants": [
+      "Cancellers",
+      "LegacyWriter",
+      "CancelEndsBeforeBegin",
+      "BeginHonorsReceipt",
+      "C2Fix",
+      "LoseDispatch",
+      "DropOrphans",
+      "Interrupts",
+      "Repeats",
+      "Recovery",
+      "ControllerDeath",
+      "NotifyEnabled",
+      "NotifyFaults",
+      "AuthorityLoss",
+      "MaxCrashes"
+    ],
+    "lists": "lines",
+    "deadlockFirst": false
+  },
+  "WorkflowReceive": {
+    "indent": 4,
+    "constants": [
+      "Secs",
+      "HasWait",
+      "Ttl",
+      "MaxPre",
+      "Matching",
+      "From",
+      "Sender1",
+      "Sender2",
+      "Authorized",
+      "Deletes",
+      "Cancels",
+      "AdmitDecides",
+      "AcceptDecides",
+      "OneReading",
+      "Granule",
+      "ReceiptStored",
+      "EntryClaim",
+      "IngressClaim",
+      "DeadlineCheck",
+      "ConsumeOnClaim",
+      "EarliestFirst",
+      "FitCheck",
+      "Cas"
+    ],
+    "lists": "lines",
+    "deadlockFirst": false
+  },
+  "WorkflowRun": {
+    "indent": 4,
+    "constants": [
+      "MaxLoops",
+      "LoseWake",
+      "ControllerFaults",
+      "EffectFaults",
+      "Backstop",
+      "CancelStopFromStore",
+      "DeleteGuard",
+      "EntryFence",
+      "EndPending",
+      "EffectWatch",
+      "CommandPoll",
+      "Recovery",
+      "HandlerOnce",
+      "CatchAll",
+      "ExplicitHandlerRoute",
+      "HandlerLoop",
+      "ControllerDeath",
+      "Deletes",
+      "CrashBudget",
+      "MaxCrashes",
+      "NoCas"
+    ],
+    "lists": "lines",
+    "deadlockFirst": false
+  },
+  "WorkflowSend": {
+    "indent": 4,
+    "constants": [
+      "MaxAttempts",
+      "Foreign",
+      "Refuses",
+      "Cancels",
+      "SourceDeletes",
+      "RecipientEnds",
+      "Terminates",
+      "Crashes",
+      "Guard",
+      "CollectFinds",
+      "ContentBound",
+      "RunEndDecides"
+    ],
+    "lists": "lines",
+    "deadlockFirst": false
+  },
+  "WorkflowSessionCommands": {
+    "indent": 4,
+    "constants": [
+      "Command",
+      "Conflict",
+      "OtherDelete",
+      "DeleteInStore",
+      "ReplayRepair",
+      "DeletedChildPath",
+      "Legacy"
+    ],
+    "lists": "lines",
+    "deadlockFirst": false
+  },
+  "WorkflowWait": {
+    "indent": 4,
+    "constants": [
+      "Secs",
+      "ClockOffset",
+      "MaxPre",
+      "EntryClock",
+      "StoreElapseGuard",
+      "Cas",
+      "CanKeepsDeadline",
+      "ElapseWhilePaused",
+      "Pauses",
+      "Cancels",
+      "Deletes",
+      "ControllerDeath",
+      "ResumeFair",
+      "MaxCrashes"
+    ],
+    "lists": "lines",
+    "deadlockFirst": false
+  }
+}

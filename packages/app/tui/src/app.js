@@ -63,6 +63,42 @@ export function isPlainShortcutKey(key = {}) {
     return !key.ctrl && !key.meta;
 }
 
+/**
+ * The workflow view's run controls for the run it shows (p pause · r resume · s stop · c cancel; stop and cancel ask
+ * first), d, which dismisses the notice about the last one, v, which opens the shown run's variables form, V, which
+ * opens the form for several of them in one update, e, which opens the YAML editor, S, which opens the Start form (it
+ * asks first; no publish-only step, review UI-4), t, which opens the test review (a test run of the
+ * current revision; it asks first), and, for a test run shown, a, which answers one of its intercepted effects that
+ * waits, and +, which advances its virtual clock. [ and ] show the selected state's result of an older or newer visit
+ * (the latest by default), o reads the shown run's older history, f reads the whole value of the visit shown, and i
+ * compares the variables that visit applied with the run's accepted ones. C compares two versions of the draft as
+ * formatted YAML (the one before the latest with the latest; , and . choose an older or newer first version; C closes).
+ * INACTIVE (apart from [ ], o, f, i, C , and ., which read only): only a deployment that takes a person's workflow commands offers
+ * them; otherwise the status line says why nothing was sent.
+ */
+const WORKFLOW_VIEW_RUN_KEYS = Object.freeze({
+    p: UI_COMMANDS.WORKFLOW_VIEW_PAUSE_RUN,
+    r: UI_COMMANDS.WORKFLOW_VIEW_RESUME_RUN,
+    s: UI_COMMANDS.WORKFLOW_VIEW_STOP_RUN,
+    c: UI_COMMANDS.WORKFLOW_VIEW_CANCEL_RUN,
+    d: UI_COMMANDS.WORKFLOW_VIEW_DISMISS_NOTICE,
+    v: UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES,
+    V: UI_COMMANDS.WORKFLOW_VIEW_UPDATE_VARIABLES,
+    e: UI_COMMANDS.WORKFLOW_VIEW_EDIT_DRAFT,
+    S: UI_COMMANDS.WORKFLOW_VIEW_PUBLICATION_REVIEW,
+    t: UI_COMMANDS.WORKFLOW_VIEW_TEST_REVIEW,
+    a: UI_COMMANDS.WORKFLOW_VIEW_TEST_ANSWER,
+    "+": UI_COMMANDS.WORKFLOW_VIEW_TEST_CLOCK,
+    "[": UI_COMMANDS.WORKFLOW_VIEW_OLDER_EXECUTION,
+    "]": UI_COMMANDS.WORKFLOW_VIEW_NEWER_EXECUTION,
+    o: UI_COMMANDS.WORKFLOW_VIEW_OLDER_HISTORY,
+    f: UI_COMMANDS.WORKFLOW_VIEW_WHOLE_VALUE,
+    i: UI_COMMANDS.WORKFLOW_VIEW_INSPECT_VARIABLES,
+    C: UI_COMMANDS.WORKFLOW_VIEW_COMPARE_VERSIONS,
+    ",": UI_COMMANDS.WORKFLOW_VIEW_COMPARE_OLDER,
+    ".": UI_COMMANDS.WORKFLOW_VIEW_COMPARE_NEWER,
+});
+
 export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
     const { stdin } = useStdin();
     const mouseInputRef = React.useRef({ ignoreUntil: 0 });
@@ -294,12 +330,16 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             && controller.giveUpTurnControl()) {
             return;
         }
-        if (focus !== "prompt" && input === "q" && quitStateRef.current.armedUntil > Date.now()) {
+        // The workflow variables forms, the draft editor, the publication and test reviews and the test run's answer and clock
+        // forms take typed text, q included.
+        const typingInForm = ["workflowVariable", "workflowVariableBatch", "workflowDraft", "workflowPublish", "workflowTest", "workflowTestAnswer",
+            "workflowTestClock"].includes(modal?.type);
+        if (focus !== "prompt" && !typingInForm && input === "q" && quitStateRef.current.armedUntil > Date.now()) {
             clearQuitArm(false);
             requestExit();
             return;
         }
-        if (focus !== "prompt" && input === "q") {
+        if (focus !== "prompt" && !typingInForm && input === "q") {
             clearQuitArm(false);
             requestExit();
             return;
@@ -527,6 +567,280 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 }
                 return;
             }
+            // The draft editor: the YAML is text (Enter a new line, Tab two spaces, the cursor keys, PgUp/PgDn, Home/End,
+            // Backspace). ctrl-o saves it as a new revision, ctrl-r discards the edit (it asks first), ctrl-k keeps the edit on a
+            // newer revision, and Esc closes the editor (the edit is kept).
+            if (modal.type === "workflowDraft") {
+                if (key.escape) {
+                    controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("o", "\u000f")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_DRAFT_SAVE).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("r", "\u0012")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_DRAFT_DISCARD).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("k", "\u000b")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_DRAFT_KEEP).catch(() => {});
+                    return;
+                }
+                if (key.return) {
+                    controller.editWorkflowDraft({ type: "insert", text: "\n" });
+                    return;
+                }
+                if (key.tab) {
+                    controller.editWorkflowDraft({ type: "insert", text: "  " });
+                    return;
+                }
+                if (key.upArrow || key.downArrow || key.pageUp || key.pageDown) {
+                    controller.editWorkflowDraft({ type: "move", lines: key.upArrow ? -1 : key.downArrow ? 1 : key.pageUp ? -10 : 10 });
+                    return;
+                }
+                if (key.leftArrow || key.rightArrow) {
+                    controller.editWorkflowDraft({ type: "move", chars: key.leftArrow ? -1 : 1 });
+                    return;
+                }
+                if (key.home || key.end) {
+                    controller.editWorkflowDraft({ type: "edge", edge: key.home ? "start" : "end" });
+                    return;
+                }
+                if (key.backspace || key.delete) {
+                    controller.editWorkflowDraft({ type: "backspace" });
+                    return;
+                }
+                if (!key.ctrl && !key.meta && input) controller.editWorkflowDraft({ type: "insert", text: input });
+                return;
+            }
+            // The Start form (spec draft 3, no publish-only step; review UI-4): two text fields, the inputs and initial
+            // variables (JSON objects); Tab switches them. ctrl-r starts (a definition's revision is published and started
+            // in one step) after the confirm dialog; ctrl-l reviews a workflow that changed meanwhile again; Enter sends
+            // nothing; Esc goes back to the workflow view.
+            if (modal.type === "workflowPublish") {
+                if (key.escape) {
+                    controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("r", "\u0012")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RUN).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("l", "\u000c")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RELOAD).catch(() => {});
+                    return;
+                }
+                if (key.return) return;
+                if (key.tab) {
+                    controller.editWorkflowPublicationField({ type: "switch" });
+                    return;
+                }
+                if (key.leftArrow || key.rightArrow) {
+                    controller.editWorkflowPublicationField({ type: "move", chars: key.leftArrow ? -1 : 1 });
+                    return;
+                }
+                if (key.home || key.end) {
+                    controller.editWorkflowPublicationField({ type: "edge", edge: key.home ? "start" : "end" });
+                    return;
+                }
+                if (key.backspace || key.delete) {
+                    controller.editWorkflowPublicationField({ type: "backspace" });
+                    return;
+                }
+                if (!key.ctrl && !key.meta && input) controller.editWorkflowPublicationField({ type: "insert", text: input });
+                return;
+            }
+            // The test review: three text fields, the run's inputs and initial variables (JSON objects) and a scenario name;
+            // Tab moves through them. ctrl-t starts the test after the confirm dialog, ctrl-a switches its agent states between
+            // mocked and real, ctrl-l reviews a workflow that changed meanwhile again; Enter sends nothing; Esc goes back.
+            if (modal.type === "workflowTest") {
+                if (key.escape) {
+                    controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("t", "\u0014")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_START).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("a", "\u0001")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_AGENTS).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("l", "\u000c")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_RELOAD).catch(() => {});
+                    return;
+                }
+                if (key.return) return;
+                if (key.tab) {
+                    controller.editWorkflowTestField({ type: "switch" });
+                    return;
+                }
+                if (key.leftArrow || key.rightArrow) {
+                    controller.editWorkflowTestField({ type: "move", chars: key.leftArrow ? -1 : 1 });
+                    return;
+                }
+                if (key.home || key.end) {
+                    controller.editWorkflowTestField({ type: "edge", edge: key.home ? "start" : "end" });
+                    return;
+                }
+                if (key.backspace || key.delete) {
+                    controller.editWorkflowTestField({ type: "backspace" });
+                    return;
+                }
+                if (!key.ctrl && !key.meta && input) controller.editWorkflowTestField({ type: "insert", text: input });
+                return;
+            }
+            // A test run's answer form: one JSON value. Enter sends the answer, Tab changes its kind (success, error, cancel),
+            // ↑↓ bind it to another effect that waits, Esc goes back to the workflow view.
+            if (modal.type === "workflowTestAnswer") {
+                if (key.escape) {
+                    controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                    return;
+                }
+                if (key.return) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_ANSWER_SEND).catch(() => {});
+                    return;
+                }
+                // ctrl-p: send the answer drafted here to the workflow's parent agent instead (owner decision q12).
+                if (matchesCtrlKey("p", "\u0010")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_ANSWER_ASK_PARENT).catch(() => {});
+                    return;
+                }
+                if (key.tab) {
+                    controller.cycleWorkflowTestAnswerKind();
+                    return;
+                }
+                if (key.upArrow || key.downArrow) {
+                    controller.pickWorkflowTestInterception(key.upArrow ? -1 : 1);
+                    return;
+                }
+                if (key.leftArrow || key.rightArrow) {
+                    controller.editWorkflowTestAnswerField({ type: "move", chars: key.leftArrow ? -1 : 1 });
+                    return;
+                }
+                if (key.home || key.end) {
+                    controller.editWorkflowTestAnswerField({ type: "edge", edge: key.home ? "start" : "end" });
+                    return;
+                }
+                if (key.backspace || key.delete) {
+                    controller.editWorkflowTestAnswerField({ type: "backspace" });
+                    return;
+                }
+                if (!key.ctrl && !key.meta && input) controller.editWorkflowTestAnswerField({ type: "insert", text: input });
+                return;
+            }
+            // A test run's virtual clock form: the seconds to advance. Enter advances, Esc goes back to the workflow view.
+            if (modal.type === "workflowTestClock") {
+                if (key.escape) {
+                    controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                    return;
+                }
+                if (key.return) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_CLOCK_ADVANCE).catch(() => {});
+                    return;
+                }
+                if (key.leftArrow || key.rightArrow) {
+                    controller.editWorkflowTestClockField({ type: "move", chars: key.leftArrow ? -1 : 1 });
+                    return;
+                }
+                if (key.home || key.end) {
+                    controller.editWorkflowTestClockField({ type: "edge", edge: key.home ? "start" : "end" });
+                    return;
+                }
+                if (key.backspace || key.delete) {
+                    controller.editWorkflowTestClockField({ type: "backspace" });
+                    return;
+                }
+                if (!key.ctrl && !key.meta && input) controller.editWorkflowTestClockField({ type: "insert", text: input });
+                return;
+            }
+            // The workflow variables form: two text fields, a name and a JSON value. Tab switches them, ↑↓ copy a listed
+            // variable into them, Enter sets, ctrl-r removes (after the confirm dialog), Esc goes back to the workflow view.
+            // When the variables changed since the edit began (R2-UI-1), ctrl-k keeps the edit and ctrl-l loads the new values.
+            if (modal.type === "workflowVariable") {
+                if (key.escape) {
+                    controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                    return;
+                }
+                if (key.return) {
+                    controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("r", "\u0012")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_REMOVE).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("k", "\u000b")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_KEEP).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("l", "\u000c")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_RELOAD).catch(() => {});
+                    return;
+                }
+                if (key.tab) {
+                    controller.switchWorkflowVariableField();
+                    return;
+                }
+                if (key.upArrow || key.downArrow) {
+                    controller.handleCommand(key.upArrow ? UI_COMMANDS.MODAL_PREV : UI_COMMANDS.MODAL_NEXT).catch(() => {});
+                    return;
+                }
+                if (key.leftArrow || key.rightArrow) {
+                    controller.moveWorkflowVariableCursor(key.leftArrow ? -1 : 1);
+                    return;
+                }
+                if (key.home || key.end) {
+                    controller.moveWorkflowVariableCursorToBoundary(key.home ? "start" : "end");
+                    return;
+                }
+                if (key.backspace || key.delete) {
+                    controller.deleteWorkflowVariableChar();
+                    return;
+                }
+                if (!key.ctrl && !key.meta && input) controller.insertWorkflowVariableText(input);
+                return;
+            }
+            // The several-variables form: two text fields, Set (a JSON object of names and values) and Remove (a JSON list of
+            // names). Tab switches them, Enter sends them as one update (a removal asks first), Esc goes back to the view.
+            // When the variables changed since the edit began (R2-UI-1), ctrl-k keeps the edit and ctrl-l starts over.
+            if (modal.type === "workflowVariableBatch") {
+                if (key.escape) {
+                    controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                    return;
+                }
+                if (key.return) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_BATCH_SEND).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("k", "\u000b")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_KEEP).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("l", "\u000c")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_RELOAD).catch(() => {});
+                    return;
+                }
+                if (key.tab) {
+                    controller.editWorkflowVariableBatchField({ type: "switch" });
+                    return;
+                }
+                if (key.leftArrow || key.rightArrow) {
+                    controller.editWorkflowVariableBatchField({ type: "move", chars: key.leftArrow ? -1 : 1 });
+                    return;
+                }
+                if (key.home || key.end) {
+                    controller.editWorkflowVariableBatchField({ type: "edge", edge: key.home ? "start" : "end" });
+                    return;
+                }
+                if (key.backspace || key.delete) {
+                    controller.editWorkflowVariableBatchField({ type: "backspace" });
+                    return;
+                }
+                if (!key.ctrl && !key.meta && input) controller.editWorkflowVariableBatchField({ type: "insert", text: input });
+                return;
+            }
             if (modal.type === "renameSession" || modal.type === "artifactUpload" || modal.type === "sessionGroupName" || modal.type === "shareSession" || modal.type === "sessionWorkspace") {
                 if (key.escape) {
                     controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
@@ -587,6 +901,21 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             }
             if (key.escape || input === "q" || (modal.type === "artifactPicker" && input === "a") || (modal.type === "help" && input === "?")) {
                 controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                return;
+            }
+            // The workflow view: ← → show another run of the workflow (the live run, then its runs).
+            if (modal.type === "workflowView" && (key.leftArrow || key.rightArrow)) {
+                controller.handleCommand(key.leftArrow ? UI_COMMANDS.WORKFLOW_VIEW_PREV_RUN : UI_COMMANDS.WORKFLOW_VIEW_NEXT_RUN).catch(() => {});
+                return;
+            }
+            // The workflow view: PgUp/PgDn (ctrl-u/ctrl-d) scroll the selected state's details.
+            if (modal.type === "workflowView" && (key.pageUp || key.pageDown || isCtrlU || isCtrlD)) {
+                controller.handleCommand(key.pageUp || isCtrlU ? UI_COMMANDS.WORKFLOW_VIEW_DETAILS_UP : UI_COMMANDS.WORKFLOW_VIEW_DETAILS_DOWN).catch(() => {});
+                return;
+            }
+            // The workflow view: a person's run controls for the shown run, and d dismisses the last command's notice.
+            if (modal.type === "workflowView" && plainShortcut && Object.hasOwn(WORKFLOW_VIEW_RUN_KEYS, input)) {
+                controller.handleCommand(WORKFLOW_VIEW_RUN_KEYS[input]).catch(() => {});
                 return;
             }
             if (key.tab && key.shift) {
@@ -960,6 +1289,13 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
         if (focus !== "prompt" && input === "?") {
             controller.handleCommand(UI_COMMANDS.OPEN_HELP).catch(() => {});
+            return;
+        }
+        // Workflow Simplified (18): w opens the Workflow pane for the session (its selected Workflow row, an agent node session's own
+        // Workflow, else its newest Workflow): nodes, details, an agent node's sessions; read-only but for the run controls a
+        // deployment that takes a person's workflow commands offers. Esc goes back to the session.
+        if (plainShortcut && input === "w") {
+            controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW).catch(() => {});
             return;
         }
         if (plainShortcut && input === "m") {

@@ -1,10 +1,13 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
+import { runtimeProviderFromEnv, vitestTimeouts } from "./test/helpers/time-scale.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const configuredWorkers = Number(process.env.PS_TEST_MAX_WORKERS || "8");
 const maxWorkers = Number.isInteger(configuredWorkers) && configuredWorkers > 0 ? configuredWorkers : 8;
+// HorizonDB is about ten times slower than local PostgreSQL and its connects can stall, so its limits grow by the time scale.
+const { testTimeout, hookTimeout } = vitestTimeouts(runtimeProviderFromEnv());
 const testModelProvidersPath = path.join(__dirname, "test/fixtures/model-providers.test.json");
 
 export default defineConfig({
@@ -13,8 +16,8 @@ export default defineConfig({
         pool: "forks",
         maxWorkers,
         fileParallelism: true,
-        testTimeout: 300_000,
-        hookTimeout: 120_000,
+        testTimeout,
+        hookTimeout,
         env: {
             RUST_LOG: "error",
             PS_MODEL_PROVIDERS_PATH: process.env.PS_MODEL_PROVIDERS_PATH || testModelProvidersPath,
@@ -31,6 +34,9 @@ export default defineConfig({
             DUROXIDE_PG_POOL_MAX: process.env.DUROXIDE_PG_POOL_MAX || "6",
             PILOTSWARM_CMS_PG_POOL_MAX: process.env.PILOTSWARM_CMS_PG_POOL_MAX || "2",
             PILOTSWARM_FACTS_PG_POOL_MAX: process.env.PILOTSWARM_FACTS_PG_POOL_MAX || "2",
+            // Workflow test mode is hidden unless PILOTSWARM_WORKFLOW_TEST_MODE=on (Workflow Simplified, spec 16). Its code
+            // stays, and its tests keep running with the flag on; a deployment leaves it off.
+            PILOTSWARM_WORKFLOW_TEST_MODE: process.env.PILOTSWARM_WORKFLOW_TEST_MODE || "on",
         },
     },
 });

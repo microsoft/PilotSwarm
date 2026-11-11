@@ -1,5 +1,8 @@
 import { normalizeSessionSortMode, normalizeSessionUsage, reconcileSessionSort } from "./session-sort.js";
 import { normalizeMoa } from "./moa.js";
+import { normalizeWorkflowLayouts, workflowLayoutsWith } from "./workflow-layouts.js";
+import { SESSION_DEFINITION_READS_MAX, isWorkflowTestBench } from "./workflow-session-definitions.js";
+import { workflowArrivalAutoOpen, workflowLifecycleObserve } from "./workflow-lifecycle.js";
 import { normalizeThemeSound } from "./theme-sound.js";
 import { normalizeCodeFont } from "./code-font.js";
 import { retainSessionWarnings } from "./session-errors.js";
@@ -11,6 +14,10 @@ import { SYSTEM_OWNER_KEY, ownerKeyForOwner, selectSessionRows } from "./selecto
 import { systemSessionSortOrder } from "./system-titles.js";
 import { createMotdState, createMotdAdminState, canReadMotd, motdPrincipal } from "./motd.js";
 import {
+    normalizeWorkflowPanelHeights, normalizeWorkflowPanelWidths, selectWorkflowTabContext, WORKFLOW_SIDE_TAB, workflowAncestorOf, workflowDefinitionName, workflowNodeStateOfSession, workflowOwnerId,
+    workflowSelectionTarget,
+} from "./workflow-owner.js";
+import {
     normalizeArtifactEntries,
     normalizeSessionOwnerFilter,
     normalizeSessionPause,
@@ -20,6 +27,7 @@ import {
     parseCanvasKey,
     normalizeStoredCollapsedSessionIds,
     normalizeStoredDesktopPanes,
+    normalizeSidePaneTab,
     normalizeStoredLayoutAdjustments,
     normalizeStoredPinnedSessionIds,
     normalizeStoredSessionOrder,
@@ -171,13 +179,17 @@ function mergeCanvasPrefs(local, stored, byId) {
             optedOut: storedEntry ? storedEntry.optedOut : Boolean(localEntry?.optedOut),
             lastViewedRev: Math.max(storedEntry?.lastViewedRev || 0, localEntry?.lastViewedRev || 0),
             lastViewedDataRev: Math.max(storedEntry?.lastViewedDataRev || 0, localEntry?.lastViewedDataRev || 0),
+            // The Workflow panel's receipt (owner F4) merges by MAX like the canvas's.
+            ...((storedEntry?.lastViewedWorkflowAt || localEntry?.lastViewedWorkflowAt)
+                ? { lastViewedWorkflowAt: Math.max(storedEntry?.lastViewedWorkflowAt || 0, localEntry?.lastViewedWorkflowAt || 0) }
+                : {}),
             // Latest write wins is unknowable here; the local value is the one
             // this window just dragged, so it outranks the poll.
             ...((localEntry?.zenRailPx || storedEntry?.zenRailPx)
                 ? { zenRailPx: localEntry?.zenRailPx || storedEntry?.zenRailPx }
                 : {}),
         };
-        if (!merged.optedOut && merged.lastViewedRev === 0 && merged.lastViewedDataRev === 0 && !merged.zenRailPx) continue;
+        if (!merged.optedOut && merged.lastViewedRev === 0 && merged.lastViewedDataRev === 0 && !merged.zenRailPx && !merged.lastViewedWorkflowAt) continue;
         const session = byId?.[parseCanvasKey(sessionId).sessionId];
         if (session && session.isGroup) continue;
         out[sessionId] = merged;
@@ -724,9 +736,12 @@ function applyVisibleSessionSelection(state, nextSessions) {
         ? intent.sessionId
         : null;
     if (intentTargetId) {
+        // A link to a Workflow opens its session's chat with the Workflow in its tab (S8).
+        const mapped = workflowSelectionTarget(sessions.byId, intentTargetId);
         sessions = {
             ...sessions,
-            activeSessionId: intentTargetId,
+            activeSessionId: mapped ? mapped.ownerId : intentTargetId,
+            workflowRowId: mapped ? intentTargetId : null,
             listDeselected: false,
             navigationIntent: intent.status === "resolved"
                 ? intent
@@ -737,7 +752,9 @@ function applyVisibleSessionSelection(state, nextSessions) {
     // Expand ancestors BEFORE resolving visibility: a selected session inside
     // a collapsed group/parent is absent from the flat tree, so resolving
     // first would drop the selection instead of revealing it.
-    const selectionCandidateId = sessions.activeSessionId || null;
+    // A selected Workflow row is revealed the same way (its session and their ancestors).
+    const selectionCandidateId = (sessions.workflowRowId && sessions.byId?.[sessions.workflowRowId] ? sessions.workflowRowId : null)
+        || sessions.activeSessionId || null;
     if (selectionCandidateId && sessions.byId?.[selectionCandidateId]) {
         const expandedCollapsedIds = reconcileCollapsedIdsForActiveSession(sessions.collapsedIds, sessions.byId, selectionCandidateId);
         if (!setsEqual(expandedCollapsedIds, sessions.collapsedIds)) {
@@ -860,12 +877,157 @@ function normalizePromptAttachments(prompt, attachments) {
 }
 
 export function appReducer(state, action) {
+    const next = appReducerStep(state, action);
+    // Only a change to the sessions slice can make a stored Workflow row mappable; streamed history, canvas and the rest
+    // leave it as it was (one reference comparison on that path).
+    const mapped = next === state || next.sessions === state.sessions ? next : selectWorkflowOwnerOnceLoaded(next);
+    return workflowLifecycleStep(state, mapped);
+}
+
+/**
+ * OF-S2-4 (B, C, d): after a change to the sessions, the Workflows' read models, the session's definitions list, the profile
+ * read or the receipts, the Workflow tab's session (selectWorkflowTabContext: also while an agent node's session is the active
+ * session, review F2) has its Workflow keys recorded (their changes date the Workflow button's dot, workflow-lifecycle.js),
+ * and a session whose panel was never on screen opens it once, by one rule, at once or on arrival (workflowArrivalAutoOpen).
+ * It opens the desktop column and the phone layer, as a canvas's first draw does, and keeps full screen or zen. Every other
+ * action leaves the state as it was (reference comparisons only).
+ */
+function workflowLifecycleStep(prev, next) {
+    if (next === prev) return next;
+    const sessionsChanged = next.sessions.byId !== prev.sessions.byId || next.sessions.activeSessionId !== prev.sessions.activeSessionId;
+    const definitionsChanged = next.ui.sessionDefinitions !== prev.ui.sessionDefinitions;
+    const profileChanged = next.ui.sessionViewsLoaded !== prev.ui.sessionViewsLoaded || next.canvas?.prefs !== prev.canvas?.prefs;
+    if (!sessionsChanged && !definitionsChanged && !profileChanged && next.ui.workflowViews === prev.ui.workflowViews) return next;
+    const ownerId = selectWorkflowTabContext(next).ownerId;
+    if (!ownerId) return next;
+    const entry = next.ui.sessionDefinitions?.[ownerId] ?? null;
+    const lifecycle = workflowLifecycleObserve(next.ui.workflowLifecycle, next.sessions.byId, ownerId, next.ui.workflowViews, entry);
+    const observed = lifecycle === next.ui.workflowLifecycle ? next : { ...next, ui: { ...next.ui, workflowLifecycle: lifecycle } };
+    if (!workflowArrivalAutoOpen(observed, ownerId)) return observed;
+    // Once in this page, whatever the receipt does next (the panel writes it when it shows).
+    const marked = { ...observed, ui: { ...observed.ui, workflowAutoOpened: { ...(observed.ui.workflowAutoOpened || {}), [ownerId]: true } } };
+    return openWorkflowTab(marked, { keepDisplayMode: true, auto: true });
+}
+
+/**
+ * Usability re-test r3, C09: a Workflow row saved as the selection (the profile's activeSessionId is the highlighted row,
+ * UI-8) and applied before the catalog answered could not be mapped to its session then, so it stayed the active session
+ * itself: after a reload the Workflow showed alone in the middle, with no session, zen or full screen. A workflow child is
+ * the active session only while its session is not loaded (selectWorkflowTabContext); once that session's row is
+ * loaded, select its session with the Workflow row, as a click on the row or a link does, and apply that session's own view
+ * (its columns and zen). A link still resolving maps itself. O(1): two lookups in the session map.
+ */
+function selectWorkflowOwnerOnceLoaded(state) {
+    const sessions = state.sessions;
+    const active = sessions?.activeSessionId ?? null;
+    if (!active || sessions.workflowRowId || sessions.navigationIntent?.status === "pending") return state;
+    const target = workflowSelectionTarget(sessions.byId, active);
+    if (!target) return state;
+    const remapped = { ...state, sessions: { ...sessions, activeSessionId: target.ownerId, workflowRowId: target.workflowId } };
+    return rememberWorkflowRow(reconcileSessionView(state, remapped, { type: "sessions/workflowOwnerLoaded" }));
+}
+
+function appReducerStep(state, action) {
     const sessionId = action.sessionId ?? action.session?.sessionId;
     const contentUpdate = /^(history|files|canvas|orchestration|executionHistory|sessionStats|outbox)\//.test(action.type) || action.type === "sessions/merged";
     if (sessionId && contentUpdate && state.sessions?.goneIds?.includes(sessionId)) return state;
-    const next = baseReducer(state, action);
+    // Workflow Simplified (S4, S8): selecting a Workflow row selects the session of the session that owns it and shows the
+    // Workflow in that session's Workflow tab. Every way of selecting (a click, the keyboard, a deep link) arrives here.
+    const workflowTarget = action.type === "sessions/selected" && !action.workflowRowId
+        ? workflowSelectionTarget(state.sessions?.byId, action.sessionId) : null;
+    const effective = workflowTarget ? { ...action, sessionId: workflowTarget.ownerId, workflowRowId: workflowTarget.workflowId } : action;
+    const next = baseReducer(state, effective);
     if (next === state) return next;
-    return reconcileSessionView(state, reconcileSessionSort(state, next, action), action);
+    const reconciled = reconcileSessionView(state, reconcileSessionSort(state, next, effective), effective);
+    // A link to a Workflow (S8, `?session=<workflow>`) opens its session's Workflow tab once, when the link resolves, on
+    // that Workflow (remembered as a row selection is, so a later reload of the session keeps it).
+    if (workflowLinkResolved(state, reconciled)) return openWorkflowTab(rememberWorkflowRow(reconciled));
+    // OF-S2-3b: choosing a Workflow (the tab's pickers and list; in full screen or zen nothing else is in view) keeps the mode.
+    if (workflowTarget) return openWorkflowTab(reconciled, { keepDisplayMode: true });
+    // Review UI-9: selecting an agent node's session (or one of its sub-agents) is a choice of its Workflow and that node, made
+    // now: the node is selected in its Workflow (a later click on the graph chooses again) and the Workflow tab opens.
+    // Review UI-D2: in the same step, its owner's Workflow tab shows that Workflow's definition, the Workflows view and that
+    // Workflow, whatever definition or view was chosen there before (a later choice in the tab chooses again).
+    if (effective.type === "sessions/selected") {
+        const agentNode = agentNodeOfSelection(reconciled);
+        if (agentNode) {
+            const chosen = agentNode.nodeStateId
+                ? baseReducer(reconciled, { type: "ui/workflowView", sessionId: agentNode.workflowId, view: { selectedNodeId: agentNode.nodeStateId } })
+                : reconciled;
+            return openWorkflowTab(showWorkflowInOwnerTab(chosen, agentNode.workflowId), { phone: false });
+        }
+    }
+    return reconciled;
+}
+
+/** Review UI-D2: the owner's Workflow tab on this Workflow: its definition, the Workflows view and the Workflow. */
+function showWorkflowInOwnerTab(state, workflowId) {
+    const workflow = state.sessions?.byId?.[workflowId];
+    const ownerId = workflow ? workflowOwnerId(workflow) : null;
+    const key = ownerId || workflowId;
+    const tabs = state.ui.workflowTabs || {};
+    const previous = tabs[key] || {};
+    // Review UI4-F2: a choice made in the tab before (Show it, a version) gives way to this Workflow.
+    const tab = { ...withoutChosenVersion(previous), view: "workflows", workflowId,
+        definition: workflowDefinitionName(workflow, state.ui.workflowViews?.[workflowId]) };
+    const same = Object.keys(previous).length === Object.keys(tab).length && Object.entries(tab).every(([field, value]) => previous[field] === value);
+    return same ? state : { ...state, ui: { ...state.ui, workflowTabs: { ...tabs, [key]: tab } } };
+}
+
+/** The Workflow and node of a selected agent node session or its sub-agent (S6): { workflowId, nodeStateId }, else null. */
+function agentNodeOfSelection(state) {
+    const byId = state.sessions?.byId || {};
+    const activeId = state.sessions?.activeSessionId ?? null;
+    const ancestor = activeId ? workflowAncestorOf(byId, activeId) : null;
+    if (!ancestor) return null;
+    return { workflowId: ancestor.workflowId, nodeStateId: workflowNodeStateOfSession(byId[ancestor.nodeSessionId]) };
+}
+
+/**
+ * A Workflow tab's state without a version or definition child chosen in it (owner, 2026-11-07T00:03Z): a Workflow row
+ * chosen shows its own. Review UI4-F2: that includes a child shown with Show it (`definitionChild`), and review UI4-F1 the
+ * version chosen as a child (`versionChild`), so the picker and the Definition view describe the Workflow selected. Stage
+ * 2.1b: and the revision of a session's definition chosen (`sessionRevision`), so the Definition view shows the revision it runs.
+ */
+function withoutChosenVersion(tab) {
+    const { versionChild, definitionChild, sessionRevision, ...rest } = tab || {};
+    return rest;
+}
+
+/** The session's Workflow tab on its selected Workflow row (S4, S5): the Workflows view of that Workflow. */
+function rememberWorkflowRow(state) {
+    const ownerId = state.sessions?.activeSessionId ?? null;
+    const rowId = state.sessions?.workflowRowId ?? null;
+    if (!ownerId || !rowId) return state;
+    const tabs = state.ui.workflowTabs || {};
+    return { ...state, ui: { ...state.ui, workflowTabs: { ...tabs, [ownerId]: { ...withoutChosenVersion(tabs[ownerId]), view: "workflows", workflowId: rowId,
+        definition: workflowDefinitionName(state.sessions.byId?.[rowId], state.ui.workflowViews?.[rowId]) } } } };
+}
+
+/** Whether this action resolved a deep link to a Workflow row (the link's target is now the selected Workflow row). */
+function workflowLinkResolved(before, after) {
+    const was = before.sessions?.navigationIntent ?? null;
+    const now = after.sessions?.navigationIntent ?? null;
+    if (!now || now.status !== "resolved" || (was && was.status === "resolved" && was.sessionId === now.sessionId)) return false;
+    return Boolean(after.sessions?.workflowRowId) && after.sessions.workflowRowId === now.sessionId;
+}
+
+// The right block shows the Workflow tab (L1, S4): the canvas column, on its Workflow side, recorded as the session's own
+// view as a person's toggle is. `workflowOpenSeq` ticks so the phone brings its Workflow pane up, unless `phone` is false
+// (an agent session chosen on the phone shows that session; its Workflow is one tap away). Review F7: a panel that opens by
+// itself (`auto`, OF-S2-4d) ticks `workflowAutoOpenSeq` instead, which the phone shows without a hand-opening's effects.
+function openWorkflowTab(state, { phone = true, keepDisplayMode = false, auto = false } = {}) {
+    const ui = state.ui;
+    const next = {
+        ...state,
+        // OF-S2-3b: a Workflow chosen while the tab is in full screen (its pickers, its list) keeps full screen, as zen is kept;
+        // only the person's own exit control or Escape leaves it.
+        ui: { ...ui, canvasOpen: true, rightPaneMode: "canvas", sidePaneTab: WORKFLOW_SIDE_TAB, sidePaneTabChosen: true,
+            canvasMaximized: keepDisplayMode ? ui.canvasMaximized === true : false,
+            workflowOpenSeq: (Number(ui.workflowOpenSeq) || 0) + (phone && !auto ? 1 : 0),
+            workflowAutoOpenSeq: (Number(ui.workflowAutoOpenSeq) || 0) + (phone && auto ? 1 : 0) },
+    };
+    return reconcileSessionView(state, next, { type: "ui/workflowTabOpened" });
 }
 
 // Per-session desktop views, kept in step with the ui slice.
@@ -1032,6 +1194,34 @@ function baseReducer(state, action) {
             if (Boolean(action.enabled) === Boolean(state.ui.touchScale)) return state;
             return { ...state, ui: { ...state.ui, touchScale: Boolean(action.enabled) } };
 
+        // Batch 6 (f-03): where the person moved one workflow's step boxes (`steps`: { stepId: [x, y] }), or null to
+        // forget them (Reset layout). Kept in the profile settings (workflowLayouts), bounded by workflowLayoutsWith.
+        case "ui/workflowLayout": {
+            const next = workflowLayoutsWith(state.ui.workflowLayouts, action.key, action.steps ?? null, Number(action.at) || 0);
+            if (next === state.ui.workflowLayouts) return state;
+            return { ...state, ui: { ...state.ui, workflowLayouts: next } };
+        }
+
+        // The Workflow tab's bottom panel height for one device class (owner feedback 2026-11-06); null forgets it.
+        case "ui/workflowPanelHeight": {
+            const device = action.device === "phone" ? "phone" : "desktop";
+            const current = normalizeWorkflowPanelHeights(state.ui.workflowPanelHeights);
+            const next = { ...current };
+            if (action.height === null) delete next[device];
+            else next[device] = action.height;
+            const normalized = normalizeWorkflowPanelHeights(next);
+            if (normalized[device] === current[device]) return state;
+            return { ...state, ui: { ...state.ui, workflowPanelHeights: normalized } };
+        }
+
+        // OF-S2-1: the side panel's width in full screen and zen (a desktop's); null forgets it.
+        case "ui/workflowPanelWidth": {
+            const current = normalizeWorkflowPanelWidths(state.ui.workflowPanelWidths);
+            const normalized = normalizeWorkflowPanelWidths(action.width === null ? {} : { desktop: action.width });
+            if (normalized.desktop === current.desktop) return state;
+            return { ...state, ui: { ...state.ui, workflowPanelWidths: normalized } };
+        }
+
         case "ui/themeSound": {
             // device "mobile" edits the phone's own setting; anything else the desktop's.
             const key = action.device === "mobile" ? "themeSoundMobile" : "themeSound";
@@ -1104,6 +1294,9 @@ function baseReducer(state, action) {
                 : null;
             const hasSessionDetailCollapsed = Object.prototype.hasOwnProperty.call(settings, "sessionDetailCollapsed")
                 && typeof settings.sessionDetailCollapsed === "boolean";
+            const hasWorkflowLayouts = Object.prototype.hasOwnProperty.call(settings, "workflowLayouts")
+                && settings.workflowLayouts && typeof settings.workflowLayouts === "object"
+                && !Array.isArray(settings.workflowLayouts);
             const hasAgentPickerUsage = Object.prototype.hasOwnProperty.call(settings, "agentPickerUsage")
                 && settings.agentPickerUsage && typeof settings.agentPickerUsage === "object"
                 && !Array.isArray(settings.agentPickerUsage);
@@ -1136,6 +1329,9 @@ function baseReducer(state, action) {
                 state.sessions.navigationIntent
                 && state.sessions.navigationIntent.status !== "failed",
             );
+            // Hydrate the saved tab once. After a local choice or an agent's
+            // pop, profile polling must not replace the pane in front.
+            const keepSideTab = state.ui.sidePaneTabChosen === true;
             // Saved selection is a boot preference. Once this tab navigates,
             // a slow profile read (or another device) must not navigate it back.
             const hasActive = Object.prototype.hasOwnProperty.call(settings, "activeSessionId")
@@ -1161,8 +1357,11 @@ function baseReducer(state, action) {
             const nextManualOrder = hasSessionOrder
                 ? normalizeStoredSessionOrder(settings.sessionOrder)
                 : state.sessions.manualOrder;
+            const storedActive = hasActive ? normalizeStoredActiveSessionId(settings.activeSessionId) : null;
+            // Review UI-8: a saved Workflow selection selects its session with that Workflow row, as a click on the row does.
+            const storedWorkflow = hasActive && storedActive ? workflowSelectionTarget(state.sessions.byId, storedActive) : null;
             const nextActiveSessionId = hasActive
-                ? normalizeStoredActiveSessionId(settings.activeSessionId)
+                ? (storedWorkflow ? storedWorkflow.ownerId : storedActive)
                 : state.sessions.activeSessionId;
             const remoteUsage = normalizeSessionUsage(settings.sessionUsedAt);
             const nextSessions = {
@@ -1187,6 +1386,7 @@ function baseReducer(state, action) {
                 collapsedIds: nextCollapsedIds,
                 collapsedIdsExplicit: hasCollapsed ? true : state.sessions.collapsedIdsExplicit,
                 activeSessionId: nextActiveSessionId,
+                ...(hasActive ? { workflowRowId: storedWorkflow ? storedWorkflow.workflowId : null } : {}),
                 flat: (hasPins || hasCollapsed || hasSessionOrder)
                     ? buildSessionTree(Object.values(state.sessions.byId), nextCollapsedIds, state.sessions.orderById, nextPinnedIds, nextManualOrder)
                     : state.sessions.flat,
@@ -1213,9 +1413,18 @@ function baseReducer(state, action) {
                     agentPickerUsage: hasAgentPickerUsage
                         ? settings.agentPickerUsage
                         : selection.ui.agentPickerUsage,
+                    workflowLayouts: hasWorkflowLayouts
+                        ? normalizeWorkflowLayouts(settings.workflowLayouts)
+                        : selection.ui.workflowLayouts,
+                    workflowPanelHeights: Object.prototype.hasOwnProperty.call(settings, "workflowPanelHeights")
+                        ? normalizeWorkflowPanelHeights(settings.workflowPanelHeights)
+                        : selection.ui.workflowPanelHeights,
+                    workflowPanelWidths: Object.prototype.hasOwnProperty.call(settings, "workflowPanelWidths")
+                        ? normalizeWorkflowPanelWidths(settings.workflowPanelWidths)
+                        : selection.ui.workflowPanelWidths,
                     rightPaneMode: hasRightPaneMode ? settings.rightPaneMode : selection.ui.rightPaneMode,
                     ...(nextDesktopPanes
-                        ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true, sidePaneTab: nextDesktopPanes.sideTab === "workspace" ? "workspace" : "canvas" }
+                        ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true, sidePaneTab: keepSideTab ? state.ui.sidePaneTab : normalizeSidePaneTab(nextDesktopPanes.sideTab) }
                         : {}),
                     layout: nextLayout,
                     sessionViews: nextSessionViews,
@@ -1736,6 +1945,8 @@ function baseReducer(state, action) {
                 byId[groupRow.sessionId] = state.sessions.byId[groupRow.sessionId] || groupRow;
             }
             for (const session of action.sessions) {
+                // Stage 2.2: an agent's test bench is never a row (the server leaves it out of its lists too).
+                if (isWorkflowTestBench(session)) continue;
                 const previous = state.sessions.byId[session.sessionId];
                 byId[session.sessionId] = retainSessionWarnings(previous, mergeDefinedSessionFields(previous, session),
                     state.history.bySessionId.get(session.sessionId)?.events, nowMs);
@@ -1800,13 +2011,29 @@ function baseReducer(state, action) {
             // everything. With no baseline we cannot tell new from
             // pre-existing, so we add nothing and trust the restored state.
             const hadBaseline = state.sessions.listingSeen === true;
+            const previousDefaultCollapsedIds = hadBaseline ? collectDefaultCollapsedSessionIds(Object.values(state.sessions.byId)) : null;
             if (previousCollapsedIdsExplicit && hadBaseline) {
-                const previousDefaultCollapsedIds = collectDefaultCollapsedSessionIds(Object.values(state.sessions.byId));
                 for (const sessionId of initialCollapsedIds) {
                     if (!previousDefaultCollapsedIds.has(sessionId)) {
                         collapsedIds.add(sessionId);
                     }
                 }
+            }
+            // Except under the session the person is looking at: when it gains its FIRST child (a workflow its session just
+            // started, a sub-agent), the child shows at once instead of behind "[+1]". Background rows still start
+            // collapsed, and a session that already had children keeps whatever the person chose. Same baseline rule as
+            // above (no baseline, no change). A session that was already collapsed before this listing stays collapsed:
+            // a restored profile can collapse a parent whose children have not loaded yet, and their arrival is not a
+            // first child (the reload ratchet; collapse-stickiness "applied BEFORE its children load"). It is kept open as
+            // an explicit choice: the defaults, recomputed from scratch on each listing while nothing is explicit, would
+            // collapse it again.
+            const activeId = state.sessions.activeSessionId;
+            let collapsedIdsExplicit = previousCollapsedIdsExplicit;
+            if (hadBaseline && activeId && !rowStatusById[activeId]?.isGroup
+                && initialCollapsedIds.has(activeId) && !previousDefaultCollapsedIds.has(activeId)
+                && !state.sessions.collapsedIds?.has?.(activeId)) {
+                collapsedIds.delete(activeId);
+                collapsedIdsExplicit = true;
             }
             // Drop pins/selection for sessions that no longer exist; only
             // keep pins on top-level rows (groups and ungrouped top-level
@@ -1819,7 +2046,7 @@ function baseReducer(state, action) {
                 byId: rowStatusById,
                 goneIds: (state.sessions.goneIds || []).filter((id) => !action.sessions.some((row) => row.sessionId === id)),
                 collapsedIds,
-                collapsedIdsExplicit: previousCollapsedIdsExplicit,
+                collapsedIdsExplicit,
                 listingSeen: true,
                 pinnedIds: survivingPins,
                 selectedIds: survivingSelected,
@@ -1923,6 +2150,8 @@ function baseReducer(state, action) {
             const previousSession = state.sessions.byId[action.session.sessionId];
             const mergedSession = retainSessionWarnings(previousSession, mergeDefinedSessionFields(previousSession, action.session),
                 state.history.bySessionId.get(action.session.sessionId)?.events);
+            // Stage 2.2: an agent's test bench is never a row.
+            if (isWorkflowTestBench(mergedSession)) return state;
             // A single session going running/idle changes its ANCESTORS' counts
             // and therefore their visual status, so both passes run over the
             // whole map rather than the one row. buildSessionTree below is
@@ -2023,19 +2252,28 @@ function baseReducer(state, action) {
             // latch and its transient filter exception.
             const releasesNavigationLatch = Boolean(
                 state.sessions.navigationIntent
-                && state.sessions.navigationIntent.sessionId !== action.sessionId,
+                && state.sessions.navigationIntent.sessionId !== (action.workflowRowId ?? action.sessionId),
             );
+            // Workflow Simplified (S4): the Workflow row chosen, and the session's Workflow tab on it.
+            const workflowRowId = typeof action.workflowRowId === "string" && action.workflowRowId ? action.workflowRowId : null;
+            const workflowTabs = workflowRowId && action.sessionId
+                ? { ...(state.ui.workflowTabs || {}), [action.sessionId]: { ...withoutChosenVersion(state.ui.workflowTabs?.[action.sessionId]), view: "workflows",
+                    workflowId: workflowRowId,
+                    definition: workflowDefinitionName(state.sessions.byId?.[workflowRowId], state.ui.workflowViews?.[workflowRowId]) } }
+                : state.ui.workflowTabs;
             return {
                 ...state,
                 sessions: {
                     ...state.sessions,
                     activeSessionId: action.sessionId,
+                    workflowRowId,
                     ...(releasesNavigationLatch
                         ? { navigationIntent: null, filterExceptionId: null, ownerFilterAutoAdmitted: null }
                         : {}),
                 },
                 ui: {
                     ...state.ui,
+                    workflowTabs,
                     chatScrollBySession: savedChatScroll,
                     chatFollowBottomBySession: savedChatFollowBottom,
                     promptDraftBySession: savedDrafts,
@@ -3594,6 +3832,44 @@ function baseReducer(state, action) {
         // separate column with its own toggle.
         //
         // `open` may be omitted to mean "toggle".
+        case "ui/workflowView": {
+            const sessionId = action.sessionId;
+            if (!sessionId || state.sessions.byId[sessionId]?.sessionKind !== "workflow") return state;
+            const previous = state.ui.workflowViews?.[sessionId] || {};
+            return { ...state, ui: { ...state.ui, workflowViews: {
+                ...state.ui.workflowViews,
+                [sessionId]: { ...previous, ...action.view },
+            } } };
+        }
+
+        // Review SF-D5: the server's word on workflow test mode (bootstrap); anything but true is off.
+        case "ui/workflowTestMode": {
+            const on = action.on === true;
+            return state.ui.workflowTestMode === on ? state : { ...state, ui: { ...state.ui, workflowTestMode: on } };
+        }
+
+        // A session's input policy as the server reported it (workflow agent states' human-input denial). A session's
+        // lineage never changes, so the policy read once is kept for it.
+        case "ui/workflowInputPolicy": {
+            const sessionId = action.sessionId;
+            if (!sessionId || !action.policy || typeof action.policy !== "object") return state;
+            return { ...state, ui: { ...state.ui, workflowInputPolicies: {
+                ...state.ui.workflowInputPolicies,
+                [sessionId]: action.policy,
+            } } };
+        }
+
+        // That read in flight or failed (owner decision q18); null clears it.
+        case "ui/workflowInputCheck": {
+            const sessionId = action.sessionId;
+            if (!sessionId) return state;
+            const checks = { ...(state.ui.workflowInputChecks || {}) };
+            if (action.phase === "checking" || action.phase === "failed") checks[sessionId] = action.phase;
+            else if (Object.hasOwn(checks, sessionId)) delete checks[sessionId];
+            else return state;
+            return { ...state, ui: { ...state.ui, workflowInputChecks: checks } };
+        }
+
         case "ui/canvasOpen": {
             const open = typeof action.open === "boolean" ? action.open : !state.ui.canvasOpen;
             const sessionId = action.sessionId || state.sessions.activeSessionId || null;
@@ -3628,9 +3904,65 @@ function baseReducer(state, action) {
         // Turning it on opens the canvas; it means nothing without one.
         // The side pane's tab: the session's canvas, or its Workspace.
         case "ui/sidePaneTab": {
-            const tab = action.tab === "workspace" ? "workspace" : "canvas";
-            if (tab === (state.ui.sidePaneTab === "workspace" ? "workspace" : "canvas")) return state;
-            return { ...state, ui: { ...state.ui, sidePaneTab: tab } };
+            const tab = normalizeSidePaneTab(action.tab);
+            if (tab === normalizeSidePaneTab(state.ui.sidePaneTab)) return state.ui.sidePaneTabChosen ? state : { ...state, ui: { ...state.ui, sidePaneTabChosen: true } };
+            return { ...state, ui: { ...state.ui, sidePaneTab: tab, sidePaneTabChosen: true } };
+        }
+
+        // Workflow Simplified: one session's Workflow tab (its definition, view, shown Workflow and bottom panel).
+        case "ui/workflowTab": {
+            const ownerId = typeof action.ownerId === "string" && action.ownerId ? action.ownerId : null;
+            if (!ownerId || !action.patch || typeof action.patch !== "object") return state;
+            const previous = state.ui.workflowTabs?.[ownerId] || {};
+            if (Object.entries(action.patch).every(([key, value]) => previous[key] === value)) return state;
+            return { ...state, ui: { ...state.ui, workflowTabs: { ...(state.ui.workflowTabs || {}), [ownerId]: { ...previous, ...action.patch } } } };
+        }
+
+        // Stage 2.1b: a session's Workflow Definitions as last read ({ items, at, error, unsupported, loading }), per session.
+        case "ui/sessionDefinitions": {
+            const ownerId = typeof action.ownerId === "string" && action.ownerId ? action.ownerId : null;
+            if (!ownerId || !action.patch || typeof action.patch !== "object") return state;
+            const previous = state.ui.sessionDefinitions?.[ownerId] || {};
+            if (Object.entries(action.patch).every(([key, value]) => previous[key] === value)) return state;
+            return { ...state, ui: { ...state.ui, sessionDefinitions: { ...(state.ui.sessionDefinitions || {}), [ownerId]: { ...previous, ...action.patch } } } };
+        }
+
+        // Stage 2.1b: one revision of a session's definition as read ({ phase, value, error, at }), by `${definitionId}:${revision}`.
+        // A revision never changes once saved, so a read is kept; the oldest reads past SESSION_DEFINITION_READS_MAX go.
+        case "ui/sessionDefinitionRead": {
+            const ownerId = typeof action.ownerId === "string" && action.ownerId ? action.ownerId : null;
+            const key = typeof action.key === "string" && action.key ? action.key : null;
+            if (!ownerId || !key || !action.entry || typeof action.entry !== "object") return state;
+            const reads = state.ui.sessionDefinitionReads?.[ownerId] || {};
+            const { [key]: _previous, ...others } = reads;
+            // Review S2UI-F2: the reads on screen (the revision shown, Compare's two) are never the ones that go.
+            const shown = new Set(Object.values(state.ui.sessionDefinitionShown?.[ownerId] || {}).filter(Boolean));
+            const pinned = Object.entries(others).filter(([name]) => shown.has(name));
+            const evictable = Object.entries(others).filter(([name]) => !shown.has(name))
+                .sort(([, a], [, b]) => (Number(a?.at) || 0) - (Number(b?.at) || 0));
+            const room = Math.max(0, SESSION_DEFINITION_READS_MAX - 1 - pinned.length);
+            const kept = [...pinned, ...evictable.slice(Math.max(0, evictable.length - room))];
+            return { ...state, ui: { ...state.ui, sessionDefinitionReads: { ...(state.ui.sessionDefinitionReads || {}),
+                [ownerId]: { ...Object.fromEntries(kept), [key]: { ...action.entry, at: Number(action.entry.at) || Date.now() } } } } };
+        }
+
+        // Review S2UI-F2: which revision reads a session's Definition view has on screen ({ main, from, to }: read keys, or null),
+        // so they are kept in the cache whatever else is read.
+        case "ui/sessionDefinitionShown": {
+            const ownerId = typeof action.ownerId === "string" && action.ownerId ? action.ownerId : null;
+            const role = ["main", "from", "to"].includes(action.role) ? action.role : null;
+            if (!ownerId || !role) return state;
+            const key = typeof action.key === "string" && action.key ? action.key : null;
+            const shown = state.ui.sessionDefinitionShown?.[ownerId] || {};
+            if ((shown[role] ?? null) === key) return state;
+            return { ...state, ui: { ...state.ui, sessionDefinitionShown: { ...(state.ui.sessionDefinitionShown || {}), [ownerId]: { ...shown, [role]: key } } } };
+        }
+
+        // A failed Workflow the person opened (O6): the Workflow badge stops counting it.
+        case "ui/workflowSeen": {
+            const id = action.sessionId;
+            if (!id || state.ui.workflowSeen?.[id]) return state;
+            return { ...state, ui: { ...state.ui, workflowSeen: { ...(state.ui.workflowSeen || {}), [id]: true } } };
         }
 
         case "ui/canvasZen": {
@@ -4046,7 +4378,8 @@ function baseReducer(state, action) {
                 // Opens the canvas column ON THE SLOT THAT DREW; leaves
                 // Diagnostics exactly as the user left it. An agent drawing
                 // must not close their panels.
-                ui: { ...state.ui, rightPaneMode: "canvas", canvasOpen: true, canvasSlot: slot },
+                ui: { ...state.ui, rightPaneMode: "canvas", canvasOpen: true, canvasSlot: slot,
+                    sidePaneTab: "canvas", sidePaneTabChosen: true },
                 canvas: { ...state.canvas, flipSeq: (state.canvas.flipSeq || 0) + 1 },
             };
         }
@@ -4061,22 +4394,30 @@ function baseReducer(state, action) {
         }
 
         // The surface's receipt: revision `rev` (a draw) and/or `dataRev` (a
-        // tick) actually rendered on screen. Both feed the unseen badge.
+        // tick) actually rendered on screen. Both feed the unseen badge. The
+        // Workflow panel's receipt (owner F4) is `workflowAt`: the newest
+        // Workflow attention change it showed (workflowAttentionAt); it feeds
+        // the Workflow button's dot the same way.
         case "canvas/viewed": {
             const sessionId = String(action.sessionId || "").trim();
             if (!sessionId) return state;
             const rev = Number(action.rev);
             const dataRev = Number(action.dataRev);
+            const workflowAt = Number(action.workflowAt);
             const key = canvasKey(sessionId, action.slot);
             const prev = state.canvas.prefs[key] || { optedOut: false, lastViewedRev: 0, lastViewedDataRev: 0 };
             const nextRev = Number.isFinite(rev) && rev > (prev.lastViewedRev || 0) ? rev : (prev.lastViewedRev || 0);
             const nextDataRev = Number.isFinite(dataRev) && dataRev > (prev.lastViewedDataRev || 0) ? dataRev : (prev.lastViewedDataRev || 0);
-            if (nextRev === (prev.lastViewedRev || 0) && nextDataRev === (prev.lastViewedDataRev || 0)) return state;
+            const nextWorkflowAt = Number.isFinite(workflowAt) && workflowAt > (prev.lastViewedWorkflowAt || 0)
+                ? Math.floor(workflowAt) : (prev.lastViewedWorkflowAt || 0);
+            if (nextRev === (prev.lastViewedRev || 0) && nextDataRev === (prev.lastViewedDataRev || 0)
+                && nextWorkflowAt === (prev.lastViewedWorkflowAt || 0)) return state;
             return {
                 ...state,
                 canvas: {
                     ...state.canvas,
-                    prefs: { ...state.canvas.prefs, [key]: { ...prev, lastViewedRev: nextRev, lastViewedDataRev: nextDataRev } },
+                    prefs: { ...state.canvas.prefs, [key]: { ...prev, lastViewedRev: nextRev, lastViewedDataRev: nextDataRev,
+                        ...(nextWorkflowAt ? { lastViewedWorkflowAt: nextWorkflowAt } : {}) } },
                 },
             };
         }
@@ -4160,17 +4501,20 @@ function baseReducer(state, action) {
             const existing = state.canvas.bySessionId[key] || {};
             const planeSeq = Number(action.planeSeq);
             const isPlane = Number.isFinite(planeSeq) && planeSeq > 0;
-            // Plane takeover: once a slot has seen ONE plane-fed tick, that
-            // lineage owns the slot. Plane ticks order by planeSeq (their
-            // numbering restarts relative to legacy dataRev, so the numeric
-            // guard below would wrongly starve them); legacy dual-written
-            // events for a plane-owned slot are strictly staler copies of
-            // state the plane already delivered — drop them.
+            const durable = action.durable === true || !isPlane;
+            const durableDataRev = durable ? Math.max(dataRev, existing.durableDataRev || 0) : (existing.durableDataRev || 0);
+            // Shared sequences order both delivery paths. Older servers lack
+            // that key: keep their durable counter separate from the plane's
+            // doc+data counter, and prefer delivery over silently losing state.
             if (isPlane) {
-                if ((existing.planeSeq || 0) >= planeSeq) return state;
-            } else {
-                if (existing.planeSeq) return state;
-                if ((existing.latestDataRev || 0) >= dataRev) return state;
+                if (Math.max(existing.planeSeq || 0, existing.planeDocSeq || 0) >= planeSeq) {
+                    if (durableDataRev === (existing.durableDataRev || 0)) return state;
+                    return { ...state, canvas: { ...state.canvas, bySessionId: {
+                        ...state.canvas.bySessionId, [key]: { ...existing, durableDataRev },
+                    } } };
+                }
+            } else if ((existing.durableDataRev || 0) >= dataRev) {
+                return state;
             }
             return {
                 ...state,
@@ -4186,6 +4530,7 @@ function baseReducer(state, action) {
                             // as "already seen".
                             latestDataRev: Math.max(dataRev, existing.latestDataRev || 0),
                             ...(isPlane ? { planeSeq } : {}),
+                            ...(durable ? { durableDataRev } : {}),
                             dataPayload: action.payload && typeof action.payload === "object" ? action.payload : null,
                             // The patch that produced this state, for pages
                             // that opt into targeted updates. Whole-state
@@ -4197,11 +4542,27 @@ function baseReducer(state, action) {
             };
         }
 
+        case "canvas/planeDocument": {
+            // A positive seq bounds a new document; zero releases a failover
+            // lineage without clearing the last usable payload.
+            const sessionId = String(action.sessionId || "").trim();
+            const slot = Number(action.slot);
+            const seq = Number(action.planeSeq);
+            if (!sessionId || !Number.isInteger(slot) || slot < 1 || slot > 5 || !Number.isFinite(seq) || seq < 0) return state;
+            const key = canvasKey(sessionId, slot);
+            const existing = state.canvas.bySessionId[key] || {};
+            if (seq > 0 && Math.max(existing.planeSeq || 0, existing.planeDocSeq || 0) >= seq) return state;
+            return { ...state, canvas: { ...state.canvas, bySessionId: {
+                ...state.canvas.bySessionId,
+                [key]: { ...existing, planeSeq: 0, planeDocSeq: seq,
+                    ...(seq > 0 ? { dataPayload: null, dataPatch: null } : {}) },
+            } } };
+        }
+
         case "canvas/planeReleased": {
             // The plane died for this session: release the takeover on every
-            // slot so legacy durable ticks resume applying. Displayed tick
-            // numbers (latestDataRev) survive, so stale legacy dupes still
-            // drop by ordinary ordering while fresh ones flow.
+            // slot so durable ticks resume in a rebuilt lineage. The durable
+            // counter survives, so stale legacy duplicates still drop.
             const sessionId = String(action.sessionId || "").trim();
             if (!sessionId) return state;
             let changed = false;
@@ -4209,8 +4570,8 @@ function baseReducer(state, action) {
             for (let slot = 1; slot <= 5; slot++) {
                 const key = canvasKey(sessionId, slot);
                 const entry = nextBySession[key];
-                if (entry && entry.planeSeq) {
-                    const { planeSeq: _released, ...rest } = entry;
+                if (entry && (entry.planeSeq || entry.planeDocSeq)) {
+                    const { planeSeq: _released, planeDocSeq: _document, ...rest } = entry;
                     nextBySession[key] = rest;
                     changed = true;
                 }

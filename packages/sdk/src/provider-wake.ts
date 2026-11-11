@@ -1,6 +1,7 @@
 /** Shared release path for management and in-session budget mutations. */
 import type { SessionCatalog } from "./cms.js";
 import { PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
+import { systemSender } from "./message-sender.js";
 
 export interface ProviderWakeClient {
     enqueueEvent(instanceId: string, queue: string, payload: string): Promise<unknown>;
@@ -22,8 +23,10 @@ export async function wakeProviderPausedSessions(
         const sessionIds = await catalog.providers.pausedFor(providerName);
         for (const sessionId of new Set(sessionIds)) {
             try {
+                // FU-9: the runtime's wake, never merged with a person's words.
                 await client.enqueueEvent(`session-${sessionId}`, "messages", JSON.stringify({
                     prompt: PROVIDER_BUDGET_WAKE_PROMPT,
+                    sender: systemSender("provider budget"),
                 }));
             } catch {
                 // One unreachable session must not prevent other sessions waking.

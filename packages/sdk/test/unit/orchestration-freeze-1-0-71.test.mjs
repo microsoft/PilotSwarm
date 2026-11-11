@@ -30,12 +30,14 @@ import { fileURLToPath } from "node:url";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "../../src");
 const read = (rel) => readFileSync(join(SRC, rel), "utf8");
+// The latest version, read where it is defined, so a later bump does not edit this test (its own freeze test pins it).
+const LATEST = /export const DURABLE_SESSION_LATEST_VERSION = "(\d+\.\d+\.\d+)";/.exec(read("orchestration-version.ts"))?.[1];
+const LATEST_HANDLER = `durableSessionOrchestration_${String(LATEST).replaceAll(".", "_")}`;
+const LATEST_PATCH = Number(String(LATEST).split(".")[2]);
 
-test("the latest version is 1.0.82", () => {
-    assert.match(
-        read("orchestration-version.ts"),
-        /export const DURABLE_SESSION_LATEST_VERSION = "1\.0\.82";/,
-    );
+test("the latest version is defined once, above every frozen version this test names", () => {
+    assert.match(String(LATEST), /^1\.0\.\d+$/);
+    assert.ok(LATEST_PATCH > 82);
 });
 
 test("1.0.70 through 1.0.79 are frozen in their own directories", () => {
@@ -55,13 +57,10 @@ test("1.0.70 through 1.0.79 are frozen in their own directories", () => {
     assert.match(registry, /import \{ durableSessionOrchestration_1_0_73 \} from "\.\/orchestration_1_0_73\/index\.js";/);
     assert.match(registry, /import \{ durableSessionOrchestration_1_0_80 \} from "\.\/orchestration_1_0_80\/index\.js";/);
     assert.match(registry, /import \{ durableSessionOrchestration_1_0_81 \} from "\.\/orchestration_1_0_81\/index\.js";/);
-    assert.match(registry, /import \{ durableSessionOrchestration_1_0_82 \} from "\.\/orchestration\/index\.js";/);
+    assert.match(registry, new RegExp(`import \\{ ${LATEST_HANDLER} \\} from "\\.\\/orchestration\\/index\\.js";`));
     assert.match(registry, /\{ version: "1\.0\.70", handler: durableSessionOrchestration_1_0_70 \}/);
     assert.match(registry, /\{ version: "1\.0\.71", handler: durableSessionOrchestration_1_0_71 \}/);
-    assert.match(
-        registry,
-        /\{ version: DURABLE_SESSION_LATEST_VERSION, handler: durableSessionOrchestration_1_0_82 \}/,
-    );
+    assert.match(registry, new RegExp(`\\{ version: DURABLE_SESSION_LATEST_VERSION, handler: ${LATEST_HANDLER} \\}`));
     assert.match(registry, /import \{ durableSessionOrchestration_1_0_72 \} from "\.\/orchestration_1_0_72\/index\.js";/);
     assert.match(registry, /\{ version: "1\.0\.72", handler: durableSessionOrchestration_1_0_72 \}/);
     assert.match(read("orchestration_1_0_72/runtime.ts"), /CURRENT_ORCHESTRATION_VERSION = "1\.0\.72";/);
@@ -69,7 +68,7 @@ test("1.0.70 through 1.0.79 are frozen in their own directories", () => {
     assert.match(registry, /\{ version: "1\.0\.73", handler: durableSessionOrchestration_1_0_73 \}/);
     assert.match(read("orchestration_1_0_73/runtime.ts"), /CURRENT_ORCHESTRATION_VERSION = "1\.0\.73";/);
     assert.match(read("orchestration_1_0_73/index.ts"), /export function\* durableSessionOrchestration_1_0_73\(/);
-    for (const patch of [74, 75, 76, 77, 78, 79, 81]) {
+    for (const patch of [74, 75, 76, 77, 78, 79, 81, 82].filter(patch => patch < LATEST_PATCH)) {
         assert.match(registry, new RegExp(`import \\{ durableSessionOrchestration_1_0_${patch} \\} from "\\.\\/orchestration_1_0_${patch}\\/index\\.js";`));
         assert.match(registry, new RegExp(`\\{ version: "1\\.0\\.${patch}", handler: durableSessionOrchestration_1_0_${patch} \\}`));
         assert.match(read(`orchestration_1_0_${patch}/runtime.ts`), new RegExp(`CURRENT_ORCHESTRATION_VERSION = "1\\.0\\.${patch}";`));
@@ -104,7 +103,7 @@ test("a frozen orchestration self-identifies with its OWN version", () => {
         read("orchestration/runtime.ts"),
         /export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;/,
     );
-    assert.match(read("orchestration/index.ts"), /export function\* durableSessionOrchestration_1_0_82\(/);
+    assert.match(read("orchestration/index.ts"), new RegExp(`export function\\* ${LATEST_HANDLER}\\(`));
     assert.match(read("orchestration_1_0_73/index.ts"), /export function\* durableSessionOrchestration_1_0_73\(/);
     assert.match(read("orchestration_1_0_71/index.ts"), /export function\* durableSessionOrchestration_1_0_71\(/);
     assert.match(read("orchestration_1_0_70/index.ts"), /export function\* durableSessionOrchestration_1_0_70\(/);

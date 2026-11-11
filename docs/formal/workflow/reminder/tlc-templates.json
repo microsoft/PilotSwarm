@@ -1,0 +1,24 @@
+{
+  "WorkflowReminder": {
+    "indent": 4,
+    "constants": [
+      "MaxTurns",
+      "Max",
+      "MaxRetry",
+      "AllowStop",
+      "AllowInterrupt",
+      "AllowSteer",
+      "AllowHeld",
+      "AllowQueued",
+      "AllowGuard",
+      "AllowCron",
+      "AllowSub",
+      "AllowSendFail",
+      "AllowStoreHang",
+      "AllowSendHang",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}

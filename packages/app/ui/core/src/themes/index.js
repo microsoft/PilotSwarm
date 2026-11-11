@@ -69,6 +69,8 @@ export const DEFAULT_THEME_ID = workspaceDarkTheme.id;
 
 export { THEME_GROUP_ORDER, contrastRatio } from "./helpers.js";
 export { themeCodeColors, CODE_COLOR_ROLES, CODE_COLOR_MIN_CONTRAST } from "./code-colors.js";
+export { themeControlBorder, CONTROL_BORDER_MIN_CONTRAST } from "./control-border.js";
+export { themeWorkflowColors, WORKFLOW_COLOR_NAMES, WORKFLOW_ICON_COLORS, WORKFLOW_PART_MIN_CONTRAST, WORKFLOW_TEXT_MIN_CONTRAST } from "./workflow-colors.js";
 
 export function listThemes() {
     return THEMES;

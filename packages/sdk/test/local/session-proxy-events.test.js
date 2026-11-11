@@ -332,7 +332,9 @@ describe("session-proxy CMS prompt classification", () => {
             event.eventType === "system.message"
             && String(event.data?.content || "").includes("Copilot SDK rebuilt the full system prompt for model input"),
         );
-        expect(String(summaryEvent?.data?.content || "")).toContain("Snippet: You are the GitHub Copilot CLI");
+        // S2SF-F2: the summary keeps fixed words and the length only, none of the prompt's text.
+        expect(String(summaryEvent?.data?.content || "")).toMatch(/^\[SYSTEM: Copilot SDK rebuilt the full system prompt for model input\. Full content omitted from CMS \(\d+ chars\)\.\]$/);
+        expect(String(summaryEvent?.data?.content || "")).not.toContain("You are the GitHub Copilot CLI");
         expect(recordedEvents).toContainEqual(expect.objectContaining({
             eventType: "assistant.message",
             data: expect.objectContaining({ content: "ok" }),

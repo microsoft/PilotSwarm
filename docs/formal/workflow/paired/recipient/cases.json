@@ -1,0 +1,3162 @@
+[
+ {
+  "id": "rco-22a-all-env",
+  "module": "RecipientCancelOrder22A",
+  "config": "rco-22a-all-env.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module RecipientCancelOrder22A (cancel branches at 22a66ef7), E-ID, E-BIG and E-WIN all on (every behavior of the single-assumption cases). Expected PASS: TypeOK_C, Inv_C_NotBroken, Inv_NoCancelLost. Bounded; not a source or deployment proof.",
+  "tlc": {
+   "comment": "Module RecipientCancelOrder22A (cancel branches at 22a66ef7), E-ID, E-BIG and E-WIN all on (every behavior of the single-assumption cases). Expected PASS: TypeOK_C, Inv_C_NotBroken, Inv_NoCancelLost. Bounded; not a source or deployment proof.",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "AllowOrdinary": "TRUE",
+    "AllowBig": "TRUE",
+    "AllowForget": "TRUE",
+    "WithInvocation": "FALSE"
+   },
+   "invariants": [
+    "TypeOK_C",
+    "Inv_C_NotBroken",
+    "Inv_NoCancelLost"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rco-22a-big",
+  "module": "RecipientCancelOrder22A",
+  "config": "rco-22a-big.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module RecipientCancelOrder22A, E-BIG only (as rco-b92-big). Expected PASS: Inv_NoCancelLost.",
+  "tlc": {
+   "comment": "Module RecipientCancelOrder22A, E-BIG only (as rco-b92-big). Expected PASS: Inv_NoCancelLost.",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "AllowOrdinary": "FALSE",
+    "AllowBig": "TRUE",
+    "AllowForget": "FALSE",
+    "WithInvocation": "FALSE"
+   },
+   "invariants": [
+    "Inv_NoCancelLost"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rco-22a-consume",
+  "module": "RecipientCancelOrder22A",
+  "config": "rco-22a-consume.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module RecipientCancelOrder22A, E-ID only (as rco-b92-consume). Expected PASS: Inv_NoCancelLost.",
+  "tlc": {
+   "comment": "Module RecipientCancelOrder22A, E-ID only (as rco-b92-consume). Expected PASS: Inv_NoCancelLost.",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "AllowOrdinary": "TRUE",
+    "AllowBig": "FALSE",
+    "AllowForget": "FALSE",
+    "WithInvocation": "FALSE"
+   },
+   "invariants": [
+    "Inv_NoCancelLost"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rco-22a-wit-latched-then-consumed",
+  "module": "RecipientCancelOrder22A",
+  "config": "rco-22a-wit-latched-then-consumed.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module RecipientCancelOrder22A, E-ID only. Positive control: expected VIOLATION of Wit_22ALatchedThenConsumed. Predicted 7 states: OrdArrive(e1) stashed, Arrive e1, ClaimOkB held, CancelLatchFirst(e1) (hcan[e1]), CancelAdd, CancelConsume (the stashed prompt consumes e1 after the latch).",
+  "tlc": {
+   "comment": "Module RecipientCancelOrder22A, E-ID only. Positive control: expected VIOLATION of Wit_22ALatchedThenConsumed. Predicted 7 states: OrdArrive(e1) stashed, Arrive e1, ClaimOkB held, CancelLatchFirst(e1) (hcan[e1]), CancelAdd, CancelConsume (the stashed prompt consumes e1 after the latch).",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "AllowOrdinary": "TRUE",
+    "AllowBig": "FALSE",
+    "AllowForget": "FALSE",
+    "WithInvocation": "FALSE"
+   },
+   "invariants": [
+    "Wit_22ALatchedThenConsumed"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rco-22a-wit-latched",
+  "module": "RecipientCancelOrder22A",
+  "config": "rco-22a-wit-latched.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module RecipientCancelOrder22A, no E-ID or E-BIG. Positive control: expected VIOLATION of Wit_22ALatched. Predicted: Arrive e1, ClaimOkB held, CancelLatchFirst(e1) (hcan[e1]).",
+  "tlc": {
+   "comment": "Module RecipientCancelOrder22A, no E-ID or E-BIG. Positive control: expected VIOLATION of Wit_22ALatched. Predicted: Arrive e1, ClaimOkB held, CancelLatchFirst(e1) (hcan[e1]).",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "AllowOrdinary": "FALSE",
+    "AllowBig": "FALSE",
+    "AllowForget": "FALSE",
+    "WithInvocation": "FALSE"
+   },
+   "invariants": [
+    "Wit_22ALatched"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rco-b92-big",
+  "module": "RecipientCancelOrderB92",
+  "config": "rco-b92-big.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module RecipientCancelOrderB92, E-BIG only (abstracted >200-id cancelPending). Expected VIOLATION of Inv_NoCancelLost by eviction. Predicted trace (4 states): Arrive e1, ClaimOkB e1 (held), CancelAdd(e1, big, evictSelf).",
+  "tlc": {
+   "comment": "Module RecipientCancelOrderB92, E-BIG only (abstracted >200-id cancelPending). Expected VIOLATION of Inv_NoCancelLost by eviction. Predicted trace (4 states): Arrive e1, ClaimOkB e1 (held), CancelAdd(e1, big, evictSelf).",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "AllowOrdinary": "FALSE",
+    "AllowBig": "TRUE",
+    "AllowForget": "FALSE",
+    "WithInvocation": "FALSE"
+   },
+   "invariants": [
+    "Inv_NoCancelLost"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rco-b92-consume",
+  "module": "RecipientCancelOrderB92",
+  "config": "rco-b92-consume.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module RecipientCancelOrderB92 (cancel branches at b92ff04b), E-ID only. Expected VIOLATION of Inv_NoCancelLost by prompt consumption. Predicted trace (6 states): OrdArrive(e1) (an ordinary prompt with e1's canonical id, stashed), Arrive e1, ClaimOkB e1 (held; window gets e1), CancelAdd(e1), CancelConsume (the stashed prompt is dropped; e1 leaves the set while the held copy is unlatched).",
+  "tlc": {
+   "comment": "Module RecipientCancelOrderB92 (cancel branches at b92ff04b), E-ID only. Expected VIOLATION of Inv_NoCancelLost by prompt consumption. Predicted trace (6 states): OrdArrive(e1) (an ordinary prompt with e1's canonical id, stashed), Arrive e1, ClaimOkB e1 (held; window gets e1), CancelAdd(e1), CancelConsume (the stashed prompt is dropped; e1 leaves the set while the held copy is unlatched).",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "AllowOrdinary": "TRUE",
+    "AllowBig": "FALSE",
+    "AllowForget": "FALSE",
+    "WithInvocation": "FALSE"
+   },
+   "invariants": [
+    "Inv_NoCancelLost"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rco-b92-wit-latched",
+  "module": "RecipientCancelOrderB92",
+  "config": "rco-b92-wit-latched.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module RecipientCancelOrderB92, no E-ID and no E-BIG. Positive control: expected VIOLATION of Wit_B92Latched (the cancel branch latches a held copy). Predicted trace: Arrive e1, ClaimOkB e1, CancelAdd(e1), CancelConsume, CancelLatch.",
+  "tlc": {
+   "comment": "Module RecipientCancelOrderB92, no E-ID and no E-BIG. Positive control: expected VIOLATION of Wit_B92Latched (the cancel branch latches a held copy). Predicted trace: Arrive e1, ClaimOkB e1, CancelAdd(e1), CancelConsume, CancelLatch.",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "AllowOrdinary": "FALSE",
+    "AllowBig": "FALSE",
+    "AllowForget": "FALSE",
+    "WithInvocation": "FALSE"
+   },
+   "invariants": [
+    "Wit_B92Latched"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rco-spec-as-unguarded",
+  "module": "RecipientCancelOrderSpec",
+  "config": "rco-spec-as-unguarded.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module RecipientCancelOrderSpec, Obligation FALSE (r3's unguarded TombDrop). Expected VIOLATION of Inv_NoCancelLost: r3 did not express the latch-before-eviction/consumption obligation. Predicted trace: Arrive e1, ClaimOk e1 (held), TombArrive e1, TombDrop e1.",
+  "tlc": {
+   "comment": "Module RecipientCancelOrderSpec, Obligation FALSE (r3's unguarded TombDrop). Expected VIOLATION of Inv_NoCancelLost: r3 did not express the latch-before-eviction/consumption obligation. Predicted trace: Arrive e1, ClaimOk e1 (held), TombArrive e1, TombDrop e1.",
+   "spec": "SpecCO",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Fault": "\"none\"",
+    "Obligation": "FALSE"
+   },
+   "invariants": [
+    "Inv_NoCancelLost"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rco-spec-hd-liveness",
+  "module": "RecipientCancelOrderSpec",
+  "config": "rco-spec-hd-liveness.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module RecipientCancelOrderSpec, Obligation TRUE. Expected PASS: r3's Live_LatchRecorded under r3's fairness (A-STORE only), unchanged.",
+  "tlc": {
+   "comment": "Module RecipientCancelOrderSpec, Obligation TRUE. Expected PASS: r3's Live_LatchRecorded under r3's fairness (A-STORE only), unchanged.",
+   "spec": "LiveSpecCO",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Fault": "\"none\"",
+    "Obligation": "TRUE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_LatchRecorded"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rco-spec-hd-safety",
+  "module": "RecipientCancelOrderSpec",
+  "config": "rco-spec-hd-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module RecipientCancelOrderSpec, Obligation TRUE. Expected PASS: every r3 safety property unchanged plus Inv_NoCancelLost.",
+  "tlc": {
+   "comment": "Module RecipientCancelOrderSpec, Obligation TRUE. Expected PASS: every r3 safety property unchanged plus Inv_NoCancelLost.",
+   "spec": "SpecCO",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Fault": "\"none\"",
+    "Obligation": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_LatchOwnId",
+    "Inv_StoreCancelLatched",
+    "Inv_DoneLatchedRecorded",
+    "Inv_NoCarryAfterUnsentLatch",
+    "Inv_TruthfulNotDispatched",
+    "Inv_NoCancelLost"
+   ],
+   "properties": [
+    "Prop_LatchStable",
+    "Prop_EndAfterCancelRequested",
+    "Prop_WakeStoreOnly",
+    "Prop_StoreFinal"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rco-spec-wit-drop-after-latch",
+  "module": "RecipientCancelOrderSpec",
+  "config": "rco-spec-wit-drop-after-latch.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module RecipientCancelOrderSpec, Obligation TRUE. Witness: expected VIOLATION of Wit_DropAfterLatch (a tombstone still leaves the set, after its copy was latched).",
+  "tlc": {
+   "comment": "Module RecipientCancelOrderSpec, Obligation TRUE. Witness: expected VIOLATION of Wit_DropAfterLatch (a tombstone still leaves the set, after its copy was latched).",
+   "spec": "SpecCO",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Fault": "\"none\"",
+    "Obligation": "TRUE"
+   },
+   "invariants": [
+    "Wit_DropAfterLatch"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ric-as-concurrent-done",
+  "module": "RecipientIntakeCode",
+  "config": "ric-as-concurrent-done.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Hypothetical caller, Wiring concurrent. Expected VIOLATION of Inv_Mapped_DoneLatchedRecorded: an unsent item latched during the cancel write's flight leaves the batch with no store record.",
+  "tlc": {
+   "comment": "Hypothetical caller, Wiring concurrent. Expected VIOLATION of Inv_Mapped_DoneLatchedRecorded: an unsent item latched during the cancel write's flight leaves the batch with no store record.",
+   "spec": "CSpec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Wiring": "\"concurrent\"",
+    "LatchFirst": "TRUE"
+   },
+   "invariants": [
+    "Inv_Mapped_DoneLatchedRecorded"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ric-as-concurrent-end",
+  "module": "RecipientIntakeCode",
+  "config": "ric-as-concurrent-end.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Hypothetical caller, Wiring concurrent. Expected VIOLATION of Inv_C_NotBroken: an end answered after a cancel latched in flight is refused by the machine (endingInvocation throws); the caller must reconcile.",
+  "tlc": {
+   "comment": "Hypothetical caller, Wiring concurrent. Expected VIOLATION of Inv_C_NotBroken: an end answered after a cancel latched in flight is refused by the machine (endingInvocation throws); the caller must reconcile.",
+   "spec": "CSpec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Wiring": "\"concurrent\"",
+    "LatchFirst": "TRUE"
+   },
+   "invariants": [
+    "Inv_C_NotBroken"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ric-as-concurrent-refines",
+  "module": "RecipientIntakeCode",
+  "config": "ric-as-concurrent-refines.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Hypothetical caller (not wired at 66739e07): Wiring concurrent lets a tombstone latch while the invocation's cancel write or end is in flight. Expected VIOLATION of Refines: the cancel answer clears an item latched after the call (applyIntakeInvocationCancelled clears every item latched now).",
+  "tlc": {
+   "comment": "Hypothetical caller (not wired at 66739e07): Wiring concurrent lets a tombstone latch while the invocation's cancel write or end is in flight. Expected VIOLATION of Refines: the cancel answer clears an item latched after the call (applyIntakeInvocationCancelled clears every item latched now).",
+   "spec": "CSpec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Wiring": "\"concurrent\"",
+    "LatchFirst": "TRUE"
+   },
+   "invariants": [],
+   "properties": [
+    "Refines"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ric-as-no-latch-first",
+  "module": "RecipientIntakeCode",
+  "config": "ric-as-no-latch-first.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Hypothetical caller that forms or carries without calling latchIntakeCancels first (LatchFirst FALSE). Expected VIOLATION of Refines (an item a current tombstone names is bound or carried).",
+  "tlc": {
+   "comment": "Hypothetical caller that forms or carries without calling latchIntakeCancels first (LatchFirst FALSE). Expected VIOLATION of Refines (an item a current tombstone names is bound or carried).",
+   "spec": "CSpec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Wiring": "\"serialized\"",
+    "LatchFirst": "FALSE"
+   },
+   "invariants": [],
+   "properties": [
+    "Refines"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ric-hd-liveness",
+  "module": "RecipientIntakeCode",
+  "config": "ric-hd-liveness.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module RecipientIntakeCode, Wiring serialized, LatchFirst. Expected PASS: Live_LatchRecorded (mapped) under A-STORE fairness only, no attempt or stimulus fairness.",
+  "tlc": {
+   "comment": "Module RecipientIntakeCode, Wiring serialized, LatchFirst. Expected PASS: Live_LatchRecorded (mapped) under A-STORE fairness only, no attempt or stimulus fairness.",
+   "spec": "CLiveSpec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Wiring": "\"serialized\"",
+    "LatchFirst": "TRUE"
+   },
+   "invariants": [],
+   "properties": [
+    "Live_LatchRecorded"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ric-hd-refines",
+  "module": "RecipientIntakeCode",
+  "config": "ric-hd-refines.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module RecipientIntakeCode (66739e07), Wiring serialized, LatchFirst. Expected PASS: code invariants, the intent invariants on the mapped state, and the refinement obligation Refines (safety). Conditional on the wiring assumptions and the abstractions in the module header.",
+  "tlc": {
+   "comment": "Module RecipientIntakeCode (66739e07), Wiring serialized, LatchFirst. Expected PASS: code invariants, the intent invariants on the mapped state, and the refinement obligation Refines (safety). Conditional on the wiring assumptions and the abstractions in the module header.",
+   "spec": "CSpec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Wiring": "\"serialized\"",
+    "LatchFirst": "TRUE"
+   },
+   "invariants": [
+    "TypeOK_C",
+    "Inv_C_NotBroken",
+    "Inv_Mapped"
+   ],
+   "properties": [
+    "Refines"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ric-wit-held-cancel-both",
+  "module": "RecipientIntakeCode",
+  "config": "ric-wit-held-cancel-both.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness on the code model (serialized, LatchFirst): expected VIOLATION of Wit_C_HeldCancelBoth (reachable).",
+  "tlc": {
+   "comment": "Witness on the code model (serialized, LatchFirst): expected VIOLATION of Wit_C_HeldCancelBoth (reachable).",
+   "spec": "CSpec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Wiring": "\"serialized\"",
+    "LatchFirst": "TRUE"
+   },
+   "invariants": [
+    "Wit_C_HeldCancelBoth"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ric-wit-latched-unclaimed-settled",
+  "module": "RecipientIntakeCode",
+  "config": "ric-wit-latched-unclaimed-settled.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness on the code model (serialized, LatchFirst): expected VIOLATION of Wit_C_LatchedUnclaimedSettled (reachable).",
+  "tlc": {
+   "comment": "Witness on the code model (serialized, LatchFirst): expected VIOLATION of Wit_C_LatchedUnclaimedSettled (reachable).",
+   "spec": "CSpec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Wiring": "\"serialized\"",
+    "LatchFirst": "TRUE"
+   },
+   "invariants": [
+    "Wit_C_LatchedUnclaimedSettled"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ric-wit-sent-cancel-then-end",
+  "module": "RecipientIntakeCode",
+  "config": "ric-wit-sent-cancel-then-end.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness on the code model (serialized, LatchFirst): expected VIOLATION of Wit_C_SentCancelThenEnd (reachable).",
+  "tlc": {
+   "comment": "Witness on the code model (serialized, LatchFirst): expected VIOLATION of Wit_C_SentCancelThenEnd (reachable).",
+   "spec": "CSpec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Wiring": "\"serialized\"",
+    "LatchFirst": "TRUE"
+   },
+   "invariants": [
+    "Wit_C_SentCancelThenEnd"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ric-wit-unsent-cancel-written",
+  "module": "RecipientIntakeCode",
+  "config": "ric-wit-unsent-cancel-written.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness on the code model (serialized, LatchFirst): expected VIOLATION of Wit_C_UnsentCancelWritten (reachable).",
+  "tlc": {
+   "comment": "Witness on the code model (serialized, LatchFirst): expected VIOLATION of Wit_C_UnsentCancelWritten (reachable).",
+   "spec": "CSpec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Wiring": "\"serialized\"",
+    "LatchFirst": "TRUE"
+   },
+   "invariants": [
+    "Wit_C_UnsentCancelWritten"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ris-df-carry-latched",
+  "module": "RecipientIntakeSpec",
+  "config": "ris-df-carry-latched.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Fault carry_latched: an unsent invocation with a latched item is carried. Expected VIOLATION of Inv_NoCarryAfterUnsentLatch.",
+  "tlc": {
+   "comment": "Fault carry_latched: an unsent invocation with a latched item is carried. Expected VIOLATION of Inv_NoCarryAfterUnsentLatch.",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"none\"",
+    "ForgedCid": "\"none\"",
+    "TombCap": "1",
+    "Fault": "\"carry_latched\""
+   },
+   "invariants": [
+    "Inv_NoCarryAfterUnsentLatch"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ris-df-drop-latch",
+  "module": "RecipientIntakeSpec",
+  "config": "ris-df-drop-latch.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Fault drop_latch: a latch is dropped once its tombstone is gone. Expected VIOLATION of Prop_LatchStable.",
+  "tlc": {
+   "comment": "Fault drop_latch: a latch is dropped once its tombstone is gone. Expected VIOLATION of Prop_LatchStable.",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"none\"",
+    "ForgedCid": "\"none\"",
+    "TombCap": "1",
+    "Fault": "\"drop_latch\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_LatchStable"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ris-df-end-before-creq",
+  "module": "RecipientIntakeSpec",
+  "config": "ris-df-end-before-creq.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Fault end_before_creq: the end may commit before a latched sent item's cancel_requested. Expected VIOLATION of Prop_EndAfterCancelRequested.",
+  "tlc": {
+   "comment": "Fault end_before_creq: the end may commit before a latched sent item's cancel_requested. Expected VIOLATION of Prop_EndAfterCancelRequested.",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"none\"",
+    "ForgedCid": "\"none\"",
+    "TombCap": "1",
+    "Fault": "\"end_before_creq\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_EndAfterCancelRequested"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ris-df-exchange-only",
+  "module": "RecipientIntakeSpec",
+  "config": "ris-df-exchange-only.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Fault exchange_only: the forged copy's latch also latches the genuine copy of its exchange. Expected VIOLATION of Inv_LatchOwnId.",
+  "tlc": {
+   "comment": "Fault exchange_only: the forged copy's latch also latches the genuine copy of its exchange. Expected VIOLATION of Inv_LatchOwnId.",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Fault": "\"exchange_only\""
+   },
+   "invariants": [
+    "Inv_LatchOwnId"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ris-df-wake-unpark",
+  "module": "RecipientIntakeSpec",
+  "config": "ris-df-wake-unpark.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Fault wake_unpark: the wake unparks the invocation. Expected VIOLATION of Prop_WakeStoreOnly.",
+  "tlc": {
+   "comment": "Fault wake_unpark: the wake unparks the invocation. Expected VIOLATION of Prop_WakeStoreOnly.",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"none\"",
+    "ForgedCid": "\"none\"",
+    "TombCap": "1",
+    "Fault": "\"wake_unpark\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_WakeStoreOnly"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ris-hd-liveness",
+  "module": "RecipientIntakeSpec",
+  "config": "ris-hd-liveness.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module RecipientIntakeSpec. Expected PASS: Live_LatchRecorded under A-STORE fairness only (no attempt, stimulus or arrival fairness).",
+  "tlc": {
+   "comment": "Module RecipientIntakeSpec. Expected PASS: Live_LatchRecorded under A-STORE fairness only (no attempt, stimulus or arrival fairness).",
+   "spec": "LiveSpec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"none\"",
+    "ForgedCid": "\"none\"",
+    "TombCap": "1",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Live_LatchRecorded"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ris-hd-safety",
+  "module": "RecipientIntakeSpec",
+  "config": "ris-hd-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module RecipientIntakeSpec. Expected PASS: every safety property, two exchanges, one forged copy (exchange e1, client id e2), one tombstone slot.",
+  "tlc": {
+   "comment": "Module RecipientIntakeSpec. Expected PASS: every safety property, two exchanges, one forged copy (exchange e1, client id e2), one tombstone slot.",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_LatchOwnId",
+    "Inv_StoreCancelLatched",
+    "Inv_DoneLatchedRecorded",
+    "Inv_NoCarryAfterUnsentLatch",
+    "Inv_TruthfulNotDispatched"
+   ],
+   "properties": [
+    "Prop_LatchStable",
+    "Prop_EndAfterCancelRequested",
+    "Prop_WakeStoreOnly",
+    "Prop_StoreFinal"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ris-wit-completed",
+  "module": "RecipientIntakeSpec",
+  "config": "ris-wit-completed.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_Completed (reachable).",
+  "tlc": {
+   "comment": "Witness: expected VIOLATION of Wit_Completed (reachable).",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_Completed"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ris-wit-forged-latch-separate",
+  "module": "RecipientIntakeSpec",
+  "config": "ris-wit-forged-latch-separate.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_ForgedLatchSeparate (reachable).",
+  "tlc": {
+   "comment": "Witness: expected VIOLATION of Wit_ForgedLatchSeparate (reachable).",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_ForgedLatchSeparate"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ris-wit-recorded-after-eviction",
+  "module": "RecipientIntakeSpec",
+  "config": "ris-wit-recorded-after-eviction.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_RecordedAfterEviction (reachable).",
+  "tlc": {
+   "comment": "Witness: expected VIOLATION of Wit_RecordedAfterEviction (reachable).",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_RecordedAfterEviction"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ris-wit-sent-cancel-requested",
+  "module": "RecipientIntakeSpec",
+  "config": "ris-wit-sent-cancel-requested.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_SentCancelRequested (reachable).",
+  "tlc": {
+   "comment": "Witness: expected VIOLATION of Wit_SentCancelRequested (reachable).",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_SentCancelRequested"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ris-wit-unclaimed-latched",
+  "module": "RecipientIntakeSpec",
+  "config": "ris-wit-unclaimed-latched.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_UnclaimedLatched (reachable).",
+  "tlc": {
+   "comment": "Witness: expected VIOLATION of Wit_UnclaimedLatched (reachable).",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_UnclaimedLatched"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ris-wit-unsent-cancelled",
+  "module": "RecipientIntakeSpec",
+  "config": "ris-wit-unsent-cancelled.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_UnsentCancelled (reachable).",
+  "tlc": {
+   "comment": "Witness: expected VIOLATION of Wit_UnsentCancelled (reachable).",
+   "spec": "Spec",
+   "constants": {
+    "Ex": "{\"e1\", \"e2\"}",
+    "ForgedEx": "\"e1\"",
+    "ForgedCid": "\"e2\"",
+    "TombCap": "1",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_UnsentCancelled"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rtc-design-refines",
+  "module": "RecipientTurnCode",
+  "config": "rtc-design-refines.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "RecipientTurnCode with the HYPOTHETICAL design gate rule (gate_retry only), gates on. Positive control of the mapping with gates. Expected PASS, complete: refines RecipientTurnSpecR2.",
+  "tlc": {
+   "comment": "RecipientTurnCode with the HYPOTHETICAL design gate rule (gate_retry only), gates on. Positive control of the mapping with gates. Expected PASS, complete: refines RecipientTurnSpecR2.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "MaxGateFlips": "2",
+    "MaxArrivals": "1",
+    "GateRule": "\"design\"",
+    "CodeFault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK"
+   ],
+   "properties": [
+    "Refines"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rtc-design-strand",
+  "module": "RecipientTurnCode",
+  "config": "rtc-design-strand.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "RecipientTurnCode with the HYPOTHETICAL design gate rule. Expected FAIL of Inv_C_GateParkClearedOnPass, 7 states: Bind, Begin(message) carries, End(gate) parks it and arms the gate wait, GateFlip (open), Begin(message) ends the wait without carrying it, End(result) passes the gates: stranded.",
+  "tlc": {
+   "comment": "RecipientTurnCode with the HYPOTHETICAL design gate rule. Expected FAIL of Inv_C_GateParkClearedOnPass, 7 states: Bind, Begin(message) carries, End(gate) parks it and arms the gate wait, GateFlip (open), Begin(message) ends the wait without carrying it, End(result) passes the gates: stranded.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "MaxGateFlips": "2",
+    "MaxArrivals": "1",
+    "GateRule": "\"design\"",
+    "CodeFault": "\"none\""
+   },
+   "invariants": [
+    "Inv_C_GateParkClearedOnPass"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rtc-df-marker-any",
+  "module": "RecipientTurnCode",
+  "config": "rtc-df-marker-any.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "RecipientTurnCode with fault marker_any (any attempt takes the retry marker: the pre-D-W2-1 plan), no gate refusals. Expected FAIL of Inv_C_SentRidesOwnTurn, 6 states: Bind, Begin(message) t1 carries, End(sent or threw, retrying) sets the marker, Begin(message) t2 takes it and carries, End sets badRide.",
+  "tlc": {
+   "comment": "RecipientTurnCode with fault marker_any (any attempt takes the retry marker: the pre-D-W2-1 plan), no gate refusals. Expected FAIL of Inv_C_SentRidesOwnTurn, 6 states: Bind, Begin(message) t1 carries, End(sent or threw, retrying) sets the marker, Begin(message) t2 takes it and carries, End sets badRide.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "MaxGateFlips": "0",
+    "MaxArrivals": "1",
+    "GateRule": "\"code\"",
+    "CodeFault": "\"marker_any\""
+   },
+   "invariants": [
+    "Inv_C_SentRidesOwnTurn"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rtc-hd-code-safety",
+  "module": "RecipientTurnCode",
+  "config": "rtc-hd-code-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module RecipientTurnCode at 5df032f1 (GateRule code), gates on. Expected PASS, complete: code-level I8, I11, latched, I9, the D-W2-1 marker obligations and no gate stranding.",
+  "tlc": {
+   "comment": "Module RecipientTurnCode at 5df032f1 (GateRule code), gates on. Expected PASS, complete: code-level I8, I11, latched, I9, the D-W2-1 marker obligations and no gate stranding.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "MaxGateFlips": "2",
+    "MaxArrivals": "1",
+    "GateRule": "\"code\"",
+    "CodeFault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_C_SentRidesOwnTurn",
+    "Inv_C_NoOwnTurnUnlessReady",
+    "Inv_C_NoCarryLatchedUnsent",
+    "Inv_C_Truthful",
+    "Inv_C_MarkerIffAwaiting",
+    "Inv_C_MarkerOnFirstSenderRetry",
+    "Inv_C_GateParkClearedOnPass"
+   ],
+   "properties": [
+    "Prop_C_SentSticky",
+    "Prop_C_OutFinal"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rtc-refines-gate",
+  "module": "RecipientTurnCode",
+  "config": "rtc-refines-gate.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "RecipientTurnCode at 5df032f1 (GateRule code), gates on. Expected FAIL of Refines, 6 states: Bind, Begin(message) carries, End(gate) parks it for the gate, Begin(message) carries it (spec: gate_retry only), End(any event but gate) changes the invocation where the spec leaves it.",
+  "tlc": {
+   "comment": "RecipientTurnCode at 5df032f1 (GateRule code), gates on. Expected FAIL of Refines, 6 states: Bind, Begin(message) carries, End(gate) parks it for the gate, Begin(message) carries it (spec: gate_retry only), End(any event but gate) changes the invocation where the spec leaves it.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "MaxGateFlips": "2",
+    "MaxArrivals": "1",
+    "GateRule": "\"code\"",
+    "CodeFault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK"
+   ],
+   "properties": [
+    "Refines"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rtc-refines-nogate",
+  "module": "RecipientTurnCode",
+  "config": "rtc-refines-nogate.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "RecipientTurnCode at 5df032f1, scope WITHOUT gate refusals (gate always open: no gate park). Expected PASS, complete: refines RecipientTurnSpecR2 (marker, interposition, replacement, own and arrival turns, latch, cancel).",
+  "tlc": {
+   "comment": "RecipientTurnCode at 5df032f1, scope WITHOUT gate refusals (gate always open: no gate park). Expected PASS, complete: refines RecipientTurnSpecR2 (marker, interposition, replacement, own and arrival turns, latch, cancel).",
+   "spec": "Spec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "MaxGateFlips": "0",
+    "MaxArrivals": "1",
+    "GateRule": "\"code\"",
+    "CodeFault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK"
+   ],
+   "properties": [
+    "Refines"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rtcg-refines-reval",
+  "module": "RecipientTurnCodeG",
+  "config": "rtcg-refines-reval.cfg",
+  "expected": "PASS",
+  "witness": true,
+  "note": "RecipientTurnCodeG: code at 5df032f1 (orchestration identical at 009109e2), gates on, against RecipientTurnSpecG revalidated. Expected PASS, complete (under A-WITNESS and the code abstractions).",
+  "tlc": {
+   "comment": "RecipientTurnCodeG: code at 5df032f1 (orchestration identical at 009109e2), gates on, against RecipientTurnSpecG revalidated. Expected PASS, complete (under A-WITNESS and the code abstractions).",
+   "spec": "Spec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "MaxGateFlips": "2",
+    "MaxArrivals": "1",
+    "GateRule": "\"code\"",
+    "CodeFault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK"
+   ],
+   "properties": [
+    "RefinesG"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rtcg-refines-timer",
+  "module": "RecipientTurnCodeG",
+  "config": "rtcg-refines-timer.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "RecipientTurnCodeG: HYPOTHETICAL design gate rule in the code environment against RecipientTurnSpecG timer_only. Positive control of the gate mapping. Expected PASS, complete.",
+  "tlc": {
+   "comment": "RecipientTurnCodeG: HYPOTHETICAL design gate rule in the code environment against RecipientTurnSpecG timer_only. Positive control of the gate mapping. Expected PASS, complete.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "MaxGateFlips": "2",
+    "MaxArrivals": "1",
+    "GateRule": "\"design\"",
+    "CodeFault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK"
+   ],
+   "properties": [
+    "RefinesG"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rtg-reval-safety",
+  "module": "RecipientTurnSpecG",
+  "config": "rtg-reval-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "RecipientTurnSpecG, revalidated (proposed row). Expected PASS, complete: I8, I11, latched, I9 and Inv_GateParkClearedOnPass (predicate amended after review of d229a253: excludes an active eligible carrier).",
+  "tlc": {
+   "comment": "RecipientTurnSpecG, revalidated (proposed row). Expected PASS, complete: I8, I11, latched, I9 and Inv_GateParkClearedOnPass (predicate amended after review of d229a253: excludes an active eligible carrier).",
+   "spec": "SpecG",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "MaxGateFlips": "2",
+    "GateResume": "\"revalidated\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_SentRidesOwnTurn",
+    "Inv_NoOwnTurnUnlessReady",
+    "Inv_NoCarryLatchedUnsent",
+    "Inv_Truthful",
+    "Inv_GateParkClearedOnPass"
+   ],
+   "properties": [
+    "Prop_SentSticky",
+    "Prop_OutFinal"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rtg-timer-safety",
+  "module": "RecipientTurnSpecG",
+  "config": "rtg-timer-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "RecipientTurnSpecG, timer_only. Expected PASS, complete: the current row is safe (I8, I11, latched, I9); it fails only the progress predicate (rtg-timer-strand).",
+  "tlc": {
+   "comment": "RecipientTurnSpecG, timer_only. Expected PASS, complete: the current row is safe (I8, I11, latched, I9); it fails only the progress predicate (rtg-timer-strand).",
+   "spec": "SpecG",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "MaxGateFlips": "2",
+    "GateResume": "\"timer_only\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_SentRidesOwnTurn",
+    "Inv_NoOwnTurnUnlessReady",
+    "Inv_NoCarryLatchedUnsent",
+    "Inv_Truthful"
+   ],
+   "properties": [
+    "Prop_SentSticky",
+    "Prop_OutFinal"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rtg-timer-strand",
+  "module": "RecipientTurnSpecG",
+  "config": "rtg-timer-strand.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "RecipientTurnSpecG, GateResume timer_only (the design row today). Expected FAIL of Inv_GateParkClearedOnPass (amended predicate), 7 states: Bind; StartTurn(message); Attempt(no, gate) parks it and arms the wait (gate closed); GateFlip opens; StartTurn(message) ends the wait; Attempt(any, result) passes the gates without carrying it.",
+  "tlc": {
+   "comment": "RecipientTurnSpecG, GateResume timer_only (the design row today). Expected FAIL of Inv_GateParkClearedOnPass (amended predicate), 7 states: Bind; StartTurn(message); Attempt(no, gate) parks it and arms the wait (gate closed); GateFlip opens; StartTurn(message) ends the wait; Attempt(any, result) passes the gates without carrying it.",
+   "spec": "SpecG",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "MaxGateFlips": "2",
+    "GateResume": "\"timer_only\""
+   },
+   "invariants": [
+    "Inv_GateParkClearedOnPass"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rtg-wit-other-turn",
+  "module": "MCRecipientTurnGWitness",
+  "config": "rtg-wit-other-turn.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "MCRecipientTurnGWitness, revalidated (ghost amended after review of d229a253). Expected FAIL of Wit_GateParkCompletedByWaitEnder (reachable), 7 states: Bind; StartTurn(message) t1; Attempt(no, gate) parks it and arms the wait; GateFlip; StartTurn(message) t2 ends the wait (waitEnder 2); Attempt(yes, result) by t2 carries and completes it with the wait gone.",
+  "tlc": {
+   "comment": "MCRecipientTurnGWitness, revalidated (ghost amended after review of d229a253). Expected FAIL of Wit_GateParkCompletedByWaitEnder (reachable), 7 states: Bind; StartTurn(message) t1; Attempt(no, gate) parks it and arms the wait; GateFlip; StartTurn(message) t2 ends the wait (waitEnder 2); Attempt(yes, result) by t2 carries and completes it with the wait gone.",
+   "spec": "HSpec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "MaxGateFlips": "2",
+    "GateResume": "\"revalidated\""
+   },
+   "invariants": [
+    "Wit_GateParkCompletedByWaitEnder"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rts-df-carry-latched",
+  "module": "RecipientTurnSpec",
+  "config": "rts-df-carry-latched.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Fault carry_latched: an unsent invocation with a latched cancel is carried. Expected VIOLATION of Inv_NoCarryLatchedUnsent, 5 states: Bind, Latch, StartTurn, Attempt.",
+  "tlc": {
+   "comment": "Fault carry_latched: an unsent invocation with a latched cancel is carried. Expected VIOLATION of Inv_NoCarryLatchedUnsent, 5 states: Bind, Latch, StartTurn, Attempt.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "Fault": "\"carry_latched\""
+   },
+   "invariants": [
+    "Inv_NoCarryLatchedUnsent"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rts-df-marker-any",
+  "module": "RecipientTurnSpec",
+  "config": "rts-df-marker-any.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Fault marker_any: while the first-sending turn waits for its retry, the next turn's first attempt carries the sent invocation (a retry marker consumed by whichever turn runs next). Expected VIOLATION of Inv_SentRidesOwnTurn, 6 states: Bind, StartTurn, Attempt(TRUE, retrying), Interpose, Attempt.",
+  "tlc": {
+   "comment": "Fault marker_any: while the first-sending turn waits for its retry, the next turn's first attempt carries the sent invocation (a retry marker consumed by whichever turn runs next). Expected VIOLATION of Inv_SentRidesOwnTurn, 6 states: Bind, StartTurn, Attempt(TRUE, retrying), Interpose, Attempt.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "Fault": "\"marker_any\""
+   },
+   "invariants": [
+    "Inv_SentRidesOwnTurn"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rts-df-own-parked",
+  "module": "RecipientTurnSpec",
+  "config": "rts-df-own-parked.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Fault own_parked: decide starts an own turn for a parked invocation. Expected VIOLATION of Inv_NoOwnTurnUnlessReady, 5 states: Bind, StartTurn, Attempt(FALSE, gate), OwnTurn.",
+  "tlc": {
+   "comment": "Fault own_parked: decide starts an own turn for a parked invocation. Expected VIOLATION of Inv_NoOwnTurnUnlessReady, 5 states: Bind, StartTurn, Attempt(FALSE, gate), OwnTurn.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "Fault": "\"own_parked\""
+   },
+   "invariants": [
+    "Inv_NoOwnTurnUnlessReady"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rts-hd-safety",
+  "module": "RecipientTurnSpec",
+  "config": "rts-hd-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module RecipientTurnSpec (W2 turn binding, intent). Expected PASS: TypeOK, Inv_SentRidesOwnTurn (I8), Inv_NoOwnTurnUnlessReady (I11), Inv_NoCarryLatchedUnsent, Inv_Truthful (I9), Prop_SentSticky, Prop_OutFinal.",
+  "tlc": {
+   "comment": "Module RecipientTurnSpec (W2 turn binding, intent). Expected PASS: TypeOK, Inv_SentRidesOwnTurn (I8), Inv_NoOwnTurnUnlessReady (I11), Inv_NoCarryLatchedUnsent, Inv_Truthful (I9), Prop_SentSticky, Prop_OutFinal.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_SentRidesOwnTurn",
+    "Inv_NoOwnTurnUnlessReady",
+    "Inv_NoCarryLatchedUnsent",
+    "Inv_Truthful"
+   ],
+   "properties": [
+    "Prop_SentSticky",
+    "Prop_OutFinal"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rts-wit-abandoned-interrupted",
+  "module": "RecipientTurnSpec",
+  "config": "rts-wit-abandoned-interrupted.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_AbandonedInterrupted (reachable).",
+  "tlc": {
+   "comment": "Witness: expected VIOLATION of Wit_AbandonedInterrupted (reachable).",
+   "spec": "Spec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_AbandonedInterrupted"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rts-wit-completed-after-interpose",
+  "module": "RecipientTurnSpec",
+  "config": "rts-wit-completed-after-interpose.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_CompletedAfterInterpose (reachable).",
+  "tlc": {
+   "comment": "Witness: expected VIOLATION of Wit_CompletedAfterInterpose (reachable).",
+   "spec": "Spec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_CompletedAfterInterpose"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rts-wit-gate-resumed",
+  "module": "RecipientTurnSpec",
+  "config": "rts-wit-gate-resumed.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Witness: expected VIOLATION of Wit_GateResumed (reachable).",
+  "tlc": {
+   "comment": "Witness: expected VIOLATION of Wit_GateResumed (reachable).",
+   "spec": "Spec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_GateResumed"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rts-wit2-abandoned-interrupted",
+  "module": "MCRecipientTurnWitness",
+  "config": "rts-wit2-abandoned-interrupted.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module MCRecipientTurnWitness. Witness: expected VIOLATION of Wit2_AbandonedInterrupted, 5 states: Bind, StartTurn, Attempt(sent, retrying), Abandon ends it interrupted. Supersedes rts-wit-abandoned-interrupted.",
+  "tlc": {
+   "comment": "Module MCRecipientTurnWitness. Witness: expected VIOLATION of Wit2_AbandonedInterrupted, 5 states: Bind, StartTurn, Attempt(sent, retrying), Abandon ends it interrupted. Supersedes rts-wit-abandoned-interrupted.",
+   "spec": "HSpec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit2_AbandonedInterrupted"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rts-wit2-completed-after-interpose",
+  "module": "MCRecipientTurnWitness",
+  "config": "rts-wit2-completed-after-interpose.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module MCRecipientTurnWitness. Witness: expected VIOLATION of Wit2_CompletedAfterInterpose, 9 states: Bind, StartTurn t1, Attempt(sent, retrying), Interpose t2, Attempt by t2 (does not carry), ResumeHeld t1, RetryReady, Attempt(sent, result) completes by t1. Supersedes rts-wit-completed-after-interpose.",
+  "tlc": {
+   "comment": "Module MCRecipientTurnWitness. Witness: expected VIOLATION of Wit2_CompletedAfterInterpose, 9 states: Bind, StartTurn t1, Attempt(sent, retrying), Interpose t2, Attempt by t2 (does not carry), ResumeHeld t1, RetryReady, Attempt(sent, result) completes by t1. Supersedes rts-wit-completed-after-interpose.",
+   "spec": "HSpec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit2_CompletedAfterInterpose"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rts-wit2-gate-resumed-completed",
+  "module": "MCRecipientTurnWitness",
+  "config": "rts-wit2-gate-resumed-completed.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module MCRecipientTurnWitness (RecipientTurnSpec unchanged plus history variables). Witness: expected VIOLATION of Wit2_GateResumedCompleted, 6 states: Bind, StartTurn(message), Attempt(unsent, gate) parks for a gate, StartTurn(gate_retry), Attempt(sent, result) carries, first sends and completes. Supersedes rts-wit-gate-resumed.",
+  "tlc": {
+   "comment": "Module MCRecipientTurnWitness (RecipientTurnSpec unchanged plus history variables). Witness: expected VIOLATION of Wit2_GateResumedCompleted, 6 states: Bind, StartTurn(message), Attempt(unsent, gate) parks for a gate, StartTurn(gate_retry), Attempt(sent, result) carries, first sends and completes. Supersedes rts-wit-gate-resumed.",
+   "spec": "HSpec",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit2_GateResumedCompleted"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rts2-hd-safety",
+  "module": "RecipientTurnSpecR2",
+  "config": "rts2-hd-safety.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module RecipientTurnSpecR2 (r1 + environment timing E1-E4; carry rule and properties unchanged). Expected PASS, complete.",
+  "tlc": {
+   "comment": "Module RecipientTurnSpecR2 (r1 + environment timing E1-E4; carry rule and properties unchanged). Expected PASS, complete.",
+   "spec": "Spec2",
+   "constants": {
+    "MaxTurns": "3",
+    "MaxRetries": "1",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_SentRidesOwnTurn",
+    "Inv_NoOwnTurnUnlessReady",
+    "Inv_NoCarryLatchedUnsent",
+    "Inv_Truthful"
+   ],
+   "properties": [
+    "Prop_SentSticky",
+    "Prop_OutFinal"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxc-df-latch-unsent-ending",
+  "module": "RecipientExposureCode",
+  "config": "rxc-df-latch-unsent-ending.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Fault latch_unsent_ending (latchCopies without its unsent-ending exclusion). Expected VIOLATION of Inv_C_NoStoreBroken, 9 states: StartAttempt, StartExec, Guard, Complete (unsent), Apply (stopped), EndCall with its answer lost (rows final, no exposure), Latch a, CancelWrite (cancel_unsent on a final row without exposure: a store broken invariant).",
+  "tlc": {
+   "comment": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Fault latch_unsent_ending (latchCopies without its unsent-ending exclusion). Expected VIOLATION of Inv_C_NoStoreBroken, 9 states: StartAttempt, StartExec, Guard, Complete (unsent), Apply (stopped), EndCall with its answer lost (rows final, no exposure), Latch a, CancelWrite (cancel_unsent on a final row without exposure: a store broken invariant).",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"latch_unsent_ending\""
+   },
+   "invariants": [
+    "Inv_C_NoStoreBroken"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxc-df-no-coerce",
+  "module": "RecipientExposureCode",
+  "config": "rxc-df-no-coerce.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Fault no_coerce (endWorkflowIntake without the exposure coercion). Expected VIOLATION of Inv_C_NotDispatchedTruthful, about 10 states: e1 guarded with admission in flight, duplicate e2 starts, e1 accepted unsent, stopped, e2 admitted and sends, end not_dispatched uncoerced (or the send after the end).",
+  "tlc": {
+   "comment": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Fault no_coerce (endWorkflowIntake without the exposure coercion). Expected VIOLATION of Inv_C_NotDispatchedTruthful, about 10 states: e1 guarded with admission in flight, duplicate e2 starts, e1 accepted unsent, stopped, e2 admitted and sends, end not_dispatched uncoerced (or the send after the end).",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "2",
+    "AllowAlt": "FALSE",
+    "Fault": "\"no_coerce\""
+   },
+   "invariants": [
+    "Inv_C_NotDispatchedTruthful"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxc-df-no-recheck",
+  "module": "RecipientExposureCode",
+  "config": "rxc-df-no-recheck.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Fault no_recheck (an answer that arrives after the run ended still sends). Expected VIOLATION of Inv_C_NoSendAfterRunEnded, 6 states: StartAttempt, StartExec, Guard (admission in flight), AdmitTxn (allowed, answer arrives late), Deliver.",
+  "tlc": {
+   "comment": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Fault no_recheck (an answer that arrives after the run ended still sends). Expected VIOLATION of Inv_C_NoSendAfterRunEnded, 6 states: StartAttempt, StartExec, Guard (admission in flight), AdmitTxn (allowed, answer arrives late), Deliver.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"no_recheck\""
+   },
+   "invariants": [
+    "Inv_C_NoSendAfterRunEnded"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxc-hd-cancel",
+  "module": "RecipientExposureCode",
+  "config": "rxc-hd-cancel.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Expected PASS, complete: two items (cancelled subset, per-item exposed cancel), two attempts, one execution each.",
+  "tlc": {
+   "comment": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Expected PASS, complete: two items (cancelled subset, per-item exposed cancel), two attempts, one execution each.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\", \"b\"}",
+    "MaxAtt": "2",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_C_NotDispatchedTruthful",
+    "Inv_C_ExposedImpliesMarker",
+    "Inv_C_CancelledStaysSettled",
+    "Inv_C_NoSendAfterRunEnded",
+    "Inv_C_OnlyOwnRetryAfterExposure",
+    "Inv_C_SentCanonical",
+    "Inv_C_CompletedFromOwnOrigin",
+    "Inv_C_NoProtocolFault",
+    "Inv_C_NoStoreBroken",
+    "Inv_C_NoSettledRefusalAccepted",
+    "Inv_C_SentBeforeIffSent",
+    "Inv_C_CoercionOnly",
+    "Inv_C_EndAnswerIsApplied"
+   ],
+   "properties": [
+    "Prop_C_MarkerInsertOnly",
+    "Prop_C_OutFinal",
+    "Prop_C_ProcFinal",
+    "Prop_C_CreqMonotone"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxc-hd-redelivery",
+  "module": "RecipientExposureCode",
+  "config": "rxc-hd-redelivery.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Expected PASS, complete: one item, two carrying attempts, two executions each (redelivery, duplicates), all code-level safety properties.",
+  "tlc": {
+   "comment": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Expected PASS, complete: one item, two carrying attempts, two executions each (redelivery, duplicates), all code-level safety properties.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "2",
+    "MaxExec": "2",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_C_NotDispatchedTruthful",
+    "Inv_C_ExposedImpliesMarker",
+    "Inv_C_CancelledStaysSettled",
+    "Inv_C_NoSendAfterRunEnded",
+    "Inv_C_OnlyOwnRetryAfterExposure",
+    "Inv_C_SentCanonical",
+    "Inv_C_CompletedFromOwnOrigin",
+    "Inv_C_NoProtocolFault",
+    "Inv_C_NoStoreBroken",
+    "Inv_C_NoSettledRefusalAccepted",
+    "Inv_C_SentBeforeIffSent",
+    "Inv_C_CoercionOnly",
+    "Inv_C_EndAnswerIsApplied"
+   ],
+   "properties": [
+    "Prop_C_MarkerInsertOnly",
+    "Prop_C_OutFinal",
+    "Prop_C_ProcFinal",
+    "Prop_C_CreqMonotone"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxc-wit-cancel-exposed",
+  "module": "RecipientExposureCode",
+  "config": "rxc-wit-cancel-exposed.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Witness Wit_C_CancelExposed: EXPECTED VIOLATION, about 10 states: hidden marker (late commit), accepted unsent, park, Latch a, CancelWrite answered exposed (cancel_requested; the invocation sent, ending interrupted), EndCall interrupted.",
+  "tlc": {
+   "comment": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Witness Wit_C_CancelExposed: EXPECTED VIOLATION, about 10 states: hidden marker (late commit), accepted unsent, park, Latch a, CancelWrite answered exposed (cancel_requested; the invocation sent, ending interrupted), EndCall interrupted.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_C_CancelExposed"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxc-wit-duplicate-sends",
+  "module": "RecipientExposureCode",
+  "config": "rxc-wit-duplicate-sends.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Witness Wit_C_DuplicateSends: EXPECTED VIOLATION, 8 states: two executions of one attempt (same attemptId) both admitted and both send.",
+  "tlc": {
+   "comment": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Witness Wit_C_DuplicateSends: EXPECTED VIOLATION, 8 states: two executions of one attempt (same attemptId) both admitted and both send.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "2",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_C_DuplicateSends"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxc-wit-late-commit-coerced",
+  "module": "RecipientExposureCode",
+  "config": "rxc-wit-late-commit-coerced.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Witness Wit_C_LateCommitCoerced: EXPECTED VIOLATION, 8 states: StartAttempt, StartExec, Guard (admission in flight), AdmitTxn (late commit inserts the marker), Complete (unsent), Apply (stopped), EndCall (not_dispatched coerced to interrupted); nothing sent.",
+  "tlc": {
+   "comment": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Witness Wit_C_LateCommitCoerced: EXPECTED VIOLATION, 8 states: StartAttempt, StartExec, Guard (admission in flight), AdmitTxn (late commit inserts the marker), Complete (unsent), Apply (stopped), EndCall (not_dispatched coerced to interrupted); nothing sent.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_C_LateCommitCoerced"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxc-wit-refused-exposed",
+  "module": "RecipientExposureCode",
+  "config": "rxc-wit-refused-exposed.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Witness Wit_C_RefusedExposed: EXPECTED VIOLATION, about 12 states: attempt 1 guarded with admission in flight, the late commit inserts the marker, accepted unsent, park or ready, attempt 2 (sentBefore false) is refused exposed, sends without the items, completes with the refused witness.",
+  "tlc": {
+   "comment": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Witness Wit_C_RefusedExposed: EXPECTED VIOLATION, about 12 states: attempt 1 guarded with admission in flight, the late commit inserts the marker, accepted unsent, park or ready, attempt 2 (sentBefore false) is refused exposed, sends without the items, completes with the refused witness.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "2",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_C_RefusedExposed"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxc-wit-sent-late-cancel",
+  "module": "RecipientExposureCode",
+  "config": "rxc-wit-sent-late-cancel.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Witness Wit_C_SentLateCancel: EXPECTED VIOLATION, about 10 states: admitted and sent, accepted sent, result (ending completed), Latch a while ending (a sent invocation may latch), CancelWrite request_cancel, EndCall completed.",
+  "tlc": {
+   "comment": "Module RecipientExposureCode (code-derived, core pin c1bda7a2). Witness Wit_C_SentLateCancel: EXPECTED VIOLATION, about 10 states: admitted and sent, accepted sent, result (ending completed), Latch a while ending (a sent invocation may latch), CancelWrite request_cancel, EndCall completed.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_C_SentLateCancel"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxc2-hd-composed-a",
+  "module": "MCExposureCode1e24Composed",
+  "config": "rxc2-hd-composed-a.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module MCExposureCode1e24Composed (1e240b0f repaired runs + c1/1e24 end-cancel ordering; all included modules unchanged). Predicted PASS, complete (prediction, not a result): one item, two attempts, one execution, one recovery, cancellation on, no H-W1. All 14 base entries (13 + TypeOK), 7 run invariants, 2 end/cancel invariants, the applied-replay diagnostic (predicted unreachable) and 4 action properties.",
+  "tlc": {
+   "comment": "Module MCExposureCode1e24Composed (1e240b0f repaired runs + c1/1e24 end-cancel ordering; all included modules unchanged). Predicted PASS, complete (prediction, not a result): one item, two attempts, one execution, one recovery, cancellation on, no H-W1. All 14 base entries (13 + TypeOK), 7 run invariants, 2 end/cancel invariants, the applied-replay diagnostic (predicted unreachable) and 4 action properties.",
+   "spec": "CSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "2",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "TRUE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_C_NotDispatchedTruthful",
+    "Inv_C_ExposedImpliesMarker",
+    "Inv_C_CancelledStaysSettled",
+    "Inv_C_NoSendAfterRunEnded",
+    "Inv_C_OnlyOwnRetryAfterExposure",
+    "Inv_C_SentCanonical",
+    "Inv_C_CompletedFromOwnOrigin",
+    "Inv_C_NoProtocolFault",
+    "Inv_C_NoStoreBroken",
+    "Inv_C_NoSettledRefusalAccepted",
+    "Inv_C_SentBeforeIffSent",
+    "Inv_C_CoercionOnly",
+    "Inv_C_EndAnswerIsApplied",
+    "Inv_R_NoSendWhileCancelled",
+    "Inv_R_NoSendAfterObservedCancel",
+    "Inv_R_NoRecoverySendAfterGapPoll",
+    "Inv_R_NoCorrectionAfterAbort",
+    "Inv_R_SettledRefusalNotHidden",
+    "Inv_R_CompletedFromFinalInclude",
+    "Inv_R_LoserSettledNotHidden",
+    "Inv_E_NoMachineError",
+    "Inv_E_NoMixedCancel",
+    "Diag_E_AppliedReplay"
+   ],
+   "properties": [
+    "Prop_C_MarkerInsertOnly",
+    "Prop_C_OutFinal",
+    "Prop_C_ProcFinal",
+    "Prop_C_CreqMonotone"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxc2-hd-composed-ab",
+  "module": "MCExposureCode1e24Composed",
+  "config": "rxc2-hd-composed-ab.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module MCExposureCode1e24Composed (1e240b0f repaired runs + c1/1e24 end-cancel ordering; all included modules unchanged). Predicted PASS, complete: two items (per-item cancel transactions, list acknowledgement), one attempt, one execution. Same checks as rxc2-hd-composed-a.",
+  "tlc": {
+   "comment": "Module MCExposureCode1e24Composed (1e240b0f repaired runs + c1/1e24 end-cancel ordering; all included modules unchanged). Predicted PASS, complete: two items (per-item cancel transactions, list acknowledgement), one attempt, one execution. Same checks as rxc2-hd-composed-a.",
+   "spec": "CSpec",
+   "constants": {
+    "Items": "{\"a\", \"b\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "TRUE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_C_NotDispatchedTruthful",
+    "Inv_C_ExposedImpliesMarker",
+    "Inv_C_CancelledStaysSettled",
+    "Inv_C_NoSendAfterRunEnded",
+    "Inv_C_OnlyOwnRetryAfterExposure",
+    "Inv_C_SentCanonical",
+    "Inv_C_CompletedFromOwnOrigin",
+    "Inv_C_NoProtocolFault",
+    "Inv_C_NoStoreBroken",
+    "Inv_C_NoSettledRefusalAccepted",
+    "Inv_C_SentBeforeIffSent",
+    "Inv_C_CoercionOnly",
+    "Inv_C_EndAnswerIsApplied",
+    "Inv_R_NoSendWhileCancelled",
+    "Inv_R_NoSendAfterObservedCancel",
+    "Inv_R_NoRecoverySendAfterGapPoll",
+    "Inv_R_NoCorrectionAfterAbort",
+    "Inv_R_SettledRefusalNotHidden",
+    "Inv_R_CompletedFromFinalInclude",
+    "Inv_R_LoserSettledNotHidden",
+    "Inv_E_NoMachineError",
+    "Inv_E_NoMixedCancel",
+    "Diag_E_AppliedReplay"
+   ],
+   "properties": [
+    "Prop_C_MarkerInsertOnly",
+    "Prop_C_OutFinal",
+    "Prop_C_ProcFinal",
+    "Prop_C_CreqMonotone"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxe-diag-applied-replay-latch-fault",
+  "module": "MCExposureCodeC1EndCancel",
+  "config": "rxe-diag-applied-replay-latch-fault.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module MCExposureCodeC1EndCancel (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 end/cancel ordering as written). Diagnostic under the deliberate latch_unsent_ending fault: EXPECTED VIOLATION, about 14 states (r1): the coerced end commits, its answer is lost, the fault latches the unsent ending invocation, cancel_unsent answers exposed (the invocation becomes sent, settle interrupted), and the end made again with interrupted is accepted by the store as a replay. Shows why the store accepts the applied outcome; not reachable at c1 without the fault (rxe-hd-two-items).",
+  "tlc": {
+   "comment": "Module MCExposureCodeC1EndCancel (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 end/cancel ordering as written). Diagnostic under the deliberate latch_unsent_ending fault: EXPECTED VIOLATION, about 14 states (r1): the coerced end commits, its answer is lost, the fault latches the unsent ending invocation, cancel_unsent answers exposed (the invocation becomes sent, settle interrupted), and the end made again with interrupted is accepted by the store as a replay. Shows why the store accepts the applied outcome; not reachable at c1 without the fault (rxe-hd-two-items).",
+   "spec": "ESpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"latch_unsent_ending\""
+   },
+   "invariants": [
+    "Diag_E_AppliedReplay"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxe-hd-two-items-dup",
+  "module": "MCExposureCodeC1EndCancel",
+  "config": "rxe-hd-two-items-dup.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module MCExposureCodeC1EndCancel (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 end/cancel ordering as written). Expected PASS, complete: as rxe-hd-two-items with two executions, so a duplicate execution's admission can interleave with the per-item cancel transactions (M6). 300 s cap; a timeout is INCONCLUSIVE.",
+  "tlc": {
+   "comment": "Module MCExposureCodeC1EndCancel (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 end/cancel ordering as written). Expected PASS, complete: as rxe-hd-two-items with two executions, so a duplicate execution's admission can interleave with the per-item cancel transactions (M6). 300 s cap; a timeout is INCONCLUSIVE.",
+   "spec": "ESpec",
+   "constants": {
+    "Items": "{\"a\", \"b\"}",
+    "MaxAtt": "1",
+    "MaxExec": "2",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_C_NotDispatchedTruthful",
+    "Inv_C_ExposedImpliesMarker",
+    "Inv_C_CancelledStaysSettled",
+    "Inv_C_NoSendAfterRunEnded",
+    "Inv_C_OnlyOwnRetryAfterExposure",
+    "Inv_C_SentCanonical",
+    "Inv_C_CompletedFromOwnOrigin",
+    "Inv_C_NoProtocolFault",
+    "Inv_C_NoStoreBroken",
+    "Inv_C_NoSettledRefusalAccepted",
+    "Inv_C_SentBeforeIffSent",
+    "Inv_C_CoercionOnly",
+    "Inv_C_EndAnswerIsApplied",
+    "Inv_E_NoMachineError",
+    "Inv_E_NoMixedCancel",
+    "Diag_E_AppliedReplay"
+   ],
+   "properties": [
+    "Prop_C_MarkerInsertOnly",
+    "Prop_C_OutFinal",
+    "Prop_C_ProcFinal",
+    "Prop_C_CreqMonotone"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxe-hd-two-items",
+  "module": "MCExposureCodeC1EndCancel",
+  "config": "rxe-hd-two-items.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module MCExposureCodeC1EndCancel (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 end/cancel ordering as written). Expected PASS, complete: two items, one attempt, one execution; split end call/answer, per-item cancel transactions in both orders, lost answers, duplicate end executions, cancel write concurrent with an end. 14 base invariants (13 + TypeOK), 2 end/cancel invariants, the applied-replay diagnostic predicted unreachable (HOLD), 4 action properties.",
+  "tlc": {
+   "comment": "Module MCExposureCodeC1EndCancel (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 end/cancel ordering as written). Expected PASS, complete: two items, one attempt, one execution; split end call/answer, per-item cancel transactions in both orders, lost answers, duplicate end executions, cancel write concurrent with an end. 14 base invariants (13 + TypeOK), 2 end/cancel invariants, the applied-replay diagnostic predicted unreachable (HOLD), 4 action properties.",
+   "spec": "ESpec",
+   "constants": {
+    "Items": "{\"a\", \"b\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_C_NotDispatchedTruthful",
+    "Inv_C_ExposedImpliesMarker",
+    "Inv_C_CancelledStaysSettled",
+    "Inv_C_NoSendAfterRunEnded",
+    "Inv_C_OnlyOwnRetryAfterExposure",
+    "Inv_C_SentCanonical",
+    "Inv_C_CompletedFromOwnOrigin",
+    "Inv_C_NoProtocolFault",
+    "Inv_C_NoStoreBroken",
+    "Inv_C_NoSettledRefusalAccepted",
+    "Inv_C_SentBeforeIffSent",
+    "Inv_C_CoercionOnly",
+    "Inv_C_EndAnswerIsApplied",
+    "Inv_E_NoMachineError",
+    "Inv_E_NoMixedCancel",
+    "Diag_E_AppliedReplay"
+   ],
+   "properties": [
+    "Prop_C_MarkerInsertOnly",
+    "Prop_C_OutFinal",
+    "Prop_C_ProcFinal",
+    "Prop_C_CreqMonotone"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxe-wit-cancel-during-end",
+  "module": "MCExposureCodeC1EndCancel",
+  "config": "rxe-wit-cancel-during-end.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module MCExposureCodeC1EndCancel (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 end/cancel ordering as written). Witness, r1: EXPECTED VIOLATION, about 15 states: a sent invocation's end commits, its answer is lost, a cancel is latched and written (request_cancel) while the end is committed but the invocation not cleared, the end replays, done. (The earlier shape, a cancel transaction while the end answer was in flight, is not code-reachable.)",
+  "tlc": {
+   "comment": "Module MCExposureCodeC1EndCancel (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 end/cancel ordering as written). Witness, r1: EXPECTED VIOLATION, about 15 states: a sent invocation's end commits, its answer is lost, a cancel is latched and written (request_cancel) while the end is committed but the invocation not cleared, the end replays, done. (The earlier shape, a cancel transaction while the end answer was in flight, is not code-reachable.)",
+   "spec": "ESpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_E_CancelDuringEnd"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxe-wit-coerced-replay",
+  "module": "MCExposureCodeC1EndCancel",
+  "config": "rxe-wit-coerced-replay.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module MCExposureCodeC1EndCancel (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 end/cancel ordering as written). Witness: EXPECTED VIOLATION, about 10 states: an exposure is recorded, the run ends unsent, the not_dispatched end commits as interrupted, its answer is lost, and the original not_dispatched call replays and is answered coerced.",
+  "tlc": {
+   "comment": "Module MCExposureCodeC1EndCancel (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 end/cancel ordering as written). Witness: EXPECTED VIOLATION, about 10 states: an exposure is recorded, the run ends unsent, the not_dispatched end commits as interrupted, its answer is lost, and the original not_dispatched call replays and is answered coerced.",
+   "spec": "ESpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_E_CoercedReplay"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxe-wit-end-after-cancel",
+  "module": "MCExposureCodeC1EndCancel",
+  "config": "rxe-wit-end-after-cancel.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module MCExposureCodeC1EndCancel (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 end/cancel ordering as written). r1 (pre-execution): UNREACHABILITY CHECK, predicted to COMPLETE WITHOUT VIOLATION: end_after_cancel needs a latch while an end answer is in flight, and every store write is a blocking yield of the wake, so it is a defensive branch. A violation here contradicts the blocking-write reading and is a finding. (The earlier prediction, reached at about 15 states, assumed concurrent writes and is withdrawn.)",
+  "tlc": {
+   "comment": "Module MCExposureCodeC1EndCancel (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 end/cancel ordering as written). r1 (pre-execution): UNREACHABILITY CHECK, predicted to COMPLETE WITHOUT VIOLATION: end_after_cancel needs a latch while an end answer is in flight, and every store write is a blocking yield of the wake, so it is a defensive branch. A violation here contradicts the blocking-write reading and is a finding. (The earlier prediction, reached at about 15 states, assumed concurrent writes and is withdrawn.)",
+   "spec": "ESpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_E_EndAfterCancel"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxf-ref-gapped-a",
+  "module": "MCExposureCodeRefines1e24",
+  "config": "rxf-ref-gapped-a.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module MCExposureCodeRefines1e24 (code -> RecipientExposureSpec refinement at 1e240b0f; mapping, history variables and named gaps G1-G8 in the module). Predicted PASS, complete: every code step is an intent step or one of the named gaps G1-G8; the intent's 10 safety invariants and TypeOK hold on the mapped state; 4 intent action properties. Bounds as rxc2-hd-composed-a.",
+  "tlc": {
+   "comment": "Module MCExposureCodeRefines1e24 (code -> RecipientExposureSpec refinement at 1e240b0f; mapping, history variables and named gaps G1-G8 in the module). Predicted PASS, complete: every code step is an intent step or one of the named gaps G1-G8; the intent's 10 safety invariants and TypeOK hold on the mapped state; 4 intent action properties. Bounds as rxc2-hd-composed-a.",
+   "spec": "HSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "2",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "TRUE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "RInv_TypeOK",
+    "RInv_NotDispatchedTruthful",
+    "RInv_ExposedImpliesMarker",
+    "RInv_CancelledStaysSettled",
+    "RInv_CompletedFromOwnOrigin",
+    "RInv_NoSendAfterGuard",
+    "RInv_OnlyOwnRetryAfterExposure",
+    "RInv_SentCanonical",
+    "RInv_NoProtocolFault",
+    "RInv_CoercionOnly",
+    "RInv_EndAnswerIsApplied"
+   ],
+   "properties": [
+    "Ref_Init",
+    "Ref_StepGapped",
+    "RProp_MarkerInsertOnly",
+    "RProp_OutFinal",
+    "RProp_ProcFinal",
+    "RProp_CreqMonotone"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxf-ref-gapped-ab",
+  "module": "MCExposureCodeRefines1e24",
+  "config": "rxf-ref-gapped-ab.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module MCExposureCodeRefines1e24 (code -> RecipientExposureSpec refinement at 1e240b0f; mapping, history variables and named gaps G1-G8 in the module). Predicted PASS, complete: as rxf-ref-gapped-a with two items (G8 list acknowledgement reachable), one attempt.",
+  "tlc": {
+   "comment": "Module MCExposureCodeRefines1e24 (code -> RecipientExposureSpec refinement at 1e240b0f; mapping, history variables and named gaps G1-G8 in the module). Predicted PASS, complete: as rxf-ref-gapped-a with two items (G8 list acknowledgement reachable), one attempt.",
+   "spec": "HSpec",
+   "constants": {
+    "Items": "{\"a\", \"b\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "TRUE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "RInv_TypeOK",
+    "RInv_NotDispatchedTruthful",
+    "RInv_ExposedImpliesMarker",
+    "RInv_CancelledStaysSettled",
+    "RInv_CompletedFromOwnOrigin",
+    "RInv_NoSendAfterGuard",
+    "RInv_OnlyOwnRetryAfterExposure",
+    "RInv_SentCanonical",
+    "RInv_NoProtocolFault",
+    "RInv_CoercionOnly",
+    "RInv_EndAnswerIsApplied"
+   ],
+   "properties": [
+    "Ref_Init",
+    "Ref_StepGapped",
+    "RProp_MarkerInsertOnly",
+    "RProp_OutFinal",
+    "RProp_ProcFinal",
+    "RProp_CreqMonotone"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxf-ref-gapped-dup",
+  "module": "MCExposureCodeRefines1e24",
+  "config": "rxf-ref-gapped-dup.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module MCExposureCodeRefines1e24 (code -> RecipientExposureSpec refinement at 1e240b0f; mapping, history variables and named gaps G1-G8 in the module). Predicted PASS, complete: as rxf-ref-gapped-a with two executions (duplicates, losing-duplicate recovery), one attempt. 300 s; a timeout is INCONCLUSIVE.",
+  "tlc": {
+   "comment": "Module MCExposureCodeRefines1e24 (code -> RecipientExposureSpec refinement at 1e240b0f; mapping, history variables and named gaps G1-G8 in the module). Predicted PASS, complete: as rxf-ref-gapped-a with two executions (duplicates, losing-duplicate recovery), one attempt. 300 s; a timeout is INCONCLUSIVE.",
+   "spec": "HSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "2",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "TRUE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "RInv_TypeOK",
+    "RInv_NotDispatchedTruthful",
+    "RInv_ExposedImpliesMarker",
+    "RInv_CancelledStaysSettled",
+    "RInv_CompletedFromOwnOrigin",
+    "RInv_NoSendAfterGuard",
+    "RInv_OnlyOwnRetryAfterExposure",
+    "RInv_SentCanonical",
+    "RInv_NoProtocolFault",
+    "RInv_CoercionOnly",
+    "RInv_EndAnswerIsApplied"
+   ],
+   "properties": [
+    "Ref_Init",
+    "Ref_StepGapped",
+    "RProp_MarkerInsertOnly",
+    "RProp_OutFinal",
+    "RProp_ProcFinal",
+    "RProp_CreqMonotone"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxf-ref-strict-a",
+  "module": "MCExposureCodeRefines1e24",
+  "config": "rxf-ref-strict-a.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module MCExposureCodeRefines1e24 (code -> RecipientExposureSpec refinement at 1e240b0f; mapping, history variables and named gaps G1-G8 in the module). Diagnostic, EXPECTED VIOLATION of Ref_Step (strict: no gaps), first counterexample predicted at a named gap, about 4 states (G2: cancelled before the run starts). Any first counterexample that is not one of G1-G8 is a finding.",
+  "tlc": {
+   "comment": "Module MCExposureCodeRefines1e24 (code -> RecipientExposureSpec refinement at 1e240b0f; mapping, history variables and named gaps G1-G8 in the module). Diagnostic, EXPECTED VIOLATION of Ref_Step (strict: no gaps), first counterexample predicted at a named gap, about 4 states (G2: cancelled before the run starts). Any first counterexample that is not one of G1-G8 is a finding.",
+   "spec": "HSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "2",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "TRUE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [],
+   "properties": [
+    "Ref_Init",
+    "Ref_Step"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr-c1-diag-w1-loser-settled-hidden",
+  "module": "MCExposureCodeC1Runs",
+  "config": "rxr-c1-diag-w1-loser-settled-hidden.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Diagnostic, no H-W1: EXPECTED VIOLATION, about 15 states: a duplicate execution includes; the winner completes and the invocation ends; the duplicate recovers, is refused settled and still reports sent. Its completion is not accepted (A-ACCEPT).",
+  "tlc": {
+   "comment": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Diagnostic, no H-W1: EXPECTED VIOLATION, about 15 states: a duplicate execution includes; the winner completes and the invocation ends; the duplicate recovers, is refused settled and still reports sent. Its completion is not accepted (A-ACCEPT).",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "2",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "FALSE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "Wit_R_LoserSettledHidden"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr-c1-hd-no-concurrent-settle",
+  "module": "MCExposureCodeC1Runs",
+  "config": "rxr-c1-hd-no-concurrent-settle.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Conditional hold: Expected PASS, complete, ONLY under not-H-W1 (no settlement while carrying) and these bounds: one item, one attempt, two executions, one recovery run each, activity cancellation enabled. The base code invariants hold with recovery and polling added; the accepted completion never hides a settled refusal or completes without its final run's include. Not a W1 exclusion.",
+  "tlc": {
+   "comment": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Conditional hold: Expected PASS, complete, ONLY under not-H-W1 (no settlement while carrying) and these bounds: one item, one attempt, two executions, one recovery run each, activity cancellation enabled. The base code invariants hold with recovery and polling added; the accepted completion never hides a settled refusal or completes without its final run's include. Not a W1 exclusion.",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "2",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "TRUE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_C_NotDispatchedTruthful",
+    "Inv_C_ExposedImpliesMarker",
+    "Inv_C_CancelledStaysSettled",
+    "Inv_C_NoSendAfterRunEnded",
+    "Inv_C_OnlyOwnRetryAfterExposure",
+    "Inv_C_SentCanonical",
+    "Inv_C_CompletedFromOwnOrigin",
+    "Inv_C_NoProtocolFault",
+    "Inv_C_NoStoreBroken",
+    "Inv_C_NoSettledRefusalAccepted",
+    "Inv_C_SentBeforeIffSent",
+    "Inv_C_CoercionOnly",
+    "Inv_C_EndAnswerIsApplied",
+    "Inv_R_SettledRefusalNotHidden",
+    "Inv_R_CompletedFromFinalInclude"
+   ],
+   "properties": [
+    "Prop_C_MarkerInsertOnly",
+    "Prop_C_OutFinal",
+    "Prop_C_ProcFinal",
+    "Prop_C_CreqMonotone"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr-c1-w1-completion-without-final-include",
+  "module": "MCExposureCodeC1Runs",
+  "config": "rxr-c1-w1-completion-without-final-include.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Finding W1 under H-W1: EXPECTED VIOLATION, about 12 states: as rxr-c1-w1-settled-hidden, then the orchestration applies the ordinary result as an intake completion.",
+  "tlc": {
+   "comment": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Finding W1 under H-W1: EXPECTED VIOLATION, about 12 states: as rxr-c1-w1-settled-hidden, then the orchestration applies the ordinary result as an intake completion.",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "FALSE",
+    "AllowConcurrentSettle": "TRUE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "Inv_R_CompletedFromFinalInclude"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr-c1-w1-settled-hidden",
+  "module": "MCExposureCodeC1Runs",
+  "config": "rxr-c1-w1-settled-hidden.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Finding W1 under hypothesis H-W1 (AllowConcurrentSettle): EXPECTED VIOLATION, about 11 states: run 1 includes and loses its session, the item is settled elsewhere, the recovery run is refused settled and omits; the accepted witness says sent.",
+  "tlc": {
+   "comment": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Finding W1 under hypothesis H-W1 (AllowConcurrentSettle): EXPECTED VIOLATION, about 11 states: run 1 includes and loses its session, the item is settled elsewhere, the recovery run is refused settled and omits; the accepted witness says sent.",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "FALSE",
+    "AllowConcurrentSettle": "TRUE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "Inv_R_SettledRefusalNotHidden"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr-c1-w2-gap-recovery-send",
+  "module": "MCExposureCodeC1Runs",
+  "config": "rxr-c1-w2-gap-recovery-send.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Finding W2 (recovery gap): EXPECTED VIOLATION, about 10 states: run 1 loses its session (here after a lost admission answer), the poll observes the cancellation in the gap and stops, the recovery run (fresh interrupt) admits and sends.",
+  "tlc": {
+   "comment": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Finding W2 (recovery gap): EXPECTED VIOLATION, about 10 states: run 1 loses its session (here after a lost admission answer), the poll observes the cancellation in the gap and stops, the recovery run (fresh interrupt) admits and sends.",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "TRUE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "Inv_R_NoRecoverySendAfterGapPoll"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr-c1-w2-observed-cancel-send",
+  "module": "MCExposureCodeC1Runs",
+  "config": "rxr-c1-w2-observed-cancel-send.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Finding W2: EXPECTED VIOLATION, about 7 states: the poll observes the cancellation with no active run and stops; a run then admits and sends.",
+  "tlc": {
+   "comment": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Finding W2: EXPECTED VIOLATION, about 7 states: the poll observes the cancellation with no active run and stops; a run then admits and sends.",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "TRUE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "Inv_R_NoSendAfterObservedCancel"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr-c1-w2-unpolled-cancel-send",
+  "module": "MCExposureCodeC1Runs",
+  "config": "rxr-c1-w2-unpolled-cancel-send.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Finding W2 (short): EXPECTED VIOLATION, about 6 states: activity cancelled before the poll runs; admission allowed; the composed prompt is sent (no synchronous isCancelled check at the send).",
+  "tlc": {
+   "comment": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Finding W2 (short): EXPECTED VIOLATION, about 6 states: activity cancelled before the poll runs; admission allowed; the composed prompt is sent (no synchronous isCancelled check at the send).",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "TRUE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "Inv_R_NoSendWhileCancelled"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr-c1-w3-correction-after-abort",
+  "module": "MCExposureCodeC1Runs",
+  "config": "rxr-c1-w3-correction-after-abort.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Finding W3: EXPECTED VIOLATION, about 8 states: initial send, activity cancellation, the poll's bare abort, then a corrective send.",
+  "tlc": {
+   "comment": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Finding W3: EXPECTED VIOLATION, about 8 states: initial send, activity cancellation, the poll's bare abort, then a corrective send.",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "TRUE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "Inv_R_NoCorrectionAfterAbort"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr-c1-wit-legit-correction",
+  "module": "MCExposureCodeC1Runs",
+  "config": "rxr-c1-wit-legit-correction.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Positive control: EXPECTED VIOLATION, about 6 states: a corrective send without any abort is reachable.",
+  "tlc": {
+   "comment": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Positive control: EXPECTED VIOLATION, about 6 states: a corrective send without any abort is reachable.",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "FALSE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "Wit_R_LegitCorrection"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr-c1-wit-recovered-include",
+  "module": "MCExposureCodeC1Runs",
+  "config": "rxr-c1-wit-recovered-include.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Positive control: EXPECTED VIOLATION, about 8 states: a recovery run is admitted under the same attemptId and sends.",
+  "tlc": {
+   "comment": "Module MCExposureCodeC1Runs (EXTENDS RecipientExposureCode, unchanged; core pin c1bda7a2 as written, pair findings W1-W3). Positive control: EXPECTED VIOLATION, about 8 states: a recovery run is admitted under the same attemptId and sends.",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "FALSE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "Wit_R_RecoveredInclude"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr2-diag-w1-settled-visible",
+  "module": "MCExposureCode1e24Runs",
+  "config": "rxr2-diag-w1-settled-visible.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module MCExposureCode1e24Runs (EXTENDS RecipientExposureCode, unchanged; repaired worker at core pin 1e240b0f; c1bda7a2 companion MCExposureCodeC1Runs). Diagnostic under H-W1: EXPECTED VIOLATION, about 12 states: run 1 includes and loses its session, the item is settled elsewhere, the recovery run is refused settled and omits; its witness is refused settled and the orchestration fails visibly (applyIntakeAttempt invariant error). If H-W1 is real, the repaired code fails closed here, it does not complete.",
+  "tlc": {
+   "comment": "Module MCExposureCode1e24Runs (EXTENDS RecipientExposureCode, unchanged; repaired worker at core pin 1e240b0f; c1bda7a2 companion MCExposureCodeC1Runs). Diagnostic under H-W1: EXPECTED VIOLATION, about 12 states: run 1 includes and loses its session, the item is settled elsewhere, the recovery run is refused settled and omits; its witness is refused settled and the orchestration fails visibly (applyIntakeAttempt invariant error). If H-W1 is real, the repaired code fails closed here, it does not complete.",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "FALSE",
+    "AllowConcurrentSettle": "TRUE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "Inv_C_NoSettledRefusalAccepted"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr2-hd-dup",
+  "module": "MCExposureCode1e24Runs",
+  "config": "rxr2-hd-dup.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module MCExposureCode1e24Runs (EXTENDS RecipientExposureCode, unchanged; repaired worker at core pin 1e240b0f; c1bda7a2 companion MCExposureCodeC1Runs). Predicted PASS, complete: as rxr2-hd-w2w3 with two executions (duplicates, losing-duplicate recovery). 300 s cap; a timeout is INCONCLUSIVE.",
+  "tlc": {
+   "comment": "Module MCExposureCode1e24Runs (EXTENDS RecipientExposureCode, unchanged; repaired worker at core pin 1e240b0f; c1bda7a2 companion MCExposureCodeC1Runs). Predicted PASS, complete: as rxr2-hd-w2w3 with two executions (duplicates, losing-duplicate recovery). 300 s cap; a timeout is INCONCLUSIVE.",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "2",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "TRUE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_C_NotDispatchedTruthful",
+    "Inv_C_ExposedImpliesMarker",
+    "Inv_C_CancelledStaysSettled",
+    "Inv_C_NoSendAfterRunEnded",
+    "Inv_C_OnlyOwnRetryAfterExposure",
+    "Inv_C_SentCanonical",
+    "Inv_C_CompletedFromOwnOrigin",
+    "Inv_C_NoProtocolFault",
+    "Inv_C_NoStoreBroken",
+    "Inv_C_NoSettledRefusalAccepted",
+    "Inv_C_SentBeforeIffSent",
+    "Inv_C_CoercionOnly",
+    "Inv_C_EndAnswerIsApplied",
+    "Inv_R_NoSendWhileCancelled",
+    "Inv_R_NoSendAfterObservedCancel",
+    "Inv_R_NoRecoverySendAfterGapPoll",
+    "Inv_R_NoCorrectionAfterAbort",
+    "Inv_R_SettledRefusalNotHidden",
+    "Inv_R_CompletedFromFinalInclude",
+    "Inv_R_LoserSettledNotHidden"
+   ],
+   "properties": [
+    "Prop_C_MarkerInsertOnly",
+    "Prop_C_OutFinal",
+    "Prop_C_ProcFinal",
+    "Prop_C_CreqMonotone"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr2-hd-w1-hw1",
+  "module": "MCExposureCode1e24Runs",
+  "config": "rxr2-hd-w1-hw1.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module MCExposureCode1e24Runs (EXTENDS RecipientExposureCode, unchanged; repaired worker at core pin 1e240b0f; c1bda7a2 companion MCExposureCodeC1Runs). Predicted PASS, complete, UNDER hypothesis H-W1 (settlement while carrying allowed): the final run's settled refusal is never hidden and no completion lacks the final run's include.",
+  "tlc": {
+   "comment": "Module MCExposureCode1e24Runs (EXTENDS RecipientExposureCode, unchanged; repaired worker at core pin 1e240b0f; c1bda7a2 companion MCExposureCodeC1Runs). Predicted PASS, complete, UNDER hypothesis H-W1 (settlement while carrying allowed): the final run's settled refusal is never hidden and no completion lacks the final run's include.",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "FALSE",
+    "AllowConcurrentSettle": "TRUE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "Inv_R_SettledRefusalNotHidden",
+    "Inv_R_CompletedFromFinalInclude",
+    "Inv_R_LoserSettledNotHidden"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr2-hd-w2w3",
+  "module": "MCExposureCode1e24Runs",
+  "config": "rxr2-hd-w2w3.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module MCExposureCode1e24Runs (EXTENDS RecipientExposureCode, unchanged; repaired worker at core pin 1e240b0f; c1bda7a2 companion MCExposureCodeC1Runs). Predicted PASS, complete (not a result): one item/attempt/execution, one recovery, activity cancellation on, no H-W1. The W2/W3/W1 configs that are violated at c1bda7a2 are invariants here, with 14 base invariant entries (13 + TypeOK) and 4 action properties.",
+  "tlc": {
+   "comment": "Module MCExposureCode1e24Runs (EXTENDS RecipientExposureCode, unchanged; repaired worker at core pin 1e240b0f; c1bda7a2 companion MCExposureCodeC1Runs). Predicted PASS, complete (not a result): one item/attempt/execution, one recovery, activity cancellation on, no H-W1. The W2/W3/W1 configs that are violated at c1bda7a2 are invariants here, with 14 base invariant entries (13 + TypeOK) and 4 action properties.",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "TRUE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_C_NotDispatchedTruthful",
+    "Inv_C_ExposedImpliesMarker",
+    "Inv_C_CancelledStaysSettled",
+    "Inv_C_NoSendAfterRunEnded",
+    "Inv_C_OnlyOwnRetryAfterExposure",
+    "Inv_C_SentCanonical",
+    "Inv_C_CompletedFromOwnOrigin",
+    "Inv_C_NoProtocolFault",
+    "Inv_C_NoStoreBroken",
+    "Inv_C_NoSettledRefusalAccepted",
+    "Inv_C_SentBeforeIffSent",
+    "Inv_C_CoercionOnly",
+    "Inv_C_EndAnswerIsApplied",
+    "Inv_R_NoSendWhileCancelled",
+    "Inv_R_NoSendAfterObservedCancel",
+    "Inv_R_NoRecoverySendAfterGapPoll",
+    "Inv_R_NoCorrectionAfterAbort",
+    "Inv_R_SettledRefusalNotHidden",
+    "Inv_R_CompletedFromFinalInclude",
+    "Inv_R_LoserSettledNotHidden"
+   ],
+   "properties": [
+    "Prop_C_MarkerInsertOnly",
+    "Prop_C_OutFinal",
+    "Prop_C_ProcFinal",
+    "Prop_C_CreqMonotone"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr2-wit-eligibility-blocked",
+  "module": "MCExposureCode1e24Runs",
+  "config": "rxr2-wit-eligibility-blocked.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module MCExposureCode1e24Runs (EXTENDS RecipientExposureCode, unchanged; repaired worker at core pin 1e240b0f; c1bda7a2 companion MCExposureCodeC1Runs). Positive control: EXPECTED VIOLATION, about 6 states: the activity is cancelled while admission is awaited; the final synchronous recheck reads it and sends nothing.",
+  "tlc": {
+   "comment": "Module MCExposureCode1e24Runs (EXTENDS RecipientExposureCode, unchanged; repaired worker at core pin 1e240b0f; c1bda7a2 companion MCExposureCodeC1Runs). Positive control: EXPECTED VIOLATION, about 6 states: the activity is cancelled while admission is awaited; the final synchronous recheck reads it and sends nothing.",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "TRUE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "Wit_R_EligibilityBlocked"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr2-wit-exposed-witness",
+  "module": "MCExposureCode1e24Runs",
+  "config": "rxr2-wit-exposed-witness.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module MCExposureCode1e24Runs (EXTENDS RecipientExposureCode, unchanged; repaired worker at core pin 1e240b0f; c1bda7a2 companion MCExposureCodeC1Runs). Positive control: EXPECTED VIOLATION, about 10 states: run 1 includes and loses its session; the recovery run ends before its send; the witness is sent false, exposed true; the orchestration takes it as possibly sent and does not complete.",
+  "tlc": {
+   "comment": "Module MCExposureCode1e24Runs (EXTENDS RecipientExposureCode, unchanged; repaired worker at core pin 1e240b0f; c1bda7a2 companion MCExposureCodeC1Runs). Positive control: EXPECTED VIOLATION, about 10 states: run 1 includes and loses its session; the recovery run ends before its send; the witness is sent false, exposed true; the orchestration takes it as possibly sent and does not complete.",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "FALSE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "Wit_R_ExposedWitnessApplied"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr2-wit-legit-correction",
+  "module": "MCExposureCode1e24Runs",
+  "config": "rxr2-wit-legit-correction.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module MCExposureCode1e24Runs (EXTENDS RecipientExposureCode, unchanged; repaired worker at core pin 1e240b0f; c1bda7a2 companion MCExposureCodeC1Runs). Positive control: EXPECTED VIOLATION, about 6 states: a corrective send of an eligible, unaborted run still happens.",
+  "tlc": {
+   "comment": "Module MCExposureCode1e24Runs (EXTENDS RecipientExposureCode, unchanged; repaired worker at core pin 1e240b0f; c1bda7a2 companion MCExposureCodeC1Runs). Positive control: EXPECTED VIOLATION, about 6 states: a corrective send of an eligible, unaborted run still happens.",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "FALSE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "Wit_R_LegitCorrection"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxr2-wit-recovered-include",
+  "module": "MCExposureCode1e24Runs",
+  "config": "rxr2-wit-recovered-include.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module MCExposureCode1e24Runs (EXTENDS RecipientExposureCode, unchanged; repaired worker at core pin 1e240b0f; c1bda7a2 companion MCExposureCodeC1Runs). Positive control: EXPECTED VIOLATION, about 8 states: a recovery run is admitted under the same attemptId and sends.",
+  "tlc": {
+   "comment": "Module MCExposureCode1e24Runs (EXTENDS RecipientExposureCode, unchanged; repaired worker at core pin 1e240b0f; c1bda7a2 companion MCExposureCodeC1Runs). Positive control: EXPECTED VIOLATION, about 8 states: a recovery run is admitted under the same attemptId and sends.",
+   "spec": "RSpec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\"",
+    "AllowActCancel": "FALSE",
+    "AllowConcurrentSettle": "FALSE",
+    "MaxRecover": "1"
+   },
+   "invariants": [
+    "Wit_R_RecoveredInclude"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxs-df-caller-hashes",
+  "module": "RecipientExposureSpec",
+  "config": "rxs-df-caller-hashes.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Fault caller_hashes (C3). Expected VIOLATION of Inv_SentCanonical, 5 states: StartAttempt, StartExec with altered text, AdmitTxn allowed (two caller hashes agree), Send.",
+  "tlc": {
+   "comment": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Fault caller_hashes (C3). Expected VIOLATION of Inv_SentCanonical, 5 states: StartAttempt, StartExec with altered text, AdmitTxn allowed (two caller hashes agree), Send.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "TRUE",
+    "Fault": "\"caller_hashes\""
+   },
+   "invariants": [
+    "Inv_SentCanonical"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxs-df-no-coerce",
+  "module": "RecipientExposureSpec",
+  "config": "rxs-df-no-coerce.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Fault no_coerce. Expected VIOLATION of Inv_NotDispatchedTruthful, about 10 states: e1 admitted and sends; a duplicate e2 is guarded during admission and completes first (accepted unsent); stopped; end not_dispatched not coerced.",
+  "tlc": {
+   "comment": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Fault no_coerce. Expected VIOLATION of Inv_NotDispatchedTruthful, about 10 states: e1 admitted and sends; a duplicate e2 is guarded during admission and completes first (accepted unsent); stopped; end not_dispatched not coerced.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "2",
+    "AllowAlt": "FALSE",
+    "Fault": "\"no_coerce\""
+   },
+   "invariants": [
+    "Inv_NotDispatchedTruthful"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxs-df-no-exclude",
+  "module": "RecipientExposureSpec",
+  "config": "rxs-df-no-exclude.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Fault no_exclude (C1). Expected VIOLATION of Inv_NoProtocolFault, 6 states: Latch a, CancelWrite a (cancelled), StartAttempt with batch {b}, StartExec, AdmitTxn finds the batch unequal to a membership that still holds a.",
+  "tlc": {
+   "comment": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Fault no_exclude (C1). Expected VIOLATION of Inv_NoProtocolFault, 6 states: Latch a, CancelWrite a (cancelled), StartAttempt with batch {b}, StartExec, AdmitTxn finds the batch unequal to a membership that still holds a.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\", \"b\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"no_exclude\""
+   },
+   "invariants": [
+    "Inv_NoProtocolFault"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxs-df-no-recheck",
+  "module": "RecipientExposureSpec",
+  "config": "rxs-df-no-recheck.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Fault no_recheck (C2). Expected VIOLATION of Inv_NoSendAfterGuard, 6 states: StartAttempt, StartExec, AdmitTxn allowed, Guard (ignored after admission), Send.",
+  "tlc": {
+   "comment": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Fault no_recheck (C2). Expected VIOLATION of Inv_NoSendAfterGuard, 6 states: StartAttempt, StartExec, AdmitTxn allowed, Guard (ignored after admission), Send.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"no_recheck\""
+   },
+   "invariants": [
+    "Inv_NoSendAfterGuard"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxs-df-origin-any",
+  "module": "RecipientExposureSpec",
+  "config": "rxs-df-origin-any.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Fault origin_any. Expected VIOLATION of Inv_CompletedFromOwnOrigin, about 9 states: e1 admitted and sends; duplicate e2 guarded and completes first (accepted unsent); Apply takes own sent from e1.",
+  "tlc": {
+   "comment": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Fault origin_any. Expected VIOLATION of Inv_CompletedFromOwnOrigin, about 9 states: e1 admitted and sends; duplicate e2 guarded and completes first (accepted unsent); Apply takes own sent from e1.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "2",
+    "AllowAlt": "FALSE",
+    "Fault": "\"origin_any\""
+   },
+   "invariants": [
+    "Inv_CompletedFromOwnOrigin"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxs-df-replay-marker",
+  "module": "RecipientExposureSpec",
+  "config": "rxs-df-replay-marker.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Fault replay_marker (C1). Expected VIOLATION of Inv_CancelledStaysSettled, 7 states: Latch a, CancelWrite a, StartAttempt {b}, StartExec, AdmitTxn (marker), CancelReplay a reads the marker first and records cancel_requested on the cancelled row.",
+  "tlc": {
+   "comment": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Fault replay_marker (C1). Expected VIOLATION of Inv_CancelledStaysSettled, 7 states: Latch a, CancelWrite a, StartAttempt {b}, StartExec, AdmitTxn (marker), CancelReplay a reads the marker first and records cancel_requested on the cancelled row.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\", \"b\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"replay_marker\""
+   },
+   "invariants": [
+    "Inv_CancelledStaysSettled"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxs-df-sb-any",
+  "module": "RecipientExposureSpec",
+  "config": "rxs-df-sb-any.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Fault sb_any. Expected VIOLATION of Inv_OnlyOwnRetryAfterExposure, about 11 states: attempt 1 admitted then guarded (hidden marker), park, attempt 2 (sentBefore false) admitted and sends.",
+  "tlc": {
+   "comment": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Fault sb_any. Expected VIOLATION of Inv_OnlyOwnRetryAfterExposure, about 11 states: attempt 1 admitted then guarded (hidden marker), park, attempt 2 (sentBefore false) admitted and sends.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "2",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"sb_any\""
+   },
+   "invariants": [
+    "Inv_OnlyOwnRetryAfterExposure"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxs-df-send-unadmitted",
+  "module": "RecipientExposureSpec",
+  "config": "rxs-df-send-unadmitted.cfg",
+  "expected": "VIOLATION",
+  "witness": false,
+  "note": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Fault send_unadmitted. Expected VIOLATION of Inv_ExposedImpliesMarker, 4 states: StartAttempt, StartExec, Send before the admission answer.",
+  "tlc": {
+   "comment": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Fault send_unadmitted. Expected VIOLATION of Inv_ExposedImpliesMarker, 4 states: StartAttempt, StartExec, Send before the admission answer.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"send_unadmitted\""
+   },
+   "invariants": [
+    "Inv_ExposedImpliesMarker"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxs-hd-cancel",
+  "module": "RecipientExposureSpec",
+  "config": "rxs-hd-cancel.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Expected PASS, complete: two items (cancelled subset, C1), two carrying activities, one execution each, all safety properties.",
+  "tlc": {
+   "comment": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Expected PASS, complete: two items (cancelled subset, C1), two carrying activities, one execution each, all safety properties.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\", \"b\"}",
+    "MaxAtt": "2",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NotDispatchedTruthful",
+    "Inv_ExposedImpliesMarker",
+    "Inv_CancelledStaysSettled",
+    "Inv_CompletedFromOwnOrigin",
+    "Inv_NoSendAfterGuard",
+    "Inv_OnlyOwnRetryAfterExposure",
+    "Inv_SentCanonical",
+    "Inv_NoProtocolFault",
+    "Inv_CoercionOnly",
+    "Inv_EndAnswerIsApplied"
+   ],
+   "properties": [
+    "Prop_MarkerInsertOnly",
+    "Prop_OutFinal",
+    "Prop_ProcFinal",
+    "Prop_CreqMonotone"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxs-hd-redelivery",
+  "module": "RecipientExposureSpec",
+  "config": "rxs-hd-redelivery.cfg",
+  "expected": "PASS",
+  "witness": false,
+  "note": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Expected PASS, complete: one item, two carrying activities, two executions each (redelivery and duplicates), all safety properties.",
+  "tlc": {
+   "comment": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Expected PASS, complete: one item, two carrying activities, two executions each (redelivery and duplicates), all safety properties.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "2",
+    "MaxExec": "2",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NotDispatchedTruthful",
+    "Inv_ExposedImpliesMarker",
+    "Inv_CancelledStaysSettled",
+    "Inv_CompletedFromOwnOrigin",
+    "Inv_NoSendAfterGuard",
+    "Inv_OnlyOwnRetryAfterExposure",
+    "Inv_SentCanonical",
+    "Inv_NoProtocolFault",
+    "Inv_CoercionOnly",
+    "Inv_EndAnswerIsApplied"
+   ],
+   "properties": [
+    "Prop_MarkerInsertOnly",
+    "Prop_OutFinal",
+    "Prop_ProcFinal",
+    "Prop_CreqMonotone"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxs-wit-cancel-a-expose-b",
+  "module": "RecipientExposureSpec",
+  "config": "rxs-wit-cancel-a-expose-b.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Witness Wit_CancelAExposeBReplayA (C1 exact case): EXPECTED VIOLATION, 8 states: Latch a, CancelWrite a, StartAttempt {b}, StartExec, AdmitTxn, Send b, CancelReplay a answers cancelled again with the marker present.",
+  "tlc": {
+   "comment": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Witness Wit_CancelAExposeBReplayA (C1 exact case): EXPECTED VIOLATION, 8 states: Latch a, CancelWrite a, StartAttempt {b}, StartExec, AdmitTxn, Send b, CancelReplay a answers cancelled again with the marker present.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\", \"b\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_CancelAExposeBReplayA"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxs-wit-coerced",
+  "module": "RecipientExposureSpec",
+  "config": "rxs-wit-coerced.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module RecipientExposureSpec (spec-first, exposure protocol r2; amendment a1). Witness Wit_GuardLateMarker (C2 and coercion, causal): EXPECTED VIOLATION, 8 states: StartAttempt, StartExec, Guard while the admission call is in flight, THAT AdmitTxn commits afterwards and inserts the marker (answer ignored), Complete unsent, Apply stopped, EndCall coerces not_dispatched to interrupted; nothing sent.",
+  "tlc": {
+   "comment": "Module RecipientExposureSpec (spec-first, exposure protocol r2; amendment a1). Witness Wit_GuardLateMarker (C2 and coercion, causal): EXPECTED VIOLATION, 8 states: StartAttempt, StartExec, Guard while the admission call is in flight, THAT AdmitTxn commits afterwards and inserts the marker (answer ignored), Complete unsent, Apply stopped, EndCall coerces not_dispatched to interrupted; nothing sent.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_GuardLateMarker"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxs-wit-duplicate-sends",
+  "module": "RecipientExposureSpec",
+  "config": "rxs-wit-duplicate-sends.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Witness Wit_DuplicateSends (same attemptId, at-least-once): EXPECTED VIOLATION, 8 states: two executions of one attempt are both admitted and both send.",
+  "tlc": {
+   "comment": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Witness Wit_DuplicateSends (same attemptId, at-least-once): EXPECTED VIOLATION, 8 states: two executions of one attempt are both admitted and both send.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "2",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_DuplicateSends"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxs-wit-late-cancel-during-end",
+  "module": "RecipientExposureSpec",
+  "config": "rxs-wit-late-cancel-during-end.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module RecipientExposureSpec (spec-first, exposure protocol r2; amendment a1). Witness Wit_LateCancelDuringEnd (plan 5, 8 row 11): EXPECTED VIOLATION, 11 states: StartAttempt, StartExec, Guard while admission is in flight, AdmitTxn commits late (marker), Complete unsent, Apply stopped, Latch a, EndCall commits interrupted (coerced) with its answer lost, CancelWrite a answers exposed (cancel_requested on the final row), EndCall replays the applied interrupted.",
+  "tlc": {
+   "comment": "Module RecipientExposureSpec (spec-first, exposure protocol r2; amendment a1). Witness Wit_LateCancelDuringEnd (plan 5, 8 row 11): EXPECTED VIOLATION, 11 states: StartAttempt, StartExec, Guard while admission is in flight, AdmitTxn commits late (marker), Complete unsent, Apply stopped, Latch a, EndCall commits interrupted (coerced) with its answer lost, CancelWrite a answers exposed (cancel_requested on the final row), EndCall replays the applied interrupted.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "1",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_LateCancelDuringEnd"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rxs-wit-refused-exposed",
+  "module": "RecipientExposureSpec",
+  "config": "rxs-wit-refused-exposed.cfg",
+  "expected": "VIOLATION",
+  "witness": true,
+  "note": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Witness Wit_RefusedExposed (hidden marker): EXPECTED VIOLATION, about 10 states: attempt 1 admitted then guarded, park, attempt 2 (sentBefore false) refused exposed.",
+  "tlc": {
+   "comment": "Module RecipientExposureSpec (spec-first, exposure protocol r2). Witness Wit_RefusedExposed (hidden marker): EXPECTED VIOLATION, about 10 states: attempt 1 admitted then guarded, park, attempt 2 (sentBefore false) refused exposed.",
+   "spec": "Spec",
+   "constants": {
+    "Items": "{\"a\"}",
+    "MaxAtt": "2",
+    "MaxExec": "1",
+    "AllowAlt": "FALSE",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Wit_RefusedExposed"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ }
+]

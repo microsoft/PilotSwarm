@@ -91,7 +91,7 @@ tools:
     assert.deepEqual(agent.tools, ["bash"]);
 });
 
-test("schemaVersions 2, 3 and 4 load; unknown versions are skipped", () => {
+test("schemaVersions 2, 3, 4 and 5 load; unknown versions are skipped", () => {
     const dir = makeTmpDir("ps-agent-mcp-");
     writeAgent(dir, "v2.agent.md", `
 schemaVersion: 2
@@ -108,13 +108,18 @@ schemaVersion: 4
 version: 1.0.0
 name: v4
 `);
-    writeAgent(dir, "future.agent.md", `
+    writeAgent(dir, "v5.agent.md", `
 schemaVersion: 5
+version: 1.0.0
+name: v5
+`);
+    writeAgent(dir, "future.agent.md", `
+schemaVersion: 6
 version: 1.0.0
 name: future
 `);
     const agents = loadAgentFiles(dir);
-    assert.deepEqual(agents.map((a) => a.name), ["v2", "v3", "v4"]);
+    assert.deepEqual(agents.map((a) => a.name).sort(), ["v2", "v3", "v4", "v5"]);
 });
 
 // ─── 2 + 3. Worker-side catalog resolution ──────────────────────

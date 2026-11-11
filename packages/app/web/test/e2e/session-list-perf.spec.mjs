@@ -78,6 +78,56 @@ test("moving through the session list does not fetch per keypress", async ({ pag
         .toBeLessThanOrEqual(8);
 });
 
+// Workflows are always on (3b70e2c5): a session's Workflow Definitions are read for the session the selection lands on, not
+// per keypress, both by the background read (Workflow tab closed) and by the open Workflow tab.
+// The right block is a per-session view: a session never opened shows none, so the Workflow tab stays open through the
+// moves only where every session's stored view has it open (be5bc210 DEV: opened on the first session, it closed on the next).
+const stubSessionId = (i) => `1111111${i}-2222-3333-4444-55555555555${i}`;
+const OPEN_VIEW = { at: 1, canvasOpen: true, diagnosticsOpen: false, zen: false, layout: {} };
+for (const tabOpen of [false, true]) {
+    test(`moving through the session list reads the landing session's Workflow Definitions only, Workflow tab ${tabOpen ? "open" : "closed"}`, async ({ page }) => {
+        if (tabOpen) {
+            const settings = {
+                desktopPanes: { canvasOpen: true, diagnosticsOpen: false, zen: false, sideTab: "workflow" },
+                sessionViews: Object.fromEntries(Array.from({ length: FLEET }, (_, i) => [stubSessionId(i), { desktop: OPEN_VIEW }])),
+            };
+            await page.route("**/api/v1/me/profile", (route) => route.fulfill({ json: { ok: true, result: { isAdmin: false, profileSettings: settings } } }));
+        }
+        await page.goto(base, { waitUntil: "networkidle" });
+        await page.waitForSelector(".ps-session-list-button", { timeout: 20_000 });
+        await page.waitForTimeout(600);
+        await page.locator(".ps-session-list-button").first().click();
+        await page.waitForTimeout(400);
+        if (tabOpen) await expect(page.locator(".ps-wf-tab")).toBeVisible();
+        const before = await page.locator(".ps-session-list-button.is-selected").getAttribute("data-session-id");
+
+        const calls = [];
+        page.on("request", (r) => {
+            const url = r.url();
+            if (url.includes("/api/")) calls.push(url.replace(base, "").split("?")[0]);
+        });
+        const MOVES = 30;
+        await page.evaluate(async (moves) => {
+            for (let i = 0; i < moves; i += 1) {
+                window.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true }));
+                await new Promise((r) => requestAnimationFrame(r));
+            }
+        }, MOVES);
+        await page.waitForTimeout(900);
+
+        const landed = await page.locator(".ps-session-list-button.is-selected").getAttribute("data-session-id");
+        expect(landed).not.toBe(before);
+        if (tabOpen) await expect(page.locator(".ps-wf-tab")).toBeVisible();
+        const definitions = calls.filter((c) => /\/workflow-definitions$/.test(c));
+        expect(definitions.length, JSON.stringify(definitions)).toBeGreaterThanOrEqual(1);
+        expect(definitions.length, JSON.stringify(definitions)).toBeLessThanOrEqual(2);
+        expect(definitions.every((c) => c.includes(`/sessions/${landed}/`)), JSON.stringify({ landed, definitions })).toBe(true);
+        const perSession = calls.filter((c) => /\/sessions\//.test(c));
+        expect(perSession.length, `${MOVES} moves issued ${perSession.length} session requests: ${JSON.stringify(perSession)}`)
+            .toBeLessThanOrEqual(8);
+    });
+}
+
 test("the selection still lands on the right session and loads it", async ({ page }) => {
     // The guard on the optimisation: deferring the fetch must not lose it.
     await openListFocused(page);

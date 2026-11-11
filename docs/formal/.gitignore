@@ -1,0 +1,6 @@
+# The TLC settings files are generated from each folder's cases.json and tlc-templates.json by tlc_cases.py
+# (run-tlc.sh and check-packet.sh do it before use). Never commit them.
+*.cfg
+# run-tlc.sh's default output folder, and the bytecode of tlc_cases.py when gen-cases.py imports it
+results/
+__pycache__/

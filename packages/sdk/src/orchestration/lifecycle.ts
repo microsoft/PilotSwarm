@@ -35,6 +35,7 @@ import {
     extraFoldersChangedNote,
     addCancelledMessageIds,
     touchRecentClientMessageIds,
+    restoreOwnedRetry,
     type DurableSessionRuntime,
     type PendingChildDigest,
 } from "./state.js";
@@ -44,6 +45,8 @@ import {
     mergePrompt,
     validClientMessageIds,
 } from "./utils.js";
+import { assertIntakeContinueAsNewTarget, carryIntakeState, type IntakeCarryingInput } from "./intake-state.js";
+import { IntakeInvariantError } from "./intake-machine.js";
 
 // ─── Custom status / KV helpers ─────────────────────────────
 
@@ -208,7 +211,7 @@ export function* releaseAffinity(
         }
     }
     state.affinityKey = yield ctx.newGuid();
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "workflow-intake-v1");
     try {
         yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
             eventType: "session.affinity_released",
@@ -345,7 +348,7 @@ export function* applyAgentWorkspaceExtrasChange(runtime: DurableSessionRuntime,
     const revision = state.workspaceRevision + 1;
     const extraPaths = action.extraPaths && typeof action.extraPaths === "object" ? action.extraPaths as Record<string, string> : null;
     state.config.workspace = next;
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "workflow-intake-v1");
     state.workspaceRevision = revision;
     const note = extraFoldersChangedNote(previous, next, extraPaths);
     if (note) state.workspaceNotice = state.workspaceNotice ? `${state.workspaceNotice} ${note}` : note;
@@ -507,7 +510,7 @@ export function restorePendingChildDigest(
     };
 }
 
-function childUpdateRank(updateType: string): number {
+export function childUpdateRank(updateType: string): number {
     switch (updateType) {
         case "failed":
         case "cancelled":
@@ -702,12 +705,57 @@ export function buildContinueInputWithPrompt(
     });
 }
 
-/** Capture the active timer state into a continueAsNew input and yield the version-bumped CAN. */
+/**
+ * Capture the active timer state into a continueAsNew input and yield the version-bumped CAN.
+ *
+ * 1.0.83: every continue-as-new of this version comes here (the
+ * orchestration-intake-1-0-83 unit test checks each call site and that
+ * nothing else calls the context's continue-as-new). So here, before any
+ * yield, it refuses an older target (the floor) and carries the intake
+ * state: present only when not empty, so a session with no intake continues
+ * as new with exactly the input 1.0.82 builds. The owed retry rides every
+ * continue-as-new apart from the pending prompt and its fields, which stay
+ * the follow-ups' (ordinary retry ownership; review Q-W2-7): the one a failed
+ * turn's retry gives in its input (turn.ts ownedRetryOverrides), else the
+ * session's; two at once is a broken invariant. The retry marker rides with
+ * it while set (review D-W2-1), and never without it; and an unanswered
+ * arrival's flag rides while set (review O-W2-5).
+ */
 export function* versionedContinueAsNew(
     runtime: DurableSessionRuntime,
     canInput: OrchestrationInput,
 ): Generator<any, void, any> {
     const { state } = runtime;
+    assertIntakeContinueAsNewTarget(runtime.versions.currentVersion, runtime.versions.latestVersion);
+    const carriedIntake = carryIntakeState(state.intake);
+    if (carriedIntake !== undefined) (canInput as IntakeCarryingInput).intake = carriedIntake;
+    else delete (canInput as IntakeCarryingInput).intake;
+    const givenOwnedRetry = (canInput as IntakeCarryingInput).ownedRetry;
+    if (givenOwnedRetry !== undefined && state.ownedRetry !== null) {
+        throw new IntakeInvariantError(null, "a failed turn's retry continues as new while another turn's retry is still owed");
+    }
+    // Checked whole, and a copy that shares nothing with the state.
+    const ownedRetry = restoreOwnedRetry(givenOwnedRetry !== undefined ? givenOwnedRetry : state.ownedRetry ?? undefined);
+    if (ownedRetry !== null) (canInput as IntakeCarryingInput).ownedRetry = ownedRetry;
+    else delete (canInput as IntakeCarryingInput).ownedRetry;
+    if (state.intakeRetryInvocationId !== null) {
+        if (ownedRetry === null) {
+            throw new IntakeInvariantError(null, `invocation ${state.intakeRetryInvocationId} awaits its turn's retry, but no retry is owed`);
+        }
+        (canInput as IntakeCarryingInput).intakeRetryInvocationId = state.intakeRetryInvocationId;
+    } else {
+        delete (canInput as IntakeCarryingInput).intakeRetryInvocationId;
+    }
+    if (state.intakeArrivalPending) (canInput as IntakeCarryingInput).intakeArrivalPending = true;
+    else delete (canInput as IntakeCarryingInput).intakeArrivalPending;
+    // PR 270 (in place): an owed report of a Workflow agent session's failed turn rides every continue-as-new while owed.
+    if (state.workflowTurnFailure) {
+        (canInput as { workflowTurnFailure?: unknown }).workflowTurnFailure = {
+            clientMessageIds: [...state.workflowTurnFailure.clientMessageIds], cause: state.workflowTurnFailure.cause,
+        };
+    } else {
+        delete (canInput as { workflowTurnFailure?: unknown }).workflowTurnFailure;
+    }
     if (state.activeTimer) {
         const now: number = yield runtime.ctx.utcNow();
         const remainingMs = Math.max(0, state.activeTimer.deadlineMs - now);
@@ -1108,7 +1156,7 @@ function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: Comm
     else delete state.config.workspace;
     // The proxy carries the config into every turn; rebuild it from the
     // changed config rather than rely on sharing one object.
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "workflow-intake-v1");
     state.workspaceRevision = revision;
     // A change of extra folders only (section 4.10) keeps the working
     // directory, so its note names the extra folders alone. A note not yet

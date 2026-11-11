@@ -2,63 +2,14 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import license from "rollup-plugin-license";
 import { fileURLToPath } from "node:url";
-import { readFileSync } from "node:fs";
 
 // Third-party notices for everything the portal's browser bundle includes:
 // each package's name, version, license and full license text, written next
 // to the bundle (dist/THIRD-PARTY-NOTICES.txt), so it ships with the package.
-// Dual-licensed components, and the license PilotSwarm uses them under.
-const ELECTED_LICENSES = { dompurify: "Apache-2.0" };
-
-// Assets that ship in the bundle from the source tree rather than from npm,
-// with the full license text each one requires (the SIL OFL asks for its text
-// to travel with every copy of the fonts).
-const BUNDLED_ASSETS = [
-  {
-    name: "Sora (fonts for the Horizon Dawn theme)",
-    license: "OFL-1.1",
-    source: "https://github.com/sora-xor/sora-font",
-    licenseFile: new URL("./src/assets/horizon-dawn/Sora-OFL.txt", import.meta.url),
-  },
-  {
-    name: "JetBrains Mono (the portal's monospace font)",
-    license: "OFL-1.1",
-    source: "https://github.com/JetBrains/JetBrainsMono",
-    licenseFile: new URL("./src/assets/fonts/jetbrains-mono/JetBrainsMono-OFL.txt", import.meta.url),
-  },
-];
-
-function thirdPartyNotices(dependencies) {
-  const sorted = [...dependencies].sort((a, b) => a.name.localeCompare(b.name) || String(a.version).localeCompare(String(b.version)));
-  const header = [
-    "THIRD-PARTY SOFTWARE NOTICES",
-    "",
-    "The PilotSwarm web portal includes the following third-party software.",
-    "Each component is listed with its license and license text.",
-    "",
-  ];
-  const sections = sorted.map((dependency) => [
-    "=".repeat(78),
-    `${dependency.name} ${dependency.version}`,
-    `License: ${dependency.license || "see below"}`,
-    ELECTED_LICENSES[dependency.name] ? `Used under: ${ELECTED_LICENSES[dependency.name]}` : null,
-    dependency.repository?.url ? `Source: ${dependency.repository.url}` : null,
-    "",
-    String(dependency.licenseText || dependency.noticeText || "(no license text in the package)").trim(),
-    dependency.noticeText && dependency.licenseText ? `\nNOTICE:\n${String(dependency.noticeText).trim()}` : null,
-    "",
-  ].filter((line) => line !== null).join("\n"));
-  const assets = BUNDLED_ASSETS.map((asset) => [
-    "=".repeat(78),
-    asset.name,
-    `License: ${asset.license}`,
-    `Source: ${asset.source}`,
-    "",
-    readFileSync(asset.licenseFile, "utf8").trim(),
-    "",
-  ].join("\n"));
-  return `${header.join("\n")}\n${[...sections, ...assets].join("\n")}\n`;
-}
+// The template, the elected licenses and the components another package
+// bundles inside its own dist live in third-party-notices.js, where a test
+// reads them.
+import { thirdPartyNotices } from "./third-party-notices.js";
 
 const workspacePackageAlias = {
   "pilotswarm/ui-core": fileURLToPath(new URL("../ui/core/src/index.js", import.meta.url)),

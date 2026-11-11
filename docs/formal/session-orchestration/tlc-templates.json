@@ -1,0 +1,235 @@
+{
+  "CarriedGiveBack": {
+    "indent": 4,
+    "constants": [
+      "Fix",
+      "AllowBig",
+      "MaxUpd",
+      "MaxGen",
+      "MaxPrompts",
+      "Fault",
+      "SweepCan",
+      "Chrono",
+      "SkipQueued",
+      "AllowPassCancel",
+      "PassSkip"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "ChildDelivery": {
+    "indent": 2,
+    "constants": [
+      "Updates",
+      "Policy",
+      "ProtectRank",
+      "PreserveFirst",
+      "AttachToPrompt",
+      "RestoreQueuedDigest"
+    ],
+    "lists": "block",
+    "deadlockFirst": true
+  },
+  "DeliveryIdentity": {
+    "indent": 2,
+    "constants": [
+      "Traffic",
+      "Window",
+      "HasClientIds"
+    ],
+    "lists": "block",
+    "deadlockFirst": true
+  },
+  "DigestWindow": {
+    "indent": 4,
+    "constants": [
+      "U",
+      "B",
+      "T",
+      "MaxPrompts",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "ForcedRefresh": {
+    "indent": 4,
+    "constants": [
+      "Fault",
+      "MaxForced"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "IntakeDrain": {
+    "indent": 4,
+    "constants": [
+      "Cap",
+      "Latest83",
+      "Mode",
+      "MaxCan",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "MergeRule": {
+    "indent": 4,
+    "constants": [
+      "N",
+      "Mode",
+      "Unstamped",
+      "Forgeable",
+      "StampAll",
+      "StripClientSender",
+      "Legacy",
+      "HeaderRule",
+      "QuotedHeader"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "OwnedRetry": {
+    "indent": 4,
+    "constants": [
+      "TimerKind",
+      "AllowHandoff",
+      "AllowShutdown",
+      "Mode",
+      "Fault",
+      "AllowExhaust",
+      "Report",
+      "AllowLaterSuccess"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RehydrationNotice": {
+    "indent": 4,
+    "constants": [
+      "P",
+      "FifoCap",
+      "AllowCancel",
+      "AllowLateCancel",
+      "LateGiveBack",
+      "AllowTooLarge",
+      "AllowCompact",
+      "AllowHydFail",
+      "Intake",
+      "Rearm",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RollingDeploy": {
+    "indent": 4,
+    "constants": [
+      "Strategy",
+      "TagEverywhere",
+      "MaxAttempts",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "SnapshotWarmDrop": {
+    "indent": 4,
+    "constants": [
+      "MaxTries",
+      "MaxDropFail",
+      "AllowUnsettled",
+      "Mode",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "TimerGeneration": {
+    "indent": 2,
+    "constants": [
+      "Kind",
+      "OneShot",
+      "ResetSchedule",
+      "CheckGeneration"
+    ],
+    "lists": "block",
+    "deadlockFirst": true
+  },
+  "TimerHandoff": {
+    "indent": 2,
+    "constants": [
+      "TimerKinds",
+      "RestoreOnNoTurn"
+    ],
+    "lists": "block",
+    "deadlockFirst": true
+  },
+  "TimerInterrupt": {
+    "indent": 2,
+    "constants": [
+      "Kind",
+      "Rule",
+      "MaxDelay"
+    ],
+    "lists": "block",
+    "deadlockFirst": true
+  },
+  "TimerStarvation": {
+    "indent": 2,
+    "constants": [
+      "Input",
+      "CountTurnTime",
+      "DueFirst"
+    ],
+    "lists": "block",
+    "deadlockFirst": true
+  },
+  "TurnCommit": {
+    "indent": 2,
+    "constants": [
+      "ReuseThrownKey"
+    ],
+    "lists": "block",
+    "deadlockFirst": true
+  },
+  "TurnLoop": {
+    "indent": 2,
+    "constants": [
+      "InputKinds",
+      "QueueCap",
+      "InitiallyBlocked",
+      "KeepStash",
+      "KeepFIFO"
+    ],
+    "lists": "block",
+    "deadlockFirst": true
+  },
+  "VersionHandoff": {
+    "indent": 4,
+    "constants": [
+      "PendKind",
+      "SourceStamp",
+      "RegistryOK",
+      "NU",
+      "SetModel",
+      "Cap",
+      "FifoTookDigest",
+      "AllowLateCancel",
+      "AllowSweepSetModel",
+      "FieldFault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WorkerShutdown": {
+    "indent": 4,
+    "constants": [
+      "HasDeadline",
+      "LocalSurvivesExit",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}

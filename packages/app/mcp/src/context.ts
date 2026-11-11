@@ -9,6 +9,7 @@ import {
     createWebGraphStore,
     isEnhancedFactStore,
     horizonConfigFromEnv,
+    workflowScriptsOptionFromEnv,
     loadModelProviders,
     ModelProviderRegistry,
     loadSkills,
@@ -85,6 +86,22 @@ interface ServerContextBase {
     /** Agent-package management tool tier ("off" | "read" | "full"). */
     agentMgmt: "off" | "read" | "full";
     /**
+     * Workflow: register update_workflow, a person's workflow command. True for every server; false only for one
+     * created with `workflowCommands: null` (a test).
+     */
+    workflowCommands?: boolean;
+    /**
+     * Workflow test mode (spec 16): whether update_workflow names the test operations. Absent: this process's flag
+     * PILOTSWARM_WORKFLOW_TEST_MODE, off unless it is exactly `on`. A command is decided again where it runs.
+     */
+    workflowTestMode?: boolean;
+    /**
+     * The session this MCP server acts for, when it was started for one (PILOTSWARM_ORIGINATING_SESSION_ID): passed on
+     * with every person's workflow command, so a definition operation from a session inside a Workflow is refused
+     * (review SF-2). Absent: a command passes on only the session its caller names.
+     */
+    originatingSessionId?: string;
+    /**
      * The caller's normalized role (`admin` | `user` | `anonymous` | null),
      * and the deployment's ownership/visibility posture. Web mode reads these
      * from /auth/me and /bootstrap; direct mode is privileged (`admin`) with
@@ -134,6 +151,18 @@ export interface CreateContextOptions {
      * default) adds publish/sync/scope/pin/delete.
      */
     agentMgmt?: "off" | "read" | "full";
+    /**
+     * Workflow: a person's workflow commands. Unset (every deployment): update_workflow is registered, and in direct mode
+     * the management client takes them on the full engine (its default); in web mode the deployment takes them. `null`: no
+     * update_workflow, and in direct mode no person's commands (a test).
+     */
+    workflowCommands?: { testMode?: boolean } | null;
+}
+
+/** The session an MCP server acts for (PILOTSWARM_ORIGINATING_SESSION_ID, trimmed), or null when it was not started for one. */
+export function originatingSessionIdFromEnv(env: Record<string, string | undefined> = process.env): string | null {
+    const value = typeof env.PILOTSWARM_ORIGINATING_SESSION_ID === "string" ? env.PILOTSWARM_ORIGINATING_SESSION_ID.trim() : "";
+    return value && value.length <= 256 ? value : null;
 }
 
 export async function createContext(opts: CreateContextOptions): Promise<ServerContext> {
@@ -224,7 +253,8 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         ctxRole = "admin";
         client = new PilotSwarmClient({ store: opts.store });
         await client.start();
-        mgmt = new PilotSwarmManagementClient({ store: opts.store });
+        mgmt = new PilotSwarmManagementClient({ store: opts.store, ...(opts.workflowCommands !== undefined ? { workflowCommands: opts.workflowCommands } : {}),
+            ...workflowScriptsOptionFromEnv() });
         await mgmt.start();
 
         // Enhanced facts + graph provisioning from HORIZON_* env — the same
@@ -340,6 +370,9 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         })(),
         role: ctxRole,
         authz: ctxAuthz,
+        workflowCommands: opts.workflowCommands !== null,
+        // The session this server acts for, when it was started for one (review SF-2).
+        ...(originatingSessionIdFromEnv() ? { originatingSessionId: originatingSessionIdFromEnv()! } : {}),
         webMode: Boolean(opts.apiUrl),
         models,
         skills,

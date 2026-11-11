@@ -22,6 +22,7 @@ import {
     normalizeAgentName,
     workspaceFilesConfigFromEnv,
     canvasCommandsConfigFromEnv,
+    workflowScriptsOptionFromEnv,
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
@@ -517,7 +518,7 @@ function resolveUserPrincipalFor(transport, principal) {
 }
 
 export class NodeSdkTransport {
-    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
+    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands } = {}) {
         this.store = store;
         this.mode = mode;
         this.useManagedIdentity = useManagedIdentity;
@@ -553,6 +554,10 @@ export class NodeSdkTransport {
             workspaceFiles: workspaceFilesConfigFromEnv(),
             // canvas-ws commands: off unless PORTAL_CANVAS_COMMANDS_RUNNER is set.
             canvasCommands: canvasCommandsConfigFromEnv(),
+            // Workflow: a person's workflow commands; unset, the management client's default (taken, on the full engine).
+            ...(workflowCommands !== undefined ? { workflowCommands } : {}),
+            // Stage 2.0: whether the workers run script nodes, when this process says (PILOTSWARM_WORKFLOW_SCRIPTS).
+            ...workflowScriptsOptionFromEnv(),
         });
         this.sessionHandles = new Map();
         this.workers = [];
@@ -1072,6 +1077,11 @@ export class NodeSdkTransport {
         return this.mgmt.getSessionAccess(sessionId, viewer);
     }
 
+    /** What a person may send to a session by its workflow lineage (workflow agent states refuse human input). */
+    async getWorkflowInputPolicy(sessionId) {
+        return typeof this.mgmt.getWorkflowInputPolicy === "function" ? this.mgmt.getWorkflowInputPolicy(sessionId) : null;
+    }
+
     async setSessionVisibility(sessionId, visibility) {
         return this.mgmt.setSessionVisibility(sessionId, visibility);
     }
@@ -1114,6 +1124,123 @@ export class NodeSdkTransport {
 
     async getSessionWorkspace(sessionId) {
         return this.mgmt.getSessionWorkspace(sessionId);
+    }
+
+    /** Workflow: the read-only view of a workflow session (readWorkflow). Authorization is the caller's (the portal gates session:read). */
+    async readWorkflow(sessionId, options = {}) {
+        return this.mgmt.readWorkflow(sessionId, options);
+    }
+
+    /** Stage 2.1: a session's Workflow Definitions (list, read; a person's save, start and delete with its principal). */
+    async listSessionWorkflowDefinitions(sessionId, options = {}) {
+        return this.mgmt.listSessionWorkflowDefinitions(sessionId, options);
+    }
+
+    async readSessionWorkflowDefinition(sessionId, ref = {}) {
+        return this.mgmt.readSessionWorkflowDefinition(sessionId, ref);
+    }
+
+    _definitionPrincipal(options) {
+        return Object.prototype.hasOwnProperty.call(options ?? {}, "principal") ? options.principal
+            : this.currentUser?.provider && this.currentUser?.subject
+                ? { provider: this.currentUser.provider, subject: this.currentUser.subject, displayName: this.currentUser.displayName ?? null } : null;
+    }
+
+    async saveSessionWorkflowDefinition(sessionId, request, options = {}) {
+        return this.mgmt.saveSessionWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
+    }
+
+    async startSessionWorkflowDefinition(sessionId, request, options = {}) {
+        return this.mgmt.startSessionWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
+    }
+
+    async deleteSessionWorkflowDefinition(sessionId, request, options = {}) {
+        return this.mgmt.deleteSessionWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
+    }
+
+    /** Stage 2.3: a person's Make a copy of a package's locked definition, and taking a package's newer version. */
+    async copySessionWorkflowDefinition(sessionId, request, options = {}) {
+        return this.mgmt.copySessionWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
+    }
+
+    async updateSessionWorkflowPackage(sessionId, request, options = {}) {
+        return this.mgmt.updateSessionWorkflowPackage(sessionId, request, { principal: this._definitionPrincipal(options) });
+    }
+
+    /** Stage 2.3 (P1): the package Workflow Definitions `viewer` can make a session for (the picker's Workflows group). */
+    async listCreatableWorkflows(viewer = null) {
+        const who = viewer ?? (this.currentUser?.provider && this.currentUser?.subject ? this.currentUser : null);
+        return this.mgmt.listCreatableWorkflows(who ? { provider: who.provider, subject: who.subject } : null);
+    }
+
+    /**
+     * Stage 2.3 (P2, P3, D8): a session made for a package's Workflow Definition: a session with the coordinating
+     * instructions (its card and how to run it), the definition attached and locked at the package's version, its title
+     * naming it, and a first message (a system kickoff) that asks the session to greet the person and ask for the inputs it
+     * needs. The model is the one asked for, else the deployment's default (the picker offers the card's suggestion).
+     */
+    async createSessionForWorkflow(ref, { model, reasoningEffort, contextTier, owner, groupId, visibility } = {}) {
+        const viewer = owner ?? (this.currentUser?.provider && this.currentUser?.subject ? this.currentUser : null);
+        const principal = viewer ? { provider: viewer.provider, subject: viewer.subject, displayName: viewer.displayName ?? viewer.email ?? null } : null;
+        const prepared = await this.mgmt.prepareSessionForWorkflow(ref, principal);
+        const session = await this.client.createSession({
+            ...(model ? { model } : {}),
+            ...(reasoningEffort ? { reasoningEffort } : {}),
+            ...(contextTier ? { contextTier } : {}),
+            systemMessage: prepared.systemMessage,
+            ...(owner ? { owner } : {}),
+            ...(groupId ? { groupId } : {}),
+            ...(visibility ? { visibility } : {}),
+        });
+        this.sessionHandles.set(session.sessionId, session);
+        // Stage 2 review S2SF-F3: the attach takes exactly the package version the instructions were written from. When that
+        // version is no longer the active one (or the package is gone), nothing is attached and the session, which has had no
+        // turn, is deleted: no session is left whose instructions describe another version than the one it would run.
+        try {
+            await this.mgmt.attachSessionWorkflowPackage(session.sessionId, { ref: prepared.ref, operationId: `session-for-workflow:${session.sessionId}`,
+                coordinating: true, title: prepared.title, packageId: prepared.packageId, sha256: prepared.sha256 }, { principal });
+        } catch (error) {
+            this.sessionHandles.delete(session.sessionId);
+            await this.mgmt.deleteSession(session.sessionId).catch(() => {});
+            throw error;
+        }
+        await session.send(prepared.kickoff, {
+            bootstrap: true,
+            sender: { kind: "system", display: `${prepared.ref} kickoff`, origin: "api" },
+        });
+        const created = await this.mgmt.getSession(session.sessionId).catch(() => null);
+        return {
+            sessionId: session.sessionId,
+            model: created?.model || null,
+            reasoningEffort: created?.reasoningEffort || reasoningEffort || undefined,
+            workflowRef: prepared.ref,
+            title: prepared.title,
+        };
+    }
+
+    /**
+     * Workflow: a person's command to a workflow session (updateWorkflow; taken unless this transport was created with
+     * `workflowCommands: null`).
+     * Authorization is the caller's (the portal gates session:manage);
+     * `options.principal` is the signed-in caller, recorded as the actor. In
+     * the TUI's direct mode it is the TUI's own user, when one is known.
+     */
+    async updateWorkflow(sessionId, command, options = {}) {
+        // The portal always names the caller (null: no signed-in user); the TUI names none, and its own user is the caller.
+        const principal = Object.prototype.hasOwnProperty.call(options ?? {}, "principal") ? options.principal
+            : this.currentUser?.provider && this.currentUser?.subject ? { provider: this.currentUser.provider, subject: this.currentUser.subject } : null;
+        // The session the command comes from, when the portal passes one on (review SF-2).
+        return this.mgmt.updateWorkflow(sessionId, command, { principal,
+            ...(options?.originatingSessionId !== undefined ? { originatingSessionId: options.originatingSessionId } : {}) });
+    }
+
+    /**
+     * Workflow support as this host takes it now (design 04, D11): what the
+     * portal's bootstrap advertises as `workflows`, from the management
+     * client's configuration (getWorkflowCapabilities). It changes nothing.
+     */
+    async getWorkflowCapabilities() {
+        return this.mgmt.getWorkflowCapabilities();
     }
 
     async setSessionWorkspace(sessionId, input = {}, options = {}) {
@@ -1492,9 +1619,10 @@ export class NodeSdkTransport {
         await this.mgmt.sendAnswer(sessionId, answer, options);
     }
 
-    async sendSessionEvent(sessionId, eventName, data) {
+    async sendSessionEvent(sessionId, eventName, data, options = {}) {
         const sessionHandle = await this.getSessionHandle(sessionId);
-        await sessionHandle.sendEvent(eventName, data);
+        // F-FU9-2: the event's own sender is dropped; only the server-stamped one (options.sender) is kept.
+        await sessionHandle.sendEvent(eventName, data, options?.sender ? { sender: options.sender } : undefined);
     }
 
     async getSessionStatus(sessionId) {

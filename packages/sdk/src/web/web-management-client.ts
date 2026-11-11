@@ -7,7 +7,8 @@ import {
 import { createManagementOps, type ManagementOps } from "./generated-op-methods.js";
 import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "../feature-store.js";
 import type { MotdCreateInput, MotdViewer } from "../motd-store.js";
-import type { StopTurnOptions, StopTurnResult, SteerTurnOptions, SteerTurnResult } from "../types.js";
+import type { StopTurnOptions, StopTurnResult, SteerTurnOptions, SteerTurnResult, WorkflowReadOptions } from "../types.js";
+import type { WorkflowInputCapabilities } from "../workflow/input-policy.js";
 
 const WAIT_SLICE_MS = 25_000;
 
@@ -335,6 +336,90 @@ export class WebPilotSwarmManagementClient {
     /** Session workspaces: the session's workspace view. */
     async getSessionWorkspace(sessionId: string): Promise<any> {
         return this._api.call("getSessionWorkspace", { sessionId });
+    }
+
+    /**
+     * Workflow: the read-only view of a workflow session (readWorkflow, session:read), a section's next page
+     * (`cursor`, a nextCursor a read returned) or one execution's whole value (`executionId`); `limit` sets the rows per
+     * page. The options are the operation's declared parameters: the request builder leaves out an absent (or null) one,
+     * and any other value is sent for the server to check. The session id is always the argument's.
+     */
+    async readWorkflow(sessionId: string, options: WorkflowReadOptions = {}): Promise<any> {
+        return this._api.call("readWorkflow", { ...options, sessionId });
+    }
+
+    /** Stage 2.1: a session's Workflow Definitions (listSessionWorkflowDefinitions, session:read). */
+    async listSessionWorkflowDefinitions(ownerSessionId: string, options: { includeDeleted?: boolean } = {}): Promise<any> {
+        return this._api.call("listSessionWorkflowDefinitions", { sessionId: ownerSessionId, ...(options.includeDeleted ? { includeDeleted: true } : {}) });
+    }
+
+    /** Stage 2.1: one of a session's Workflow Definitions with a revision's YAML (readSessionWorkflowDefinition, session:read). */
+    async readSessionWorkflowDefinition(ownerSessionId: string, ref: { definitionId?: string | null; name?: string | null; revision?: number | null }): Promise<any> {
+        return this._api.call("readSessionWorkflowDefinition", { sessionId: ownerSessionId, ...(ref.definitionId ? { definitionId: ref.definitionId } : {}),
+            ...(ref.name ? { name: ref.name } : {}), ...(ref.revision != null ? { revision: ref.revision } : {}) });
+    }
+
+    /** Stage 2.1: a person saves a revision (saveSessionWorkflowDefinition, session:manage); the server stamps the caller. */
+    async saveSessionWorkflowDefinition(ownerSessionId: string, request: { name: string; yaml: string; definitionId?: string | null; expectedRevision?: number | null;
+        operationId: string }, _options: Record<string, unknown> = {}): Promise<any> {
+        return this._api.call("saveSessionWorkflowDefinition", { sessionId: ownerSessionId, ...request });
+    }
+
+    /** Stage 2.1: a person starts a Workflow from a revision (startSessionWorkflowDefinition, session:manage). */
+    async startSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; revision?: number | null; runAgainOf?: string | null; agentModels?: unknown;
+        inputs?: unknown; vars?: Record<string, unknown> | null; notifyParent?: boolean; operationId: string }, _options: Record<string, unknown> = {}): Promise<any> {
+        return this._api.call("startSessionWorkflowDefinition", { sessionId: ownerSessionId, ...request });
+    }
+
+    /** Stage 2.1: a person deletes a definition (deleteSessionWorkflowDefinition, session:manage). */
+    async deleteSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; operationId: string }, _options: Record<string, unknown> = {}): Promise<any> {
+        return this._api.call("deleteSessionWorkflowDefinition", { sessionId: ownerSessionId, ...request });
+    }
+
+    /** Stage 2.3: the package Workflow Definitions the caller can make a session for (listCreatableWorkflows); the server scopes them. */
+    async listCreatableWorkflows(_viewer?: unknown): Promise<any> {
+        return this._api.call("listCreatableWorkflows", {});
+    }
+
+    /** Stage 2.3: a person attaches a package's newer version for the next Workflow (updateSessionWorkflowPackage, session:manage). */
+    async updateSessionWorkflowPackage(ownerSessionId: string, request: { definitionId: string; operationId: string }, _options: Record<string, unknown> = {}): Promise<any> {
+        return this._api.call("updateSessionWorkflowPackage", { sessionId: ownerSessionId, ...request });
+    }
+
+    /** Stage 2.3: a person's Make a copy of a package's definition (copySessionWorkflowDefinition, session:manage). */
+    async copySessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; revision?: number | null; operationId: string },
+        _options: Record<string, unknown> = {}): Promise<any> {
+        return this._api.call("copySessionWorkflowDefinition", { sessionId: ownerSessionId, ...request });
+    }
+
+    /**
+     * Workflow: a person's command to a workflow session (updateWorkflow,
+     * session:manage; taken by default: only a deployment whose management
+     * client was created with `workflowCommands: null` answers 501
+     * WORKFLOW_COMMANDS_UNAVAILABLE). The server stamps
+     * the caller as the actor; `options` is accepted for the direct client's
+     * signature and not sent.
+     */
+    async updateWorkflow(sessionId: string, command: Record<string, unknown>, options: { originatingSessionId?: string | null } = {}): Promise<any> {
+        // The signed-in caller is the actor; the session the command comes from, when given, is passed on (review SF-2).
+        return this._api.call("updateWorkflow", { sessionId, command,
+            ...(typeof options?.originatingSessionId === "string" ? { originatingSessionId: options.originatingSessionId } : {}) });
+    }
+
+    /**
+     * Workflow support as the server advertises it in its bootstrap (design
+     * 04, D11; the direct client's getWorkflowCapabilities): its `workflows`
+     * field, or null from a server that advertises none (an older server: no
+     * field, or null). A bootstrap that cannot be read rejects as it failed,
+     * and a `workflows` that is not an object rejects
+     * WORKFLOW_CAPABILITIES_MALFORMED: neither is read as an older server.
+     */
+    async getWorkflowCapabilities(): Promise<Record<string, unknown> | null> {
+        const workflows = (await this._api.getBootstrap())?.workflows;
+        if (workflows === undefined || workflows === null) return null;
+        if (typeof workflows === "object" && !Array.isArray(workflows)) return workflows;
+        throw Object.assign(new Error(`The server's bootstrap advertises workflows as ${Array.isArray(workflows) ? "a list" : `a ${typeof workflows}`}, `
+            + "not an object, so its workflow support is unknown."), { code: "WORKFLOW_CAPABILITIES_MALFORMED" });
     }
 
     /** Session workspaces: set or clear the workspace (external flow). */
@@ -739,6 +824,29 @@ export class WebPilotSwarmManagementClient {
         return this.ops.getSessionAccess({ sessionId });
     }
 
+    /**
+     * What a person may send to a session, by its workflow lineage (design 03
+     * human-input denial;): read
+     * from the session's access route, which reports canSendPrompt, canAnswer
+     * and canSteer false, with the workflow and its controlling agent, for a
+     * session in a workflow agent state's subtree (the portal runtime asks the
+     * SDK). Every other session takes all three, as before. The refusal
+     * itself is the SDK's, whatever a client shows.
+     */
+    async getWorkflowInputPolicy(sessionId: string): Promise<WorkflowInputCapabilities> {
+        const access = await this.ops.getSessionAccess({ sessionId }) as unknown as Record<string, any> | null;
+        if (access?.canSendPrompt !== false) {
+            return { canSendPrompt: true, canAnswer: true, canSteer: true, reason: null, workflowSessionId: null, controllingSessionId: null };
+        }
+        const workflowInput = access.workflowInput ?? {};
+        return {
+            canSendPrompt: false, canAnswer: access.canAnswer === true, canSteer: access.canSteer === true,
+            reason: typeof workflowInput.reason === "string" ? workflowInput.reason : null,
+            workflowSessionId: typeof workflowInput.workflowSessionId === "string" ? workflowInput.workflowSessionId : null,
+            controllingSessionId: typeof workflowInput.controllingSessionId === "string" ? workflowInput.controllingSessionId : null,
+        };
+    }
+
     async setSessionVisibility(sessionId: string, visibility: string): Promise<void> {
         await this.ops.setSessionVisibility({ sessionId, visibility });
     }
@@ -959,6 +1067,14 @@ export class WebPilotSwarmManagementClient {
 
     getModelCredentialStatus(): never {
         throw webModeUnsupported("getModelCredentialStatus", "credential checks happen server-side");
+    }
+
+    prepareSessionForWorkflow(): never {
+        throw webModeUnsupported("prepareSessionForWorkflow", "createSessionForWorkflow makes a package Workflow's session server-side");
+    }
+
+    attachSessionWorkflowPackage(): never {
+        throw webModeUnsupported("attachSessionWorkflowPackage", "createSessionForWorkflow attaches the definition server-side; a session attaches one when it starts it");
     }
 }
 
