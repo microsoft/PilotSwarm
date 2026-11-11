@@ -153,7 +153,7 @@ PilotSwarm metrics, rather than accepting a broad prefix.
 
 This example requires the Contrib distribution, which contains
 `filterprocessor`; the core Collector distribution does not. It is pinned to
-`otel/opentelemetry-collector-contrib:0.146.0`.
+`otel/opentelemetry-collector-contrib:0.145.0`.
 
 ```yaml
 receivers:
