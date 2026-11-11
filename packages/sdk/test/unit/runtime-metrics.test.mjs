@@ -51,6 +51,13 @@ test("histograms are explicit and measure monotonic elapsed seconds", () => {
     assert.deepEqual(records.filter(r => r.name.endsWith(".duration")).map(r => r.value), [2.5, 2.5]);
 });
 
+test("histogram booleans are case-insensitive and invalid values fall back to false", () => {
+    for (const value of ["TRUE", "True", "false", "anything"]) {
+        const { instruments } = fixture({ PILOTSWARM_OTEL_HISTOGRAMS: value });
+        assert.equal(instruments.some(name => name.endsWith(".duration")), value.toLowerCase() === "true");
+    }
+});
+
 test("disabled SDK or metrics exporter records nothing even with a real injected meter", () => {
     for (const env of [{ OTEL_SDK_DISABLED: "true" }, { OTEL_METRICS_EXPORTER: "none" }]) {
         const { metric, records } = fixture(env);

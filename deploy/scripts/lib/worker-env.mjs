@@ -27,8 +27,12 @@ export const WORKER_ENV_DEFAULTS = Object.freeze({
 });
 
 export function workerTelemetryOmittedKeys(env) {
-  return ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_RESOURCE_ATTRIBUTES"]
-    .filter(key => !env[key]);
+  const endpoint = String(env?.OTEL_EXPORTER_OTLP_ENDPOINT ?? "").trim();
+  if (!endpoint) {
+    return Object.keys(WORKER_ENV_DEFAULTS)
+      .filter(key => key.startsWith("OTEL_") || key.startsWith("PILOTSWARM_OTEL_"));
+  }
+  return ["OTEL_RESOURCE_ATTRIBUTES"].filter(key => !env[key]);
 }
 
 export function nativeSubagentsSetting(env) {

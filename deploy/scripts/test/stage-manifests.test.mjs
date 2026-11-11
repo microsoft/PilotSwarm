@@ -461,10 +461,20 @@ test("stageManifests(worker): telemetry is omitted when unset and configured onl
     });
     const root = stageManifests({ service: "worker", envName: "testenv", env, stagingDir });
     const text = readFileSync(join(root, "overlays", "default", ".env"), "utf8");
-    if (endpoint) assert.match(text, /^OTEL_EXPORTER_OTLP_ENDPOINT=http:\/\/collector\.example:4318$/m);
-    else assert.doesNotMatch(text, /^OTEL_EXPORTER_OTLP_ENDPOINT=/m);
-    assert.match(text, /^OTEL_TRACES_EXPORTER=none$/m);
-    assert.match(text, /^PILOTSWARM_OTEL_HISTOGRAMS=false$/m);
+    if (endpoint) {
+      assert.match(text, /^OTEL_EXPORTER_OTLP_ENDPOINT=http:\/\/collector\.example:4318$/m);
+      assert.match(text, /^OTEL_SDK_DISABLED=false$/m);
+      assert.match(text, /^OTEL_METRICS_EXPORTER=otlp$/m);
+      assert.match(text, /^OTEL_TRACES_EXPORTER=none$/m);
+      assert.match(text, /^OTEL_LOGS_EXPORTER=none$/m);
+      assert.match(text, /^OTEL_SERVICE_NAME=pilotswarm-worker$/m);
+      assert.match(text, /^OTEL_METRIC_EXPORT_INTERVAL=30000$/m);
+      assert.match(text, /^OTEL_METRIC_EXPORT_TIMEOUT=5000$/m);
+      assert.match(text, /^OTEL_EXPORTER_OTLP_TIMEOUT=5000$/m);
+      assert.match(text, /^PILOTSWARM_OTEL_HISTOGRAMS=false$/m);
+    } else {
+      assert.doesNotMatch(text, /^(?:OTEL_|PILOTSWARM_OTEL_)/m);
+    }
     assert.ok(!allFileText(root).includes("secret-example-not-for-configmaps"));
   }
 });

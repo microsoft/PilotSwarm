@@ -52,9 +52,11 @@ one the receiver supports. Leave the endpoint unset, or set
 model-client, filesystem, or resource collectors are installed.
 
 Use only the shared `OTEL_EXPORTER_OTLP_ENDPOINT` and
-`OTEL_EXPORTER_OTLP_HEADERS` routing settings. Signal-specific endpoint,
-header, certificate, client-certificate, and client-key settings are rejected
-at startup so credentials cannot be sent to the wrong receiver.
+`OTEL_EXPORTER_OTLP_HEADERS` routing settings. Invalid endpoints, malformed
+headers, and signal-specific endpoint, header, certificate, client-certificate,
+or client-key settings disable telemetry with an `[otel]` warning; they never
+stop the worker or send partial credentials. Invalid enum, boolean, and numeric
+settings warn and use the documented default instead.
 
 `PILOTSWARM_OTEL_HISTOGRAMS=false` disables only the two PilotSwarm duration
 histograms. It does not disable instruments registered by other libraries that
@@ -73,7 +75,8 @@ await shutdownTelemetry();
 ```
 
 Handle `SIGINT` and `SIGTERM` once in the application and share its drain
-promise. Do not add signal handlers in a library bootstrap. Static ESM imports
+promise. Telemetry flush failures are logged and do not change a successful
+worker drain into a failed exit. Do not add signal handlers in a library bootstrap. Static ESM imports
 do not guarantee that a telemetry provider is registered before another module
 gets a meter; use `--import` as shown, or dynamically import the application
 only after importing `pilotswarm-sdk/telemetry`. The internal metric hook is

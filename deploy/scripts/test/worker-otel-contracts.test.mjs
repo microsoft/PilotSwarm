@@ -15,9 +15,10 @@ test("worker and starter images ship the SDK telemetry bootstrap and dependencie
     assert.match(worker, /COPY --from=build \/app\/node_modules\/ \.\/node_modules\//);
     const pkg = JSON.parse(read("packages/sdk/package.json"));
     for (const dependency of [
-        "@opentelemetry/api", "@opentelemetry/sdk-node", "@opentelemetry/resources",
+        "@opentelemetry/api", "@opentelemetry/sdk-metrics", "@opentelemetry/sdk-trace-base", "@opentelemetry/resources",
         "@opentelemetry/exporter-metrics-otlp-http", "@opentelemetry/exporter-trace-otlp-http",
     ]) assert.ok(pkg.dependencies[dependency], `${dependency} must survive pruning`);
+    assert.equal(pkg.dependencies["@opentelemetry/sdk-node"], undefined);
 });
 
 test("every production worker launch preloads bootstrap; portal launch does not", () => {
@@ -29,18 +30,24 @@ test("every production worker launch preloads bootstrap; portal launch does not"
     assert.doesNotMatch(read("deploy/bin/start-portal.sh"), /telemetry|NODE_OPTIONS.*--import/);
 });
 
-test("shutdown drains before flush and flushes before exit", () => {
+test("shutdown drains before the best-effort telemetry flush and exits successfully", () => {
     const source = read("packages/sdk/examples/worker.js");
     const shutdown = source.slice(source.indexOf("async function drainAndExit"));
     assert.ok(shutdown.indexOf("await worker.gracefulShutdown()") < shutdown.indexOf("await shutdownTelemetry()"));
     assert.ok(shutdown.indexOf("await shutdownTelemetry()") < shutdown.indexOf("process.exit(0)"));
+    assert.doesNotMatch(shutdown, /process\.exit\(1\)/);
 });
 
 test("deployment defaults stay opt-in and credentials never enter the ConfigMap", () => {
     assert.equal(WORKER_ENV_DEFAULTS.OTEL_EXPORTER_OTLP_ENDPOINT, "");
     assert.equal(WORKER_ENV_DEFAULTS.OTEL_TRACES_EXPORTER, "none");
     assert.equal(WORKER_ENV_DEFAULTS.PILOTSWARM_OTEL_HISTOGRAMS, "false");
-    assert.deepEqual(workerTelemetryOmittedKeys({}), ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_RESOURCE_ATTRIBUTES"]);
+    assert.deepEqual(workerTelemetryOmittedKeys({}), [
+        "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_SDK_DISABLED", "OTEL_METRICS_EXPORTER",
+        "OTEL_TRACES_EXPORTER", "OTEL_LOGS_EXPORTER", "OTEL_SERVICE_NAME",
+        "OTEL_RESOURCE_ATTRIBUTES", "OTEL_METRIC_EXPORT_INTERVAL", "OTEL_METRIC_EXPORT_TIMEOUT",
+        "OTEL_EXPORTER_OTLP_TIMEOUT", "PILOTSWARM_OTEL_HISTOGRAMS",
+    ]);
     assert.deepEqual(workerTelemetryOmittedKeys({ OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector.example:4318", OTEL_RESOURCE_ATTRIBUTES: "deployment.environment.name=test" }), []);
     const env = read("deploy/providers/azure/gitops/worker/overlays/default/.env");
     assert.doesNotMatch(env, /^OTEL_EXPORTER_OTLP_HEADERS=/m);

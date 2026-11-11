@@ -26,19 +26,21 @@ is enabled. The portal does not preload worker telemetry.
 | `PILOTSWARM_OTEL_HISTOGRAMS` | `false` | `true` or `false`. Enables only PilotSwarm's two duration histograms when explicitly requested; it does not disable third-party instrumentation in the process. |
 
 This bootstrap uses only a shared OTLP HTTP base URL and headers for the
-selected signals. Signal-specific endpoint, header, certificate,
-client-certificate, and client-key settings are rejected at startup. OTLP gRPC
-and automatic instrumentation configuration are not supported here.
+selected signals. Invalid endpoints (including non-HTTP(S), userinfo, query,
+or fragment), malformed headers, and signal-specific endpoint, header,
+certificate, client-certificate, or client-key settings disable telemetry with
+one sanitized `[otel]` warning per setting. OTLP gRPC and automatic
+instrumentation configuration are not supported here.
 
-When an endpoint is configured, unknown signal values, invalid URLs, invalid
-headers, invalid intervals, or invalid histogram settings fail worker startup.
-Diagnostics do not print endpoints, header values, or exporter error payloads.
-Export failures are reported with a generic diagnostic; OTLP is not a durable
-queue. A collector outage can lose telemetry, without making a turn fail.
-Graceful shutdown drains the worker first, then awaits exporter shutdown and
-its final metric export before exit. All enabled providers settle before a
-failure is reported. Signal handlers log a sanitized shutdown failure and exit
-with status 1 instead of leaving an unhandled rejection. A hard kill can lose
+Unknown metrics/traces enums, unsupported logs settings, invalid booleans, and
+invalid or out-of-range numeric settings warn and use their documented defaults
+(a metric timeout above its interval is clamped). Diagnostics do not print
+endpoints, header values, or exporter error payloads. Invalid telemetry
+configuration and exporter failures never stop the worker. OTLP is not a
+durable queue, so a collector outage can lose telemetry without making a turn
+fail. Graceful shutdown drains the worker first, then awaits all exporter
+shutdowns and final metric exports; failures log a sanitized warning and still
+allow a successful drained worker to exit with status 0. A hard kill can lose
 buffered metrics.
 
 **Trace privacy:** `OTEL_TRACES_EXPORTER=otlp` exports existing manual SDK spans.
@@ -112,8 +114,10 @@ PILOTSWARM_OTEL_HISTOGRAMS=false
 
 For the existing deployment generator, put non-secret settings in the local
 deployment `.env` map. The worker overlay stages them into `worker-env`, already
-referenced by the Deployment's `envFrom`. An empty endpoint/resource attribute
-is omitted rather than left as a placeholder. Do not add authentication
+referenced by the Deployment's `envFrom`. An empty endpoint omits every telemetry setting from the worker ConfigMap,
+preserving the pre-telemetry worker environment. With an endpoint, the
+metrics-only defaults are staged; an empty resource attribute is omitted rather
+than left as a placeholder. Do not add authentication
 headers to a ConfigMap, repository, image, or deployment artifact. Add them
 through an operator-managed Secret, for example a worker-only patch:
 

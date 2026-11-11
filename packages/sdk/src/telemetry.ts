@@ -16,7 +16,8 @@ export const telemetryEnabled = Boolean(config && (config.metrics === "otlp" || 
 
 if (config && telemetryEnabled) {
     const { diag, DiagLogLevel, metrics, trace } = await import("@opentelemetry/api");
-    const { metrics: sdkMetrics, tracing: sdkTracing } = await import("@opentelemetry/sdk-node");
+    const { MeterProvider, PeriodicExportingMetricReader } = await import("@opentelemetry/sdk-metrics");
+    const { BasicTracerProvider, BatchSpanProcessor } = await import("@opentelemetry/sdk-trace-base");
     const { envDetector, resourceFromAttributes } = await import("@opentelemetry/resources");
     // Exporter diagnostics can contain URLs and headers. Never print their arguments.
     diag.setLogger({
@@ -36,9 +37,9 @@ if (config && telemetryEnabled) {
 
     if (config.metrics === "otlp") {
         const { OTLPMetricExporter } = await import("@opentelemetry/exporter-metrics-otlp-http");
-        const provider = new sdkMetrics.MeterProvider({
+        const provider = new MeterProvider({
             resource,
-            readers: [new sdkMetrics.PeriodicExportingMetricReader({
+            readers: [new PeriodicExportingMetricReader({
                 exporter: new OTLPMetricExporter({
                     url: `${config.endpoint}/v1/metrics`,
                     headers: config.headers,
@@ -53,9 +54,9 @@ if (config && telemetryEnabled) {
     }
     if (config.traces === "otlp") {
         const { OTLPTraceExporter } = await import("@opentelemetry/exporter-trace-otlp-http");
-        const provider = new sdkTracing.BasicTracerProvider({
+        const provider = new BasicTracerProvider({
             resource,
-            spanProcessors: [new sdkTracing.BatchSpanProcessor(new OTLPTraceExporter({
+            spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({
                 url: `${config.endpoint}/v1/traces`,
                 headers: config.headers,
                 timeoutMillis: config.timeout,
@@ -66,10 +67,7 @@ if (config && telemetryEnabled) {
     }
     console.info("[otel] Worker telemetry enabled.");
     process.once("beforeExit", () => {
-        void shutdownTelemetry().catch(() => {
-            console.error("[otel] Telemetry shutdown failed.");
-            process.exitCode = 1;
-        });
+        void shutdownTelemetry();
     });
 }
 

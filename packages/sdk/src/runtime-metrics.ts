@@ -1,6 +1,7 @@
 import { metrics, type Meter } from "@opentelemetry/api";
 import { performance } from "node:perf_hooks";
 import type { TurnResult } from "./types.js";
+import { otelBoolean } from "./telemetry-config.js";
 
 type Result = "completed" | "error" | "cancelled" | "stopped" | "yielded";
 type LifecycleResult = "completed" | "error" | "lossy_handoff" | "checkpoint_fallback" | "superseded" | "cancelled";
@@ -24,10 +25,11 @@ export function createRuntimeMetrics(
     const tokens = meter.createCounter("pilotswarm.tokens");
     const tools = meter.createCounter("pilotswarm.tool.calls");
     const lifecycle = meter.createCounter("pilotswarm.lifecycle.operations");
-    const histograms = env.PILOTSWARM_OTEL_HISTOGRAMS === "true";
+    const histograms = otelBoolean(env, "PILOTSWARM_OTEL_HISTOGRAMS");
     const turnDuration = histograms ? meter.createHistogram("pilotswarm.turn.duration", { unit: "s" }) : null;
     const lifecycleDuration = histograms ? meter.createHistogram("pilotswarm.lifecycle.duration", { unit: "s" }) : null;
-    const enabled = () => env.OTEL_SDK_DISABLED?.trim().toLowerCase() !== "true" && env.OTEL_METRICS_EXPORTER !== "none";
+    const enabled = () => env.OTEL_SDK_DISABLED?.trim().toLowerCase() !== "true"
+        && env.OTEL_METRICS_EXPORTER?.trim().toLowerCase() !== "none";
     return {
         startTurn() {
             const started = now();
