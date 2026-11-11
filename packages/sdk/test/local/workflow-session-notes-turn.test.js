@@ -54,8 +54,9 @@ describe("a person's save note reaches the session's next turn once (E2-4, F3)",
             expect(prompts[2]).not.toContain(NOTE);
         });
     });
-    // Review AS-07: a notes read that fails is no trigger. The turn runs off (no Workflow trigger reaches the session manager,
-    // which then reads ownership as usual); the next turn reads the notes again and sees the note.
+    // Review AS-07: a notes read that fails is no trigger: no Workflow trigger reaches the session manager, which decides
+    // the turn's mode from its own reads (here a fake; a session that owns a definition may still turn them on through its
+    // ownership read, which is not this case). The next turn reads the notes again and sees the note.
     it("AS-07: a notes read that fails leaves the turn without a Workflow trigger; the next turn reads the note", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
         const prompts = [];
         const script = async (_call, prompt) => {

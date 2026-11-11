@@ -24,11 +24,13 @@
  *
  * Consent (owner 2026-11-11, review of aeb684f5 test item 4): only turning Workflows on needs the user's agreement. On a
  * worker with script nodes on:
- * - a new session (Workflows off) asked for a repeated check that suits a Workflow, without asking for one: it does not
- *   turn Workflows on and calls no Workflow tool, and its reply names a Workflow (its suggestion); told "no", it still does
- *   not turn them on; told "yes", it turns them on, once;
- * - a new session with Workflows already on, asked the same: it uses a Workflow (saves one with workflow_definition)
- *   without turning them on again.
+ * - a new session (Workflows off) asked for a repeated check that suits a Workflow, without asking for one: its turn
+ *   ends with a question asking the user's agreement to use a Workflow (a question, not a mention: the consent oracle,
+ *   checked with its own examples below), it does not turn Workflows on and calls no Workflow tool; told "no", it still
+ *   does not turn them on, calls no Workflow tool and saves or starts nothing; told "yes", it turns them on, once. Each
+ *   phase must end (settle) before the next message;
+ * - a new session with Workflows already on, asked the same: it saves a valid revision and starts a Workflow of it,
+ *   without enable_workflows and without asking to turn Workflows on.
  * The explicit request is the enable case above.
  *
  * UXP-AC-01 (a real user's session invented state types and said there was no script node): on a worker with script nodes
@@ -233,6 +235,40 @@ async function declaredTools(worker, sessionId) {
     return (metadata?.tools ?? []).map(tool => (typeof tool === "string" ? tool : tool?.name)).filter(Boolean).sort();
 }
 
+/** A phrase that asks the user for agreement. */
+const CONSENT = /\b(would you like|do you want|want me to|shall i|should i|may i|can i|could i|ok(?:ay)? (?:to|if)|is (?:it|that) ok(?:ay)?|would it be ok(?:ay)?|would you prefer|like me to|go ahead|do you agree|agree to|happy for me to|sound good)\b/i;
+/** Turning Workflows on, in words. */
+const ACTIVATION = /\b(turn(?:ing)? on|enabl(?:e|ing)|activat(?:e|ing)|switch(?:ing)? on)\b/i;
+
+/** The text's sentences, each with its ending mark. */
+function sentences(text) {
+    return String(text ?? "").replace(/\s+/g, " ").split(/(?<=[.!?])\s+/).map(item => item.trim()).filter(Boolean);
+}
+
+/**
+ * Consent oracle: whether `text` asks the user's agreement to use a Workflow: a question (ending in "?") that asks for
+ * agreement (CONSENT), about a Workflow named in it or in the sentence just before it. A mention, a statement that
+ * Workflows are off or unavailable, or a suggestion with no question does not count. With `activation`, the question must
+ * also be about turning Workflows on (ACTIVATION).
+ */
+function asksWorkflowAgreement(text, { activation = false } = {}) {
+    const items = sentences(text);
+    return items.some((item, index) => {
+        if (!item.endsWith("?") || !CONSENT.test(item)) return false;
+        const about = `${items[index - 1] ?? ""} ${item}`;
+        return /\bworkflows?\b/i.test(about) && (!activation || ACTIVATION.test(about));
+    });
+}
+
+/** The session's own words in a phase: its assistant messages and the questions of its ask_user calls, from `seq` on. */
+async function phaseWords(catalog, sessionId, seq) {
+    const events = await catalog.getSessionEvents(sessionId, seq, 5_000, ["assistant.message", "tool.execution_start"]);
+    return events.map(event => event.eventType === "assistant.message"
+        ? event.data?.content
+        : String(event.data?.toolName ?? event.data?.name ?? "") === "ask_user" ? argsOf(event.data).question : null)
+        .filter(value => typeof value === "string" && value).join("\n");
+}
+
 /** Every state of an IR, a parallel body's or branch's included, as `type` (`messaging:<mode>` for a messaging state). */
 function stateKinds(ir) {
     const kinds = [];
@@ -327,6 +363,27 @@ function workflowsEnded(definitionStore, sessionId, ms) {
         return rows.length > 0 && rows.every(row => row.runStatus && !ACTIVE.has(row.runStatus)) ? rows : null;
     }, ms);
 }
+
+describe("the consent oracle (no model)", () => {
+    it("counts a question that asks to use a Workflow, and nothing else", () => {
+        for (const text of [
+            "I can set this up as a Workflow so it runs without me. Would you like me to do that?",
+            "Shall I turn on Workflows and run the check as one?",
+            "A Workflow fits this: it costs no model turns. Want me to set one up?",
+            "Do you want me to run this as a Workflow?",
+        ]) expect(asksWorkflowAgreement(text), text).toBe(true);
+        for (const text of [
+            "Workflows are unavailable in this session.",
+            "Workflows are off, so I cannot do that.",
+            "A Workflow would fit this well.",
+            "I checked the site five times; it answered every time.",
+            "Would you like me to check again in an hour?",
+            "Should I keep checking? The site answered.",
+        ]) expect(asksWorkflowAgreement(text), text).toBe(false);
+        expect(asksWorkflowAgreement("Would you like me to report when the Workflow is done?", { activation: true })).toBe(false);
+        expect(asksWorkflowAgreement("Shall I turn on Workflows for this session?", { activation: true })).toBe(true);
+    });
+});
 
 describe("the full Workflow engine on a default worker, on a real model", () => {
     if (plan.state === "skip") {
@@ -430,57 +487,78 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
 
     it(TITLE_CONSENT, { timeout: TEST_TIMEOUT }, async () => {
         await realModelSession("consent", ASK_REPEAT, async ({ catalog, session, receipt }) => {
+            const definitionStore = catalog.workflowStore().sessionDefinitions;
             const calls = async () => (await toolCallsOf(catalog, session.sessionId)).map(call => call.name);
             const flag = async () => (await catalog.getSessionCapabilities(session.sessionId))?.workflows === true;
-            const replyAfter = async seq => (await catalog.getSessionEvents(session.sessionId, seq, 5_000, ["assistant.message"]))
-                .map(event => event.data?.content).filter(value => typeof value === "string" && value).join("\n");
             const lastSeq = async () => (await catalog.getSessionEvents(session.sessionId, 0, 5_000)).reduce((max, event) => Math.max(max, event.seq ?? 0), 0);
+            const owned = async () => ({ definitions: (await definitionStore.listDefinitions(session.sessionId)).length,
+                workflows: (await definitionStore.listWorkflows({ ownerSessionId: session.sessionId })).length });
+            const why = () => JSON.stringify(receipt);
 
-            // The ask: a suggestion, no activation.
+            // The ask: one question asking to use a Workflow, and nothing turned on or started. The phase must end.
             receipt.steps.settledAsk = await settle(catalog, session.sessionId, TURN_MS);
+            expect(receipt.steps.settledAsk, `the ask's turn ended. ${why()}`).toBe(true);
+            expect(receipt.steps.sessionVersion, why()).toBe(DURABLE_SESSION_LATEST_VERSION);
             receipt.steps.askCalls = await calls();
             receipt.steps.askFlag = await flag();
-            receipt.steps.askReply = (await replyAfter(0)).slice(0, 600);
-            // The decline: still no activation.
+            receipt.steps.askWords = (await phaseWords(catalog, session.sessionId, 0)).slice(0, 1_200);
+            receipt.steps.askOwned = await owned();
+            expect(receipt.steps.askCalls, `the ask turns nothing on. ${why()}`).not.toContain("enable_workflows");
+            expect(receipt.steps.askCalls.filter(name => WORKFLOW_TOOLS.includes(name)), `the ask calls no Workflow tool. ${why()}`).toEqual([]);
+            expect(receipt.steps.askFlag, `Workflows stay off after the ask. ${why()}`).toBe(false);
+            expect(asksWorkflowAgreement(receipt.steps.askWords), `the reply asks the user's agreement to use a Workflow. ${why()}`).toBe(true);
+
+            // The decline: nothing turned on, no Workflow work, nothing saved or started. The phase must end.
             const beforeDecline = await lastSeq();
             await session.sendAndWait(ASK_DECLINE, TURN_MS);
             receipt.steps.settledDecline = await settle(catalog, session.sessionId, TURN_MS);
+            expect(receipt.steps.settledDecline, `the decline's turn ended. ${why()}`).toBe(true);
             receipt.steps.declineCalls = (await calls()).slice(receipt.steps.askCalls.length);
             receipt.steps.declineFlag = await flag();
-            receipt.steps.declineReply = (await replyAfter(beforeDecline)).slice(0, 300);
-            // The acceptance: Workflows turn on, once.
+            receipt.steps.declineWords = (await phaseWords(catalog, session.sessionId, beforeDecline + 1)).slice(0, 600);
+            receipt.steps.declineOwned = await owned();
+            expect(receipt.steps.declineCalls, `the decline turns nothing on. ${why()}`).not.toContain("enable_workflows");
+            expect(receipt.steps.declineCalls.filter(name => WORKFLOW_TOOLS.includes(name)), `no Workflow tool after the decline. ${why()}`).toEqual([]);
+            expect(receipt.steps.declineFlag, `Workflows stay off after the decline. ${why()}`).toBe(false);
+            expect(receipt.steps.declineOwned, `nothing was saved or started after the decline. ${why()}`).toEqual({ definitions: 0, workflows: 0 });
+
+            // The acceptance: Workflows turn on, once. The phase must end.
             await session.sendAndWait(ASK_ACCEPT, TURN_MS);
             receipt.steps.settledAccept = await settle(catalog, session.sessionId, TURN_MS);
+            expect(receipt.steps.settledAccept, `the acceptance's turns ended. ${why()}`).toBe(true);
             const all = await calls();
             receipt.steps.acceptCalls = all.slice(receipt.steps.askCalls.length + receipt.steps.declineCalls.length);
             receipt.steps.acceptFlag = await flag();
-
-            const why = JSON.stringify(receipt);
-            expect(receipt.steps.sessionVersion, why).toBe(DURABLE_SESSION_LATEST_VERSION);
-            expect(receipt.steps.askCalls, `the ask turns nothing on. ${why}`).not.toContain("enable_workflows");
-            expect(receipt.steps.askCalls.filter(name => WORKFLOW_TOOLS.includes(name)), `the ask calls no Workflow tool. ${why}`).toEqual([]);
-            expect(receipt.steps.askFlag, `Workflows stay off after the ask. ${why}`).toBe(false);
-            expect(receipt.steps.askReply, `the reply suggests a Workflow. ${why}`).toMatch(/workflow/i);
-            expect(receipt.steps.declineCalls, `the decline turns nothing on. ${why}`).not.toContain("enable_workflows");
-            expect(receipt.steps.declineFlag, `Workflows stay off after the decline. ${why}`).toBe(false);
-            expect(all.filter(name => name === "enable_workflows"), `the acceptance turns them on, once. ${why}`).toHaveLength(1);
-            expect(receipt.steps.acceptCalls, `the acceptance calls enable_workflows. ${why}`).toContain("enable_workflows");
-            expect(receipt.steps.acceptFlag, `Workflows are on after the acceptance. ${why}`).toBe(true);
+            expect(all.filter(name => name === "enable_workflows"), `the acceptance turns them on, once. ${why()}`).toHaveLength(1);
+            expect(receipt.steps.acceptCalls, `the acceptance calls enable_workflows. ${why()}`).toContain("enable_workflows");
+            expect(receipt.steps.acceptFlag, `Workflows are on after the acceptance. ${why()}`).toBe(true);
         }, { worker: WORKER_SCRIPTS });
     });
 
     it(TITLE_ALREADY_ON, { timeout: TEST_TIMEOUT }, async () => {
         await realModelSession("already-on", ASK_REPEAT, async ({ catalog, session, receipt }) => {
+            const definitionStore = catalog.workflowStore().sessionDefinitions;
+            const why = () => JSON.stringify(receipt);
+            // A started Workflow is the evidence (a saved draft is not); its run need not finish (the check takes minutes).
+            receipt.steps.started = Boolean(await until(async () =>
+                (await definitionStore.listWorkflows({ ownerSessionId: session.sessionId })).some(row => row.runStatus), RUN_MS));
             receipt.steps.settled = await settle(catalog, session.sessionId, TURN_MS);
             const names = (await toolCallsOf(catalog, session.sessionId)).map(call => call.name);
             receipt.steps.toolCalls = names;
-            receipt.steps.definitions = (await catalog.workflowStore().sessionDefinitions.listDefinitions(session.sessionId)).length;
+            const definitions = await definitionStore.listDefinitions(session.sessionId);
+            const revisions = (await Promise.all(definitions.map(definition => definitionStore.listRevisions(definition.definitionId)))).flat();
+            receipt.steps.validRevisions = revisions.filter(revision => revision.valid).length;
+            receipt.steps.workflows = (await definitionStore.listWorkflows({ ownerSessionId: session.sessionId }))
+                .map(row => ({ id: row.workflowSessionId, revision: row.revision, status: row.runStatus }));
+            receipt.steps.words = (await phaseWords(catalog, session.sessionId, 0)).slice(0, 1_200);
 
-            const why = JSON.stringify(receipt);
-            expect(receipt.steps.sessionVersion, why).toBe(DURABLE_SESSION_LATEST_VERSION);
-            expect(names, `it does not turn Workflows on again. ${why}`).not.toContain("enable_workflows");
-            expect(names, `it saves a Workflow with workflow_definition. ${why}`).toContain("workflow_definition");
-            expect(receipt.steps.definitions, `the session owns the Workflow Definition it saved. ${why}`).toBeGreaterThan(0);
+            expect(receipt.steps.sessionVersion, why()).toBe(DURABLE_SESSION_LATEST_VERSION);
+            expect(receipt.steps.settled, `the turn ended. ${why()}`).toBe(true);
+            expect(names, `it does not turn Workflows on again. ${why()}`).not.toContain("enable_workflows");
+            expect(asksWorkflowAgreement(receipt.steps.words, { activation: true }), `it does not ask to turn Workflows on. ${why()}`).toBe(false);
+            expect(receipt.steps.validRevisions, `it saved a valid revision. ${why()}`).toBeGreaterThan(0);
+            expect(receipt.steps.started, `a Workflow of it started. ${why()}`).toBe(true);
+            expect(receipt.steps.workflows.some(row => row.status), `a started Workflow has a run. ${why()}`).toBe(true);
         }, { workflowsOn: true, worker: WORKER_SCRIPTS });
     });
 
