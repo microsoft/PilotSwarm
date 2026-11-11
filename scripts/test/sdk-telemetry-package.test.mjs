@@ -126,6 +126,7 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
             await worker.start();
             const manager = worker.sessionManager;
             const managerPrototype = Object.getPrototypeOf(manager);
+            const sessionStore = manager.sessionStore;
             for (const name of ["dehydrate", "_dehydrateUnlocked", "sweepIdleSessions"]) {
                 const original = managerPrototype[name];
                 managerPrototype[name] = async function (...args) {
@@ -136,6 +137,20 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
                         durable: [...this.durablyDehydratedSessions],
                     }));
                     return original.apply(this, args);
+                };
+            }
+            for (const name of ["checkpoint", "dehydrate"]) {
+                const original = sessionStore[name].bind(sessionStore);
+                sessionStore[name] = async (...args) => {
+                    console.log(JSON.stringify({ debug: `store.${name}.start`, args: args.slice(0, 2) }));
+                    try {
+                        const result = await original(...args);
+                        console.log(JSON.stringify({ debug: `store.${name}.complete`, args: args.slice(0, 2) }));
+                        return result;
+                    } catch (error) {
+                        console.log(JSON.stringify({ debug: `store.${name}.failed`, error: String(error) }));
+                        throw error;
+                    }
                 };
             }
             client = new PilotSwarmClient({ store, modelProvidersPath, ...storage });
