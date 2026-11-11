@@ -198,11 +198,15 @@ test("a Workflow-only package is verified without adding an agent", () => {
     assert.match(prompt, /portal's new-session picker/);
 });
 
-test("the prompt and the repair loop say propose_agent_patch refuses what publish would refuse, with its errors", () => {
-    assert.match(prompt, /`propose_agent_patch` — first checks the staged package exactly as publish\s+checks it/);
-    assert.match(prompt, /never ask\s+the person to approve a package that was refused/);
+test("the prompt and the repair loop say propose_agent_patch runs every check publish runs on the staged files, with its errors", () => {
+    // Review of 069eca30 SR-01: the claim is narrowed to the staged files; the registry is checked at publish.
+    assert.match(prompt, /`propose_agent_patch` — first runs every check publish runs on the staged\s+files/);
+    assert.match(prompt, /never ask the person to\s+approve a package that was refused/);
+    assert.match(prompt, /Publish still checks the registry itself/);
+    assert.doesNotMatch(prompt, /checks the staged package exactly as publish/);
     const skill = fs.readFileSync(path.join(pkgDir, "skills/agent-repair-loop/SKILL.md"), "utf8");
-    assert.match(skill, /`propose_agent_patch` first checks the staged package as publish checks it/);
+    assert.match(skill, /`propose_agent_patch` first runs every check publish runs on the staged\s+files/);
+    assert.match(skill, /Publish still checks the registry itself/);
 });
 
 test("option a: a session starts any visible package Workflow; an agent's workflows list suggests, and Agent Smith verifies by starting it", () => {

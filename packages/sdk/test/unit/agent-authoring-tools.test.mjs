@@ -271,12 +271,15 @@ test("propose points the agent at the approval step it must not skip", async () 
     assert.equal(written.length, out.written);
 });
 
-test("propose warns when a change does not touch the changelog", async () => {
-    const { byName } = toolsWith({ catalog: { async getAgentPackage() { return null; } } });
+// Review of 069eca30 SR-01: publish refuses a staged tree with no CHANGELOG.md, so propose refuses it too (it used to propose it
+// with a warning) and writes no patch.
+test("propose refuses a staged tree with no CHANGELOG, as publish does, and writes no patch", async () => {
+    const { artifacts, byName } = toolsWith({ catalog: { async getAgentPackage() { return null; } } });
     await byName.get("stage_agent_package_edit").handler({ package: "p", files: { "plugin.json": VALID_PLUGIN } });
     const out = await byName.get("propose_agent_patch").handler({ package: "p" });
-    assert.equal(out.changelogUpdated, false);
-    assert.match(out.warning, /CHANGELOG/);
+    assert.equal(out.refused, true, JSON.stringify(out));
+    assert.deepEqual(out.errors.map(issue => [issue.code, issue.path]), [["AGENT_PACKAGE_CHANGELOG_MISSING", CHANGELOG_PATH]]);
+    assert.deepEqual([...artifacts.files.keys()].filter(key => key.endsWith(".patch")), []);
 });
 
 // ── Reach: whose packages can this manager touch? ─────────────────
@@ -672,4 +675,70 @@ test("propose still proposes a package whose Workflow card matches its definitio
     assert.equal(ok.out.refused, undefined, JSON.stringify(ok.out));
     assert.ok(ok.out.written > 0, JSON.stringify(ok.out));
     assert.equal(ok.patches.length, ok.out.written);
+});
+
+// Review of 069eca30 SR-01 (owner decision 1): propose runs every check publish runs on the staged files (one shared
+// preparation), so each staged tree publish refuses below is refused by propose too, with its code and path, and no patch
+// is written; publish gives the same refusal. The registry's own checks (permission, an existing version) stay at publish.
+async function proposeAndPublish(pkg, files, semver = "1.0.0") {
+    const { artifacts, byName } = toolsWith({ catalog: { async getAgentPackage() { return null; } } });
+    await byName.get("stage_agent_package_edit").handler({ package: pkg, files });
+    const proposed = await byName.get("propose_agent_patch").handler({ package: pkg });
+    const patches = [...artifacts.files.keys()].filter(key => key.endsWith(".patch"));
+    const published = await byName.get("publish_agent_package").handler({ package: pkg, semver, approved_by: "alice" });
+    return { proposed, patches, published };
+}
+const pluginOf = (name, version = "1.0.0") => JSON.stringify({ name, version, description: "A package." });
+const refusedWith = (out, code, file) => {
+    assert.equal(out.refused, true, JSON.stringify(out));
+    assert.ok(out.errors.some(issue => issue.code === code && issue.path === file), JSON.stringify(out.errors));
+};
+
+test("propose refuses a staged plugin.json that names another package, as publish does, and writes no patch", async () => {
+    const { proposed, patches, published } = await proposeAndPublish("p", { "plugin.json": pluginOf("q"), [CHANGELOG_PATH]: "## 1.0.0\n- first" });
+    refusedWith(proposed, "AGENT_PACKAGE_IDENTITY_MISMATCH", "plugin.json");
+    assert.match(proposed.errors.find(issue => issue.code === "AGENT_PACKAGE_IDENTITY_MISMATCH").message, /staged=p, plugin=q, requested=p/);
+    assert.deepEqual(patches, []);
+    assert.match(published.error, /package identity mismatch \(staged=p, plugin=q, requested=p\)/);
+});
+
+test("propose refuses a CHANGELOG with no entry for plugin.json's version, as publish does, and writes no patch", async () => {
+    const { proposed, patches, published } = await proposeAndPublish("p", { "plugin.json": pluginOf("p", "1.1.0"), [CHANGELOG_PATH]: "## 1.0.0\n- first" }, "1.1.0");
+    refusedWith(proposed, "AGENT_PACKAGE_CHANGELOG_NO_ENTRY", CHANGELOG_PATH);
+    assert.deepEqual(patches, []);
+    assert.match(published.error, /no entry for 1\.1\.0/);
+});
+
+test("propose refuses a reserved package name, as publish does, and writes no patch", async () => {
+    for (const name of ["sources", "upload", "worker-state"]) {
+        const { proposed, patches, published } = await proposeAndPublish(name, { "plugin.json": pluginOf(name), [CHANGELOG_PATH]: "## 1.0.0\n- first" });
+        refusedWith(proposed, "AGENT_PACKAGE_BAD_NAME", "plugin.json");
+        assert.deepEqual(patches, [], name);
+        assert.match(published.error, /AGENT_PACKAGE_BAD_NAME: "[a-z-]+" is a reserved name/);
+    }
+});
+
+test("propose refuses a package over the compressed size limit, as publish does, and writes no patch", async () => {
+    // About 24 MB of base64 text: it compresses to more than the 16 MB limit (packAgentPackage).
+    const { randomBytes } = await import("node:crypto");
+    const blob = randomBytes(18 * 1024 * 1024).toString("base64");
+    const { proposed, patches, published } = await proposeAndPublish("p", {
+        "plugin.json": pluginOf("p"), [CHANGELOG_PATH]: "## 1.0.0\n- first", "skills/big/SKILL.md": `---\nname: big\ndescription: Big.\n---\n${blob}\n`,
+    });
+    refusedWith(proposed, "PAYLOAD_TOO_LARGE", null);
+    assert.match(proposed.errors.find(issue => issue.code === "PAYLOAD_TOO_LARGE").message, /exceeds compressed size limit/);
+    assert.deepEqual(patches, []);
+    assert.match(published.error, /exceeds compressed size limit/);
+});
+
+test("propose diffs the canonical tree publish would ship: an ignored file is not proposed", async () => {
+    const { artifacts, byName } = toolsWith({ catalog: { async getAgentPackage() { return null; } } });
+    await byName.get("stage_agent_package_edit").handler({ package: "p", files: {
+        "plugin.json": VALID_PLUGIN, [CHANGELOG_PATH]: "## 1.0.0\n- first", ".DS_Store": "finder", ".pilotswarm-meta.json": "{}",
+    } });
+    const out = await byName.get("propose_agent_patch").handler({ package: "p" });
+    assert.ok(out.written > 0, JSON.stringify(out));
+    const text = [...artifacts.files.entries()].filter(([key]) => key.endsWith(".patch")).map(([, value]) => value).join("\n");
+    assert.match(text, /plugin\.json/);
+    assert.doesNotMatch(text, /\.DS_Store|\.pilotswarm-meta\.json/);
 });

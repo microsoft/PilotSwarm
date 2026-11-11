@@ -348,6 +348,11 @@ export interface PackedAgentPackage {
     fileCount: number;
 }
 
+/** A packing refusal, with its code (the message is unchanged). */
+function packError(code: string, message: string): Error & { code: string } {
+    return Object.assign(new Error(message), { code });
+}
+
 /**
  * Pack a validated package directory into the canonical tar.gz.
  * Deterministic: sorted entries, zeroed mtime/uid/gid, normalized modes
@@ -356,16 +361,16 @@ export interface PackedAgentPackage {
 export function packAgentPackage(rootDir: string): PackedAgentPackage {
     const { files, symlinks, nonAscii } = walkPackageDir(rootDir);
     if (symlinks.length > 0) {
-        throw new Error(`symlinks are not allowed in agent packages: ${symlinks.join(", ")}`);
+        throw packError("AGENT_PACKAGE_SYMLINK", `symlinks are not allowed in agent packages: ${symlinks.join(", ")}`);
     }
     if (nonAscii.length > 0) {
-        throw new Error(`non-ASCII paths are not allowed in agent packages (rename to ASCII): ${nonAscii.join(", ")}`);
+        throw packError("AGENT_PACKAGE_NON_ASCII_PATH", `non-ASCII paths are not allowed in agent packages (rename to ASCII): ${nonAscii.join(", ")}`);
     }
     let rawBytes = 0;
     const entries: TarEntry[] = files.map((f) => {
         rawBytes += f.size;
         if (rawBytes > AGENT_PACKAGE_MAX_RAW_BYTES) {
-            throw new Error(`package exceeds raw size limit (${AGENT_PACKAGE_MAX_RAW_BYTES} bytes)`);
+            throw packError("PAYLOAD_TOO_LARGE", `package exceeds raw size limit (${AGENT_PACKAGE_MAX_RAW_BYTES} bytes)`);
         }
         return {
             name: f.rel,
@@ -380,7 +385,8 @@ export function packAgentPackage(rootDir: string): PackedAgentPackage {
     targz[4] = 0; targz[5] = 0; targz[6] = 0; targz[7] = 0;
     targz[9] = 0x03;
     if (targz.length > AGENT_PACKAGE_MAX_COMPRESSED_BYTES) {
-        throw new Error(
+        throw packError(
+            "PAYLOAD_TOO_LARGE",
             `package exceeds compressed size limit: ${targz.length} > ${AGENT_PACKAGE_MAX_COMPRESSED_BYTES} bytes`,
         );
     }

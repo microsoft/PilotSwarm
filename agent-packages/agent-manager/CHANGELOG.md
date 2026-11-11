@@ -1,5 +1,17 @@
 # Changelog — agent-manager
 
+## 1.7.1
+
+### Fixed
+
+- `propose_agent_patch` runs every check publish runs on the staged files,
+  through the same preparation publish uses: a missing `CHANGELOG.md` or no
+  entry for plugin.json's version, a plugin.json that names another package,
+  a reserved package name and the size limits now refuse the proposal too
+  (a missing changelog used to be only a warning). Publish still checks the
+  registry (permission, an existing version) when it runs. The diff shows the
+  canonical tree publish would ship.
+
 ## 1.7.0
 
 ### Changed
