@@ -45,6 +45,7 @@ describe("SessionManager dehydrate", () => {
             fs.mkdirSync(path.join(sessionStateDir, sessionId), { recursive: true });
             fs.writeFileSync(path.join(sessionStateDir, sessionId, "workspace.yaml"), "session: test\n");
             manager.sessions.set(sessionId, {
+                getWorkspaceState: () => ({}),
                 destroy: vi.fn(async () => { events.push("destroy"); }),
             });
             manager.sessionLastTouchedAt.set(sessionId, 0);
