@@ -1,5 +1,18 @@
 # Changelog — agent-manager
 
+## 1.7.3
+
+### Fixed
+
+- Verifying a published Workflow-only package checks the version just
+  published. Its card and YAML are read with `read_agent_package_file` at that
+  semver (`workflows/<name>/card.md` and `workflow.yaml`). `workflow_definition`
+  `card` shows the attached revision when there is one, so its `version` is
+  compared and an older card is not counted. The live run starts with
+  `update: true`, and `card` confirms the attached version before and after;
+  if the package's active version moved, Agent Smith says so instead of
+  reporting a check of another version.
+
 ## 1.7.2
 
 ### Fixed

@@ -202,11 +202,24 @@ test("a Workflow-only package is verified without adding an agent", () => {
 // DEFINITION_NOT_FOUND for a package one never started (definition-tool.ts read → readSessionWorkflowDefinition); card looks
 // the package up, and read_agent_package_file reads its exact YAML.
 test("a published Workflow is verified with card and read_agent_package_file, never read of <package>/<name>", () => {
-    assert.match(prompt, /`workflow_definition` `card` with `<package>\/<name>` for its card/);
-    assert.match(prompt, /`read_agent_package_file` of `workflows\/<name>\/workflow\.yaml` \(with\s+`semver`\) for its exact YAML/);
-    assert.match(prompt, /`workflow_definition` `read` reads only a\s+definition already saved in or attached to your session/);
+    assert.match(prompt, /`workflow_definition` `card` with `<package>\/<name>` shows the revision\s+attached to your session/);
+    assert.match(prompt, /`workflow_definition` `read` reads only a definition already saved in or\s+attached to your session/);
     assert.doesNotMatch(prompt, /read of `<package>\/<name>`/);
     assert.ok(agent.tools.includes("read_agent_package_file"), "Agent Smith has read_agent_package_file");
+});
+
+// Review of 68b98d7a VR-02: card shows the session's attached revision (which may be older) and start without update runs it,
+// so the procedure reads both published files at the published semver, compares card's version, starts with update: true,
+// confirms the attached version before and after, and says so when the active version moved.
+test("Workflow-only verification checks the version just published, not an older attachment", () => {
+    assert.match(prompt, /`read_agent_package_file` of\s+`workflows\/<name>\/card\.md` and of `workflows\/<name>\/workflow\.yaml`, each\s+with `semver` set to `<semver>`/);
+    assert.match(prompt, /compare its `version` with\s+`<semver>`, and\s+never count an older version's card as the one you published/);
+    assert.match(prompt, /`start` of `<package>\/<name>` and\s+`update: true`/);
+    assert.match(prompt, /Without `update`, `start` runs the version already attached to\s+your session/);
+    assert.match(prompt, /after it, `card` must show `attached` with\s+`version` `<semver>`/);
+    assert.match(prompt, /If the package's active version is no longer\s+`<semver>`/);
+    assert.match(prompt, /do not report the\s+run as a check of `<semver>`/);
+    assert.doesNotMatch(prompt, /`workflow_definition` `card` with `<package>\/<name>` for its card/);
 });
 
 test("the prompt and the repair loop say propose_agent_patch runs every check publish runs on the staged files, with its errors", () => {

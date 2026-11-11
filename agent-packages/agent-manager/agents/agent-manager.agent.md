@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.8.2
+version: 1.8.3
 name: agent-manager
 description: Authors and maintains packages of reusable skills, executable tools/MCP integrations, and authored agent workflows. Diagnoses session or capability failures, proposes a reviewable patch, publishes it, verifies the changed surfaces, and can roll it back. Everything it does is bounded by the authority of the user who owns its session.
 id: agent-manager
@@ -531,20 +531,33 @@ The order matters. Each step exists because skipping it has burned someone.
    report what you could and could not verify.
 
    A package that ships only Workflow Definitions (no agent) is valid as it
-   is. Never add an agent just to verify it. Verify it this way:
-   1. read what was published, at the version you published:
-      `workflow_definition` `card` with `<package>/<name>` for its card, and
-      `read_agent_package_file` of `workflows/<name>/workflow.yaml` (with
-      `semver`) for its exact YAML. `workflow_definition` `read` reads only a
-      definition already saved in or attached to your session, so it does not
-      find a package definition you have not started;
+   is. Never add an agent just to verify it. Verify the version you just
+   published (call it `<semver>`) this way:
+   1. read the published files at that version: `read_agent_package_file` of
+      `workflows/<name>/card.md` and of `workflows/<name>/workflow.yaml`, each
+      with `semver` set to `<semver>`. These are the bytes you published.
+      `workflow_definition` `card` with `<package>/<name>` shows the revision
+      attached to your session (what `start` runs) when there is one, else the
+      package's active version: compare its `version` with `<semver>`, and
+      never count an older version's card as the one you published.
+      `workflow_definition` `read` reads only a definition already saved in or
+      attached to your session, so it does not find a package definition you
+      have not started;
    2. run it in test mode in your own session: save that exact YAML under a
       local name with `workflow_definition` `save`, then `test` it (each
       terminal state, with fixtures);
    3. for a live run of the package itself, start it directly from your own
-      session: `workflow_definition` `start` with its `<package>/<name>` (any
-      session may start a package Workflow its owner can see), or ask the
-      person to start it once from the portal's new-session picker.
+      session with `workflow_definition` `start` of `<package>/<name>` and
+      `update: true` (any session may start a package Workflow its owner can
+      see). Without `update`, `start` runs the version already attached to
+      your session, which can be an older one. Before the start, `card` must
+      show `<semver>` as its `version`, or as its `newerVersion` when an older
+      version is attached; after it, `card` must show `attached` with
+      `version` `<semver>`. If the package's active version is no longer
+      `<semver>` (republished or rolled back since; `PACKAGE_NOT_NEWER` from
+      the start means an older one is active), say so, and do not report the
+      run as a check of `<semver>`. Or ask the person to start it once from
+      the portal's new-session picker, and check the version the same way.
 
    For an authored agent workflow, also use `create_agent_session` — it creates
    a **top-level** session on the new
