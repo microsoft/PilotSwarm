@@ -100,6 +100,7 @@ describe("the consent case's driver: every phase on its own turn, whatever cron 
             const why = JSON.stringify(phases);
             expect(phases.ask.exercised, `the ask's own turn ended. ${why}`).toBe(true);
             expect(phases.ask.cron, `the model set a cron on the ask. ${why}`).toBe(true);
+            expect(phases.ask.cronStarted, `the session recorded the cron's start. ${why}`).toBe(true);
             expect(phases.ask.calls, why).toEqual(["cron"]);
             expect(phases.ask.outcome, why).toBe("chose-cron");
             expect(phases.decline.exercised, why).toBe(true);

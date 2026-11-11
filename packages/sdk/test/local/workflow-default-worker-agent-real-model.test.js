@@ -84,7 +84,7 @@ import { sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
 import { realModelPlan } from "../helpers/workflow-real-model.mjs";
 import { realModelWorkflowEvidence } from "../helpers/workflow-real-model-evidence.mjs";
-import { consentGating, consentVerdict, cronStarted, driveConsentCase, excerpt, phaseMessages, phaseTurn, reportNonGating, toolCallsOf } from "../helpers/workflow-consent.mjs";
+import { consentGating, consentVerdict, cronChoice, driveConsentCase, excerpt, phaseMessages, phaseTurn, reportNonGating, toolCallsOf } from "../helpers/workflow-consent.mjs";
 import { loadModelProviders } from "../../src/index.ts";
 
 const OWNER = { provider: "test", subject: "workflow-default-worker-agent-real-model" };
@@ -478,14 +478,18 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
                 receipt.steps.askTurn = { exercised: turn.settled, userSeq: turn.userSeq, endSeq: turn.endSeq, iteration: turn.iteration };
                 receipt.steps.started = turn.settled && Boolean(await until(async () =>
                     (await definitionStore.listWorkflows({ ownerSessionId: session.sessionId })).some(row => row.runStatus), ALREADY_ON_START_MS));
-                const names = (await toolCallsOf(catalog, session.sessionId)).map(call => call.name);
+                const calls = await toolCallsOf(catalog, session.sessionId);
+                const names = calls.map(call => call.name);
                 receipt.steps.toolCalls = names;
                 const definitions = await definitionStore.listDefinitions(session.sessionId);
                 const revisions = (await Promise.all(definitions.map(definition => definitionStore.listRevisions(definition.definitionId)))).flat();
                 receipt.steps.validRevisions = revisions.filter(revision => revision.valid).length;
                 receipt.steps.workflows = (await definitionStore.listWorkflows({ ownerSessionId: session.sessionId }))
                     .map(row => ({ id: row.workflowSessionId, revision: row.revision, status: row.runStatus }));
-                receipt.steps.cron = await cronStarted(catalog, session.sessionId);
+                // A cron call, or its session.cron_started (recorded after the turn's end, so waited for when it was called).
+                const cron = await cronChoice(catalog, session.sessionId, calls);
+                receipt.steps.cron = cron.cron;
+                receipt.steps.cronStarted = cron.started;
                 const messages = turn.settled ? await phaseMessages(catalog, session.sessionId, turn.userSeq, turn.endSeq) : [];
                 receipt.steps.words = excerpt(messages);
                 // Activation question: "asks", "ambiguous" (manual review) or "no", kept as it is (test review of 8951bc61 item 2).

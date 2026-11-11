@@ -183,6 +183,20 @@ export async function cronStarted(catalog, sessionId) {
     return (await catalog.getSessionEvents(sessionId, 0, 5_000, ["session.cron_started"])).length > 0;
 }
 
+/** A call that sets a schedule: cron or cron_at, not its cancel. */
+const setsCron = call => (call.name === "cron" || call.name === "cron_at") && call.args?.action !== "cancel";
+
+/**
+ * Whether a turn chose a cron: `called`, it called cron or cron_at to set a schedule (the model's choice, in the turn's
+ * own calls), and `started`, the session recorded session.cron_started. The orchestration records cron_started after the
+ * turn's session.turn_completed, so a turn that called the cron waits for it, within `ms`. `cron` is either.
+ */
+export async function cronChoice(catalog, sessionId, calls, ms = 10_000) {
+    const called = calls.some(setsCron);
+    const started = called ? Boolean(await until(() => cronStarted(catalog, sessionId), ms)) : await cronStarted(catalog, sessionId);
+    return { called, started, cron: called || started };
+}
+
 /** A tool result's text: a string, the content of an object result, or its JSON. */
 export function resultText(result) {
     if (typeof result === "string") return result;
@@ -252,7 +266,8 @@ export async function driveConsentCase({ catalog, session, ask, decline, accept,
     const flag = async () => (await catalog.getSessionCapabilities(sessionId))?.workflows === true;
     const owned = async () => ({ definitions: (await store.listDefinitions(sessionId)).length,
         workflows: (await store.listWorkflows({ ownerSessionId: sessionId })).length });
-    const callsIn = async (from, to = Infinity) => (await toolCallsOf(catalog, sessionId)).filter(call => call.seq > from && call.seq <= to).map(call => call.name);
+    const callObjects = async (from, to = Infinity) => (await toolCallsOf(catalog, sessionId)).filter(call => call.seq > from && call.seq <= to);
+    const callsIn = async (from, to = Infinity) => (await callObjects(from, to)).map(call => call.name);
     const phase = async (turn, extra = {}) => {
         const record = { clientMessageId: turn.clientMessageId, exercised: turn.settled, userSeq: turn.userSeq, endSeq: turn.endSeq, iteration: turn.iteration, ...extra };
         if (turn.settled) {
@@ -265,7 +280,9 @@ export async function driveConsentCase({ catalog, session, ask, decline, accept,
 
     const phases = {};
     phases.ask = await phase(await phaseTurn(catalog, sessionId, ask.id, caps.ask));
-    phases.ask.cron = await cronStarted(catalog, sessionId);
+    const askCron = await cronChoice(catalog, sessionId, phases.ask.exercised ? await callObjects(phases.ask.userSeq, phases.ask.endSeq) : []);
+    phases.ask.cron = askCron.cron;
+    phases.ask.cronStarted = askCron.started;
     phases.ask.consent = phases.ask.exercised ? consentVerdict(phases.ask.messages) : null;
     phases.ask.outcome = phases.ask.exercised ? firstTurnOutcome(phases.ask.consent, phases.ask.cron) : "not-exercised";
 
