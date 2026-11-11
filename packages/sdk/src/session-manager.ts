@@ -1659,7 +1659,8 @@ export class SessionManager {
         try {
             return await this._withSessionLock(sessionId, operation, fn, options);
         } finally {
-            this.sessionLastTouchedAt.set(sessionId, Date.now());
+            if (this.sessions.has(sessionId)) this.sessionLastTouchedAt.set(sessionId, Date.now());
+            else this.sessionLastTouchedAt.delete(sessionId);
         }
     }
 
