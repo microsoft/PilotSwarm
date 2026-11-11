@@ -20,7 +20,12 @@ const DELETED_REASON = "The workflow session was deleted.";
 const READY = "DELETE_CASCADE_READY";
 const getEnv = useSuiteEnv(import.meta.url);
 
-async function assertDeletedWorkflow(h, run, client) {
+/**
+ * `cascadeReason`: the live delete's own reason. A live owner's delete cascades a cancel with its reason to its Workflow
+ * child (the orchestration's shutdown), which ends the run before the owner's row is deleted; the trigger's words apply
+ * only when no cascade reached the Workflow first (the fast path, a nested Workflow).
+ */
+async function assertDeletedWorkflow(h, run, client, cascadeReason = null) {
     expect(await h.catalog.getSession(run.workflowId)).toBeNull();
     expect(await h.q("SELECT deleted_at IS NOT NULL AS deleted FROM SCHEMA.sessions WHERE session_id = $1", [run.workflowId]))
         .toEqual([{ deleted: true }]);
@@ -33,7 +38,11 @@ async function assertDeletedWorkflow(h, run, client) {
     const ended = await h.store.readRun(run.runId);
     expect(ended).toMatchObject({ status: "cancelled", terminalError: { code: "cancelled" }, finishedAt: expect.any(Date) });
     // deleteSession may mark an ancestor failed before deleting it; the first accepted run end is preserved.
-    expect([DELETED_REASON, FAILED_REASON]).toContain(ended.terminalError.message);
+    if (cascadeReason !== null) {
+        expect(ended.terminalError).toMatchObject({ message: cascadeReason, details: { command: "cancel" } });
+    } else {
+        expect([DELETED_REASON, FAILED_REASON]).toContain(ended.terminalError.message);
+    }
     await assertCancelledCascadeNodes(h.store, run);
     // The real force-delete paths may terminate the live instance rather than letting it return normally.
     await cascadeControllerEnded(client, run);
@@ -84,7 +93,7 @@ describe("failed and deleted owners retain their existing cascades", () => {
                         // An unstarted owner takes deleteSession's terminal/unknown fast path, with a genuinely live Workflow.
                         await mgmt.deleteSession(owner.sessionId, "fixture delete");
                         expect(await h.catalog.getSession(owner.sessionId)).toBeNull();
-                        await assertDeletedWorkflow(h, run, duroxide);
+                        await assertDeletedWorkflow(h, run, duroxide, path === "live orchestration" ? "fixture delete" : null);
                     });
                 } finally {
                     await mgmt.stop();
