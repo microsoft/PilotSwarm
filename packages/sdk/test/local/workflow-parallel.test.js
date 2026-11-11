@@ -115,7 +115,7 @@ function fanOut({ items = [{ n: 1 }, { n: 2 }, { n: 3 }], concurrency = 2, outpu
     };
 }
 
-/** Three branches, two at a time, failFast: the second fails after a 5-second wait; the others wait 600 seconds. */
+/** Three branches, two at a time, failFast: the second fails after a 5-second wait (scaled with the database); the others wait 600 seconds. */
 function failFastOut() {
     return {
         ...head("fail-fast"),
@@ -131,7 +131,7 @@ function failFastOut() {
                             type: "script", source: "await setResult(context.input.fail ? \"bad\" : \"slow\", context.input);\n",
                             transition: { next: { bad: "pause", slow: "hold" } },
                         },
-                        pause: { type: "wait", seconds: 5, transition: { next: { elapsed: "refused" } } },
+                        pause: { type: "wait", seconds: testTime.seconds(5), transition: { next: { elapsed: "refused" } } },
                         hold: { type: "wait", seconds: 600, transition: { next: { elapsed: "done" } } },
                         refused: { type: "terminal", outcome: "blocked", output: "${input}" },
                         done: { type: "terminal", outcome: "succeeded", output: "${input}" },
@@ -560,8 +560,9 @@ function pausedDeadlines() {
                             source: "await setResult(context.branch.index === 0 ? \"short\" : \"long\", {});\n",
                             transition: { next: { short: "shortWait", long: "longWait" } },
                         },
-                        shortWait: { type: "wait", seconds: 1, transition: { next: { elapsed: "done" } } },
-                        longWait: { type: "wait", seconds: 4, transition: { next: { elapsed: "done" } } },
+                        // Scaled with the database: both waits are still pending when the pause lands (HorizonDB is slower).
+                        shortWait: { type: "wait", seconds: testTime.seconds(1), transition: { next: { elapsed: "done" } } },
+                        longWait: { type: "wait", seconds: testTime.seconds(4), transition: { next: { elapsed: "done" } } },
                         done: { type: "terminal", outcome: "succeeded", output: "${branch.item}" },
                     },
                 },
@@ -854,8 +855,9 @@ describe("workflow parallel states: a literal list is shown as its count and dig
 
 // Adversarial review R3-SF-3: a parallel state whose time limit passes before its join records its report as its
 // error; a finished branch's business output in it stays exactly as the branch stored it, as the blocked report keeps it.
-// Branch 1 ends at once with { key, token } (ordinary business fields); branch 2 waits 600 s (the time limit, 3 s, passes)
-// or is refused at once (0 s: the join of both can no longer happen, so it is blocked).
+// Branch 1 ends after a 1 s wait with { key, token } (ordinary business fields); branch 2 waits 600 s (the time limit,
+// 3 s scaled by the database's time scale, passes first) or is refused at once (0 s: the join of both can no longer
+// happen, so it is blocked). CI run 117 (HorizonDB): with an unscaled 3 s limit branch 1 did not reach `done` in time.
 describe("workflow parallel states: a timed_out report keeps business outputs (adversarial review R3-SF-3)", () => {
     it("R3-SF-3: a timed_out report's finished branch output equals the branch's own and the blocked report's", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
@@ -864,7 +866,7 @@ describe("workflow parallel states: a timed_out report keeps business outputs (a
                 ...head("report-outputs"), initialInput: { items: [{ seconds: 1, n: 0 }, { seconds: second, n: 1 }] }, initial: "fan",
                 states: {
                     fan: {
-                        type: "parallel", forEach: "${input.items}", concurrency: 2, join: { first: 2 }, timeoutSeconds: 3,
+                        type: "parallel", forEach: "${input.items}", concurrency: 2, join: { first: 2 }, timeoutSeconds: testTime.seconds(3),
                         body: {
                             initial: "hold",
                             states: {
