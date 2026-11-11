@@ -1068,8 +1068,12 @@ Workflow's wait loop; with them off, suggest a Workflow to the user and call
   (for example one from an earlier release); a Workflow's message or request
   that arrives; a person's saved definition; the coordinating session of a
   package's Workflow. Each saves the flag. Also on, without saving: a session
-  inside a Workflow, Agent Smith, a turn of a session still on orchestration
-  1.0.82, and a turn where one of these could not be read.
+  inside a Workflow, Agent Smith, and a turn of a session still on
+  orchestration 1.0.82.
+- **A read that fails.** When a turn cannot read whether the session owns a
+  Definition or a Workflow, or cannot read its definition notes, that turn
+  stays off (the paragraph and `enable_workflows`, no Workflow tools or
+  guidance). The next turn reads again.
 - **Never.** The read-only tuner and service sessions get neither the
   paragraph nor `enable_workflows`.
 - A deployment without durable capability storage (no session catalog) has

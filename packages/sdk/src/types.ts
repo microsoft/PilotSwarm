@@ -880,11 +880,11 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
     workflowInsideWorkflow?: boolean;
     /**
      * Workflows on demand (owner 2026-11-08T16:55Z): a reason found by the runTurn activity to turn Workflows on in this
-     * session for this turn: `lasting` (a Workflow message or request arrived, a person saved a definition, the session
-     * coordinates a package's Workflow) also saves the session's flag; `turn` (a trigger could not be read) does not.
-     * Runtime-only.
+     * session: `lasting` (a Workflow message or request arrived, a person saved a definition, the session coordinates a
+     * package's Workflow), which also saves the session's flag. A trigger that could not be read is no trigger (review AS-07):
+     * the session stays off. Runtime-only.
      */
-    workflowContextTrigger?: "lasting" | "turn";
+    workflowContextTrigger?: "lasting";
     /** Workflows on demand: whether the session owns a Workflow Definition or a Workflow (read only while they are off). Runtime-only. */
     workflowContextOwnsCheck?: () => Promise<boolean>;
     /** Workflows on demand: this turn's Workflow context, as the session manager decided it (on, off or none). Runtime-only. */

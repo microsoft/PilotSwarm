@@ -54,6 +54,42 @@ describe("a person's save note reaches the session's next turn once (E2-4, F3)",
             expect(prompts[2]).not.toContain(NOTE);
         });
     });
+    // Review AS-07: a notes read that fails is no trigger. The turn runs off (no Workflow trigger reaches the session manager,
+    // which then reads ownership as usual); the next turn reads the notes again and sees the note.
+    it("AS-07: a notes read that fails leaves the turn without a Workflow trigger; the next turn reads the note", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
+        const prompts = [];
+        const script = async (_call, prompt) => {
+            prompts.push(String(prompt));
+            return { type: "completed", content: "noted", events: [] };
+        };
+        await intakeNativeCase(getEnv(), "notes read fails", script, {
+            managerExtras: { workflowScriptsEnabled: true } }, async h => {
+            const host = { catalog: h.catalog, store: h.store, duroxideClient: { startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "Running" }),
+                enqueueEvent: async () => {} } };
+            // The turn's own reader (the catalog's Workflow store) fails once; every later read is the store's.
+            const definitions = h.catalog.workflowStore().sessionDefinitions;
+            const pendingNotes = definitions.pendingNotes.bind(definitions);
+            let failures = 1;
+            definitions.pendingNotes = async (...args) => {
+                if (failures > 0) { failures -= 1; throw new Error("the notes read failed (scripted)"); }
+                return pendingNotes(...args);
+            };
+            await h.start();
+            await h.until(({ history }) => history.some(event => event.kind === "QueueSubscribed"), "the session waits for its messages");
+            await saveSessionWorkflowDefinition(host, { ownerSessionId: h.sessionId, name: "hn-top-watch", yaml: YAML, expected: null,
+                actor: { kind: "user", provider: "test", subject: "ada", display: "Ada Lovelace" }, operationId: "person-save-as07", by: "person", personWords: "Ada Lovelace" });
+            await h.say("what changed?", "cm-as07-1");
+            await h.until(() => prompts.length >= 1, "the turn runs");
+            expect(failures).toBe(0);
+            expect(prompts[0]).not.toContain(NOTE);
+            expect(h.sessionConfigs[0].workflowContextTrigger).toBeUndefined();
+            await h.say("and now?", "cm-as07-2");
+            await h.until(async () => prompts.length >= 2 && (await h.store.sessionDefinitions.pendingNotes(h.sessionId)).length === 0,
+                "the next turn reads the note and consumes it");
+            expect(prompts[1].startsWith(`${NOTE}\n\n`), prompts[1]).toBe(true);
+            expect(h.sessionConfigs.at(-1).workflowContextTrigger).toBe("lasting");
+        });
+    });
     // Deployed check DS-2: a session made without a first message has no session orchestration. The worker's delivery of a
     // Workflow's end says so, and the runtime keeps the notice as the session's note (workflow-notify-parent "DS-2" runs that
     // end to end on the real controller); nothing starts the session. Its first turn reads the note once.

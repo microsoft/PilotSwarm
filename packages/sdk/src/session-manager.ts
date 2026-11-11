@@ -5135,13 +5135,15 @@ export class SessionManager {
         // a cached "owns none".
         let lasting = config.workflowContextTrigger === "lasting" || this.workflowContextPendingOn.has(sessionId);
         if (lasting) this.workflowContextOwnsNone.delete(sessionId);
-        if (!lasting && config.workflowContextTrigger === "turn") return on;
         if (!lasting && flags.ownsCheck && !this.workflowContextOwnsNone.has(sessionId)) {
             try {
                 if (await flags.ownsCheck()) lasting = true;
                 else this.workflowContextOwnsNone.add(sessionId);
             } catch {
-                return on;
+                // Review AS-07: a read that fails proves nothing, so the session stays off this turn (the paragraph and
+                // enable_workflows, no Workflow tools or free-use guidance); it is not cached as owning none, so the next
+                // turn reads again.
+                return { mode: "off", onDemand: true };
             }
         }
         if (!lasting) return { mode: "off", onDemand: true };

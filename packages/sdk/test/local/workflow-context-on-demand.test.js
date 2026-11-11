@@ -5,9 +5,11 @@
  *   Workflow tools; cron and cron_at point to enable_workflows.
  * - enable_workflows saves the session's flag (with its capability state, revision-checked) and ends the turn; the turn's
  *   result carries the continuation, so the next turn starts at once, on a fresh binding, with the Workflow tools.
- * - On without asking: a saved flag; a lasting trigger (saved too); a trigger that could not be read (this turn only); a
- *   session that owns a definition or a Workflow (saved; a session that owns none is not read again); a session inside a
- *   Workflow; Agent Smith; a frozen 1.0.82 turn; a session manager without durable capability storage.
+ * - On without asking: a saved flag; a lasting trigger (saved too); a session that owns a definition or a Workflow (saved; a
+ *   session that owns none is not read again); a session inside a Workflow; Agent Smith; a frozen 1.0.82 turn; a session
+ *   manager without durable capability storage.
+ * - Review AS-07: a read that fails is no trigger. The session stays off for that turn (no Workflow tools, no free-use
+ *   guidance, the agreement paragraph and enable_workflows), saves nothing, and reads again on its next turn.
  * - None: the read-only tuner and service sessions get neither the paragraph nor enable_workflows.
  * - A session whose Workflows are on demand keeps enable_workflows declared once they are on ("already on"): the CLI refuses
  *   a call of a tool it was not declared, which the session shows as a Failed row (the deployed UX check).
@@ -191,18 +193,14 @@ describe("Workflows on demand: declarations and instructions", () => {
         expect(f.manager.clientSessionConfigs.has("chat")).toBe(false);
     });
 
-    it("a lasting trigger turns them on and saves the flag; a trigger that could not be read turns them on for this turn only", async () => {
+    it("a lasting trigger turns them on and saves the flag", async () => {
         const lasting = fixture();
         expect((await lasting.turn(0, { workflowContextTrigger: "lasting" })).config.workflowContext).toBe("on");
         expect(lasting.state.workflows).toBe(true);
         expect((await lasting.turn(1)).config.workflowContext).toBe("on");
-        const once = fixture();
-        expect((await once.turn(0, { workflowContextTrigger: "turn" })).config.workflowContext).toBe("on");
-        expect(once.state.workflows).toBeUndefined();
-        expect((await once.turn(1)).config.workflowContext).toBe("off");
     });
 
-    it("a session that owns a definition or a Workflow turns them on and saves; one that owns none is not read again; a failed read is on", async () => {
+    it("a session that owns a definition or a Workflow turns them on and saves; one that owns none is not read again; a failed read stays off", async () => {
         const owns = fixture();
         const yes = vi.fn(async () => true);
         expect((await owns.turn(0, { workflowContextOwnsCheck: yes })).config.workflowContext).toBe("on");
@@ -212,12 +210,26 @@ describe("Workflows on demand: declarations and instructions", () => {
         expect((await nothing.turn(0, { workflowContextOwnsCheck: no })).config.workflowContext).toBe("off");
         expect((await nothing.turn(1, { workflowContextOwnsCheck: no })).config.workflowContext).toBe("off");
         expect(no).toHaveBeenCalledTimes(1);
+        // Review AS-07: a failed read is no evidence of a Definition or a Workflow. The turn stays off: no Workflow tool, no
+        // free-use guidance, the agreement paragraph and enable_workflows; nothing is saved, and the next turn reads again.
         const failing = fixture();
         const broken = vi.fn(async () => { throw new Error("store unavailable"); });
-        expect((await failing.turn(0, { workflowContextOwnsCheck: broken })).config.workflowContext).toBe("on");
+        const first = await failing.turn(0, { workflowContextOwnsCheck: broken });
+        expect(first.config.workflowContext).toBe("off");
+        expect(none(first.names, [...WORKFLOW_TOOLS, "spawn_workflow"])).toBe(true);
+        expect(first.names).toContain("enable_workflows");
+        expect(first.prompt).toContain(inPrompt(WORKFLOW_CONTEXT_STUB));
+        expect(first.prompt).not.toContain(inPrompt(WORKFLOW_SESSION_GUIDANCE.split("\n\n")[1]));
+        for (const name of ["cron", "cron_at"]) expect(described(first.tools, name).endsWith(WORKFLOW_SCHEDULING_HINT_OFF)).toBe(true);
         expect(failing.state.workflows).toBeUndefined();
-        expect((await failing.turn(1, { workflowContextOwnsCheck: broken })).config.workflowContext).toBe("on");
+        expect(failing.saves).toEqual([]);
+        expect((await failing.turn(1, { workflowContextOwnsCheck: broken })).config.workflowContext).toBe("off");
         expect(broken).toHaveBeenCalledTimes(2);
+        // The explicit paths still turn them on: a lasting trigger on a turn whose owns-check fails, and a saved flag.
+        const explicit = fixture();
+        expect((await explicit.turn(0, { workflowContextTrigger: "lasting", workflowContextOwnsCheck: broken })).config.workflowContext).toBe("on");
+        expect(explicit.state.workflows).toBe(true);
+        expect((await explicit.turn(1, { workflowContextOwnsCheck: broken })).config.workflowContext).toBe("on");
     });
 
     it("on without a save: inside a Workflow, an agent node's session, a frozen 1.0.82 turn, no durable capability storage", async () => {

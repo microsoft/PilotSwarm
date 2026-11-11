@@ -22,6 +22,15 @@
  *   skills directory). The load must succeed. Turning Workflows on first is allowed. Owner 2026-11-09T06:40Z approved how
  *   the CLI's tool serves these skills (A), so it runs with the other cases.
  *
+ * Consent (owner 2026-11-11, review of aeb684f5 test item 4): only turning Workflows on needs the user's agreement. On a
+ * worker with script nodes on:
+ * - a new session (Workflows off) asked for a repeated check that suits a Workflow, without asking for one: it does not
+ *   turn Workflows on and calls no Workflow tool, and its reply names a Workflow (its suggestion); told "no", it still does
+ *   not turn them on; told "yes", it turns them on, once;
+ * - a new session with Workflows already on, asked the same: it uses a Workflow (saves one with workflow_definition)
+ *   without turning them on again.
+ * The explicit request is the enable case above.
+ *
  * UXP-AC-01 (a real user's session invented state types and said there was no script node): on a worker with script nodes
  * on, a new session is asked, with no YAML words, "Create and start a Workflow that checks every minute whether a counter
  * variable has reached 3, using a small script, and ends when it does." PASS: within its first 3 saved revisions, one is
@@ -45,7 +54,8 @@
  * (provider:model) and optionally PS_WORKFLOW_REAL_MODEL_EFFORT, on a local worker whose model catalog
  * (PS_MODEL_PROVIDERS_PATH) serves it (test/helpers/workflow-real-model.mjs). Asked but unable to run, it fails as
  * BLOCKED. The receipt goes to PS_WORKFLOW_REAL_MODEL_RECEIPT when set (an on-demand case's to the same path with its
- * key before the extension: <name>.enable.json, <name>.stays-off.json, <name>.load-skill.json, <name>.script-state.json); a summary is printed. The
+ * key before the extension: <name>.enable.json, <name>.stays-off.json, <name>.load-skill.json, <name>.script-state.json,
+ * <name>.consent.json, <name>.already-on.json); a summary is printed. The
  * haiku case: one asked turn, the agent node's turn, and the turn the Workflow's ending notice starts; each on-demand case:
  * one or two turns (enable_workflows ends a turn and starts the next), and the simple Workflow's ending notice.
  *
@@ -70,6 +80,11 @@ const ASK = "Set up a Workflow with one agent step that writes a one-line haiku 
 const ASK_SIMPLE = "Build a simple Workflow that waits 5 seconds and then finishes, start it, and tell me when it has finished.";
 const ASK_PLAIN = "What is the capital of France? Answer in one word.";
 const ASK_SKILL = "Load the Workflow authoring skill, then tell me in one sentence what it covers.";
+/** Consent: a repeated check a script could do, with no word about Workflows. */
+const ASK_REPEAT = "Every minute for the next five minutes, check whether https://example.com answers, then tell me how many of the checks got an answer.";
+/** Consent: the user declines the suggestion, then accepts it. */
+const ASK_DECLINE = "No, don't use a Workflow for that. Don't set anything up.";
+const ASK_ACCEPT = "I changed my mind: yes, use a Workflow for it.";
 /** UXP-AC-01: no YAML words; the session must find the script state type itself. */
 const ASK_SCRIPT = "Create and start a Workflow that checks every minute whether a counter variable has reached 3, using a small script, and ends when it does.";
 /** UXP-AD-01: what the session is asked first, with its Workflow's id; nothing about who may resume it. */
@@ -238,6 +253,8 @@ const TITLE_ENABLE = "Workflows on demand: a new session asked in prose to build
 const TITLE_STAYS_OFF = "Workflows on demand: a new session asked an ordinary question keeps Workflows off (no enable_workflows, no Workflow tool declared)";
 const TITLE_LOAD_SKILL = "Workflows on demand: a new session asked in prose to load the Workflow authoring skill loads it (load_skill or the CLI's skill tool) and gets its body";
 const TITLE_SCRIPT = "UXP-AC-01: a new session asked in plain words for a counter check with a small script saves a valid revision with a script state within 3 saves and starts it";
+const TITLE_CONSENT = "Consent: with Workflows off, a repeated check gets a suggestion and no activation; a decline keeps them off; an acceptance turns them on once";
+const TITLE_ALREADY_ON = "Consent: with Workflows already on, the same repeated check uses a Workflow without turning them on again";
 const TITLE_PERSON_CONTROL = "UXP-AD-01: a session that paused its Workflow on request does not pause it again after a person resumed it through the API, the Workflow wrote to it and the person asked about it";
 /** Every case runs: none is held any more (owner 2026-11-09T06:40Z decided A, I1 and I2). */
 const caseOf = () => it;
@@ -313,7 +330,7 @@ function workflowsEnded(definitionStore, sessionId, ms) {
 
 describe("the full Workflow engine on a default worker, on a real model", () => {
     if (plan.state === "skip") {
-        for (const title of [TITLE, TITLE_ENABLE, TITLE_STAYS_OFF, TITLE_LOAD_SKILL, TITLE_SCRIPT, TITLE_PERSON_CONTROL]) {
+        for (const title of [TITLE, TITLE_ENABLE, TITLE_STAYS_OFF, TITLE_CONSENT, TITLE_ALREADY_ON, TITLE_LOAD_SKILL, TITLE_SCRIPT, TITLE_PERSON_CONTROL]) {
             it.skip(`${title} — skipped: ${plan.reason}`, () => {});
         }
         return;
@@ -409,6 +426,62 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
             expect(declared, `enable_workflows is declared while Workflows are off. ${why}`).toContain("enable_workflows");
             expect(declared.filter(name => WORKFLOW_TOOLS.includes(name)), `no Workflow tool is declared. ${why}`).toEqual([]);
         });
+    });
+
+    it(TITLE_CONSENT, { timeout: TEST_TIMEOUT }, async () => {
+        await realModelSession("consent", ASK_REPEAT, async ({ catalog, session, receipt }) => {
+            const calls = async () => (await toolCallsOf(catalog, session.sessionId)).map(call => call.name);
+            const flag = async () => (await catalog.getSessionCapabilities(session.sessionId))?.workflows === true;
+            const replyAfter = async seq => (await catalog.getSessionEvents(session.sessionId, seq, 5_000, ["assistant.message"]))
+                .map(event => event.data?.content).filter(value => typeof value === "string" && value).join("\n");
+            const lastSeq = async () => (await catalog.getSessionEvents(session.sessionId, 0, 5_000)).reduce((max, event) => Math.max(max, event.seq ?? 0), 0);
+
+            // The ask: a suggestion, no activation.
+            receipt.steps.settledAsk = await settle(catalog, session.sessionId, TURN_MS);
+            receipt.steps.askCalls = await calls();
+            receipt.steps.askFlag = await flag();
+            receipt.steps.askReply = (await replyAfter(0)).slice(0, 600);
+            // The decline: still no activation.
+            const beforeDecline = await lastSeq();
+            await session.sendAndWait(ASK_DECLINE, TURN_MS);
+            receipt.steps.settledDecline = await settle(catalog, session.sessionId, TURN_MS);
+            receipt.steps.declineCalls = (await calls()).slice(receipt.steps.askCalls.length);
+            receipt.steps.declineFlag = await flag();
+            receipt.steps.declineReply = (await replyAfter(beforeDecline)).slice(0, 300);
+            // The acceptance: Workflows turn on, once.
+            await session.sendAndWait(ASK_ACCEPT, TURN_MS);
+            receipt.steps.settledAccept = await settle(catalog, session.sessionId, TURN_MS);
+            const all = await calls();
+            receipt.steps.acceptCalls = all.slice(receipt.steps.askCalls.length + receipt.steps.declineCalls.length);
+            receipt.steps.acceptFlag = await flag();
+
+            const why = JSON.stringify(receipt);
+            expect(receipt.steps.sessionVersion, why).toBe(DURABLE_SESSION_LATEST_VERSION);
+            expect(receipt.steps.askCalls, `the ask turns nothing on. ${why}`).not.toContain("enable_workflows");
+            expect(receipt.steps.askCalls.filter(name => WORKFLOW_TOOLS.includes(name)), `the ask calls no Workflow tool. ${why}`).toEqual([]);
+            expect(receipt.steps.askFlag, `Workflows stay off after the ask. ${why}`).toBe(false);
+            expect(receipt.steps.askReply, `the reply suggests a Workflow. ${why}`).toMatch(/workflow/i);
+            expect(receipt.steps.declineCalls, `the decline turns nothing on. ${why}`).not.toContain("enable_workflows");
+            expect(receipt.steps.declineFlag, `Workflows stay off after the decline. ${why}`).toBe(false);
+            expect(all.filter(name => name === "enable_workflows"), `the acceptance turns them on, once. ${why}`).toHaveLength(1);
+            expect(receipt.steps.acceptCalls, `the acceptance calls enable_workflows. ${why}`).toContain("enable_workflows");
+            expect(receipt.steps.acceptFlag, `Workflows are on after the acceptance. ${why}`).toBe(true);
+        }, { worker: WORKER_SCRIPTS });
+    });
+
+    it(TITLE_ALREADY_ON, { timeout: TEST_TIMEOUT }, async () => {
+        await realModelSession("already-on", ASK_REPEAT, async ({ catalog, session, receipt }) => {
+            receipt.steps.settled = await settle(catalog, session.sessionId, TURN_MS);
+            const names = (await toolCallsOf(catalog, session.sessionId)).map(call => call.name);
+            receipt.steps.toolCalls = names;
+            receipt.steps.definitions = (await catalog.workflowStore().sessionDefinitions.listDefinitions(session.sessionId)).length;
+
+            const why = JSON.stringify(receipt);
+            expect(receipt.steps.sessionVersion, why).toBe(DURABLE_SESSION_LATEST_VERSION);
+            expect(names, `it does not turn Workflows on again. ${why}`).not.toContain("enable_workflows");
+            expect(names, `it saves a Workflow with workflow_definition. ${why}`).toContain("workflow_definition");
+            expect(receipt.steps.definitions, `the session owns the Workflow Definition it saved. ${why}`).toBeGreaterThan(0);
+        }, { workflowsOn: true, worker: WORKER_SCRIPTS });
     });
 
     // Known failure until the owner decides how the CLI's own `skill` tool serves the Workflow skills: a model that calls it

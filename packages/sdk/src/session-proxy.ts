@@ -1823,7 +1823,7 @@ export function registerActivities(
         // Stage 2.1 (E2-4, F3): a person's save of one of this session's Workflow Definitions left a note; the session reads the notes
         // at the start of its next turn's prompt (read once per attempt; a save never starts a turn), and they are consumed only
         // when that turn succeeds, so a turn that fails leaves them for its retry.
-        const sessionNotes: { read: { ids: number[]; text: string } | null; failed?: boolean } = { read: null };
+        const sessionNotes: { read: { ids: number[]; text: string } | null } = { read: null };
         const readSessionNotesOnce = async (): Promise<{ ids: number[]; text: string }> => {
             if (sessionNotes.read !== null) return sessionNotes.read;
             sessionNotes.read = { ids: [], text: "" };
@@ -1832,7 +1832,6 @@ export function registerActivities(
                 const notes = await catalog.workflowStore().sessionDefinitions.pendingNotes(input.sessionId);
                 if (notes.length) sessionNotes.read = { ids: notes.map(note => note.noteId), text: notes.map(note => `[SYSTEM: ${note.text}]`).join("\n") };
             } catch (error: any) {
-                sessionNotes.failed = true;
                 traceWarn(`[runTurn] could not read the Workflow Definition notes of ${input.sessionId}: ${error?.message ?? error}`);
             }
             return sessionNotes.read;
@@ -2549,8 +2548,9 @@ export function registerActivities(
         }
         // Workflows on demand (owner 2026-11-08T16:55Z): on a 1.0.83 turn a session has the Workflow tools and guidance only
         // when they are on in it (session-manager decides from its saved flag and these). A Workflow's message or request, a
-        // person's saved definition (a pending note) or a coordinating session turns them on for good; a trigger that cannot be
-        // read turns them on for this turn. Whether the session owns a definition or a Workflow is read only while they are off.
+        // person's saved definition (a pending note) or a coordinating session turns them on for good. A read that fails is no
+        // trigger: the session stays off (review AS-07), and a later turn reads again. Whether the session owns a definition or a
+        // Workflow is read only while they are off.
         if (workflowRequestTurn && catalog?.workflowStore) {
             const store = catalog.workflowStore();
             const notes = await readSessionNotesOnce();
@@ -2558,8 +2558,6 @@ export function registerActivities(
             const updates = [effectivePrompt ?? "", ...stashed].some(text => /\[WORKFLOW_UPDATE\b/.test(text));
             if (turnIntake !== null || updates || notes.text || catalogSessionRow?.workflowRef) {
                 (runConfig as ManagedSessionConfig).workflowContextTrigger = "lasting";
-            } else if (sessionNotes.failed) {
-                (runConfig as ManagedSessionConfig).workflowContextTrigger = "turn";
             }
             (runConfig as ManagedSessionConfig).workflowContextOwnsCheck = () => store.sessionDefinitions.hasWorkflows(input.sessionId);
         }
