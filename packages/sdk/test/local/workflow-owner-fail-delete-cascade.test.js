@@ -11,7 +11,7 @@ import { createManagementClient } from "../helpers/local-workers.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 import {
-    CASCADE_OWNER, CASCADE_TIMEOUT, openOwnerCascadeRuntime, startCascadeLive, startCascadeBench, pendingCascadeNode,
+    CASCADE_OWNER, CASCADE_TIMEOUT, WORKFLOW_SESSION_END_STATE, openOwnerCascadeRuntime, startCascadeLive, startCascadeBench, pendingCascadeNode,
     cascadeControllerEnded, assertNoActiveCascadeRuns, assertCancelledCascadeNodes,
 } from "./workflow-owner-cascade-fixture.js";
 
@@ -56,7 +56,7 @@ describe("failed and deleted owners retain their existing cascades", () => {
             });
             await assertCancelledCascadeNodes(h.store, run);
             await cascadeControllerEnded(h.client, run);
-            expect(await h.catalog.getSession(run.workflowId)).toMatchObject({ state: "cancelled", deletedAt: null });
+            expect(await h.catalog.getSession(run.workflowId)).toMatchObject({ state: WORKFLOW_SESSION_END_STATE, deletedAt: null });
             await assertNoActiveCascadeRuns(h.q, [run.workflowId]);
             // No later test admission may revive a failed owner's bench.
             await expect(startCascadeBench(h.host, owner, "after-failure")).rejects.toThrow();

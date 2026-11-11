@@ -15,6 +15,7 @@ export const CASCADE_OWNER = { provider: "test", subject: "workflow-owner-cascad
 export const CASCADE_ACTOR = { kind: "system", name: "workflow-owner-cascade-tests" };
 export const CASCADE_TIMEOUT = testTime.ms(180_000);
 export const ACTIVE_RUNS = ["admitted", "running", "paused"];
+export const WORKFLOW_SESSION_END_STATE = "cancelled";
 
 export const waitYaml = name => `
 apiVersion: pilotswarm.dev/v1

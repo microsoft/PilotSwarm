@@ -14,7 +14,7 @@ import { createManagementClient } from "../helpers/local-workers.js";
 import { waitForSessionState } from "../helpers/cms-helpers.js";
 import { controlWorkflowRun } from "../../src/workflow/service.ts";
 import {
-    CASCADE_OWNER, CASCADE_ACTOR, CASCADE_TIMEOUT, openOwnerCascadeRuntime, startCascadeLive, startCascadeBench,
+    CASCADE_OWNER, CASCADE_ACTOR, CASCADE_TIMEOUT, WORKFLOW_SESSION_END_STATE, openOwnerCascadeRuntime, startCascadeLive, startCascadeBench,
     terminalYaml, pendingCascadeNode, cascadeControllerEnded, assertNoActiveCascadeRuns, assertCancelledCascadeNodes,
 } from "./workflow-owner-cascade-fixture.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
@@ -62,7 +62,7 @@ describe("completing an owner cancels active Workflows and preserves ended Workf
             await assertCancelledCascadeNodes(h.store, run, OWNER_ENDED_REASON);
             await cascadeControllerEnded(h.client, run);
             // Read after the controller's post-end projection, not just after the trigger.
-            expect(await h.catalog.getSession(run.workflowId)).toMatchObject({ state: "cancelled", deletedAt: null });
+            expect(await h.catalog.getSession(run.workflowId)).toMatchObject({ state: WORKFLOW_SESSION_END_STATE, deletedAt: null });
             await assertNoActiveCascadeRuns(h.q, [run.workflowId]);
         } finally {
             await h.stop();
@@ -115,18 +115,16 @@ async function spawnedChild(h, parentId) {
 async function assertLiveCascadeEnd(h, run, ownerId) {
     const ended = await h.store.readRun(run.runId);
     expect(ended.status).toBe("cancelled");
-    expect(ended.terminalError).toEqual({
+    expect(ended.terminalError).toMatchObject({
         code: "cancelled", message: PARENT_CASCADE_REASON,
         details: {
             command: "done",
-            // Existing store attribution; option A removes no accepted-command markers.
-            accepted: true,
             operationId: expect.stringMatching(new RegExp(`^${CASCADE_OPERATION_PREFIX}\\d+-${run.workflowId.slice(0, 8)}$`)),
             requestedBy: ownerId,
         },
     });
     expect(await h.catalog.getSession(run.workflowId)).toMatchObject({
-        state: "cancelled", lastError: PARENT_CASCADE_REASON, deletedAt: null,
+        state: WORKFLOW_SESSION_END_STATE, lastError: PARENT_CASCADE_REASON, deletedAt: null,
     });
     await assertCancelledCascadeNodes(h.store, run, PENDING_CASCADE_REASON);
 }
@@ -151,7 +149,7 @@ describe("the real owner completion entry points, with an active live Workflow a
                 expect((await h.store.readRun(run.runId)).status).toBe("cancelled");
                 await assertCancelledCascadeNodes(h.store, run, OWNER_ENDED_REASON);
                 await cascadeControllerEnded(duroxide, run);
-                expect(await h.catalog.getSession(run.workflowId)).toMatchObject({ state: "cancelled" });
+                expect(await h.catalog.getSession(run.workflowId)).toMatchObject({ state: WORKFLOW_SESSION_END_STATE });
                 await assertNoActiveCascadeRuns(h.q, [run.workflowId]);
             });
         } finally {

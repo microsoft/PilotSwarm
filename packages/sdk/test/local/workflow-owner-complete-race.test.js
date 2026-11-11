@@ -17,7 +17,7 @@ import { checkpoint, reachedDuring, observeBlocked } from "../helpers/workflow-r
 import { startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { startSessionWorkflowTest } from "../../src/workflow/definition-test.ts";
 import {
-    CASCADE_OWNER, CASCADE_ACTOR, CASCADE_TIMEOUT, openOwnerCascadeRuntime, saveCascadeDefinition, startCascadeLive,
+    CASCADE_OWNER, CASCADE_ACTOR, CASCADE_TIMEOUT, WORKFLOW_SESSION_END_STATE, openOwnerCascadeRuntime, saveCascadeDefinition, startCascadeLive,
     pendingCascadeNode, cascadeControllerEnded, assertNoActiveCascadeRuns,
 } from "./workflow-owner-cascade-fixture.js";
 
@@ -111,7 +111,7 @@ describe("a run starting concurrently with its owner's completion never survives
                         });
                         expect(run.terminalError).toEqual({ code: "cancelled", message: OWNER_ENDED_REASON });
                         await cascadeControllerEnded(h.client, run);
-                        expect(await h.catalog.getSession(run.workflowSessionId)).toMatchObject({ state: "cancelled" });
+                        expect(await h.catalog.getSession(run.workflowSessionId)).toMatchObject({ state: WORKFLOW_SESSION_END_STATE });
                     } else {
                         expect(started.ok).toBe(false);
                         expect(started.error.code, started.error.message).toBe(REFUSED_AFTER_END);
@@ -125,7 +125,7 @@ describe("a run starting concurrently with its owner's completion never survives
                         [owner, saved.definitionId])).toEqual([]);
                     }
                     await cascadeControllerEnded(h.client, control);
-                    expect(await h.catalog.getSession(control.workflowId)).toMatchObject({ state: "cancelled" });
+                    expect(await h.catalog.getSession(control.workflowId)).toMatchObject({ state: WORKFLOW_SESSION_END_STATE });
                     expect((await h.store.readRun(control.runId)).terminalError).toEqual({ code: "cancelled", message: OWNER_ENDED_REASON });
                     await assertNoActiveCascadeRuns(h.q, childIds);
                 } finally {
