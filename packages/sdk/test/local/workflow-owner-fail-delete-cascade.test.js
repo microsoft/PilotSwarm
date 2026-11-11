@@ -12,7 +12,7 @@ import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 import {
     CASCADE_OWNER, CASCADE_TIMEOUT, WORKFLOW_SESSION_END_STATE, openOwnerCascadeRuntime, startCascadeLive, startCascadeBench, pendingCascadeNode,
-    cascadeControllerEnded, assertNoActiveCascadeRuns, assertCancelledCascadeNodes,
+    cascadeControllerEnded, cascadeControllerRunning, assertNoActiveCascadeRuns, assertActiveCascadeRuns, assertCancelledCascadeNodes,
 } from "./workflow-owner-cascade-fixture.js";
 
 const FAILED_REASON = "The session that owns this Workflow ended, so the Workflow was canceled.";
@@ -26,7 +26,7 @@ const getEnv = useSuiteEnv(import.meta.url);
  * a deletion trigger ended it (DELETED_REASON when the Workflow itself was deleted first, FAILED_REASON when its owner
  * ended first). Nothing else is accepted.
  */
-async function assertDeletedWorkflow(h, run, client, end) {
+async function assertDeletedWorkflow(h, run, client, end, { deleted = false } = {}) {
     expect(await h.catalog.getSession(run.workflowId)).toBeNull();
     expect(await h.q("SELECT deleted_at IS NOT NULL AS deleted FROM SCHEMA.sessions WHERE session_id = $1", [run.workflowId]))
         .toEqual([{ deleted: true }]);
@@ -49,8 +49,8 @@ async function assertDeletedWorkflow(h, run, client, end) {
         expect(ended.terminalError).toEqual({ code: "cancelled", message: end.trigger });
     }
     await assertCancelledCascadeNodes(h.store, run);
-    // The real force-delete paths may terminate the live instance rather than letting it return normally.
-    await cascadeControllerEnded(client, run);
+    // A path that deletes instances may leave NotFound (the controller was proven Running before the delete).
+    await cascadeControllerEnded(client, run, { deleted });
     await assertNoActiveCascadeRuns(h.q, [run.workflowId]);
 }
 
@@ -62,7 +62,7 @@ describe("failed and deleted owners retain their existing cascades", () => {
             await h.catalog.createSession(owner, { owner: CASCADE_OWNER });
             const run = await startCascadeBench(h.host, owner, "failed-owner-bench");
             await pendingCascadeNode(h.store, run);
-            await expect(assertNoActiveCascadeRuns(h.q, [run.workflowId])).rejects.toThrow();
+            await assertActiveCascadeRuns(h.q, [run.workflowId], [run.runId]);
             await h.catalog.updateSession(owner, { state: "failed" });
             expect(await h.catalog.getSession(owner)).toMatchObject({ state: "failed" });
             expect(await h.store.readRun(run.runId)).toMatchObject({
@@ -94,13 +94,14 @@ describe("failed and deleted owners retain their existing cascades", () => {
                         const host = { catalog: h.catalog, store: h.store, duroxideClient: duroxide, scripts: true };
                         const run = await startCascadeLive(host, owner.sessionId, "deleted-owner-live");
                         await pendingCascadeNode(h.store, run);
-                        await expect(assertNoActiveCascadeRuns(h.q, [run.workflowId])).rejects.toThrow();
+                        await assertActiveCascadeRuns(h.q, [run.workflowId], [run.runId]);
+                        await cascadeControllerRunning(duroxide, run);
                         // An unstarted owner takes deleteSession's terminal/unknown fast path, with a genuinely live Workflow.
                         await mgmt.deleteSession(owner.sessionId, "fixture delete");
                         expect(await h.catalog.getSession(owner.sessionId)).toBeNull();
                         await assertDeletedWorkflow(h, run, duroxide, path === "live orchestration"
                             ? { cascade: { reason: "fixture delete", command: "cancel", operationPrefix: "session-command:delete-cascade-", requestedBy: owner.sessionId } }
-                            : { trigger: DELETED_REASON });
+                            : { trigger: DELETED_REASON }, { deleted: path !== "live orchestration" });
                     });
                 } finally {
                     await mgmt.stop();
@@ -135,7 +136,9 @@ describe("failed and deleted owners retain their existing cascades", () => {
                         ];
                         for (const run of runs) await pendingCascadeNode(h.store, run);
                         const ids = runs.map(run => run.workflowId);
-                        await expect(assertNoActiveCascadeRuns(h.q, ids)).rejects.toThrow();
+                        await assertActiveCascadeRuns(h.q, ids, runs.map(run => run.runId));
+                        for (const run of runs) await cascadeControllerRunning(duroxide, run);
+                        await cascadeControllerRunning(duroxide, { controllerInstanceId: `session-${leaf.sessionId}` });
                         if (path === "SDK deleteSession") await client.deleteSession(root.sessionId);
                         else await mgmt.deleteSession(root.sessionId, "fixture delete tree");
                         for (const id of [root.sessionId, nested.sessionId, leaf.sessionId, ...ids]) {
@@ -157,8 +160,8 @@ describe("failed and deleted owners retain their existing cascades", () => {
                         ] : [
                             [rootRun, { trigger: DELETED_REASON }], [nestedRun, { trigger: DELETED_REASON }], [benchRun, { trigger: DELETED_REASON }],
                         ];
-                        for (const [run, end] of ends) await assertDeletedWorkflow(h, run, duroxide, end);
-                        await cascadeControllerEnded(duroxide, { controllerInstanceId: `session-${leaf.sessionId}` });
+                        for (const [run, end] of ends) await assertDeletedWorkflow(h, run, duroxide, end, { deleted: path !== "live orchestration" });
+                        await cascadeControllerEnded(duroxide, { controllerInstanceId: `session-${leaf.sessionId}` }, { deleted: path !== "live orchestration" });
                         await assertNoActiveCascadeRuns(h.q, ids);
                         // All test-schema runs belong to this tree: catches a run omitted from our expected ids.
                         expect(await h.q(`SELECT run.run_id FROM SCHEMA.workflow_runs run JOIN SCHEMA.sessions child

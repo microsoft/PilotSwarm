@@ -125,9 +125,32 @@ export async function cascadeRunEnded(store, run) {
         .not.toMatch(new RegExp(`^(${ACTIVE_RUNS.join("|")})$`));
 }
 
-export async function cascadeControllerEnded(client, run) {
-    await expect.poll(async () => (await client.getStatus(run.controllerInstanceId)).status,
-        { timeout: CASCADE_TIMEOUT }).not.toMatch(/^(Running|Pending)$/);
+/** Terminal Duroxide statuses: the controller ran and ended. NotFound is not one: it may never have existed. */
+const ENDED_CONTROLLER = new Set(["Completed", "Failed", "Terminated"]);
+
+/** Wait until the controller exists and runs: the proof that a later NotFound means it was deleted. */
+export async function cascadeControllerRunning(client, run) {
+    await expect.poll(async () => (await client.getStatus(run.controllerInstanceId)).status, { timeout: CASCADE_TIMEOUT }).toBe("Running");
+}
+
+/**
+ * Wait until the controller has ended: Completed, Failed or Terminated (test review of 8951bc61, item 7). NotFound counts
+ * only with `{ deleted: true }`, for a path that deletes instances, after cascadeControllerRunning proved it existed.
+ */
+export async function cascadeControllerEnded(client, run, { deleted = false } = {}) {
+    let last = null;
+    await expect.poll(async () => {
+        last = (await client.getStatus(run.controllerInstanceId)).status;
+        return ENDED_CONTROLLER.has(last) || (deleted && last === "NotFound");
+    }, { timeout: CASCADE_TIMEOUT }).toBe(true);
+    return last;
+}
+
+/** The active runs of `workflowIds` are exactly `runIds` (the negative control before an end: the fixture really is active). */
+export async function assertActiveCascadeRuns(q, workflowIds, runIds) {
+    const rows = await q(`SELECT run_id FROM SCHEMA.workflow_runs
+        WHERE workflow_session_id = ANY($1::text[]) AND status = ANY($2::text[]) ORDER BY run_id`, [workflowIds, ACTIVE_RUNS]);
+    expect(rows.map(row => row.run_id), "the fixture's runs are active before the end").toEqual([...runIds].sort());
 }
 
 /** The same oracle is exercised against an active fixture before every end; it must reject an orphan. */

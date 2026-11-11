@@ -18,7 +18,7 @@ import { startSessionWorkflowDefinition } from "../../src/workflow/session-defin
 import { startSessionWorkflowTest } from "../../src/workflow/definition-test.ts";
 import {
     CASCADE_OWNER, CASCADE_ACTOR, CASCADE_TIMEOUT, WORKFLOW_SESSION_END_STATE, openOwnerCascadeRuntime, saveCascadeDefinition, startCascadeLive,
-    pendingCascadeNode, cascadeControllerEnded, assertNoActiveCascadeRuns,
+    pendingCascadeNode, cascadeControllerEnded, assertNoActiveCascadeRuns, assertActiveCascadeRuns,
 } from "./workflow-owner-cascade-fixture.js";
 
 const OWNER_ENDED_REASON = "The session that owns this Workflow ended, so the Workflow was canceled.";
@@ -60,7 +60,7 @@ describe("a run starting concurrently with its owner's completion never survives
                     // A real running negative control, and an independent definition for the racing admission.
                     const control = await startCascadeLive(h.host, owner, "race-control");
                     await pendingCascadeNode(h.store, control);
-                    await expect(assertNoActiveCascadeRuns(h.q, [control.workflowId])).rejects.toThrow();
+                    await assertActiveCascadeRuns(h.q, [control.workflowId], [control.runId]);
                     const saved = await saveCascadeDefinition(h.host, owner, "racing-start");
                     let hooked = false;
                     h.control.hook = async ({ sql, params, query, client }) => {

@@ -16,7 +16,7 @@ import { controlWorkflowRun } from "../../src/workflow/service.ts";
 import { registerActivities } from "../../src/session-proxy.ts";
 import {
     CASCADE_OWNER, CASCADE_ACTOR, CASCADE_TIMEOUT, WORKFLOW_SESSION_END_STATE, openOwnerCascadeRuntime, startCascadeLive, startCascadeBench,
-    terminalYaml, pendingCascadeNode, cascadeControllerEnded, cascadeRunEnded, assertNoActiveCascadeRuns, assertCancelledCascadeNodes,
+    terminalYaml, pendingCascadeNode, cascadeControllerEnded, cascadeRunEnded, assertNoActiveCascadeRuns, assertActiveCascadeRuns, assertCancelledCascadeNodes,
 } from "./workflow-owner-cascade-fixture.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 
@@ -52,7 +52,7 @@ describe("completing an owner cancels active Workflows and preserves ended Workf
             await h.catalog.createSession(owner, { owner: CASCADE_OWNER });
             const run = await startCascadeBench(h.host, owner, "active-bench");
             await pendingCascadeNode(h.store, run);
-            await expect(assertNoActiveCascadeRuns(h.q, [run.workflowId])).rejects.toThrow();
+            await assertActiveCascadeRuns(h.q, [run.workflowId], [run.runId]);
             await h.catalog.updateSession(owner, { state: "completed" });
             expect(await h.catalog.getSession(owner)).toMatchObject({ state: "completed" });
             expect(await h.store.readRun(run.runId)).toMatchObject({
@@ -150,7 +150,7 @@ describe("the real owner completion entry points, with an active live Workflow a
                 const host = { catalog: h.catalog, store: h.store, duroxideClient: duroxide, scripts: true };
                 const run = await startCascadeBench(host, owner.sessionId, "management-bench");
                 await pendingCascadeNode(h.store, run);
-                await expect(assertNoActiveCascadeRuns(h.q, [run.workflowId])).rejects.toThrow();
+                await assertActiveCascadeRuns(h.q, [run.workflowId], [run.runId]);
                 await mgmt.completeSession(owner.sessionId, "fixture bench owner completion", { wait: false });
                 await waitForSessionState(h.catalog, owner.sessionId, "completed", testTime.ms(60_000));
                 expect((await h.store.readRun(run.runId)).terminalError).toEqual({ code: "cancelled", message: OWNER_ENDED_REASON });
@@ -242,7 +242,7 @@ describe("the real owner completion entry points, with an active live Workflow a
                     const host = { catalog: h.catalog, store: h.store, duroxideClient: duroxide, scripts: true };
                     const run = await startCascadeLive(host, ownerId, "live-on-completion");
                     await pendingCascadeNode(h.store, run);
-                    await expect(assertNoActiveCascadeRuns(h.q, [run.workflowId])).rejects.toThrow();
+                    await assertActiveCascadeRuns(h.q, [run.workflowId], [run.runId]);
 
                     if (path === "done command") {
                         const id = `done-${randomUUID()}`;
