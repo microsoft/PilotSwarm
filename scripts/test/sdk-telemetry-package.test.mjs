@@ -124,6 +124,19 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
                 sessionStateDir: path.join(temp, "sessions"), workerNodeId: "consumer-worker", ...storage,
             });
             await worker.start();
+            const manager = worker.sessionManager;
+            for (const name of ["dehydrate", "_dehydrateUnlocked", "sweepIdleSessions"]) {
+                const original = manager[name].bind(manager);
+                manager[name] = async (...args) => {
+                    console.log(JSON.stringify({
+                        debug: name,
+                        args: args.slice(0, 2),
+                        active: manager.activeSessionIds(),
+                        durable: [...manager.durablyDehydratedSessions],
+                    }));
+                    return original(...args);
+                };
+            }
             client = new PilotSwarmClient({ store, modelProvidersPath, ...storage });
             await client.start();
             const session = await client.createSession();
