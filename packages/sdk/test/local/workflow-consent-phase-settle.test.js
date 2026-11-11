@@ -12,6 +12,13 @@
  * - A model that turns Workflows on when told no fails the gating rules (the rules are not vacuous on a real session).
  * The old wait (sendAndWait on the ask, as at d5118761) is the negative control: it does not return within 20 s.
  *
+ * The Workflow the model starts waits ten minutes, so it is still running when the case cancels its session, and the
+ * cancel ends it (DEV run at 069eca30: with a one-second wait the control case's Workflow could end on its own just after
+ * the cancel reached the session; its end notice then reached the session while the cancel waited for its children, ran as
+ * a turn, the session cron was armed again and the cancel never finished). That race is a session-orchestration defect of
+ * its own, reported separately (a message that arrives while a cancel, completion or deletion waits for the session's
+ * children ends that wait); these cases do not test it.
+ *
  * Run: npx vitest run test/local/workflow-consent-phase-settle.test.js
  */
 import { describe, it, expect } from "vitest";
@@ -30,10 +37,10 @@ const CAPS = { ask: 60_000, decline: 60_000, accept: 90_000 };
 const WORKFLOW_NAME = "repeat-check";
 const WORKFLOW_YAML = `apiVersion: pilotswarm.dev/v1
 kind: Workflow
-metadata: { name: ${WORKFLOW_NAME}, version: "1.0.0", description: "Waits a moment, then ends." }
+metadata: { name: ${WORKFLOW_NAME}, version: "1.0.0", description: "Waits ten minutes, then ends." }
 initial: pause
 states:
-  pause: { type: wait, seconds: 1, transition: { next: { elapsed: done } } }
+  pause: { type: wait, seconds: 600, transition: { next: { elapsed: done } } }
   done: { type: terminal, outcome: succeeded }
 `;
 
