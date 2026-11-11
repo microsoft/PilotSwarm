@@ -871,6 +871,8 @@ export class SessionManager {
     private sessionLocks = new Map<string, Promise<void>>();
     /** Last local activity per session — feeds the autonomous eviction clock. */
     private sessionLastTouchedAt = new Map<string, number>();
+    /** Sessions already durably released by this manager instance. */
+    private durablyDehydratedSessions = new Set<string>();
     private readonly adminScope: AdminScope;
 
     constructor(
@@ -1659,8 +1661,7 @@ export class SessionManager {
         try {
             return await this._withSessionLock(sessionId, operation, fn, options);
         } finally {
-            if (this.sessions.has(sessionId)) this.sessionLastTouchedAt.set(sessionId, Date.now());
-            else this.sessionLastTouchedAt.delete(sessionId);
+            this.sessionLastTouchedAt.set(sessionId, Date.now());
         }
     }
 
@@ -1877,6 +1878,7 @@ export class SessionManager {
         serializableConfig: SerializableSessionConfig,
         options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean },
     ): Promise<ManagedSession> {
+        this.durablyDehydratedSessions.delete(sessionId);
         this.sessionLastTouchedAt.set(sessionId, Date.now());
         const turnIndex = options?.turnIndex;
         const trace = options?.trace;
@@ -2998,6 +3000,10 @@ export class SessionManager {
     }
 
     private async _dehydrateUnlocked(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter; onCheckpointFallback?: () => void }): Promise<void> {
+        if (this.durablyDehydratedSessions.has(sessionId) && !this.sessions.has(sessionId)) {
+            emitSessionManagerTrace(sessionId, `dehydrate skipped after durable release reason=${reason}`, { trace: options?.trace });
+            return;
+        }
         const DESTROY_MAX_RETRIES = 3;
         const trace = options?.trace;
         let lastDestroyError: Error | undefined;
@@ -3157,6 +3163,7 @@ export class SessionManager {
                     throw error;
                 }
             }
+            this.durablyDehydratedSessions.add(sessionId);
         }
 
         if (lastDestroyError) {

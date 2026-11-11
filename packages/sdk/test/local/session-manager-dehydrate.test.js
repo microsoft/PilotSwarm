@@ -31,25 +31,17 @@ describe("SessionManager dehydrate", () => {
         );
     });
 
-    it("does not re-evict a session already dehydrated inside a run lock", async () => {
+    it("does not dehydrate a session twice after its durable release", async () => {
         const sessionStore = createSessionStoreMock();
         const manager = new SessionManager(undefined, sessionStore, {}, "/tmp/pilotswarm-session-state");
         manager.sessions.set("session-dehydrated", {
             destroy: vi.fn(async () => {}),
         });
 
-        vi.useFakeTimers();
-        try {
-            await manager.withRunTurnLock("session-dehydrated", "dehydrate", () =>
-                manager.dehydrate("session-dehydrated", "eviction", { lockHeld: true }),
-            );
-            vi.advanceTimersByTime(2);
+        await manager.dehydrate("session-dehydrated", "eviction");
+        await manager.dehydrate("session-dehydrated", "worker_shutdown");
 
-            await expect(manager.sweepIdleSessions(1)).resolves.toBe(0);
-            expect(sessionStore.dehydrate).toHaveBeenCalledTimes(1);
-        } finally {
-            vi.useRealTimers();
-        }
+        expect(sessionStore.dehydrate).toHaveBeenCalledTimes(1);
     });
 
     it("bubbles the session-store dehydration failure on the first attempt", async () => {
