@@ -31,12 +31,15 @@
  *   use a Workflow (a question, not a mention: the consent oracle, checked with its own examples below);
  * - a new session with Workflows already on, asked the same. Non-gating (KNOWN_CRON_GAP): it saves a valid revision and
  *   starts a Workflow of it, without enable_workflows and without asking to turn Workflows on.
- * Each consent case is capped and cannot hang on a cron: its ask is sent without waiting for an answer, each phase settles
- * on its own turn (its user message, an answer after it, then quiet), not on the session going idle, so a cron's later
- * turns do not hold it; every wait is bounded; and the case cancels its session at the end (ending a cron it set). The
- * first turn's outcome is named: asked-for-workflow-consent, chose-cron (the known gap, never a consent pass) or
- * ambiguous (manual review). The decline and the acceptance always run, so the gating rules are checked in every run.
- * Non-gating results go to receipt.nonGating.
+ * Each consent case is capped and cannot hang on a cron (test review of 8951bc61 item 1): every phase's message is sent
+ * with its own client message id, without waiting for an answer, and the phase ends on its own turn (the first
+ * session.turn_completed after that message's record: test/helpers/workflow-consent.mjs phaseTurn), never on the session's
+ * row state or on the session going idle, so a cron's turns do not hold it; every wait is bounded; and the case cancels
+ * its session at the end (ending a cron it set). The first turn's outcome is named: asked-for-workflow-consent, chose-cron
+ * (the known gap, never a consent pass) or ambiguous (manual review). The decline and the acceptance are sent whatever the
+ * first turn did (driveConsentCase), so the gating rules (consentGating) are checked in every run; a phase whose turn did
+ * not end within its cap is reported as not exercised and fails the case, never passes. Non-gating results go to
+ * receipt.nonGating, each check on its own (the already-on case's too).
  * The explicit request is the enable case above.
  *
  * UXP-AC-01 (a real user's session invented state types and said there was no script node): on a worker with script nodes
@@ -81,7 +84,7 @@ import { sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
 import { realModelPlan } from "../helpers/workflow-real-model.mjs";
 import { realModelWorkflowEvidence } from "../helpers/workflow-real-model-evidence.mjs";
-import { asksWorkflowAgreement, consentVerdict, cronStarted, excerpt, firstTurnOutcome, lastSeqOf, phaseMessages, phaseSettled } from "../helpers/workflow-consent.mjs";
+import { consentGating, consentVerdict, cronStarted, driveConsentCase, excerpt, phaseMessages, phaseTurn, reportNonGating, toolCallsOf } from "../helpers/workflow-consent.mjs";
 import { loadModelProviders } from "../../src/index.ts";
 
 const OWNER = { provider: "test", subject: "workflow-default-worker-agent-real-model" };
@@ -162,51 +165,6 @@ async function until(read, ms) {
     }
 }
 
-/** A tool event's arguments as an object (recorded as an object, or as JSON text). */
-function argsOf(data) {
-    const value = data?.arguments ?? data?.args;
-    if (typeof value === "string") {
-        try { return JSON.parse(value) ?? {}; } catch { return {}; }
-    }
-    return value && typeof value === "object" ? value : {};
-}
-
-/** A tool result's text: a string, the content of an object result, or its JSON. */
-function resultText(result) {
-    if (typeof result === "string") return result;
-    if (result && typeof result === "object" && typeof result.content === "string") return result.content;
-    try { return JSON.stringify(result ?? null); } catch { return ""; }
-}
-
-/**
- * The session's tool calls in event order: name, arguments and, once it completed, its result's text, whether it succeeded
- * (`success`: the completion's flag; false with an error) and its detailed text (`detail`: the CLI's `skill` tool returns
- * the body there; its `content` is a one-line receipt).
- */
-async function toolCallsOf(catalog, sessionId) {
-    const rows = (await catalog.getSessionEvents(sessionId, 0, 5_000, ["tool.execution_start", "tool.execution_complete"]))
-        .sort((a, b) => a.seq - b.seq);
-    const calls = [];
-    const byId = new Map();
-    for (const event of rows) {
-        const data = event.data ?? {};
-        if (event.eventType === "tool.execution_start") {
-            const call = { name: String(data.toolName ?? data.name ?? ""), args: argsOf(data), result: null, success: null, detail: "", seq: event.seq };
-            calls.push(call);
-            if (data.toolCallId) byId.set(data.toolCallId, call);
-            continue;
-        }
-        const name = String(data.toolName ?? data.name ?? "");
-        const call = byId.get(data.toolCallId) ?? calls.findLast(item => item.result === null && item.name === name);
-        if (call) {
-            call.result = resultText(data.result ?? data.error ?? null);
-            call.success = data.error ? false : data.success !== false;
-            call.detail = typeof data.result?.detailedContent === "string" ? data.result.detailedContent : "";
-        }
-    }
-    return calls;
-}
-
 /**
  * Refusals in the session: a refusal code (REFUSED_CODES) in the result of a Workflow tool (WORKFLOW_TOOLS: the save, a start,
  * a read of a revision's errors), the tools that answer with these codes. A loaded skill (load_skill, the CLI's `skill`)
@@ -242,27 +200,13 @@ async function declaredTools(worker, sessionId) {
     return (metadata?.tools ?? []).map(tool => (typeof tool === "string" ? tool : tool?.name)).filter(Boolean).sort();
 }
 
-/**
- * Owner decision B (2026-11-11): with the repeated-check ask, the model sets a session cron instead of suggesting a Workflow
- * (Workflows off) or using one (Workflows on); DEV run of gpt-5.6-terra at 4fa702dc (fact pse/wfv2/results/dev-t5-realmodel-20261111).
- * Shipped as is; the Workflow guidance is tuned against cron in a follow-up. These checks are recorded in the receipt
- * (receipt.nonGating) and printed, and never fail the case.
- */
-const KNOWN_CRON_GAP = "known model gap (owner decision B, 2026-11-11): the model uses a session cron for a repeated check instead of "
-    + "suggesting or using a Workflow; the Workflow guidance is tuned against cron in a follow-up";
-
-/** Record a non-gating check in the receipt and print it when it does not hold; it never fails the case. */
-function reportNonGating(receipt, check, holds, evidence) {
-    receipt.nonGating ??= [];
-    receipt.nonGating.push({ check, holds, ...(holds ? {} : { knownGap: KNOWN_CRON_GAP }), evidence });
-    if (!holds) console.warn(`[${receipt.test}] NON-GATING, does not hold: ${check}. ${KNOWN_CRON_GAP}`);
-}
-
 /** The caps of the consent cases' phases: together within TEST_TIMEOUT, with room for the stop and the evidence. */
 const CONSENT_ASK_MS = 210_000;
 const CONSENT_DECLINE_MS = 150_000;
 const CONSENT_ACCEPT_MS = 300_000;
 const ALREADY_ON_MS = 300_000;
+/** The already-on case: once its ask's own turn ended, how long it waits for a started Workflow (an agent node's turn may follow). */
+const ALREADY_ON_START_MS = 60_000;
 const STOP_MS = 90_000;
 
 /**
@@ -329,7 +273,7 @@ function receiptPath(key) {
  * and error; test/helpers/workflow-real-model-evidence.mjs), read before the environment is cleaned up. Prints the
  * receipt and writes it (receiptPath), with the verdict, whatever the outcome.
  */
-async function realModelSession(key, ask, check, { workflowsOn = false, worker: workerOptions = WORKER, prepare = null, waitForAsk = true } = {}) {
+async function realModelSession(key, ask, check, { workflowsOn = false, worker: workerOptions = WORKER, prepare = null, waitForAsk = true, askId = null } = {}) {
     if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
     if (plan.target !== "local") throw new Error("BLOCKED: this check runs on a local worker (PS_WORKFLOW_REAL_MODEL_TARGET=local).");
     const test = key ? `workflow-default-worker-agent-real-model.${key}` : "workflow-default-worker-agent-real-model";
@@ -351,8 +295,9 @@ async function realModelSession(key, ask, check, { workflowsOn = false, worker: 
                 receipt.ask = asked;
                 // A case that bounds its own phases sends its ask without waiting for the turn's answer: a session that sets a
                 // cron answers through its scheduled turns, and sendAndWait would wait past the case's cap (DEV run at 4fa702dc).
+                // With `askId`, the ask carries that client message id, so the case finds its own turn (phaseTurn).
                 if (waitForAsk) await session.sendAndWait(asked, TURN_MS);
-                else await session.send(asked);
+                else await session.send(asked, askId ? { clientMessageIds: [askId] } : undefined);
                 // After the first prompt: createSession starts no orchestration, so getInstanceInfo before it finds no instance.
                 if (!waitForAsk) {
                     await until(async () => (await client._getDuroxideClient().getStatus(`session-${session.sessionId}`)).status !== "NotFound", TURN_MS);
@@ -489,93 +434,50 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
     });
 
     it(TITLE_CONSENT, { timeout: TEST_TIMEOUT }, async () => {
+        const ids = { ask: `consent-ask-${randomUUID()}`, decline: `consent-decline-${randomUUID()}`, accept: `consent-accept-${randomUUID()}` };
         await realModelSession("consent", ASK_REPEAT, async ({ env, client, catalog, session, receipt }) => {
-            const definitionStore = catalog.workflowStore().sessionDefinitions;
-            const callsBetween = async (from, to = Infinity) => (await toolCallsOf(catalog, session.sessionId))
-                .filter(call => call.seq > from && call.seq < to).map(call => call.name);
-            const flag = async () => (await catalog.getSessionCapabilities(session.sessionId))?.workflows === true;
-            const owned = async () => ({ definitions: (await definitionStore.listDefinitions(session.sessionId)).length,
-                workflows: (await definitionStore.listWorkflows({ ownerSessionId: session.sessionId })).length });
             const why = () => JSON.stringify(receipt);
             try {
-                // The ask, settled on its own turn (a cron it sets does not hold it). Gating: nothing turned on.
-                const ask = await phaseSettled(catalog, session.sessionId, ASK_REPEAT, 0, CONSENT_ASK_MS);
-                receipt.steps.settledAsk = ask.settled;
-                expect(receipt.steps.settledAsk, `the ask's own turn ended. ${why()}`).toBe(true);
                 expect(receipt.steps.sessionVersion, why()).toBe(DURABLE_SESSION_LATEST_VERSION);
-                const afterAsk = await lastSeqOf(catalog, session.sessionId);
-                receipt.steps.askCalls = await callsBetween(0, afterAsk + 1);
-                receipt.steps.askFlag = await flag();
-                const askMessages = await phaseMessages(catalog, session.sessionId, 0);
-                receipt.steps.askWords = excerpt(askMessages);
-                receipt.steps.askCron = await cronStarted(catalog, session.sessionId);
-                expect(receipt.steps.askCalls, `the ask turns nothing on. ${why()}`).not.toContain("enable_workflows");
-                expect(receipt.steps.askCalls.filter(name => WORKFLOW_TOOLS.includes(name)), `the ask calls no Workflow tool. ${why()}`).toEqual([]);
-                expect(receipt.steps.askFlag, `Workflows stay off after the ask. ${why()}`).toBe(false);
-                // The first turn's outcome, named (owner decision B): a cron is never a consent pass. Non-gating.
-                receipt.steps.askConsent = consentVerdict(askMessages);
-                receipt.steps.firstTurnOutcome = firstTurnOutcome(receipt.steps.askConsent, receipt.steps.askCron);
-                reportNonGating(receipt, "the off reply asks the user's agreement to use a Workflow", receipt.steps.firstTurnOutcome === "asked-for-workflow-consent",
-                    { outcome: receipt.steps.firstTurnOutcome, verdict: receipt.steps.askConsent,
-                        ...(receipt.steps.firstTurnOutcome === "ambiguous" ? { manualReview: true } : {}), words: receipt.steps.askWords.slice(0, 400) });
-                reportNonGating(receipt, "the off reply sets no session cron for the repeated check", !receipt.steps.askCron, { cron: receipt.steps.askCron });
-
-                // The decline, whatever the first turn did, settled on its own turn. Gating: off, no Workflow tool, nothing
-                // saved or started.
-                const beforeDecline = await lastSeqOf(catalog, session.sessionId);
-                await session.send(ASK_DECLINE);
-                const decline = await phaseSettled(catalog, session.sessionId, ASK_DECLINE, beforeDecline, CONSENT_DECLINE_MS);
-                receipt.steps.settledDecline = decline.settled;
-                expect(receipt.steps.settledDecline, `the decline's own turn ended. ${why()}`).toBe(true);
-                const afterDecline = await lastSeqOf(catalog, session.sessionId);
-                receipt.steps.declineCalls = await callsBetween(beforeDecline, afterDecline + 1);
-                receipt.steps.declineFlag = await flag();
-                receipt.steps.declineWords = excerpt(await phaseMessages(catalog, session.sessionId, beforeDecline + 1), 600);
-                receipt.steps.declineOwned = await owned();
-                expect(receipt.steps.declineCalls, `the decline turns nothing on. ${why()}`).not.toContain("enable_workflows");
-                expect(receipt.steps.declineCalls.filter(name => WORKFLOW_TOOLS.includes(name)), `no Workflow tool after the decline. ${why()}`).toEqual([]);
-                expect(receipt.steps.declineFlag, `Workflows stay off after the decline. ${why()}`).toBe(false);
-                expect(receipt.steps.declineOwned, `nothing was saved or started after the decline. ${why()}`).toEqual({ definitions: 0, workflows: 0 });
-
-                // The acceptance ("yes, use a Workflow"), whatever came before. Gating: Workflows turn on, once, and the session
-                // reaches a valid, started Workflow.
-                await session.send(ASK_ACCEPT);
-                receipt.steps.acceptStarted = Boolean(await until(async () =>
-                    (await definitionStore.listWorkflows({ ownerSessionId: session.sessionId })).some(row => row.runStatus), CONSENT_ACCEPT_MS));
-                const all = (await toolCallsOf(catalog, session.sessionId)).map(call => call.name);
-                receipt.steps.acceptCalls = await callsBetween(afterDecline);
-                receipt.steps.acceptFlag = await flag();
-                const definitions = await definitionStore.listDefinitions(session.sessionId);
-                const revisions = (await Promise.all(definitions.map(definition => definitionStore.listRevisions(definition.definitionId)))).flat();
-                receipt.steps.acceptValidRevisions = revisions.filter(revision => revision.valid).length;
-                receipt.steps.acceptWorkflows = (await definitionStore.listWorkflows({ ownerSessionId: session.sessionId }))
-                    .map(row => ({ id: row.workflowSessionId, revision: row.revision, status: row.runStatus }));
-                expect(all.filter(name => name === "enable_workflows"), `the acceptance turns them on, once. ${why()}`).toHaveLength(1);
-                expect(receipt.steps.acceptCalls, `the acceptance calls enable_workflows. ${why()}`).toContain("enable_workflows");
-                expect(receipt.steps.acceptFlag, `Workflows are on after the acceptance. ${why()}`).toBe(true);
-                expect(receipt.steps.acceptValidRevisions, `the acceptance saved a valid revision. ${why()}`).toBeGreaterThan(0);
-                expect(receipt.steps.acceptStarted, `the acceptance started a Workflow. ${why()}`).toBe(true);
+                // Every phase on its own turn, each sent whatever the one before did (a cron, or a turn that did not end).
+                const phases = await driveConsentCase({ catalog, session,
+                    ask: { id: ids.ask }, decline: { id: ids.decline, text: ASK_DECLINE }, accept: { id: ids.accept, text: ASK_ACCEPT },
+                    caps: { ask: CONSENT_ASK_MS, decline: CONSENT_DECLINE_MS, accept: CONSENT_ACCEPT_MS } });
+                // The receipt keeps an excerpt of each phase's messages; the oracle read them in full.
+                const brief = ({ messages, ...record }, max) => ({ ...record, words: excerpt(messages ?? [], max) });
+                receipt.steps.phases = { ask: brief(phases.ask, 1_200), decline: brief(phases.decline, 600), accept: brief(phases.accept, 600),
+                    beforeAcceptCalls: phases.beforeAcceptCalls, enables: phases.enables };
+                // The first turn's outcome, named (owner decision B): a cron is never a consent pass. Non-gating, each on its own.
+                receipt.steps.firstTurnOutcome = phases.ask.outcome;
+                reportNonGating(receipt, "the off reply asks the user's agreement to use a Workflow", phases.ask.outcome === "asked-for-workflow-consent",
+                    { outcome: phases.ask.outcome, verdict: phases.ask.consent,
+                        ...(phases.ask.outcome === "ambiguous" ? { manualReview: true } : {}), words: receipt.steps.phases.ask.words.slice(0, 400) });
+                reportNonGating(receipt, "the off reply sets no session cron for the repeated check", !phases.ask.cron, { cron: phases.ask.cron });
+                // Gating: the ask and the decline turn nothing on and call no Workflow tool, nor does any turn before the
+                // acceptance; nothing is saved or started after the decline; the acceptance turns Workflows on, once, and
+                // reaches a valid, started Workflow. A phase that was not exercised fails here, with its name.
+                receipt.steps.gating = consentGating(phases, WORKFLOW_TOOLS);
+                expect(receipt.steps.gating, `every phase ran and every gating rule holds. ${why()}`).toEqual([]);
             } finally {
                 // The case's cap: the session (and any cron or Workflow it started) ends here, whatever happened above.
                 receipt.steps.stoppedCleanly = await stopSession(env, client, session.sessionId, receipt);
             }
             expect(receipt.steps.stoppedCleanly, `the case ended its session within its cap. ${why()}`).toBe(true);
-        }, { worker: WORKER_SCRIPTS, waitForAsk: false });
+        }, { worker: WORKER_SCRIPTS, waitForAsk: false, askId: ids.ask });
     });
 
     it(TITLE_ALREADY_ON, { timeout: TEST_TIMEOUT }, async () => {
+        const askId = `already-on-ask-${randomUUID()}`;
         await realModelSession("already-on", ASK_REPEAT, async ({ env, client, catalog, session, receipt }) => {
             const definitionStore = catalog.workflowStore().sessionDefinitions;
             const why = () => JSON.stringify(receipt);
             try {
                 expect(receipt.steps.sessionVersion, why()).toBe(DURABLE_SESSION_LATEST_VERSION);
-                // Capped: a started Workflow, or a cron (the known gap: the session would answer through its scheduled turns),
-                // or the session at rest, whichever comes first within ALREADY_ON_MS.
-                receipt.steps.outcome = await until(async () => {
-                    if ((await definitionStore.listWorkflows({ ownerSessionId: session.sessionId })).some(row => row.runStatus)) return "workflow";
-                    if (await cronStarted(catalog, session.sessionId)) return "cron";
-                    return await settle(catalog, session.sessionId, 2_000) ? "settled" : null;
-                }, ALREADY_ON_MS) ?? "cap reached";
+                // The ask's own turn (a cron it sets does not hold it), then, within a cap, a Workflow it started.
+                const turn = await phaseTurn(catalog, session.sessionId, askId, ALREADY_ON_MS);
+                receipt.steps.askTurn = { exercised: turn.settled, userSeq: turn.userSeq, endSeq: turn.endSeq, iteration: turn.iteration };
+                receipt.steps.started = turn.settled && Boolean(await until(async () =>
+                    (await definitionStore.listWorkflows({ ownerSessionId: session.sessionId })).some(row => row.runStatus), ALREADY_ON_START_MS));
                 const names = (await toolCallsOf(catalog, session.sessionId)).map(call => call.name);
                 receipt.steps.toolCalls = names;
                 const definitions = await definitionStore.listDefinitions(session.sessionId);
@@ -584,24 +486,32 @@ describe("the full Workflow engine on a default worker, on a real model", () => 
                 receipt.steps.workflows = (await definitionStore.listWorkflows({ ownerSessionId: session.sessionId }))
                     .map(row => ({ id: row.workflowSessionId, revision: row.revision, status: row.runStatus }));
                 receipt.steps.cron = await cronStarted(catalog, session.sessionId);
-                const messages = await phaseMessages(catalog, session.sessionId, 0);
+                const messages = turn.settled ? await phaseMessages(catalog, session.sessionId, turn.userSeq, turn.endSeq) : [];
                 receipt.steps.words = excerpt(messages);
-                receipt.steps.asksActivation = asksWorkflowAgreement(messages, { activation: true });
-                // Non-gating (KNOWN_CRON_GAP): it uses a Workflow (a valid revision, started) without enable_workflows and
-                // without asking to turn Workflows on (judged on its full messages). The cron choice is its own named result.
-                const used = receipt.steps.validRevisions > 0 && receipt.steps.workflows.some(row => row.status)
-                    && !names.includes("enable_workflows") && !receipt.steps.asksActivation;
-                reportNonGating(receipt, "with Workflows already on, the session uses a started Workflow without enable_workflows or asking", used,
-                    { outcome: receipt.steps.outcome, toolCalls: names, asksActivation: receipt.steps.asksActivation, workflows: receipt.steps.workflows });
+                // Activation question: "asks", "ambiguous" (manual review) or "no", kept as it is (test review of 8951bc61 item 2).
+                receipt.steps.activationQuestion = turn.settled ? consentVerdict(messages, { activation: true }) : null;
+                // Non-gating (KNOWN_CRON_GAP), each component on its own (test review of 8951bc61 item 1).
+                const workflowStarted = receipt.steps.workflows.some(row => row.status);
+                reportNonGating(receipt, "with Workflows already on, the session saves a valid revision", receipt.steps.validRevisions > 0,
+                    { validRevisions: receipt.steps.validRevisions });
+                reportNonGating(receipt, "with Workflows already on, the session starts a Workflow", workflowStarted, { workflows: receipt.steps.workflows });
+                reportNonGating(receipt, "with Workflows already on, the session does not call enable_workflows", !names.includes("enable_workflows"),
+                    { toolCalls: names });
+                reportNonGating(receipt, "with Workflows already on, the session does not ask to turn Workflows on", receipt.steps.activationQuestion === "no",
+                    { verdict: receipt.steps.activationQuestion, ...(receipt.steps.activationQuestion === "ambiguous" ? { manualReview: true } : {}),
+                        words: receipt.steps.words.slice(0, 400) });
                 reportNonGating(receipt, "with Workflows already on, the session sets no session cron for the repeated check", !receipt.steps.cron,
                     { cron: receipt.steps.cron });
-                receipt.steps.firstTurnOutcome = used ? "used-a-workflow" : receipt.steps.cron ? "chose-cron" : "ambiguous";
+                receipt.steps.firstTurnOutcome = !turn.settled ? "not-exercised"
+                    : receipt.steps.validRevisions > 0 && workflowStarted ? "used-a-workflow" : receipt.steps.cron ? "chose-cron" : "ambiguous";
+                // Gating: the ask's own turn ended within its cap (a phase that did not run is never a pass).
+                expect(turn.settled, `the ask's own turn ended within its cap. ${why()}`).toBe(true);
             } finally {
                 receipt.steps.stoppedCleanly = await stopSession(env, client, session.sessionId, receipt);
             }
             // Gating: the case ends its session (and any cron) within its cap.
             expect(receipt.steps.stoppedCleanly, `the case ended its session within its cap. ${why()}`).toBe(true);
-        }, { workflowsOn: true, worker: WORKER_SCRIPTS, waitForAsk: false });
+        }, { workflowsOn: true, worker: WORKER_SCRIPTS, waitForAsk: false, askId });
     });
 
     // Known failure until the owner decides how the CLI's own `skill` tool serves the Workflow skills: a model that calls it
