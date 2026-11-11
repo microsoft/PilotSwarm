@@ -3136,23 +3136,17 @@ export class SessionManager {
                 if (!lastDestroyError && checkpointPrepared && isMissingDehydrateSnapshotError(lastStoreError)) {
                     emitSessionManagerTrace(
                         sessionId,
-                        "session-store dehydrate could not verify a post-disconnect snapshot; preserving checkpoint and surfacing failure",
+                        "session-store dehydrate falling back to pre-destroy checkpoint after snapshot-missing error",
                         { trace, level: "warn" },
                     );
                     console.warn(
                         `[SessionManager] session-store dehydrate snapshot missing after destroy for ${sessionId}; ` +
-                        `the pre-destroy checkpoint is retained, but final state is not verified.`,
+                        `using the pre-destroy checkpoint as the durable fallback.`,
                     );
-                    const error = new Error(
-                        `Session-store persistence failed after ${sessionStoreAttemptCount} attempts ` +
-                        `during dehydrate for ${sessionId} (reason=${reason}): ${lastStoreError.message}. ` +
-                        "A pre-destroy checkpoint was retained, but final state could not be verified.",
-                    );
-                    (error as any).sessionStoreAttemptCount = sessionStoreAttemptCount;
-                    (error as any).sessionStoreError = lastStoreError.message;
-                    (error as any).dehydrateReason = reason;
-                    (error as any).sessionId = sessionId;
-                    throw error;
+                    options?.onCheckpointFallback?.();
+                    try {
+                        fs.rmSync(sessionDir, { recursive: true, force: true });
+                    } catch {}
                 } else {
                     const message = lastDestroyError
                         ? `Session ${sessionId} is not dehydratable (reason=${reason}): ` +

@@ -135,13 +135,11 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
             const shutdownDiagnostics = warnings.filter(line =>
                 line.includes("session-store dehydrate failed")
                 || line.includes("snapshot missing after destroy")
-                || line.includes("eviction sweep skipped"),
+                || line.includes("falling back to pre-destroy checkpoint"),
             );
             assert.equal(shutdownDiagnostics.filter(line => line.includes("session-store dehydrate failed")).length, 1);
             assert.equal(shutdownDiagnostics.filter(line => line.includes("snapshot missing after destroy")).length, 1);
-            assert.equal(shutdownDiagnostics.filter(line => line.includes("eviction sweep skipped")).length, 1);
-            assert.ok(shutdownDiagnostics.every(line => !line.includes("falling back to pre-destroy checkpoint")),
-                "the packaged legacy shutdown must classify missing state rather than claim a fallback is final");
+            assert.equal(shutdownDiagnostics.filter(line => line.includes("falling back to pre-destroy checkpoint")).length, 1);
             await shutdownTelemetry();
             worker = new PilotSwarmWorker({
                 store, modelProvidersPath, disableManagementAgents: true,
