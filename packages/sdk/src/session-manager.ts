@@ -72,22 +72,6 @@ const DEHYDRATE_STORE_MAX_RETRIES = 1;
 const DEHYDRATE_STORE_RETRY_BASE_DELAY_MS = 0;
 const SESSION_LOCK_BACKOFF_MS = [5_000, 10_000, 20_000] as const;
 const SESSION_LOCK_MAX_WAIT_MS = 120_000;
-/** Review L1: how long a session's close in the Copilot CLI may take when the worker lets the session go. */
-export const CLI_SESSION_CLOSE_TIMEOUT_MS = 10_000;
-/** Review DRR-3: how long a turn waits for a close of its session that is still in flight before it fails (and is retried). */
-export const CLI_SESSION_CLOSE_SETTLE_MS = 60_000;
-
-/** `promise`'s value, or undefined when it has not settled within `ms` (it keeps running). Never rejects for the timeout. */
-function settledWithin<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    return Promise.race([
-        promise,
-        new Promise<undefined>((resolve) => {
-            timer = setTimeout(() => resolve(undefined), ms);
-            timer.unref?.();
-        }),
-    ]).finally(() => { if (timer) clearTimeout(timer); });
-}
 const COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS = 10_000;
 export const SESSION_LOCK_ACQUIRE_TIMEOUT_CODE = "PILOTSWARM_SESSION_LOCK_ACQUIRE_TIMEOUT";
 
@@ -1029,19 +1013,6 @@ export class SessionManager {
      * created/resumed in `_getOrCreateUnlocked`.
      */
     private sessionClientKeys = new Map<string, string>();
-    /**
-     * Review DRR-3, DS2-003: a session's closes in the Copilot CLI whose answer has not come yet, by the client each was sent
-     * to (its settled result: true when closed). A turn of the session waits for all of them before it resumes the session.
-     */
-    private cliClosesInFlight = new Map<string, Map<string, Promise<boolean>>>();
-    /**
-     * Review DRR-3, DS2-003: sessions whose close in the Copilot CLI is not confirmed, with every client that may still hold
-     * them (one per failed close: a session rebound twice may owe two); each sweep tries each again.
-     */
-    private cliClosesOwed = new Map<string, Set<string>>();
-    /** Review DRR-3: CLI_SESSION_CLOSE_TIMEOUT_MS and CLI_SESSION_CLOSE_SETTLE_MS (a test shortens them). */
-    private cliCloseTimeoutMs = CLI_SESSION_CLOSE_TIMEOUT_MS;
-    private cliCloseSettleMs = CLI_SESSION_CLOSE_SETTLE_MS;
     private sessionStore: SessionStateStore | null = null;
     /** In-memory configs with non-serializable fields (tools, hooks). */
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
@@ -1578,12 +1549,15 @@ export class SessionManager {
     }
 
     /**
-     * The GitHub token a pooled client is created with: the override (a
-     * per-user GitHub Copilot key, cms.users.github_copilot_key), else the
-     * worker's token, else the first registry GitHub provider's resolved
-     * token. Undefined when there is none.
+     * The pooled CopilotClient for this token, transport and workspace root.
+     * It may not be started yet: create and resume sessions on it through
+     * `_createCopilotSession` / `_resumeCopilotSession`.
      */
-    private _effectiveClientToken(tokenOverride?: string): string | undefined {
+    private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string): Promise<CopilotClient> {
+        // Resolve the effective token: explicit override > worker default >
+        // first registry github provider's resolved token. The override is
+        // how per-user GitHub Copilot keys (cms.users.github_copilot_key)
+        // get plumbed through to a dedicated CopilotClient.
         let token = tokenOverride;
         if (!token) token = this.githubToken;
         if (!token && this.workerDefaults.modelProviders) {
@@ -1596,31 +1570,9 @@ export class SessionManager {
                 }
             }
         }
-        return token || undefined;
-    }
 
-    /**
-     * The pool key of the client for a token (already resolved by
-     * _effectiveClientToken), transport and workspace root. Review CI-1 (CI run
-     * 114): a session's binding (sessionClientKeys) is built here too, from the
-     * same resolved token, so it names the client the session runs on. It used
-     * to leave out the worker's token, so on a worker with GITHUB_TOKEN and a
-     * session with no per-user key the binding named no client, and the CLI
-     * closes (L1, DRR-4, DR2-004) found nothing to close.
-     */
-    private _clientPoolKey(token: string | undefined, byokOpenAi: boolean, workspaceRoot?: string): string {
-        return (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (token || "")
+        const clientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (token || "")
             + (workspaceRoot ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceRoot : "");
-    }
-
-    /**
-     * The pooled CopilotClient for this token, transport and workspace root.
-     * It may not be started yet: create and resume sessions on it through
-     * `_createCopilotSession` / `_resumeCopilotSession`.
-     */
-    private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string): Promise<CopilotClient> {
-        const token = this._effectiveClientToken(tokenOverride);
-        const clientKey = this._clientPoolKey(token, byokOpenAi, workspaceRoot);
         const existing = this.clients.get(clientKey);
         if (existing) return existing;
 
@@ -1957,19 +1909,8 @@ export class SessionManager {
      * the next runTurn self-validates and hydrates); unmarked (legacy)
      * sessions are dehydrated the old way so their only copy is preserved.
      * Returns the number of sessions reclaimed.
-     *
-     * Review DRR-3b: `final` is the worker's last sweep before it stops (gracefulShutdown). Its clients stop right after,
-     * so a close the CLI does not confirm does not keep a session's files here: the sweep logs it and goes on, as before
-     * DRR-3 (a legacy session is still uploaded). Every other sweep keeps such a session for the next one.
-     * Review DR2-006: the final sweep spends its time (the worker's shutdown deadline) on the files: it does not retry the
-     * owed closes first, it takes the sessions with no unconfirmed close first, and it does not wait again on a close that
-     * is owed or still in flight (it was tried; the process exits). Each session's turn lock still excludes it.
-     * Review D3-002: it takes the sessions whose local files may be the only copy (no committed snapshot marker) before the
-     * ones the store already holds, so a first close that has no answer for a committed session's cache cleanup cannot use
-     * up the deadline before a legacy session is uploaded; and a close that had no answer in this sweep is not waited on
-     * again by that session's upload.
      */
-    async sweepIdleSessions(evictAfterMs: number, options: { final?: boolean } = {}): Promise<number> {
+    async sweepIdleSessions(evictAfterMs: number): Promise<number> {
         if (!(evictAfterMs > 0)) return 0;
         const now = Date.now();
         // Only sessions THIS manager has actually served since boot are
@@ -1982,20 +1923,8 @@ export class SessionManager {
             ...this.sessionLastTouchedAt.keys(),
         ]);
 
-        // Review DRR-3: the closes an earlier sweep, end or dehydrate could not confirm (not in the final sweep, DR2-006).
-        if (!options.final) await this._retryOwedCliCloses();
         let reclaimed = 0;
-        let ordered = [...candidates];
-        if (options.final) {
-            // Files that may be the only copy first, then the stores' cached ones; in each, no unconfirmed close first.
-            const rank = new Map<string, number>(ordered.map((sessionId): [string, number] => {
-                const dir = path.join(this.sessionStateDir, sessionId);
-                const onlyCopy = fs.existsSync(dir) && !readSnapshotMarker(dir);
-                return [sessionId, (onlyCopy ? 0 : 2) + Number(this._cliCloseUnresolved(sessionId))];
-            }));
-            ordered = ordered.sort((a, b) => rank.get(a)! - rank.get(b)!);
-        }
-        for (const sessionId of ordered) {
+        for (const sessionId of candidates) {
             if (this.sessionLocks.has(sessionId)) continue; // busy — never race a turn
             const sessionDir = path.join(this.sessionStateDir, sessionId);
             const lastTouched = this.sessionLastTouchedAt.get(sessionId);
@@ -2016,23 +1945,6 @@ export class SessionManager {
                     } else if (existing) {
                         try { await existing.destroy(); } catch {}
                         this._forgetWarmSession(sessionId);
-                    }
-                    // L1: before the files are removed or uploaded (the close flushes the session's events to them).
-                    // Review DRR-3: a close that is not confirmed keeps the session here (its files, its binding, its idle
-                    // time): it is not reclaimed, and the next sweep evicts it again.
-                    // Review DR2-006: the final sweep does not wait again on a close that is owed or in flight.
-                    const finalUnresolved = options.final === true && this._cliCloseUnresolved(sessionId);
-                    // Review D3-002: a close not waited on again before the upload (owed before, or tried in this sweep).
-                    let skipCliClose = finalUnresolved;
-                    if (finalUnresolved) {
-                        emitSessionManagerTrace(sessionId, "final release: its close in the Copilot CLI is still owed; its files are kept as before");
-                    } else if (!(await this._closeCliSession(sessionId))) {
-                        if (!options.final) {
-                            emitSessionManagerTrace(sessionId, "eviction deferred: its close in the Copilot CLI is not confirmed");
-                            return;
-                        }
-                        emitSessionManagerTrace(sessionId, "final release: its close in the Copilot CLI is not confirmed; its files are kept as before");
-                        skipCliClose = true;
                     }
                     if (!dirExists) {
                         this.sessionLastTouchedAt.delete(sessionId);
@@ -2058,7 +1970,7 @@ export class SessionManager {
                             emitSessionManagerTrace(sessionId, `evicted (store versioned at v${versioned.version}); stale unmarked cache reclaimed`);
                         } else {
                             // Legacy session: its local files may be the only copy.
-                            await this._dehydrateUnlocked(sessionId, "eviction", skipCliClose ? { skipCliClose: true } : undefined);
+                            await this._dehydrateUnlocked(sessionId, "eviction");
                             emitSessionManagerTrace(sessionId, "evicted via legacy dehydrate (no committed marker)");
                         }
                     } else {
@@ -2205,9 +2117,6 @@ export class SessionManager {
         options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean; workflowTools?: WorkflowToolBinding },
     ): Promise<ManagedSession> {
         this.sessionLastTouchedAt.set(sessionId, Date.now());
-        // Review DRR-3: never resume into a close of this session that is still in flight.
-        const closing = this.awaitCliClose(sessionId);
-        if (closing) await closing;
         // Workflow package pins (R18): the exact earlier package
         // revision this session runs is installed here before its copy is resolved. One that cannot be served leaves the
         // binding unresolved, and the session fails as any unavailable bound package does.
@@ -2490,9 +2399,8 @@ export class SessionManager {
             );
         }
         const byokOpenAi = needsByokRequestCompatibility(resolvedProviderConfig.provider);
-        // Review CI-1: the binding is the pool key of the client the session runs on (the worker's token included).
-        const clientToken = this._effectiveClientToken(userGithubToken);
-        const desiredClientKey = this._clientPoolKey(clientToken, byokOpenAi, workspaceAttach?.root);
+        const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (userGithubToken || "")
+            + (workspaceAttach ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceAttach.root : "");
         const previousClientKey = this.sessionClientKeys.get(sessionId);
         if (previousClientKey !== undefined && previousClientKey !== desiredClientKey) {
             // The credential or native/BYOK transport changed since we last
@@ -2511,19 +2419,8 @@ export class SessionManager {
                 try { await existingWarm.destroy(); } catch {}
                 this._forgetWarmSession(sessionId);
             }
-            // Review DRR-4: the previous client's session is closed in its CLI and dropped from its SDK map before the
-            // binding moves (files kept), also when a workspace release already dropped the warm handle. Otherwise only the
-            // new client is ever closed and the old one keeps the session until the worker stops.
-            // Review DR2-004: the binding moves, and the new client touches the session, only once that close is
-            // confirmed: one still in flight is waited for (cliCloseSettleMs). One that failed, or did not settle, fails
-            // this turn (it is retried, and the retry closes it again); the old binding and its owed close stay.
-            if (!(await this._closeCliSession(sessionId, previousClientKey))
-                && !(await this._settleCliClose(sessionId, previousClientKey))) {
-                throw new Error(`The Copilot CLI has not confirmed closing session ${sessionId} on the client it leaves; `
-                    + "the turn does not resume it on another client yet.");
-            }
         }
-        const client = await this.ensureClient(clientToken, byokOpenAi, workspaceAttach?.root);
+        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root);
         this.sessionClientKeys.set(sessionId, desiredClientKey);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
 
@@ -3302,157 +3199,6 @@ export class SessionManager {
     }
 
     /**
-     * Review L1 (per-session memory on TEST): when the worker lets a session go (its end, eviction, dehydrate), the warm
-     * handle's disconnect only detaches it. The Copilot CLI keeps the session active (it closes none on its own) and the
-     * SDK keeps its session object in CopilotClient.sessions, so each finished session stayed in both processes. This
-     * closes it in the CLI (sessions.close: flushes its events to disk, releases its lock and disposes it; idempotent;
-     * files stay) and drops the SDK's object. Not deleteSession: that removes the files a dehydrate uploads and a
-     * destroyed session keeps; the worker's own steps decide the files, as before. A later turn resumes from the files
-     * (hydrated, or kept), as after a worker restart. Only the client that served the session is asked (`key`: that
-     * client; default the session's binding; none is started for it). The caller holds the session's lock.
-     *
-     * Review DRR-3: returns whether the close is confirmed. A close that fails, or has no answer within
-     * cliCloseTimeoutMs, is owed (cliClosesOwed: the sweep tries it again; the SDK's object and the binding stay), and one
-     * still in flight is a barrier: a turn of the session waits for it before it resumes (awaitCliClose). A late answer
-     * settles it then (closed: the SDK's object is dropped and nothing is owed; failed: still owed). Never throws.
-     *
-     * Review CI-1: a session with no binding was never served here: nothing to close (confirmed). A binding is the pool
-     * key of its client (_clientPoolKey), so a binding with no pooled client means that client left the pool (the
-     * worker stopped it, or its CLI exited and could not start again): that CLI holds nothing any more, and the close is
-     * confirmed. That is decided by looking, not by the missing key alone: a pooled client that still holds the session
-     * (its SDK map has it) means the binding does not name its client; the close goes to that client instead, and
-     * counts only if it is confirmed there.
-     */
-    private async _closeCliSession(sessionId: string, key: string | undefined = this.sessionClientKeys.get(sessionId)): Promise<boolean> {
-        const client = key != null ? this.clients.get(key) : undefined;
-        if (!client || key == null) {
-            if (key == null) return true;
-            this._settleOwedCliClose(sessionId, key);
-            const holder = this._pooledKeyHolding(sessionId);
-            if (holder == null) return true;
-            console.error(`[SessionManager] session ${sessionId} is bound to a client that is not pooled, but a pooled client holds it; it is closed there`);
-            return this._closeCliSession(sessionId, holder);
-        }
-        // One close of a session at a time: closes in flight to other clients are waited for first (each bounded).
-        const flights = this.cliClosesInFlight.get(sessionId) ?? new Map<string, Promise<boolean>>();
-        this.cliClosesInFlight.set(sessionId, flights);
-        for (const [other, pending] of [...flights]) if (other !== key) await settledWithin(pending, this.cliCloseTimeoutMs);
-        let settled = flights.get(key);
-        if (!settled) {
-            const sent: Promise<boolean> = Promise.resolve().then(() => client.rpc.sessions.close({ sessionId })).then(() => true, (error: unknown) => {
-                const message = error instanceof Error ? error.message : String(error);
-                console.warn(`[SessionManager] closing ${sessionId} in the Copilot CLI failed: ${message}`);
-                return false;
-            }).then((closed) => {
-                const current = this.cliClosesInFlight.get(sessionId);
-                if (current?.get(key) === sent) {
-                    current.delete(key);
-                    if (current.size === 0) this.cliClosesInFlight.delete(sessionId);
-                }
-                if (closed) {
-                    (client as unknown as { sessions?: Map<string, unknown> }).sessions?.delete(sessionId);
-                    this._settleOwedCliClose(sessionId, key);
-                } else {
-                    this._oweCliClose(sessionId, key);
-                }
-                return closed;
-            });
-            flights.set(key, sent);
-            settled = sent;
-        }
-        const outcome = await settledWithin(settled, this.cliCloseTimeoutMs);
-        if (outcome === true) return true;
-        if (outcome === undefined) {
-            console.warn(`[SessionManager] closing ${sessionId} in the Copilot CLI had no answer within ${this.cliCloseTimeoutMs} ms; it is tried again later`);
-        }
-        this._oweCliClose(sessionId, key);
-        return false;
-    }
-
-    /**
-     * Review DR2-004: whether `key`'s close of `sessionId`, still in flight, is confirmed within cliCloseSettleMs. False
-     * when it is not in flight (it failed: owed), failed, or did not settle in time (it stays in flight and owed).
-     */
-    private async _settleCliClose(sessionId: string, key: string): Promise<boolean> {
-        const pending = this.cliClosesInFlight.get(sessionId)?.get(key);
-        if (!pending) return false;
-        return (await settledWithin(pending, this.cliCloseSettleMs)) === true;
-    }
-
-    /** Review CI-1: the pool key of a pooled client whose SDK map still holds `sessionId`, if any. */
-    private _pooledKeyHolding(sessionId: string): string | undefined {
-        for (const [key, pooled] of this.clients) {
-            const held = (pooled as unknown as { sessions?: { has?: (id: string) => boolean } }).sessions;
-            if (typeof held?.has === "function" && held.has(sessionId)) return key;
-        }
-        return undefined;
-    }
-
-    /** Review DR2-006: whether a close of `sessionId` is owed or still in flight on any client. */
-    private _cliCloseUnresolved(sessionId: string): boolean {
-        return (this.cliClosesOwed.get(sessionId)?.size ?? 0) > 0 || (this.cliClosesInFlight.get(sessionId)?.size ?? 0) > 0;
-    }
-
-    /** Review DS2-003: `key`'s close of `sessionId` is owed, beside any other client's. */
-    private _oweCliClose(sessionId: string, key: string): void {
-        const owed = this.cliClosesOwed.get(sessionId) ?? new Set<string>();
-        owed.add(key);
-        this.cliClosesOwed.set(sessionId, owed);
-    }
-
-    /** Review DS2-003: `key`'s close of `sessionId` is no longer owed; another client's stays owed. */
-    private _settleOwedCliClose(sessionId: string, key: string): void {
-        const owed = this.cliClosesOwed.get(sessionId);
-        if (!owed) return;
-        owed.delete(key);
-        if (owed.size === 0) this.cliClosesOwed.delete(sessionId);
-    }
-
-    /**
-     * Review DRR-3: a turn's barrier. The closes of this session still in flight in the Copilot CLI (to any client) are
-     * waited for before the session is resumed; when they have no answer within cliCloseSettleMs the turn fails (its
-     * orchestration retries it), so a turn never resumes into a close that may still land. Nothing in flight: returns at
-     * once, with no await.
-     */
-    private awaitCliClose(sessionId: string): Promise<void> | void {
-        const flights = this.cliClosesInFlight.get(sessionId);
-        if (!flights || flights.size === 0) return;
-        return settledWithin(Promise.all([...flights.values()]), this.cliCloseSettleMs).then((outcome) => {
-            if (outcome === undefined) {
-                throw new Error(`The Copilot CLI has not finished closing session ${sessionId} after ${this.cliCloseSettleMs} ms; the turn does not resume it yet.`);
-            }
-        });
-    }
-
-    /**
-     * Review DRR-3: the owed closes, tried again once per sweep, each under its session's lock (a busy session waits for the
-     * next sweep). A session that is warm again on the same client is no longer owed: its next release closes it. Returns
-     * how many were closed.
-     */
-    private async _retryOwedCliCloses(): Promise<number> {
-        let closed = 0;
-        for (const sessionId of [...this.cliClosesOwed.keys()]) {
-            if (this.sessionLocks.has(sessionId)) continue;
-            try {
-                await this._withSessionLock(sessionId, "cli-close-retry", async () => {
-                    // Review DS2-003: every client that may still hold the session, each on its own.
-                    for (const key of [...(this.cliClosesOwed.get(sessionId) ?? [])]) {
-                        if (this.sessions.has(sessionId) && this.sessionClientKeys.get(sessionId) === key) {
-                            this._settleOwedCliClose(sessionId, key);
-                            continue;
-                        }
-                        if (await this._closeCliSession(sessionId, key)) closed++;
-                    }
-                });
-            } catch (error: unknown) {
-                const message = error instanceof Error ? error.message : String(error);
-                console.warn(`[SessionManager] the owed close of ${sessionId} was not tried: ${message}`);
-            }
-        }
-        return closed;
-    }
-
-    /**
      * Destroy the in-memory ManagedSession only — disk state untouched.
      * Used by the lifecycle preamble before overwriting local files with a
      * hydrated snapshot (a warm session bound to the old files must not
@@ -3514,7 +3260,7 @@ export class SessionManager {
         return this._dehydrateUnlocked(sessionId, reason, options);
     }
 
-    private async _dehydrateUnlocked(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter; skipCliClose?: boolean }): Promise<void> {
+    private async _dehydrateUnlocked(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter }): Promise<void> {
         const DESTROY_MAX_RETRIES = 3;
         const trace = options?.trace;
         let lastDestroyError: Error | undefined;
@@ -3604,10 +3350,6 @@ export class SessionManager {
                 }
             }
         }
-
-        // L1: the session is closed in the CLI before its files are uploaded (the close flushes its events to them). The final
-        // sweep skips a close that is already owed or in flight (DR2-006).
-        if (!options?.skipCliClose) await this._closeCliSession(sessionId);
 
         // Phase 2: Persist to the session store (always attempt, even if destroy failed)
         if (this.sessionStore) {
@@ -3969,7 +3711,6 @@ export class SessionManager {
         const session = this.sessions.get(sessionId);
         if (session) await session.destroy();
         this._forgetWarmSession(sessionId);
-        await this._closeCliSession(sessionId);
         this.sessionApplicationTools.delete(sessionId);
         this.clientSessionConfigs.delete(sessionId);
         this._forgetTurnState(sessionId);
@@ -4090,9 +3831,6 @@ export class SessionManager {
         this.clientSessionConfigs.clear();
         this.promptSectionDigests.clear();
         this.sessionClientKeys.clear();
-        // Review DRR-3: the clients stop below, and their sessions with them.
-        this.cliClosesOwed.clear();
-        this.cliClosesInFlight.clear();
         // Each process gets the same deadline concurrently; one stuck client
         // cannot block another or multiply the worker's termination budget.
         // This is final cleanup only, not the individual-session eviction path.
