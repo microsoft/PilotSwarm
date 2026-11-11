@@ -8,7 +8,7 @@ A **Workflow** is a PilotSwarm session whose engine executes a graph instead of 
 
 ## Scope and evidence
 
-The source of truth is PilotSwarm commit `4fa702dc8b078b93c3e26339dc833b53d8acfee4`, a PR 270 candidate. All PilotSwarm `path:line` citations refer to that commit, not to a later branch tip. Changes the PR made after that commit (the completion refusal removed, the cleanup fixes, the fenced first start, package Workflow starts) are described where they apply and listed with their commits in [Known issues](known-issues.md#done-in-this-pr-after-the-source-pin); their line numbers are not re-pinned. The comparison with main uses `4ccbedcca57bcc6451919da98050dd7f09bbaca1`. This document describes code and recorded evidence. It is not a deployment or readiness verdict.
+The source of truth is PilotSwarm commit `4fa702dc8b078b93c3e26339dc833b53d8acfee4`, a PR 270 candidate. All PilotSwarm `path:line` citations refer to that commit, not to a later branch tip. Changes the PR made after that commit (the completion refusal removed, the cleanup fixes, package Workflow starts) are described where they apply and listed with their commits in [Known issues](known-issues.md#done-in-this-pr-after-the-source-pin); their line numbers are not re-pinned. The comparison with main uses `4ccbedcca57bcc6451919da98050dd7f09bbaca1`. This document describes code and recorded evidence. It is not a deployment or readiness verdict.
 
 The Duroxide dependency has a separate source pin. [Duroxide integration](duroxide.md) gives those pins and explains what the package lock does not prove. Historical formal-model results retain their original code pins. A model pass is not a proof of the current implementation.
 

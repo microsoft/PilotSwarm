@@ -303,8 +303,9 @@ behaviour. No model, case or expected verdict changes, and no TLC run is needed:
 
 Known limit, as on main (not modelled: no model contains the Sweeper): a first message starts the session's
 orchestration, then updates its row (`state` running, `orchestration_id`), then enqueues. A Sweeper that read the
-row as NotFound before the start and makes its final check between the start and the row update finds the same row
-version and no `orchestration_id`, so it soft-deletes the session. The row update that follows leaves `deleted_at`
+orchestration as NotFound and makes its final check anywhere from the first message's initial read of the live row and
+lineage to its row update (before or after the start) finds the same row version and no `orchestration_id`, so it
+soft-deletes the session; the update defeats the cleanup only if it lands before that final locked check. The row update that follows leaves `deleted_at`
 set (`cms_update_session` does not write it). A 1.0.83 turn on a worker with the Workflow store reads the row's
 deletion first and runs no model and no tool (review DR2-001, `session-proxy.ts` 2517-2535), so that first message is
 dropped; a frozen version's turn, or a worker without the Workflow store, has no such guard. For a Workflow agent session the same guard is checked by

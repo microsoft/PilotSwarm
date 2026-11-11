@@ -197,3 +197,17 @@ test("FRT-F2: after a drain past the deadline the release, the sweep and the clo
     assert.deepEqual(calls.slice(-1), ["release finished"]);
     assert.ok(errors.some((line) => line.includes("drain released 2 workspace session(s)")), "the abandoned release's work completed");
 });
+
+test("the worker's shutdown runs its release sweep as an ordinary sweep of every idle session", async (t) => {
+    const { PilotSwarmWorker } = await import("../../dist/worker.js");
+    t.mock.method(console, "error", () => {});
+    const sweeps = [];
+    const worker = {
+        config: {}, _stopProviderPolling() {}, _agentPackagesCacheDir: null, _agentPackagesTimer: null, _evictionTimer: null,
+        _runtimeStartup: null, runtime: { shutdown: async () => {} }, sessionStore: {},
+        sessionManager: { releaseIdleWorkspaces: async () => 0, sweepIdleSessions: async (...args) => { sweeps.push(args); return 0; } },
+        stop: async () => {},
+    };
+    await PilotSwarmWorker.prototype.gracefulShutdown.call(worker);
+    assert.deepEqual(sweeps, [[1]]);
+});

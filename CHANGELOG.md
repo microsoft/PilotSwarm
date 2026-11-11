@@ -77,9 +77,11 @@ restriction) or set `PILOTSWARM_WORKFLOW_SCRIPTS=0`.
 
 **Known limits, as on main.** The Copilot CLI keeps a finished session's
 memory until the worker stops: the worker does not ask the CLI to close a
-session it lets go. A session's first message starts its orchestration and
-then updates its row, so it can still race the Sweeper's cleanup; the
-Sweeper's exact row-version check narrows that race.
+session it lets go. A session's first message reads its row, starts its
+orchestration and then updates the row, so the Sweeper's cleanup can still
+commit anywhere from that read to the update. The update defeats the cleanup
+only if it lands before the Sweeper's final locked row-version check;
+otherwise that first message is dropped.
 
 ## 0.8.10 — 2026-11-07
 

@@ -125,7 +125,7 @@ export function createSweeperTools(opts: {
 
     /**
      * Reviews AS-02, AR-01..AR-03: the final check and the soft delete, in one transaction under the session row's lock
-     * (WorkflowStore.sweeperSoftDelete), which every run admission and a session orchestration's start take first. It
+     * (WorkflowStore.sweeperSoftDelete), which every run admission takes first. It
      * refuses, deleting nothing, when the row changed since `version` was read (Changed), a Workflow run was admitted
      * (ActiveRun), an ordinary session judged NotFound has an accepted start not seen to end (StartUnresolved), or another transaction holds a
      * session the delete would change (Busy). With `cascade`, all its descendants go with it (a parent's lifecycle owns its

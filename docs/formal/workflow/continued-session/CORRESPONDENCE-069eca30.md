@@ -3,8 +3,10 @@
 Code: `packages/sdk/src/workflow/` at `069eca30` (PR 270 after the collapse to one version of each orchestration,
 the Workflow rename, the removal of pre-release compatibility and the session rename, in which the session that owns
 Workflow Definitions stopped being called a chat, and the Sweeper and child-creation fences DR-01 and DR-02, and the parent-first pair lock `09c4e404`; the same bound code as `0df9e8a4`/`781441bf` but for those), line
-numbers there; every line number below is the same at `3766b346`, where the Copilot CLI close and the fenced first
-start are reverted to main's behaviour (`d002b3ad`, `ca1a86f8`). The model follows one agent state whose session lifecycle is "continue": the default for an agent
+numbers there. At `3766b346`, where the Copilot CLI close and the fenced first start are reverted to main's behaviour
+(`d002b3ad`, `ca1a86f8`), every line number below is the same except the two `cms.ts` ranges in the `Spawn` row, which
+the fenced start's removal moved up 36 lines: there `lockLiveParent` is 1849-1856 and the `refuseDeleted` block is
+1962-1983, with the same code. The model follows one agent state whose session lifecycle is "continue": the default for an agent
 state in the outer graph that does not set the YAML key `session` (`compiler.ts` 1556); a For each body and a named
 branch get a new agent session per visit, and `session: continue` there is refused (1304-1317). The IR field is `session` too.
 

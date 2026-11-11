@@ -272,7 +272,7 @@ Evidence at the source pin: `packages/sdk/src/sweeper-tools.ts:65-115`, `:140-18
 
 These are not represented by `4fa702dc`:
 
-- `bddbd878`: the final check compares the row's exact version (read before the session is judged) under the row's lock, so a first message's row update after that read makes it refuse; the cascade locks the sessions it would delete without waiting, and refuses when one is held. (Its fenced first start, and `50ad6493`'s bound on it, were reverted: a first message starts its orchestration, then updates the row, as on main. A first message can still race the cleanup between those two steps.)
+- `bddbd878`: the final check compares the row's exact version (read before the session is judged) under the row's lock, so a first message's row update after that read makes it refuse; the cascade locks the sessions it would delete without waiting, and refuses when one is held. (Its fenced first start, and `50ad6493`'s bound on it, were reverted: a first message starts its orchestration, then updates the row, as on main. A first message can still race the cleanup anywhere from its initial read of the live row and lineage to its running-row update; the update defeats the cleanup only if it lands before the Sweeper's final locked version check.)
 - `5dcfc349` (**DR-01**): a session whose first message was accepted is never deleted because Duroxide reports NotFound, at any age; only a terminal status or an ended session state shows its end.
 - `6f59403d` (**DR-02**): the cleanup subtree is read again under its locks, and a session is never created under a deleted parent.
 

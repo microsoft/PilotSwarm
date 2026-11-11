@@ -1009,14 +1009,17 @@ that lock first, so whichever commits first decides:
 - The Sweeper reads the row's version before it judges the session, and
   refuses unless the row still has that exact version (any update changes
   it, whatever its timestamps). A run admitted, or a first message's row
-  update, after that read makes the cleanup refuse and delete nothing.
+  update, after that read and before the final check makes the cleanup
+  refuse and delete nothing.
 - An admission that comes after the delete finds the session deleted and
   does nothing.
-- A session's first message is not fenced, as on main: it starts the
-  orchestration, then updates the row, then queues the prompt. It can still
-  race a cleanup: a Sweeper whose final check runs between the start and the
-  row update deletes the session, and the started turn then finds it deleted
-  and runs no model. The row-version check narrows that race to that window.
+- A session's first message is not fenced, as on main: it reads the row
+  and the session's lineage, starts the orchestration, updates the row
+  (running, with its orchestration ID), then queues the prompt. A cleanup can
+  commit anywhere from that first row read to the row update. The update
+  defeats the cleanup only if it lands before the Sweeper's final locked
+  version check. Otherwise the session is deleted, the started turn finds it
+  deleted and runs no model, and that first message is dropped.
 - An ordinary session whose first message was accepted (its row records its
   orchestration) is never taken as ended because its orchestration reads
   NotFound, at any age: a start that no worker has picked up yet reads
