@@ -950,15 +950,16 @@ with that end and changes nothing. Whatever ended the run first decides who
 is told: a later command that lost changes nothing.
 
 A finished Workflow is kept until the Sweeper cleans it, like any finished
-session. The Sweeper reads a Workflow session's status from its latest run's
-controller (`session-<id>` for its live run, `wft-<run>` for a test bench's
-test run): while that controller runs (or any run the store counts as
+session. The Sweeper reads a Workflow session's status from its latest own
+run's controller (`session-<id>` for its live run, `wft-<run>` for a test
+bench's test run): while that controller runs (or any run the store counts as
 running still has a running controller), the Workflow is live and is kept.
 Once the controller has ended and the session is older than the Sweeper's
 grace, `cleanup_session` deletes it; once the controller instance is gone,
-`prune_orchestrations` deletes it too. A Workflow session with no run yet (a
-draft, or one not yet started) is never a cleanup candidate. A status read
-that fails, of the controller or of the Workflow's runs, deletes nothing.
+`prune_orchestrations` deletes it too. A Workflow session with no run of its
+own yet (a draft, tested or not, or one not yet started) is never a cleanup
+candidate. A status read that fails, of the controller or of the Workflow's
+runs, deletes nothing.
 Deleting a Workflow session goes through the normal path: its definition
 becomes a tombstone, and its owner session's cleanup removes it with the
 owner's other descendants.

@@ -300,9 +300,11 @@ async function testWorkflowSessionsByTheirControllers(env) {
         const benchRunning = await makeWorkflow(catalog, db, schema, { parent: owner, bench: true, runs: [{ mode: "test", status: "running" }] });
         const benchEnded = await makeWorkflow(catalog, db, schema, { parent: owner, bench: true, runs: [{ mode: "test", status: "completed" }] });
         const draft = await makeWorkflow(catalog, db, schema, { parent: owner });
+        // A draft that was tested (its test ended, its wft-<run> is gone) still has no run of its own: it stays.
+        const testedDraft = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "test", status: "completed" }] });
         // A Workflow whose latest run ended while an earlier test run still runs: the running one keeps it live.
         const mixed = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "test", status: "running" }, { mode: "live", status: "completed" }] });
-        const all = [live, finished, benchRunning, benchEnded, draft, mixed];
+        const all = [live, finished, benchRunning, benchEnded, draft, testedDraft, mixed];
         await ageSessions(env, all.map(w => w.id), 60);
 
         // A status read of session-<id> would say NotFound for every bench and draft: only the controllers below exist.
@@ -326,12 +328,14 @@ async function testWorkflowSessionsByTheirControllers(env) {
         assertEqual(read.includes(`session-${benchRunning.id}`), false, "the bench's session-<id> is not read");
 
         // cleanup_session refuses the live ones and the one with no run.
-        for (const w of [live, benchRunning, draft, mixed]) {
+        for (const w of [live, benchRunning, draft, testedDraft, mixed]) {
             const refused = await findTool(tools, "cleanup_session").handler({ sessionId: w.id, graceMinutes: 0 });
             assertEqual(refused.ok, false, `cleanup refuses ${w.id.slice(0, 8)}`);
             assertEqual(await isLive(catalog, w.id), true, `${w.id.slice(0, 8)} stays`);
         }
         assertEqual((await findTool(tools, "cleanup_session").handler({ sessionId: draft.id, graceMinutes: 0 })).status, "NoRun", "a draft is refused for having no run");
+        assertEqual((await findTool(tools, "cleanup_session").handler({ sessionId: testedDraft.id, graceMinutes: 0 })).status, "NoRun",
+            "a tested draft has no run of its own");
 
         // cleanup_session cleans the finished Workflow through the normal path: soft-deleted, its definition a tombstone,
         // its ended run unchanged; nothing live is touched.
@@ -346,7 +350,7 @@ async function testWorkflowSessionsByTheirControllers(env) {
         assertEqual(pruned.ok, true, "prune ran");
         assertEqual(await isLive(catalog, benchEnded.id), false, "the ended bench is soft-deleted");
         assertEqual(await runStatus(db, schema, benchEnded.runs[0].runId), "completed", "the ended test run is unchanged");
-        for (const w of [live, benchRunning, draft, mixed]) assertEqual(await isLive(catalog, w.id), true, `prune keeps ${w.id.slice(0, 8)}`);
+        for (const w of [live, benchRunning, draft, testedDraft, mixed]) assertEqual(await isLive(catalog, w.id), true, `prune keeps ${w.id.slice(0, 8)}`);
         assertEqual(await runStatus(db, schema, live.runs[0].runId), "running", "the live run still runs");
         assertEqual(await runStatus(db, schema, benchRunning.runs[0].runId), "running", "the running test still runs");
         assertEqual(await definitionState(db, schema, draft.id), "draft", "the draft's definition is untouched");

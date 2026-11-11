@@ -16,6 +16,7 @@ import { defineTool } from "@github/copilot-sdk";
 import type { SessionCatalog } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
 import type { Tool } from "@github/copilot-sdk";
+import { WORKFLOW_TEST_BENCH_KIND } from "./workflow/test-bench.js";
 
 /**
  * Create sweeper tools bound to the given CMS catalog and duroxide client.
@@ -55,23 +56,26 @@ export function createSweeperTools(opts: {
      * connection, a timeout), so a thrown read is never taken for NotFound: the Sweeper deletes nothing on a failed read.
      *
      * - An ordinary session: `session-<id>`.
-     * - A Workflow session: its runs' controllers, as the store records them (`session-<id>` for its live run, `wft-<run>`
-     *   for a test run, as on a test bench). Its status is its latest run's controller's; a run the store counts as running
-     *   whose controller still runs keeps the session live whatever the latest run says. A Workflow session with no run yet
-     *   (a draft, or one claimed and not yet admitted) has nothing to read: `noRun`, never a cleanup candidate. A failed
-     *   read of the store is `unreadable`, like a failed status read.
+     * - A Workflow session: its runs' controllers, as the store records them. Its status is its latest own run's
+     *   controller's: a Workflow's live run (`session-<id>`), or a test bench's test run (`wft-<run>`). A test run of any
+     *   other Workflow (a draft's test) is not its run: it keeps the session live only while it runs. Any run the store
+     *   counts as running whose controller still runs keeps the session live, whatever the latest run says. A Workflow
+     *   session with no run of its own yet (a draft, tested or not, or one claimed and not yet admitted) has nothing to
+     *   read: `noRun`, never a cleanup candidate. A failed read of the store is `unreadable`, like a failed status read.
      */
-    async function readOrchestrationStatus(session: { sessionId: string; sessionKind?: string }): Promise<OrchestrationRead> {
+    async function readOrchestrationStatus(session: { sessionId: string; sessionKind?: string; serviceKind?: string | null }): Promise<OrchestrationRead> {
         if (session.sessionKind !== "workflow") return readInstanceStatus(`session-${session.sessionId}`);
-        let runs: Array<{ controllerInstanceId: string; status: string }>;
+        let runs: Array<{ controllerInstanceId: string; status: string; mode: string }>;
         try {
             if (typeof catalog.workflowStore !== "function") return { unreadable: "this catalog has no Workflow store" };
             runs = await catalog.workflowStore().listRuns(session.sessionId);
         } catch (err: any) {
             return { unreadable: `the Workflow runs of ${session.sessionId}: ${String(err?.message ?? err)}` };
         }
-        if (runs.length === 0) return { noRun: true };
-        const latest = runs[runs.length - 1];
+        const bench = session.serviceKind === WORKFLOW_TEST_BENCH_KIND;
+        const own = bench ? runs : runs.filter(run => run.mode === "live");
+        if (own.length === 0) return { noRun: true };
+        const latest = own[own.length - 1];
         const reads = new Map<string, Awaited<ReturnType<typeof readInstanceStatus>>>();
         for (const run of [latest, ...runs.filter(run => run !== latest && ACTIVE_WORKFLOW_RUN.has(run.status))]) {
             if (reads.has(run.controllerInstanceId)) continue;
@@ -91,7 +95,7 @@ export function createSweeperTools(opts: {
     * cleanable when its OWN orchestration is terminal.
      */
     async function evaluateCleanupEligibility(
-        session: { sessionId: string; parentSessionId: string | null; updatedAt: Date; sessionKind?: string },
+        session: { sessionId: string; parentSessionId: string | null; updatedAt: Date; sessionKind?: string; serviceKind?: string | null },
         graceMinutes: number,
     ): Promise<{ eligible: boolean; status: string; reason: string }> {
         const read = await readOrchestrationStatus(session);
@@ -99,7 +103,7 @@ export function createSweeperTools(opts: {
             return {
                 eligible: false,
                 status: "NoRun",
-                reason: "Refusing to clean a Workflow session that has no run yet (a draft, or one not yet started): it has no orchestration to end.",
+                reason: "Refusing to clean a Workflow session that has no run of its own yet (a draft, or one not yet started): it has no orchestration to end.",
             };
         }
         if ("unreadable" in read) {
@@ -150,7 +154,7 @@ export function createSweeperTools(opts: {
         description:
             "Scan for terminal sessions that are eligible for cleanup. " +
             "Only sessions whose OWN orchestration is Completed, Failed, Terminated, or NotFound are returned " +
-            "(a Workflow session's orchestration is its latest run's controller; one with no run yet is never returned). " +
+            "(a Workflow session's orchestration is its latest own run's controller; one with no run of its own yet is never returned). " +
             "Idle, zombie, orphaned, or otherwise live sessions are not cleanup candidates, including child sessions. " +
             "Pass only sessionId values from sessions[] to cleanup_session.",
         parameters: {
@@ -379,7 +383,7 @@ export function createSweeperTools(opts: {
             "instances older than N minutes, and (2) prune old executions from all instances, " +
             "keeping only the last N executions per instance. " +
             "It then soft-deletes the session rows (older than the same cutoff) whose orchestration is NotFound " +
-            "(a Workflow session's: its latest run's controller; one with no run yet is kept); " +
+            "(a Workflow session's: its latest own run's controller; one with no run of its own yet is kept); " +
             "a status read that fails deletes nothing (cmsUnreadable counts them). " +
             "This is a system-level operation that cleans up duroxide storage directly.",
         parameters: {
