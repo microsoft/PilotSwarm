@@ -99,6 +99,15 @@ test("S2RT-F2: a Workflow and its own parent chat are locked chat first; any oth
     assert.deepEqual(sessionPairLockOrder("w-1", "w-1", "a-chat"), ["w-1"]);
 });
 
+// Review ER-03: a Workflow and its own child session (an agent step's) are locked Workflow first, as a session's creation
+// locks its parent first: sorting them by id could lock the child first and deadlock against that creation.
+test("ER-03: a Workflow and its own child session are locked Workflow first, whatever their ids", () => {
+    assert.deepEqual(sessionPairLockOrder("w-9", "a-child", "z-chat", "w-9"), ["w-9", "a-child"]);
+    assert.deepEqual(sessionPairLockOrder("w-1", "z-child", "a-chat", "w-1"), ["w-1", "z-child"]);
+    // Another session's child (not this Workflow's) keeps the id order.
+    assert.deepEqual(sessionPairLockOrder("w-9", "a-other", null, "x-parent"), ["a-other", "w-9"]);
+});
+
 // The executor's run at ea596f23: a chat that ended while its Workflow's run was paused broke the check
 // workflow_runs_paused_from ((status = 'paused') = (paused_from IS NOT NULL)) when the run was cancelled with paused_from
 // left set. The chat's own update failed with it.

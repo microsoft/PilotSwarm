@@ -1915,10 +1915,16 @@ export class WorkflowStore {
         : Promise<{ workflow: AuthoritySession | null; other: AuthoritySession | null; definition: { parentSessionId: string | null } | null }> {
         const locked = new Set<string>();
         // S2RT-F2: a Workflow and its own parent session are locked session first, as the owner-session-ended trigger and a Start lock
-        // them; any other pair in ascending id order. The parent is read unlocked: a session's parent never changes.
-        const parentRow = await client.query(`SELECT parent_session_id FROM ${this.t.sessions} WHERE session_id = $1`, [workflowSessionId]);
-        const parentId = parentRow.rows[0]?.parent_session_id ?? null;
-        for (const sessionId of sessionPairLockOrder(workflowSessionId, otherSessionId, parentId === null ? null : String(parentId))) {
+        // them; review ER-03: a Workflow and its own child session are locked Workflow first, as a session's creation locks its
+        // parent before the child (PgSessionCatalog.createSession); any other pair in ascending id order. The parents are read
+        // unlocked: a session's parent never changes.
+        const parents = await client.query(`SELECT session_id, parent_session_id FROM ${this.t.sessions} WHERE session_id = ANY($1::text[])`,
+            [[workflowSessionId, otherSessionId]]);
+        const parentOf = (sessionId: string): string | null => {
+            const found = parents.rows.find((row: Row) => String(row.session_id) === sessionId)?.parent_session_id;
+            return found === null || found === undefined ? null : String(found);
+        };
+        for (const sessionId of sessionPairLockOrder(workflowSessionId, otherSessionId, parentOf(workflowSessionId), parentOf(otherSessionId))) {
             const { rows } = await client.query(
                 `SELECT 1 FROM ${this.t.sessions} WHERE session_id = $1 FOR ${sessionId === workflowSessionId ? "NO KEY UPDATE" : "SHARE"}`, [sessionId]);
             if (rows[0]) locked.add(sessionId);
@@ -7911,11 +7917,15 @@ function assertNotDeleted(definition: WorkflowDefinitionRow): void {
 }
 
 /**
- * S2RT-F2: the order in which a Workflow's session and another session are locked: its own parent session first (the order of
- * the owner-session-ended trigger and of a Start: the session, then its Workflows), any other session in ascending id order. Pure.
+ * The order in which a Workflow's session and another session are locked: the parent first, in both directions. S2RT-F2: the
+ * Workflow's own parent session before the Workflow (the order of the owner-session-ended trigger and of a Start: the session,
+ * then its Workflows). Review ER-03: the Workflow before its own child session (the order of a session's creation, which locks
+ * its parent before the child, and of the Sweeper: parent first). Any other pair in ascending id order. Pure.
  */
-export function sessionPairLockOrder(workflowSessionId: string, otherSessionId: string, parentSessionId: string | null): string[] {
+export function sessionPairLockOrder(workflowSessionId: string, otherSessionId: string, parentSessionId: string | null,
+    otherParentSessionId: string | null = null): string[] {
     if (workflowSessionId === otherSessionId) return [workflowSessionId];
     if (parentSessionId !== null && otherSessionId === parentSessionId) return [otherSessionId, workflowSessionId];
+    if (otherParentSessionId !== null && otherParentSessionId === workflowSessionId) return [workflowSessionId, otherSessionId];
     return [workflowSessionId, otherSessionId].sort();
 }
