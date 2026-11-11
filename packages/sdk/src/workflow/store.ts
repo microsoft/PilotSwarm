@@ -64,6 +64,17 @@ export type WorkflowRunStatus = "admitted" | "running" | "paused" | "completed" 
 export type WorkflowRunMode = "live" | "test";
 /** A run that has not ended: it can still be cancelled, deleted, recovered and finish its admitted work. */
 export const ACTIVE_RUN_STATUSES: readonly WorkflowRunStatus[] = ["admitted", "running", "paused"];
+/**
+ * Review AR-01: how long after an ordinary session's orchestration was started (its row's last update) the Sweeper does
+ * not take a NotFound read of it as its end. A start that was queued but not yet dispatched reads NotFound.
+ */
+export const SWEEPER_START_SETTLE_MINUTES = 5;
+/** The states of an ordinary session whose orchestration has ended. */
+const ENDED_SESSION_STATES: readonly string[] = ["completed", "cancelled", "failed", "error"];
+/** The Sweeper's NOWAIT lock found a session another transaction holds (sweeperSoftDelete). */
+class SweeperBusy extends Error {
+    constructor() { super("a session the Sweeper would delete is held by another transaction"); }
+}
 /** A run that may admit a new node execution (a paused run admits none). */
 export const ADMITTING_RUN_STATUSES: readonly WorkflowRunStatus[] = ["admitted", "running"];
 
@@ -3352,49 +3363,98 @@ export class WorkflowStore {
     }
 
     /**
-     * Review AS-02: the Sweeper's final check and soft delete of one session, in one transaction under the session row's
-     * lock (FOR NO KEY UPDATE), the lock every run admission takes first (startLive, startTest: lockLiveSession). So an
-     * admission either commits before the check, which then sees its run and refuses, or waits for the delete, and then
-     * finds the session deleted and admits nothing. Under the lock: the session must still exist, not be deleted or a
-     * system session, and not have changed since the Sweeper read it (its updated_at, to the millisecond the read saw);
-     * a Workflow session must have no run the store counts as active. Then the given descendants are soft-deleted, in the
-     * order given (a system session is left as it is; one an earlier delete's trigger already deleted is deleted again,
-     * which changes nothing), and the session last; the deletion triggers end what each owned (an active run of a
-     * Workflow under it included: a parent's lifecycle owns its children's), in the same transaction. A refusal deletes
-     * nothing; a failed statement rolls it all back.
+     * Review AR-02: the version of a session row as the Sweeper reads it before it judges the session (its xmin, which
+     * every update of the row changes, whatever its timestamps), with its updated_at and whether it is deleted. Null when
+     * the row does not exist. sweeperSoftDelete refuses unless the row still has this exact version.
      */
-    async sweeperSoftDelete(input: { sessionId: string; readUpdatedAt: Date; descendants: readonly string[] }): Promise<
+    async sweeperRowVersion(sessionId: string): Promise<{ version: string; updatedAt: Date; deleted: boolean } | null> {
+        const { rows } = await this.pool.query(
+            `SELECT xmin::text AS version, updated_at, deleted_at FROM ${this.t.sessions} WHERE session_id = $1`, [sessionId]);
+        if (!rows[0]) return null;
+        return { version: str(rows[0], "version"), updatedAt: new Date(rows[0].updated_at), deleted: rows[0].deleted_at !== null };
+    }
+
+    /**
+     * The Sweeper's final check and soft delete of one session (reviews AS-02, AR-01..AR-03), in one transaction under the
+     * session row's lock (FOR NO KEY UPDATE). Every run admission (startLive, startTest: lockLiveSession) and a session
+     * orchestration's start (PgSessionCatalog.startSessionFenced) take that lock first, so each either commits before the
+     * check, which then refuses, or waits for the delete and then finds the session deleted and does nothing.
+     *
+     * Under the lock, it refuses (deleting nothing) when the row:
+     * - is gone or deleted, or no longer has the exact version the Sweeper read (sweeperRowVersion): Changed;
+     * - is a system session: System;
+     * - is a Workflow session with a run the store counts as active: ActiveRun;
+     * - is an ordinary session the Sweeper judged NotFound whose orchestration was started (orchestration_id set, its
+     *   state not ended) within SWEEPER_START_SETTLE_MINUTES: Starting. A start that was queued but not yet dispatched
+     *   reads NotFound, and deleting it would leave the orchestration to run on a deleted row;
+     * - has a session the delete would change that another transaction holds (each one is locked NOWAIT, in session id
+     *   order, before anything is changed, so the Sweeper never waits holding a lock): Busy.
+     * The sessions locked first: with `cascade`, all its descendants (a parent's lifecycle owns its children's: an active
+     * run under it ends with it); without, the Workflow sessions the owner-session trigger deletes with it. Then those are
+     * soft-deleted and the session last; the deletion triggers end what each owned, in the same transaction. A failed
+     * statement rolls it all back.
+     */
+    async sweeperSoftDelete(input: { sessionId: string; version: string; cascade: boolean; orchestrationNotFound: boolean }): Promise<
         | { deleted: string[] }
-        | { refused: { status: "Changed" | "System" | "ActiveRun"; detail: string; runId?: string; runStatus?: WorkflowRunStatus } }> {
-        return this.transaction(async client => {
-            const { rows } = await client.query(
-                `SELECT session_kind, is_system, deleted_at, date_trunc('milliseconds', updated_at) > $2::timestamptz AS changed
-                   FROM ${this.t.sessions} WHERE session_id = $1 FOR NO KEY UPDATE`, [input.sessionId, input.readUpdatedAt]);
-            const row = rows[0];
-            if (!row || row.deleted_at !== null) return { refused: { status: "Changed" as const, detail: "it was deleted since it was read" } };
-            if (row.is_system === true) return { refused: { status: "System" as const, detail: "it is a system session" } };
-            if (row.changed === true) return { refused: { status: "Changed" as const, detail: "it changed since it was read" } };
-            if (row.session_kind === "workflow") {
-                const active = await client.query(
-                    `SELECT run_id, status FROM ${this.t.runs} WHERE workflow_session_id = $1 AND status = ANY($2::text[])
-                      ORDER BY created_at, run_id LIMIT 1`, [input.sessionId, ACTIVE_RUN_STATUSES]);
-                if (active.rows[0]) {
-                    const runStatus = str(active.rows[0], "status") as WorkflowRunStatus;
-                    return { refused: { status: "ActiveRun" as const, runId: str(active.rows[0], "run_id"), runStatus,
-                        detail: `its run ${str(active.rows[0], "run_id")} is ${runStatus} in the store` } };
+        | { refused: { status: "Changed" | "System" | "ActiveRun" | "Starting" | "Busy"; detail: string; runId?: string; runStatus?: WorkflowRunStatus } }> {
+        const s = `"${this.schema}"`;
+        try {
+            return await this.transaction(async client => {
+                const { rows } = await client.query(
+                    `SELECT session_kind, is_system, deleted_at, xmin::text AS version, orchestration_id, state,
+                            updated_at > now() - make_interval(mins => $2) AS recent
+                       FROM ${this.t.sessions} WHERE session_id = $1 FOR NO KEY UPDATE`, [input.sessionId, SWEEPER_START_SETTLE_MINUTES]);
+                const row = rows[0];
+                if (!row || row.deleted_at !== null) return { refused: { status: "Changed" as const, detail: "it was deleted since it was read" } };
+                if (row.is_system === true) return { refused: { status: "System" as const, detail: "it is a system session" } };
+                if (str(row, "version") !== input.version) return { refused: { status: "Changed" as const, detail: "it changed since it was read" } };
+                const workflow = row.session_kind === "workflow";
+                if (!workflow && input.orchestrationNotFound && row.orchestration_id !== null && row.recent === true
+                    && !ENDED_SESSION_STATES.includes(String(row.state))) {
+                    return { refused: { status: "Starting" as const,
+                        detail: `its orchestration was started within the last ${SWEEPER_START_SETTLE_MINUTES} minutes and may not have begun yet` } };
                 }
+                if (workflow) {
+                    const active = await client.query(
+                        `SELECT run_id, status FROM ${this.t.runs} WHERE workflow_session_id = $1 AND status = ANY($2::text[])
+                          ORDER BY created_at, run_id LIMIT 1`, [input.sessionId, ACTIVE_RUN_STATUSES]);
+                    if (active.rows[0]) {
+                        const runStatus = str(active.rows[0], "status") as WorkflowRunStatus;
+                        return { refused: { status: "ActiveRun" as const, runId: str(active.rows[0], "run_id"), runStatus,
+                            detail: `its run ${str(active.rows[0], "run_id")} is ${runStatus} in the store` } };
+                    }
+                }
+                const { rows: affected } = input.cascade
+                    ? await client.query(`SELECT session_id FROM ${s}.cms_get_descendant_session_ids($1)`, [input.sessionId])
+                    : workflow ? { rows: [] as Array<Record<string, unknown>> }
+                        : await client.query(`SELECT session_id FROM ${this.t.sessions}
+                            WHERE parent_session_id = $1 AND session_kind = 'workflow' AND deleted_at IS NULL`, [input.sessionId]);
+                const ids = affected.map(item => str(item, "session_id"));
+                let locked: string[] = [];
+                if (ids.length > 0) {
+                    try {
+                        const { rows: held } = await client.query(
+                            `SELECT session_id FROM ${this.t.sessions} WHERE session_id = ANY($1::text[]) AND is_system = FALSE AND deleted_at IS NULL
+                              ORDER BY session_id FOR NO KEY UPDATE NOWAIT`, [ids]);
+                        locked = held.map(item => str(item, "session_id"));
+                    } catch (error: any) {
+                        if (error?.code === "55P03") throw new SweeperBusy();
+                        throw error;
+                    }
+                }
+                for (const sessionId of locked) {
+                    await client.query(`SELECT ${this.t.softDeleteSession}(session_id) FROM ${this.t.sessions}
+                        WHERE session_id = $1 AND deleted_at IS NULL`, [sessionId]);
+                }
+                await client.query(`SELECT ${this.t.softDeleteSession}($1)`, [input.sessionId]);
+                return { deleted: [...locked, input.sessionId] };
+            });
+        } catch (error) {
+            if (error instanceof SweeperBusy) {
+                return { refused: { status: "Busy" as const, detail: "another transaction holds one of the sessions it would delete" } };
             }
-            const deleted: string[] = [];
-            for (const sessionId of input.descendants) {
-                const { rows: done } = await client.query(
-                    `SELECT ${this.t.softDeleteSession}(session_id) FROM ${this.t.sessions}
-                      WHERE session_id = $1 AND is_system = FALSE`, [sessionId]);
-                if (done.length > 0) deleted.push(sessionId);
-            }
-            await client.query(`SELECT ${this.t.softDeleteSession}($1)`, [input.sessionId]);
-            deleted.push(input.sessionId);
-            return { deleted };
-        });
+            throw error;
+        }
     }
 
     /**

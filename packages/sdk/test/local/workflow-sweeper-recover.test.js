@@ -225,8 +225,8 @@ describe("the Sweeper and Workflow recovery on the real runtime", () => {
                 expect(await isLive(h.catalog, benchId)).toBe(false);
                 expect((await h.store.readRun(benchRun.runId)).status).toBe("completed");
 
-                // prune_orchestrations, at its default cutoff and at 0: its bulk pass deletes the dead controller's instance
-                // for real; its session pass keeps both rows.
+                // prune_orchestrations, at its default cutoff and at 0 (the dead controller failed moments ago, so the pass at
+                // 0 is the one whose bulk delete removes its instance, for real); its session pass keeps both rows.
                 for (const minutes of [5, 0]) {
                     const pruned = await tool("prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: minutes });
                     expect(pruned.ok, JSON.stringify(pruned)).toBe(true);

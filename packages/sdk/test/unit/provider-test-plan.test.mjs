@@ -42,7 +42,9 @@ test('full HDB routes CMS, orchestration and facts to the same real backend', ()
 
 test('additive coverage contains CMS, facts, compositions, live workers and recovery', () => {
   const files = horizonSdkFiles();
-  for (const name of ['cms-state', 'pg-migrator', 'facts', 'facts-access-control', 'facts-provider-selection', 'composition-tiers.integration', 'enhanced-composition.integration', 'contracts', 'smoke-basic', 'durability', 'agent-handoff-routing']) {
+  // The Sweeper's suites read and lock Workflow and session rows: they run on both providers (re-review of 4fa702dc, T6).
+  for (const name of ['cms-state', 'pg-migrator', 'facts', 'facts-access-control', 'facts-provider-selection', 'composition-tiers.integration', 'enhanced-composition.integration', 'contracts', 'smoke-basic', 'durability', 'agent-handoff-routing',
+    'sweeper-cleanup-guard', 'sweeper-final-check', 'workflow-sweeper-recover']) {
     assert.ok(files.includes(`test/local/${name}.test.js`), name);
   }
   assert.ok(!files.includes('test/local/copilot-provider-compatibility.test.js'), 'synthetic HTTP permutations already covered on baseline');

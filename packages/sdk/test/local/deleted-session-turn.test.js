@@ -4,10 +4,12 @@
  * person's delete then is a catalog delete only (nothing runs to stop). The client's send refuses a row that is already
  * deleted when it reads it (it cannot restore the session's lineage); a delete that lands after that read, before the
  * send starts the orchestration, used to leave the first turn free to run the model on the deleted session, before the
- * Workflow's carried delete was queued. Now the turn reads the tombstone with its lineage, runs no model and no tool, and
- * queues the session's own delete: the orchestration ends and the row stays deleted. The Workflow's carry is not involved
- * here (held for ever): the real session orchestration (1.0.83), the real turn activity and a scripted model; the child's
- * id and first prompt as a `session: new` visit's and as a continued replacement's.
+ * Workflow's carried delete was queued. Review AR-01 (re-review of 4fa702dc): the start is fenced on the session row
+ * (PgSessionCatalog.startSessionFenced), so that send now refuses (SESSION_DELETED) and starts nothing: no orchestration,
+ * no model request, the row stays deleted. (A turn of a session deleted after its orchestration started still reads the
+ * tombstone and runs no model: the second case below.) The Workflow's carry is not involved here (held for ever): the
+ * real session orchestration (1.0.83), the real turn activity and a scripted model; the child's id and first prompt as a
+ * `session: new` visit's and as a continued replacement's.
  *
  * Review D3-001: the refused turn's result is followed by the orchestration's title step before its own delete is
  * drained. A session whose title is due (its first turn armed it 60 s earlier) and whose row is deleted while its cancel
@@ -44,7 +46,7 @@ describe("a deleted session runs no model turn (review DR2-001)", () => {
         ["a continued agent session's replacement", () => workflowAgentSessionId(`run-${randomUUID()}`, "talk", 2),
             marker => `[SYSTEM: workflow node invocation ${marker}] The agent session of its earlier cycles ended. Tell one new fact.`],
     ]) {
-        it(`${label}, deleted between its create and its first send, ends without a model request or a tool call; its row stays deleted`, { timeout: TIMEOUT }, async () => {
+        it(`${label}, deleted between its create and its first send, is refused and starts nothing: no model request or tool call; its row stays deleted`, { timeout: TIMEOUT }, async () => {
             const env = getEnv();
             const mgmt = await createManagementClient(env);
             const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
@@ -58,8 +60,7 @@ describe("a deleted session runs no model turn (review DR2-001)", () => {
                     const child = await client.createSession({ sessionId: id, parentSessionId: parent.sessionId, nestingLevel: 1,
                         owner: OWNER, model: qualifiedModel, refuseDeleted: true });
                     // A person deletes it after the send read its row and before it starts the orchestration: none exists
-                    // yet, so the delete is a catalog delete only. The send then starts it with the prompt; nothing else is
-                    // queued to it.
+                    // yet, so the delete is a catalog delete only. The send's start fence then finds the row deleted.
                     const restore = client._restoreLineageForStart.bind(client);
                     let deleted = false;
                     client._restoreLineageForStart = async (sessionId, ...rest) => {
@@ -71,27 +72,16 @@ describe("a deleted session runs no model turn (review DR2-001)", () => {
                         }
                         return lineage;
                     };
-                    await child.send(prompt(marker), { clientMessageIds: [`workflow:${parent.sessionId}:run:agent:${marker}`],
-                        sender: { kind: "agent", sessionId: parent.sessionId, display: "workflow node invocation" } });
+                    const refused = await child.send(prompt(marker), { clientMessageIds: [`workflow:${parent.sessionId}:run:agent:${marker}`],
+                        sender: { kind: "agent", sessionId: parent.sessionId, display: "workflow node invocation" } }).then(() => null, error => error);
                     expect(deleted).toBe(true);
-                    let status;
-                    try {
-                        status = await until(async () => {
-                            const read = (await client._getDuroxideClient().getStatus(`session-${id}`)).status;
-                            return ["Completed", "Failed", "Terminated"].includes(read) ? read : null;
-                        }, "the deleted session's orchestration to end", 60_000);
-                    } catch (error) {
-                        const info = await client._getDuroxideClient().getStatus(`session-${id}`);
-                        const events = (await catalog.getSessionEvents(id, 0, 200)).map(event => [event.eventType, JSON.stringify(event.data ?? null).slice(0, 160)]);
-                        throw new Error(`${error.message}; status ${JSON.stringify({ status: info.status, custom: String(info.customStatus ?? "").slice(0, 400) })}; `
-                            + `requests with the marker ${model.requests.filter(request => JSON.stringify(request.body).includes(marker)).length}; events ${JSON.stringify(events)}`);
-                    }
-                    expect(["Completed", "Failed", "Terminated"]).toContain(status);
-                    // No model request carried its prompt (so no tool call either), and the row is still deleted.
+                    expect(refused?.code, String(refused?.message ?? refused)).toBe("SESSION_DELETED");
+                    // Nothing was started, so nothing runs: no orchestration, no model request with its prompt, and the row
+                    // stays deleted.
+                    await new Promise(resolve => setTimeout(resolve, 2_000));
+                    expect((await client._getDuroxideClient().getStatus(`session-${id}`)).status).toBe("NotFound");
                     expect(model.requests.filter(request => JSON.stringify(request.body).includes(marker))).toEqual([]);
                     expect(await catalog.workflowStore().isSessionDeleted(id)).toBe(true);
-                    const stopped = (await catalog.getSessionEvents(id, 0, 200, ["session.turn_stopped"])).map(event => event.data?.reason);
-                    expect(stopped).toContain("This session was deleted; this turn was not run.");
                 });
             } finally {
                 await mgmt.stop();

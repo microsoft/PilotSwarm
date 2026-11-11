@@ -972,10 +972,23 @@ becomes a tombstone. Cleaning an ended session removes all its descendants
 with it, whatever their state: a parent's lifecycle owns its children's, so
 any run still active under it (a Workflow child's or a test bench's) ends
 with it, as an explicit delete would end it. The final check and the delete
-are one transaction under the session row's lock, the lock every run
-admission takes first: a run admitted after the Sweeper read the session
-makes the cleanup refuse and delete nothing, and an admission that comes
-after the delete finds the session deleted and admits nothing.
+are one transaction under the session row's lock. Every run admission and a
+session's first message (the start of its orchestration) take that lock
+first, so whichever commits first decides:
+
+- The Sweeper reads the row's version before it judges the session, and
+  refuses unless the row still has that exact version (any update changes
+  it, whatever its timestamps). A run admitted, or a first message sent,
+  after that read makes the cleanup refuse and delete nothing.
+- An admission or a first message that comes after the delete finds the
+  session deleted and does nothing (a first message is refused with
+  `SESSION_DELETED`).
+- An ordinary session whose orchestration was started in the last 5 minutes
+  is not taken as ended when its orchestration reads NotFound, whatever the
+  grace: a start that is queued but not yet dispatched reads NotFound.
+- The Sweeper locks every session the delete would change before it changes
+  any, without waiting. When another transaction holds one, it refuses at
+  once and deletes nothing; a later scan tries again.
 
 The kill reaches the worker when the running script state next renews its
 activity lock. The lock times out after `PILOTSWARM_WORKER_LOCK_TIMEOUT_MS`
