@@ -1,11 +1,11 @@
 /**
- * Freezing 1.0.81 and opening 1.0.82 (issue 192).
+ * Freezing 1.0.81 and 1.0.82, then opening 1.0.83.
  *
- * 1.0.82 changes how the session FIFO is drained and merged: queued prompts no
+ * 1.0.82 changed how the session FIFO is drained and merged: queued prompts no
  * longer wait behind an armed timer, a timer item no longer stops prompt
  * batching, and a full FIFO compacts instead of dropping items. That changes
- * the yields and KV writes the orchestration makes, so 1.0.81 is frozen and
- * in-flight 1.0.81 sessions keep replaying on the frozen copy.
+ * the yields and KV writes the orchestration makes, so 1.0.81 and 1.0.82 are
+ * frozen. Version 1.0.83 adds durable provider rate-limit retries.
  *
  * Run: node --test test/unit/orchestration-freeze-1-0-81.test.mjs
  */
@@ -17,13 +17,17 @@ import { DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration
 
 const read = name => readFileSync(new URL(`../../src/${name}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
-test("registry freezes 1.0.81 and activates a separate 1.0.82 handler", () => {
+test("registry retains frozen 1.0.81 and 1.0.82 and activates 1.0.83", () => {
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.81").handler.name, "durableSessionOrchestration_1_0_81");
-    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.82");
-    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).handler.name, "durableSessionOrchestration_1_0_82");
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.82").handler.name, "durableSessionOrchestration_1_0_82");
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.83");
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).handler.name, "durableSessionOrchestration_1_0_83");
     assert.match(read("orchestration-registry.ts"), /from "\.\/orchestration_1_0_81\/index\.js"/);
+    assert.match(read("orchestration-registry.ts"), /from "\.\/orchestration_1_0_82\/index\.js"/);
     assert.match(read("orchestration_1_0_81/runtime.ts"), /CURRENT_ORCHESTRATION_VERSION = "1\.0\.81"/);
+    assert.match(read("orchestration_1_0_82/runtime.ts"), /CURRENT_ORCHESTRATION_VERSION = "1\.0\.82"/);
     assert.match(read("orchestration_1_0_81/index.ts"), /latestVersion: DURABLE_SESSION_LATEST_VERSION/);
+    assert.match(read("orchestration/index.ts"), /durableSessionOrchestration_1_0_83\(/);
 });
 
 const frozenHashes = {

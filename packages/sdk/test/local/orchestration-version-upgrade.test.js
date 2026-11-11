@@ -164,7 +164,7 @@ describe("orchestration version upgrades", () => {
 
     // 1.0.79 is the version frozen when session workspaces opened 1.0.80
     // (test C4): its sessions carry no config.workspace into 1.0.80.
-    for (const sourceVersion of ["1.0.40", "1.0.41", "1.0.42", "1.0.79", "1.0.80", "1.0.81"]) {
+    for (const sourceVersion of ["1.0.40", "1.0.41", "1.0.42", "1.0.79", "1.0.80", "1.0.81", "1.0.82"]) {
         it(`upgrades ${sourceVersion} snapshots into the latest orchestration`, async () => {
             const values = new Map();
             const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
@@ -270,15 +270,15 @@ describe("orchestration version upgrades", () => {
         expect(readFifo(values).filter((item) => item.kind === "prompt").map((item) => item.prompt)).toEqual(["P2"]);
     });
 
-    it("R9: 1.0.82 drains an inherited 1.0.81 FIFO [timer, timer, P1, P2] in two turns, then waits on the cron", async () => {
+    it("R9: 1.0.83 drains an inherited 1.0.81 FIFO [timer, timer, P1, P2] in two turns, then waits on the cron", async () => {
         const values = new Map();
         inheritedFifo(values);
         const turns = [];
         const ctx = createCtx(values, [], turns);
         const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
-        expect(DURABLE_SESSION_LATEST_VERSION).toBe("1.0.82");
+        expect(DURABLE_SESSION_LATEST_VERSION).toBe("1.0.83");
         const handler = await loadHandler(DURABLE_SESSION_LATEST_VERSION);
-        const result = driveUntilParked(handler(ctx, inheritedInput("fifo-1.0.82")), ctx);
+        const result = driveUntilParked(handler(ctx, inheritedInput("fifo-1.0.83")), ctx);
         expect(turns).toHaveLength(2);
         expect(turns[0][0]).toMatch(/P1[\s\S]*P2/);
         expect(turns[1][0]).toMatch(/Scheduled cron wake-up/);
