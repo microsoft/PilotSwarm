@@ -7,8 +7,10 @@ import { registerWorkflow, sessionQueueTransport } from "../../src/workflow/runt
 import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { startSessionWorkflowTest } from "../../src/workflow/definition-test.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
+import { resolveStorageConfig } from "../../src/storage-config.ts";
+import { getDuroxideStorageProvider } from "../../src/storage-providers.ts";
 
-const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
+const { Runtime, Client } = createRequire(import.meta.url)("duroxide");
 export const CASCADE_OWNER = { provider: "test", subject: "workflow-owner-cascade" };
 export const CASCADE_ACTOR = { kind: "system", name: "workflow-owner-cascade-tests" };
 export const CASCADE_TIMEOUT = testTime.ms(180_000);
@@ -38,7 +40,10 @@ export async function openOwnerCascadeRuntime(env) {
     const h = await openWorkflowStore(env);
     let runtime;
     try {
-        const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
+        const storage = resolveStorageConfig({ options: {
+            store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema,
+        } });
+        const provider = await getDuroxideStorageProvider(storage.duroxide.provider).createDuroxideProvider(storage.duroxide);
         const client = new Client(provider);
         runtime = new Runtime(provider, {
             dispatcherPollIntervalMs: 10, logLevel: "error",
