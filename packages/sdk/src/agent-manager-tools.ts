@@ -23,7 +23,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { SessionCatalog, AgentPackageSelector, AgentPrincipal } from "./cms.js";
 import type { ArtifactStore } from "./session-store.js";
-import { readAgentPackageTarGz } from "./agent-package-format.js";
+import { isValidSemver, readAgentPackageTarGz } from "./agent-package-format.js";
 import { prepareAgentPackageDir, publishPreparedAgentPackage, readAgentPackageVersionEntries, type PreparedAgentPackage } from "./agent-package-service.js";
 import { diffPackageTrees, patchArtifacts, entriesToMap, type PackageEntry } from "./agent-package-diff.js";
 import { guardedImportFetch } from "./agent-package-import-fetch.js";
@@ -426,7 +426,9 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
      * publish_agent_package both run it, in this order: the staged tree is not empty; CHANGELOG.md is staged and has an entry
      * for the version; plugin.json is JSON, names the staged package (and the requested one) and, for publish, has the
      * requested version; then publication's own preparation of the files (prepareAgentPackageDir: canonical staging, content
-     * validation, the reserved package names, the packing limits). Propose checks the version plugin.json declares.
+     * validation, the reserved package names, the packing limits). Propose checks the version plugin.json declares
+     * (`semver` omitted); publish gives `semver`, which must then be a concrete version (an empty or malformed one is
+     * refused, never read as omitted: review of 68b98d7a VR-01).
      * The registry's checks (permission on the package, an existing version) are not here: publish runs them against the
      * registry, which can change after the proposal. Returns the prepared package, or every refusal (code, path, message)
      * with the message publish answers with (the first one; a content refusal's full validation text).
@@ -441,7 +443,8 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
         let plugin: any = null;
         try { plugin = JSON.parse(staged.files["plugin.json"] || ""); } catch { plugin = null; }
         if (!plugin || typeof plugin !== "object" || Array.isArray(plugin)) plugin = null;
-        const semver = requested.semver ?? (typeof plugin?.version === "string" && plugin.version ? plugin.version : null);
+        const publishing = requested.semver !== undefined;
+        const semver = publishing ? requested.semver : (typeof plugin?.version === "string" && plugin.version ? plugin.version : null);
         const changelog = staged.files[CHANGELOG_PATH];
         if (!changelog) {
             refuse("AGENT_PACKAGE_CHANGELOG_MISSING", CHANGELOG_PATH,
@@ -456,10 +459,14 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                 refuse("AGENT_PACKAGE_IDENTITY_MISMATCH", "plugin.json",
                     `package identity mismatch (staged=${staged.package}, plugin=${plugin.name || "?"}, requested=${requested.package}).`);
             }
-            if (requested.semver && plugin.version !== requested.semver) {
+            if (publishing && plugin.version !== requested.semver) {
                 refuse("AGENT_PACKAGE_VERSION_MISMATCH", "plugin.json",
                     `plugin.json version ${plugin.version || "(missing)"} does not match requested ${requested.semver}.`);
             }
+        }
+        if (publishing && !isValidSemver(String(requested.semver))) {
+            refuse("AGENT_PACKAGE_SEMVER_INVALID", null,
+                `the requested version ${JSON.stringify(requested.semver)} is not a concrete version like 1.2.3 or 1.2.3-dev.1.`);
         }
         // The first refusal found before publication's own preparation is the one publish answers with, as before.
         const before = errors.length;

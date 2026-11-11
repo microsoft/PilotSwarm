@@ -742,3 +742,64 @@ test("propose diffs the canonical tree publish would ship: an ignored file is no
     assert.match(text, /plugin\.json/);
     assert.doesNotMatch(text, /\.DS_Store|\.pilotswarm-meta\.json/);
 });
+
+// Review of 68b98d7a VR-01: publish's requested semver is always compared with plugin.json's version and must be a concrete
+// version. An empty one used to be read as "not given" (proposal's case) and published plugin.json's version; each case below
+// is refused before the registry is read or any package artifact is uploaded. A valid one reaches publication (the control
+// that the recorder sees a publish).
+function recordingRegistry() {
+    const calls = [];
+    const artifacts = fakeArtifacts();
+    artifacts.uploadArtifactFromFile = async (_sessionId, filename) => { calls.push(`upload ${filename}`); return { filename }; };
+    const catalog = {
+        async getAgentPackage() { calls.push("getAgentPackage"); return null; },
+        async getAgentPackagesInstallManifest() { return []; },
+        async publishAgentPackage() { calls.push("publishAgentPackage"); return { status: "published", packageId: "pkg-1", versionId: "ver-1" }; },
+        async countAgentPackageArtifactRefs() { return 0; },
+    };
+    return { artifacts, catalog, calls };
+}
+async function publishWithSemver(semver) {
+    const { artifacts, catalog, calls } = recordingRegistry();
+    const { byName } = toolsWith({ artifacts, catalog });
+    await byName.get("stage_agent_package_edit").handler({ package: "p", files: { "plugin.json": VALID_PLUGIN, [CHANGELOG_PATH]: "## 1.0.0\n- first" } });
+    const out = await byName.get("publish_agent_package").handler({ package: "p", semver, approved_by: "alice" });
+    return { out, calls };
+}
+
+async function assertRefusedBeforePublication(semver, message) {
+    const { out, calls } = await publishWithSemver(semver);
+    assert.equal(out.refused, true, `${JSON.stringify(semver)}: ${JSON.stringify(out)}`);
+    assert.match(out.error, message, JSON.stringify(semver));
+    assert.ok(out.errors.some(issue => issue.code === "AGENT_PACKAGE_VERSION_MISMATCH"), JSON.stringify(out.errors));
+    assert.deepEqual(calls, [], `${JSON.stringify(semver)}: no registry read, publication or upload`);
+    return out;
+}
+
+test("publish refuses an empty semver before any publication or upload (it used to publish plugin.json's version)", async () => {
+    const out = await assertRefusedBeforePublication("", /plugin\.json version 1\.0\.0 does not match requested \./);
+    assert.ok(out.errors.some(issue => issue.code === "AGENT_PACKAGE_SEMVER_INVALID"), JSON.stringify(out.errors));
+});
+
+test("publish refuses a whitespace-only semver before any publication or upload, as not a version", async () => {
+    const out = await assertRefusedBeforePublication("   ", /CHANGELOG\.md has no entry for {4}\. /);
+    assert.ok(out.errors.some(issue => issue.code === "AGENT_PACKAGE_SEMVER_INVALID"), JSON.stringify(out.errors));
+});
+
+test("publish refuses a semver that differs from plugin.json's before any publication or upload", async () => {
+    await assertRefusedBeforePublication("1.1.0", /CHANGELOG\.md has no entry for 1\.1\.0/);
+});
+
+test("control: publish with plugin.json's own semver reaches publication (the recorder sees it)", async () => {
+    const ok = await publishWithSemver("1.0.0");
+    assert.equal(ok.out.status, "published", JSON.stringify(ok.out));
+    assert.ok(ok.calls.includes("publishAgentPackage") && ok.calls.some(call => call.startsWith("upload p@1.0.0.")), JSON.stringify(ok.calls));
+});
+
+test("propose still takes the version from plugin.json (no semver given)", async () => {
+    const { artifacts, byName } = toolsWith({ catalog: { async getAgentPackage() { return null; } } });
+    await byName.get("stage_agent_package_edit").handler({ package: "p", files: { "plugin.json": VALID_PLUGIN, [CHANGELOG_PATH]: "## 1.0.0\n- first" } });
+    const out = await byName.get("propose_agent_patch").handler({ package: "p" });
+    assert.ok(out.written > 0, JSON.stringify(out));
+    assert.equal([...artifacts.files.keys()].filter(key => key.endsWith(".patch")).length, out.written);
+});
