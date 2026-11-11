@@ -5,7 +5,10 @@ import path from "node:path";
 import { SessionManager } from "../../dist/session-manager.js";
 import { SPAWN_WORKFLOW_TOOL_SPEC } from "../../dist/workflow/tool-spec.js";
 import { UPDATE_WORKFLOW_TOOL_SPEC } from "../../dist/workflow/tools.js";
-import { WORKFLOW_SESSION_GUIDANCE, WORKFLOW_SKILLS_DIR, workflowSessionGuidance } from "../../dist/workflow/guidance.js";
+import {
+    ENABLE_WORKFLOWS_TOOL_SPEC, WORKFLOW_CONTEXT_STUB, WORKFLOW_SCHEDULING_HINT, WORKFLOW_SCHEDULING_HINT_OFF, WORKFLOW_SESSION_GUIDANCE,
+    WORKFLOW_SKILLS_DIR, workflowSessionGuidance,
+} from "../../dist/workflow/guidance.js";
 
 // Owner 2026-11-08T16:55Z: the Workflow guidance is trimmed to its rules for every session; the details are in the Workflow
 // skills (workflow-authoring, workflow-reference, workflow-tools), which the guidance names.
@@ -128,4 +131,32 @@ test("spawn_workflow says it is kept one release, saves a revision and starts it
     assert.deepEqual(state.enum, ["draft", "published"]);
     assert.match(start.description, /with state: published: also start it/i);
     assert.match(key.description, /idempotency key/);
+});
+
+// Owner 2026-11-11T01:10Z and 01:13Z: only turning Workflows on needs the user's agreement. While they are off, a session may
+// suggest one, but calls enable_workflows only when the user asks for a Workflow or agrees; once on, it uses them wherever they
+// fit, without asking.
+test("off: turning Workflows on needs the user's request or agreement; on: the guidance uses them without asking", () => {
+    assert.ok(WORKFLOW_CONTEXT_STUB.includes("When the user asks for a Workflow, call `enable_workflows` (not `load_skill`)"));
+    assert.ok(WORKFLOW_CONTEXT_STUB.includes("When a Workflow would suit the task (a fixed procedure, a repeated check a script could do), "
+        + "suggest it in one sentence and ask; call `enable_workflows` only after the user agrees."));
+    assert.ok(!WORKFLOW_CONTEXT_STUB.includes("or for a repeated check a script could do, call"), "a repeated check alone no longer turns them on");
+    assert.match(ENABLE_WORKFLOWS_TOOL_SPEC.description, /Call it once, when the user asks for a Workflow or agrees to your suggestion of one\.$/);
+    assert.equal(WORKFLOW_SCHEDULING_HINT_OFF, " For a fixed check a script can do, a Workflow costs no model turns: suggest one to the user, "
+        + "and call enable_workflows only if they agree.");
+    for (const [label, text] of [["stub", WORKFLOW_CONTEXT_STUB], ["enable_workflows", ENABLE_WORKFLOWS_TOOL_SPEC.description],
+        ["cron hint (off)", WORKFLOW_SCHEDULING_HINT_OFF]]) {
+        assert.match(text, /agree/, `${label} asks for the user's agreement`);
+    }
+    // On: unchanged, no permission asked.
+    const first = WORKFLOW_SESSION_GUIDANCE.split("\n\n")[1];
+    assert.ok(first.startsWith("For prescriptive or repetitive work that needs little judgment, write a Workflow Definition and start a "
+        + "Workflow instead of doing each step yourself."), first);
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("Recurring or polling work is one Workflow that loops through a wait state, never `cron` "
+        + "or a timer that starts Workflows."));
+    assert.equal(WORKFLOW_SCHEDULING_HINT, " For a fixed check a script can do, start one Workflow that loops through a wait state instead: "
+        + "it costs no model turns.");
+    for (const [label, text] of [["guidance", WORKFLOW_SESSION_GUIDANCE], ["cron hint (on)", WORKFLOW_SCHEDULING_HINT]]) {
+        assert.doesNotMatch(text, /\bagree|user's permission|ask the user/i, `${label} asks no permission`);
+    }
 });

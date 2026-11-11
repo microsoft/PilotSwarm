@@ -62,9 +62,13 @@ export type WorkflowContextMode = "on" | "off" | "none";
 export const WORKFLOW_SCHEDULING_HINT = " For a fixed check a script can do, start one Workflow that loops through a wait state instead: "
     + "it costs no model turns.";
 
-/** The sentence while Workflows are off in the session: the same advice, through enable_workflows. */
-export const WORKFLOW_SCHEDULING_HINT_OFF = " For a fixed check a script can do, a Workflow costs no model turns: call enable_workflows, "
-    + "then start one Workflow that loops through a wait state.";
+/**
+ * The sentence while Workflows are off in the session: suggest one, and turn them on only if the user agrees (owner
+ * 2026-11-11T01:10Z and 01:13Z: only turning Workflows on needs the user's agreement; once on, a session uses them wherever
+ * they fit).
+ */
+export const WORKFLOW_SCHEDULING_HINT_OFF = " For a fixed check a script can do, a Workflow costs no model turns: suggest one to the user, "
+    + "and call enable_workflows only if they agree.";
 
 /** cron and cron_at as a worker that runs Workflow scripts declares them: the default wording and the hint. Other tools unchanged. */
 export function workflowAwareSchedulingTool<T extends { name?: string; description?: string }>(tool: T, mode: WorkflowContextMode = "on"): T {
@@ -75,13 +79,13 @@ export function workflowAwareSchedulingTool<T extends { name?: string; descripti
 /** While Workflows are off in a session, its instructions carry only this paragraph, in the guidance's place. */
 export const WORKFLOW_CONTEXT_STUB = `## Workflows
 
-Workflows are off in this session. A Workflow runs a fixed procedure (steps, waits, repeated checks) without model turns, except at agent nodes that need judgment. When the user asks for a Workflow, or for a repeated check a script could do, call \`enable_workflows\` (not \`load_skill\`): this session gets the Workflow tools and guidance, and your task continues.`;
+Workflows are off in this session. A Workflow runs a fixed procedure (steps, waits, repeated checks) without model turns, except at agent nodes that need judgment. When the user asks for a Workflow, call \`enable_workflows\` (not \`load_skill\`): this session gets the Workflow tools and guidance, and your task continues. When a Workflow would suit the task (a fixed procedure, a repeated check a script could do), suggest it in one sentence and ask; call \`enable_workflows\` only after the user agrees.`;
 
 export const ENABLE_WORKFLOWS_TOOL = "enable_workflows";
 
 export const ENABLE_WORKFLOWS_TOOL_SPEC = {
     description: "Turn Workflows on in this session: it gets the Workflow tools and guidance from the next turn on, which starts at once "
-        + "and continues your task. Call it once, when the user asks for a Workflow or a repeated check a script could do.",
+        + "and continues your task. Call it once, when the user asks for a Workflow or agrees to your suggestion of one.",
     parameters: { type: "object", properties: {} },
 } as const;
 

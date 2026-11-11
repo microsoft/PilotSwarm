@@ -38,9 +38,11 @@ every session can load them with `load_skill`, Base V2 sessions included. See
 **Workflows load per session, only when needed.** A session carries the Workflow
 tools and guidance (about 2,000 tokens, trimmed from about 10,000) only when
 Workflows are on in it. Every other session carries one short paragraph and the
-`enable_workflows` tool; when the user asks for a Workflow, the model calls
-it, and the next turn starts at once with the Workflow tools and continues
-the task (one extra model call and one prompt-cache miss). Workflows turn on
+`enable_workflows` tool; when the user asks for a Workflow, or agrees when the
+model suggests one, the model calls it, and the next turn starts at once with
+the Workflow tools and continues the task (one extra model call and one
+prompt-cache miss). Once they are on, the session uses Workflows wherever they
+fit, without asking. Workflows turn on
 by themselves in a session that already has a Workflow Definition or a
 Workflow, when a Workflow's message or request arrives, for a person's saved
 definition and for Agent Smith. The details moved to the Workflow skills,

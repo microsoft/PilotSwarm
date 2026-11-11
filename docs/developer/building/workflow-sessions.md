@@ -1040,13 +1040,18 @@ off, both keep main's wording.
 
 A session carries the Workflow tools and guidance only when Workflows are on in
 it (owner decision, 2026-11-08). They cost about 2,000 tokens; a session that
-never uses a Workflow carries a 350-character paragraph and one tool,
+never uses a Workflow carries a paragraph of about 500 characters and one tool,
 `enable_workflows`, instead. cron and cron_at keep their default wording plus
 one sentence: with Workflows on, a fixed check a script can do belongs in one
-Workflow's wait loop; with them off, call `enable_workflows` first.
+Workflow's wait loop; with them off, suggest a Workflow to the user and call
+`enable_workflows` only if they agree.
 
-- **Turning them on.** The model calls `enable_workflows` when the user asks
-  for a Workflow or for a repeated check a script could do. The flag is saved
+- **Turning them on.** Only turning Workflows on needs the user (owner
+  decision, 2026-11-11). The model calls `enable_workflows` when the user asks
+  for a Workflow, or when it suggested one (for a fixed procedure, or a
+  repeated check a script could do) and the user agreed; it never takes
+  silence for agreement. Once they are on, the session uses Workflows wherever
+  they fit, without asking. The flag is saved
   with the session's capability state (revision-checked, never cleared). The
   turn ends at once, and the next turn starts automatically with the Workflow
   tools and guidance and continues the task: one extra model call and one
