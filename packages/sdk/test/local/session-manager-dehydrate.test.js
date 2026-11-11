@@ -51,8 +51,7 @@ describe("SessionManager dehydrate", () => {
             manager.sessionLastTouchedAt.set(sessionId, 0);
 
             await expect(manager.sweepIdleSessions(1)).resolves.toBe(1);
-            expect(events).toEqual(["checkpoint", "destroy"]);
-            expect(fs.existsSync(path.join(sessionStateDir, sessionId))).toBe(false);
+            expect(events).toEqual(["checkpoint", "destroy", "dehydrate"]);
         } finally {
             fs.rmSync(baseDir, { recursive: true, force: true });
         }
@@ -73,20 +72,21 @@ describe("SessionManager dehydrate", () => {
         expect(failure.sessionStoreError).toBe("blob unavailable");
     });
 
-    it("falls back to the pre-destroy checkpoint when the post-disconnect snapshot is missing", async () => {
-        // The post-disconnect snapshot can legitimately be missing only if the
-        // SDK regressed or the CLI crashed mid-disconnect. In either case we
-        // try once; the pre-destroy checkpoint is the fallback.
+    it("preserves the checkpoint and reports missing post-disconnect state", async () => {
         const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-session-manager-"));
         const sessionStateDir = path.join(baseDir, "session-state");
         const sessionId = "session-checkpoint-fallback";
         const sessionDir = path.join(sessionStateDir, sessionId);
+        const checkpoint = path.join(baseDir, "checkpoint.txt");
 
         try {
             fs.mkdirSync(sessionDir, { recursive: true });
+            fs.writeFileSync(path.join(sessionDir, "workspace.yaml"), "before-disconnect\n");
 
             const sessionStore = createSessionStoreMock();
-            sessionStore.checkpoint.mockResolvedValue(undefined);
+            sessionStore.checkpoint.mockImplementation(async () => {
+                fs.copyFileSync(path.join(sessionDir, "workspace.yaml"), checkpoint);
+            });
             sessionStore.dehydrate.mockRejectedValue(
                 new Error(
                     `Session state directory not ready during dehydrate: ${sessionId} (${sessionDir}). ` +
@@ -96,17 +96,23 @@ describe("SessionManager dehydrate", () => {
 
             const manager = new SessionManager(undefined, sessionStore, {}, sessionStateDir);
             manager.sessions.set(sessionId, {
-                destroy: vi.fn(async () => {}),
+                destroy: vi.fn(async () => {
+                    fs.writeFileSync(path.join(sessionDir, "final-state.txt"), "written-during-disconnect\n");
+                    fs.rmSync(path.join(sessionDir, "workspace.yaml"));
+                }),
             });
 
             const onCheckpointFallback = vi.fn();
-            await expect(manager.dehydrate(sessionId, "cron", { onCheckpointFallback })).resolves.toBeUndefined();
+            const failure = await manager.dehydrate(sessionId, "cron", { onCheckpointFallback }).catch((err) => err);
 
-            expect(onCheckpointFallback).toHaveBeenCalledTimes(1);
+            expect(failure.message).toContain("final state could not be verified");
+            expect(failure.sessionStoreError).toContain("Session state directory not ready during dehydrate");
+            expect(onCheckpointFallback).not.toHaveBeenCalled();
             expect(sessionStore.checkpoint).toHaveBeenCalledTimes(1);
             expect(sessionStore.checkpoint).toHaveBeenCalledWith(sessionId);
             expect(sessionStore.dehydrate).toHaveBeenCalledTimes(1);
-            expect(fs.existsSync(sessionDir)).toBe(false);
+            expect(fs.readFileSync(checkpoint, "utf8")).toBe("before-disconnect\n");
+            expect(fs.readFileSync(path.join(sessionDir, "final-state.txt"), "utf8")).toBe("written-during-disconnect\n");
         } finally {
             fs.rmSync(baseDir, { recursive: true, force: true });
         }

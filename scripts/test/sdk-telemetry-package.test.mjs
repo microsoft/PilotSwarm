@@ -68,11 +68,13 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
             factsSchema: "ps_smoke_f_" + schemaSuffix,
         };
         const model = await new Promise(resolve => {
+            const requests = [];
             const server = http.createServer((request, response) => {
                 const chunks = [];
                 request.on("data", chunk => chunks.push(chunk));
                 request.on("end", () => {
                     const body = JSON.parse(Buffer.concat(chunks).toString());
+                    requests.push(body);
                     const usage = {
                         prompt_tokens: 11,
                         completion_tokens: 7,
@@ -90,9 +92,9 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
                     response.end("data: [DONE]\\n\\n");
                 });
             });
-            server.listen(0, "127.0.0.1", () => resolve(server));
+            server.listen(0, "127.0.0.1", () => resolve({ server, requests }));
         });
-        const modelUrl = "http://127.0.0.1:" + model.address().port + "/v1";
+        const modelUrl = "http://127.0.0.1:" + model.server.address().port + "/v1";
         const modelProvidersPath = path.join(temp, "model-providers.json");
         await writeFile(modelProvidersPath, JSON.stringify({
             providers: [{ id: "scripted", type: "openai", baseUrl: modelUrl, models: [{ name: "scripted" }] }],
@@ -130,17 +132,28 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
             assert.equal(await session.sendAndWait("emit a deterministic turn", 60_000), "scripted response");
             await worker.gracefulShutdown();
             worker = undefined;
-            assert.deepEqual(
-                warnings.filter(line =>
-                    line.includes("session-store dehydrate snapshot missing after destroy")
-                    || line.includes("falling back to pre-destroy checkpoint"),
-                ),
-                [],
-                "the packed worker shutdown must persist its post-disconnect snapshot without checkpoint fallback",
+            const shutdownDiagnostics = warnings.filter(line =>
+                line.includes("session-store dehydrate failed")
+                || line.includes("snapshot missing after destroy")
+                || line.includes("eviction sweep skipped"),
             );
+            assert.equal(shutdownDiagnostics.filter(line => line.includes("session-store dehydrate failed")).length, 1);
+            assert.equal(shutdownDiagnostics.filter(line => line.includes("snapshot missing after destroy")).length, 1);
+            assert.equal(shutdownDiagnostics.filter(line => line.includes("eviction sweep skipped")).length, 1);
+            assert.ok(shutdownDiagnostics.every(line => !line.includes("falling back to pre-destroy checkpoint")),
+                "the packaged legacy shutdown must classify missing state rather than claim a fallback is final");
+            await shutdownTelemetry();
+            worker = new PilotSwarmWorker({
+                store, modelProvidersPath, disableManagementAgents: true,
+                sessionStateDir: path.join(temp, "sessions"), workerNodeId: "resumed-consumer-worker", ...storage,
+            });
+            await worker.start();
+            assert.equal(await session.sendAndWait("resume the deterministic turn", 60_000), "scripted response");
+            assert.match(JSON.stringify(model.requests.at(-1)), /emit a deterministic turn/);
             await client.stop();
             client = undefined;
-            await shutdownTelemetry();
+            await worker.stop();
+            worker = undefined;
             console.log(JSON.stringify({
                 telemetryPath: import.meta.resolve("pilotswarm-sdk/telemetry"),
                 sdkPath: import.meta.resolve("pilotswarm-sdk"),
@@ -150,7 +163,7 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
             await client?.stop();
             await worker?.stop();
             await management?.stop();
-            await new Promise(resolve => model.close(resolve));
+            await new Promise(resolve => model.server.close(resolve));
             await rm(temp, { recursive: true, force: true });
         }
     `;

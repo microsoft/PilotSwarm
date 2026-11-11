@@ -1737,7 +1737,7 @@ export class SessionManager {
                             emitSessionManagerTrace(sessionId, `evicted (store versioned at v${versioned.version}); stale unmarked cache reclaimed`);
                         } else {
                             // This checkpoints before disconnecting the CLI session.
-                            await this._dehydrateUnlocked(sessionId, "eviction", { checkpointIsFinal: true });
+                            await this._dehydrateUnlocked(sessionId, "eviction");
                             emitSessionManagerTrace(sessionId, "evicted via legacy dehydrate (no committed marker)");
                         }
                     } else {
@@ -2991,7 +2991,7 @@ export class SessionManager {
      *   4. If the post-disconnect snapshot is missing (which would indicate
      *      a future SDK regression), fall back to the pre-destroy checkpoint.
      */
-    async dehydrate(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter; lockHeld?: boolean; onCheckpointFallback?: () => void; checkpointIsFinal?: boolean }): Promise<void> {
+    async dehydrate(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter; lockHeld?: boolean; onCheckpointFallback?: () => void }): Promise<void> {
         if (!options?.lockHeld) {
             return this._withSessionLock(
                 sessionId,
@@ -3003,7 +3003,7 @@ export class SessionManager {
         return this._dehydrateUnlocked(sessionId, reason, options);
     }
 
-    private async _dehydrateUnlocked(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter; onCheckpointFallback?: () => void; checkpointIsFinal?: boolean }): Promise<void> {
+    private async _dehydrateUnlocked(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter; onCheckpointFallback?: () => void }): Promise<void> {
         const DESTROY_MAX_RETRIES = 3;
         const trace = options?.trace;
         let lastDestroyError: Error | undefined;
@@ -3094,12 +3094,6 @@ export class SessionManager {
             }
         }
 
-        if (options?.checkpointIsFinal && checkpointPrepared && !lastDestroyError) {
-            fs.rmSync(sessionDir, { recursive: true, force: true });
-            emitSessionManagerTrace(sessionId, `dehydrate released pre-destroy checkpoint reason=${reason}`, { trace });
-            return;
-        }
-
         // Phase 2: Persist to the session store (always attempt, even if destroy failed)
         if (this.sessionStore) {
             let lastStoreError: Error | undefined;
@@ -3142,17 +3136,23 @@ export class SessionManager {
                 if (!lastDestroyError && checkpointPrepared && isMissingDehydrateSnapshotError(lastStoreError)) {
                     emitSessionManagerTrace(
                         sessionId,
-                        "session-store dehydrate falling back to pre-destroy checkpoint after snapshot-missing error",
+                        "session-store dehydrate could not verify a post-disconnect snapshot; preserving checkpoint and surfacing failure",
                         { trace, level: "warn" },
                     );
                     console.warn(
                         `[SessionManager] session-store dehydrate snapshot missing after destroy for ${sessionId}; ` +
-                        `using the pre-destroy checkpoint as the durable fallback.`,
+                        `the pre-destroy checkpoint is retained, but final state is not verified.`,
                     );
-                    options?.onCheckpointFallback?.();
-                    try {
-                        fs.rmSync(sessionDir, { recursive: true, force: true });
-                    } catch {}
+                    const error = new Error(
+                        `Session-store persistence failed after ${sessionStoreAttemptCount} attempts ` +
+                        `during dehydrate for ${sessionId} (reason=${reason}): ${lastStoreError.message}. ` +
+                        "A pre-destroy checkpoint was retained, but final state could not be verified.",
+                    );
+                    (error as any).sessionStoreAttemptCount = sessionStoreAttemptCount;
+                    (error as any).sessionStoreError = lastStoreError.message;
+                    (error as any).dehydrateReason = reason;
+                    (error as any).sessionId = sessionId;
+                    throw error;
                 } else {
                     const message = lastDestroyError
                         ? `Session ${sessionId} is not dehydratable (reason=${reason}): ` +
