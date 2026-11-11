@@ -21,11 +21,12 @@ const READY = "DELETE_CASCADE_READY";
 const getEnv = useSuiteEnv(import.meta.url);
 
 /**
- * `cascadeReason`: the live delete's own reason. A live owner's delete cascades a cancel with its reason to its Workflow
- * child (the orchestration's shutdown), which ends the run before the owner's row is deleted; the trigger's words apply
- * only when no cascade reached the Workflow first (the fast path, a nested Workflow).
+ * `end`: how the run ended, exactly, by path. `{ cascade: { reason, command, operationPrefix, requestedBy } }`: a live
+ * delete's cascade reached the Workflow first (its session's own cancel, with the delete's reason); `{ trigger: message }`:
+ * a deletion trigger ended it (DELETED_REASON when the Workflow itself was deleted first, FAILED_REASON when its owner
+ * ended first). Nothing else is accepted.
  */
-async function assertDeletedWorkflow(h, run, client, cascadeReason = null) {
+async function assertDeletedWorkflow(h, run, client, end) {
     expect(await h.catalog.getSession(run.workflowId)).toBeNull();
     expect(await h.q("SELECT deleted_at IS NOT NULL AS deleted FROM SCHEMA.sessions WHERE session_id = $1", [run.workflowId]))
         .toEqual([{ deleted: true }]);
@@ -37,11 +38,15 @@ async function assertDeletedWorkflow(h, run, client, cascadeReason = null) {
     expect(await h.store.readDefinition(run.workflowId)).toMatchObject({ state: "deleted" });
     const ended = await h.store.readRun(run.runId);
     expect(ended).toMatchObject({ status: "cancelled", terminalError: { code: "cancelled" }, finishedAt: expect.any(Date) });
-    // deleteSession may mark an ancestor failed before deleting it; the first accepted run end is preserved.
-    if (cascadeReason !== null) {
-        expect(ended.terminalError).toMatchObject({ message: cascadeReason, details: { command: "cancel" } });
+    // The first accepted run end is preserved: the cascade's when it reached the Workflow first, else the trigger's.
+    if (end?.cascade) {
+        expect(ended.terminalError).toEqual({ code: "cancelled", message: end.cascade.reason, details: {
+            accepted: true, command: end.cascade.command, requestedBy: end.cascade.requestedBy,
+            operationId: expect.stringMatching(new RegExp(`^${end.cascade.operationPrefix}\\d+-${run.workflowId.slice(0, 8)}$`)),
+        } });
     } else {
-        expect([DELETED_REASON, FAILED_REASON]).toContain(ended.terminalError.message);
+        expect([DELETED_REASON, FAILED_REASON]).toContain(end?.trigger);
+        expect(ended.terminalError).toEqual({ code: "cancelled", message: end.trigger });
     }
     await assertCancelledCascadeNodes(h.store, run);
     // The real force-delete paths may terminate the live instance rather than letting it return normally.
@@ -93,7 +98,9 @@ describe("failed and deleted owners retain their existing cascades", () => {
                         // An unstarted owner takes deleteSession's terminal/unknown fast path, with a genuinely live Workflow.
                         await mgmt.deleteSession(owner.sessionId, "fixture delete");
                         expect(await h.catalog.getSession(owner.sessionId)).toBeNull();
-                        await assertDeletedWorkflow(h, run, duroxide, path === "live orchestration" ? "fixture delete" : null);
+                        await assertDeletedWorkflow(h, run, duroxide, path === "live orchestration"
+                            ? { cascade: { reason: "fixture delete", command: "cancel", operationPrefix: "session-command:delete-cascade-", requestedBy: owner.sessionId } }
+                            : { trigger: DELETED_REASON });
                     });
                 } finally {
                     await mgmt.stop();
@@ -114,6 +121,9 @@ describe("failed and deleted owners retain their existing cascades", () => {
                         if (path !== "terminal management fast path") expect(await root.sendAndWait("fixture-delete-tree", CASCADE_TIMEOUT)).toBe(READY);
                         // Catalog descendants not tracked by state.subAgents must be covered by the real delete cascade too.
                         const nested = await client.createSession({ owner: CASCADE_OWNER, model: qualifiedModel, parentSessionId: root.sessionId });
+                        // Every child is live (has had its first message): a live delete with a child that never started is
+                        // https://github.com/microsoft/PilotSwarm/issues/290 section 1 (its parent ends failed, not deleted).
+                        if (path === "live orchestration") expect(await nested.sendAndWait("fixture-nested-live", CASCADE_TIMEOUT)).toBe(READY);
                         const leaf = await client.createSession({ owner: CASCADE_OWNER, model: qualifiedModel, parentSessionId: nested.sessionId });
                         expect(await leaf.sendAndWait("fixture-ordinary-descendant", CASCADE_TIMEOUT)).toBe(READY);
                         const duroxide = client._getDuroxideClient();
@@ -133,7 +143,21 @@ describe("failed and deleted owners retain their existing cascades", () => {
                             expect(await h.q("SELECT deleted_at IS NOT NULL AS deleted FROM SCHEMA.sessions WHERE session_id = $1", [id]))
                                 .toEqual([{ deleted: true }]);
                         }
-                        for (const run of runs) await assertDeletedWorkflow(h, run, duroxide);
+                        // Each run's end, exactly, by path. Live: the cascade reaches each listed Workflow child first, with the
+                        // delete's reason (the root's delete, then the nested session's cancel); the bench is not in a child list,
+                        // so its owner's end ends it. Fast path: the root's Workflow child is deleted directly; the nested
+                        // session is ended before its own Workflows. SDK: each Workflow is deleted directly.
+                        const [rootRun, nestedRun, benchRun] = runs;
+                        const ends = path === "live orchestration" ? [
+                            [rootRun, { cascade: { reason: "fixture delete tree", command: "cancel", operationPrefix: "session-command:delete-cascade-", requestedBy: root.sessionId } }],
+                            [nestedRun, { cascade: { reason: "fixture delete tree", command: "cancel", operationPrefix: "session-command:cancel-cascade-", requestedBy: nested.sessionId } }],
+                            [benchRun, { trigger: FAILED_REASON }],
+                        ] : path === "terminal management fast path" ? [
+                            [rootRun, { trigger: DELETED_REASON }], [nestedRun, { trigger: FAILED_REASON }], [benchRun, { trigger: FAILED_REASON }],
+                        ] : [
+                            [rootRun, { trigger: DELETED_REASON }], [nestedRun, { trigger: DELETED_REASON }], [benchRun, { trigger: DELETED_REASON }],
+                        ];
+                        for (const [run, end] of ends) await assertDeletedWorkflow(h, run, duroxide, end);
                         await cascadeControllerEnded(duroxide, { controllerInstanceId: `session-${leaf.sessionId}` });
                         await assertNoActiveCascadeRuns(h.q, ids);
                         // All test-schema runs belong to this tree: catches a run omitted from our expected ids.
