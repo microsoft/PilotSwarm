@@ -243,6 +243,8 @@ test("publish refuses an agent name reserved by the deployment", async () => {
 
 // ── Propose: the approval surface ─────────────────────────────────
 
+const VALID_PLUGIN = JSON.stringify({ name: "p", version: "1.0.0", description: "A package." });
+
 test("propose refuses when nothing is staged for that package", async () => {
     const { byName } = toolsWith({
         catalog: { async getAgentPackage() { return null; } },
@@ -258,7 +260,8 @@ test("propose points the agent at the approval step it must not skip", async () 
     });
     await byName.get("stage_agent_package_edit").handler({
         package: "p",
-        files: { "plugin.json": "{}", [CHANGELOG_PATH]: "## 1.0.0\n- first" },
+        // A package publish would accept (propose checks it as publish does).
+        files: { "plugin.json": VALID_PLUGIN, [CHANGELOG_PATH]: "## 1.0.0\n- first" },
     });
     const out = await byName.get("propose_agent_patch").handler({ package: "p" });
     assert.ok(out.written > 0, "patch artifacts must be written");
@@ -270,7 +273,7 @@ test("propose points the agent at the approval step it must not skip", async () 
 
 test("propose warns when a change does not touch the changelog", async () => {
     const { byName } = toolsWith({ catalog: { async getAgentPackage() { return null; } } });
-    await byName.get("stage_agent_package_edit").handler({ package: "p", files: { "plugin.json": "{}" } });
+    await byName.get("stage_agent_package_edit").handler({ package: "p", files: { "plugin.json": VALID_PLUGIN } });
     const out = await byName.get("propose_agent_patch").handler({ package: "p" });
     assert.equal(out.changelogUpdated, false);
     assert.match(out.warning, /CHANGELOG/);
@@ -617,4 +620,56 @@ test("publish refuses a Workflow card hint that names a model of the worker's co
     // Without the worker's names nothing matches the note: validation passes (the fake catalog then fails the publish itself).
     const unnamed = await publish(null);
     assert.ok(!/modelHints\.classify\.note names the model/.test(unnamed.error ?? ""), unnamed.error);
+});
+
+// Owner 2026-11-11 (pre-approval package check): propose_agent_patch checks the staged package exactly as publish does. A
+// package publish would refuse is never proposed (no patch artifact, so no human is asked to approve it); the answer lists
+// each error with its code, path and message.
+const WORLD_NEWS = [
+    "apiVersion: pilotswarm.dev/v1", "kind: Workflow", "metadata: { name: world-news-digest, version: \"1.0.0\" }", "initial: collect", "states:",
+    "  collect: { type: wait, seconds: 1, transition: { next: { elapsed: done } } }",
+    "  done: { type: terminal, outcome: succeeded }", "",
+].join("\n");
+const NEWS_CARD = (front) => `---\nname: world-news-digest\ndescription: Collects world news.\nwhenToUse: Daily, for a digest.\n${front}---\nStart it and read its output.\n`;
+async function proposeWorkflowCard(front) {
+    const { artifacts, byName } = toolsWith({ catalog: { async getAgentPackage() { return null; } } });
+    await byName.get("stage_agent_package_edit").handler({ package: "newskit", files: {
+        "plugin.json": JSON.stringify({ name: "newskit", version: "1.0.0", description: "News kit." }),
+        [CHANGELOG_PATH]: "## 1.0.0\n\n- first",
+        "workflows/world-news-digest/workflow.yaml": WORLD_NEWS,
+        "workflows/world-news-digest/card.md": NEWS_CARD(front),
+    } });
+    const out = await byName.get("propose_agent_patch").handler({ package: "newskit" });
+    const patches = [...artifacts.files.keys()].filter(key => key.endsWith(".patch"));
+    return { out, patches };
+}
+
+test("propose refuses a package whose Workflow card publish would refuse, and proposes nothing", async () => {
+    // outcomes keyed by the outcome value (succeeded) instead of the terminal state (done).
+    const byOutcome = await proposeWorkflowCard("outcomes:\n  succeeded: The digest is ready.\neffects: One wait; no scripts.\n");
+    assert.equal(byOutcome.out.refused, true, JSON.stringify(byOutcome.out));
+    assert.match(byOutcome.out.error, /publish would refuse this staged package/);
+    assert.match(byOutcome.out.error, /Nothing was proposed/);
+    assert.deepEqual(byOutcome.patches, [], "no patch artifact: nothing reaches a person for approval");
+    const mismatches = byOutcome.out.errors.filter(issue => issue.code === "workflow_card_mismatch");
+    assert.ok(mismatches.length >= 2, JSON.stringify(byOutcome.out.errors));
+    for (const issue of mismatches) assert.equal(issue.path, "workflows/world-news-digest/card.md");
+    assert.ok(mismatches.some(issue => /outcomes does not describe terminal state 'done'/.test(issue.message)), JSON.stringify(mismatches));
+    assert.ok(mismatches.some(issue => /outcomes names 'succeeded', which is not terminal state/.test(issue.message)), JSON.stringify(mismatches));
+
+    // effects as a list instead of one text string.
+    const listEffects = await proposeWorkflowCard("outcomes:\n  done: The digest is ready.\neffects:\n  - one wait\n  - no scripts\n");
+    assert.equal(listEffects.out.refused, true, JSON.stringify(listEffects.out));
+    assert.deepEqual(listEffects.patches, []);
+    const invalid = listEffects.out.errors.find(issue => issue.code === "invalid_workflow_card");
+    assert.ok(invalid, JSON.stringify(listEffects.out.errors));
+    assert.equal(invalid.path, "workflows/world-news-digest/card.md");
+    assert.match(invalid.message, /effects must be text/);
+});
+
+test("propose still proposes a package whose Workflow card matches its definition", async () => {
+    const ok = await proposeWorkflowCard("outcomes:\n  done: The digest is ready.\neffects: One wait; no scripts.\n");
+    assert.equal(ok.out.refused, undefined, JSON.stringify(ok.out));
+    assert.ok(ok.out.written > 0, JSON.stringify(ok.out));
+    assert.equal(ok.patches.length, ok.out.written);
 });

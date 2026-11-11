@@ -23,7 +23,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { SessionCatalog, AgentPackageSelector, AgentPrincipal } from "./cms.js";
 import type { ArtifactStore } from "./session-store.js";
-import { readAgentPackageTarGz } from "./agent-package-format.js";
+import { readAgentPackageTarGz, validateAgentPackageDir } from "./agent-package-format.js";
 import { publishAgentPackageDir, readAgentPackageVersionEntries } from "./agent-package-service.js";
 import { diffPackageTrees, patchArtifacts, entriesToMap, type PackageEntry } from "./agent-package-diff.js";
 import { guardedImportFetch } from "./agent-package-import-fetch.js";
@@ -394,12 +394,41 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
         },
     });
 
+    /** The validation every publication of a staged package runs (publish_agent_package and, before it, propose_agent_patch). */
+    const stagedValidation = () => ({
+        reservedAgentNames: opts.reservedAgentNames ?? listBundledAgentNames(),
+        reservedMcpServerNames: opts.reservedMcpServerNames ?? [],
+        knownModelNames: opts.knownModelNames?.() ?? [],
+    });
+
+    /**
+     * The staged tree written to a fresh temp directory, exactly as publish writes it, for `work`; the directory is removed
+     * after. A staged path that escapes the package root is refused (`escapes`): a staged path is model-authored.
+     */
+    async function withStagedDir<T>(files: Record<string, string>, work: (dir: string) => Promise<T>): Promise<T | { escapes: string }> {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-agent-publish-"));
+        try {
+            for (const [rel, content] of Object.entries(files)) {
+                const target = path.resolve(dir, rel);
+                if (!target.startsWith(path.resolve(dir) + path.sep)) return { escapes: rel };
+                fs.mkdirSync(path.dirname(target), { recursive: true });
+                fs.writeFileSync(target, content, "utf8");
+            }
+            return await work(dir);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    }
+
     const proposeAgentPatchTool = defineTool("propose_agent_patch", {
         description:
             "Render the change as ordered `.patch` artifacts on this session so a human can review the real diff "
             + "in the portal before anything is published. "
             + "With no `to_semver`, diffs your STAGED edit against the live version — this is the normal path: "
-            + "stage, propose, show the human, wait for approval, then publish.",
+            + "stage, propose, show the human, wait for approval, then publish. "
+            + "A staged edit is first checked exactly as publish checks it (plugin.json, agents, skills, every Workflow Definition "
+            + "compiled and its card matched against it): when publish would refuse it, nothing is proposed and the answer lists "
+            + "each error (code, path, message) to fix before proposing again.",
         parameters: {
             type: "object" as const,
             properties: {
@@ -434,6 +463,21 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                     const staged = await loadStaging();
                     if (!staged || staged.package !== ref.name) {
                         return { error: `propose_agent_patch: nothing staged for "${ref.name}". Use stage_agent_package_edit first.` };
+                    }
+                    // Review before approval (owner 2026-11-11): a package publish would refuse never reaches a person. The
+                    // staged tree is checked exactly as publish checks it; a refusal proposes nothing.
+                    const checked = await withStagedDir(staged.files, dir => validateAgentPackageDir(dir, stagedValidation()));
+                    if ("escapes" in checked) {
+                        return { error: `propose_agent_patch: staged path "${checked.escapes}" escapes the package root. Nothing was proposed.` };
+                    }
+                    if (!checked.ok) {
+                        return {
+                            error: `propose_agent_patch: publish would refuse this staged package (${checked.errors.length} `
+                                + `error${checked.errors.length === 1 ? "" : "s"}). Nothing was proposed: fix each one with `
+                                + "stage_agent_package_edit and propose again.",
+                            refused: true,
+                            errors: checked.errors.map(issue => ({ code: issue.code, path: issue.file ?? null, message: issue.message })),
+                        };
                     }
                     toEntries = Object.entries(staged.files).map(([p, content]) => ({ path: p, content: Buffer.from(content, "utf8") }));
                     label = "staged edit";
@@ -656,45 +700,35 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                 return { error: `publish_agent_package: plugin.json version ${plugin.version || "(missing)"} does not match requested ${args.semver}.` };
             }
 
-            const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-agent-publish-"));
             try {
-                for (const [rel, content] of Object.entries(staged.files)) {
-                    // Containment check: a staged path is model-authored, and
-                    // `..` in it would write outside the staging root.
-                    const target = path.resolve(dir, rel);
-                    if (!target.startsWith(path.resolve(dir) + path.sep)) {
-                        return { error: `publish_agent_package: staged path "${rel}" escapes the package root.` };
-                    }
-                    fs.mkdirSync(path.dirname(target), { recursive: true });
-                    fs.writeFileSync(target, content, "utf8");
-                }
-
-                // Publish to the package's real owner when this edit was
-                // seeded from someone else's copy. Only the fleet-wide
-                // principals can have staged such a seed in the first place,
-                // and the database re-checks creator-or-admin under a row
-                // lock, so this widens nothing on its own.
-                const target = staged.targetOwner;
-                const owner = target && (packageAdmin(viewer) || viewer.isSystemPrincipal)
-                    ? { provider: target.provider, subject: target.subject }
-                    : principalOf(viewer);
-                const outcome = await publishAgentPackageDir(
-                    { catalog, artifactStore },
-                    {
-                        dir,
-                        scope: args.scope === "shared" ? "shared" : "user",
-                        owner,
-                        // Provenance: a reader must be able to tell an
-                        // agent-authored version from a human `agents push`.
-                        createdBy: `agent-manager (approved by ${args.approved_by})`,
-                        isAdmin: packageAdmin(viewer),
-                        validate: {
-                            reservedAgentNames: opts.reservedAgentNames ?? listBundledAgentNames(),
-                            reservedMcpServerNames: opts.reservedMcpServerNames ?? [],
-                            knownModelNames: opts.knownModelNames?.() ?? [],
+                const store = artifactStore;
+                const published = await withStagedDir(staged.files, async dir => {
+                    // Publish to the package's real owner when this edit was
+                    // seeded from someone else's copy. Only the fleet-wide
+                    // principals can have staged such a seed in the first place,
+                    // and the database re-checks creator-or-admin under a row
+                    // lock, so this widens nothing on its own.
+                    const target = staged.targetOwner;
+                    const owner = target && (packageAdmin(viewer) || viewer.isSystemPrincipal)
+                        ? { provider: target.provider, subject: target.subject }
+                        : principalOf(viewer);
+                    const outcome = await publishAgentPackageDir(
+                        { catalog, artifactStore: store },
+                        {
+                            dir,
+                            scope: args.scope === "shared" ? "shared" : "user",
+                            owner,
+                            // Provenance: a reader must be able to tell an
+                            // agent-authored version from a human `agents push`.
+                            createdBy: `agent-manager (approved by ${args.approved_by})`,
+                            isAdmin: packageAdmin(viewer),
+                            validate: stagedValidation(),
                         },
-                    },
-                );
+                    );
+                    return outcome;
+                });
+                if ("escapes" in published) return { error: `publish_agent_package: staged path "${published.escapes}" escapes the package root.` };
+                const outcome = published;
                 await artifactStore.deleteArtifact(opts.sessionId, STAGING_ARTIFACT).catch(() => {});
                 const status = (outcome as any)?.status ?? "published";
                 const collisionWarnings = ((outcome as any)?.warnings ?? [])
@@ -720,8 +754,6 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                 };
             } catch (err: any) {
                 return { error: `publish_agent_package: ${err?.message || String(err)}` };
-            } finally {
-                fs.rmSync(dir, { recursive: true, force: true });
             }
         },
     });

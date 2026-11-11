@@ -39,8 +39,11 @@ Tell the user which of these is about to happen before you do it.
 
 ## 3. Propose the change as a diff
 
-`propose_agent_patch` writes ordered `.patch` artifacts to the session. The
-portal renders them with gutter markers.
+`propose_agent_patch` first checks the staged package as publish checks it.
+When publish would refuse it, it proposes nothing and returns each error's
+`code`, `path` and `message`: fix them and propose again, before any person
+is asked to approve. Otherwise it writes ordered `.patch` artifacts to the
+session. The portal renders them with gutter markers.
 
 Do this even when the change is small. A one-line prompt edit that the user
 can see is a decision they made; the same edit described in prose is one they

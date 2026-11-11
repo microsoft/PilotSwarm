@@ -1,5 +1,14 @@
 # Changelog — agent-manager
 
+## 1.6.0
+
+### Changed
+
+- `propose_agent_patch` checks the staged package exactly as publish checks
+  it. When publish would refuse it, nothing is proposed: the answer lists each
+  error's code, path and message, and Agent Smith fixes them and proposes
+  again, so no person is asked to approve a package that publish would refuse.
+
 ## 1.5.0
 
 ### Changed
