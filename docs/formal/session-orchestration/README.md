@@ -103,7 +103,7 @@ N02, N04-N07 and N10):
 |---|---|
 | `OwnedRetry` | `orchestration_1_0_83/state.ts` 255-410 (`ownedRetry`), 759-761; `queue.ts` 620-629, 749-760 (`releaseTimerForOwnedRetry`), 1495-1517 (`decide`); `turn.ts` 159, 194, 364, 549-553; `lifecycle.ts` 733-740 |
 | `IntakeDrain` | `orchestration_1_0_83/queue.ts` 482-520, 797-812; `runtime.ts` 253-278, 303; `lifecycle.ts` 724-776; `intake-state.ts` 534-545; `intake-wiring.ts` 326, 584; `state.ts` 804; `orchestration-version.ts` 15, 33; `activity-routing.ts` 10-22, 93-128; `session-proxy.ts` 5778 |
-| `WorkerShutdown` | `worker.ts` 1307-1404 (`gracefulShutdown`; `bounded` 1317-1338 starts every step and races it against the time left; workspace release 1374, release sweep 1394, stop 1403). Updated to `bb162ed8` in batch ws2 (`CORRESPONDENCE-bb162ed8-ws2.md`). At `069eca30` the same steps are at 1263-1361 (`bounded` 1273-1293, release sweep 1350-1358, stop 1360). The release sweep is now `sweepIdleSessions(1, { final: true })` (DRR-3b `3432b239`, DR2-006 `781441bf`; D3-002 takes legacy sessions first): a session whose close in the Copilot CLI is not confirmed (DRR-3, `4d564f47`) is still uploaded and its local copy deleted, as at `bb162ed8`, and such sessions are taken last. Without `final` (the periodic sweep) such a session is kept and evicted again later. So the model's sweep and its `closeCut` limit (a legacy upload cut by the close) are unchanged |
+| `WorkerShutdown` | `worker.ts` 1307-1404 (`gracefulShutdown`; `bounded` 1317-1338 starts every step and races it against the time left; workspace release 1374, release sweep 1394, stop 1403). Updated to `bb162ed8` in batch ws2 (`CORRESPONDENCE-bb162ed8-ws2.md`). At `3766b346` the same steps are at 1263-1360 (`bounded` 1273-1293, release sweep 1349-1358, stop 1359). The worker never asks the Copilot CLI to close a session (the close of DRR-3 `4d564f47`, DRR-3b `3432b239`, DR2-006 and D3-002 is reverted to main's behaviour by `d002b3ad`), so the release sweep is `sweepIdleSessions(1)` again, as at `bb162ed8`: it deletes the local copy of a committed session and uploads, then deletes, an unmarked legacy one (it now also forgets the session's in-memory turn state, which is not modelled). So the model's sweep and its `closeCut` limit (a legacy upload cut by the worker's `stop()`) are unchanged |
 
 Bound to `bb162ed8` (`CORRESPONDENCE-bb162ed8-so5b.md`):
 
@@ -293,6 +293,22 @@ it, as `d3230de4` does; `or.terminal-report-later-success` checks `Prop_Terminal
 witness shows the drop. Cases (batch tf1): `or.terminal-no-report` (the code before the fix: violated),
 `or.terminal-report`, `or.terminal-report-safety-wait`, `-agent` (PASS), the two faults and a witness. `TurnLoop` is
 unchanged: the report is an activity before the session idles, and it changes no queue order.
+
+### Reverts at `3766b346` (2026-11-11): no Copilot CLI close, no fenced first start
+
+`d002b3ad` removes the Copilot CLI session close and `ca1a86f8` the fenced first start; both return to main's
+behaviour. No model, case or expected verdict changes, and no TLC run is needed: no model contains the CLI close
+(`WorkerShutdown` is bound to `bb162ed8`, before it; see its row in section 2), and no model took the fenced start
+(`../workflow/continued-session/CORRESPONDENCE-069eca30.md`).
+
+Known limit, as on main (not modelled: no model contains the Sweeper): a first message starts the session's
+orchestration, then updates its row (`state` running, `orchestration_id`), then enqueues. A Sweeper that read the
+row as NotFound before the start and makes its final check between the start and the row update finds the same row
+version and no `orchestration_id`, so it soft-deletes the session. The row update that follows leaves `deleted_at`
+set (`cms_update_session` does not write it). A 1.0.83 turn on a worker with the Workflow store reads the row's
+deletion first and runs no model and no tool (review DR2-001, `session-proxy.ts` 2517-2535), so that first message is
+dropped; a frozen version's turn, or a worker without the Workflow store, has no such guard. For a Workflow agent session the same guard is checked by
+`fix.cc-dr2-001-*` and `impl.cc-final-live` in `../workflow/continued-session/`.
 
 ## 5. How to run
 
