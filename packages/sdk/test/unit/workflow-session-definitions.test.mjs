@@ -76,7 +76,7 @@ test("a person's refusals map to HTTP statuses: not found, invalid, unprocessabl
     assert.equal(workflowCommandStatus("WORKFLOW_NAME_MISMATCH"), 400);
     for (const code of ["DEFINITION_INVALID", "WORKFLOW_SCRIPTS_DISABLED"]) assert.equal(workflowCommandStatus(code), 422, code);
     assert.equal(workflowCommandStatus("REVISION_LIMIT"), 429);
-    for (const code of ["REVISION_STALE", "DEFINITION_DELETED", "DEFINITION_EXISTS", "DEFINITION_IN_USE", "SESSION_NOT_LIVE", "WORKFLOW_ACTIVE",
+    for (const code of ["REVISION_STALE", "DEFINITION_DELETED", "DEFINITION_EXISTS", "DEFINITION_IN_USE", "SESSION_NOT_LIVE",
         "REVISION_REQUIRED", "OPERATION_CONFLICT"]) {
         assert.equal(workflowCommandStatus(code), 409, code);
     }

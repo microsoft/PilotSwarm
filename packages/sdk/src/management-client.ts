@@ -173,7 +173,7 @@ import { readWorkflowModel, workflowExclusiveRead } from "./workflow/tools.js";
 import { WORKFLOW_READ_STATUS } from "./workflow/read-pages.js";
 import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/human-commands.js";
 import {
-    attachSessionPackageWorkflow, sessionCompletionRefusal, copySessionPackageWorkflow, deleteSessionWorkflowDefinition, findPackageWorkflow, listSessionWorkflowDefinitions,
+    attachSessionPackageWorkflow, copySessionPackageWorkflow, deleteSessionWorkflowDefinition, findPackageWorkflow, listSessionWorkflowDefinitions,
     packageWorkflowFacts,
     readSessionWorkflowDefinition, requireSessionDefinitionsWritable, saveSessionWorkflowDefinition, startSessionWorkflowDefinition, withPackageUpdates,
 } from "./workflow/session-definitions.js";
@@ -1677,9 +1677,10 @@ export class PilotSwarmManagementClient {
     // ─── Session Actions ─────────────────────────────────────
 
     /**
-     * Complete a session: send it the done command. Refuses a system session
-     * (409 SYSTEM_SESSION_PROTECTED). With wait: false, return once the
-     * command is sent, without waiting for the session to finish.
+     * Complete a session: send it the done command, which its children get
+     * too (a Workflow child's active run is cancelled). Refuses a system
+     * session (409 SYSTEM_SESSION_PROTECTED). With wait: false, return once
+     * the command is sent, without waiting for the session to finish.
      */
     async completeSession(sessionId: string, reason?: string, options: { wait?: boolean } = {}): Promise<void> {
         this._ensureStarted();
@@ -1690,12 +1691,8 @@ export class PilotSwarmManagementClient {
         }
         if (session.status === "completed") return;
         if (session.status === "cancelled" || session.status === "failed") return;
-        // Stage 2.1 (R4): a session cannot complete while one of its Workflows is active (the refusal names them, 409).
-        const workflowStore = this._workflowStoreOrNull();
-        if (workflowStore) {
-            const refusal = await sessionCompletionRefusal({ store: workflowStore }, sessionId);
-            if (refusal) throw Object.assign(new Error(refusal.message), { code: refusal.code, status: 409, details: refusal.details, expose: true });
-        }
+        // Owner 2026-11-11T05:25Z: completing a session completes its children, whether or not they are active. Its done
+        // cascades to them; a Workflow child's active run is cancelled ("Parent session completing").
 
         const doneReason = reason ?? "Completed by management client";
         await this._sendLifecycleCommand(sessionId, {

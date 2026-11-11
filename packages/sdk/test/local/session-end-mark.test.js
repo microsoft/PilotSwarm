@@ -1,8 +1,8 @@
 /**
  * G1 residual: a done or cancel is marked on its session (session.end_requested) only when the command is sent. A refused
- * command marks nothing: a system session (SYSTEM_SESSION_PROTECTED), a session with an active Workflow (R4, 409), and a
- * session with no live orchestration (nothing could be queued). A session whose orchestration runs gets the mark before
- * its command. (A reader of a shared session is refused by the portal's session:manage gate before the management client
+ * command marks nothing: a system session (SYSTEM_SESSION_PROTECTED) and a session with no live orchestration (nothing
+ * could be queued). A session whose orchestration runs gets the mark before its command, also when it owns an active
+ * Workflow (owner 2026-11-11T05:25Z: completing a session is never refused for its Workflows; its done ends them). (A reader of a shared session is refused by the portal's session:manage gate before the management client
  * is called: workflow-session-definitions-runtime and the session route tests.)
  */
 import { describe, it, expect } from "vitest";
@@ -61,7 +61,7 @@ describe("an end's mark is recorded only when its command is sent (G1 residual)"
             await expect(mgmt.cancelSession(system, "no")).rejects.toMatchObject({ code: "SYSTEM_SESSION_PROTECTED" });
             expect(await marks(system)).toEqual([]);
 
-            // A session with an active Workflow (R4): its completion is refused, no mark.
+            // A session with an active Workflow and a live orchestration: not refused; marked, then its done is queued.
             const session = randomUUID();
             await catalog.createSession(session, { owner: OWNER });
             const host = { catalog, store: catalog.workflowStore(), duroxideClient: { startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "Running" }),
@@ -69,8 +69,10 @@ describe("an end's mark is recorded only when its command is sent (G1 residual)"
             const created = await createWorkflow(host, { workflowSessionId: randomUUID(), parentSessionId: session, owner: OWNER, yaml: HOLD,
                 actor: { kind: "system", name: "end-mark-test" }, operationId: "start", start: { inputs: {} } });
             expect(created.receipt.valid).toBe(true);
-            await expect(mgmt.completeSession(session, "no", { wait: false })).rejects.toMatchObject({ status: 409 });
-            expect(await marks(session)).toEqual([]);
+            await client.startOrchestrationVersioned(`session-${session}`, "end-mark-listener", {}, "1.0.0");
+            for (let waited = 0; waited < 10_000 && (await client.getStatus(`session-${session}`)).status !== "Running"; waited += 50) await new Promise(r => setTimeout(r, 50));
+            await mgmt.completeSession(session, "done with its Workflow running", { wait: false });
+            expect(await marks(session)).toEqual([expect.objectContaining({ cmd: "done", id: expect.any(String) })]);
 
             // No live orchestration: nothing can be queued, no mark.
             const idle = randomUUID();

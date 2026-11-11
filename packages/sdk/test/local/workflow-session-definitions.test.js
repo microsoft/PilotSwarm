@@ -9,7 +9,9 @@
  * - start: the newest valid revision by default, or a named one, or Run again's (Q10); the Workflow's own definition is
  *   that revision's YAML and stays so after later saves (R1);
  * - R6: a definition with a running Workflow cannot be deleted; a finished Workflow keeps its copy;
- * - R4: a session with a running Workflow cannot complete (the management client's completeSession);
+ * - R4 (owner 2026-11-11T05:25Z: completing a parent completes its children, active or not): completing a session with a
+ *   running Workflow is not refused: the management client's completeSession sends the session its done (which its
+ *   orchestration cascades to the Workflow; the cascade's own tests are the owner-cascade suites);
  * - R5, F2: a session that is canceled, fails or completes ends its Workflows' runs; a deleted session's definitions and
  *   Workflows are deleted;
  * - E2-4: a person's save leaves one note for the session; the session's own does not;
@@ -22,12 +24,13 @@
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmManagementClient, createManagementClient } from "../helpers/local-workers.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 import { controlWorkflowRun, createWorkflow } from "../../src/workflow/service.ts";
 import {
-    sessionCompletionRefusal, deleteSessionWorkflowDefinition, listSessionWorkflowDefinitions, readSessionWorkflowDefinition, saveSessionWorkflowDefinition,
+    deleteSessionWorkflowDefinition, listSessionWorkflowDefinitions, readSessionWorkflowDefinition, saveSessionWorkflowDefinition,
     startSessionWorkflowDefinition,
 } from "../../src/workflow/session-definitions.ts";
 import { spawnWorkflowCompatFromTool, workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
@@ -37,6 +40,8 @@ import { readWorkflowModel } from "../../src/workflow/tools.ts";
 import { startSessionWorkflowTest } from "../../src/workflow/definition-test.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { canonicalJson, sha256Hex } from "../../src/workflow/json.ts";
+
+const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -72,6 +77,18 @@ initial: nowhere
 states:
   done: { type: terminal, outcome: succeeded }
 `;
+
+/** A stand-in session orchestration for R4: it returns the first message it is sent. */
+const SESSION_STAND_IN = "r4-session-stand-in";
+
+async function until(check, label, timeoutMs = 30_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (await check()) return;
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error(`timed out waiting for ${label}`);
+}
 
 async function refused(promise, code) {
     let caught = null;
@@ -224,17 +241,32 @@ describe("a definition belongs to the session (stage 2.1)", () => {
         }
     });
 
-    it("R4: a session with a running Workflow cannot complete; R5 and F2: an ended session ends its Workflows; a deleted session deletes them", { timeout: TIMEOUT }, async () => {
+    it("R4: completing a session with a running Workflow is not refused, its done is sent; R5 and F2: an ended session ends its Workflows; a deleted session deletes them", { timeout: TIMEOUT }, async () => {
         const { h, host, session } = await harness();
         const mgmt = await createManagementClient(getEnv());
+        // The session's orchestration, as the management client reads it: running, recording the commands it is sent.
+        const provider = await PostgresProvider.connectWithSchema(getEnv().store, getEnv().duroxideSchema);
+        const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
+        runtime.registerOrchestration(SESSION_STAND_IN, function* (ctx) {
+            const received = yield ctx.dequeueEvent("messages");
+            return received;
+        });
+        await runtime.start();
+        const duroxide = new Client(provider);
         try {
             const id = (await save(host, session, YAML(30), null)).receipt.definitionId;
             const running = await start(host, session, id);
-            const refusal = await sessionCompletionRefusal(host, session);
-            expect(refusal?.code).toBe("WORKFLOW_ACTIVE");
-            expect(refusal.message).toMatch(/^This session cannot complete while its Workflow hn-top-watch is still running\. Stop it first, or cancel the session, which cancels them\.$/);
-            const completing = await refused(mgmt.completeSession(session, "test", { wait: false }), "WORKFLOW_ACTIVE");
-            expect(completing.status).toBe(409);
+            await duroxide.startOrchestration(`session-${session}`, SESSION_STAND_IN, "{}");
+            await until(async () => (await duroxide.getStatus(`session-${session}`)).status === "Running", "the session's orchestration to run");
+            // Not refused (no WORKFLOW_ACTIVE): the done reaches the session's orchestration, which is what ends its Workflow.
+            await mgmt.completeSession(session, "test", { wait: false });
+            const ended = await duroxide.waitForOrchestration(`session-${session}`, 30_000);
+            expect(ended.status, JSON.stringify(ended)).toBe("Completed");
+            const output = typeof ended.output === "string" ? JSON.parse(ended.output) : ended.output;
+            expect(typeof output === "string" ? JSON.parse(output) : output).toMatchObject({ type: "cmd", cmd: "done", args: { reason: "test" } });
+            expect((await h.catalog.getSessionEvents(session, 0, 50, ["session.end_requested"])).length).toBe(1);
+            // Nothing in the store refused or ended it on the way: the run waits for the session's own cascade.
+            expect((await h.store.readRun(running.runId)).status).toBe("admitted");
             // Each terminal state of a session ends its Workflows' runs (the trigger, in the same transaction).
             for (const state of ["cancelled", "failed", "completed"]) {
                 const other = randomUUID();
@@ -254,6 +286,7 @@ describe("a definition belongs to the session (stage 2.1)", () => {
             expect(await h.catalog.getSession(running.workflowId)).toBeNull();
             expect((await h.store.readRun(running.runId)).status).toBe("cancelled");
         } finally {
+            await runtime.shutdown(100);
             await mgmt.stop();
             await h.stop();
         }

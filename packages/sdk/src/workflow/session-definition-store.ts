@@ -467,19 +467,6 @@ export class SessionDefinitionStore {
         return this.retireTests(String(row.parent_session_id), String(row.definition_id), keep);
     }
 
-    /** A session's Workflows that are active (R4: a session cannot complete while one is), from session definitions or not. */
-    async activeWorkflowsOfSession(ownerSessionId: string): Promise<Array<{ workflowSessionId: string; definitionId: string | null; title: string | null }>> {
-        const { rows } = await this.pool.query(
-            `SELECT s.session_id, s.title, d.session_definition_id
-               FROM ${this.t.sessions} s
-               JOIN ${this.t.runs} r ON r.workflow_session_id = s.session_id AND r.mode = 'live' AND r.status = ANY($2::text[])
-               LEFT JOIN ${this.t.wfDefinitions} d ON d.workflow_session_id = s.session_id
-              WHERE s.parent_session_id = $1 AND s.session_kind = 'workflow' AND s.deleted_at IS NULL
-              ORDER BY s.created_at, s.session_id`, [ownerSessionId, ACTIVE]);
-        return rows.map((row: Row) => ({ workflowSessionId: String(row.session_id), title: row.title === null || row.title === undefined ? null : String(row.title),
-            definitionId: row.session_definition_id === null || row.session_definition_id === undefined ? null : String(row.session_definition_id) }));
-    }
-
     /**
      * Stage 2.4 (PR 235 2b893906): the session's running children, the budget spawn_agent and Start share: its sub-agents
      * that are running and its Workflows whose live run is active. Not its system sessions or service sessions (an agent's

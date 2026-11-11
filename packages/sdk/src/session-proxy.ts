@@ -92,7 +92,6 @@ import { workflowTestModeFromEnv } from "./workflow/test-mode-switch.js";
 import { workflowDefinitionFromTool } from "./workflow/definition-tool.js";
 import { createPackageWorkflowSource, manifestAgentWorkflows } from "./workflow/session-packages.js";
 import { requireWorkflowScriptsInYaml } from "./workflow/scripts-gate.js";
-import { sessionCompletionRefusal } from "./workflow/session-definitions.js";
 import { authorizeWorkflowTestNotice, workflowTestAgentScope, workflowTestAgentToolCall } from "./workflow/test-agent-tools.js";
 import { sessionInsideWorkflow, spawnNesting, spawnNestingRefusal, workflowDefinitionToolsRefusal, workflowDefinitionToolsRefused } from "./workflow/input-policy.js";
 import { applyOperatorCommandToWorkflow, applySessionCommandToWorkflow } from "./workflow/service.js";
@@ -4016,9 +4015,6 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             completeAgent: async (args: { agent_id: string; result?: Record<string, unknown> }) => {
                 try {
                     const child = await resolveManagedChild(args.agent_id);
-                    // Stage 2.1 (R4): a session cannot complete while one of its Workflows is active; nothing is recorded or sent.
-                    const r4 = await sessionCompletionRefusalText(child.sessionId);
-                    if (r4) return `[SYSTEM: complete_agent refused — ${r4}]`;
                     let builtOutcome: ReturnType<typeof buildResultJson> | null = null;
                     if (catalog) {
                         const existing = await catalog.getChildOutcome(child.sessionId).catch(() => null);
@@ -6660,13 +6656,6 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
      * its controller to finish, or any other target). Used by the sendCommandToSession activity and by the inline control
      * tools (complete_agent, cancel_agent, delete_agent), so both reach the store the same way.
      */
-    /** Stage 2.1 (R4): the words that refuse completing `targetSessionId` while one of its Workflows is active, or null. */
-    const sessionCompletionRefusalText = async (targetSessionId: string): Promise<string | null> => {
-        if (!catalog?.workflowStore) return null;
-        const refusal = await sessionCompletionRefusal({ store: catalog.workflowStore() }, targetSessionId);
-        return refusal ? refusal.message : null;
-    };
-
     const workflowChildCommandApplied = async (activityCtx: any, targetSessionId: string, command: unknown): Promise<boolean> => {
         if (!catalog?.workflowStore) return false;
         const facts = factStore ?? null;
@@ -6688,13 +6677,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         input: { sessionId: string; command: any },
     ): Promise<void> => {
         activityCtx.traceInfo(`[sendCommandToSession] session=${input.sessionId} cmd=${input.command?.cmd}`);
-        // Stage 2.1 (R4): complete_agent's done for a session with an active Workflow is refused; the orchestration's catch tells
-        // the caller (complete_agent failed: …). A parent's own shutdown cascade is not refused: its children end, and their
-        // Workflows with them (migration 0088's trigger).
-        if (input.command?.cmd === "done" && input.command?.args?.reason === "Completed by parent") {
-            const r4 = await sessionCompletionRefusalText(input.sessionId);
-            if (r4) throw new Error(r4);
-        }
+        // Owner 2026-11-11T05:25Z: complete_agent's done is never refused for the child's active Workflows: the child's own
+        // done cascades to them, as a parent's shutdown does (their active runs are cancelled).
         // A workflow child's lifecycle command is applied in the workflow store
         // for the child's own parent (workflowChildCommandApplied); it is
         // queued only when that says so. Every other target keeps the queued

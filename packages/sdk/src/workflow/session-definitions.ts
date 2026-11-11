@@ -446,20 +446,6 @@ export async function deleteSessionWorkflowDefinition(host: Pick<WorkflowHost, "
     return host.store.sessionDefinitions.deleteDefinition({ ...request, requestSha256: sha256Hex(canonicalJson({ kind: "delete", definitionId: request.definitionId })) });
 }
 
-/**
- * R4: a session cannot complete while one of its Workflows is active. The refusal names them (WORKFLOW_ACTIVE, 409); null
- * when the session may complete. Its cancel, failure and deletion end its Workflows instead (migration 0088's trigger).
- */
-export async function sessionCompletionRefusal(host: Pick<WorkflowHost, "store">, ownerSessionId: string): Promise<WorkflowStoreError | null> {
-    const active = await host.store.sessionDefinitions.activeWorkflowsOfSession(ownerSessionId);
-    if (!active.length) return null;
-    const names = active.slice(0, 3).map(item => (item.title ?? item.workflowSessionId).replace(/^Workflow: /, ""));
-    return new WorkflowStoreError("WORKFLOW_ACTIVE",
-        `This session cannot complete while ${active.length === 1 ? "its Workflow" : `${active.length} of its Workflows`} ${names.join(", ")}`
-        + `${active.length > 3 ? ` and ${active.length - 3} more` : ""} ${active.length === 1 ? "is" : "are"} still running. Stop ${active.length === 1 ? "it" : "them"} first, `
-        + "or cancel the session, which cancels them.", { workflowSessionIds: active.map(item => item.workflowSessionId) });
-}
-
 // ─── Stage 2.3: package Workflow Definitions in a session ─────────────────────────────────────────
 
 function requirePackages(host: Pick<WorkflowHost, "packageWorkflows">): PackageWorkflowSource {

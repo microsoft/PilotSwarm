@@ -940,6 +940,20 @@ started), the run ends as **cancelled** without reaching a terminal state
 (complete also ends it as cancelled, with reason "Stopped"), and the parent
 is told unless it asked. Delete also removes the session.
 
+Ending the session that owns a Workflow ends the Workflow too, whatever its
+state (owner decision, 2026-11-11). Completing that session is never refused
+for an active Workflow, from any entry point: the management API's
+`completeSession`, the portal's Complete, a parent's `complete_agent`, or the
+completion of the session's own parent. The session's done reaches each of
+its Workflow children: an active run (admitted, running or paused) is
+cancelled with the reason "Parent session completing", its agent steps end,
+and the Workflow session ends cancelled. A test bench is not in the session's
+child list, so the done does not reach it; when the owner's state becomes
+completed, its active test run is cancelled ("The session that owns this
+Workflow ended, so the Workflow was canceled."). A Workflow whose runs had
+already ended keeps its state. Cancelling the owner, or its failure, ends
+them the same way; deleting it deletes them.
+
 For a Workflow, a cancel or complete ends the run in the store when
 it is accepted, from every entry point: `update_workflow`, the parent agent,
 the management API and the agent manager's `manage_agent_session`. Its
