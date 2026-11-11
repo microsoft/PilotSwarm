@@ -204,3 +204,10 @@ test("the prompt and the repair loop say propose_agent_patch refuses what publis
     const skill = fs.readFileSync(path.join(pkgDir, "skills/agent-repair-loop/SKILL.md"), "utf8");
     assert.match(skill, /`propose_agent_patch` first checks the staged package as publish checks it/);
 });
+
+test("option a: a session starts any visible package Workflow; an agent's workflows list suggests, and Agent Smith verifies by starting it", () => {
+    assert.match(prompt, /Any session may start any package definition its owner can see/);
+    assert.match(prompt, /they do not\s+limit what it may start/);
+    assert.match(prompt, /start it directly from your own\s+session/);
+    assert.doesNotMatch(prompt, /An agent names the definitions its session may start/);
+});

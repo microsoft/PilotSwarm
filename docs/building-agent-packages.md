@@ -421,7 +421,11 @@ when the node's hint asks; it picks a model from its own catalog
 (`list_available_models`) and says what it chose. Give hints only where a node
 really needs one.
 
-An agent names the definitions its session may start:
+Any session may start any package definition its owner can see (a shared
+package's, or the owner's own), as the new-session picker shows them, with
+`workflow_definition` `start` and its `<package>/<name>`. An agent can name the
+definitions to suggest to its session; `list` shows them first, marked
+`suggested`, but they do not limit what the session may start:
 
 ```yaml
 workflows:
@@ -432,7 +436,9 @@ workflows:
 A bare name must be one of this package's definitions (`unknown_workflow_ref`
 otherwise); another package's is checked when a session starts it. An agent that
 names definitions cannot be an agent step's agent (`workflow_agent_brings_workflows`
-inside the package; `AGENT_HAS_WORKFLOWS` at save and Start).
+inside the package; `AGENT_HAS_WORKFLOWS` at save and Start). A package with only
+Workflow Definitions and no agent is valid: a person starts one from the
+new-session picker, and any session of theirs can start it directly.
 
 People find a package's definitions in the new-session picker's **Workflows**
 group; choosing one makes a session for it (its *coordinating session*). In any session,

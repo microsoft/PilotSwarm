@@ -7,10 +7,12 @@
  * spawn_workflow stays one release (D2), mapped to save then start (spawnWorkflowCompatFromTool): its save is guarded by
  * the newest revision the session has seen of that definition (Q2), and its start pins exactly the revision it saved (F4).
  *
- * Stage 2.3 (P3–P6, D7): a package's definition is named `<package>/<name>`. The session may start the ones its agent names
- * (its workflows list; a bare name is its own package's), the one its coordinating session was made for, and any already
- * attached to it: Start attaches the package's version the first time (and, with update, a newer one), then starts it.
- * card reads a definition's interface card. A package's definition is locked: save refuses it (DEFINITION_LOCKED).
+ * Stage 2.3 (P3–P6, D7): a package's definition is named `<package>/<name>`. Owner decision 2026-11-11 (option a): a session
+ * may start any package definition its owner can see, as the portal's new-session picker shows them (a user-scope package
+ * only to its owner, a shared one to everyone); one its owner cannot see is refused (PACKAGE_WORKFLOW_NOT_FOUND). Its agent's
+ * workflows list (a bare name is its own package's) and its coordinating session's own definition no longer limit a start:
+ * list marks them as suggested. Start attaches the package's version the first time (and, with update, a newer one), then
+ * starts it. card reads a definition's interface card. A package's definition is locked: save refuses it (DEFINITION_LOCKED).
  */
 import type { SessionOwnerInfo } from "../types.js";
 import type { WorkflowToolBinding } from "./tool-policy.js";
@@ -146,14 +148,14 @@ export interface WorkflowDefinitionToolContext {
     /** Stage 2.4: the session's nesting level, for Start's depth limit (spawn_agent's). */
     nestingLevel?: number | null;
     /**
-     * Stage 2.3 (P4): the session's bound agent's workflows list and its package (bare names are that package's). Absent or
-     * empty: the session may start only what is already attached and, for a coordinating session, its own definition.
+     * Stage 2.3 (P4): the session's bound agent's workflows list and its package (bare names are that package's). It marks the
+     * definitions list suggests; it does not limit what the session may start (owner decision 2026-11-11, option a).
      */
     agentWorkflows?: () => Promise<{ packageName: string | null; refs: string[] }>;
 }
 
-/** The package definitions this session may start (P4, P2): its agent's (bare names in its own package) and its coordinating ref. */
-async function allowedPackageRefs(context: WorkflowDefinitionToolContext): Promise<string[]> {
+/** The package definitions suggested to this session (P4, P2): its agent's (bare names in its own package) and its coordinating ref. */
+async function suggestedPackageRefs(context: WorkflowDefinitionToolContext): Promise<string[]> {
     const allowed = new Set<string>();
     const agent = context.agentWorkflows ? await context.agentWorkflows() : { packageName: null, refs: [] };
     for (const ref of agent.refs) {
@@ -179,17 +181,21 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
         const engineActor: WorkflowActor = { kind: "agent", sessionId: session } as WorkflowActor;
         if (operation === "list") {
             const views = await withPackageUpdates(context.host, await listSessionWorkflowDefinitions(context.host, session, { forSession: true }), viewerOf(context));
-            // Stage 2.3 (P4): the package definitions this session may start, with what each is for.
-            const allowed = await allowedPackageRefs(context);
+            // Stage 2.3 (P4), option a: every package definition the session's owner can see (the new-session picker's), with
+            // what each is for; those its agent names (or its coordinating session was made for) first, marked suggested. A
+            // suggested one no package the owner can see has is shown as not available.
+            const suggested = await suggestedPackageRefs(context);
             const canStart: JsonValue[] = [];
-            if (allowed.length && context.host.packageWorkflows) {
+            if (context.host.packageWorkflows) {
                 const visible = await context.host.packageWorkflows.list(viewerOf(context)).catch(() => []);
-                for (const ref of allowed) {
+                const entryJson = (entry: (typeof visible)[number]) => ({ name: entry.ref, version: entry.semver, description: entry.workflow.description,
+                    attached: views.some(view => view.name === entry.ref && view.deletedAt === null),
+                    ...(suggested.includes(entry.ref) ? { suggested: true } : {}) });
+                for (const ref of suggested) {
                     const entry = visible.find(item => item.ref === ref);
-                    canStart.push(entry ? { name: ref, version: entry.semver, description: entry.workflow.description,
-                        attached: views.some(view => view.name === ref && view.deletedAt === null) }
-                        : { name: ref, available: false, note: "No package you can use has it now." });
+                    canStart.push(entry ? entryJson(entry) : { name: ref, suggested: true, available: false, note: "No package you can use has it now." });
                 }
+                for (const entry of visible) if (!suggested.includes(entry.ref)) canStart.push(entryJson(entry));
             }
             return JSON.stringify({ ok: true, operation: "list", definitions: views.map(definitionJson), ...(canStart.length ? { canStart } : {}) });
         }
@@ -266,10 +272,8 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
                 const packageRef = requirePackageRef(ref.name).ref;
                 const attached = await context.host.store.sessionDefinitions.readDefinitionByName(session, packageRef);
                 if (!attached || args.update === true) {
-                    if (!attached && !(await allowedPackageRefs(context)).includes(packageRef)) {
-                        throw new WorkflowStoreError("PACKAGE_WORKFLOW_NOT_ALLOWED", `This session may not start ${packageRef}: its agent does not name it. `
-                            + "list shows under canStart the package definitions it may start.", { ref: packageRef });
-                    }
+                    // Option a (owner 2026-11-11): any package definition the session's owner can see; the attach refuses one
+                    // they cannot (PACKAGE_WORKFLOW_NOT_FOUND), as the portal's picker would not show it.
                     // update on a definition the session has: only the same package's strictly greater version (S2SF-F6 / L4).
                     const stored = await attachSessionPackageWorkflow(context.host, { ownerSessionId: session, ref: packageRef, viewer: viewerOf(context),
                         actor: sessionActor, operationId: `definition:${context.toolCallId}:attach`, by: "session", ...(attached ? { newerOnly: true } : {}) });

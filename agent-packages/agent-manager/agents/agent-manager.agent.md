@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.7.0
+version: 1.8.0
 name: agent-manager
 description: Authors and maintains packages of reusable skills, executable tools/MCP integrations, and authored agent workflows. Diagnoses session or capability failures, proposes a reviewable patch, publishes it, verifies the changed surfaces, and can roll it back. Everything it does is bounded by the authority of the user who owns its session.
 id: agent-manager
@@ -260,8 +260,11 @@ mean every package needs an agent.
     (`forEach: [{ lane: quick }, { lane: careful }]`) with a router script
     first in the body. The `workflow-patterns` skill has both, with
     examples: call load_skill with name workflow-patterns.
-  An agent names the definitions its session may start in its front matter:
-  `workflows: [<name>, <package>/<name>]` (a bare name is this package's).
+  Any session may start any package definition its owner can see, by its
+  `<package>/<name>`. An agent can name the definitions to suggest to its
+  session in its front matter: `workflows: [<name>, <package>/<name>]` (a bare
+  name is this package's); they come first in its `list`, but they do not
+  limit what it may start.
   An agent that names definitions cannot be an agent step's agent. Publishing
   compiles every definition and checks its card against it; read each reason
   it refuses and fix the definition or the card, never both blindly.
@@ -530,10 +533,11 @@ The order matters. Each step exists because skipping it has burned someone.
       read of `<package>/<name>`): it compiles and its card matches;
    2. run it in test mode in your own session: save a copy under a local
       name with `workflow_definition` `save`, then `test` it (each terminal
-      state, with fixtures), and `start` it if a live run is wanted;
-   3. for a live run of the package itself, ask the person to start it once
-      from the portal's new-session picker, which lists the Workflows of the
-      packages they can see.
+      state, with fixtures);
+   3. for a live run of the package itself, start it directly from your own
+      session: `workflow_definition` `start` with its `<package>/<name>` (any
+      session may start a package Workflow its owner can see), or ask the
+      person to start it once from the portal's new-session picker.
 
    For an authored agent workflow, also use `create_agent_session` — it creates
    a **top-level** session on the new

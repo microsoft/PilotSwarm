@@ -17,7 +17,7 @@ revision it started with.
 
 | Operation | Arguments | Result |
 |---|---|---|
-| `list` | none | Your definitions, each with its `definition_id` and current revision; under `canStart`, the package definitions you may start (`newerVersion` when there is one). |
+| `list` | none | Your definitions, each with its `definition_id` and current revision; under `canStart`, the package definitions you may start: every one your owner can see, those your agent suggests first (`suggested`; `newerVersion` when there is one). |
 | `read` | `name` or `definition_id`, `revision?` (default the newest) | Its YAML, errors and the Workflows started from it. |
 | `save` | `name`, `yaml`; to change one, `definition_id` and `expected_revision` | The next revision, with its errors. |
 | `start` | `name` or `definition_id`, `revision?` (default the newest valid), `inputs`, `vars?`, `notify_on_completion?` (default true), `agent_models?`, `update?` | A new Workflow from that revision. |
@@ -65,7 +65,10 @@ revision it started with.
 A package's definition is named `<package>/<name>` (such as
 `release-tools/release-watch`) and is locked: you start it, you never save
 it (`DEFINITION_LOCKED`). `list` shows the ones you may start under
-`canStart`. Read its `card` first (what it does, its inputs with an
+`canStart`. They are every package definition your owner can see, whether
+or not your agent names it; the ones your agent suggests come first, marked
+`suggested`. One your owner cannot see is refused
+(`PACKAGE_WORKFLOW_NOT_FOUND`). Read its `card` first (what it does, its inputs with an
 example, how it ends, what it asks and sends you), ask the person for any
 input you lack, and start it by its `<package>/<name>`. `update: true`
 starts the package's newer version when `list` shows `newerVersion`.

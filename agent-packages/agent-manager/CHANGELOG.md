@@ -1,5 +1,14 @@
 # Changelog — agent-manager
 
+## 1.7.0
+
+### Changed
+
+- Any session may start any package Workflow its owner can see. An agent's
+  `workflows:` list now suggests definitions to its session; it no longer
+  limits what the session may start. A Workflow-only package can be verified
+  by starting it directly from Agent Smith's own session.
+
 ## 1.6.0
 
 ### Changed

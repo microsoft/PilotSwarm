@@ -644,9 +644,14 @@ A package can ship Workflow Definitions as top-level entries
   same package with a greater version: an older active version (a rollback)
   or another package of the same name (your own copy that shadows a shared
   one) is not offered, and taking it is refused (`PACKAGE_NOT_NEWER`).
-- **The session's tool** (`workflow_definition`): `list` shows under `canStart`
-  the package definitions this session may start (those its agent's
-  `workflows:` names, and a coordinating session's own), `card` reads one's card,
+- **The session's tool** (`workflow_definition`): a session may start any
+  package definition its owner can see, as the new-session picker shows them
+  (owner decision, 2026-11-11): a shared package's to everyone, a user's own
+  package's only to that user; one its owner cannot see is refused
+  (`PACKAGE_WORKFLOW_NOT_FOUND`). `list` shows them all under `canStart`, those
+  its agent's `workflows:` names (and a coordinating session's own) first,
+  marked `suggested`; a suggested one no visible package has is shown as not
+  available. `card` reads one's card,
   and `start` with its `<package>/<name>` attaches it the first time (`update:
   true`: the newer version) and starts exactly that revision. A save of one is
   refused (`DEFINITION_LOCKED`).

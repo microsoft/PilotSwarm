@@ -7,8 +7,10 @@
  *   version and the card's digest; attaching it again changes nothing; a save to it is refused (DEFINITION_LOCKED); Start
  *   pins its revision; Make a copy saves the package's YAML as the session's own, editable definition, with a note;
  * - P6: a newer package version is offered (packageUpdate) and attached as the next revision; a running Workflow keeps its own;
- * - P4: a session starts what its agent names (a bare name in the agent's own package, another package's by package and name),
- *   reads a card first, and is refused one its agent does not name; a coordinating session starts its own;
+ * - P4, option a (owner 2026-11-11): a session may start any package definition its owner can see, as the portal's picker
+ *   shows them, whatever its agent names; list shows them all under canStart, the ones its agent names (a bare name in the
+ *   agent's own package, another package's by package and name) or its coordinating session was made for first, marked
+ *   suggested; it reads a card first; a package its owner cannot see (another user's own) is refused and nothing attached;
  * - A2: a definition whose agent state uses an agent that names definitions is refused at save and at Start;
  * - the management client: the picker's catalog, a coordinating session's preparation and attach (its row's workflowRef and
  *   title), a person's newer version and Make a copy.
@@ -368,14 +370,18 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
         }
     });
 
-    it("P4: the session starts what its agent names, reads the card first, and is refused another; a coordinating session starts its own", { timeout: TIMEOUT }, async () => {
-        const { h, host, session, release, ops, tag } = await harness();
+    it("P4, option a: a session starts any package definition its owner can see, its agent's suggested first; one its owner cannot see is refused", { timeout: TIMEOUT }, async () => {
+        const { h, host, session, release, ops, tag, publish } = await harness();
         try {
-            const agentWorkflows = async () => ({ packageName: release, refs: ["release-watch", `${ops}/incident-digest`] });
+            // Another user's own package: not visible to this session's owner.
+            await publish(`private-kit-${tag}`, "1.0.0", { "workflows/incident-digest/workflow.yaml": DIGEST_YAML, "workflows/incident-digest/card.md": DIGEST_CARD },
+                { scope: "user", owner: { provider: "test", subject: "eve" } });
+            const agentWorkflows = async () => ({ packageName: release, refs: [`${ops}/incident-digest`] });
             const listed = await tool(host, session, { operation: "list" }, { agentWorkflows });
+            // Every package definition the owner can see; the agent's first, marked suggested; never another user's own.
             expect(listed.canStart).toEqual([
+                { name: `${ops}/incident-digest`, version: "0.4.1", description: "Collects the day's incidents into one digest.", attached: false, suggested: true },
                 { name: `${release}/release-watch`, version: "1.0.0", description: "Watches a release train and reports when it is clear.", attached: false },
-                { name: `${ops}/incident-digest`, version: "0.4.1", description: "Collects the day's incidents into one digest.", attached: false },
             ]);
             const card = await tool(host, session, { operation: "card", name: `${release}/release-watch` }, { agentWorkflows });
             expect(card).toMatchObject({ ok: true, operation: "card", name: `${release}/release-watch`, version: "1.0.0", attached: false,
@@ -391,10 +397,14 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
             const again = await tool(host, session, { operation: "list" }, { agentWorkflows });
             expect(again.definitions.find(item => item.name === `${ops}/incident-digest`)).toMatchObject({ locked: true, package: { name: ops, version: "0.4.1" } });
             expect(again.canStart.find(item => item.name === `${ops}/incident-digest`).attached).toBe(true);
-            // A definition the agent does not name is refused, and nothing is attached.
+            // A visible definition the agent does not name starts too (option a), from a session whose agent names nothing.
             const other = await tool(host, session, { operation: "start", name: `${release}/release-watch`, inputs: { train: "M70" } });
-            expect(other).toMatchObject({ ok: false, error: { code: "PACKAGE_WORKFLOW_NOT_ALLOWED" } });
-            expect((await listSessionWorkflowDefinitions(host, session)).some(item => item.name === `${release}/release-watch`)).toBe(false);
+            expect(other).toMatchObject({ ok: true, operation: "start", name: `${release}/release-watch`, revision: 1 });
+            expect((await listSessionWorkflowDefinitions(host, session)).some(item => item.name === `${release}/release-watch`)).toBe(true);
+            // A package this session's owner cannot see is refused, as the picker would not show it, and nothing is attached.
+            const hidden = await tool(host, session, { operation: "start", name: `private-kit-${tag}/incident-digest` });
+            expect(hidden).toMatchObject({ ok: false, error: { code: "PACKAGE_WORKFLOW_NOT_FOUND" } });
+            expect((await listSessionWorkflowDefinitions(host, session)).some(item => item.name === `private-kit-${tag}/incident-digest`)).toBe(false);
             const missing = await tool(host, session, { operation: "start", name: `nothing-${tag}/x` }, { agentWorkflows: async () => ({ packageName: null,
                 refs: [`nothing-${tag}/x`] }) });
             expect(missing).toMatchObject({ ok: false, error: { code: "PACKAGE_WORKFLOW_NOT_FOUND" } });
@@ -406,7 +416,9 @@ describe("a package's Workflow Definitions (stage 2.3)", () => {
             expect((await h.catalog.getSession(coordinating)).workflowRef).toBe(`${release}/release-watch`);
             const own = await tool(host, coordinating, { operation: "start", name: `${release}/release-watch`, inputs: { train: "M70" } });
             expect(own).toMatchObject({ ok: true, revision: 1 });
-            expect((await tool(host, coordinating, { operation: "list" })).canStart).toEqual([expect.objectContaining({ name: `${release}/release-watch`, attached: true })]);
+            const coordinatingList = (await tool(host, coordinating, { operation: "list" })).canStart;
+            expect(coordinatingList[0]).toMatchObject({ name: `${release}/release-watch`, attached: true, suggested: true });
+            expect(coordinatingList.map(item => item.name)).toEqual([`${release}/release-watch`, `${ops}/incident-digest`]);
         } finally {
             await h.stop();
         }

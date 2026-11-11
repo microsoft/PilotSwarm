@@ -178,7 +178,7 @@ const LIMITED = new Set(["OPERATION_LIMIT", "TEST_INTERCEPTION_LIMIT", "INBOX_RA
  */
 export function workflowCommandStatus(code: string): number {
     if (NOT_FOUND.has(code)) return 404;
-    if (code === "FORBIDDEN" || code === "WORKFLOW_HUMAN_INPUT_DENIED" || code === WORKFLOW_DEFINITION_TOOLS_REFUSED || code === "PACKAGE_WORKFLOW_NOT_ALLOWED") return 403;
+    if (code === "FORBIDDEN" || code === "WORKFLOW_HUMAN_INPUT_DENIED" || code === WORKFLOW_DEFINITION_TOOLS_REFUSED) return 403;
     if (INVALID.has(code)) return 400;
     if (UNPROCESSABLE.has(code)) return 422;
     if (LIMITED.has(code)) return 429;

@@ -579,8 +579,8 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
             + "never by outcome values such as succeeded; asks a map keyed by each request state ID and sends by each send state ID, "
             + "exactly those, left out when there are none; inputs.example when the definition has an input schema; optional output, "
             + "model and modelHints (an agent node's id → { strength?, reasoning?, context?, note? }, the kind of model that node needs, "
-            + "never a model's name); no other field. An agent names the definitions its session may start in its front matter: "
-            + "workflows: [<name>, <package>/<name>]. "
+            + "never a model's name); no other field. Any session may start a package definition its owner can see; an agent may "
+            + "suggest definitions to its session in its front matter: workflows: [<name>, <package>/<name>]. "
             + "Nothing is published until you call publish_agent_package.",
         parameters: {
             type: "object" as const,
