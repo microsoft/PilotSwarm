@@ -13,6 +13,7 @@ import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { createManagementClient } from "../helpers/local-workers.js";
 import { waitForSessionState } from "../helpers/cms-helpers.js";
 import { controlWorkflowRun } from "../../src/workflow/service.ts";
+import { registerActivities } from "../../src/session-proxy.ts";
 import {
     CASCADE_OWNER, CASCADE_ACTOR, CASCADE_TIMEOUT, WORKFLOW_SESSION_END_STATE, openOwnerCascadeRuntime, startCascadeLive, startCascadeBench,
     terminalYaml, pendingCascadeNode, cascadeControllerEnded, cascadeRunEnded, assertNoActiveCascadeRuns, assertCancelledCascadeNodes,
@@ -103,6 +104,12 @@ describe("completing an owner cancels active Workflows and preserves ended Workf
         }
     });
 });
+
+/** A runtime that records the activities registerActivities registers (so one can be run as the worker runs it). */
+function captureActivities() {
+    const handlers = new Map();
+    return { handlers, registerActivity(name, fn) { handlers.set(name, fn); }, registerOrchestration() {}, registerOrchestrationVersioned() {} };
+}
 
 /** Spawn through the model-facing tool so the ordinary child is tracked by the real state.subAgents cascade. */
 async function spawnedChild(h, parentId) {
@@ -252,18 +259,20 @@ describe("the real owner completion entry points, with an active live Workflow a
                     } else if (path === "parent's own completion") {
                         await mgmt.completeSession(root.sessionId, "fixture parent completion", { wait: false });
                     } else {
-                        worker.runtime.registerOrchestration("fixture-parent-completes-owner", function* (ctx, input) {
-                            yield ctx.scheduleActivity("sendCommandToSession", {
-                                sessionId: input.ownerId,
-                                command: { type: "cmd", cmd: "done", id: input.commandId,
-                                    args: { reason: PARENT_DONE_REASON }, requestedBy: input.rootId },
-                            });
-                            return "sent";
+                        // The worker's own sendCommandToSession activity (registerActivities, captured), run as the parent's
+                        // instance runs it for complete_agent: the exact input of the former refusal ("Completed by parent").
+                        // It must send the done (no refusal), which the owner's orchestration then cascades.
+                        const activities = captureActivities();
+                        registerActivities(activities, /* sessionManager */ {}, /* sessionStore */ null, /* githubToken */ undefined, h.catalog,
+                            /* provider */ undefined, env.store, env.cmsSchema, { duroxideSchema: env.duroxideSchema, factsSchema: env.factsSchema });
+                        const sendCommandToSession = activities.handlers.get("sendCommandToSession");
+                        expect(sendCommandToSession, "the sendCommandToSession activity is registered").toBeTypeOf("function");
+                        const traces = [];
+                        await sendCommandToSession({ instanceId: `session-${root.sessionId}`, traceInfo: text => traces.push(text) }, {
+                            sessionId: ownerId,
+                            command: { type: "cmd", cmd: "done", id: `done-parent-${randomUUID()}`, args: { reason: PARENT_DONE_REASON }, requestedBy: root.sessionId },
                         });
-                        await duroxide.startOrchestration(`session-${root.sessionId}`, "fixture-parent-completes-owner", {
-                            ownerId, rootId: root.sessionId, commandId: `done-parent-${randomUUID()}`,
-                        });
-                        expect(await duroxide.waitForOrchestration(`session-${root.sessionId}`, testTime.ms(30_000))).toMatchObject({ output: "sent" });
+                        expect(traces.some(text => text.includes(`enqueued to session-${ownerId}`)), JSON.stringify(traces)).toBe(true);
                     }
                     await waitForSessionState(h.catalog, ownerId, "completed", testTime.ms(60_000));
                     await waitForSessionState(h.catalog, ordinaryId, "completed", testTime.ms(60_000));
