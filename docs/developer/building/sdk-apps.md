@@ -101,6 +101,33 @@ console.log(`${sessions.length} sessions`);
 
 A handful of low-level methods (raw command channels, session dumps, some usage stats) are direct-mode only and throw `WEB_MODE_UNSUPPORTED` in web mode. See the [Web API reference](../../api/reference.md) for the full surface.
 
+## Workflows
+
+A Workflow runs a fixed procedure (scripts, waits, typed messages, approvals
+and agent steps) on the workers, under the session that owns it. An app can
+use one in two ways:
+
+- **Through a session.** Ask a session for a Workflow in a prompt. Its agent
+  writes, saves and starts the definition, and the session gets a message
+  when the Workflow ends.
+- **Directly.** The management client saves and starts definitions
+  (`saveSessionWorkflowDefinition`, `startSessionWorkflowDefinition`), reads a
+  Workflow (`readWorkflow`), and pauses, resumes, stops or cancels it
+  (`updateWorkflow`).
+
+```ts
+// owner: a session from client.createSession(); yaml: a Workflow Definition.
+const saved = await mgmt.saveSessionWorkflowDefinition(owner.sessionId,
+  { name: "one-minute", yaml, operationId: crypto.randomUUID() });
+const { workflowId } = await mgmt.startSessionWorkflowDefinition(owner.sessionId,
+  { definitionId: saved.definitionId, inputs: {}, operationId: crypto.randomUUID() });
+const status = (await mgmt.readWorkflow(workflowId)).run?.status;
+```
+
+See [Workflows from the SDK](../../user-guide/workflows.md#21-the-sdk) for the
+full example, the events and the HTTP routes, and
+[Durable workflows](./workflow-sessions.md) for the complete reference.
+
 ## Facts & Graph
 
 To read and write a deployment's memory — facts (key/value + search) and the
@@ -266,6 +293,7 @@ That is the pattern used by the DevOps sample and the one we recommend pointing 
 ## What To Read Next
 
 - [Building Agents For SDK Apps](./sdk-agents.md)
+- [Workflows](../../user-guide/workflows.md) and [Durable workflows](./workflow-sessions.md)
 - [Facts & Graph](./facts-and-graph.md)
 - [Web API Reference](../../api/reference.md)
 - [Configuration](../reference/configuration.md)
