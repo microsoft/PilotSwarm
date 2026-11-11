@@ -8,9 +8,10 @@ This file answers what a reader must not assume is solved by PR 270. For example
 
 | Class | Issue | Evidence and disposition |
 |---|---|---|
-| Gap | CMS and Duroxide are separate transaction domains | Live admission commits before dispatch; ordinary session start dispatches before its CMS running update. Re-request and explicit recovery mitigate but do not remove the gap. `packages/sdk/src/workflow/service.ts:433-441`, `:978-986`; `packages/sdk/src/client.ts:1006-1030`. |
+| Gap | CMS and Duroxide are separate transaction domains | Live admission commits before dispatch. At the source pin an ordinary session start dispatched before its CMS running update; later in this PR the two are serialized under the session row's lock (`bddbd878`, `50ad6493`), still not atomic. Re-request and explicit recovery mitigate but do not remove the gap. `packages/sdk/src/workflow/service.ts:433-441`, `:978-986`; `packages/sdk/src/client.ts:1006-1030`. |
 | Enhancement | Resolve two-store consistency across the product | Tracked as follow-up work for ordinary sessions and Workflows. A durable start-intent record is a follow-up; it is not implemented at this source pin. |
-| Bug | Ordinary first start can race Sweeper cleanup of a NotFound orchestration | Ordinary first start and the CMS update are separate; ordinary cleanup accepts a stale NotFound instance. The Workflow guard protects active Workflow rows, not that ordinary-start window. This ordering exists on main too. DR-01 and DR-02 are pending fixes described below, not behavior at `4fa702dc`. `packages/sdk/src/client.ts:1006-1025`; `packages/sdk/src/sweeper-tools.ts:80`, `:166-184`; `packages/sdk/src/workflow/store.ts:3366-3400`. |
+| Bug (fixed in this PR) | Ordinary first start can race Sweeper cleanup of a NotFound orchestration | At the source pin the ordinary first start and the CMS update were separate, and ordinary cleanup accepted a stale NotFound instance. This ordering exists on main too. Fixed later in this PR (`bddbd878`, `5dcfc349`, `6f59403d`, `50ad6493`; see below), not at `4fa702dc`. `packages/sdk/src/client.ts:1006-1025`; `packages/sdk/src/sweeper-tools.ts:80`, `:166-184`; `packages/sdk/src/workflow/store.ts:3366-3400`. |
+| Bug | A live delete, cancel or completion waits for a child that never started | A session created through the API with no first message has no orchestration. When its parent's live orchestration ends with a cascade, the child never answers; after the 60-second shutdown deadline the parent ends failed instead of deleted or completed, and its subtree is left as it was. This exists on main too. The management client's fast path for a parent that is not live is not affected. A fix is to be decided. |
 | Bug | Sweeper schedule wording contradicts itself | The prompt says every approximately ten iterations is "about every 5 hours", but it wakes every 21,600 s (6 h). Ten scheduled wakes would be about 60 h. The implementation document cannot turn that prose into a reliable five-hour prune schedule. `packages/sdk/plugins/mgmt/agents/sweeper.agent.md:42`, `:63-67`; `packages/sdk/plugins/mgmt/skills/sweeper/SKILL.md:15-19`. |
 | Gap | Durable recipient intake is present but not enabled by the default worker | Worker registration omits `workflowIntake`; send delivery requires the callback to return true. Legacy queue deduplication is not durable at-most-one admission after arbitrary message traffic. `packages/sdk/src/worker.ts:1043-1064`; `packages/sdk/src/workflow/runtime.ts:4490-4509`. |
 | Gap | No periodic response-wake dispatcher is started | Immediate dispatch is attempted; a lost response wake relies on controller backstop. The durable wake row alone does not imply an active periodic dispatcher. `packages/sdk/src/workflow/request-service.ts:6-12`, `:64-135`. |
@@ -25,19 +26,21 @@ This file answers what a reader must not assume is solved by PR 270. For example
 | Gap | Activity tags do not solve mixed-version orchestration dispatch | An old worker can receive an unsupported orchestration version during rollout. The formal `RollingDeploy` notes document the poison/retry limit. `docs/formal/session-orchestration/README.md:70`; `packages/sdk/src/worker.ts:932-944`. |
 | Gap | Human credential forwarding can hide an agent origin | A person-mode command can reject a declared originating session inside a Workflow. A caller using a person's credential and omitting that origin is indistinguishable from the person at this boundary. `packages/sdk/src/workflow/human-commands.ts:194-209`. |
 
-## Pending in this PR
+## Done in this PR after the source pin
 
-The following fixes are in progress. They are not implemented at the source pin `4fa702dc`.
+The following changes are in PR 270 after the source pin `4fa702dc`; that pin does not show them.
 
-| Change | Pending behavior |
-|---|---|
-| Direct completion | Remove the `WORKFLOW_ACTIVE` refusal so direct completion of an owner session uses the existing cascade and owner-session trigger. The refusal remains at `packages/sdk/src/management-client.ts:1693-1698` and `packages/sdk/src/workflow/session-definitions.ts:449-462`. |
-| DR-01: unresolved start | Keep a session with a committed, unresolved start instead of deleting it when Duroxide reports NotFound. |
-| DR-02: cleanup subtree | Recheck the cleanup subtree under its locks before deleting it. |
+| Change | Commit | Behavior |
+|---|---|---|
+| Direct completion | `ac3fef7b` | The `WORKFLOW_ACTIVE` refusal is removed (it was at `packages/sdk/src/management-client.ts:1693-1698` and `packages/sdk/src/workflow/session-definitions.ts:449-462`). Direct completion of an owner session uses the existing cascade and owner-session trigger. |
+| Serialized first start | `bddbd878`, `50ad6493` | A session's first message writes its row and starts its orchestration in one CMS transaction on the row's lock, with a bounded wait; the Sweeper compares the row's exact version under that lock. Serialized, not atomic. |
+| DR-01: unresolved start | `5dcfc349` | A session with an accepted, unresolved start is kept when Duroxide reports NotFound, at any age; only a terminal status or an ended state shows its end. |
+| DR-02: cleanup subtree | `6f59403d` | The cleanup subtree is read again under its locks; a session is never created under a deleted parent. |
+| Package Workflow starts | `e27de05f` | Any session may start any package Workflow its owner can see; see [Interfaces](interfaces.md#package-interfaces-and-admission). |
 
 The parent's `done` cascade already ends ordinary children as completed. An active Workflow run and its Workflow session end cancelled with "Parent session completing"; step agents end; already-ended Workflow children keep their state. This live-run behavior was observed on a test deployment. Hidden test benches are not listed for the cascade: when the owner row becomes completed, the owner-session trigger cancels their active test runs with "The session that owns this Workflow ended, so the Workflow was canceled." The same trigger is the backstop for any Workflow child the cascade did not end first. See `packages/sdk/src/orchestration/agents.ts:727-758`, `packages/sdk/src/session-proxy.ts:6691-6702`, `:6809-6813`, `packages/sdk/src/client.ts:564-566`, and `packages/sdk/src/migrations/workflow-session-names-0089.ts:91-138`.
 
-The pending completion change does not rewrite Workflow child sessions to completed. **No migration 0090 is planned for it.** A durable start-intent record and product-wide two-store consistency remain separate follow-ups, not claims made by DR-01 or DR-02.
+The completion change does not rewrite Workflow child sessions to completed. **No migration was needed for it.** A durable start-intent record and product-wide two-store consistency remain separate follow-ups, not claims made by DR-01 or DR-02.
 
 ## Follow-up issues
 

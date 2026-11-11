@@ -236,11 +236,11 @@ sequenceDiagram
   C->>DX: enqueueEvent child end commands
 ```
 
-The SQL cascade is synchronous inside the original CMS transaction; it does not call Duroxide. Controller cleanup happens later. A normal owner completion request is refused first when live Workflows remain active; the trigger still protects other terminal-state writers. Evidence: `packages/sdk/src/migrations/workflow-session-names-0089.ts:91-158`, `packages/sdk/src/migrations/workflow-0088.ts:733-757`, `packages/sdk/src/workflow/session-definitions.ts:449-462`, `packages/sdk/src/workflow/runtime.ts:975-982`.
+The SQL cascade is synchronous inside the original CMS transaction; it does not call Duroxide. Controller cleanup happens later. At the source pin a normal owner completion request was refused first when live Workflows remained active; that refusal is removed later in this PR (below). The trigger still protects other terminal-state writers. Evidence: `packages/sdk/src/migrations/workflow-session-names-0089.ts:91-158`, `packages/sdk/src/migrations/workflow-0088.ts:733-757`, `packages/sdk/src/workflow/session-definitions.ts:449-462`, `packages/sdk/src/workflow/runtime.ts:975-982`.
 
-### Pending in this PR: direct completion
+### Done in this PR after the source pin: direct completion
 
-Removal of the `WORKFLOW_ACTIVE` refusal on direct completion is in progress. Direct completion will then use the same existing child cascade and owner-session trigger, with the outcomes described above. **No migration 0090 is planned for this change.** The refusal is still present at `4fa702dc`.
+Commit `ac3fef7b` removes the `WORKFLOW_ACTIVE` refusal on direct completion (the management API's `completeSession`, the portal's Complete, `complete_agent`, and the `Completed by parent` command). Completing a session that owns an active Workflow now uses the same existing child cascade and owner-session trigger, with the outcomes described above: the active run and its Workflow session end cancelled with "Parent session completing". **No migration was needed.** The refusal is still present at `4fa702dc`.
 
 The live-run cascade was also observed on a test deployment. That observation did not exercise hidden test benches; their behavior follows the source paths above.
 
@@ -259,18 +259,25 @@ sequenceDiagram
   Sweep->>DX: getStatus of own run controller
   Note over Sweep,DX: Failed status reads refuse cleanup
   Sweep->>Catalog: getDescendantSessionIds
-  Sweep->>Store: sweeperSoftDelete with read timestamp
-  Store->>Store: recheck under lock and soft-delete
+  Sweep->>Store: sweeperSoftDelete with the row version read first
+  Store->>Store: lock, recheck version and subtree, soft-delete
   Store-->>Sweep: deleted session IDs
   Sweep->>Facts: deleteSessionFactsForSession
   Sweep->>DX: deleteInstance for eligible controllers
 ```
 
-Evidence: `packages/sdk/src/sweeper-tools.ts:65-115`, `:140-184`, `:310-365`; `packages/sdk/src/workflow/store.ts:3366-3400`. A begun or admitted Workflow with a missing controller stays a recovery problem, never a cleanup candidate. Bulk prune also reconciles NotFound CMS rows with the same active-run guard. Ordinary session first-start ordering still has a race; see [Known issues](known-issues.md).
+Evidence at the source pin: `packages/sdk/src/sweeper-tools.ts:65-115`, `:140-184`, `:310-365`; `packages/sdk/src/workflow/store.ts:3366-3400`. A begun or admitted Workflow with a missing controller stays a recovery problem, never a cleanup candidate. Bulk prune also reconciles NotFound CMS rows with the same active-run guard. The ordinary first-start race of the source pin is closed later in this PR (below).
 
-### Pending in this PR: cleanup
+### Done in this PR after the source pin: cleanup
 
-Two fixes are in progress and are not represented by `4fa702dc`: **DR-01** keeps a session with a committed, unresolved start instead of deleting it when Duroxide reports NotFound; **DR-02** rechecks the cleanup subtree under its locks. A durable start-intent record is a separate follow-up, not part of these fixes. See [Pending in this PR](known-issues.md#pending-in-this-pr).
+These are not represented by `4fa702dc`:
+
+- `bddbd878`: the final check compares the row's exact version (read before the session is judged) under the row's lock; a session's first message writes its row and starts its orchestration in one CMS transaction on that lock, so the first message and the Sweeper serialize; the cascade locks the sessions it would delete without waiting, and refuses when one is held.
+- `5dcfc349` (**DR-01**): a session whose first message was accepted is never deleted because Duroxide reports NotFound, at any age; only a terminal status or an ended session state shows its end.
+- `6f59403d` (**DR-02**): the cleanup subtree is read again under its locks, and a session is never created under a deleted parent.
+- `50ad6493`: the first start's wait for Duroxide is bounded; the CMS update and the start are serialized, not atomic.
+
+A durable start-intent record is a separate follow-up, not part of these fixes. See [Done in this PR](known-issues.md#done-in-this-pr-after-the-source-pin).
 
 ## Lost-dispatch recovery
 
