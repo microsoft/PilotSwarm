@@ -144,7 +144,6 @@
     "test/local/sub-agents/parent-child-roundtrip.test.js",
     "test/local/sub-agents/spawn-custom.test.js",
     "test/local/sub-agents/system-inheritance.test.js",
-    "test/local/sweeper-cleanup-guard.test.js",
     "test/local/system-agent-bootstrap.test.js",
     "test/local/system-agent-cron-contracts.test.js",
     "test/local/system-agents.test.js",

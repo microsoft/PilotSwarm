@@ -97,6 +97,39 @@ export function createSweeperTools(opts: {
     }
 
     /**
+     * Review AS-02: the final check and the soft delete, in one transaction under the session row's lock, which every run
+     * admission takes first (WorkflowStore.sweeperSoftDelete): a run admitted after the Sweeper's read makes it refuse, and
+     * one that comes after the delete finds the session deleted. `descendants` are soft-deleted with it, in that order, as
+     * before (the parent's lifecycle owns its children's: a Workflow run still active under it ends with it). A catalog
+     * without a Workflow store (a test double) deletes as before, one row at a time.
+     */
+    async function softDeleteChecked(session: { sessionId: string; updatedAt: Date }, descendants: readonly string[])
+        : Promise<{ deleted: string[] } | { refused: { status: string; detail: string } }> {
+        const store = typeof catalog.workflowStore === "function" ? catalog.workflowStore() : null;
+        if (store && typeof store.sweeperSoftDelete === "function") {
+            return store.sweeperSoftDelete({ sessionId: session.sessionId, readUpdatedAt: session.updatedAt, descendants });
+        }
+        const deleted: string[] = [];
+        for (const descId of descendants) {
+            try {
+                await catalog.softDeleteSession(descId);
+                deleted.push(descId);
+            } catch {}
+        }
+        await catalog.softDeleteSession(session.sessionId);
+        deleted.push(session.sessionId);
+        return { deleted };
+    }
+
+    /** The words of a refusal of the final check (softDeleteChecked). */
+    function finalCheckRefusal(sessionId: string, refused: { status: string; detail: string }): string {
+        return refused.status === "ActiveRun"
+            ? `Refusing to clean Workflow session ${sessionId}: ${refused.detail} (it was admitted after the Sweeper read the session). `
+                + "It ends through its controller; nothing was deleted."
+            : `Refusing to clean session ${sessionId}: ${refused.detail}. Nothing was deleted; a later scan reads it again.`;
+    }
+
+    /**
      * Re-derive whether a session is independently cleanable, mirroring the
      * eligibility rules used by scan_completed_sessions. This is the guardrail
     * that stops cleanup_session from deleting any LIVE session just because it
@@ -291,21 +324,23 @@ export function createSweeperTools(opts: {
             return { ok: false, sessionId, refused: true, status: eligibility.status, error: eligibility.reason };
         }
 
-        // Delete all descendants first, then the session itself.
+        // All descendants go with it (a parent's lifecycle owns its children's), then the session itself: one final check
+        // of the session and every soft delete in one transaction (review AS-02).
         const descendants = await catalog.getDescendantSessionIds(sessionId);
+        const result = await softDeleteChecked(session, descendants);
+        if ("refused" in result) {
+            return { ok: false, sessionId, refused: true, status: result.refused.status, error: finalCheckRefusal(sessionId, result.refused) };
+        }
         let deletedCount = 0;
-        for (const descId of descendants) {
-            try {
-                await catalog.softDeleteSession(descId);
-                if (factStore) {
-                    try { await factStore.deleteSessionFactsForSession(descId); } catch {}
-                }
-                try { await duroxideClient.deleteInstance(`session-${descId}`, true); } catch {}
-                deletedCount++;
-            } catch {}
+        for (const descId of result.deleted) {
+            if (descId === sessionId) continue;
+            if (factStore) {
+                try { await factStore.deleteSessionFactsForSession(descId); } catch {}
+            }
+            try { await duroxideClient.deleteInstance(`session-${descId}`, true); } catch {}
+            deletedCount++;
         }
 
-        await catalog.softDeleteSession(sessionId);
         if (factStore) {
             try { await factStore.deleteSessionFactsForSession(sessionId); } catch {}
         }
@@ -331,9 +366,13 @@ export function createSweeperTools(opts: {
     const cleanupTool = defineTool("cleanup_session", {
         description:
             "Delete terminal session(s) and all their descendants. " +
+            "The descendants go with it whatever their state (a parent's lifecycle owns its children's): " +
+            "a Workflow run still active under a cleaned session ends with it. " +
             "Accepts a single sessionId OR a batch sessionIds[] — clean many stale sessions (e.g. all the children a scan returned) in one call. " +
             "Removes from CMS (soft-delete) and deletes the duroxide orchestration instance. " +
             "Independently re-verifies EACH target is terminal and REFUSES system sessions plus any live/non-terminal root or child session. " +
+            "The final check (the target not changed since it was read; a Workflow target with no run the store counts as active) " +
+            "and the delete are one transaction, so a run admitted after the read refuses the cleanup. " +
             "Only pass sessionIds that scan_completed_sessions returned in sessions[]. Idle/zombie/orphaned live sessions are never cleanup targets.",
         parameters: {
             type: "object" as const,
@@ -418,7 +457,8 @@ export function createSweeperTools(opts: {
             "It then soft-deletes the session rows (older than the same cutoff) whose orchestration is NotFound " +
             "(a Workflow session's: its latest own run's controller; one with a run the store counts as active, or with no run " +
             "of its own yet, is kept); " +
-            "a status read that fails deletes nothing (cmsUnreadable counts them). " +
+            "a status read that fails deletes nothing (cmsUnreadable counts them), and a row that changed since its read " +
+            "(a run admitted in it) is kept (cmsRefused counts them). " +
             "This is a system-level operation that cleans up duroxide storage directly.",
         parameters: {
             type: "object" as const,
@@ -469,6 +509,7 @@ export function createSweeperTools(opts: {
                 // (duroxide's getStatus throws only on an error): such a row is skipped and counted, never deleted.
                 let cmsCleanedUp = 0;
                 let cmsUnreadable = 0;
+                let cmsRefused = 0;
                 try {
                     const cmsSessions = await catalog.listSessions();
                     for (const s of cmsSessions) {
@@ -483,7 +524,14 @@ export function createSweeperTools(opts: {
                         }
                         if (read.status !== "NotFound") continue;
                         try {
-                            await catalog.softDeleteSession(s.sessionId);
+                            // The final check and the soft delete in one transaction (review AS-02): a run admitted since
+                            // this read keeps the row.
+                            const result = await softDeleteChecked(s, []);
+                            if ("refused" in result) {
+                                cmsRefused++;
+                                console.warn(`[sweeper] prune: ${finalCheckRefusal(s.sessionId, result.refused)}`);
+                                continue;
+                            }
                             cmsCleanedUp++;
                         } catch {}
                     }
@@ -503,6 +551,7 @@ export function createSweeperTools(opts: {
                     },
                     cmsCleanedUp,
                     cmsUnreadable,
+                    cmsRefused,
                 };
             } catch (err: any) {
                 return { ok: false, error: err.message };

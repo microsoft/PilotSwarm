@@ -968,8 +968,14 @@ ended controller instances; once the controller instance is gone,
 own yet (a draft, tested or not) is never a cleanup candidate. A status read
 that fails, of the controller or of the Workflow's runs, deletes nothing.
 Deleting a Workflow session goes through the normal path: its definition
-becomes a tombstone, and its owner session's cleanup removes it with the
-owner's other descendants.
+becomes a tombstone. Cleaning an ended session removes all its descendants
+with it, whatever their state: a parent's lifecycle owns its children's, so
+any run still active under it (a Workflow child's or a test bench's) ends
+with it, as an explicit delete would end it. The final check and the delete
+are one transaction under the session row's lock, the lock every run
+admission takes first: a run admitted after the Sweeper read the session
+makes the cleanup refuse and delete nothing, and an admission that comes
+after the delete finds the session deleted and admits nothing.
 
 The kill reaches the worker when the running script state next renews its
 activity lock. The lock times out after `PILOTSWARM_WORKER_LOCK_TIMEOUT_MS`

@@ -3352,6 +3352,52 @@ export class WorkflowStore {
     }
 
     /**
+     * Review AS-02: the Sweeper's final check and soft delete of one session, in one transaction under the session row's
+     * lock (FOR NO KEY UPDATE), the lock every run admission takes first (startLive, startTest: lockLiveSession). So an
+     * admission either commits before the check, which then sees its run and refuses, or waits for the delete, and then
+     * finds the session deleted and admits nothing. Under the lock: the session must still exist, not be deleted or a
+     * system session, and not have changed since the Sweeper read it (its updated_at, to the millisecond the read saw);
+     * a Workflow session must have no run the store counts as active. Then the given descendants are soft-deleted, in the
+     * order given (a system session is left as it is; one an earlier delete's trigger already deleted is deleted again,
+     * which changes nothing), and the session last; the deletion triggers end what each owned (an active run of a
+     * Workflow under it included: a parent's lifecycle owns its children's), in the same transaction. A refusal deletes
+     * nothing; a failed statement rolls it all back.
+     */
+    async sweeperSoftDelete(input: { sessionId: string; readUpdatedAt: Date; descendants: readonly string[] }): Promise<
+        | { deleted: string[] }
+        | { refused: { status: "Changed" | "System" | "ActiveRun"; detail: string; runId?: string; runStatus?: WorkflowRunStatus } }> {
+        return this.transaction(async client => {
+            const { rows } = await client.query(
+                `SELECT session_kind, is_system, deleted_at, date_trunc('milliseconds', updated_at) > $2::timestamptz AS changed
+                   FROM ${this.t.sessions} WHERE session_id = $1 FOR NO KEY UPDATE`, [input.sessionId, input.readUpdatedAt]);
+            const row = rows[0];
+            if (!row || row.deleted_at !== null) return { refused: { status: "Changed" as const, detail: "it was deleted since it was read" } };
+            if (row.is_system === true) return { refused: { status: "System" as const, detail: "it is a system session" } };
+            if (row.changed === true) return { refused: { status: "Changed" as const, detail: "it changed since it was read" } };
+            if (row.session_kind === "workflow") {
+                const active = await client.query(
+                    `SELECT run_id, status FROM ${this.t.runs} WHERE workflow_session_id = $1 AND status = ANY($2::text[])
+                      ORDER BY created_at, run_id LIMIT 1`, [input.sessionId, ACTIVE_RUN_STATUSES]);
+                if (active.rows[0]) {
+                    const runStatus = str(active.rows[0], "status") as WorkflowRunStatus;
+                    return { refused: { status: "ActiveRun" as const, runId: str(active.rows[0], "run_id"), runStatus,
+                        detail: `its run ${str(active.rows[0], "run_id")} is ${runStatus} in the store` } };
+                }
+            }
+            const deleted: string[] = [];
+            for (const sessionId of input.descendants) {
+                const { rows: done } = await client.query(
+                    `SELECT ${this.t.softDeleteSession}(session_id) FROM ${this.t.sessions}
+                      WHERE session_id = $1 AND is_system = FALSE`, [sessionId]);
+                if (done.length > 0) deleted.push(sessionId);
+            }
+            await client.query(`SELECT ${this.t.softDeleteSession}($1)`, [input.sessionId]);
+            deleted.push(input.sessionId);
+            return { deleted };
+        });
+    }
+
+    /**
      * UXP-AD-01: a run's latest control action that names who took it: the newest of its Workflow's workflow.paused,
      * workflow.resumed, workflow.vars_set, workflow.stop_requested and workflow.cancelled events (a cancel command's; a
      * "done" is no control action) whose data names an actor, with the reason as it was stored and, for a person, the
