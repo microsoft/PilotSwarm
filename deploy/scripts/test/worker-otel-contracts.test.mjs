@@ -23,7 +23,10 @@ test("worker and starter images ship the SDK telemetry bootstrap and dependencie
 test("every production worker launch preloads bootstrap; portal launch does not", () => {
     assert.match(read("deploy/Dockerfile.worker"), /ENTRYPOINT \["node", "--import", "pilotswarm-sdk\/telemetry", "packages\/sdk\/examples\/worker\.js"\]/);
     assert.match(read("deploy/bin/start-worker.sh"), /exec node --import pilotswarm-sdk\/telemetry packages\/sdk\/examples\/worker\.js/);
-    assert.match(JSON.parse(read("package.json")).scripts.worker, /--import pilotswarm-sdk\/telemetry/);
+    assert.match(
+        JSON.parse(read("package.json")).scripts.worker,
+        /--import (?:pilotswarm-sdk\/telemetry|\.\/scripts\/otel\/register\.mjs)/,
+    );
     assert.ok(read("packages/sdk/examples/worker.js").indexOf('import { shutdownTelemetry }') <
         read("packages/sdk/examples/worker.js").indexOf('from "pilotswarm-sdk"'));
     assert.doesNotMatch(read("deploy/bin/start-portal.sh"), /telemetry|NODE_OPTIONS.*--import/);
