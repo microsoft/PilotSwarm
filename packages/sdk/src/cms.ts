@@ -26,6 +26,8 @@ import { WorkflowStore, insertStopNotForTurn, workflowVisitOfStopRequestId } fro
 
 /** Review DRR-1: the code of a create with refuseDeleted that found the row deleted (it stays deleted). */
 export const SESSION_DELETED = "SESSION_DELETED" as const;
+/** Review DR-02: a child is never created under a deleted parent. */
+export const PARENT_DELETED = "PARENT_DELETED" as const;
 
 /** A persisted session event (non-ephemeral). */
 export interface SessionEvent {
@@ -1870,6 +1872,20 @@ export class PgSessionCatalog implements SessionCatalog {
         }
     }
 
+    /**
+     * Review DR-02: lock a child's parent row before the child is created, and refuse (PARENT_DELETED) when it is deleted,
+     * read after the lock wait. A parent with no row is not refused (as before). `exclusive`: FOR NO KEY UPDATE (the lock a
+     * later step of the same transaction takes on it), else FOR SHARE.
+     */
+    private async lockLiveParent(client: import("pg").PoolClient, parentSessionId: string, exclusive: boolean): Promise<void> {
+        const { rows } = await client.query(
+            `SELECT deleted_at FROM "${this.sql.schema}".sessions WHERE session_id = $1 FOR ${exclusive ? "NO KEY UPDATE" : "SHARE"}`, [parentSessionId]);
+        if (rows[0] && rows[0].deleted_at !== null) {
+            throw Object.assign(new Error(`The parent session ${parentSessionId.slice(0, 8)} was deleted; no session is created under it.`),
+                { code: PARENT_DELETED, status: 409 });
+        }
+    }
+
     async createWorkflowSession(sessionId: string, opts: {
         parentSessionId: string | null;
         owner: SessionOwnerInfo | null;
@@ -1883,6 +1899,8 @@ export class PgSessionCatalog implements SessionCatalog {
             // Review SDK3-F2: the version check after the claim (afterClaim) takes its lock, then reads what an earlier
             // holder committed: that needs a new snapshot per statement, whatever the connection's default isolation.
             await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+            // Review DR-02: the parent first, as createSession does (FOR NO KEY UPDATE when afterClaim may take that lock).
+            if (opts.parentSessionId) await this.lockLiveParent(client, opts.parentSessionId, Boolean(opts.afterClaim));
             const { rows } = await client.query(
                 `SELECT "${this.sql.schema}".cms_create_workflow_session($1, $2, $3::jsonb) AS created`,
                 [sessionId, opts.parentSessionId, JSON.stringify(opts.creationConfig)],
@@ -1978,6 +1996,13 @@ export class PgSessionCatalog implements SessionCatalog {
                 // deleted it: it reads the tombstone after the other commits. A row lock alone locks nothing when the row
                 // is absent. Other creates are unchanged.
                 await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`pilotswarm:create-session:${sessionId}`]);
+            }
+            // Review DR-02: the parent first (before the child's own row: the parent-first order of every session lock), then
+            // its deletion is read after any wait: a delete that committed first refuses the child (PARENT_DELETED), and the
+            // Sweeper's delete, which locks the parent too, cannot miss a child created while it runs. FOR NO KEY UPDATE when
+            // the child budget will take that lock (no upgrade from SHARE), FOR SHARE otherwise.
+            if (opts?.parentSessionId) await this.lockLiveParent(client, opts.parentSessionId, Boolean(opts.childBudget && !opts.isSystem));
+            if (opts?.refuseDeleted) {
                 // Review DRR-1: the row is locked first, so a deletion either committed before (refused here) or waits for
                 // this creation and applies after it; a deleted row is never revived by cms_create_session's upsert.
                 const { rows } = await client.query(

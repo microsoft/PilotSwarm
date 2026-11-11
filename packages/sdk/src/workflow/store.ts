@@ -3389,9 +3389,10 @@ export class WorkflowStore {
      * - has a session the delete would change that another transaction holds (each one is locked NOWAIT, in session id
      *   order, before anything is changed, so the Sweeper never waits holding a lock): Busy.
      * The sessions locked first: with `cascade`, all its descendants (a parent's lifecycle owns its children's: an active
-     * run under it ends with it); without, the Workflow sessions the owner-session trigger deletes with it. Then those are
-     * soft-deleted and the session last; the deletion triggers end what each owned, in the same transaction. A failed
-     * statement rolls it all back.
+     * run under it ends with it); without, the Workflow sessions the owner-session trigger deletes with it. They are read
+     * again under those locks, and a set that grew refuses (Changed: review DR-02; creation locks its parent first, so no
+     * session can be created under a locked one). Then those are soft-deleted and the session last; the deletion triggers
+     * end what each owned, in the same transaction. A failed statement rolls it all back.
      */
     async sweeperSoftDelete(input: { sessionId: string; version: string; cascade: boolean; orchestrationNotFound: boolean }): Promise<
         | { deleted: string[] }
@@ -3422,12 +3423,15 @@ export class WorkflowStore {
                             detail: `its run ${str(active.rows[0], "run_id")} is ${runStatus} in the store` } };
                     }
                 }
-                const { rows: affected } = input.cascade
-                    ? await client.query(`SELECT session_id FROM ${s}.cms_get_descendant_session_ids($1)`, [input.sessionId])
-                    : workflow ? { rows: [] as Array<Record<string, unknown>> }
-                        : await client.query(`SELECT session_id FROM ${this.t.sessions}
-                            WHERE parent_session_id = $1 AND session_kind = 'workflow' AND deleted_at IS NULL`, [input.sessionId]);
-                const ids = affected.map(item => str(item, "session_id"));
+                const enumerate = async (): Promise<string[]> => {
+                    const { rows: affected } = input.cascade
+                        ? await client.query(`SELECT session_id FROM ${s}.cms_get_descendant_session_ids($1)`, [input.sessionId])
+                        : workflow ? { rows: [] as Array<Record<string, unknown>> }
+                            : await client.query(`SELECT session_id FROM ${this.t.sessions}
+                                WHERE parent_session_id = $1 AND session_kind = 'workflow' AND deleted_at IS NULL`, [input.sessionId]);
+                    return affected.map(item => str(item, "session_id"));
+                };
+                const ids = await enumerate();
                 let locked: string[] = [];
                 if (ids.length > 0) {
                     try {
@@ -3439,6 +3443,16 @@ export class WorkflowStore {
                         if (error?.code === "55P03") throw new SweeperBusy();
                         throw error;
                     }
+                }
+                // Review DR-02: the set again, under the locks. A session created between the first read and the locks (under a
+                // descendant that was not locked yet) would escape the delete, or its trigger's lock would wait; with every
+                // parent now locked, no session can be created under them (creation locks its parent first), so a set that
+                // grew means the subtree changed: refuse, and a later scan reads it again.
+                const again = await enumerate();
+                const known = new Set(ids);
+                const added = again.filter(id => !known.has(id));
+                if (added.length > 0) {
+                    return { refused: { status: "Changed" as const, detail: `its subtree changed while it was read (${added.length} session(s) were created under it)` } };
                 }
                 for (const sessionId of locked) {
                     await client.query(`SELECT ${this.t.softDeleteSession}(session_id) FROM ${this.t.sessions}

@@ -1004,9 +1004,14 @@ first, so whichever commits first decides:
   Terminated) or an ended session state (completed, cancelled, failed) shows
   that it ended. A session with no first message yet is a candidate after the
   grace, as before.
-- The Sweeper locks every session the delete would change before it changes
-  any, without waiting. When another transaction holds one, it refuses at
-  once and deletes nothing; a later scan tries again.
+- The Sweeper waits for the target's own lock (the lock admissions and first
+  messages take). It then locks every other session the delete would change
+  before it changes any, without waiting: when another transaction holds one,
+  it refuses at once and deletes nothing. It reads that set again under those
+  locks and refuses if it grew. A session is created only after its parent's
+  lock and never under a deleted parent (`PARENT_DELETED`), so no session
+  created during a cleanup is left under a deleted parent. A later scan tries
+  again after any refusal.
 
 The kill reaches the worker when the running script state next renews its
 activity lock. The lock times out after `PILOTSWARM_WORKER_LOCK_TIMEOUT_MS`

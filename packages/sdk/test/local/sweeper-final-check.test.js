@@ -15,6 +15,9 @@
  * - AR-01: an ordinary session's first message (PilotSwarmClient's start) and the Sweeper serialize on the session row.
  *   A start that holds its fence first makes the Sweeper wait, then refuse (Changed); a Sweeper that holds its final
  *   transaction first makes the start refuse (SESSION_DELETED), and nothing is started.
+ * - DR-02 (review of d5118761): a new ordinary or Workflow grandchild created between the Sweeper's read of the subtree
+ *   and its locks makes the cleanup refuse (Changed) with nothing deleted; a creator that the Sweeper's lock on the parent
+ *   blocks refuses after the delete commits (PARENT_DELETED), so no child is left under a deleted parent.
  * - DR-01 (review of d5118761): a session whose first message was accepted and whose start is still queued (it reads
  *   NotFound) is never taken as ended, at any age and any grace (StartUnresolved), by scan, cleanup, prune and the final
  *   check; one whose state shows it ended, or that never had a first message, is cleaned.
@@ -345,6 +348,76 @@ describe("the Sweeper's final check and delete under concurrency", () => {
         } finally {
             await other.query("ROLLBACK").catch(() => {});
             other.release();
+        }
+    });
+
+    // DR-02 (review of d5118761): the subtree is read again under the Sweeper's locks, and a child is created only after
+    // its parent's lock (refused when the parent is deleted), so no session escapes a cleanup.
+    for (const kind of ["ordinary", "Workflow"]) {
+        it(`DR-02: a new ${kind} grandchild created between the subtree's read and its locks makes the cleanup refuse (Changed); nothing is deleted`, { timeout: TIMEOUT }, async () => {
+            const root = randomUUID();
+            const child = randomUUID();
+            const grandchild = randomUUID();
+            await catalog.createSession(root);
+            await catalog.createSession(child, { parentSessionId: root });
+            await ageSessions(db, schema, [root, child], 60);
+            // The Sweeper stops just before it locks the descendants it read ([child]); the grandchild is created then.
+            const held = gate();
+            const sweeperPool = gatedPool(env.store, { matches: (sql, params) => sql.includes("FOR NO KEY UPDATE NOWAIT")
+                && Array.isArray(params[0]) && params[0].includes(child), held });
+            try {
+                const tools = createSweeperTools({ catalog: withStore(catalog, new WorkflowStore(sweeperPool, env.cmsSchema)),
+                    duroxideClient: stubDuroxide(new Map([[`session-${root}`, { status: "Completed" }]])), factStore: null });
+                const cleaning = findTool(tools, "cleanup_session").handler({ sessionId: root });
+                await held.reached;
+                if (kind === "ordinary") await catalog.createSession(grandchild, { parentSessionId: child });
+                else expect((await catalog.createWorkflowSession(grandchild, { parentSessionId: child, owner: null, creationConfig: {} })).created).toBe(true);
+                held.open();
+                const result = await cleaning;
+                expect(result, JSON.stringify(result)).toMatchObject({ ok: false, refused: true, status: "Changed" });
+                for (const id of [root, child, grandchild]) expect(await isLive(db, schema, id), id.slice(0, 8)).toBe(true);
+            } finally {
+                held.open();
+                await sweeperPool.end();
+            }
+        });
+    }
+
+    it("DR-02: a creator blocked by the Sweeper's lock on the parent waits, then refuses (PARENT_DELETED); no child is created", { timeout: TIMEOUT }, async () => {
+        const root = randomUUID();
+        const child = randomUUID();
+        await catalog.createSession(root);
+        await catalog.createSession(child, { parentSessionId: root });
+        await ageSessions(db, schema, [root, child], 60);
+        // The Sweeper stops at its first soft delete (the child's), holding the root's and the child's locks.
+        const held = gate();
+        const sweeperPool = gatedPool(env.store, { matches: (sql, params) => sql.includes("cms_soft_delete_session") && params[0] === child, held });
+        try {
+            const tools = createSweeperTools({ catalog: withStore(catalog, new WorkflowStore(sweeperPool, env.cmsSchema)),
+                duroxideClient: stubDuroxide(new Map([[`session-${root}`, { status: "Completed" }]])), factStore: null });
+            const cleaning = findTool(tools, "cleanup_session").handler({ sessionId: root });
+            const sweeperPid = await held.reached;
+            const ordinary = randomUUID();
+            const workflow = randomUUID();
+            const creating = [
+                catalog.createSession(ordinary, { parentSessionId: child }).then(() => null, error => error),
+                catalog.createWorkflowSession(workflow, { parentSessionId: child, owner: null, creationConfig: {} }).then(() => null, error => error),
+            ];
+            const waited = await untilLockWait(db, "blocker", sweeperPid, Promise.race(creating));
+            held.open();
+            const result = await cleaning;
+            expect(result, JSON.stringify(result)).toMatchObject({ ok: true, descendants: 1 });
+            const [ordinaryError, workflowError] = await Promise.all(creating);
+            expect(waited, "a creator waited for the Sweeper's lock on the parent").toBe(true);
+            expect(ordinaryError?.code, String(ordinaryError?.message ?? ordinaryError)).toBe("PARENT_DELETED");
+            expect(workflowError?.code, String(workflowError?.message ?? workflowError)).toBe("PARENT_DELETED");
+            const rows = (await db.query(`SELECT session_id FROM ${schema}.sessions WHERE session_id = ANY($1::text[])`, [[ordinary, workflow]])).rows;
+            expect(rows).toEqual([]);
+            expect(await isLive(db, schema, root)).toBe(false);
+            expect(await isLive(db, schema, child)).toBe(false);
+        } finally {
+            held.open();
+            await sweeperPool.end();
         }
     });
 
