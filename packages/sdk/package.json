@@ -1,6 +1,6 @@
 {
     "name": "pilotswarm-sdk",
-    "version": "0.8.10",
+    "version": "0.8.11",
     "description": "A durable execution runtime for GitHub Copilot SDK agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by duroxide.",
     "type": "module",
     "main": "./dist/index.js",
@@ -40,6 +40,7 @@
         "test:local:sweeper": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/sweeper-cleanup-guard.test.js",
         "test:local:session-policy": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/session-policy-*.test.js",
         "test:local:reliability": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/reliability-*.test.js",
+        "test:local:workflows": "node --test test/unit/workflow-*.test.mjs && node --env-file-if-exists=../../.env ../../node_modules/vitest/vitest.mjs run test/local/workflow-*.test.js test/local/workflows-always-on.test.js",
         "test:local:knowledge-pipeline": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/knowledge-pipeline.test.js test/local/facts.test.js",
         "test:local:inspect-tools": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/inspect-tools.test.js",
         "test:local:selection": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/transcript-selection.test.js",
@@ -90,16 +91,19 @@
         "@azure/storage-blob": "^12.31.0",
         "@github/copilot": "1.0.83",
         "@github/copilot-sdk": "1.0.13",
+        "@modelcontextprotocol/sdk": "^1.28.0",
         "@opentelemetry/api": "^1.9.0",
         "@opentelemetry/exporter-metrics-otlp-http": "^0.217.0",
         "@opentelemetry/exporter-trace-otlp-http": "^0.217.0",
         "@opentelemetry/resources": "^2.7.1",
         "@opentelemetry/sdk-node": "^0.217.0",
+        "ajv": "^8.17.1",
         "duroxide": "0.2.4",
         "eventsource-parser": "3.0.8",
         "fflate": "^0.8.3",
         "file-type": "^20.5.0",
-        "pg": "^8.18.0"
+        "pg": "^8.18.0",
+        "yaml": "^2.9.0"
     },
     "optionalDependencies": {
         "duroxide-darwin-arm64": "0.2.4",
@@ -109,7 +113,7 @@
         "duroxide-windows-x64": "0.2.4"
     },
     "peerDependencies": {
-        "pilotswarm-horizon-store": "0.8.10"
+        "pilotswarm-horizon-store": "0.8.11"
     },
     "peerDependenciesMeta": {
         "pilotswarm-horizon-store": {
@@ -119,7 +123,7 @@
     "devDependencies": {
         "@types/node": "^22.0.0",
         "@types/pg": "^8.16.0",
-        "pilotswarm-horizon-store": "0.8.10",
+        "pilotswarm-horizon-store": "0.8.11",
         "typescript": "^5.0.0",
         "vitest": "^4.1.0"
     },

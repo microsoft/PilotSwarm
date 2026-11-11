@@ -142,6 +142,31 @@ export function evaluateSessionAccess(accessClass, snapshot, { isAdmin = false, 
 }
 
 /**
+ * Artifacts that only a session's owner may read or write (session:manage, so
+ * an admin too), never a share: a Workflow agent's whole base instructions
+ * (`base-instructions-<sha256 prefix>.md` on the Workflow's session; review
+ * SF-3). A share grants the Workflow's view; the composed prompt behind its
+ * agents is the owner's. Every surface asks this one question: the portal
+ * runtime gates the artifact operations and routes with it, and the agent
+ * artifact tools refuse such a file. The name is taken as the stores take it
+ * (its last path part, trimmed), in any letter case.
+ */
+export const OWNER_ONLY_ARTIFACT_PATTERN = /^base-instructions-[0-9a-f]{16,64}\.md$/i;
+
+/**
+ * Whether `filename` names an owner-only artifact (see OWNER_ONLY_ARTIFACT_PATTERN). Review DSS-001: the name a store
+ * writes is tested too (path.basename of the trimmed name, which drops trailing separators: `NAME/` writes `NAME`), so a
+ * write cannot reach the protected name through a form this check reads differently.
+ */
+export function isOwnerOnlyArtifact(filename) {
+    if (typeof filename !== "string") return false;
+    const trimmed = filename.trim();
+    const last = trimmed.split(/[\\/]/).pop()?.trim() ?? "";
+    const stored = trimmed.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
+    return OWNER_ONLY_ARTIFACT_PATTERN.test(last) || OWNER_ONLY_ARTIFACT_PATTERN.test(stored) || OWNER_ONLY_ARTIFACT_PATTERN.test(stored.trim());
+}
+
+/**
  * Archive (dehydrated session tar) access — owner or admin ONLY, never a
  * share. Deliberately NOT `evaluateSessionAccess("session:read", …)`.
  *

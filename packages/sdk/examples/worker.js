@@ -38,7 +38,9 @@
 import { shutdownTelemetry } from "pilotswarm-sdk/telemetry";
 import os from "node:os";
 import fs from "node:fs";
-import { PilotSwarmWorker, horizonConfigFromEnv, loadExtensionModules, parseExtensionModules } from "pilotswarm-sdk";
+import {
+    PilotSwarmWorker, horizonConfigFromEnv, loadExtensionModules, parseExtensionModules,
+} from "pilotswarm-sdk";
 
 // Sentinel value written to KV by the bicep-deploy `seed-secrets` step
 // for optional secrets that the user didn't provide. CSI Secret Store
@@ -93,6 +95,7 @@ if (process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH) {
 // Set explicitly to override the plugin default, or leave undefined to use it.
 const SYSTEM_MESSAGE = undefined;
 
+// Workflows are always on, with the full engine.
 const worker = new PilotSwarmWorker({
     store: process.env.DATABASE_URL,
     githubToken: process.env.GITHUB_TOKEN,
@@ -167,7 +170,10 @@ if (mcpNames.length > 0) {
 // Graceful drain (lifecycle protocol §3.8): stop fetching, let in-flight
 // turns finish and commit within the drain budget, release warm sessions,
 // then exit. PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS sets the budget (60s
-// default); the pod's terminationGracePeriodSeconds must exceed it.
+// default); PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS (15s default) bounds the
+// release and closes after it, so the process exits by budget + grace even
+// when the database does not answer. The pod's terminationGracePeriodSeconds
+// (90s) must exceed both together.
 let shutdownPromise;
 function shutdown(signal) {
     shutdownPromise ??= drainAndExit(signal).catch(() => {

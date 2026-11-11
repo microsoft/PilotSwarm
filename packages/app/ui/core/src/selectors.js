@@ -2,7 +2,7 @@ import { INSPECTOR_TABS, FOCUS_REGIONS } from "./commands.js";
 import { canReadMotd } from "./motd.js";
 import { chatCallLine, firstCallLine } from "./chat-activity.js";
 import { canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
-import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
+import { buildSessionTree, isManuallyOrderableSession, isUnstartedWorkflowChild } from "./session-tree.js";
 import {
     buildSessionSearchDocument,
     parseSessionSearchQuery,
@@ -37,6 +37,10 @@ import {
     getContextHeaderBadge,
 } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
+import { isWorkflowSession, WORKFLOW_SESSION_GLYPH } from "./workflow-sessions.js";
+import { isWorkflowChild, sessionGrowsWorkflows, WORKFLOW_OWNER_MARK_TITLE, workflowHighlightedSessionId, workflowNodeSessionTitle, workflowRowTitle, workflowStateOf,
+} from "./workflow-owner.js";
+import { selectWorkflowInputNote } from "./workflow-tui.js";
 import { matchesSessionError } from "./session-warning.js";
 import { normalizeQuestionForDisplay } from "./question-display.js";
 import { withSessionWarnings, isActivityOnlySessionError } from "./session-errors.js";
@@ -877,6 +881,8 @@ function buildChildMaps(byId) {
     for (const session of Object.values(byId || {})) {
         const parentId = session?.parentSessionId;
         if (!parentId) continue;
+        // A workflow child that has not started has no row (Workflow Simplified), so it is not counted either.
+        if (isUnstartedWorkflowChild(session)) continue;
         parentMap.set(session.sessionId, parentId);
         if (!childMap.has(parentId)) childMap.set(parentId, []);
         childMap.get(parentId).push(session.sessionId);
@@ -1036,6 +1042,11 @@ function buildSelectedSessionMetaRuns(session, mode) {
     return runs;
 }
 
+/** The colour of a Workflow's state in terminal runs (the portal styles the chip by its tone). */
+const WORKFLOW_STATE_COLORS = Object.freeze({
+    running: "cyan", waiting: "yellow", paused: "gray", canceling: "gray", canceled: "gray", failed: "red", completed: "green",
+});
+
 function buildSessionRowView(entry, session, state, totalDescendantCounts, visibleDescendantCounts) {
     const prefixRuns = [];
     const mode = state.connection?.mode || "local";
@@ -1105,6 +1116,15 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
             color: sessionStatusColor(session, mode),
             role: "status",
         });
+        if (isWorkflowSession(session)) {
+            // Workflow sessions run a workflow graph, not a conversation: the
+            // chain mark tells them apart from agent sessions at a glance.
+            prefixRuns.push({ text: `${WORKFLOW_SESSION_GLYPH} `, color: "magenta", bold: true, role: "sessionKind" });
+        } else if (typeof session?.workflowRef === "string" && session.workflowRef) {
+            // Stage 2.3 (P2): a session made from the new-session picker for a package's Workflow Definition wears the
+            // Workflow badge too, in the session's colour: it is a conversation that runs that Workflow.
+            prefixRuns.push({ text: `${WORKFLOW_SESSION_GLYPH} `, color: "cyan", bold: true, role: "sessionKind", workflowRef: session.workflowRef });
+        }
     }
 
     const mainColor = session?.isGroup ? "cyan" : session?.isSystem ? "yellow" : sessionStatusColor(session, mode);
@@ -1126,9 +1146,14 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
     // "(guid)" — an empty, ugly line. For those, pull the meta (id · age ·
     // model) UP onto the main line so it carries information. Titled rows keep
     // the title on the line and expand id·age·model·ctx only when selected.
+    // Workflow Simplified (S2, S3): a Workflow reads `check-items #3`, an agent node's session `summarize · agent`.
+    const workflowViews = state.ui?.workflowViews || {};
+    const workflowRow = isWorkflowChild(session);
     const rawTitle = session?.isSystem
         ? canonicalSystemTitle(session, state.branding?.title || "PilotSwarm")
-        : buildSessionDisplayTitle(session, state.agentTitles);
+        : workflowRow ? workflowRowTitle(state.sessions?.byId || {}, session, workflowViews)
+            : workflowNodeSessionTitle(state.sessions?.byId || {}, session) ?? buildSessionDisplayTitle(session, state.agentTitles);
+    const workflowState = workflowRow ? workflowStateOf(session, workflowViews[session.sessionId] ?? null) : null;
     const hasRealTitle = Boolean(session?.isSystem || session?.isGroup || (rawTitle && rawTitle.trim()));
 
     const titleRuns = [...prefixRuns];
@@ -1145,11 +1170,18 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
         // Both read from the same descriptor, so they cannot disagree.
         titleRuns.push({ text: `[${initials}] `, color: isMine ? "green" : "cyan", bold: true, ownerChip: true });
     }
+    // OF-S2-5: a session (a sub-agent too) that has grown Workflows says so beside its title. Tagged so the portal draws
+    // the Workflow glyph with its tooltip; the TUI prints the mark. After the title, in gray: never a Workflow row's mark.
+    const ownerMark = !session?.isSystem && sessionGrowsWorkflows(state, session?.sessionId) ? workflowOwnerMarkRun() : null;
     if (hasRealTitle) {
         titleRuns.push({ text: rawTitle, color: mainColor, bold: Boolean(session?.isSystem || session?.isGroup) });
+        if (ownerMark) titleRuns.push(ownerMark);
+        // A Workflow's own state, in words (S2, 05). Tagged so the portal draws it as a chip; the TUI prints it.
+        if (workflowState) titleRuns.push({ text: ` ${workflowState.label}`, color: WORKFLOW_STATE_COLORS[workflowState.tone] || "gray", role: "workflowState" });
     } else {
-        // Untitled → id · age · model on one line (no wasted title line).
+        // Untitled → id · age · model on one line (no wasted title line). OF-S2-5-F1: the mark right after the id, its title.
         titleRuns.push({ text: shortId, color: mainColor });
+        if (ownerMark) titleRuns.push(ownerMark);
         if (relTime) { titleRuns.push({ text: " · ", color: "gray" }); titleRuns.push({ text: relTime, color: "gray" }); }
         if (modelLabel) { titleRuns.push({ text: " · ", color: "gray" }); titleRuns.push({ text: modelLabel, color: "green" }); }
     }
@@ -1294,6 +1326,7 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
             kind: session?.isGroup ? "group"
                 : session?.isSystem ? "system"
                 : session?.serviceKind ? "service"
+                : isWorkflowSession(session) ? "workflow"
                 : "session",
             title: hasRealTitle ? rawTitle : shortId,
             untitled: !hasRealTitle,
@@ -1319,6 +1352,8 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
             model: modelLabel || null,
             shortId,
             ctx: ctxRuns.length > 0 ? { text: ctxRuns[0].text, color: ctxRuns[0].color } : null,
+            // A Workflow's own state (S2, 05): { key, label, tone }, drawn as a chip; null on any other row.
+            workflowState: workflowState ? { key: workflowState.key, label: workflowState.label, tone: workflowState.tone } : null,
         },
     };
 }
@@ -1529,6 +1564,7 @@ export function selectSessionRows(state) {
     const pinnedSet = new Set(Array.isArray(state.sessions?.pinnedIds) ? state.sessions.pinnedIds : []);
     const selectedSet = new Set(Array.isArray(state.sessions?.selectedIds) ? state.sessions.selectedIds : []);
     const filterExceptionIds = collectFilterExceptionIds(state.sessions);
+    const highlightedId = workflowHighlightedSessionId(state.sessions);
 
     let memo = sessionRowMemo.get(sessionFlat);
     if (!memo) {
@@ -1544,14 +1580,21 @@ export function selectSessionRows(state) {
         const session = state.sessions.byId[entry.sessionId] || entry.standIn;
         // The LIST highlight can be cleared (click empty space) without
         // detaching the session — the chat and inspector panes keep it.
-        const active = entry.sessionId === state.sessions.activeSessionId
+        // A selected Workflow row takes the highlight; its session's row is
+        // marked as the chat on screen (Workflow Simplified, S4).
+        const active = entry.sessionId === highlightedId
+            && !state.sessions.listDeselected;
+        const chatOwner = highlightedId !== state.sessions.activeSessionId && entry.sessionId === state.sessions.activeSessionId
             && !state.sessions.listDeselected;
         const pinned = pinnedSet.has(entry.sessionId);
         const selected = selectedSet.has(entry.sessionId);
         // Every input the row below is derived from. Identity comparison is
         // enough: the reducer replaces these objects rather than mutating them.
         const deps = [
-            entry, session, active, pinned, selected, query, ownerFilter, auth,
+            entry, session, active, chatOwner, pinned, selected, query, ownerFilter, auth,
+            // A Workflow row reads its number from its siblings and its state from its read model (S2).
+            isWorkflowChild(session) ? state.sessions.byId : null,
+            isWorkflowChild(session) ? state.ui?.workflowViews?.[entry.sessionId] : null,
             state.connection?.mode, state.sessions.selectMode,
             totalDescendantCounts, visibleDescendantCounts,
             // The root system row renders as the branding title, and this
@@ -1591,6 +1634,7 @@ export function selectSessionRows(state) {
             status: session?.status,
             statusColor: sessionStatusColor(session, state.connection?.mode || "local"),
             active,
+            chatOwner,
             // The RAW group id (rows are keyed "group:<uuid>"); the placement
             // API and drag hit-testing both need the bare id.
             groupId: session?.groupId || entry?.groupId || null,
@@ -1655,7 +1699,8 @@ export function selectVisibleSessionRows(state, maxRows = 8) {
     const flat = (Array.isArray(state.sessions?.flat) ? state.sessions.flat : [])
         .filter((entry) => filteredSessionIds.has(entry.sessionId));
 
-    const activeIndexRaw = flat.findIndex((entry) => entry.sessionId === state.sessions.activeSessionId);
+    const highlightedId = workflowHighlightedSessionId(state.sessions);
+    const activeIndexRaw = flat.findIndex((entry) => entry.sessionId === highlightedId);
     const activeIndex = Math.max(0, activeIndexRaw);
     if (flat.length <= maxRows) {
         return rows;
@@ -1732,6 +1777,8 @@ export function selectSessionFilterExceptionNotice(state) {
  */
 export function canStopSessionTurn(session) {
     if (!session || session.isGroup) return false;
+    // Stage 2.4 (PR 235 a7562559): a Workflow session has no turn to stop; its run has its own Stop and Cancel.
+    if (isWorkflowSession(session)) return false;
     return (session.status || "") === "running";
 }
 
@@ -1754,7 +1801,12 @@ function latestEventCreatedAtMs(events = [], eventTypes = [], predicate = () => 
     return null;
 }
 
-function buildPendingQuestionMessage(session, events = []) {
+/**
+ * The pending-question card. `inputNote` (selectWorkflowInputNote) is the server's refusal of people's input to a
+ * session in a workflow agent state's subtree (design 03, T116): the card then says why nobody answers it here
+ * instead of asking for an answer in a composer that is not there.
+ */
+function buildPendingQuestionMessage(session, events = [], inputNote = null) {
     const pendingQuestion = session?.pendingQuestion;
     if (!pendingQuestion?.question) return null;
 
@@ -1770,7 +1822,9 @@ function buildPendingQuestionMessage(session, events = []) {
         }
     }
 
-    if (choices.length > 0 && pendingQuestion.allowFreeform === false) {
+    if (inputNote) {
+        body.push("", inputNote);
+    } else if (choices.length > 0 && pendingQuestion.allowFreeform === false) {
         body.push("", "Reply with one of the choices above in the prompt below.");
     } else if (choices.length > 0) {
         body.push("", "Reply with one of the choices above, or type a free-form answer below.");
@@ -2040,6 +2094,20 @@ function buildLiveProgressState(session, history, chat = [], outboxItems = []) {
     return null;
 }
 
+/** A stored workflow test notice (a parent session's "Workflow · test waiting" card). */
+function isWorkflowTestNotice(item) {
+    return item?.workflowUpdate?.type === "test_waiting";
+}
+
+/**
+ * Review SF-D5: a session shows a stored workflow test notice only while the server says workflow test mode is on
+ * (state.ui.workflowTestMode); otherwise it is hidden, as test runs are. The same session array when nothing is hidden.
+ */
+function withoutHiddenWorkflowTestNotices(state, chat) {
+    if (state?.ui?.workflowTestMode === true || !chat.some(isWorkflowTestNotice)) return chat;
+    return chat.filter(item => !isWorkflowTestNotice(item));
+}
+
 export function selectActiveChat(state) {
     const sessionId = state.sessions.activeSessionId;
     const session = sessionId ? state.sessions.byId[sessionId] || null : null;
@@ -2085,7 +2153,7 @@ export function selectActiveChat(state) {
         }];
     }
     const history = state.history.bySessionId.get(sessionId);
-    const chat = history?.chat || [];
+    const chat = withoutHiddenWorkflowTestNotices(state, history?.chat || []);
     if (!chat.length && history?.loadState === "loading") {
         const splash = createSplashCard(state.branding, session, { loading: true });
         if (splash.length) return splash;
@@ -2103,7 +2171,7 @@ export function selectActiveChat(state) {
     const events = history?.events || [];
     const pendingQuestionMessage = session?.pendingQuestion?.question
         && !chatAlreadyContainsPendingQuestion(chat, session.pendingQuestion.question)
-        ? buildPendingQuestionMessage(session, events)
+        ? buildPendingQuestionMessage(session, events, selectWorkflowInputNote(state, sessionId))
         : null;
     const answeredQuestionMessage = buildAnsweredPendingQuestionMessage(session, chat);
     // Legacy/synthetic selector callers may not have passed through the
@@ -2202,7 +2270,10 @@ function describeChatMessageHeader(message, options = {}) {
     );
     const ownerSuffix = senderIsOwner ? " (owner)" : "";
 
-    const roleLabel = isAgentKickoffMessage(message)
+    // Review SF-1: a turn merged from messages of different senders (a server-stamped count, no sender) is no one
+    // person's words: it is labelled as such, never "You".
+    const mergedMessages = isUser && !sender && Number.isSafeInteger(message?.mergedMessages) && message.mergedMessages >= 2;
+    const roleLabel = mergedMessages ? "Several messages arrived together" : isAgentKickoffMessage(message)
         // Belt and braces: the chat pane collapses a kickoff before it reaches
         // here, but the TUI and any other renderer share this labeling, and
         // "You" is the one label this message must never carry.
@@ -2904,6 +2975,17 @@ function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
         if (message?.role === "system" && !strippedSystemText) {
             return [];
         }
+        // A workflow step: one line that opens to its output (workflow-sessions.js).
+        if (message?.workflowNotice) {
+            const line = buildSystemNoticeLine({
+                title: message.workflowNotice.title,
+                summary: message.workflowNotice.summary,
+                body: message.text || "",
+                timestamp: message.workflowNotice.progress ? "" : formatTimestamp(message?.createdAt || message?.time),
+                color: message.workflowNotice.color || "gray",
+            });
+            return [{ ...line, ...(message.workflowNotice.progress ? { workflowProgress: true } : {}) }];
+        }
         // System-role messages that carry an explicit non-"System" cardTitle
         // (e.g. "Question", "Error", "Warning") are real product cards built by
         // selectors like buildPendingQuestionMessage / buildSessionErrorMessage.
@@ -3242,6 +3324,10 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
             ? state?.history?.bySessionId?.get?.(memoSessionId)?.events ?? null : null,
         branding: state?.branding ?? null,
         principal: state?.auth?.principal ?? null,
+        // A pending question's card says whether people may answer it (the session's recorded input policy).
+        inputPolicy: memoSession?.pendingQuestion ? state?.ui?.workflowInputPolicies?.[memoSessionId] ?? null : null,
+        // Review SF-D5: stored workflow test notices show only with test mode on.
+        workflowTestMode: state?.ui?.workflowTestMode === true,
         maxWidth,
         tableMode: options?.tableMode ?? null,
     };
@@ -3251,6 +3337,8 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
             && entry.byId === memoKey.byId
             && entry.chat === memoKey.chat
             && entry.events === memoKey.events
+            && entry.inputPolicy === memoKey.inputPolicy
+            && entry.workflowTestMode === memoKey.workflowTestMode
             && entry.viewMode === memoKey.viewMode
             && entry.branding === memoKey.branding
             && entry.principal === memoKey.principal
@@ -3460,7 +3548,7 @@ export function selectTurnControlView(state, sessionId = state?.sessions?.active
         acceptsControls,
         steeringEnabled,
         canStop: canStopSessionTurn(session),
-        canSteer: Boolean(session && !session.isGroup && !session.serviceKind && acceptsControls && steeringEnabled),
+        canSteer: Boolean(session && !session.isGroup && !session.serviceKind && !isWorkflowSession(session) && acceptsControls && steeringEnabled),
         steer: entry?.steer || null,
         stop: entry?.stop || null,
         // The queue is being steered (one batch per session at a time).
@@ -3923,6 +4011,15 @@ function shortBucketModelLabel(model) {
     return shortModelName(model) || "(unknown)";
 }
 
+/**
+ * OF-S2-5: the mark beside the title of a session that has grown Workflows (sessionGrowsWorkflows): the Workflow glyph in
+ * the portal (role "workflowOwner", with its tooltip), " ◇" in the TUI, gray and after the title, where a Workflow row's
+ * own mark is magenta and before it.
+ */
+function workflowOwnerMarkRun() {
+    return { text: ` ${WORKFLOW_SESSION_GLYPH}`, color: "gray", role: "workflowOwner", title: WORKFLOW_OWNER_MARK_TITLE };
+}
+
 export function selectChatPaneChrome(state, options = {}) {
     const session = selectActiveSession(state);
     const sessionsById = state.sessions?.byId || {};
@@ -3948,6 +4045,9 @@ export function selectChatPaneChrome(state, options = {}) {
             : (buildSessionDisplayTitle(session, state.agentTitles) || "Chat"),
         mainColor,
     );
+
+    // OF-S2-5: the session's title says it has grown Workflows, as its list row does.
+    if (!session.isSystem && sessionGrowsWorkflows(state, session.sessionId)) title.push(workflowOwnerMarkRun());
 
     const activeEntry = sessionsFlat.find((entry) => entry.sessionId === session.sessionId);
     const collapseBadge = getCollapseBadge(session.sessionId, activeEntry, totalDescendantCounts, visibleDescendantCounts);
@@ -7211,7 +7311,8 @@ function buildNodeMapCell(session, brandingTitle, width, active) {
             ? canonicalSystemTitle(session, brandingTitle)
             : (session?.title || shortSessionId(session?.sessionId)))
         : shortSessionId(session?.sessionId);
-    const prefix = session?.isSystem ? "⚙ " : session?.serviceKind ? "⚗ " : `${sessionStatusIcon(session) || "."} `;
+    const prefix = session?.isSystem ? "⚙ " : session?.serviceKind ? "⚗ "
+        : isWorkflowSession(session) ? `${WORKFLOW_SESSION_GLYPH} ` : `${sessionStatusIcon(session) || "."} `;
     const text = padDisplayText(`${prefix}${label}`, width);
 
     if (active) {
@@ -7244,7 +7345,8 @@ function nodeMapSessionEntry(session, brandingTitle, active) {
     const label = session?.isSystem
         ? canonicalSystemTitle(session, brandingTitle)
         : (session?.title || shortSessionId(session?.sessionId));
-    const prefix = session?.isSystem ? "⚙ " : session?.serviceKind ? "⚗ " : `${sessionStatusIcon(session) || "."} `;
+    const prefix = session?.isSystem ? "⚙ " : session?.serviceKind ? "⚗ "
+        : isWorkflowSession(session) ? `${WORKFLOW_SESSION_GLYPH} ` : `${sessionStatusIcon(session) || "."} `;
     return {
         sessionId: session?.sessionId || null,
         text: `${prefix}${label}`,
@@ -7547,6 +7649,51 @@ export function selectModelPickerModal(state, maxWidth = 72) {
     };
 }
 
+/**
+ * Stage 2.3 (P1, P2, D8): a package Workflow Definition's card in the picker's details: what it does, when to use it, its
+ * inputs, how it ends, what it asks, its effects, and the model its session uses (the one chosen, else your default; the
+ * card's suggestion is shown), which its agent nodes use unless the session chooses one at start (OF-S2-7), with the card's
+ * model hints.
+ */
+/** A package Workflow's inputs on its card (OF-S2-2 part 2: no parenthetical): "Inputs: repo · optional: branch". */
+function inputsLine(inputs) {
+    if (!inputs.length) return "Inputs: none";
+    const required = inputs.filter((input) => input.required).map((input) => input.name);
+    const optional = inputs.filter((input) => !input.required).map((input) => input.name);
+    return `Inputs: ${[required.join(", "), optional.length ? `optional: ${optional.join(", ")}` : ""].filter(Boolean).join(" · ")}`;
+}
+
+export function workflowPickerDetailsLines(item, chosenModel = null) {
+    const gray = (text) => [{ text, color: "gray" }];
+    const inputs = Array.isArray(item?.inputs) ? item.inputs : [];
+    const outcomes = Array.isArray(item?.outcomes) ? item.outcomes : [];
+    const asks = Array.isArray(item?.asks) ? item.asks : [];
+    const agentNodes = Array.isArray(item?.agentNodes) ? item.agentNodes : [];
+    const hints = Array.isArray(item?.modelHints) ? item.modelHints : [];
+    return [
+        [{ text: `${item?.title || item?.ref || "Workflow"}`, color: "white", bold: true }],
+        gray(`Workflow Definition · ${[item?.packageName, item?.packageSemver].filter(Boolean).join(" ") || "package"}${item?.packageScope === "user" ? " · yours" : ""}`),
+        // S2SF-F4: the checked facts first, then the card's effects, which are its author's words. Packages lens (1024 px):
+        // the checked facts are safety words (what a script can reach), so they come right under the name, where the
+        // details open, never below the fold of a short dialog.
+        ...(item?.checked ? [[{ text: item.checked, color: "white" }]] : []),
+        ...(item?.effects ? [gray(`Author's stated effects: ${item.effects}`)] : []),
+        gray(""),
+        [{ text: item?.description || "No description.", color: item?.description ? "white" : "gray" }],
+        ...(item?.whenToUse ? [gray(""), gray(`When to use it: ${item.whenToUse}`)] : []),
+        gray(""),
+        gray(inputsLine(inputs)),
+        gray(`Ends: ${outcomes.length ? outcomes.map((outcome) => outcome.id).join(" · ") : "—"}`),
+        ...(asks.length ? [gray(`Asks you: ${asks.map((ask) => ask.text).join("; ")}`)] : []),
+        gray(`Model: ${chosenModel || "your default"}${item?.suggestedModel && item.suggestedModel !== chosenModel ? ` · its card suggests ${item.suggestedModel}` : ""}`),
+        // OF-S2-7: its agent nodes use that model unless the session chooses one for a node at start; the card's hints say when.
+        ...(agentNodes.length || hints.length ? [gray("Its agent nodes use this model unless the session chooses one for a node at start.")] : []),
+        ...(hints.length ? [gray(`Model hints: ${hints.map((hint) => `${hint.id}: ${hint.text}`).join("; ")}`)] : []),
+        gray(""),
+        gray("Creates a session that runs this Workflow: it asks you for what it needs, then starts it."),
+    ];
+}
+
 export function selectSessionAgentPickerModal(state, maxWidth = 76) {
     const modal = state.ui.modal;
     if (!modal || modal.type !== "sessionAgentPicker") return null;
@@ -7560,12 +7707,29 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
     // item (the same mechanism the model picker uses).
     const rows = [];
     const rowItemIndexes = [];
+    // Stage 2.3 (P1): with Workflows listed, two headings (not items: no key lands on them) say which rows are agents and
+    // which are Workflows. A picker with no Workflow rows is as before.
+    const hasWorkflows = items.some((item) => item?.kind === "workflow");
+    const firstAgentRow = hasWorkflows ? items.findIndex((item) => item?.kind !== "workflow" && item?.kind !== "section") : -1;
+    const firstWorkflowRow = hasWorkflows ? items.findIndex((item) => item?.kind === "workflow") : -1;
     items.forEach((item, index) => {
         const isSelected = index === selectedIndex;
         const indent = " ".repeat(Math.max(0, Number(item?.depth) || 0) * 2);
         let labelRuns;
+        if (index === firstAgentRow || index === firstWorkflowRow) {
+            rows.push([{ text: index === firstWorkflowRow ? "WORKFLOWS" : "AGENTS", color: "gray", bold: true }]);
+            rowItemIndexes.push(-1);
+        }
 
-        if (item?.kind === "section") {
+        if (item?.kind === "workflow") {
+            // ◇ release-watch  release-tools 1.2.0: a package's Workflow Definition; choosing it makes a session that runs it.
+            const pkg = [item.packageTitle || item.packageName, item.packageSemver].filter(Boolean).join(" ");
+            labelRuns = fitRuns([
+                { text: `${indent}${WORKFLOW_SESSION_GLYPH} `, color: "magenta", bold: true },
+                { text: item.title || item.ref, color: "white", bold: true },
+                ...(pkg ? [{ text: `  ${pkg}`, color: "gray" }] : []),
+            ], contentWidth);
+        } else if (item?.kind === "section") {
             const arrow = item.collapsed ? "▸" : "▾";
             // Only when the row's scope disagrees with the shelf it is on:
             // an admin sees other users' user-scoped packages, and those land
@@ -7617,7 +7781,9 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
     const selectedItem = items[selectedIndex] || null;
     const selectedModel = modal.sessionOptions?.model || null;
     const selectedReasoningEffort = modal.sessionOptions?.reasoningEffort || null;
-    const detailsLines = selectedItem?.kind === "section"
+    const detailsLines = selectedItem?.kind === "workflow"
+        ? workflowPickerDetailsLines(selectedItem, selectedModel)
+        : selectedItem?.kind === "section"
         ? [
             [{ text: selectedItem.title || "Section", color: "white", bold: true }],
             ...(selectedItem.sectionKind === "package"
@@ -7685,7 +7851,7 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
         rows,
         rowItemIndexes,
         selectedRowIndex: selectedRowIndex >= 0 ? selectedRowIndex : 0,
-        detailsTitle: "Agent Details",
+        detailsTitle: selectedItem?.kind === "workflow" ? "Workflow card" : "Agent Details",
         detailsLines,
         idealWidth: Math.min(
             Math.max(
@@ -9745,6 +9911,15 @@ const KEYBINDING_HELP = [
         ["n / r", "new session / refresh"],
         ["a", "linked items — artifacts to download, links to open"],
         ["m", "cycle inspector tab"],
+        ["w", "Workflow pane for this session: its selected Workflow, else its newest (↑↓ node · PgUp/PgDn details · Tab agent session · Enter open it · Esc back to the session)"],
+        ["p r s c  d", "workflow view: pause / resume / stop / cancel the shown run where the deployment takes people's workflow commands (stop and cancel ask first) · dismiss a notice"],
+        ["v", "workflow view: the shown run's variables — set a name to a JSON value or remove one (Tab name/value · ↑↓ copy a listed one · Enter set · ctrl-r remove · Esc back)"],
+        ["V", "workflow view: several of the shown run's variables in one update — Set a JSON object of names and values, Remove a JSON list of names; every other variable stays (Tab set/remove · Enter send, a removal asks first · Esc back)"],
+        ["e", "workflow view: edit the definition's YAML (ctrl-o save as a new revision · ctrl-r discard edits · ctrl-k keep edits on a newer revision · Esc close, edits kept)"],
+        ["S", "workflow view: Start the definition at the revision shown (ctrl-r start, with its JSON inputs and variables · asks first · ctrl-l review it again after a change · Esc back)"],
+        ["[  ]", "workflow view: the selected node's own result of an older / newer visit of the shown run (the latest by default; past the newest, the latest again)"],
+        ["o  f  i", "workflow view: o reads the shown run's older history (the next, older page of its executions, messages and calls) · f reads the whole output or error of the visit the details show · i compares the variables that visit applied with the run's accepted ones"],
+        ["C  ,  .", "workflow view, a definition you may change: C compares two versions of its YAML, formatted (the one before the latest with the latest; C again closes) · , an older first version · . a newer one"],
         ["c / d / D", "cancel / done / delete session"],
         ["ctrl-x  (ctrl-esc)", "stop the current turn (again: retry an unconfirmed stop)", { dim: true }],
         ["ctrl-t", "prompt: steer the running turn with the prompt text, a selected queued message, or (empty prompt) every queued message (steering feature)", { dim: true }],

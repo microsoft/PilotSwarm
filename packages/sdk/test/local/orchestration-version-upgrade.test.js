@@ -164,7 +164,7 @@ describe("orchestration version upgrades", () => {
 
     // 1.0.79 is the version frozen when session workspaces opened 1.0.80
     // (test C4): its sessions carry no config.workspace into 1.0.80.
-    for (const sourceVersion of ["1.0.40", "1.0.41", "1.0.42", "1.0.79", "1.0.80", "1.0.81"]) {
+    for (const sourceVersion of ["1.0.40", "1.0.41", "1.0.42", "1.0.79", "1.0.80", "1.0.81", "1.0.82"]) {
         it(`upgrades ${sourceVersion} snapshots into the latest orchestration`, async () => {
             const values = new Map();
             const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
@@ -275,14 +275,137 @@ describe("orchestration version upgrades", () => {
         inheritedFifo(values);
         const turns = [];
         const ctx = createCtx(values, [], turns);
-        const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
-        expect(DURABLE_SESSION_LATEST_VERSION).toBe("1.0.82");
-        const handler = await loadHandler(DURABLE_SESSION_LATEST_VERSION);
+        // 1.0.82 is frozen since 1.0.83 opened; its sessions still drain this way until their continue-as-new.
+        const handler = await loadHandler("1.0.82");
         const result = driveUntilParked(handler(ctx, inheritedInput("fifo-1.0.82")), ctx);
         expect(turns).toHaveLength(2);
         expect(turns[0][0]).toMatch(/P1[\s\S]*P2/);
         expect(turns[1][0]).toMatch(/Scheduled cron wake-up/);
         expect(readFifo(values)).toEqual([]);
         expect(result.parkedOnTimerMs).toBe(3_600_000);
+    });
+    // 1.0.83 opens (owner decision 2026-11-08T15:30Z): a live session of the previous release continues as new into it, and
+    // 1.0.83 accepts everything it carries (the compatibility floor). Its queued prompts (KV FIFO), its pending child
+    // digest, its rehydration notice and a set_model all arrive: the new model's turn says the notice once, the queued
+    // prompts run once, in order, and the child's update is delivered once.
+    it("a 1.0.82 session with queued prompts, a pending child digest, a rehydration notice and a set_model continues as new into 1.0.83 and keeps them all", async () => {
+        const values = new Map();
+        values.set("fifo.0", JSON.stringify([
+            { kind: "prompt", prompt: "QUEUED-P1", bootstrap: false, clientMessageIds: ["p1"] },
+            { kind: "prompt", prompt: "QUEUED-P2", bootstrap: false, clientMessageIds: ["p2"] },
+        ]));
+        const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
+        expect(DURABLE_SESSION_LATEST_VERSION).toBe("1.0.83");
+        const sourceCtx = createCtx(values, [
+            JSON.stringify({ type: "cmd", cmd: "set_model", id: "set-model-82", args: { model: "github-copilot:gpt-5.4-mini" } }),
+        ]);
+        const source = driveUntilStop((await loadHandler("1.0.82"))(sourceCtx, {
+            sessionId: "upgrade-82-carried",
+            config: { model: "github-copilot:gpt-5.4" },
+            sourceOrchestrationVersion: "1.0.82",
+            iteration: 4,
+            isSystem: true,
+            blobEnabled: true,
+            needsHydration: true,
+            rehydrationMessage: "REHYDRATION-NOTICE: the last hand-off lost the live session.",
+            pendingChildDigest: {
+                startedAtMs: 1_713_083_000_000,
+                updates: [{ sessionId: "child-a", updateType: "completed", content: "CHILD-RESULT", observedAtMs: 1_713_083_000_000 }],
+            },
+        }), sourceCtx);
+        expect(source.effect).toMatchObject({ effect: "continueAsNew", version: "1.0.83" });
+        const carried = source.effect.input;
+        expect(carried.config.model).toBe("github-copilot:gpt-5.4-mini");
+        expect(carried.rehydrationMessage).toMatch(/^REHYDRATION-NOTICE/);
+        expect(carried.pendingChildDigest.updates.map((update) => update.content)).toEqual(["CHILD-RESULT"]);
+        expect(readFifo(values).map((item) => item.prompt)).toEqual(["QUEUED-P1", "QUEUED-P2"]);
+
+        const turns = [];
+        const latestCtx = createCtx(values, [], turns);
+        let guid = 0;
+        const resolve = latestCtx.resolveEffect.bind(latestCtx);
+        latestCtx.resolveEffect = (effect) => (effect?.effect === "newGuid" ? `guid-${++guid}` : resolve(effect));
+        const parked = driveUntilParked((await loadHandler("1.0.83"))(latestCtx, carried), latestCtx);
+        expect(parked.done).toBe(false);
+        const prompts = turns.map((turn) => String(turn[0]));
+        const count = (text) => prompts.filter((prompt) => prompt.includes(text)).length;
+        expect(prompts[0]).toMatch(/^Continue on github-copilot:gpt-5\.4-mini\./);
+        expect(prompts[0]).toContain("Runtime model for this turn is github-copilot:gpt-5.4-mini.");
+        expect(count("REHYDRATION-NOTICE")).toBe(1);
+        expect(prompts[0]).toContain("REHYDRATION-NOTICE");
+        expect(count("QUEUED-P1")).toBe(1);
+        expect(count("QUEUED-P2")).toBe(1);
+        expect(prompts.find((prompt) => prompt.includes("QUEUED-P1"))).toMatch(/QUEUED-P1[\s\S]*QUEUED-P2/);
+        expect(count("CHILD-RESULT")).toBe(1);
+        expect(readFifo(values).filter((item) => item.kind === "prompt")).toEqual([]);
+        // The turn index carries on from the 1.0.82 session's.
+        expect(turns[0][2]).toBe(4);
+    });
+    // Formal audit R2: a 1.0.82 turn that threw continues as new with its retry as its prompt and its thrown attempt's key
+    // (1.0.81's contract), stamped with its own literal source version "1.0.82". 1.0.83 converts that into its owed retry
+    // (state.ts ownedRetryOfInput): the retry runs once, with the thrown attempt's key and its count, never twice.
+    it("a 1.0.82 turn that threw continues into 1.0.83 and its retry runs once, with the thrown attempt's key", async () => {
+        const values = new Map();
+        let guid = 0;
+        let thrown = 0;
+        const sourceTurns = [];
+        const sourceGen = (await loadHandler("1.0.82"))(createCtx(values, []), {
+            sessionId: "upgrade-82-thrown",
+            config: { model: "github-copilot:gpt-5.4" },
+            sourceOrchestrationVersion: "1.0.82",
+            iteration: 2,
+            isSystem: true,
+            blobEnabled: true,
+            prompt: "THROWN-PROMPT",
+            clientMessageIds: ["thrown-1"],
+        });
+        // Drive 1.0.82 by hand: its first turn throws (a lost worker), its retry timer fires, and it continues as new.
+        let input;
+        let failure;
+        let can = null;
+        for (let step = 0; step < 300 && can === null; step += 1) {
+            const next = failure ? sourceGen.throw(failure) : sourceGen.next(input);
+            failure = undefined;
+            input = undefined;
+            if (next.done) throw new Error(`1.0.82 ended: ${JSON.stringify(next.value)}`);
+            const effect = next.value;
+            const turn = effect?.effect === "session.runTurn" ? effect
+                : effect?.effect === "race" ? [effect.left, effect.right].find(side => side?.effect === "session.runTurn") : null;
+            if (turn) {
+                sourceTurns.push(turn.args);
+                thrown += 1;
+                failure = new Error("worker lost the session");
+                continue;
+            }
+            switch (effect?.effect) {
+                case "continueAsNew": can = effect; break;
+                case "newGuid": input = `guid-${++guid}`; break;
+                case "scheduleTimer": input = undefined; break;
+                case "utcNow": input = 1_713_083_589_000 + step; break;
+                case "race": input = { index: [effect.left, effect.right].findIndex(side => side?.effect === "scheduleTimer") }; break;
+                case "dequeueEvent": throw new Error("1.0.82 blocked before its retry");
+                default: input = undefined;
+            }
+        }
+        expect(thrown).toBe(1);
+        expect(can).toMatchObject({ effect: "continueAsNew", version: "1.0.83" });
+        const carried = can.input;
+        expect(carried.sourceOrchestrationVersion).toBe("1.0.82");
+        expect(carried.prompt).toContain("THROWN-PROMPT");
+        expect(carried.retryCount).toBe(1);
+        expect(typeof carried.thrownTurnKey).toBe("string");
+        const thrownKey = carried.thrownTurnKey;
+        expect(sourceTurns[0][3]?.snapshot?.turnKey ?? thrownKey).toBe(thrownKey);
+
+        const turns = [];
+        const latestCtx = createCtx(values, [], turns);
+        const resolve = latestCtx.resolveEffect.bind(latestCtx);
+        latestCtx.resolveEffect = (effect) => (effect?.effect === "newGuid" ? `guid-${++guid}` : resolve(effect));
+        const parked = driveUntilParked((await loadHandler("1.0.83"))(latestCtx, carried), latestCtx);
+        expect(parked.done).toBe(false);
+        const retries = turns.filter(turn => String(turn[0]).includes("THROWN-PROMPT"));
+        expect(retries).toHaveLength(1);
+        expect(retries[0][3]?.retryCount).toBe(1);
+        expect(retries[0][3]?.snapshot?.turnKey).toBe(thrownKey);
     });
 });

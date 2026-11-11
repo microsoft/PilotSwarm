@@ -773,7 +773,20 @@ containers:
 
 ```bash
 kubectl apply -f deploy/k8s/worker-deployment.yaml
+kubectl apply -f deploy/k8s/worker-network-policy.yaml
 ```
+
+The second file is the worker egress policy: worker pods reach everything
+they reached before (DNS, the cluster, Postgres, Blob, model endpoints, the
+internet) except the instance metadata address `169.254.169.254` and the
+Azure host endpoint `168.63.129.16` (DNS on it stays allowed). Workflow
+scripts, agent shells and tools share the worker pod's network, and the
+metadata address would give any of them the node's managed identity token.
+These workers authenticate with the keys in `copilot-runtime-secrets` and do
+not need it. A cluster without a network policy engine ignores the policy;
+there, block the address another way (for example, the AKS IMDS restriction)
+or set `PILOTSWARM_WORKFLOW_SCRIPTS=0`. `scripts/deploy-aks.sh` applies both
+files.
 
 ### Verify
 
@@ -940,7 +953,41 @@ owners/shares/ledgers. Rollback is an explicit operator change to
 `AUTHZ_ADMIN_SCOPE=unrestricted` followed by a consistent rollout. See the
 [mini spec](../../proposals/cluster-scoped-admin.md) for boundaries and tests.
 
+### Upgrading to orchestration 1.0.83 (stop, deploy, start)
+
+The release that makes session orchestration 1.0.83 the default (the
+Workflow release) must not roll the workers. A worker of an earlier release
+does not have 1.0.83: when it picks up a 1.0.83 session it gives the session back
+and tries again, and after 10 tries the session fails. Stop every worker,
+deploy, then start them:
+
+```bash
+# 1. Stop every worker and wait until none runs. Start nothing of the new
+#    release that starts sessions (portal, MCP server, TUI) before this ends.
+kubectl scale deployment/copilot-runtime-worker -n copilot-runtime --replicas=0
+kubectl wait pod -n copilot-runtime -l app.kubernetes.io/component=worker --for=delete --timeout=10m
+
+# 2. Build and push the new image (as in the rolling update below), then
+#    point the Deployment at it while it has no pods. (With the :latest tag
+#    and imagePullPolicy: Always, the push is enough: new pods pull it.)
+kubectl set image deployment/copilot-runtime-worker -n copilot-runtime \
+    worker=<your-acr-name>.azurecr.io/copilot-runtime-worker:<new-tag>
+
+# 3. Start the workers, then update the portal and the MCP server.
+kubectl scale deployment/copilot-runtime-worker -n copilot-runtime --replicas=<count>
+kubectl rollout status deployment/copilot-runtime-worker -n copilot-runtime
+```
+
+Existing sessions keep replaying on the frozen 1.0.82 and move to 1.0.83 at
+their next continue-as-new. For the GitOps path (Flux), see "Upgrading to
+this release: stop, deploy, start" in `deploy/scripts/README.md`.
+
 ### Rolling Update
+
+Use a rolling update only for a release that keeps the default session
+orchestration version. A release that changes it, such as the one that makes
+1.0.83 the default, is deployed by stop, deploy, start (above): during a
+rolling update an old worker can take a session of the new version and fail it.
 
 ```bash
 # Rebuild and push
@@ -955,7 +1002,7 @@ kubectl rollout restart deployment/copilot-runtime-worker -n copilot-runtime
 kubectl rollout status deployment/copilot-runtime-worker -n copilot-runtime
 ```
 
-In-flight orchestrations are safe during rollouts. If a worker is killed mid-turn, duroxide will retry the activity on another worker after the lock timeout.
+When the default orchestration version does not change, in-flight orchestrations are safe during rollouts: if a worker is killed mid-turn, duroxide retries the activity on another worker after the lock timeout.
 
 ### Database Reset
 

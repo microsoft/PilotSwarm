@@ -145,7 +145,8 @@ for (const [name, args, method] of RELEASING_MUTATIONS) {
         assert.deepEqual(h.calls[0].args.slice(-2), [42, false]);
         assert.deepEqual(h.calls[1].args, ["ghcp-u1"]);
         assert.equal(h.enqueued.length, 1);
-        assert.deepEqual(JSON.parse(h.enqueued[0].payload), { prompt: PROVIDER_BUDGET_WAKE_PROMPT });
+        // FU-9 (1.0.83): the wake is the runtime's, so it never merges with a person's words.
+        assert.deepEqual(JSON.parse(h.enqueued[0].payload), { prompt: PROVIDER_BUDGET_WAKE_PROMPT, sender: { kind: "system", display: "provider budget" } });
         assert.deepEqual(h.updated, []);
     });
     test(`denied agent ${name}/${method} never discovers or wakes paused sessions`, async () => {

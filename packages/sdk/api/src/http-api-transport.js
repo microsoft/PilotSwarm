@@ -104,6 +104,21 @@ export class HttpApiTransport {
         return this.bootstrap?.defaultModel || null;
     }
 
+    /**
+     * Workflow support as the server advertised it in its bootstrap (design
+     * 04, D11): its `workflows` field from the snapshot taken at start, or
+     * null from a server that advertises none (no field, or null). A
+     * `workflows` that is not an object rejects
+     * WORKFLOW_CAPABILITIES_MALFORMED rather than reading as an older server.
+     */
+    async getWorkflowCapabilities() {
+        const workflows = this.bootstrap?.workflows;
+        if (workflows === undefined || workflows === null) return null;
+        if (typeof workflows === "object" && !Array.isArray(workflows)) return workflows;
+        throw Object.assign(new Error(`The server's bootstrap advertises workflows as ${Array.isArray(workflows) ? "a list" : `a ${typeof workflows}`}, `
+            + "not an object, so its workflow support is unknown."), { code: "WORKFLOW_CAPABILITIES_MALFORMED" });
+    }
+
     getAuthContext() {
         if (this.bootstrap?.auth) return { ...this.bootstrap.auth, adminScope: this.bootstrap.authz?.adminScope ?? "unrestricted" };
         return {
@@ -238,6 +253,68 @@ export class HttpApiTransport {
 
     async getSessionWorkspace(sessionId) {
         return this.api.call("getSessionWorkspace", { sessionId });
+    }
+
+    /**
+     * Workflow: the read-only view of a workflow session (readWorkflow, session:read), a section's next page
+     * (`cursor`, a nextCursor a read returned) or one execution's whole value (`executionId`); `limit` sets the rows per
+     * page. The options are the operation's declared parameters: the request builder leaves out an absent (or null) one,
+     * and any other value is sent for the server to check. The session id is always the argument's.
+     */
+    async readWorkflow(sessionId, options = {}) {
+        return this.api.call("readWorkflow", { ...options, sessionId });
+    }
+
+    /** Workflow: a person's command to a workflow session (updateWorkflow, session:manage; inactive unless the deployment enables it). */
+    async updateWorkflow(sessionId, command) {
+        return this.api.call("updateWorkflow", { sessionId, command });
+    }
+
+    /** Stage 2.1: a session's Workflow Definitions (listSessionWorkflowDefinitions, session:read). */
+    async listSessionWorkflowDefinitions(sessionId, options = {}) {
+        return this.api.call("listSessionWorkflowDefinitions", { sessionId, ...(options.includeDeleted === true ? { includeDeleted: true } : {}) });
+    }
+
+    /** Stage 2.1: one definition with a revision's YAML, diagnostics and graph (readSessionWorkflowDefinition, session:read). */
+    async readSessionWorkflowDefinition(sessionId, ref = {}) {
+        return this.api.call("readSessionWorkflowDefinition", { sessionId,
+            ...(ref.definitionId ? { definitionId: ref.definitionId } : {}), ...(ref.name ? { name: ref.name } : {}),
+            ...(Number.isSafeInteger(ref.revision) ? { revision: ref.revision } : {}) });
+    }
+
+    /** Stage 2.1: a person saves a revision (saveSessionWorkflowDefinition, session:manage); the server stamps the caller. */
+    async saveSessionWorkflowDefinition(sessionId, request) {
+        return this.api.call("saveSessionWorkflowDefinition", { sessionId, ...request });
+    }
+
+    /** Stage 2.1: a person starts a Workflow from a revision (startSessionWorkflowDefinition, session:manage). */
+    async startSessionWorkflowDefinition(sessionId, request) {
+        return this.api.call("startSessionWorkflowDefinition", { sessionId, ...request });
+    }
+
+    /** Stage 2.1: a person deletes a definition (deleteSessionWorkflowDefinition, session:manage). */
+    async deleteSessionWorkflowDefinition(sessionId, request) {
+        return this.api.call("deleteSessionWorkflowDefinition", { sessionId, ...request });
+    }
+
+    /** Stage 2.3: a person's Make a copy of a package's locked definition (copySessionWorkflowDefinition, session:manage). */
+    async copySessionWorkflowDefinition(sessionId, request) {
+        return this.api.call("copySessionWorkflowDefinition", { sessionId, ...request });
+    }
+
+    /** Stage 2.3: a person takes a package's newer version for the next Workflow (updateSessionWorkflowPackage, session:manage). */
+    async updateSessionWorkflowPackage(sessionId, request) {
+        return this.api.call("updateSessionWorkflowPackage", { sessionId, ...request });
+    }
+
+    /** Stage 2.3: the package Workflow Definitions the caller can make a session for (listCreatableWorkflows). */
+    async listCreatableWorkflows() {
+        return this.api.call("listCreatableWorkflows");
+    }
+
+    /** Stage 2.3: a session made for a package's Workflow Definition (createSessionForWorkflow, session:create). */
+    async createSessionForWorkflow(ref, options = {}) {
+        return this.api.call("createSessionForWorkflow", { ref, ...options });
     }
 
     async setSessionWorkspace(sessionId, input = {}, options = {}) {
@@ -638,13 +715,17 @@ export class HttpApiTransport {
         // (patch pings off the database's NOTIFY) are mirrored into complete
         // `session.canvas_data`-shaped events, so every consumer keeps its
         // whole-state contract at ~30 ms instead of the 500 ms poll floor.
-        // Once a slot is plane-fed, the dual-written legacy tick events for
-        // it are suppressed here — the plane already delivered fresher state
-        // (same writer, written first). Everything degrades: a server
-        // without the plane just never sends canvasLive messages.
+        // A dual-written tick is suppressed only after the mirror applied
+        // its shared planeSeq. A pointer or doc ping proves no data arrived.
+        // A server without the plane just never sends canvasLive messages.
         if (!this._canvasMirror) {
             this._canvasMirror = createCanvasLiveMirror({
                 fetchSnapshot: (sid) => this.getCanvasLive(sid),
+                reset: (sid, update) => {
+                    for (const h of this._canvasEmitHandlers?.get(sid) || []) {
+                        h({ eventType: "session.canvas_plane_document", sessionId: sid, transient: true, data: update });
+                    }
+                },
                 emit: (sid, update) => {
                     const handlers = this._canvasEmitHandlers?.get(sid);
                     if (!handlers) return;
@@ -676,12 +757,17 @@ export class HttpApiTransport {
         this._canvasEmitHandlers.get(sessionId).add(handler);
         const wrapped = (event) => {
             if (event?.eventType === "session.canvas_data"
-                && this._canvasMirror.covers(sessionId, Number(event?.data?.slot) || 1)) {
-                return; // plane-fed slot: the mirror already delivered this state
+                && this._canvasMirror.covers(sessionId, Number(event?.data?.slot) || 1, event?.data?.planeSeq)) {
+                return; // this tick (not merely this slot) was already applied
             }
             handler(event);
         };
-        const unsubscribeEvents = this.api.subscribeSession(sessionId, wrapped, onResubscribe);
+        const unsubscribeEvents = this.api.subscribeSession(sessionId, wrapped, () => {
+            // Re-read even if no new ping follows, without replaying an
+            // unchanged tick. The mirror also detects a rebuilt plane row.
+            void this._canvasMirror.prime(sessionId, { reconnect: true });
+            onResubscribe?.();
+        });
         const unsubscribeCanvas = this.api.subscribeCanvasLive(sessionId, (message) => {
             if (message?.kind === "kv") {
                 // A KV change: not part of the tick mirror (per-key rev, not

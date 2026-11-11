@@ -1,0 +1,159 @@
+{
+  "WfAgent": {
+    "indent": 4,
+    "constants": [
+      "MaxCrashes",
+      "MaxInvalid",
+      "AllowRefuse",
+      "AllowExhaust",
+      "AllowEndFail",
+      "AllowEvict",
+      "AllowRunEnd",
+      "AllowAsk",
+      "Fault",
+      "Code",
+      "AllowTurnFail",
+      "Report",
+      "DeadlineFair",
+      "AllowRecover"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WfExecLease": {
+    "indent": 4,
+    "constants": [
+      "N",
+      "Dep",
+      "AllowTeardownFail",
+      "AllowShutdown",
+      "AllowRevoke",
+      "AllowScriptEnd",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WfExecShare": {
+    "indent": 4,
+    "constants": [
+      "N",
+      "Dep",
+      "AllowTeardownFail",
+      "AllowShutdown",
+      "AllowRevoke",
+      "AllowScriptEnd",
+      "Fault",
+      "Code",
+      "AllowUnsettled",
+      "AllowUnattributed",
+      "AllowBoundary",
+      "AllowListingFail",
+      "AllowLate",
+      "ListingRace"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WfExecutor": {
+    "indent": 4,
+    "constants": [
+      "Code",
+      "Overlap"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WfGraph": {
+    "indent": 4,
+    "constants": [
+      "Plan",
+      "Limit",
+      "K",
+      "Conc",
+      "FailFast",
+      "AllowCancel",
+      "AllowStop",
+      "AllowPause",
+      "AllowDeadline",
+      "AllowDelete",
+      "Cmd",
+      "AllowLoseHint",
+      "Fault",
+      "Elsewhere",
+      "OtherEnds"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WfPaging": {
+    "indent": 4,
+    "constants": [
+      "Code",
+      "N",
+      "Page",
+      "Settled",
+      "AllowEndFail",
+      "MaxCalls"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WfParent": {
+    "indent": 4,
+    "constants": [
+      "MKind",
+      "StartFlag",
+      "MaxCrashes",
+      "AllowExternalEnd",
+      "AllowParentCancel",
+      "AllowParentEnd",
+      "AllowFifoFull",
+      "AllowEvict",
+      "AllowClockBack",
+      "MaxTurnFails",
+      "Fault",
+      "AllowWaitTimeout",
+      "AllowZombie",
+      "NumNotifiers",
+      "AllowStatusRace",
+      "AllowNtZombie",
+      "AllowRecover",
+      "MaxRecovers",
+      "RecoverAfterRelease",
+      "AllowLateStart",
+      "Code"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WfPaused": {
+    "indent": 4,
+    "constants": [
+      "Code",
+      "AllowResume",
+      "AllowChildComplete",
+      "AllowEndFail",
+      "PauseFirst",
+      "TimedJoin",
+      "AllowEndElsewhere",
+      "AllowCutFail",
+      "AllowPause"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WfRecover": {
+    "indent": 4,
+    "constants": [
+      "Code",
+      "MaxDeaths",
+      "DieAt",
+      "MaxRecovers",
+      "AllowNotifierExhaust",
+      "AllowEndFail"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}

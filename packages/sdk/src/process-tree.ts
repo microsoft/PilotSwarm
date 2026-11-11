@@ -18,6 +18,21 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 
+/**
+ * Kill every process of a process group (Workflow Simplified stage 2.4, PR 235 6e2a1fec: a script leads its own group, so
+ * a process it started that left the tree, a daemon reparented to init, is still found). False when the group is gone or
+ * cannot be signalled. POSIX only; false on Windows.
+ */
+export function killProcessGroup(pgid: unknown): boolean {
+    if (process.platform === "win32" || typeof pgid !== "number" || !Number.isInteger(pgid) || pgid <= 1 || pgid === process.pid) return false;
+    try {
+        process.kill(-pgid, "SIGKILL");
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 /** True while the process exists (EPERM: it exists, under another user). */
 export function processAlive(pid: number): boolean {
     try {

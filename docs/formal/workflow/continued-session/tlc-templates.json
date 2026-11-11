@@ -1,0 +1,41 @@
+{
+  "WfContinuedSession": {
+    "indent": 4,
+    "constants": [
+      "V",
+      "Person",
+      "AllowStop",
+      "AllowCancel",
+      "AllowStopFail",
+      "FailAgentSession",
+      "RecoverFair",
+      "SpawnRecheck",
+      "RecheckSeesEnding",
+      "EndMark",
+      "StopBeforeSpawn",
+      "PerAgentSessionEnd",
+      "StopAtRunEnd",
+      "Fault",
+      "SplitSpawn",
+      "CheckAll",
+      "Fence",
+      "Backstop",
+      "AllowSpawnCrash",
+      "MarkSplit",
+      "MarkFail",
+      "Withdraw",
+      "Outbox",
+      "Carry",
+      "CarryDelete",
+      "TurnGuard",
+      "MarkCreating",
+      "CarryNotFound",
+      "AllowTurnFail",
+      "FailReport",
+      "TimeoutFair",
+      "AllowRecover"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}

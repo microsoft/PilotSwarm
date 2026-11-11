@@ -84,3 +84,39 @@ export function replaceMoaNode(tree, nodeId, next) {
     if (!second) return first;
     return first === tree.first && second === tree.second ? tree : { ...tree, first, second };
 }
+
+/**
+ * Which YAML edit a Master of Agents workflow panel hands to the workspace when it opens the workflow there (adversarial
+ * review UI-2 and its verifications, VR-6 and E2-R4). The panel's live editor buffer, when one is mounted, is the
+ * person's edit in the panel as it is now: a changed one is handed over, as unsaved; a clean one (nothing changed, or
+ * the edit was discarded) hands over nothing, so it neither brings back an older saved edit nor erases an unsaved edit
+ * the workspace has of its own. Only with no live buffer is the panel's saved edit handed over. Only an edit of
+ * `sessionId` counts. Returns the workflow view's change ({ draftEdit, draftDirty }), or null to leave the workspace's
+ * own as it is. Pure.
+ */
+export function workflowDraftHandoff({ sessionId, buffer = null, saved = null }) {
+    if (buffer && buffer.sessionId === sessionId) {
+        const changed = typeof buffer.text === "string" && buffer.base && buffer.text !== buffer.base.yaml;
+        return changed ? { draftEdit: buffer, draftDirty: true } : null;
+    }
+    if (saved && saved.sessionId === sessionId) return { draftEdit: saved, draftDirty: true };
+    return null;
+}
+
+/**
+ * The workflow view a Master of Agents panel's side request opens in the workspace (adversarial review UI-2 and R2-UI-2):
+ * the requested side panel and step, the panel's run and its main tab, and the edit workflowDraftHandoff hands over
+ * (`draft`). The run and the tab are always given, so nothing the workspace showed before is kept by accident: a panel
+ * that never chose a run shows the live run there (selectedRunId null), whatever run the workspace last showed; a panel
+ * without a tab of its own shows the graph. Pure.
+ */
+export function workflowSideHandoffView({ request = null, childView = null, draft = null } = {}) {
+    const view = childView && typeof childView === "object" ? childView : {};
+    return {
+        sidePanel: request?.panel ?? null,
+        ...(request?.nodeId ? { selectedNodeId: request.nodeId } : {}),
+        selectedRunId: typeof view.selectedRunId === "string" && view.selectedRunId ? view.selectedRunId : null,
+        mainTab: view.mainTab === "yaml" ? "yaml" : "graph",
+        ...(draft ?? {}),
+    };
+}

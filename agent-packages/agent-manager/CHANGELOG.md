@@ -1,5 +1,210 @@
 # Changelog — agent-manager
 
+## 1.7.3
+
+### Fixed
+
+- Verifying a published Workflow-only package checks the version just
+  published. Its card and YAML are read with `read_agent_package_file` at that
+  semver (`workflows/<name>/card.md` and `workflow.yaml`). `workflow_definition`
+  `card` shows the attached revision when there is one, so its `version` is
+  compared and an older card is not counted. The live run starts with
+  `update: true`, and `card` confirms the attached version before and after;
+  if the package's active version moved, Agent Smith says so instead of
+  reporting a check of another version.
+
+## 1.7.2
+
+### Fixed
+
+- Verifying a published Workflow-only package reads its card with
+  `workflow_definition` `card` and its exact YAML with
+  `read_agent_package_file` (`workflows/<name>/workflow.yaml`).
+  `workflow_definition` `read` reads only a definition saved in or attached
+  to the session, so it answered `DEFINITION_NOT_FOUND` for a package
+  definition not yet started.
+
+## 1.7.1
+
+### Fixed
+
+- `propose_agent_patch` runs every check publish runs on the staged files,
+  through the same preparation publish uses: a missing `CHANGELOG.md` or no
+  entry for plugin.json's version, a plugin.json that names another package,
+  a reserved package name and the size limits now refuse the proposal too
+  (a missing changelog used to be only a warning). Publish still checks the
+  registry (permission, an existing version) when it runs. The diff shows the
+  canonical tree publish would ship.
+
+## 1.7.0
+
+### Changed
+
+- Any session may start any package Workflow its owner can see. An agent's
+  `workflows:` list now suggests definitions to its session; it no longer
+  limits what the session may start. A Workflow-only package can be verified
+  by starting it directly from Agent Smith's own session.
+
+## 1.6.0
+
+### Changed
+
+- `propose_agent_patch` checks the staged package exactly as publish checks
+  it. When publish would refuse it, nothing is proposed: the answer lists each
+  error's code, path and message, and Agent Smith fixes them and proposes
+  again, so no person is asked to approve a package that publish would refuse.
+
+## 1.5.0
+
+### Changed
+
+- A Workflow Definition's card is written from an exact template that matches
+  the publish check: front matter only; `effects` is one text string, never a
+  list; `outcomes` is keyed by each terminal state ID (such as `done`), never
+  by an outcome value (such as `succeeded`); `asks` and `sends` are keyed by
+  each request and send state ID, exactly those, and left out when there are
+  none; `inputs.example` is required when there is an input schema; no
+  unknown fields. Before proposing a package, Agent Smith lists the YAML's
+  terminal, request and send state IDs and checks the card's keys against
+  them, so a card the publish check would refuse never reaches a person.
+- A package with only Workflow Definitions is valid as it is: Agent Smith
+  never adds an agent just to verify it. It verifies one by reading the
+  published definition and card, by a test run of a saved copy in its own
+  session, and by asking the person to start it once from the portal's
+  new-session picker.
+- The repair loop names each terminal state ID as an expected end, not each
+  outcome.
+
+## 1.4.11
+
+### Changed
+
+- Before publishing a Workflow Definition, test every expected end as its own
+  run with `expect`, and read each report's path, unanswered calls and the
+  tools it needs at run time. Per-visit and receive fixtures cover loops,
+  polling and receive states; the repair loop has the full procedure.
+- Every instruction to load a Workflow skill says to call load_skill with its
+  name.
+- The `test` operation is described as offered where Workflows are on (Agent
+  Smith's own session has them; another session turns them on with
+  `enable_workflows`), no longer as offered in every session.
+
+## 1.4.10
+
+### Changed
+
+- Every deployment runs the full Workflow engine (owner 2026-11-08T15:30Z):
+  `workflow_definition` and its `test` operation are offered in every current
+  session. The untested-publish fallback is for a session of an earlier release
+  that has not continued yet.
+
+## 1.4.9
+
+### Changed
+
+- Workflows are always on (owner 2026-11-08T08:03Z): `workflow_definition` is
+  always offered. The fallback for an untested publish now names only its
+  `test` operation, which is offered only where the deployment runs Workflow
+  tests.
+
+## 1.4.8
+
+### Changed
+
+- Carries 1.3.1 from main (0.8.10): flags listed with `alwaysOn: true` (native
+  tasks, Base Agent V2 and steering) are always on and cannot be changed. The
+  version stays above main's.
+
+## 1.4.7
+
+### Changed
+
+- Named branches (owner 2026-11-08T00:35Z, option A): different branches running
+  different nodes at once are one parallel state with named `branches`, each its
+  own small graph whose agent node has its own state id, joined as
+  `{ <name>: output }`, with `timeoutSeconds` when a branch runs an agent. The
+  router pattern is the older form, for branches that come from a list. The
+  `workflow-patterns` skill has both, with examples.
+
+## 1.4.6
+
+### Changed
+
+- The router pattern: different branches running different nodes at once (a
+  different prompt or model for each) are one Workflow, never several: a
+  parallel state over a literal list of lanes, concurrency equal to their
+  number, join all, a router script first in the body, one agent node per lane
+  (its own state id), and one item end whose output names the lane. The
+  `workflow-patterns` skill has the pattern and a complete example.
+
+## 1.4.5
+
+### Changed
+
+- Card model hints are structured (OF-S2-7 review OF7-R5): `strength`,
+  `reasoning`, `context` and a short `note` (at most 120 characters) per agent
+  node. Publication refuses a note that names a model.
+
+## 1.4.4
+
+### Changed
+
+- Models of agent nodes (OF-S2-7): a definition never names a model, and every
+  agent node uses the model of the session that starts it. A card may give
+  `modelHints` for a node that really needs another kind of model: words for
+  the kind of model, reasoning or context, keyed by the node's id, never a
+  provider or model name, so the package works on every deployment.
+
+## 1.4.3
+
+### Changed
+
+- Test fixtures by step kind: a tool call's success value is what it returns,
+  an agent node's `{ outcome, output }`, an ask (request) node's
+  `{ response }` or `{ decline: { reason } }`, a send's any value; an error is
+  `{ code, message }`, a cancel has none. With an example for an ask node.
+- A failed test is never followed by a publish plan: quote the report's
+  failure in its own words, fix and test again. The same failure twice: stop
+  and show the person the report and the fixtures.
+
+## 1.4.2
+
+### Changed
+
+- Workflow Definitions stay simple: the simplest Workflow that does the job
+  (few nodes, a straight path, readable in one look). Write the common path
+  and route corner cases to an agent node. Judgement, parsing, many branches,
+  nested conditions or string logic go to an agent node with a short, clear
+  prompt, not to conditions, expressions or scripts. Scripts do work, not
+  decisions; no code in YAML. When unsure, choose the simpler definition and
+  tell the person what the agent node now handles. The test before publish
+  stays.
+
+## 1.4.1
+
+### Changed
+
+- A Workflow Definition is tested before its package is published: save that
+  exact YAML in your own session, run `workflow_definition` `test` on that
+  revision, read the report, and publish only on a pass (on a fail: fix, save,
+  test again). The request to publish counts as the request for the test. The
+  result goes with the publish plan; without the test operation, say so and
+  publish only on the person's explicit yes.
+
+## 1.4.0
+
+### Added
+
+- Write Workflow Definitions as package entries: `workflows/<name>/workflow.yaml`
+  with its interface card `card.md`, named inputs and outputs, and a wait loop
+  for recurring work. An agent names the definitions its session may start.
+- Verify a Workflow Definition by starting it once from the new-session picker
+  in a disposable session before the shared publish.
+
+### Changed
+
+- "Agent workflow" means a named agent; definitions are Workflow Definitions.
+
 ## 1.3.1
 
 ### Changed

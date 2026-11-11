@@ -831,6 +831,7 @@ button {
    nothing" rather than "this is not available here". */
 .ps-toolbar-button:disabled,
 .ps-mini-button:disabled,
+.ps-mini-button[aria-disabled="true"],
 .ps-modal-button:disabled,
 .ps-mobile-nav-button:disabled {
   opacity: 0.42;
@@ -840,6 +841,7 @@ button {
 /* Hover must not animate a button that cannot be pressed. */
 .ps-toolbar-button:disabled:hover,
 .ps-mini-button:disabled:hover,
+.ps-mini-button[aria-disabled="true"]:hover,
 .ps-modal-button:disabled:hover,
 .ps-mobile-nav-button:disabled:hover {
   background: inherit;
@@ -1200,10 +1202,17 @@ body.ps-kb-takeover .ps-prompt-shell.is-mobile .ps-prompt-input {
    above the pane edges it overlaps. 3, not 2: the canvas layer is
    position:absolute at z-index 2 in the same stacking context and came later
    in the DOM, so it painted over the seam's canvas-side half of the band —
-   the hairline itself could only be grabbed from the chat side. */
-.ps-column-resizer,
+   the hairline itself could only be grabbed from the chat side.
+   A column seam sits one above a row seam (F-08): where a row seam meets a
+   column seam (the inspector/activity seam against the chat/right seam, at
+   half height) the row seam's band came later in the DOM and took the column
+   seam's centre. The column seam spans the whole height, so it owns the
+   junction; the row seam keeps the rest of its band. */
 .ps-row-resizer {
   z-index: 3;
+}
+.ps-column-resizer {
+  z-index: 4;
 }
 
 .ps-column-resizer::after {
@@ -2737,6 +2746,22 @@ body.is-resizing-pane-y iframe {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+
+/* Batch 8 (d-1): a row whose value is another session ("Started by", "Step of") is a link that selects it, still one
+   clamped line in the row's own text size. */
+button.ps-session-detail-value.ps-session-detail-link {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ps-accent);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.ps-session-detail-value.ps-session-detail-link:hover { text-decoration: underline; }
+button.ps-session-detail-value.ps-session-detail-link:focus-visible { outline: 2px solid var(--ps-accent); outline-offset: 1px; }
 
 /* The id goes into kubectl and CLI commands, so it must stay copyable — but it
    cannot wrap, or a narrow pane would make this row two lines and the box
@@ -4397,6 +4422,11 @@ body.is-resizing-pane-y iframe {
   width: min(560px, 100%);
 }
 
+/* A dialog takes focus when it opens (ModalDialog) so screen readers announce it; the frame itself shows no ring. */
+.ps-modal[role="dialog"]:focus {
+  outline: none;
+}
+
 .ps-modal.is-wide {
   width: min(980px, 100%);
 }
@@ -5011,6 +5041,664 @@ body.is-resizing-pane-y iframe {
   color: var(--ps-muted);
   font-size: 1.04rem;
   line-height: 1.5;
+}
+
+.ps-chat-composer.is-workflow {
+  padding: 5px 12px;
+}
+
+.ps-chat-composer.is-workflow .ps-composer-readonly {
+  padding: 0;
+  border: 0;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.ps-workflow-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--ps-border);
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-surface);
+  /* Only when the pane is shorter than its header and the graph's 150px floor (a short window or a small dashboard pane)
+     does the whole pane scroll. */
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.ps-workflow-main-header {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--ps-border);
+  font-size: 0.9rem;
+}
+
+/* Batch 6 (r-1): Graph | YAML, a small segmented switch in the header. The main pane holds nothing else: every panel
+   opens in the side pane (r-3). */
+.ps-workflow-main-tabs {
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--ps-border);
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-chrome);
+}
+.ps-workflow-main-tabs > button {
+  padding: 2px 10px;
+  border: 0;
+  border-radius: calc(var(--ps-radius-sm) - 2px);
+  background: transparent;
+  color: var(--ps-muted);
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.ps-workflow-main-tabs > button[aria-selected="true"] { background: var(--ps-surface); color: var(--ps-foreground); box-shadow: 0 0 0 1px var(--ps-border); }
+.ps-workflow-main-tabs > button:focus-visible { outline: 2px solid var(--ps-accent); outline-offset: 1px; }
+
+/* of-02: the name never wraps letter by letter. One line with an ellipsis (the whole name is its title), beside its
+   own status badge; the tools follow on the same row at desktop widths and wrap to a second row on a narrow screen. */
+.ps-workflow-main-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 6rem;
+  flex: 1 1 10rem;
+}
+.ps-workflow-main-title > :first-child { flex: 0 0 auto; }
+.ps-workflow-main-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ps-workflow-status {
+  flex: 0 0 auto;
+  max-width: 100%;
+  padding: 1px 8px;
+  border: 1px solid var(--ps-border);
+  border-radius: 999px;
+  color: var(--ps-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ps-workflow-main-tools {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+/* of-04: the workflow toolbar's icon buttons, in the top bar's icon style; their tooltip is .ps-icon-tooltip. */
+.ps-workflow-tool-wrap { display: inline-flex; }
+.ps-mini-button.ps-workflow-tool-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 4px 6px;
+  touch-action: manipulation;
+  /* A long-press shows the tooltip (as .ps-icon-button): no iOS loupe or callout over it. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.ps-workflow-tool-glyph { display: inline-flex; line-height: 1; }
+.ps-mini-button.ps-workflow-tool-button[aria-expanded="true"] {
+  color: var(--ps-accent);
+  border-color: var(--ps-accent);
+}
+.ps-mini-button.ps-workflow-tool-button:focus-visible {
+  outline: 2px solid var(--ps-accent);
+  outline-offset: 1px;
+}
+/* Batch 5 (g-03): a count on a tool's icon (Notices, Test calls), tinted by the most serious item it counts. */
+.ps-mini-button.ps-workflow-tool-button { position: relative; overflow: visible; }
+.ps-workflow-tool-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--ps-muted);
+  color: var(--ps-surface);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+}
+.ps-workflow-tool-badge[data-level="warning"] { background: var(--ps-warning); }
+.ps-workflow-tool-badge[data-level="error"] { background: var(--ps-danger); }
+.ps-workflow-notices, .ps-workflow-test-calls { border-bottom: 1px solid var(--ps-border); }
+
+/* of-07: one theme-consistent style for every edit box on the workflow screen (JSON boxes, names, notes, selects, the
+   clock's seconds and the YAML box), in the modal inputs' colours and focus ring. JSON and YAML are monospace; a JSON
+   box whose text does not parse is marked aria-invalid and shows the problem under it (.ps-workflow-field-error).
+   Font sizes are left to the coarse-pointer block at the end of this file, which keeps a phone from zooming. */
+.ps-workflow-input {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-height: 28px;
+  /* UX2D-F7: the control border token reaches 3:1 against the background and the panel in every theme. */
+  border: 1px solid var(--ps-control-border, var(--ps-border));
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-background);
+  background-clip: padding-box;
+  color: var(--ps-foreground);
+  caret-color: var(--ps-foreground);
+  padding: 4px 8px;
+  outline: none;
+  font-family: inherit;
+  font-size: var(--ps-font-size-dense);
+  line-height: var(--ps-line-height-dense);
+}
+textarea.ps-workflow-input { width: 100%; resize: vertical; }
+/* A select's open list follows the theme too, where the browser draws it from the page's styles. */
+select.ps-workflow-input option { background: var(--ps-background); color: var(--ps-foreground); }
+.ps-workflow-input.is-code { font-family: var(--ps-mono, monospace); line-height: 1.45; }
+.ps-workflow-input::placeholder {
+  color: color-mix(in srgb, var(--ps-muted) 74%, transparent);
+  opacity: 1;
+}
+.ps-workflow-input:focus,
+.ps-workflow-yaml:focus-within {
+  border-color: var(--ps-modal-selected-border);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ps-modal-selected-border) 20%, transparent);
+}
+.ps-workflow-input[aria-invalid="true"] { border-color: var(--ps-wf-danger-text, var(--ps-danger)); }
+.ps-workflow-input[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ps-danger) 22%, transparent);
+}
+.ps-workflow-field { display: grid; gap: 3px; min-width: 0; }
+.ps-workflow-field > label,
+.ps-workflow-field > span:first-child { color: var(--ps-muted); font-size: 0.75rem; }
+.ps-workflow-field.is-grow { flex: 1 1 14em; }
+/* Batch 7 (f-05): a box's label with a small action beside it (the inputs' Sample). */
+.ps-workflow-field-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
+.ps-workflow-field-head > label { color: var(--ps-muted); font-size: 0.75rem; }
+.ps-workflow-field-head .ps-mini-button.ps-workflow-tool-button { min-width: 24px; min-height: 24px; padding: 2px 4px; }
+.ps-workflow-field-error { color: var(--ps-wf-danger-text, var(--ps-danger)); font-size: 0.75rem; overflow-wrap: anywhere; }
+.ps-workflow-yaml {
+  display: flex;
+  border: 1px solid var(--ps-control-border, var(--ps-border));
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-background);
+  font-family: var(--ps-mono, monospace);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+.ps-workflow-yaml textarea {
+  font: inherit;
+  background: transparent;
+  color: var(--ps-foreground);
+  caret-color: var(--ps-foreground);
+  outline: none;
+}
+/* The graph tab fills the pane under the header and keeps at least 150px; it stays mounted (hidden) while the YAML tab
+   is shown, so the graph comes back at the same zoom and place. */
+.ps-workflow-graph-region {
+  position: relative;
+  flex: 1 1 150px;
+  min-width: 0;
+  min-height: 150px;
+  display: grid;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+}
+.ps-workflow-graph-region[hidden], .ps-workflow-yaml-tab[hidden] { display: none; }
+.ps-workflow-log { min-width: 0; min-height: 0; }
+
+/* Batch 6 (r-2): the YAML tab. A draft's editor fills it: one compact strip, a muted note, the answer to a save, then the
+   YAML box at the remaining height, scrolling inside, and its marks under it. Another revision shows read-only. */
+.ps-workflow-yaml-tab {
+  flex: 1 1 150px;
+  min-width: 0;
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ps-workflow-draft-editor, .ps-workflow-yaml-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 12px 8px;
+  font-size: 0.75rem;
+}
+.ps-workflow-draft-editor > .ps-workflow-yaml, .ps-workflow-yaml-view > .ps-workflow-yaml { flex: 1 1 120px; min-height: 120px; }
+.ps-workflow-yaml-marks { flex: 0 1 auto; max-height: 8em; overflow: auto; }
+.ps-workflow-yaml-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ps-workflow-yaml-strip h3 { margin: 0 6px 0 0; font-size: 0.8rem; white-space: nowrap; }
+.ps-workflow-yaml-strip-tools { margin-left: auto; display: inline-flex; }
+.ps-workflow-yaml-unsaved { color: var(--ps-muted); }
+.ps-workflow-yaml-note { margin: 0; color: var(--ps-muted); overflow-wrap: anywhere; }
+.ps-workflow-yaml textarea[readonly] { cursor: text; }
+/* OF-S2-8 (owner, 2026-11-07T23:13Z): the YAML is highlighted. The textarea keeps the text people edit (caret, selection,
+   undo, IME and paste are the browser's); once the parser has loaded its letters are transparent over a highlighted copy
+   of the same text, in the same font, padding and scroll position. */
+.ps-workflow-yaml-text { position: relative; display: flex; flex: 1 1 auto; min-width: 0; }
+.ps-workflow-yaml-paint {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 2px 48px 2px 6px;
+  overflow: hidden;
+  pointer-events: none;
+  font: inherit;
+  white-space: pre;
+  color: var(--ps-foreground);
+  background: transparent;
+  border: 0;
+}
+.ps-workflow-yaml-paint > code { font: inherit; }
+.ps-workflow-yaml textarea.is-painted { position: relative; z-index: 1; color: transparent; -webkit-text-fill-color: transparent; }
+.ps-workflow-yaml textarea.is-painted::selection {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  background: color-mix(in srgb, var(--ps-foreground) 24%, transparent);
+}
+/* Code colours: each theme's --ps-code-* colour, readable on the panel (themeCodeColors). */
+.ps-code-keyword { color: var(--ps-code-keyword, inherit); }
+.ps-code-string { color: var(--ps-code-string, inherit); }
+.ps-code-number { color: var(--ps-code-number, inherit); }
+.ps-code-function { color: var(--ps-code-function, inherit); }
+.ps-code-type { color: var(--ps-code-type, inherit); }
+.ps-code-property { color: var(--ps-code-property, inherit); }
+.ps-code-variable { color: var(--ps-code-variable, inherit); }
+.ps-code-comment { color: var(--ps-code-comment, inherit); font-style: italic; }
+.ps-code-invalid { color: var(--ps-code-invalid, inherit); }
+/* A node's Script, Sample input and Sample output (OF-S2-8), each closed by default. */
+.ps-wf-more-list { display: grid; gap: 4px; margin: 6px 0; }
+.ps-wf-more { border: 1px solid var(--ps-border); border-radius: var(--ps-radius-sm); }
+.ps-wf-more > summary { cursor: pointer; padding: 4px 8px; font-weight: 600; overflow-wrap: anywhere; }
+.ps-wf-more[open] > summary { border-bottom: 1px solid var(--ps-border); }
+.ps-wf-more-body { display: grid; gap: 6px; padding: 6px 8px; min-width: 0; }
+.ps-wf-more.is-schema > summary { font-weight: 400; }
+.ps-wf-sample-note { margin: 0; }
+.ps-wf-more-body > pre.ps-wf-code {
+  margin: 0;
+  padding: 6px 8px;
+  max-height: 24em;
+  overflow: auto;
+  border: 1px solid var(--ps-control-border, var(--ps-border));
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-background);
+  color: var(--ps-foreground);
+  font-family: var(--ps-mono, monospace);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  white-space: pre;
+  tab-size: 4;
+}
+.ps-wf-code > code, .ps-wf-code-inline { font: inherit; }
+
+/* Batch 6 (r-3): the side pane shows Step details or one panel at a time, each with its title and a way back to Step
+   details, the answer to the person's last command above it, then the panel, scrolling inside. */
+.ps-workflow-side, .ps-workflow-side-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.ps-workflow-side > .ps-workflow-node-details, .ps-workflow-side > .ps-workflow-empty { flex: 1 1 auto; min-height: 0; height: auto; overflow: auto; }
+.ps-workflow-side-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 12px;
+  border-bottom: 1px solid var(--ps-border);
+}
+.ps-workflow-side-bar h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ps-workflow-side-body { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.ps-workflow-side-panel.is-log .ps-workflow-side-body { overflow: hidden; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
+/* The bar already names the panel. */
+.ps-workflow-side-panel .ps-workflow-definition > h3,
+.ps-workflow-side-panel .ps-workflow-test-review > h3,
+.ps-workflow-side-panel .ps-workflow-variables > h3 { display: none; }
+.ps-workflow-panel-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ps-workflow-draft-tools { display: grid; gap: 8px; padding: 8px 12px; font-size: 0.75rem; }
+
+/* Batch 6 (f-04): the side pane's forms (publish or start review, test review, variables) are compact, on a phone too.
+   Their property rows are a tight two-column grid: small muted labels, values in normal weight, no row dividers. One
+   short muted note; JSON boxes size to their text (2 to 8 lines, then they scroll); buttons at the app's small size in
+   one row. */
+.ps-workflow-side-form { display: grid; gap: 6px; padding: 8px 12px; font-size: 0.75rem; }
+.ps-workflow-side-form .ps-workflow-property {
+  display: grid;
+  grid-template-columns: minmax(5.5em, 34%) minmax(0, 1fr);
+  gap: 0 10px;
+  padding: 1px 0;
+  border: 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+.ps-workflow-side-form .ps-workflow-property span { color: var(--ps-muted); font-size: 0.7rem; white-space: pre-wrap; }
+.ps-workflow-side-form .ps-workflow-property strong { font-weight: 400; text-align: left; }
+.ps-workflow-side-note { margin: 0; color: var(--ps-muted); font-size: 0.72rem; line-height: 1.4; }
+.ps-workflow-side-form textarea.ps-workflow-input { resize: vertical; }
+.ps-workflow-side-form fieldset { margin: 0; padding: 2px 8px 4px; border: 1px solid var(--ps-border); border-radius: var(--ps-radius-sm); }
+
+/* Batch 5 (g-02): the graph, drawn by React Flow (.ps-workflow-flow) once it has loaded and as a plain picture of the
+   same layout (.ps-workflow-graph-static) until then. Steps are HTML cards, edges SVG curves with a label box. */
+.ps-workflow-graph { position: relative; width: 100%; height: 100%; min-height: 0; color: var(--ps-wf-edge, var(--ps-muted)); }
+.ps-workflow-graph-static { width: 100%; height: 100%; overflow: auto; }
+.ps-workflow-graph-canvas {
+  position: relative;
+  margin: 0 auto;
+  background-image: radial-gradient(color-mix(in srgb, var(--ps-border) 35%, transparent) 0.7px, transparent 0.7px);
+  background-size: 18px 18px;
+}
+.ps-workflow-graph-edges { position: absolute; inset: 0; overflow: visible; }
+.ps-workflow-node-slot { position: absolute; }
+.ps-workflow-node {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  align-content: center;
+  gap: 1px;
+  padding: 6px 12px;
+  overflow: hidden;
+  /* OF-S2-8: a card's edge is seen on the canvas in every theme (3:1). */
+  border: 1.5px solid var(--ps-wf-node-border, var(--ps-border));
+  border-radius: 8px;
+  background: var(--ps-chrome);
+  color: var(--ps-foreground);
+  cursor: pointer;
+  outline: none;
+  text-align: left;
+}
+.ps-workflow-node.is-terminal { border-radius: 30px; padding-inline: 18px; }
+.ps-workflow-node-name, .ps-workflow-node-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-workflow-node-name { font-size: 13px; font-weight: 600; line-height: 1.35; }
+.ps-workflow-node-meta { color: var(--ps-muted); font-size: 10px; line-height: 1.4; padding-right: 3.5em; }
+.ps-workflow-node.is-selected, .ps-workflow-node:focus-visible { border-color: var(--ps-wf-selected, var(--ps-accent)); box-shadow: inset 0 0 0 1.5px var(--ps-wf-selected, var(--ps-accent)); }
+.ps-workflow-node.is-running { background: color-mix(in srgb, var(--ps-accent) 15%, var(--ps-surface)); }
+.ps-workflow-node.is-done:not(.is-selected) { border-color: var(--ps-success); }
+/* FUI-F2 (DEV run of 297824f4): a failed card's edge in the Workflow's danger colour, seen on the canvas in every theme
+   (the theme's own read 2.7:1 in gruvbox-dark and ms-dos). */
+.ps-workflow-node.is-failed { border-color: var(--ps-wf-danger-text, var(--ps-danger)); }
+.ps-workflow-node.is-cancelled { border-color: var(--ps-warning); }
+.ps-workflow-edge-path { fill: none; stroke: var(--ps-wf-edge, var(--ps-muted)); stroke-width: 1.5; }
+.ps-workflow-edge-label rect { fill: var(--ps-surface); stroke: color-mix(in srgb, var(--ps-border) 70%, transparent); stroke-width: 1; }
+.ps-workflow-edge-label text { fill: var(--ps-wf-edge-text, var(--ps-muted)); font-size: 10px; }
+.ps-workflow-edge[data-kind="error"] .ps-workflow-edge-label text { fill: var(--ps-wf-danger-text, var(--ps-danger)); }
+/* Owner 2026-11-09 (the timeline; "the current node should be highlight more and the history trail gets fainter"): the
+   last four transitions up to the visit shown are lit in the theme's lit colour (themeWorkflowColors "lit", 3:1 on the
+   canvas). Thickness says how often each was taken among the four (data-lit 1: once, 2: twice or more); brightness how long
+   ago it was last taken (data-lit-age 0, the newest, to 3). The current step (data-current: the visit shown, or Live's
+   newest) is filled with the lit colour, ringed thicker and glows; the selection keeps its own ring inside the card. No
+   animation. The Node panel and the Log say the same in words. */
+.ps-workflow-edge[data-lit] .ps-workflow-edge-path { stroke: var(--ps-wf-lit, var(--ps-warning)); stroke-width: 2.5; }
+.ps-workflow-edge[data-lit="2"] .ps-workflow-edge-path { stroke-width: 4.5; }
+.ps-workflow-edge-lit-arrow { fill: var(--ps-wf-lit, var(--ps-warning)); }
+.ps-workflow-edge[data-lit-age="1"] .ps-workflow-edge-path { stroke-opacity: 0.75; }
+.ps-workflow-edge[data-lit-age="2"] .ps-workflow-edge-path { stroke-opacity: 0.5; }
+.ps-workflow-edge[data-lit-age="3"] .ps-workflow-edge-path { stroke-opacity: 0.35; }
+.ps-workflow-edge[data-lit-age="1"] .ps-workflow-edge-lit-arrow { fill-opacity: 0.75; }
+.ps-workflow-edge[data-lit-age="2"] .ps-workflow-edge-lit-arrow { fill-opacity: 0.5; }
+.ps-workflow-edge[data-lit-age="3"] .ps-workflow-edge-lit-arrow { fill-opacity: 0.35; }
+/* Owner 2026-11-09T06:40Z: while the run is active, a soft light travels each lit edge from its source to its target, one pass
+   every 1.6 s whatever the edge's length (pathLength 1), as bright as its edge's age; the passes ripple from the oldest lit
+   edge to the newest. An ended run's edges, and every edge with reduced motion, are still. No other motion. */
+@keyframes ps-wf-edge-flow { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+.ps-workflow-edge-flow {
+  fill: none;
+  stroke: var(--ps-wf-lit, var(--ps-warning));
+  stroke-width: 3.5;
+  stroke-linecap: round;
+  stroke-dasharray: 0.14 0.86;
+  stroke-dashoffset: 1;
+  pointer-events: none;
+  filter: drop-shadow(0 0 3px var(--ps-wf-lit, var(--ps-warning)));
+  animation: ps-wf-edge-flow 1.6s linear infinite;
+}
+.ps-workflow-edge[data-lit="2"] .ps-workflow-edge-flow { stroke-width: 5.5; }
+.ps-workflow-edge[data-lit-age="3"] .ps-workflow-edge-flow { opacity: 0.35; animation-delay: 0s; }
+.ps-workflow-edge[data-lit-age="2"] .ps-workflow-edge-flow { opacity: 0.5; animation-delay: 0.2s; }
+.ps-workflow-edge[data-lit-age="1"] .ps-workflow-edge-flow { opacity: 0.75; animation-delay: 0.4s; }
+.ps-workflow-edge[data-lit-age="0"] .ps-workflow-edge-flow { animation-delay: 0.6s; }
+@media (prefers-reduced-motion: reduce) {
+  .ps-workflow-edge-flow { animation: none; display: none; }
+}
+.ps-workflow-node[data-lit] { outline: 1.5px solid var(--ps-wf-lit, var(--ps-warning)); outline-offset: 3px; }
+.ps-workflow-node[data-lit="2"] { outline-width: 3px; }
+.ps-workflow-node[data-lit-age="1"] { outline-color: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 75%, transparent); }
+.ps-workflow-node[data-lit-age="2"] { outline-color: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 50%, transparent); }
+.ps-workflow-node[data-lit-age="3"] { outline-color: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 35%, transparent); }
+.ps-workflow-node[data-current="true"] {
+  outline: 4.5px solid var(--ps-wf-lit, var(--ps-warning));
+  outline-offset: 3px;
+  background: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 20%, var(--ps-chrome));
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 60%, transparent));
+}
+.ps-workflow-node.is-running[data-current="true"] {
+  background: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 20%, color-mix(in srgb, var(--ps-accent) 15%, var(--ps-surface)));
+}
+/* FUI-F2 (DEV run of the timeline): on the current step's lit fill a kind's icon fell under 3:1 (2.9 in nine themes). Its
+   well keeps the card's own ground under it, so the icon reads as on any other card. */
+.ps-workflow-node[data-current="true"] .ps-workflow-node-icon { background: color-mix(in srgb, currentColor 16%, var(--ps-chrome)); }
+.ps-workflow-node.is-running[data-current="true"] .ps-workflow-node-icon {
+  background: color-mix(in srgb, currentColor 16%, color-mix(in srgb, var(--ps-accent) 15%, var(--ps-surface)));
+}
+/* Owner batch 7 (H2): a parallel step's branch box, dashed and drawn as a stack (two outlines behind it, from its
+   shadows, which are never painted inside it), and its join bar under it. The box lets a press through to the graph
+   except on its label row, where it is dragged. */
+.ps-workflow-group-slot, .ps-workflow-join-slot { position: absolute; }
+.ps-workflow-group {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  border: 1.5px dashed var(--ps-wf-edge, color-mix(in srgb, var(--ps-muted) 75%, transparent));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ps-surface) 55%, transparent);
+  box-shadow: 4px 4px 0 -1.5px var(--ps-surface), 4px 4px 0 0 var(--ps-border), 8px 8px 0 -1.5px var(--ps-surface), 8px 8px 0 0 var(--ps-border);
+  pointer-events: none;
+}
+.ps-workflow-group.is-waiting { border-color: var(--ps-accent); }
+/* Named branches are lanes side by side in one box, not a stack of items. */
+.ps-workflow-group.is-named { box-shadow: none; }
+.ps-workflow-group.is-joined, .ps-workflow-group.is-done { border-color: var(--ps-success); }
+.ps-workflow-group.is-blocked, .ps-workflow-group.is-failed, .ps-workflow-group.is-timed_out { border-color: var(--ps-wf-danger-text, var(--ps-danger)); }
+.ps-workflow-group-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 8px 12px; pointer-events: auto; cursor: grab; }
+.ps-workflow-graph-static .ps-workflow-group-head { cursor: default; }
+.ps-workflow-group-label { flex: none; color: var(--ps-foreground); font-size: 11px; font-weight: 600; }
+.ps-workflow-group-counts { min-width: 0; overflow: hidden; color: var(--ps-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.ps-workflow-join {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  align-content: start;
+  gap: 1px;
+  padding: 0 4px;
+  color: var(--ps-muted);
+  font-size: 10px;
+  line-height: 1.3;
+  text-align: center;
+  cursor: pointer;
+  outline: none;
+}
+.ps-workflow-join-bar { display: block; height: 7px; margin-bottom: 3px; border-radius: 3px; background: var(--ps-muted); }
+.ps-workflow-join-rule { min-width: 0; color: var(--ps-foreground); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-workflow-join-limit { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-workflow-join.is-waiting .ps-workflow-join-bar { background: var(--ps-accent); }
+.ps-workflow-join.is-joined .ps-workflow-join-bar, .ps-workflow-join.is-done .ps-workflow-join-bar { background: var(--ps-success); }
+.ps-workflow-join.is-blocked .ps-workflow-join-bar, .ps-workflow-join.is-failed .ps-workflow-join-bar,
+.ps-workflow-join.is-timed_out .ps-workflow-join-bar { background: var(--ps-wf-danger-text, var(--ps-danger)); }
+.ps-workflow-join.is-cancelled .ps-workflow-join-bar { background: var(--ps-warning); }
+.ps-workflow-join.is-selected .ps-workflow-join-bar, .ps-workflow-join:focus-visible .ps-workflow-join-bar { box-shadow: 0 0 0 2px var(--ps-accent); }
+/* React Flow, in the app's colours in every theme: edges and arrowheads in the muted text colour, the dots of the
+   background from the border colour, the attribution on the surface. */
+.ps-workflow-flow {
+  --xy-edge-stroke: var(--ps-wf-edge, var(--ps-muted));
+  --xy-edge-stroke-width: 1.5;
+  --xy-background-color: transparent;
+  --xy-background-pattern-dots-color: color-mix(in srgb, var(--ps-border) 60%, transparent);
+  --xy-attribution-background-color: color-mix(in srgb, var(--ps-surface) 75%, transparent);
+  background: transparent;
+}
+.ps-workflow-flow .react-flow__attribution a { color: var(--ps-muted); }
+.ps-workflow-flow .react-flow__node { cursor: default; }
+/* Batch 6 (f-03): a step box is dragged by its card; while it moves it shows it is held. */
+.ps-workflow-flow .react-flow__node.dragging .ps-workflow-node { cursor: grabbing; box-shadow: 0 6px 18px color-mix(in srgb, var(--ps-foreground) 18%, transparent); }
+/* The invisible handles React Flow measures for where edges meet a step (batch 5 T8): never seen, never hit. */
+.ps-workflow-flow .react-flow__handle.ps-workflow-handle { opacity: 0; pointer-events: none; }
+/* The hand is off: the graph stays still, and a finger on it scrolls the page. */
+.ps-workflow-flow.is-still .react-flow__pane { touch-action: pan-x pan-y; cursor: default; }
+.ps-workflow-graph-controls {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--ps-border);
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-chrome);
+}
+.ps-workflow-graph-controls .ps-mini-button.ps-workflow-tool-button[aria-pressed="true"] { color: var(--ps-accent); border-color: var(--ps-accent); }
+.ps-workflow-log > .ps-chat-panel { height: 100%; border: 0; border-radius: 0; }
+/* In the side pane the bar above already says "Step log". */
+.ps-workflow-log .ps-chat-panel > .ps-panel-header { display: none; }
+/* Owner batch 7 (H1): compact at the top of the graph area and of the side pane, scrolled when long. */
+.ps-workflow-empty { padding: 20px; color: var(--ps-muted); display: grid; gap: 12px; align-content: start; min-height: 0; overflow: auto; }
+.ps-workflow-empty.is-drafting > strong { color: var(--ps-foreground); }
+.ps-workflow-draft-errors > summary { cursor: pointer; }
+.ps-workflow-draft-errors > .ps-workflow-diagnostics { margin-top: 8px; }
+.ps-workflow-node-details { height: 100%; overflow: auto; padding: 16px; }
+.ps-workflow-node-details header small { color: var(--ps-muted); font-size: 0.75rem; letter-spacing: 0.06em; }
+.ps-workflow-node-details h2 { margin: 8px 0; font-size: 1.2rem; overflow-wrap: anywhere; }
+.ps-workflow-node-details h3 { margin: 22px 0 10px; font-size: 0.85rem; }
+.ps-workflow-node-details p { color: var(--ps-muted); font-size: 0.85rem; line-height: 1.6; }
+.ps-workflow-detail-tabs { display: flex; gap: 14px; border-bottom: 1px solid var(--ps-border); }
+.ps-workflow-detail-tabs button {
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ps-muted);
+  padding: 10px 0;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+.ps-workflow-detail-tabs button[aria-selected="true"] { border-color: var(--ps-accent); color: var(--ps-accent); }
+.ps-workflow-detail-content { padding-top: 12px; }
+.ps-workflow-property { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--ps-border); font-size: 0.85rem; }
+.ps-workflow-property span { color: var(--ps-muted); }
+.ps-workflow-property strong { font-weight: 500; text-align: right; overflow-wrap: anywhere; }
+.ps-workflow-transition { display: block; width: 100%; text-align: left; padding: 8px 0; border: 0; background: transparent; color: var(--ps-accent); font: inherit; font-size: 0.85rem; cursor: pointer; overflow-wrap: anywhere; }
+.ps-workflow-detail-content pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--ps-chrome); font-size: 0.85rem; }
+.ps-workflow-detail-content table { border-collapse: collapse; width: 100%; font-size: 0.8rem; }
+.ps-workflow-detail-content th, .ps-workflow-detail-content td { text-align: left; padding: 8px 4px; border-bottom: 1px solid var(--ps-border); }
+
+.ps-workflow-glyph {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.12em;
+  flex: 0 0 auto;
+}
+
+.ps-workflow-kind {
+  display: inline-flex;
+  align-items: center;
+  padding-right: 0.35em;
+}
+
+/* OF-S2-5: a session that has grown Workflows. After its title, smaller and muted: never read as a Workflow row's own
+   (coloured, leading) mark. */
+.ps-workflow-owner-mark {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding-left: 0.35em;
+  color: var(--ps-muted);
+  font-size: 0.85em;
+}
+
+/* OF-S2-5-F1: the mark is always on screen, right after the title: [title (shrinks, ellipsis)] [mark (never shrinks)]
+   [the rest (gives way first)]. The wrap mode's and the phone's titles are blocks, so a title with the mark is a flex row
+   in every mode (each selector matches the one it overrides, plus .has-owner-mark). */
+.ps-session-row-content.has-owner-mark,
+.ps-session-row-title.has-owner-mark,
+.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-title.has-owner-mark,
+.ps-session-pane.ps-mobile-session-pane .ps-session-row-title.has-owner-mark,
+.ps-panel-title.has-owner-mark {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.has-owner-mark > .ps-session-row-title__text,
+.has-owner-mark > .ps-panel-title__text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.has-owner-mark > .ps-workflow-owner-mark { flex: none; }
+.has-owner-mark > .ps-session-row-title__rest,
+.has-owner-mark > .ps-panel-title__rest {
+  flex: 0 1000 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ps-workflow-progress {
+  margin: 6px 0;
+  border-left: 2px solid var(--ps-muted);
+  padding-left: 8px;
+}
+
+.ps-workflow-progress .ps-system-notice-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  white-space: normal;
+}
+
+.ps-workflow-progress .ps-system-notice-summary-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .ps-share-overlay {
@@ -7841,7 +8529,9 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   .ps-share-add-select,
   .ps-admin-add__scope,
   .ps-prompt-input,
-  .ps-prompt-shell.is-mobile .ps-prompt-input {
+  .ps-prompt-shell.is-mobile .ps-prompt-input,
+  .ps-workflow-input,
+  .ps-workflow-yaml {
     font-size: max(16px, 1em);
   }
 
@@ -9553,6 +10243,26 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   text-overflow: clip;
 }
 
+/* OF-S2-5-F1 at 390 px (42fe6838 DEV): rows here pan sideways at their full width, so a long title pushed the "Has
+   Workflows" mark past the list's visible edge. A row with the mark is as wide as the visible list at most, its title
+   takes the ellipsis, and the mark stays right after it: [title (shrinks)] [mark (never)] [the rest (first to give way)]. */
+.ps-session-pane.ps-mobile-session-pane .ps-session-list-track {
+  container-type: inline-size;
+}
+.ps-session-pane.ps-mobile-session-pane .ps-session-list-track .ps-list-button:has(.has-owner-mark) {
+  box-sizing: border-box;
+  max-width: 100cqw;
+}
+.ps-session-pane.ps-mobile-session-pane .ps-session-list-track .ps-line.has-owner-mark {
+  max-width: 100%;
+  overflow: hidden;
+}
+.ps-session-pane.ps-mobile-session-pane .ps-session-list-track .has-owner-mark > .ps-session-row-title__text,
+.ps-session-pane.ps-mobile-session-pane .ps-session-list-track .has-owner-mark > .ps-session-row-title__rest {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* The mobile inspector KEEPS horizontal scroll: the sequence grid is sized to
    fit (2 columns of slack for iOS's wider monospace), but logs, execution
    history and wide tables genuinely exceed a phone — clipping them made the
@@ -10765,6 +11475,8 @@ textarea.ps-link-input {
   .ps-toolbar:not(.is-mobile) {
     --ps-header-button: 44px;
     --ps-header-pair: 94px;
+    /* Canvas, Workflow and Diagnostics (Workflow Simplified, L1): three buttons after Back and Forward. */
+    --ps-header-panels: 144px;
     /* The flank weights put Back / Forward on the screen's centre (Toolbar
        measures the header); equal flanks until they are set. */
     grid-template-columns: minmax(0, var(--ps-toolbar-left, 1fr)) auto minmax(0, var(--ps-toolbar-right, 1fr));
@@ -10772,7 +11484,7 @@ textarea.ps-link-input {
   }
   .ps-toolbar:not(.is-mobile) > .ps-toolbar-side { min-width: 0; min-height: 44px; }
   .ps-toolbar-navigation {
-    display: grid; grid-template-columns: repeat(3, var(--ps-header-pair));
+    display: grid; grid-template-columns: var(--ps-header-pair) var(--ps-header-pair) var(--ps-header-panels);
     gap: 6px; height: 44px; flex-wrap: nowrap;
   }
   .ps-toolbar-context, .ps-toolbar-history { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -10794,12 +11506,20 @@ textarea.ps-link-input {
    both rows keeps the navigation's vertical position stable as well. The
    widest mode decides: a full-screen canvas puts its controls (pane tabs,
    canvas picker, zoom, zen, restore: about 341 px) in the left rail, and the
-   two rails are equal around the 294 px navigation, so one row needs about
-   1,000 px. At 960 a header that measured 961-1,000 px (WebKit's narrower
-   brand at 1,280 px) kept one row and the canvas controls ran into the
-   navigation. */
-@container header-tools (max-width: 1040px) {
-  .ps-toolbar:not(.is-mobile) { grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 44px max(36px, var(--ps-control-min-height, 34px)); gap: 4px 6px; }
+   two rails are equal around the 344 px navigation (Back, Forward, and the
+   Canvas, Workflow and Diagnostics buttons), so one row needs about 1,050 px.
+   At 960 a header that measured 961-1,000 px (WebKit's narrower brand at
+   1,280 px) kept one row and the canvas controls ran into the navigation; the
+   threshold keeps 40 px above the need (1,090 px). */
+@container header-tools (max-width: 1090px) {
+  .ps-toolbar:not(.is-mobile) {
+    grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 44px max(36px, var(--ps-control-min-height, 34px)); gap: 4px 6px;
+    /* The Workflow button (Workflow Simplified, L1) took 50 px from this row; 40 px wide buttons give it back, so the
+       mode buttons on the right never run over Diagnostics (still 44 px tall). */
+    --ps-header-button: 40px;
+    --ps-header-pair: 86px;
+    --ps-header-panels: 132px;
+  }
   .ps-toolbar:not(.is-mobile) > .ps-toolbar-navigation { grid-column: 1; grid-row: 1; }
   .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-left { grid-column: 1 / -1; grid-row: 2; min-height: max(36px, var(--ps-control-min-height, 34px)); }
   .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-right { grid-column: 2; grid-row: 1; gap: 6px; }
@@ -10893,7 +11613,11 @@ textarea.ps-link-input {
   font-weight: 700;
 }
 .ps-side-pane-tab svg { width: 14px; height: 14px; }
-.ps-side-pane-body { position: relative; overflow: hidden; }
+/* A clipping box, never a scroller: its layers are parked outside it (translateX(-105%)) and scroll inside themselves.
+   With `overflow: hidden` alone it could still be scrolled from script (focus, scrollIntoView, an automation's scroll
+   into view): a phone's Workflow tab, whose content was a few pixels wider than the pane, then sat shifted left with a
+   dead strip at its left edge, where a press reached the page instead of the graph. */
+.ps-side-pane-body { position: relative; overflow: hidden; overflow: clip; }
 .ps-side-pane-layer {
   position: absolute;
   inset: 0;
@@ -11759,6 +12483,40 @@ textarea.ps-link-input {
   box-shadow: inset 1px 1px 0 var(--w95-face), inset -1px -1px 0 var(--w95-shadow);
   background: var(--w95-face);
 }
+:root[data-ps-theme="win95"] .ps-wf-tab {
+  /* r3 C15: the Workflow tab is the canvas pane's window face, not the teal desktop its text read 4.4:1 (muted 1.9:1) on.
+     (OF-S2-8: the theme says so too, page.workflowGround, and the graph's colours are chosen against it.) */
+  background: var(--w95-face);
+}
+/* OF-S2-8: the YAML box and the code boxes are text wells (white, inset), as the pickers are: highlighted code on the teal
+   they took from the page background read 1.9:1 to 4.4:1. Final review FUI-F2: every code box of the tab (a result, a
+   whole value, the variables), and the older detail pane's, not only the script's and samples'. */
+:root[data-ps-theme="win95"] .ps-wf-tab .ps-workflow-yaml,
+:root[data-ps-theme="win95"] .ps-wf-tab pre.ps-wf-code,
+:root[data-ps-theme="win95"] .ps-wf-tab .ps-workflow-compare-view,
+:root[data-ps-theme="win95"] .ps-workflow-detail-content pre.ps-wf-code {
+  background: #ffffff;
+  color: var(--w95-dark);
+  border: 2px solid;
+  border-color: var(--w95-shadow) var(--w95-light) var(--w95-light) var(--w95-shadow);
+  border-radius: 0;
+}
+/* Final review FUI-F2: an inline value (the variables table) sits in a white well too, and an error result stays the
+   danger colour in its well. */
+:root[data-ps-theme="win95"] .ps-wf-tab code.ps-wf-code-inline { background: #ffffff; color: var(--w95-dark); padding: 0 2px; }
+:root[data-ps-theme="win95"] .ps-wf-tab .ps-wf-result.is-error pre.ps-wf-code { color: var(--ps-wf-danger-text, var(--ps-danger)); }
+/* Its pickers and fields are win95's text wells (white, inset), as the composer is: black on the teal they took from the
+   page background read 4.4:1 (the 5482bae3 win95 screenshot: "#2 of 2"). UXP-GEM-06: their top and left edges are the
+   sunken field's dark edge (--w95-dark, 11.5:1 on the window face), not its grey shadow (#808080, 2.17:1), so a picker's
+   edge is seen on the face; the YAML box (an edit box too) has the same edges. */
+:root[data-ps-theme="win95"] .ps-wf-tab .ps-workflow-input {
+  background: #ffffff;
+  color: var(--w95-dark);
+  border: 2px solid;
+  border-color: var(--w95-dark) var(--w95-light) var(--w95-light) var(--w95-dark);
+  border-radius: 0;
+}
+:root[data-ps-theme="win95"] .ps-wf-tab .ps-workflow-yaml { border-color: var(--w95-dark) var(--w95-light) var(--w95-light) var(--w95-dark); }
 :root[data-ps-theme="win95"] .ps-mobile-canvas-layer .ps-canvas-pane {
   border: 0;
   box-shadow: none;
@@ -11984,9 +12742,10 @@ textarea.ps-link-input {
   .portal-header-user .portal-header-version { display: none; }
 }
 
-/* Phone toolbar: all eight buttons on one row at any phone width. Each one
-   gives up a few pixels (never under 34px) instead of the last action sliding
-   under the view-mode group, where only a sideways swipe found it. */
+/* Phone toolbar: all nine buttons on one row at any phone width (Workflow
+   Simplified added the Workflow button beside Canvas). Each one gives up a
+   few pixels (never under 34px) instead of the last action sliding under the
+   view-mode group, where only a sideways swipe found it. */
 @media (max-width: 420px) {
   .ps-toolbar.is-mobile .ps-toolbar-row { gap: 6px; }
   .ps-toolbar.is-mobile .ps-toolbar-row-actions { gap: 4px; }
@@ -11994,7 +12753,7 @@ textarea.ps-link-input {
   .ps-toolbar.is-mobile .ps-toolbar-row-actions .ps-icon-button {
     flex: 0 0 auto;
     box-sizing: border-box;
-    width: clamp(34px, calc((100vw - 62px) / 8), 44px);
+    width: clamp(34px, calc((100vw - 62px) / 9), 44px);
     min-width: 0;
     padding-left: 0;
     padding-right: 0;
@@ -12213,6 +12972,814 @@ textarea.ps-link-input {
   .ps-motd-history-row > .ps-motd-history-actions { grid-column: 1; grid-row: 4; }
 }
 
+
+/* ── Workflow Simplified, stage 1 (spec draft 3) ───────────────────────────
+   The Workflow tab shares the right block with the canvas (L1): a header row
+   (definition picker, Definition | Workflows), the graph or the list, and a
+   bottom panel that is closed by default (L5). The graph keeps 150px. */
+
+.ps-wf-layer { display: flex; flex-direction: column; min-height: 0; }
+.ps-wf-tab {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  /* OF-S2-8: the --ps-wf-* colours are each theme's own, seen on this ground (themeWorkflowColors). */
+  background: var(--ps-wf-ground, var(--ps-background));
+  color: var(--ps-foreground);
+  font-size: var(--ps-font-size-dense, 13px);
+}
+.ps-wf-tab-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--ps-border);
+}
+/* Zen and full screen (a phone: maximize), the canvas's own buttons, at the right end of the Workflow tab's header. */
+.ps-wf-tab-modes { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; flex: none; }
+.ps-wf-tab-modes .ps-canvas-max-btn { margin-left: 0; }
+.ps-wf-picker { display: inline-flex; min-width: 0; }
+.ps-wf-picker-select { max-width: 100%; min-width: 0; }
+/* A plain picker (a Workflow session's Definition picker) is drawn by the page, not the browser: WebKit's own select face
+   ignored the theme's ground and showed the theme's light words on white (DEV at bfa03e9b). Its arrow is drawn in its own
+   colour at its end. More specific than win95's text wells (which set the ground with the background shorthand). */
+.ps-wf-tab .ps-wf-picker select.ps-workflow-input.ps-wf-picker-select {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 24px;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 13px) 50%, calc(100% - 8px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+/* Owner, 2026-11-06T13:43Z (F2): the Workflow picker reads "#7 of 7" closed; its open list (the native one, a phone's
+   too) is one group that says how many. The face is drawn; the select lies over it, transparent, and takes the taps. */
+.ps-wf-picker.is-faced { position: relative; flex: none; }
+.ps-wf-picker-face {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  pointer-events: none;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.ps-wf-picker-face-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ps-wf-picker-face::after { content: "\25BE"; color: var(--ps-muted); flex: none; }
+.ps-wf-picker.is-faced > .ps-wf-picker-native {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.ps-wf-picker.is-faced:focus-within > .ps-wf-picker-face { border-color: var(--ps-accent); outline: 2px solid var(--ps-accent); outline-offset: 1px; }
+/* OF-S2-8 (owner, 2026-11-07T23:18Z): each picker says what it picks in words before it ("Definition", "Rev", "Workflow").
+   The chat's header is one row: Definition, then Rev, the view icons, YAML, Compare and Start…, full screen at the right.
+   The definition's name gives way with an ellipsis (its full name is the picker's tooltip); a narrow pane wraps the rest to
+   a second line; a phone always does (below). */
+.ps-wf-picker-group { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.ps-wf-picker-label { flex: none; white-space: nowrap; color: var(--ps-foreground); cursor: pointer; }
+.ps-wf-picker-group.is-definition { flex: 0 1 auto; }
+.ps-wf-picker.is-faced.is-definition { flex: 0 1 auto; display: inline-flex; min-width: 4em; max-width: 24em; }
+.ps-wf-picker.is-faced.is-revision > .ps-wf-picker-face { min-width: 3.2em; }
+.ps-wf-tab-head.is-pickers { row-gap: 6px; }
+.ps-wf-head-rest { display: inline-flex; align-items: center; gap: 8px; flex: none; }
+.ps-wf-head-actions { display: inline-flex; align-items: center; gap: 6px; }
+/* The dimmed line under the row: the shown revision's detail (who, when, version, newest, not valid, a package's), its last
+   test, and Delete… at its end. "not valid" keeps the danger colour. */
+.ps-wf-line.ps-wf-info { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.ps-wf-info-text { flex: 1 1 auto; min-width: 0; }
+.ps-wf-info-error { color: var(--ps-wf-danger-text, var(--ps-danger)); }
+.ps-wf-info-actions { display: inline-flex; flex: none; margin-left: auto; }
+select.ps-workflow-input optgroup { background: var(--ps-background); color: var(--ps-muted); }
+.ps-wf-switch {
+  display: inline-flex;
+  border: 1px solid var(--ps-border);
+  border-radius: var(--ps-radius-sm);
+  overflow: hidden;
+}
+.ps-wf-switch:not(.is-icons) button,
+.ps-wf-panel-tabs button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ps-muted);
+  font: inherit;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+/* r3 C15: the tab shown (Node, Log, Variables) takes the top bar's selected tokens, each theme's fill with its own
+   foreground (6.3:1 or more in every theme). The selection colour with the page's foreground on it read 1.65:1 in
+   Workspace Dark and 3.04:1 in GitHub Light ("Node"). */
+.ps-wf-switch button.is-on,
+.ps-wf-panel-tabs button.is-on {
+  background: var(--ps-modal-selected-background);
+  color: var(--ps-modal-selected-foreground);
+}
+/* Owner, 2026-11-06T13:43Z (F1): the Definition | Workflows switch is two icon toggles, and the header's and toolbars'
+   buttons are icons (Workflow tool buttons, 32 px; a phone's are 44 px, below), in each theme's own button look. */
+.ps-wf-switch.is-icons { gap: 2px; border: 0; border-radius: 0; overflow: visible; }
+/* Owner, 2026-11-06T14:35Z (F5): a pressed toggle (the view shown, YAML, Compare, Move the graph) is the top bar's
+   pressed button: the selected tokens every theme defines for it (a fill with its own foreground), and win95's latched
+   and ms-dos's reverse-video looks. The selection colour it used before equals the accent in some themes (High
+   Contrast: a white square, the icon gone). */
+/* A toggle's fill changes with its icon in the same frame. The base button eases its background in over 120 ms while its
+   colour changes at once, so for those frames a pressed icon sat on the old fill: in themes whose pressed icon is the page
+   colour (cobalt2, hearth) it vanished (1:1), on every press. Only the fill and edge stop easing: the hover lift keeps its
+   120 ms (dropping it too changed when a second Zoom out lands during the first one's 150 ms zoom; 997ee50c). */
+.ps-wf-tab .ps-mini-button.ps-workflow-tool-button { transition: transform 120ms ease; }
+.ps-wf-tab .ps-mini-button.ps-workflow-tool-button[aria-pressed="true"] {
+  border-color: var(--ps-modal-selected-border);
+  background: var(--ps-modal-selected-background);
+  color: var(--ps-modal-selected-foreground);
+}
+:root[data-ps-theme="win95"] .ps-wf-tab .ps-mini-button.ps-workflow-tool-button[aria-pressed="true"] {
+  border-color: var(--w95-dark) var(--w95-light) var(--w95-light) var(--w95-dark);
+  box-shadow: none;
+  background:
+    repeating-conic-gradient(var(--w95-face) 0% 25%, #dfdfdf 0% 50%) 0 0 / 2px 2px;
+  color: var(--w95-dark);
+}
+:root[data-ps-theme="ms-dos"] .ps-wf-tab .ps-mini-button.ps-workflow-tool-button[aria-pressed="true"] {
+  background: var(--dos-fg);
+  color: #000000;
+  border-color: var(--dos-bright);
+}
+.ps-wf-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.ps-wf-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--ps-border);
+}
+.ps-wf-bar.is-foot { border-bottom: 0; border-top: 1px solid var(--ps-border); }
+.ps-wf-bar-text { color: var(--ps-muted); min-width: 0; overflow-wrap: anywhere; }
+/* Stage 2.2: a revision's last agent test beside the revision picker. */
+.ps-wf-last-test.is-passed { color: var(--ps-success, var(--ps-muted)); }
+.ps-wf-last-test.is-failed { color: var(--ps-wf-danger-text, var(--ps-danger)); }
+.ps-wf-bar-actions { display: inline-flex; gap: 6px; margin-left: auto; }
+.ps-wf-line { margin: 0; padding: 6px 10px; border-bottom: 1px solid var(--ps-border); overflow-wrap: anywhere; }
+.ps-wf-line.is-error {
+  color: var(--ps-wf-danger-text, var(--ps-danger));
+  background: color-mix(in srgb, var(--ps-danger) 10%, transparent);
+}
+.ps-wf-line.is-quiet { color: var(--ps-muted); }
+/* Owner, 2026-11-06T19:40Z (F9): the Workflows view's line about a definition's children not started yet, and their list. */
+.ps-wf-unstarted { flex: none; }
+.ps-wf-unstarted > .ps-wf-line .ps-link-button { margin-left: 4px; }
+/* Review UI3-F7: a long list of children not started scrolls in its own bounded area, so its oldest Show it stays
+   reachable and the started Workflows below keep their room. */
+.ps-wf-unstarted-list { margin: 0; padding: 4px 10px 6px 28px; border-bottom: 1px solid var(--ps-border); overflow-wrap: anywhere;
+  max-height: min(14em, 35vh); overflow-y: auto; overscroll-behavior: contain; }
+.ps-wf-unstarted-list > li { padding: 2px 0; }
+/* Review UI3-F8: on a phone the draft actions (Show it, Start…, the way to the newest) are 44 px targets themselves.
+   Final review FUI-F1: a phone held sideways too (the merged phone query). */
+@media (max-width: 600px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
+  .ps-wf-unstarted .ps-link-button,
+  .ps-wf-bar .ps-link-button[data-action="show-newest"] {
+    display: inline-flex; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; padding: 0 8px;
+  }
+}
+/* A failed Workflow's error as it arrived, folded under its plain-words headline. */
+.ps-wf-failure { flex: none; }
+.ps-wf-failure-details { padding: 4px 10px 6px; border-bottom: 1px solid var(--ps-border); }
+.ps-wf-failure-details > summary { cursor: pointer; color: var(--ps-muted); }
+.ps-wf-failure-details > pre {
+  margin: 6px 0 0; max-height: 12em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: 12px; color: var(--ps-muted);
+}
+.ps-wf-errors { padding: 6px 10px; overflow: auto; align-self: flex-start; }
+.ps-wf-errors > summary { cursor: pointer; color: var(--ps-muted); }
+.ps-wf-test { display: flex; flex-direction: column; gap: 8px; }
+.ps-wf-main { position: relative; display: flex; flex: 1 1 auto; min-height: 150px; }
+.ps-wf-main[hidden] { display: none; }
+.ps-wf-main > * { flex: 1 1 auto; min-width: 0; }
+.ps-wf-yaml { overflow: auto; flex-direction: column; }
+.ps-wf-muted { margin: 0; padding: 8px 10px; color: var(--ps-muted); }
+.ps-wf-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex: 1 1 auto;
+  padding: 24px;
+  text-align: center;
+  color: var(--ps-muted);
+}
+.ps-wf-empty p { margin: 0; }
+.ps-wf-empty-title { color: var(--ps-foreground); font-size: 1.05em; }
+.ps-mini-button.is-primary { border-color: var(--ps-success); color: var(--ps-success); }
+.ps-mini-button.is-danger { border-color: var(--ps-danger); color: var(--ps-danger); }
+.ps-link-button {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ps-accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* A Workflow's state (05): in the tab, the list and the session rows. */
+.ps-wf-state {
+  --ps-wf-tone: var(--ps-muted);
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border: 1px solid var(--ps-wf-tone);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ps-wf-tone) 14%, transparent);
+  /* r3 C15: the words in the theme's foreground, the state's colour in the edge and a light fill. Several themes' state
+     colours read under 4.5:1 as text (gruvbox's red 2.7:1, ms-dos's 2.7:1, win95's cyan 2.6:1). */
+  color: var(--ps-foreground);
+  font-size: 0.92em;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.ps-wf-state.is-running { --ps-wf-tone: var(--ps-accent); }
+.ps-wf-state.is-waiting { --ps-wf-tone: var(--ps-warning); }
+.ps-wf-state.is-paused,
+.ps-wf-state.is-canceling,
+.ps-wf-state.is-canceled { --ps-wf-tone: var(--ps-muted); }
+.ps-wf-state.is-failed { --ps-wf-tone: var(--ps-wf-danger-text, var(--ps-danger)); }
+.ps-wf-state.is-completed { --ps-wf-tone: var(--ps-success); }
+.ps-session-row-workflow-state { margin-left: auto; flex: none; font-size: 0.85em; }
+/* UX2D-F11: in a narrow session column (1024 px with the Workflow tab open) a Workflow row read "… Completed [+1]": its
+   state chip and the [+N] badge do not shrink, so the title gave all its width away. The title keeps its start (about 12
+   characters: "ux-defs #1"), and the chip gives way first, cut with an ellipsis. */
+.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-line.has-workflow-state > .ps-session-row-title {
+  min-width: min(12ch, 55%);
+}
+.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-line.has-workflow-state > .ps-session-row-workflow-state {
+  display: inline-block;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ps-session-row-content.is-chat-owner,
+.ps-session-list-button.is-chat-owner {
+  box-shadow: inset 2px 0 0 var(--ps-warning);
+}
+
+/* The Workflows list (W1). */
+.ps-wf-list { display: flex; flex-direction: column; overflow: auto; flex: 1 1 auto; min-height: 0; }
+.ps-wf-list-row {
+  display: grid;
+  grid-template-columns: 3.5em minmax(8em, 2fr) minmax(5em, 7em) minmax(6em, 1fr) 4.5em;
+  align-items: start;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--ps-border);
+  background: transparent;
+  color: var(--ps-foreground);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ps-wf-list-row.is-head { cursor: default; color: var(--ps-muted); font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.04em; }
+.ps-wf-list-row.is-action:hover,
+.ps-wf-list-row.is-action:focus-within { background: var(--ps-highlight-background); }
+.ps-wf-list-number { font-weight: 700; }
+.ps-wf-list-state { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+.ps-wf-list-reason { color: var(--ps-wf-danger-text, var(--ps-danger)); font-size: 0.9em; overflow-wrap: anywhere; }
+.ps-wf-list-version { min-width: 0; overflow-wrap: anywhere; }
+
+/* The bottom panel (L5): closed is one strip of panel tabs; open, it has ONE height (set inline from the person's
+   choice, per device class) whatever tab shows, and its body scrolls. Its top edge is the resize handle. */
+.ps-wf-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  min-height: 0;
+  /* UXFD-F7: the rule above the bottom panel is drawn in the control-border colour (3:1 or better), as controls are. */
+  border-top: 1px solid var(--ps-control-border, var(--ps-border));
+  background: var(--ps-surface);
+}
+.ps-wf-panel.is-closed { flex-direction: row; align-items: center; padding: 2px 6px; }
+.ps-wf-panel-resize {
+  position: relative;
+  flex: 0 0 auto;
+  height: 10px;
+  margin-top: -6px;
+  cursor: row-resize;
+  touch-action: none;
+}
+.ps-wf-panel-resize::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 4px;
+  width: 40px;
+  height: 3px;
+  margin-left: -20px;
+  border-radius: 2px;
+  background: var(--ps-border);
+}
+.ps-wf-panel-resize:hover::after,
+.ps-wf-panel-resize:focus-visible::after { background: var(--ps-accent, var(--ps-foreground)); }
+.ps-wf-panel-resize:focus-visible { outline: 2px solid var(--ps-selection-background); outline-offset: -2px; }
+.ps-wf-panel-bar { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-bottom: 1px solid var(--ps-border); }
+.ps-wf-panel-tabs { display: inline-flex; gap: 2px; }
+.ps-wf-panel-close {
+  margin-left: auto;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ps-muted);
+  font: inherit;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.ps-wf-panel-body { flex: 1 1 auto; overflow: auto; min-height: 0; padding: 8px 10px; }
+/* Owner, 2026-11-07T16:29Z (OF-S2-1): in full screen and zen on a desktop, the panel is a column to the right of the
+   graph, from below the header bars to the bottom; the graph's column keeps the YAML view and the replay timeline, and
+   at least 360 px (WORKFLOW_GRAPH_MIN_WIDTH). Open, the panel has ONE width (set inline, remembered per profile) and its
+   left edge is the resize handle; closed, it is a slim strip of the panel tabs, stacked. */
+.ps-wf-split { display: flex; flex-direction: row; flex: 1 1 auto; min-height: 0; min-width: 0; }
+.ps-wf-split-graph { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 360px; min-height: 0; }
+.ps-wf-panel.is-side {
+  position: relative;
+  flex: 0 1 auto;
+  min-width: 0;
+  border-top: 0;
+  border-left: 1px solid var(--ps-border);
+}
+.ps-wf-panel.is-side.is-closed { flex: 0 0 auto; flex-direction: column; align-items: stretch; padding: 6px 2px; }
+.ps-wf-panel.is-side.is-closed .ps-wf-panel-tabs { flex-direction: column; gap: 4px; }
+.ps-wf-panel.is-side.is-closed .ps-wf-panel-tabs button { writing-mode: vertical-rl; padding: 10px 4px; }
+.ps-wf-panel.is-side .ps-wf-panel-bar { flex-wrap: wrap; }
+.ps-wf-panel-resize.is-vertical {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  width: 10px;
+  height: auto;
+  margin: 0;
+  z-index: 2;
+  cursor: col-resize;
+}
+.ps-wf-panel-resize.is-vertical::after { left: 4px; top: 50%; width: 3px; height: 40px; margin: -20px 0 0 0; }
+.ps-wf-facts { display: grid; gap: 4px; }
+.ps-wf-fact { display: grid; grid-template-columns: 8em minmax(0, 1fr); gap: 8px; }
+.ps-wf-fact > span { color: var(--ps-muted); }
+.ps-wf-fact > strong { font-weight: 500; overflow-wrap: anywhere; }
+.ps-wf-node { display: grid; gap: 6px; }
+.ps-wf-node-head { margin: 0; overflow-wrap: anywhere; }
+/* The Node panel's summary (finding 7): what it does, Now, Runs, the last result, the agent, Next. */
+.ps-wf-summary, .ps-wf-def-node { display: grid; gap: 8px; }
+.ps-wf-what { margin: 0; font-size: 0.95em; overflow-wrap: anywhere; }
+.ps-wf-summary h3, .ps-wf-def-node h3 { margin: 0 0 2px; font-size: 0.8em; font-weight: 600; color: var(--ps-muted); }
+.ps-wf-result pre, .ps-wf-told pre {
+  margin: 0;
+  max-height: 12em;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 6px 8px;
+  border: 1px solid var(--ps-border);
+  border-radius: 4px;
+}
+.ps-wf-result.is-error pre { color: var(--ps-wf-danger-text, var(--ps-danger)); }
+.ps-wf-told summary { cursor: pointer; color: var(--ps-muted); }
+.ps-wf-told[open] summary { margin-bottom: 4px; }
+.ps-wf-agent { display: grid; gap: 6px; justify-items: start; }
+.ps-wf-next { display: grid; gap: 4px; justify-items: start; }
+.ps-wf-next ul { margin: 0; padding-left: 18px; }
+.ps-wf-next p, .ps-wf-summary > p.ps-wf-muted { margin: 0; }
+/* The Node panel never runs past its pane (GEM lane, WebKit at 390 px: its head, its description and a Result box were cut
+   at the right edge). A grid's items have no minimum width of their own, so a long head or value wraps and a code box
+   scrolls inside itself; the panel never scrolls sideways. */
+.ps-wf-node, .ps-wf-summary, .ps-wf-def-node, .ps-wf-facts, .ps-wf-more-list, .ps-wf-agent, .ps-wf-next { grid-template-columns: minmax(0, 1fr); }
+.ps-wf-node > *, .ps-wf-summary > *, .ps-wf-def-node > *, .ps-wf-facts > *, .ps-wf-more-list > *, .ps-wf-agent > *, .ps-wf-next > * {
+  min-width: 0;
+  max-width: 100%;
+}
+/* An agent node's Log (finding 8): one group per visit; Prompt, Agent and Workflow rows told apart by label and edge. */
+.ps-wf-log-panel { display: grid; gap: 8px; }
+.ps-wf-switch.is-log { justify-self: start; }
+.ps-wf-alog { display: grid; gap: 12px; }
+.ps-wf-alog-note { margin: 0; }
+.ps-wf-alog-visit h3 { margin: 0 0 4px; font-size: 0.85em; font-weight: 600; }
+.ps-wf-alog-status { font-weight: 400; color: var(--ps-muted); }
+/* OF-S2-7: the model a visit's agent session used, under its header; the Start dialog's agent nodes and their models. */
+.ps-wf-alog-model { margin: 0 0 4px; overflow-wrap: anywhere; }
+.ps-wf-models { margin: 0; padding-left: 1.2em; overflow-wrap: anywhere; }
+.ps-wf-alog-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.ps-wf-alog-row { border-left: 3px solid var(--ps-border); padding: 2px 0 2px 8px; display: grid; gap: 2px; min-width: 0; }
+.ps-wf-alog-row[data-kind="prompt"] { border-left-color: var(--ps-accent); }
+.ps-wf-alog-row[data-kind="agent"] { border-left-color: var(--ps-success); }
+.ps-wf-alog-row[data-kind="result"] { border-left-color: var(--ps-success); background: var(--ps-highlight-background); }
+.ps-wf-alog-row[data-kind="workflow"] { border-left-color: var(--ps-muted); color: var(--ps-muted); }
+.ps-wf-alog-row[data-level="warning"] { color: var(--ps-warning); }
+.ps-wf-alog-row[data-level="error"] { color: var(--ps-wf-danger-text, var(--ps-danger)); }
+.ps-wf-alog-head { display: flex; gap: 8px; align-items: baseline; font-size: 0.8em; }
+.ps-wf-alog-label { font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.ps-wf-alog-head time { color: var(--ps-muted); }
+.ps-wf-alog-text { display: grid; gap: 2px; justify-items: start; }
+.ps-wf-alog-text p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ps-wf-alog-row details summary { cursor: pointer; overflow-wrap: anywhere; }
+.ps-wf-alog-row pre { margin: 4px 0 0; max-height: 14em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.9em; }
+.ps-wf-log { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.ps-wf-log li { display: grid; grid-template-columns: auto 1fr; gap: 8px; overflow-wrap: anywhere; }
+.ps-wf-log li[data-level="error"] { color: var(--ps-wf-danger-text, var(--ps-danger)); }
+.ps-wf-log li[data-level="warning"] { color: var(--ps-warning); }
+.ps-wf-log time { color: var(--ps-muted); white-space: nowrap; }
+/* Stage 2.4 (FU-26): the replay under a Workflow's graph, and the Log line of the visit it shows. */
+.ps-wf-replay {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--ps-border);
+}
+.ps-wf-replay-range { flex: 1 1 140px; min-width: 100px; margin: 0; accent-color: var(--ps-accent); }
+.ps-wf-replay-label { color: var(--ps-muted); min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+/* UXP-TL-04: the words beside the slider have a width of their own, so the slider's length (and its thumb's place) never
+   changes with them ("· 7 newer" is longer than "· 4 newer"); words longer than it end in an ellipsis (the slider's value
+   text says them whole). It never holds the graph's column wide: a narrow column takes it to a line of its own, and an
+   even narrower one shortens it (OF-S2-1). */
+.ps-wf-replay .ps-wf-replay-label { flex: 0 1 24em; width: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
+.ps-wf-replay[data-replaying="true"] .ps-wf-replay-label { color: var(--ps-foreground); }
+/* Owner 2026-11-09 (the timeline): Live (Latest once the run ended) is pressed while the graph shows the run as it is. */
+.ps-wf-replay-live.is-on[aria-disabled="true"] { opacity: 1; cursor: default; color: var(--ps-success); border-color: var(--ps-success); }
+.ps-wf-replay-older-short { display: none; }
+.ps-wf-log li.is-current {
+  background: color-mix(in srgb, var(--ps-accent) 14%, transparent);
+  border-radius: var(--ps-radius-sm);
+  outline: 1px solid color-mix(in srgb, var(--ps-accent) 45%, transparent);
+}
+.ps-wf-log .ps-link-button[data-action="replay-visit"] { text-align: left; overflow-wrap: anywhere; }
+/* Final review FUI-F1: the phone query, a phone held sideways included. */
+@media (max-width: 600px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
+  .ps-wf-replay-range { min-height: 44px; }
+  /* UXFD-F9: the "Line 11" buttons under the YAML box are 44 px targets on a phone. */
+  .ps-workflow-yaml-marks .ps-mini-button { min-height: 44px; min-width: 44px; }
+  /* Packages UX P11: an icon button (Hide the Workflow tab, and the toolbar's) is 44 px tall on a phone held sideways too. */
+  .ps-icon-button { min-height: 44px; }
+  .ps-wf-log .ps-link-button[data-action="replay-visit"] { min-height: 44px; }
+  /* Review S2UI-F8: the replay's buttons (Step back, Play, Step on, Back to now, Load older visits) and a package
+     definition's Make a copy and Use it for the next Workflow are 44 px targets on a phone. */
+  .ps-wf-replay .ps-mini-button,
+  .ps-wf-replay .ps-mini-button.ps-workflow-tool-button { min-width: 44px; min-height: 44px; }
+  /* Owner 2026-11-09 (the timeline, R10): one compact row on a phone; the words give way, the slider keeps 60 px. */
+  .ps-wf-replay { flex-wrap: nowrap; gap: 4px; padding: 2px 6px; }
+  .ps-wf-replay > * { flex: none; }
+  .ps-wf-replay .ps-wf-replay-range { flex: 1 1 60px; min-width: 60px; }
+  .ps-wf-replay .ps-wf-replay-label { flex: 0 1 34%; width: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
+  .ps-wf-replay-older-long { display: none; }
+  .ps-wf-replay-older-short { display: inline; }
+  .ps-wf-info .ps-link-button,
+  .ps-wf-latest .ps-link-button {
+    display: inline-flex; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; padding: 0 8px;
+  }
+  /* OF-S2-8: Delete… at the end of the line under the pickers. */
+  .ps-wf-info .ps-mini-button.ps-workflow-tool-button { min-width: 44px; min-height: 44px; }
+  /* UX2P-F1: the new-session picker's rows (a Workflow's too) and its dialog buttons (Create Session) are 44 px targets on a
+     phone, without waiting for the touch-scale toggle. */
+  .ps-modal-list-button,
+  .ps-modal-button { min-height: 44px; }
+}
+
+/* r3 (390 px): a failed Workflow's failure is one line on a phone, with Details at its end; a tap on the line shows all
+   of it, and Details opens under it. The graph keeps its place (two header rows and this line). Review UI2-F4: the line's
+   button and Details are each a 44 px target (the line's own vertical padding is the button's). */
+.ps-wf-tab.is-phone .ps-wf-failure { display: flex; flex-wrap: wrap; align-items: center; border-bottom: 1px solid var(--ps-border); }
+.ps-wf-tab.is-phone .ps-wf-failure > .ps-wf-line.is-error { flex: 1 1 0; min-width: 0; border-bottom: 0; padding-top: 0; padding-bottom: 0; }
+.ps-wf-tab.is-phone .ps-wf-failure-toggle { box-sizing: border-box; min-height: 44px; padding: 12px 0; line-height: 20px; }
+.ps-wf-tab.is-phone .ps-wf-failure > .ps-wf-failure-details > summary { box-sizing: border-box; min-width: 44px; padding: 12px 4px; line-height: 20px; }
+.ps-wf-failure-toggle {
+  appearance: none;
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.ps-wf-failure-toggle:focus-visible { outline: 2px solid var(--ps-accent); outline-offset: 2px; }
+.ps-wf-tab.is-phone .ps-wf-failure.is-open .ps-wf-failure-toggle { white-space: normal; overflow-wrap: anywhere; }
+/* UXP-GEM-02: in WebKit at 390 px the toggle's words on one line still widened the tab, which scrolled sideways. The
+   failure line holds them: it clips sideways only (overflow-x: clip is not a scroll container and leaves the line's
+   height alone, so the focus ring above and below the toggle is not cut; at its sides the ring sits in the line's 10 px
+   padding), and the toggle is never wider than the line. The tab itself clips nothing. */
+.ps-wf-tab.is-phone .ps-wf-failure { min-width: 0; max-width: 100%; overflow-x: clip; }
+.ps-wf-tab.is-phone .ps-wf-failure-toggle { min-width: 0; max-width: 100%; }
+.ps-wf-tab.is-phone .ps-wf-failure > .ps-wf-failure-details { flex: none; padding: 0 10px 0 0; border-bottom: 0; }
+.ps-wf-tab.is-phone .ps-wf-failure > .ps-wf-failure-details[open] { flex-basis: 100%; padding: 0 10px 6px; }
+
+/* The phone's node sheet (12): over the graph, with a visible way back. */
+.ps-wf-tab.is-mobile .ps-wf-panel.is-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: calc(100% - 120px);
+  z-index: 5;
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
+}
+.ps-wf-tab.is-mobile { position: relative; }
+.ps-wf-back { min-height: 44px; }
+.ps-wf-tab.is-mobile .ps-workflow-input { font-size: 16px; }
+/* Owner, 2026-11-06T13:43Z: on a phone (600 px or less) the graph gets the height. Two header rows: the definition
+   picker (it gives way, with an ellipsis), the view icons and the full screen icon; then the Workflow picker, its state
+   (with the time taken) and the action icons. No meta line (its start and revision are in the state's tooltip and the
+   picker's options). Buttons and pickers are 44 px targets; pickers keep 16 px text (iOS does not zoom). */
+.ps-wf-tab.is-phone .ps-wf-tab-head,
+.ps-wf-tab.is-phone .ps-wf-bar.is-run,
+.ps-wf-tab.is-phone .ps-wf-body > .ps-wf-bar:first-child { flex-wrap: nowrap; gap: 6px; padding: 4px 8px; }
+.ps-wf-tab.is-phone .ps-wf-tab-head > .ps-wf-picker,
+.ps-wf-tab.is-phone .ps-wf-tab-head > .ps-wf-picker-group.is-definition { flex: 1 1 auto; min-width: 0; }
+.ps-wf-tab.is-phone .ps-wf-picker-group.is-definition > .ps-wf-picker { flex: 1 1 auto; max-width: none; }
+.ps-wf-tab.is-phone .ps-wf-picker-group.is-definition .ps-wf-picker-face { width: 100%; }
+/* OF-S2-8 (owner, 2026-11-07T23:19Z): on a phone the Definition view's row wraps to two lines rather than shrink the
+   pickers: Definition and full screen, then Rev, the view icons, YAML, Compare and Start…. */
+.ps-wf-tab.is-phone .ps-wf-tab-head.is-two-lines { flex-wrap: wrap; }
+.ps-wf-tab.is-phone .ps-wf-tab-head.is-two-lines > .ps-wf-head-rest { flex: 1 1 100%; gap: 6px; }
+/* UXFD-F11: from 700 px wide (a phone held sideways), the row fits on one line. */
+@media (min-width: 700px) {
+  .ps-wf-tab.is-phone .ps-wf-tab-head.is-two-lines { flex-wrap: nowrap; }
+  .ps-wf-tab.is-phone .ps-wf-tab-head.is-two-lines > .ps-wf-head-rest { flex: 0 1 auto; min-width: 0; }
+}
+/* UXFD-F10: on a phone the YAML box scrolls inside a capped height, and the editor's bar stays at the top of the tab.
+   UXP-GEM-04: the chat's editor too (SessionYamlEditor: .ps-wf-session-editor, its bar .ps-wf-bar.is-yaml, then the box, each a
+   child of it), not only the stage-1 draft editor. */
+.ps-wf-tab.is-phone .ps-wf-session-editor > .ps-workflow-yaml,
+.ps-wf-tab.is-phone .ps-workflow-draft-editor > .ps-workflow-yaml { max-height: 55vh; overflow: auto; }
+.ps-wf-tab.is-phone .ps-wf-session-editor > .ps-wf-bar.is-yaml,
+.ps-wf-tab.is-phone .ps-workflow-draft-editor > .ps-workflow-yaml-strip { position: sticky; top: 0; z-index: 2; background: var(--ps-surface); }
+/* UXP-GEM-04 (WebKit at 390 px): the YAML view's scroller (.ps-wf-yaml) is shorter than 55vh under the tab's header lines, so
+   a capped box still ran under the bar. On a phone the chat's editor fills that scroller: its bar and notes keep their
+   height and the box takes the rest, scrolling inside itself; no viewport cap, at least 8 lines (line-height 1.45, its
+   padding and border). */
+.ps-wf-tab.is-phone .ps-wf-yaml > .ps-wf-session-editor { display: flex; flex-direction: column; min-height: 0; }
+.ps-wf-tab.is-phone .ps-wf-session-editor > :not(.ps-workflow-yaml):not(.ps-workflow-yaml-marks) { flex: none; }
+.ps-wf-tab.is-phone .ps-wf-session-editor > .ps-workflow-yaml { flex: 1 1 auto; min-height: calc(8 * 1.45em + 6px); max-height: none; }
+.ps-wf-tab.is-phone .ps-wf-head-actions { gap: 6px; }
+.ps-wf-tab.is-phone .ps-wf-picker-select { width: 100%; min-height: 44px; text-overflow: ellipsis; }
+.ps-wf-tab.is-phone .ps-wf-picker-face { min-height: 44px; }
+.ps-wf-tab.is-phone .ps-wf-switch,
+.ps-wf-tab.is-phone .ps-wf-bar-actions { flex: none; }
+.ps-wf-tab.is-phone .ps-wf-tab-modes { flex: none; margin-left: 0; }
+.ps-wf-tab.is-phone .ps-wf-bar .ps-wf-state {
+  display: inline-block;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ps-wf-tab.is-phone .ps-wf-bar-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-wf-tab.is-phone .ps-wf-tab-head .ps-mini-button.ps-workflow-tool-button,
+.ps-wf-tab.is-phone .ps-wf-bar .ps-mini-button.ps-workflow-tool-button,
+.ps-wf-tab.is-phone .ps-workflow-yaml-strip .ps-mini-button.ps-workflow-tool-button { min-width: 44px; min-height: 44px; }
+/* UX2D-F12: a phone's run bar cuts the state's label, never the time taken ("Runn… · 2:45"). UXP-GEM-03: and only at the
+   label's end (WebKit at 390 px showed "leted ·… · 0:15", its start cut): the chip packs from its start and is not a
+   scroll container (clip), so nothing can scroll its start out of sight; the label takes the room left and reads left to
+   right to its ellipsis. */
+.ps-wf-tab.is-phone .ps-wf-bar .ps-wf-state.has-time { display: inline-flex; justify-content: flex-start; overflow: hidden; overflow: clip; }
+/* UXP-GEM-03 (WebKit at 390 px, measured): the Workflow picker's group shrank below its words and its picker (flex: none)
+   painted over the start of the state chip beside it. In the run bar the group keeps its width; the chip gives way. */
+.ps-wf-tab.is-phone .ps-wf-bar.is-run > .ps-wf-picker-group { flex: none; }
+/* UXP-TL-01 (owner, TEST at 390 px, a running Workflow): beside Pause, Stop… and Run again… the chip gave way to nothing
+   ("·"). Now the chip keeps its words and its time; the Workflow picker gives way first (its face ends in an ellipsis,
+   down to a few characters), and when the row still cannot hold them the buttons go to a line of their own, at its end.
+   The picker's group lays its label and picker out in the row itself, so the row breaks on the picker's narrowest width
+   and the picker then takes back the room left, up to its whole face. */
+.ps-wf-tab.is-phone .ps-wf-body > .ps-wf-bar.is-run { flex-wrap: wrap; row-gap: 4px; }
+.ps-wf-tab.is-phone .ps-wf-bar.is-run > .ps-wf-picker-group { display: contents; }
+.ps-wf-tab.is-phone .ps-wf-bar.is-run > .ps-wf-picker-group > .ps-wf-picker-label { flex: none; }
+.ps-wf-tab.is-phone .ps-wf-bar.is-run > .ps-wf-picker-group > .ps-wf-picker.is-faced { flex: 1 1 4.5rem; min-width: 4.5rem; max-width: max-content; }
+.ps-wf-tab.is-phone .ps-wf-bar.is-run > .ps-wf-picker-group > .ps-wf-picker.is-faced > .ps-wf-picker-face { flex: 1 1 auto; width: 100%; }
+.ps-wf-tab.is-phone .ps-wf-bar.is-run > .ps-wf-state { flex: none; max-width: 100%; }
+.ps-wf-state.has-time > .ps-wf-state-label {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; direction: ltr;
+}
+.ps-wf-state.has-time > .ps-wf-state-time { flex: none; white-space: pre; }
+/* UX2D-F12: a phone's list of a session definition's Workflows: two lines per Workflow, nothing wrapped: # (both lines), its
+   state and the time it took; then its revision and when it started. The column heads are read, not shown. */
+.ps-wf-tab.is-phone .ps-wf-list-row:not(.is-head) {
+  grid-template-columns: 2.6em minmax(0, 1fr) max-content;
+  grid-template-areas: "num state took" "num version started";
+  row-gap: 2px;
+}
+.ps-wf-tab.is-phone .ps-wf-list-row:not(.is-head) > .ps-wf-list-number { grid-area: num; }
+.ps-wf-tab.is-phone .ps-wf-list-row:not(.is-head) > .ps-wf-list-state { grid-area: state; }
+.ps-wf-tab.is-phone .ps-wf-list-row:not(.is-head) > .ps-wf-list-took { grid-area: took; white-space: nowrap; }
+.ps-wf-tab.is-phone .ps-wf-list-row:not(.is-head) > .ps-wf-list-version { grid-area: version; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--ps-muted); }
+.ps-wf-tab.is-phone .ps-wf-list-row:not(.is-head) > .ps-wf-list-started { grid-area: started; white-space: nowrap; color: var(--ps-muted); }
+.ps-wf-tab.is-phone .ps-wf-list-row.is-head {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+/* UX round (UX2D-F3, F5): a phone's panel tabs, its Compare pickers, the Maximize toggle and the graph's zoom, fit and
+   move buttons are 44 px targets (the icons keep their size). */
+.ps-wf-tab.is-phone .ps-wf-panel-tabs button { min-height: 44px; }
+.ps-wf-tab.is-phone .ps-wf-panel select.ps-workflow-input { min-height: 44px; }
+.ps-wf-tab.is-phone .ps-wf-tab-modes .ps-canvas-max-btn { min-width: 44px; height: 44px; }
+.ps-wf-tab.is-phone .ps-workflow-graph-controls .ps-mini-button.ps-workflow-tool-button { min-width: 44px; min-height: 44px; }
+/* UX2D-F4: a Workflow dialog is portalled out of the tab, so its phone sizes are its own: every button (Start, Cancel,
+   Delete, Keep it, Stop, Keep running), its Close and a link such as Add are 44 px targets. Final review FUI-F1: on a
+   phone held sideways too. */
+@media (max-width: 600px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
+  .ps-wf-dialog button,
+  .ps-wf-dialog .ps-link-button { min-height: 44px; min-width: 44px; }
+  .ps-wf-dialog .ps-link-button { display: inline-flex; align-items: center; justify-content: center; }
+  .ps-wf-dialog .ps-modal-close { width: 44px; height: 44px; }
+  .ps-wf-dialog select.ps-workflow-input { min-height: 44px; }
+}
+
+/* Dialogs: Start (11) and Stop (W9). */
+.ps-wf-dialog-body { display: grid; gap: 12px; padding: 12px 20px; }
+.ps-wf-dialog-sub { padding: 0; }
+.ps-wf-dialog-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 20px 16px; }
+.ps-wf-dialog-foot .ps-wf-muted { padding: 0; margin-left: auto; }
+.ps-wf-field { display: grid; gap: 4px; }
+.ps-wf-field > label,
+.ps-wf-label { color: var(--ps-muted); font-size: 0.92em; }
+.ps-wf-field > p { margin: 0; }
+.ps-wf-field-actions { display: flex; justify-content: flex-end; }
+.ps-wf-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ps-wf-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--ps-border);
+  border-radius: 999px;
+}
+.ps-wf-chip button { appearance: none; border: 0; background: transparent; color: var(--ps-muted); cursor: pointer; padding: 0; font: inherit; }
+.ps-wf-chip-input { width: 8em; }
+.ps-wf-choices { display: grid; gap: 10px; }
+.ps-wf-choice { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; cursor: pointer; }
+.ps-wf-choice > span { display: grid; gap: 2px; }
+.ps-wf-choice small { color: var(--ps-muted); }
+.ps-wf-choice.is-disabled { opacity: 0.55; cursor: default; }
+
+/* Workflow Simplified (10): node look. An icon per type, the Start marker on the first node, ends as rings in their
+   outcome's colour (filled once reached), status on the border, nodes not reached dimmed, no separate join bar. */
+.ps-workflow-node { display: flex; align-items: center; gap: 10px; }
+.ps-workflow-node-text { display: grid; gap: 1px; min-width: 0; flex: 1 1 auto; }
+.ps-workflow-node-icon {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  color: var(--ps-muted);
+}
+.ps-workflow-node-glyph { width: 18px; height: 18px; }
+/* OF-S2-8: each kind's colour as before where it is seen (3:1 on its well), else the theme's own (win95: navy, purple,
+   olive, maroon, teal), else moved toward the text (themeWorkflowColors). */
+.ps-workflow-node-icon { color: var(--ps-wf-icon-other, var(--ps-muted)); }
+.ps-workflow-node.is-kind-script .ps-workflow-node-icon { color: var(--ps-wf-icon-script, #60a5fa); }
+.ps-workflow-node.is-kind-agent .ps-workflow-node-icon { color: var(--ps-wf-icon-agent, #a78bfa); }
+.ps-workflow-node.is-kind-wait .ps-workflow-node-icon { color: var(--ps-wf-icon-wait, #f59e0b); }
+.ps-workflow-node.is-kind-request .ps-workflow-node-icon { color: var(--ps-wf-icon-request, #fb923c); }
+.ps-workflow-node.is-kind-send .ps-workflow-node-icon,
+.ps-workflow-node.is-kind-receive .ps-workflow-node-icon { color: var(--ps-wf-icon-message, #22d3ee); }
+.ps-workflow-node-meta.is-state { color: var(--ps-foreground); }
+/* r3 C15 (and C02): a node's type line was the muted colour on the node's face, 4.2:1 to 4.3:1 on a running node in
+   Workspace Dark and on any node in win95. A third of the foreground in it keeps it quieter than the name and reads 5:1 or
+   more on every theme's node face and running tint. */
+.ps-workflow-node-meta:not(.is-state) { color: var(--ps-wf-meta, color-mix(in srgb, var(--ps-muted) 70%, var(--ps-foreground))); }
+.ps-workflow-node.is-running { border-color: var(--ps-wf-selected, var(--ps-accent)); }
+.ps-workflow-node.is-cancelled { border-color: var(--ps-muted); }
+/* Owner, 2026-11-07T17:47Z (OF-S2-2: crisp): two rows. The name, with how often it ran as a badge at the right
+   ("↻ 126"); then the state's mark and the node's one key fact. The type is the icon; the words are its tooltip. */
+.ps-workflow-node-row { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.ps-workflow-node-row > .ps-workflow-node-name { flex: 1 1 auto; }
+.ps-workflow-node-visits {
+  flex: none;
+  margin-left: auto;
+  padding: 0 5px;
+  border: 1px solid var(--ps-border);
+  border-radius: 9px;
+  color: var(--ps-foreground);
+  font-size: 10px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ps-workflow-node-meta.is-state { display: flex; align-items: baseline; gap: 5px; padding-right: 0; font-size: 11px; }
+.ps-workflow-node-mark { flex: none; font-weight: 700; }
+.ps-workflow-node-fact { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-workflow-node-meta.is-state[data-state-mark="done"] .ps-workflow-node-mark { color: var(--ps-wf-mark-done, var(--ps-success)); }
+.ps-workflow-node-meta.is-state[data-state-mark="running"] .ps-workflow-node-mark { color: var(--ps-wf-mark-running, var(--ps-accent)); }
+.ps-workflow-node-meta.is-state[data-state-mark="failed"] .ps-workflow-node-mark { color: var(--ps-wf-mark-failed, var(--ps-danger)); }
+.ps-workflow-node-meta.is-state[data-state-mark="canceled"] .ps-workflow-node-mark { color: var(--ps-wf-mark-canceled, var(--ps-muted)); }
+/* OF-S2-8: a node not reached is dimmed without losing its words: a dashed edge, its name and icon in the quiet colours
+   (4.5:1 and 3:1 on its card), instead of 55% opacity (4.2:1 to 3.2:1 in six themes). */
+.ps-workflow-node.is-not-reached { border-style: dashed; }
+.ps-workflow-node.is-not-reached .ps-workflow-node-name { color: var(--ps-wf-dim-text, var(--ps-muted)); }
+.ps-workflow-node.is-not-reached .ps-workflow-node-icon { color: var(--ps-wf-dim-icon, var(--ps-muted)); }
+.ps-workflow-node.is-initial { overflow: visible; }
+.ps-workflow-node-start {
+  position: absolute;
+  left: 50%;
+  top: -36px;
+  width: 22px;
+  height: 22px;
+  margin-left: -11px;
+  box-sizing: border-box;
+  border: 2px solid var(--ps-wf-start, var(--ps-success));
+  border-radius: 50%;
+  background: var(--ps-wf-ground, var(--ps-background));
+}
+.ps-workflow-node-start::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 4.5px;
+  border-style: solid;
+  border-width: 5px 0 5px 8px;
+  border-color: transparent transparent transparent var(--ps-wf-start, var(--ps-success));
+}
+.ps-workflow-node-start::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 20px;
+  width: 2px;
+  height: 14px;
+  background: var(--ps-wf-start, var(--ps-success));
+}
+.ps-workflow-node-start > span {
+  position: absolute;
+  left: 28px;
+  top: 1px;
+  color: var(--ps-wf-start, var(--ps-success));
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ps-workflow-node.is-terminal {
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+  text-align: center;
+  --ps-end: var(--ps-wf-end-succeeded, var(--ps-success));
+}
+.ps-workflow-node.is-terminal[data-outcome="blocked"] { --ps-end: var(--ps-wf-end-blocked, var(--ps-warning)); }
+.ps-workflow-node.is-terminal[data-outcome="failed"] { --ps-end: var(--ps-wf-end-failed, var(--ps-danger)); }
+.ps-workflow-node.is-terminal[data-outcome="cancelled"] { --ps-end: var(--ps-wf-end-cancelled, var(--ps-muted)); }
+.ps-workflow-node-ring {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  box-sizing: border-box;
+  border: 4px solid var(--ps-end, var(--ps-muted));
+  border-radius: 50%;
+  background: var(--ps-wf-ground, var(--ps-background));
+}
+.ps-workflow-node-ring::after { content: ""; width: 10px; height: 10px; border-radius: 2px; background: color-mix(in srgb, var(--ps-end, var(--ps-muted)) 45%, transparent); }
+.ps-workflow-node.is-terminal.is-reached .ps-workflow-node-ring { background: color-mix(in srgb, var(--ps-end) 25%, var(--ps-wf-ground, var(--ps-background))); }
+.ps-workflow-node.is-terminal.is-reached .ps-workflow-node-ring::after { background: var(--ps-end); }
+.ps-workflow-node.is-terminal .ps-workflow-node-text { justify-items: center; align-content: start; }
+.ps-workflow-node.is-terminal .ps-workflow-node-meta { display: none; }
+/* r3 C15: the end's words in the theme's foreground; its colour is the ring's (a red under 4.5:1 as text in some themes). */
+.ps-workflow-node.is-terminal.is-reached .ps-workflow-node-meta.is-state { display: flex; justify-content: center; color: var(--ps-foreground); }
+.ps-workflow-node.is-terminal.is-selected,
+.ps-workflow-node.is-terminal:focus-visible { box-shadow: none; }
+.ps-workflow-node.is-terminal.is-selected .ps-workflow-node-ring,
+.ps-workflow-node.is-terminal:focus-visible .ps-workflow-node-ring { box-shadow: 0 0 0 2px var(--ps-wf-selected, var(--ps-accent)); }
+.ps-workflow-join-bar { display: none; }
+.ps-workflow-join-rule { color: var(--ps-muted); font-weight: 500; }
+.ps-workflow-join.is-blocked .ps-workflow-join-rule,
+.ps-workflow-join.is-failed .ps-workflow-join-rule,
+.ps-workflow-join.is-timed_out .ps-workflow-join-rule { color: var(--ps-wf-danger-text, var(--ps-danger)); }
+.ps-workflow-group.is-failed .ps-workflow-group-counts,
+.ps-workflow-group.is-blocked .ps-workflow-group-counts { color: var(--ps-wf-danger-text, var(--ps-danger)); }
 /* ═══════════════════════════════════════════════════════════════════════════
    HORIZON DAWN — Azure HorizonDB, generally available on 17 November 2026.
    Scoped to [data-ps-theme="horizon-dawn"]. A pre-dawn Azure sky full of

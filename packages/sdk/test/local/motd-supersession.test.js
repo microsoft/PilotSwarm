@@ -121,7 +121,7 @@ describe.skipIf(!url)("fleet-current MoTD supersession in real PostgreSQL", () =
             expect((await pool.query(`SELECT * FROM "${schema}".motds ORDER BY motd_id`)).rows).toEqual(rows);
             expect((await pool.query(`SELECT * FROM "${schema}".motd_dismissals ORDER BY user_id,motd_id`)).rows).toEqual(dismissals);
             expect((await pool.query(`SELECT * FROM "${schema}".schema_migrations WHERE version <= '0086' ORDER BY version`)).rows).toEqual(records);
-            expect((await pool.query(`SELECT version FROM "${schema}".schema_migrations ORDER BY version DESC LIMIT 1`)).rows[0].version).toBe("0087");
+            expect((await pool.query(`SELECT version FROM "${schema}".schema_migrations ORDER BY version DESC LIMIT 1`)).rows[0].version).toBe(CMS_MIGRATIONS(schema).at(-1).version);
             expect((await pool.query(`SELECT pg_get_functiondef('"${schema}".cms_motd_list(text,text,boolean,integer,bigint)'::regprocedure) AS sql`)).rows[0].sql).toBe(listDefinition);
             expect(await catalog.motds.list(admin)).toEqual(history);
             expect(await catalog.motds.current(reader)).toBeNull();
