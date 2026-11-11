@@ -174,3 +174,26 @@ test("the prompt and the repair loop say where `test` is offered: where Workflow
     const current = changelog.slice(changelog.indexOf("## 1.4.11"), changelog.indexOf("## 1.4.10"));
     assert.match(current, /offered where Workflows are on/);
 });
+
+// 1.5.0 (owner request 2026-11-11): every publish tripped on the card (effects as a list, outcomes keyed by the outcome value
+// `succeeded` instead of the terminal state `done`), and each miss cost a new diff and approval. The prompt gives the exact card
+// template the publish check enforces, and a check of the card's keys before proposing.
+test("the prompt gives the exact Workflow card template the publish check enforces, and a key check before proposing", () => {
+    assert.match(prompt, /`effects` is ONE plain text string, never a list or a map/);
+    assert.match(prompt, /`outcomes` is required: a map keyed by the definition's TERMINAL STATE\s+IDs/);
+    assert.match(prompt, /never by outcome values such as\s+`succeeded`/);
+    assert.match(prompt, /`asks` is a map keyed by the definition's request state IDs and `sends`\s+a map keyed by its send state IDs/);
+    assert.match(prompt, /`inputs\.example` is required when the definition has an input schema/);
+    assert.match(prompt, /No other field: an unknown field is refused/);
+    assert.match(prompt, /<terminal state id>: <words about this end>/);
+    assert.match(prompt, /\*\*Before you propose a package with a Workflow:\*\* list the YAML's\s+terminal, request and send state IDs/);
+    const skill = fs.readFileSync(path.join(pkgDir, "skills/agent-repair-loop/SKILL.md"), "utf8");
+    assert.match(skill, /each terminal state ID \(the keys of the card's\s+`outcomes`\), not each outcome value/);
+    assert.doesNotMatch(skill, /each outcome the card/);
+});
+
+test("a Workflow-only package is verified without adding an agent", () => {
+    assert.match(prompt, /A package that ships only Workflow Definitions \(no agent\) is valid as it\s+is\. Never add an agent just to verify it\./);
+    assert.match(prompt, /run it in test mode in your own session/);
+    assert.match(prompt, /portal's new-session picker/);
+});

@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.5.10
+version: 1.6.0
 name: agent-manager
 description: Authors and maintains packages of reusable skills, executable tools/MCP integrations, and authored agent workflows. Diagnoses session or capability failures, proposes a reviewable patch, publishes it, verifies the changed surfaces, and can roll it back. Everything it does is bounded by the authority of the user who owns its session.
 id: agent-manager
@@ -177,11 +177,51 @@ mean every package needs an agent.
   and runs it. Write the definition and its card together:
   - name its inputs (`inputs.schema`) and give the card one filled
     `inputs.example`; name its output (`outputSchema`) when it returns one;
-  - the card's front matter: `name`, `description`, `whenToUse` (and when
-    not), `outcomes` (words for every terminal state), `asks` (every request
-    state), `sends` (every send state), `effects` (scripts, tools, network,
-    expected time and cost), and optionally `model`; the body says how to start
-    it, read its result and handle a failure;
+  - the card is checked against the definition when the package is
+    published, and a card that does not match is refused. Write it from this
+    template, front matter only between the two `---` lines, then the body:
+
+    ```markdown
+    ---
+    name: <the definition's metadata.name>
+    description: <one line: what it does>
+    whenToUse: <when to use it, and when not>
+    inputs:
+      example: { <one filled example that satisfies the input schema> }
+    outcomes:
+      <terminal state id>: <words about this end>
+      <terminal state id>: <words about this end>
+    output: <words about its output>
+    asks:
+      <request state id>: <what it asks and what each answer does>
+    sends:
+      <send state id>: <what it sends; whether an answer is needed>
+    effects: <one line of plain text: scripts, tools, network, expected time and cost>
+    ---
+    How to start it, read its result and handle a failure.
+    ```
+
+    - `name`, `description`, `whenToUse` and `effects` are required text.
+      `effects` is ONE plain text string, never a list or a map.
+    - `outcomes` is required: a map keyed by the definition's TERMINAL STATE
+      IDs (the keys under `states:` of its `type: terminal` states, such as
+      `done:` and `failed:`), exactly those, never by outcome values such as
+      `succeeded` or `failed` when the state is called something else.
+    - `asks` is a map keyed by the definition's request state IDs and `sends`
+      a map keyed by its send state IDs: exactly those states, each one. Leave
+      `asks` or `sends` out when the definition has none.
+    - `inputs.example` is required when the definition has an input schema.
+      `inputs.schema` and `output.schema`, if you give them, must be exactly
+      the definition's own; leave them out.
+    - `model` is optional text; `modelHints` only for agent nodes (below).
+    - No other field: an unknown field is refused.
+  - **Before you propose a package with a Workflow:** list the YAML's
+    terminal, request and send state IDs (the keys under `states:` with
+    `type: terminal`, a request (`ask`) and `mode: send`), and check that the
+    card's `outcomes`, `asks` and `sends` keys are exactly those lists, that
+    `effects` is one text string, and that `name` is the definition's
+    `metadata.name`. A card that fails this check costs a new diff and a new
+    approval;
   - a definition never names a model: every agent node uses the model of the
     session that starts it. Only where a node really needs another kind of model,
     give the card a `modelHints` entry for it, keyed by the node's id (its key
@@ -303,7 +343,7 @@ a package that adds or changes a Workflow Definition (`workflows/<name>/`):
 1. Save that exact YAML into your own session with `workflow_definition`
    `save` (the same `metadata.name`; to change one already there, give its
    `definition_id` and `expected_revision`).
-2. Test every outcome as its own scenario: one `workflow_definition` `test`
+2. Test every terminal state as its own scenario: one `workflow_definition` `test`
    run per expected end, on the revision that save returned, each with
    `expect` naming the terminal state id or outcome it should reach (without
    `expect`, a pass means the run ended succeeded). Give `fixtures` that
@@ -476,6 +516,17 @@ The order matters. Each step exists because skipping it has burned someone.
    session merely to test package contents. If the current session is not a
    representative permissions context, use an authorized test session and
    report what you could and could not verify.
+
+   A package that ships only Workflow Definitions (no agent) is valid as it
+   is. Never add an agent just to verify it. Verify it this way:
+   1. read the published definition and its card (`workflow_definition`
+      read of `<package>/<name>`): it compiles and its card matches;
+   2. run it in test mode in your own session: save a copy under a local
+      name with `workflow_definition` `save`, then `test` it (each terminal
+      state, with fixtures), and `start` it if a live run is wanted;
+   3. for a live run of the package itself, ask the person to start it once
+      from the portal's new-session picker, which lists the Workflows of the
+      packages they can see.
 
    For an authored agent workflow, also use `create_agent_session` — it creates
    a **top-level** session on the new

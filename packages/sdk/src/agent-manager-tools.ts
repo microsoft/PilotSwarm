@@ -530,10 +530,13 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
             + "brand-new package from an empty staging area. Repeat calls accumulate. "
             + "Staging is written to a session artifact, so a human can see it while deciding. "
             + "A package may ship Workflow Definitions: workflows/<name>/workflow.yaml (metadata.name = <name>) with its interface "
-            + "card workflows/<name>/card.md (front matter: name, description, whenToUse, inputs.example, outcomes for every terminal "
-            + "state, asks for every request state, sends for every send state, effects, optional model, optional modelHints: an "
-            + "agent node's id → { strength?, reasoning?, context?, note? }, the kind of model that node needs, never a model's name; "
-            + "then notes). An agent names the definitions its session may start in its front matter: workflows: [<name>, <package>/<name>]. "
+            + "card workflows/<name>/card.md: front matter only (then notes), with name, description, whenToUse and effects as text "
+            + "(effects is ONE text string, never a list); outcomes a map keyed by each TERMINAL STATE ID (e.g. done:, failed:), "
+            + "never by outcome values such as succeeded; asks a map keyed by each request state ID and sends by each send state ID, "
+            + "exactly those, left out when there are none; inputs.example when the definition has an input schema; optional output, "
+            + "model and modelHints (an agent node's id → { strength?, reasoning?, context?, note? }, the kind of model that node needs, "
+            + "never a model's name); no other field. An agent names the definitions its session may start in its front matter: "
+            + "workflows: [<name>, <package>/<name>]. "
             + "Nothing is published until you call publish_agent_package.",
         parameters: {
             type: "object" as const,

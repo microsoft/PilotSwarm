@@ -1,5 +1,26 @@
 # Changelog — agent-manager
 
+## 1.5.0
+
+### Changed
+
+- A Workflow Definition's card is written from an exact template that matches
+  the publish check: front matter only; `effects` is one text string, never a
+  list; `outcomes` is keyed by each terminal state ID (such as `done`), never
+  by an outcome value (such as `succeeded`); `asks` and `sends` are keyed by
+  each request and send state ID, exactly those, and left out when there are
+  none; `inputs.example` is required when there is an input schema; no
+  unknown fields. Before proposing a package, Agent Smith lists the YAML's
+  terminal, request and send state IDs and checks the card's keys against
+  them, so a card the publish check would refuse never reaches a person.
+- A package with only Workflow Definitions is valid as it is: Agent Smith
+  never adds an agent just to verify it. It verifies one by reading the
+  published definition and card, by a test run of a saved copy in its own
+  session, and by asking the person to start it once from the portal's
+  new-session picker.
+- The repair loop names each terminal state ID as an expected end, not each
+  outcome.
+
 ## 1.4.11
 
 ### Changed

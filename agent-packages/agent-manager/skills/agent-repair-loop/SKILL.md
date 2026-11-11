@@ -80,7 +80,9 @@ preamble differs from the entry point a user runs. Tag the test with `test_of`,
 reuse its key when appropriate, and observe its events and actual outputs.
 Respect the session owner's authorization before messaging or ending it.
 
-For a Workflow Definition (`workflows/<name>/` with its card), first check that
+For a Workflow Definition (`workflows/<name>/` with its card, whose `outcomes`
+are keyed by each terminal state ID, `asks` by each request state ID and
+`sends` by each send state ID), first check that
 it is simple: few nodes, a straight path, readable in one look. It does not
 encode every corner case: it writes the common path and routes the rest to an
 agent node. Judgement, parsing, many branches, nested conditions or string
@@ -102,10 +104,10 @@ person's request to publish is their request for this test. For exact
 shapes, call load_skill with name workflow-tools.
 
 1. Save that exact YAML in your own session (`workflow_definition` `save`).
-2. List its expected ends: each terminal state, or each outcome the card
-   says it can end with. Plan one `workflow_definition` `test` run per end,
-   on the revision the save returned. Give each run `expect`, naming the
-   terminal state id or outcome it should reach. Without `expect`, a pass
+2. List its expected ends: each terminal state ID (the keys of the card's
+   `outcomes`), not each outcome value. Plan one `workflow_definition` `test`
+   run per end, on the revision the save returned. Give each run `expect`,
+   naming the terminal state id it should reach. Without `expect`, a pass
    means only that the run ended succeeded.
 3. Write each run's `fixtures`, with realistic example values. A fixture
    answers one step: a tool call's success value is what the tool returns;
