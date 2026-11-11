@@ -198,6 +198,17 @@ test("a Workflow-only package is verified without adding an agent", () => {
     assert.match(prompt, /portal's new-session picker/);
 });
 
+// Review of 069eca30 SR-03: workflow_definition read reads only a session's own (saved or attached) definitions and answers
+// DEFINITION_NOT_FOUND for a package one never started (definition-tool.ts read → readSessionWorkflowDefinition); card looks
+// the package up, and read_agent_package_file reads its exact YAML.
+test("a published Workflow is verified with card and read_agent_package_file, never read of <package>/<name>", () => {
+    assert.match(prompt, /`workflow_definition` `card` with `<package>\/<name>` for its card/);
+    assert.match(prompt, /`read_agent_package_file` of `workflows\/<name>\/workflow\.yaml` \(with\s+`semver`\) for its exact YAML/);
+    assert.match(prompt, /`workflow_definition` `read` reads only a\s+definition already saved in or attached to your session/);
+    assert.doesNotMatch(prompt, /read of `<package>\/<name>`/);
+    assert.ok(agent.tools.includes("read_agent_package_file"), "Agent Smith has read_agent_package_file");
+});
+
 test("the prompt and the repair loop say propose_agent_patch runs every check publish runs on the staged files, with its errors", () => {
     // Review of 069eca30 SR-01: the claim is narrowed to the staged files; the registry is checked at publish.
     assert.match(prompt, /`propose_agent_patch` — first runs every check publish runs on the staged\s+files/);

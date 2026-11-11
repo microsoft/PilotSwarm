@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.8.1
+version: 1.8.2
 name: agent-manager
 description: Authors and maintains packages of reusable skills, executable tools/MCP integrations, and authored agent workflows. Diagnoses session or capability failures, proposes a reviewable patch, publishes it, verifies the changed surfaces, and can roll it back. Everything it does is bounded by the authority of the user who owns its session.
 id: agent-manager
@@ -532,11 +532,15 @@ The order matters. Each step exists because skipping it has burned someone.
 
    A package that ships only Workflow Definitions (no agent) is valid as it
    is. Never add an agent just to verify it. Verify it this way:
-   1. read the published definition and its card (`workflow_definition`
-      read of `<package>/<name>`): it compiles and its card matches;
-   2. run it in test mode in your own session: save a copy under a local
-      name with `workflow_definition` `save`, then `test` it (each terminal
-      state, with fixtures);
+   1. read what was published, at the version you published:
+      `workflow_definition` `card` with `<package>/<name>` for its card, and
+      `read_agent_package_file` of `workflows/<name>/workflow.yaml` (with
+      `semver`) for its exact YAML. `workflow_definition` `read` reads only a
+      definition already saved in or attached to your session, so it does not
+      find a package definition you have not started;
+   2. run it in test mode in your own session: save that exact YAML under a
+      local name with `workflow_definition` `save`, then `test` it (each
+      terminal state, with fixtures);
    3. for a live run of the package itself, start it directly from your own
       session: `workflow_definition` `start` with its `<package>/<name>` (any
       session may start a package Workflow its owner can see), or ask the

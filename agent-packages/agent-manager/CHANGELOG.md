@@ -1,5 +1,16 @@
 # Changelog — agent-manager
 
+## 1.7.2
+
+### Fixed
+
+- Verifying a published Workflow-only package reads its card with
+  `workflow_definition` `card` and its exact YAML with
+  `read_agent_package_file` (`workflows/<name>/workflow.yaml`).
+  `workflow_definition` `read` reads only a definition saved in or attached
+  to the session, so it answered `DEFINITION_NOT_FOUND` for a package
+  definition not yet started.
+
 ## 1.7.1
 
 ### Fixed
