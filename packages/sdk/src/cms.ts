@@ -26,6 +26,8 @@ import { WorkflowStore, insertStopNotForTurn, workflowVisitOfStopRequestId } fro
 
 /** Review DRR-1: the code of a create with refuseDeleted that found the row deleted (it stays deleted). */
 export const SESSION_DELETED = "SESSION_DELETED" as const;
+/** Review DR-03: how long a fenced session start may hold the session row's lock while the provider starts it. */
+export const SESSION_START_FENCE_TIMEOUT_MS = 30_000;
 /** Review DR-02: a child is never created under a deleted parent. */
 export const PARENT_DELETED = "PARENT_DELETED" as const;
 
@@ -1238,13 +1240,16 @@ export interface SessionCatalog {
     /** Update one or more fields on an existing session. */
     updateSession(sessionId: string, updates: SessionRowUpdates): Promise<void>;
     /**
-     * Review AR-01: a session orchestration's start, fenced against the Sweeper's delete on the session row. In one
-     * transaction: lock the row (FOR NO KEY UPDATE), refuse a deleted row (code SESSION_DELETED: nothing is started),
-     * write `updates`, run `start`, and commit. A start that throws rolls the update back. The Sweeper's final check takes
-     * the same lock and compares the row's version, so whichever commits first decides. Optional: a catalog without it
-     * starts unfenced, as before.
+     * Review AR-01: a session orchestration's start, serialized with the Sweeper's delete on the session row (not atomic
+     * with it: review DR-03). In one CMS transaction: lock the row (FOR NO KEY UPDATE), refuse a deleted row (code
+     * SESSION_DELETED: nothing is started), write `updates`, run `start`, and commit. A start that throws, or does not
+     * answer within SESSION_START_FENCE_TIMEOUT_MS (code SESSION_START_TIMEOUT), rolls the CMS update back and releases the
+     * lock; a start the durable provider committed is in its own store, which that rollback does not undo (a later send
+     * starts it again, which the provider ignores for an instance that exists). The Sweeper's final check takes the same
+     * lock and compares the row's version, so whichever commits first decides. Optional: a catalog without it starts
+     * unfenced, as before.
      */
-    startSessionFenced?(sessionId: string, updates: SessionRowUpdates, start: () => Promise<void>): Promise<void>;
+    startSessionFenced?(sessionId: string, updates: SessionRowUpdates, start: () => Promise<void>, options?: { timeoutMs?: number }): Promise<void>;
     /** Publish the in-flight turn index (stop-turn targeting). */
     setActiveTurnIndex(sessionId: string, turnIndex: number): Promise<void>;
 
@@ -2207,7 +2212,8 @@ export class PgSessionCatalog implements SessionCatalog {
         );
     }
 
-    async startSessionFenced(sessionId: string, updates: SessionRowUpdates, start: () => Promise<void>): Promise<void> {
+    async startSessionFenced(sessionId: string, updates: SessionRowUpdates, start: () => Promise<void>, options: { timeoutMs?: number } = {}): Promise<void> {
+        const timeoutMs = options.timeoutMs ?? SESSION_START_FENCE_TIMEOUT_MS;
         const client = await this.pool.connect();
         let released = false;
         try {
@@ -2222,7 +2228,21 @@ export class PgSessionCatalog implements SessionCatalog {
             if (Object.keys(jsonUpdates).length > 0) {
                 await client.query(`SELECT ${this.sql.fn.updateSession}($1, $2)`, [sessionId, JSON.stringify(jsonUpdates)]);
             }
-            await start();
+            // Review DR-03: the row's lock is held while the provider starts the orchestration; a call that does not answer
+            // releases it (the transaction rolls back) instead of holding it.
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            try {
+                await Promise.race([
+                    start(),
+                    new Promise<never>((_, reject) => {
+                        timer = setTimeout(() => reject(Object.assign(
+                            new Error(`The start of session ${sessionId.slice(0, 8)} did not answer within ${Math.round(timeoutMs / 1000)} s. Send the message again.`),
+                            { code: "SESSION_START_TIMEOUT" })), timeoutMs);
+                    }),
+                ]);
+            } finally {
+                if (timer) clearTimeout(timer);
+            }
             await client.query("COMMIT");
         } catch (error) {
             try {

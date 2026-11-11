@@ -997,6 +997,12 @@ first, so whichever commits first decides:
 - An admission or a first message that comes after the delete finds the
   session deleted and does nothing (a first message is refused with
   `SESSION_DELETED`).
+- A first message's row update and its orchestration start are serialized
+  with the delete, not atomic: the start is written to the durable
+  provider's own store, which a rollback of the session row does not undo.
+  When the start fails, or does not answer within 30 seconds (the session
+  row's lock is not held longer), the row is left as it was and the send
+  fails; sending again starts it.
 - An ordinary session whose first message was accepted (its orchestration
   was started) is never taken as ended because its orchestration reads
   NotFound, at any age: a start that no worker has picked up yet reads

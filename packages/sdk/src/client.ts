@@ -1021,10 +1021,11 @@ export class PilotSwarmClient {
                 startVersion,
             );
             if (this._catalog.startSessionFenced) {
-                // Review AR-01: the row's update and the start, in one transaction on the session row's lock, the lock the
-                // Sweeper's final check takes. A row the Sweeper deleted first refuses (SESSION_DELETED) and nothing starts;
-                // a start that commits first changes the row's version, so the Sweeper refuses. A start that fails rolls the
-                // update back.
+                // Review AR-01: the row's update and the start, serialized with the Sweeper on the session row's lock (the lock
+                // its final check takes). A row the Sweeper deleted first refuses (SESSION_DELETED) and nothing starts; a start
+                // that commits first changes the row's version, so the Sweeper refuses. A start that fails or does not answer
+                // in time rolls the row's update back (review DR-03: not atomic with the provider's own store; a later send
+                // starts it again).
                 await this._catalog.startSessionFenced(sessionId, runningUpdate, start);
                 rowUpdated = true;
             } else {

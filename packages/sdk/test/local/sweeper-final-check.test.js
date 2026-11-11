@@ -15,6 +15,8 @@
  * - AR-01: an ordinary session's first message (PilotSwarmClient's start) and the Sweeper serialize on the session row.
  *   A start that holds its fence first makes the Sweeper wait, then refuse (Changed); a Sweeper that holds its final
  *   transaction first makes the start refuse (SESSION_DELETED), and nothing is started.
+ * - DR-03 (review of d5118761): a fenced start that does not answer releases the session row's lock within its bound
+ *   (SESSION_START_TIMEOUT), leaving the row as it was.
  * - DR-02 (review of d5118761): a new ordinary or Workflow grandchild created between the Sweeper's read of the subtree
  *   and its locks makes the cleanup refuse (Changed) with nothing deleted; a creator that the Sweeper's lock on the parent
  *   blocks refuses after the delete commits (PARENT_DELETED), so no child is left under a deleted parent.
@@ -520,6 +522,26 @@ describe("the Sweeper's final check and delete under concurrency", () => {
                 }
             });
         }
+
+        it("DR-03: a start that does not answer releases the session row's lock within its bound; the row is left as it was", { timeout: TIMEOUT }, async () => {
+            const id = randomUUID();
+            await catalog.createSession(id);
+            const before = (await db.query(`SELECT state, orchestration_id, xmin::text AS version FROM ${schema}.sessions WHERE session_id = $1`, [id])).rows[0];
+            const started = Date.now();
+            const stalled = catalog.startSessionFenced(id, { orchestrationId: `session-${id}`, state: "running" }, () => new Promise(() => {}), { timeoutMs: 1_000 })
+                .then(() => null, error => error);
+            // While the start stalls, the row's lock is held: the Sweeper's lock would wait.
+            await new Promise(resolve => setTimeout(resolve, 200));
+            const held = await db.query(`SELECT 1 FROM ${schema}.sessions WHERE session_id = $1 FOR NO KEY UPDATE NOWAIT`, [id]).then(() => false, error => error?.code === "55P03");
+            expect(held, "the fence holds the row's lock while the start runs").toBe(true);
+            const error = await stalled;
+            expect(error?.code, String(error?.message ?? error)).toBe("SESSION_START_TIMEOUT");
+            expect(Date.now() - started).toBeLessThan(10_000);
+            // Released, and nothing written.
+            await db.query(`SELECT 1 FROM ${schema}.sessions WHERE session_id = $1 FOR NO KEY UPDATE NOWAIT`, [id]);
+            const after = (await db.query(`SELECT state, orchestration_id, xmin::text AS version FROM ${schema}.sessions WHERE session_id = $1`, [id])).rows[0];
+            expect(after).toEqual(before);
+        });
 
         it("DR-01: a session whose first message was accepted and whose start is still queued is kept at any age (StartUnresolved); one shown to have ended is cleaned", { timeout: TIMEOUT }, async () => {
             const { client, starts } = await startedClient(null);
