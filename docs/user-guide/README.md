@@ -84,7 +84,7 @@ The advanced scenarios deliberately include real durability moments —
 
 ## Reference
 
-- [Workflows: a guided tour](./workflows.md) — why and when to use a Workflow, a walkthrough in the portal, sharing one in a package, and a reference for agents
+- [Workflows: a guided tour](./workflows.md) — why and when to use a Workflow, a walkthrough in the portal, sharing one in a package, working with Workflows from the SDK, the HTTP API, the MCP server and the terminal, and a reference for agents
 - [Access, sharing & security](./security-and-sharing.md) — who can see and act on a session, visibility levels, targeted shares, roles, and admin break-glass
 - [Keybindings cheat sheet](./keybindings.md) — every TUI key in one table
 - [Working in folders and repos](./workspaces.md) — repo clones, your own folder, the shared folder, and loading agents and skills from files
