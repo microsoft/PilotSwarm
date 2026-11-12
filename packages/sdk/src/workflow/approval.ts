@@ -49,7 +49,7 @@ const tables = (schema: string) => {
 export async function approvalOwnerIn(client: PoolClient, schema: string, workflowSessionId: string): Promise<{ provider: string; subject: string; displayName: string | null } | null> {
     const t = tables(schema);
     const { rows } = await client.query(`SELECT u.provider, u.subject, u.display_name FROM ${t.owners} o JOIN ${t.users} u ON u.user_id = o.user_id
-        WHERE o.session_id = $1`, [workflowSessionId]);
+        WHERE o.session_id = $1 FOR SHARE OF o`, [workflowSessionId]);
     const row = rows[0];
     if (!row || typeof row.provider !== "string" || !row.provider || typeof row.subject !== "string" || !row.subject) return null;
     return { provider: row.provider, subject: row.subject, displayName: typeof row.display_name === "string" ? row.display_name : null };

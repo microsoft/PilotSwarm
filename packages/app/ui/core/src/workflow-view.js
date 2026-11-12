@@ -55,6 +55,11 @@ function invalidState(node, why) {
 }
 
 function checkState(node) {
+    if (node.type === "approval" && (typeof node.question !== "string" || !node.question.trim() || node.question.length > 4000
+        || !Number.isSafeInteger(node.timeoutSeconds) || node.timeoutSeconds < 1 || node.timeoutSeconds > 2592000
+        || node.approver !== undefined && node.approver !== "owner")) {
+        throw new Error(`Approval node '${node.id}' has an invalid question, owner or deadline.`);
+    }
     if (node.type === "terminal") {
         if (!TERMINAL_OUTCOMES.has(node.outcome)) throw invalidState(node, "its outcome is unknown");
         return;

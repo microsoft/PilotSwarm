@@ -60,7 +60,7 @@ function execute({ input = INPUT, version = "1.1.0", testMode = false, next = ()
                 case "enter": result = { admitted: true, nodeExecutionId: "end", state: "completed" }; break;
                 case "collect": result = { collected: task.value.nodeExecutionIds.includes("visit") && saved()
                     ? [{ nodeExecutionId: "visit", outcome: saved(), resultKind: saved() === "timed_out" ? "runtime_error" : "business" }] : [],
-                    paused: paused() }; break;
+                    ...(paused() ? { paused: true } : {}) }; break;
                 case "elapseApproval": elapse(); result = { notDue: [] }; break;
                 case "finish":
                     if (task.value.failure && version !== "1.0.0") throw new Error(JSON.stringify(task.value.failure));
