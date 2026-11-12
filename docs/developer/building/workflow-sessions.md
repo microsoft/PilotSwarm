@@ -847,6 +847,24 @@ start after a catalog/start interruption. A different definition or owner
 conflicts; a completed run does not restart. There is no automatic sweep for
 a pending creation that is never retried.
 
+## Reading the saved definition revision
+
+The overview returned by `read_workflow` and `readWorkflow` exposes an
+existing session-definition pin as `definition.source`:
+`{ ownerSessionId, definitionId, revision }`. Starting saved revision 2
+therefore reports `definition.source.revision: 2`, even though the
+Workflow child's immutable copy starts at revision 1. This source is fixed
+at creation and does not change when the session saves revision 3.
+
+The local fields `definition.currentRevision`,
+`definition.publishedRevision`, `revision.revision`, `graph.revision` and
+`runs[].revision` are unchanged; local reads and guarded operations still
+use them. A Workflow without the stored session-definition pin returns
+`definition.source: null`. Do not infer a source from a matching name or
+the owner's current definition. Portal and terminal labels say
+"Saved definition revision 2"; a local number beside it is called
+"Workflow copy revision 1".
+
 ## Finite change watchers
 
 A watcher can read a query and linked pull-request snapshot, retain the

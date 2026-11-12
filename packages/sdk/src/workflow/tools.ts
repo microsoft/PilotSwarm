@@ -1132,6 +1132,9 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
         definition: {
             state: definition.state, semver: definition.semver, currentRevision: definition.currentRevision,
             publishedRevision: definition.publishedRevision, publishedDefinitionHash: definition.publishedYamlSha256,
+            source: definition.sessionDefinitionId && definition.sessionRevision !== null ? {
+                ownerSessionId: definition.parentSessionId, definitionId: definition.sessionDefinitionId, revision: definition.sessionRevision,
+            } : null,
             // Whether the parent agent is told when the live run ends (batch 7, n-1): spawn_workflow sets it, a live start sets it again.
             notifyOnCompletion: definition.notifyParent,
             // What publication pinned each named agent state to (migration 0088; R18, R28); only a definition with any shows it.
@@ -1621,4 +1624,3 @@ export async function sendWorkflowInputFromTool(args: Record<string, unknown>, c
         return errorPayload(error);
     }
 }
-

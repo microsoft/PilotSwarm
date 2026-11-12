@@ -144,9 +144,17 @@ describe("a definition belongs to the session (stage 2.1)", () => {
             const own = await h.store.readDefinition(started.workflowId);
             expect(own).toMatchObject({ state: "published", parentSessionId: session });
             expect((await h.store.readRevision(started.workflowId, 1)).yaml).toBe(YAML(45));
+            const readStarted = () => readWorkflowModel(host, started.workflowId, {}, "tool");
+            const startedView = await readStarted();
+            expect(startedView.definition).toMatchObject({
+                currentRevision: 1, publishedRevision: 1,
+                source: { ownerSessionId: session, definitionId: id, revision: 2 },
+            });
+            expect(startedView.runs).toEqual(expect.arrayContaining([expect.objectContaining({ mode: "live", revision: 1 })]));
             // A later save never changes it (R1).
             await save(host, session, YAML(90), { definitionId: id, revision: 3 });
             expect((await h.store.readRevision(started.workflowId, 1)).yaml).toBe(YAML(45));
+            expect((await readStarted()).definition.source).toEqual(startedView.definition.source);
             // An explicit revision; Run again pins the same revision as the Workflow it repeats.
             expect((await start(host, session, id, { revision: 1 })).revision).toBe(1);
             expect((await start(host, session, id, { runAgainOf: started.workflowId })).revision).toBe(2);

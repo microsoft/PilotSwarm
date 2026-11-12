@@ -5,6 +5,7 @@ import {
     selectWorkflowViewSnapshotFor, workflowParentWorking, workflowReadModelView, workflowViewSnapshotEqual, formatSeconds,
     projectWorkflow, workflowLogEvents, workflowLogWindow, workflowActivity, workflowBranchPickKey, workflowExecutionOfRow,
     workflowReplayBranchIndex, workflowReplayFrames, workflowReplayLabel, workflowSelectionAfterBranchChange,
+    workflowSavedDefinitionRevision,
 } from "../../core/src/workflow-view.js";
 import {
     WORKFLOW_TEST_NEEDS_DRAFT_TEXT, workflowDefinitionControls, workflowDraftEditor, workflowJsonObjectDraft, workflowRunCommandNotice,
@@ -843,7 +844,7 @@ function WorkflowList({ controller, definition, byId, views, onOpen, onStart, on
 export function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile, phone = false, onOpen, nodeStateId = null, displayMode = "normal",
     sessionRevision = null, extraActions = null }) {
     const child = useWorkflowChild(controller, workflow.sessionId);
-    const { sessionId, session, view, places, events, projection, readModel, readError } = child;
+    const { sessionId, session, view, places, events, projection, readModel, workflowModel, readError } = child;
     // Live while it is shown, also when its session's chat is the active session (the companion subscription).
     React.useEffect(() => controller.watchWorkflow(sessionId), [controller, sessionId]);
     // A Workflow is its live run: a test run chosen in the Definition view's Test panel (test mode) is not shown here.
@@ -964,8 +965,11 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     const runId = projection?.runId ?? readModel?.run?.runId ?? null;
     const times = workflowRunTimes(events, runId);
     // Stage 2.1b: a Workflow of a session's definition says the definition's revision it runs (its own copy is revision 1).
-    const revision = Number.isSafeInteger(sessionRevision) ? sessionRevision
-        : Number.isSafeInteger(projection?.readModel?.runRevision) ? projection.readModel.runRevision : null;
+    const savedRevision = workflowSavedDefinitionRevision(readModel ?? workflowModel)
+        ?? (Number.isSafeInteger(sessionRevision) ? sessionRevision : null);
+    const revision = savedRevision
+        ?? (Number.isSafeInteger(projection?.readModel?.runRevision) ? projection.readModel.runRevision : null);
+    const revisionWords = savedRevision !== null ? `Saved definition revision ${savedRevision}` : revision !== null ? `revision ${revision}` : null;
     // F6: a failed terminal's summary, from the run's end event, for a run whose failure route ended it with no error of its own.
     const endSummary = React.useMemo(() => {
         for (let at = events.length - 1; at >= 0; at -= 1) {
@@ -998,7 +1002,7 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     const started = times.started !== null ? shownTime(times.started) : null;
     const took = times.took !== null ? workflowElapsedText(times.took) : null;
     // Its words in full, for the header's tooltip: the start with its date and zone, and how long it ran.
-    const headerTitle = [revision !== null ? `revision ${revision}` : null, times.started !== null ? `started ${shownTimeTitle(times.started)}` : null,
+    const headerTitle = [revisionWords, times.started !== null ? `started ${shownTimeTitle(times.started)}` : null,
         took ? `ran ${took}` : null].filter(Boolean).join(" · ");
     return h("div", { className: "ps-wf-body", "data-session-id": sessionId },
         h("div", { className: "ps-wf-bar is-run" },
@@ -1007,10 +1011,10 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
             // the state's tooltip and the picker's options (owner, 2026-11-06T13:43Z: relocated, not removed).
             phone
                 ? h(StateChip, { state, time: took,
-                    title: [started ? `Started ${started}` : null, revision !== null ? `revision ${revision}` : null].filter(Boolean).join(" · ") })
+                    title: [started ? `Started ${started}` : null, revisionWords].filter(Boolean).join(" · ") })
                 : h(StateChip, { state }),
             phone ? null : h("span", { className: "ps-wf-bar-text", title: headerTitle || undefined },
-                [revision !== null ? `revision ${revision}` : null, started, took].filter(Boolean).join(" · ")),
+                [revisionWords, started, took].filter(Boolean).join(" · ")),
             // Owner, 2026-11-06T13:43Z (F1): icons; a refused or waiting control explains why in its tooltip.
             h("span", { className: "ps-wf-bar-actions" },
                 pause ? h(WorkflowToolButton, { label: pause.label, glyph: "pause", "data-operation": "pause", disabled: !pause.enabled,
@@ -1200,9 +1204,13 @@ function WorkflowNumberPicker({ controller, definition, chosen, onOpen, phone = 
         const model = workflowChildModel(view);
         const live = Array.isArray(model?.runs) ? model.runs.find(run => run?.mode === "live") ?? null : null;
         const times = workflowRunTimes(histories?.get?.(row.sessionId)?.events, live?.runId ?? null);
-        return workflowPickerOptionLabel({ number: row.number, version: workflowChildDefinitionFacts(view).version,
+        const savedRevision = workflowSavedDefinitionRevision(model)
+            ?? (definition.definitionId && Number.isSafeInteger(row.revision) ? row.revision : null);
+        const words = workflowPickerOptionLabel({ number: row.number, version: workflowChildDefinitionFacts(view).version,
             state: workflowStateOf(byId?.[row.sessionId], view)?.label ?? null,
-            started: times.started !== null ? shownTime(times.started) : null, revision: phone ? live?.revision ?? null : null });
+            started: times.started !== null ? shownTime(times.started) : null,
+            revision: phone && savedRevision === null ? live?.revision ?? null : null });
+        return phone && savedRevision !== null ? `${words} · Saved definition revision ${savedRevision}` : words;
     };
     // OF-S2-8 (owner, 2026-11-07T23:19Z): the picker says what it picks, "Workflow", in words beside it.
     return h(FacedPicker, { id, label: "Workflow", kind: "is-number", face: shown ? workflowPickerFace(shown.number, count) : "—", value: chosen,
