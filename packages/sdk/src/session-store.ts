@@ -457,7 +457,11 @@ async function archiveSessionDir(
     tarPath: string,
     codec: SnapshotCodec = DEFAULT_SNAPSHOT_CODEC,
 ): Promise<{ rawSizeBytes: number; codec: SnapshotCodec }> {
-    const tar = spawn("tar", [...TAR_EXCLUDES, "-cf", "-", "-C", sessionStateDir, sessionId]);
+    const tar = spawn(
+        process.platform === "win32" ? "C:\\Windows\\System32\\tar.exe" : "tar",
+        [...TAR_EXCLUDES, "-cf", "-", "-C", sessionStateDir, sessionId],
+        process.platform === "win32" ? { windowsHide: true } : undefined,
+    );
     let rawSizeBytes = 0;
     const counter = new Transform({
         transform(chunk, _enc, cb) { rawSizeBytes += chunk.length; cb(null, chunk); },
@@ -484,7 +488,11 @@ async function extractSessionArchive(
     // Read through zero padding to EOF. Otherwise tar can exit successfully
     // at the archive terminator while decompression is still writing, causing
     // EPIPE/ERR_STREAM_PREMATURE_CLOSE and hiding compression trailer errors.
-    const tar = spawn("tar", ["--ignore-zeros", "-xf", "-", "-C", sessionStateDir]);
+    const tar = spawn(
+        process.platform === "win32" ? "C:\\Windows\\System32\\tar.exe" : "tar",
+        ["--ignore-zeros", "-xf", "-", "-C", sessionStateDir],
+        process.platform === "win32" ? { windowsHide: true } : undefined,
+    );
     const [pipeResult, procResult] = await Promise.allSettled([
         pipeline(input, makeDecompressor(codec), tar.stdin!),
         awaitProcess(tar, "tar extract"),
