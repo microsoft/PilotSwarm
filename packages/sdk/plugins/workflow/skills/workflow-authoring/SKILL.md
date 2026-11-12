@@ -144,8 +144,7 @@ await setResult(status.state === "running" ? "running" : "finished", { status, l
 
 ## 7. Agent states
 
-An agent state runs an agent session for one task and waits for its typed
-result.
+An agent state runs one task and waits for its typed result.
 
 - The task is `invoke: { prompt: "..." }` or a named agent:
   `invoke: { agent: { name: code-reviewer, package: review-kit, version: "1.2.0" } }`.
@@ -158,6 +157,8 @@ result.
   final message does not. Three invalid completions fail the state with
   `invalid_output`.
 - `timeoutSeconds` (1 to 86,400) is the outer deadline (`timed_out`).
+- For long work, use short visits with a sleep outcome and a Workflow wait
+  between them. Call `load_skill` with name `workflow-long-agent`.
 - `session: continue` (default): one agent session keeps the step's memory
   across visits. `session: new` (a fresh one each visit) only if the
   person asks; For each and branches: `new`. Session lifecycle:

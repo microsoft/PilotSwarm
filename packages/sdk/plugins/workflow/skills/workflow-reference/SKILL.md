@@ -1,20 +1,18 @@
 ---
 name: workflow-reference
-description: Field reference for Workflow YAML (root keys, every state type, bindings, outputs, runtime error codes), what the engine guarantees, and a review fan-out example. For design, call load_skill with name workflow-authoring.
+description: Workflow YAML fields, bindings, state outputs, errors and guarantees, with a review example. Design guidance is in workflow-authoring.
 ---
 
 # Workflow reference
 
-Exact fields for `apiVersion: pilotswarm.dev/v1` definitions.
-`workflow-authoring` explains how to design with them.
+Fields for `apiVersion: pilotswarm.dev/v1`; design: `workflow-authoring`.
 
-Ids: a state id or an outcome is a letter, then at most 63 letters, digits,
-`_` or `-`. State ids are unique in the whole workflow, body and branch
-states included. A contract name is `Name@N` (for example `BuildEvent@1`).
+Ids: a letter, then at most 63 letters, digits, `_` or `-`. State ids are
+unique across bodies and branches. Contracts: `Name@N`, e.g. `BuildEvent@1`.
 
-Optional start `key` deduplicates an attempt in the owning session.
-It is not YAML or script-effect idempotency. `workflow-tools` gives its
-exact scope, validation, replay, conflicts and deliberate-rerun rules.
+Start `key` deduplicates an attempt in its owning session, not YAML or
+script effects. Scope, validation, replay, conflicts and reruns:
+`workflow-tools`.
 
 ## Root keys
 
@@ -46,10 +44,9 @@ states only). Path segments: `.name`,
 bindings.
 
 A template is a YAML value: an object is a map (`{ fact: "..." }`), not
-JSON text in quotes (`'{"fact": "..."}'` is one string). A template with no
-binding is checked against its contract or `inputSchema` when the draft is
-saved (`WORKFLOW_STATE_INPUT_INVALID`); JSON written as text where an object
-or array is expected gets the warning `WORKFLOW_INPUT_JSON_TEXT`. A state
+JSON text in quotes (`'{"fact": "..."}'` is one string). Fixed templates are
+checked against their contract or `inputSchema` at Save (`WORKFLOW_STATE_INPUT_INVALID`).
+JSON text where an object or array is expected gets the warning `WORKFLOW_INPUT_JSON_TEXT`. A state
 with no `input:` whose closed `inputSchema` refuses a property that the
 `outputSchema` of the state before it declares (a wait passes its input on),
 or needs one it lacks, gets the warning `WORKFLOW_INPUT_MISMATCH`.
@@ -84,7 +81,7 @@ names the diagnostics and static-analysis limits.
 
 | Field | Rule |
 |---|---|
-| `seconds` | 1 to 86,400, or one binding (checked at entry: `invalid_input`). Required unless `at`. |
+| `seconds` | 1 to 2,592,000 (30 days), or one binding (checked at entry: `invalid_input`). Required unless `at`. A literal longer than the run timeout warns. |
 | `at` | Instead of `seconds`: `{ minute, hour?, day_of_week? (0-6, Sunday 0) or day_of_month? (1-31), tz }`; a day needs `hour`, and `minute` alone is every hour. Waits until the next such time in the IANA zone `tz` (daylight saving included), decided at entry. |
 | `input` | Optional template. |
 
@@ -97,7 +94,7 @@ Outcome: `elapsed` (route required). Output: its input.
 | `contract` | Required. A root contract. |
 | `from` | Optional: `{ parent: true }`, a session id, or `{ sessionId }` (may be a binding). Without it, any permitted sender. |
 | `correlate` | Optional template object; a message's `correlation` must equal it. |
-| `wait` | Optional `{ seconds }` (as a wait state's seconds): the receive races a durable timer. |
+| `wait` | Optional `{ seconds }` (1 to 86,400, or one binding): the receive races a durable timer. |
 | `input` | Optional template. |
 
 Outcomes: `received` (output: the message payload) and, with `wait`,
@@ -166,6 +163,9 @@ sessions. Each completion gives `node_execution_id` from its prompt.
 Session lifecycle: the time limit is per visit; the agent session ends with
 the Workflow (a stop ends an idle one at once). An agent session that ended
 on its own is replaced, and the prompt says so.
+
+For multi-day work, use short visits and a sleep outcome routed to a wait;
+call `load_skill` with name `workflow-long-agent`. A timeout self-loop warns.
 
 `interface: <name>@<version>` (for example `review_change@1`) names the
 workflow interface its package agent exports. `ps_list_agents` lists it as

@@ -350,6 +350,8 @@ export interface TurnOptions {
          * that runs agent states.
          */
         workflowAgentSubtree?: boolean;
+        /** Direct agent child only: the deadline of this turn's captured Workflow visit, read before scheduling. */
+        workflowScheduleDeadline?(): Promise<{ deadlineAt: string }>;
         /**
          * Workflow real-agent test runs (design 05 agent mode real): this
          * session is in the subtree of a test run's agent state, so each of

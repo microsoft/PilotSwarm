@@ -186,6 +186,29 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   An update from a sub-agent or a timer that arrives between visits is
   recorded in the agent session but is not given to the model; the next
   visit's prompt carries the current state.
+- **Long-lived agents and multi-day waits (FB-018, steps 1 and 1b).**
+  Keep `session: continue`, complete each short visit with a declared sleep
+  outcome, and route through a wait back to the agent. The reference example
+  is `packages/sdk/plugins/workflow/skills/workflow-long-agent/SKILL.md`.
+  Only wait-state `seconds` expands to 2,592,000 (30 days), for literals and
+  bindings. Agent, request, receive and parallel deadlines remain capped at
+  86,400 seconds. The IR shape, controller version and database schema do not
+  change. A literal wait longer than `limits.timeoutSeconds` warns
+  `WORKFLOW_WAIT_EXCEEDS_RUN_TIMEOUT`; an agent's `timed_out` self-loop warns
+  `WORKFLOW_AGENT_TIMEOUT_LOOP`. Both remain valid definitions.
+  The production session host supplies the optional
+  `TurnOptions.controlToolBridge.workflowScheduleDeadline()` only for direct
+  agent children. It reads the invocation captured for that turn, not the
+  session's latest invocation. Managed-session tools compare the next wake
+  with that deadline before queuing `wait`, `wait_on_worker`, `cron` or
+  `cron_at`; a wake at or after it is refused with sleep-outcome guidance.
+  Cancellation never needs that lookup. An allowed first fire does not
+  extend the visit; its usual timeout remains authoritative. Ordinary
+  sessions and descendants keep their current scheduling behavior.
+  Pausing does not freeze an admitted wait or run deadline. Continued
+  sessions clear inherited cron schedules at visit boundaries (FB-026);
+  an already pending one-shot wait can still wake once. Multi-day agent
+  visits and new liveness or hand-over rules are deferred.
 - **Agent node tool limit: `tools: none | [names]`** (stage 2.1). Absent, an
   agent node's agent session has its session's tools. `tools: none` leaves it only
   `complete_workflow_node`; a list (1 to 64 distinct tool names, as the agent

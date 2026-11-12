@@ -3223,6 +3223,17 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             } : {}),
             /** Workflow agent states: a session in an agent state's subtree gets the ask_user refusal (R14). */
             ...(workflowLineage?.agentRoot ? { workflowAgentSubtree: true } : {}),
+            ...(workflowAgentChild && workflowFenceStore ? {
+                workflowScheduleDeadline: async () => {
+                    const executionId = workflowTurnVisit ? workflowTurnVisit.nodeExecutionId : workflowLineage?.agentRoot?.nodeExecutionId;
+                    if (!executionId) throw new Error("This Workflow turn has no captured visit for scheduling.");
+                    const invocation = await workflowFenceStore.readAgentInvocation(executionId);
+                    if (!invocation || invocation.childSessionId !== input.sessionId) {
+                        throw new Error("This Workflow turn's scheduling visit could not be read.");
+                    }
+                    return { deadlineAt: invocation.deadlineAt.toISOString() };
+                },
+            } : {}),
             /**
              * Real-agent test runs (design 05 agent mode real): a session in a test run's agent state's subtree runs
              * no framework tool; each call is recorded for the test's parent, or a fixture, to answer (test-agent-tools.ts).

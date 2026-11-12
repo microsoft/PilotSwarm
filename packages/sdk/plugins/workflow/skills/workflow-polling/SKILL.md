@@ -1,18 +1,16 @@
 ---
 name: workflow-polling
-description: Load for bounded polling, multi-day observation or uncertain external effects. Calculate state-visit budgets, preserve loop data where supported, re-arm with authorization, and report unknown results without claiming success.
+description: Bounded polling, multi-day observation and uncertain effects: state-visit budgets, loop data, authorized re-arming and unknown results.
 ---
 
 # Bounded observation
 
-Read `workflow-authoring` first. Workflows do not promise unbounded
-watching or exactly-once external effects.
+Read `workflow-authoring`. No unbounded or exactly-once execution.
 
-## Calculate the budget
+## Visit budget
 
-`limits.maxNodeExecutions` defaults to 1,000 and allows at most 10,000
-state visits, including waits, branch states and terminals. At the cap
-the run fails with `limit_exceeded`; reserve visits for its exit first.
+`limits.maxNodeExecutions`: default 1,000, maximum 10,000, counting waits,
+branches and terminals. The cap fails with `limit_exceeded`; reserve exit visits.
 
 Let `B` be the run's visit budget, `R` the visits reserved for setup,
 notifications, errors and the terminal, and `C` the most visits in one
@@ -37,30 +35,29 @@ wall-clock guarantee.
 | 14 days | 1 hour | 337 | 694 |
 | 28 days | 6 hours | 113 | 246 |
 
-- A `seconds` wait is 1 to 86,400 seconds (24 hours) **per visit**, not per
-  run. Repeat bounded waits for longer durations. Calendar `at` can span
-  more than 24 hours, but means the next calendar time, not a duration.
+- A wait state's `seconds` is 1 to 2,592,000 (30 days) **per visit**, not per
+  run. A literal longer than the run timeout warns. Request, receive, agent
+  and parallel deadlines stay at 24 hours. Calendar `at` names a clock time.
 - `limits.timeoutSeconds` is optional, with a maximum of 2,592,000 seconds
   (30 days). Omitting it adds no deadline, but the visit limit still applies.
   Pause does not stop the deadline; expiry fails with `timed_out`.
-- Exit on a counter before the cap. More states per round need fewer rounds.
+- Exit before the cap. More states per round need fewer rounds.
 
 ## Poll without false success
 
-The parent/person may set `maxChecks` (default 30, clipped at 490) and
-`pollSeconds` (default 60, 1 to 86,400). The hard count protects the
-1,000-visit budget even if KV is raised during the run. The wait maps away
-`ciState` before the next check's closed schema. Replace `get_ci_state`
-with your read-only tool, whose state is `pending`, `success` or `failure`.
-CI finishing means observation success, not CI success. Pending at the
-count limit is blocked.
+Parent/person variables: `maxChecks` (default 30, clipped at 490) and
+`pollSeconds` (default 60, 1 to 2,592,000). The hard cap protects 1,000 visits
+even after KV changes. The wait removes `ciState` for the closed schema.
+Replace `get_ci_state` with your read-only tool (`pending`, `success` or
+`failure`). CI finishing is observation success, not CI success. Pending
+at the count limit is blocked.
 
 ```yaml
 # example: ci-poll
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: ci-poll, version: "1.0.0" }
-description: Observes CI. Variables maxChecks (1-490) and pollSeconds (1-86400) are optional.
+description: Observes CI. Variables maxChecks (1-490) and pollSeconds (1-2592000) are optional.
 initial: check_ci
 initialInput: { checks: 0 }
 limits: { maxNodeExecutions: 1000 }
