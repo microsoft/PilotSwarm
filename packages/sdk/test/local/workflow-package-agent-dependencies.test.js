@@ -310,7 +310,7 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                         await expect(handler({}, {})).rejects.toThrow("A captured tool source changed or was removed.");
                     } else if (lifecycle === "parent end") {
                         await h.q("UPDATE SCHEMA.sessions SET state = 'completed' WHERE session_id = $1", [parentSessionId]);
-                        await expect(handler({}, {})).rejects.toThrow("Workflow parent authority is no longer available.");
+                        await expect(handler({}, {})).rejects.toThrow("Workflow agent visit is no longer available.");
                     } else if (lifecycle === "stored binding removed") {
                         await h.q("UPDATE SCHEMA.sessions SET creation_config = creation_config #- '{workflowToolBinding,agentStepTools}' WHERE session_id = $1",
                             [workflowSessionId]);
