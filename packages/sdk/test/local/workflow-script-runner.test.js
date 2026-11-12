@@ -51,6 +51,15 @@ describe("script runner", () => {
         expect(result.output.stderr).toContain("unrelated script failure");
     });
 
+    it("ignores an invented failure identity instead of treating script output as host authority", async () => {
+        const result = await run(node("n", `
+            process.send({ workflowPackageFailure: "invented" });
+            throw new Error("ordinary failure");
+        `));
+        expect(result).toMatchObject({ resultSource: "exit", exitCode: 1 });
+        expect(result.toolFailure).toBeUndefined();
+    });
+
     it("routes a node script's tool call to the session tool set and takes its reported result", async () => {
         const calls = [];
         const result = await run(node("n", `

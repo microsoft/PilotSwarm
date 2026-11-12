@@ -48,6 +48,9 @@ export async function resolveWorkflowCapabilitySnapshot(
         packagePins: { ...retained?.packagePins, ...binding.packagePins },
         toolSources: { ...retained?.toolSources, ...binding.toolSources },
     };
+    for (const selection of binding.capabilities.selections.filter(candidate => candidate.sourceId.startsWith("static:"))) {
+        for (const tool of selection.tools) labels.toolSources[tool] ??= selection.sourceId;
+    }
     const sources = liveSources.filter(source => source.source === "static");
     for (const source of sources) {
         for (const tool of binding.tools) {

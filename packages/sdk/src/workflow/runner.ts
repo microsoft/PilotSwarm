@@ -122,6 +122,16 @@ const __psArrayPrototype = Array.prototype;
 const __psFetch = globalThis.fetch;
 const __psEndpoint = process.env.PILOTSWARM_WORKFLOW_ENDPOINT;
 const __psToken = process.env.PILOTSWARM_WORKFLOW_TOKEN;
+const __psFailures = new WeakMap();
+const __psFailureGet = WeakMap.prototype.get;
+const __psFailureSet = WeakMap.prototype.set;
+const __psSend = process.send?.bind(process);
+process.on("uncaughtExceptionMonitor", error => {
+    const id = __psApply(__psFailureGet, __psFailures, [error]);
+    if (id && __psSend) __psSend({ workflowPackageFailure: id }, error => {
+        if (error) process.stderr.write("Workflow package failure could not be reported: " + error.message + "\\n");
+    });
+});
 function __psIsIndex(key, length) {
     if (typeof key !== "string" || key.length === 0 || key.length > 10) return false;
     if (key.length > 1 && __psApply(__psCharCodeAt, key, [0]) === 48) return false;
@@ -203,7 +213,11 @@ async function __psPost(route, body) {
         body,
     });
     const payload = await response.json();
-    if (!payload.ok) throw new Error(payload.error);
+    if (!payload.ok) {
+        const error = new Error(payload.error);
+        if (typeof payload.failureId === "string") __psApply(__psFailureSet, __psFailures, [error, payload.failureId]);
+        throw error;
+    }
     return payload.result;
 }
 async function callTool(name, args = {}) {
@@ -365,6 +379,7 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
     let acceptingToolCalls = true;
     let reported: { outcome: string; output: unknown; invalid?: string } | null = null;
     let toolFailure: RunScriptNodeResult["toolFailure"];
+    const packageFailures = new Map<string, NonNullable<RunScriptNodeResult["toolFailure"]>>();
 
     const server = http.createServer(async (req, res) => {
         const reply = (status: number, body: unknown) => {
@@ -421,9 +436,12 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
                 toolCalls.push({ name, ok: true, durationMs: Date.now() - callStarted });
                 reply(200, { ok: true, result: toJsonSafe(result) });
             } catch (error) {
-                if (error instanceof WorkflowPackageToolError) toolFailure = { message: error.message, details: error.details };
+                const failureId = error instanceof WorkflowPackageToolError ? randomBytes(16).toString("hex") : undefined;
+                if (failureId && error instanceof WorkflowPackageToolError) {
+                    packageFailures.set(failureId, { message: error.message, details: error.details });
+                }
                 toolCalls.push({ name, ok: false, durationMs: Date.now() - callStarted, error: errorText(error) });
-                reply(200, { ok: false, error: errorText(error) });
+                reply(200, { ok: false, error: errorText(error), ...(failureId ? { failureId } : {}) });
             }
             return;
         }
@@ -477,7 +495,7 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
                 const child = spawn(executable, args, {
                     cwd: workDir,
                     env,
-                    stdio: ["pipe", "pipe", "pipe"],
+                    stdio: ["pipe", "pipe", "pipe", "ipc"],
                     windowsHide: true,
                     detached: groupLeader,
                 });
@@ -511,6 +529,14 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
                 };
                 child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
                 child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+                // Match the exact uncaught host error; a previously caught refusal is not the cause of a later exit.
+                child.on("message", message => {
+                    if (message && typeof message === "object" && "workflowPackageFailure" in message
+                        && typeof message.workflowPackageFailure === "string") {
+                        const failure = packageFailures.get(message.workflowPackageFailure);
+                        if (failure) toolFailure = failure;
+                    }
+                });
                 child.on("error", (error: NodeJS.ErrnoException) => {
                     settle();
                     reject(error.code === "ENOENT"

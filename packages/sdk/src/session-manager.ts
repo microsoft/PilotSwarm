@@ -4071,7 +4071,9 @@ export class SessionManager {
             const sources = snapshot?.sources ?? this.workerDefaults.getCapabilitySources?.() ?? [];
             const provider = snapshot?.labels.toolSources[name];
             const current = sources.filter(source => source.source === "static").map(source => source.tools.get(name)).find(Boolean);
-            if (grant && ((provider?.startsWith("static:") && !current && !grant.mcpServerName)
+            const deploymentAgentTool = binding.config.boundAgentSource === "deployment"
+                && resolveBoundAgentCopy(this.workerDefaults, binding.config, agentOwnerKey(owner))?.toolNames?.includes(name);
+            if (grant && (((provider?.startsWith("static:") || deploymentAgentTool) && !current && !grant.mcpServerName)
                 || (current && workflowToolGrant({ name, input_schema: toolDeclarationForFingerprint(current).parameters }).schemaHash !== grant.schemaHash))) {
                 throw new WorkflowToolAuthorityError(`Tool '${name}' is unavailable or its contract changed since workflow admission.`);
             }
