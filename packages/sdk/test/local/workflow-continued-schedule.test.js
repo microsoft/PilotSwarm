@@ -44,6 +44,9 @@ function harness({ stopped = false, descendant = false, lifecycle = null } = {})
         readNodeExecution: async () => ({ nodeType: "agent", runId: "run-1", nodeId: "look", nodeExecutionId: NX1 }),
         readRun: async () => ({ runId: "run-1", mode: "live", workflowSessionId: "wf-1" }),
         readAgentToolLimit: async () => null,
+        // The state requires no tools (FB-020: the turn reads them before it starts).
+        readAgentRequiredTools: async () => [],
+        readAgentMissingTools: async () => [],
         readTurnVisit: async () => invocation.visit,
         recordAgentReminder: async request => {
             reminders.push(request);

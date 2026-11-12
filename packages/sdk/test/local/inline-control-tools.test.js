@@ -1476,6 +1476,9 @@ describe("Q2: the step reminder inside an agent state's child turn", () => {
     function stepChild(sends, { gate = REMIND, config = { workflowAgentChild: true }, tools = [] } = {}) {
         const fakeSession = new FakeCopilotSession();
         fakeSession.scriptedSends = sends;
+        // A Workflow agent step checks its required tools against the CLI's declared tools (sessionConfig.tools): these.
+        fakeSession.rpc = { tools: { initializeAndValidate: vi.fn(async () => {}),
+            getCurrentMetadata: vi.fn(async () => ({ tools: tools.map(tool => ({ name: tool.name })) })) } };
         const checks = [];
         let managed = null;
         const stepReminder = { check: vi.fn(async input => {

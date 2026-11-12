@@ -97,6 +97,9 @@ describe("the scheduling bridge uses this turn's visit", () => {
             readNodeExecution: async () => ({ nodeType: "agent", runId: "run", nodeId: "look", nodeExecutionId: OLD }),
             readRun: async () => ({ runId: "run", mode: "live", workflowSessionId: "wf" }),
             readAgentToolLimit: async () => null,
+            // The state requires no tools (FB-020: the turn reads them before it starts).
+            readAgentRequiredTools: async () => [],
+            readAgentMissingTools: async () => [],
             readTurnVisit: async () => turnVisit,
             readAgentInvocation: async id => {
                 reads.push(id);
