@@ -2202,7 +2202,7 @@ export class PgSessionCatalog implements SessionCatalog {
     }
 
     async updateSessionTitleIfUnlocked(sessionId: string, title: string): Promise<boolean> {
-        const { rows } = await this.pool.query<{ updated: boolean }>(
+        const { rows } = await this.pool.query(
             `SELECT ${this.sql.fn.updateSessionTitleIfUnlocked}($1, $2) AS updated`,
             [sessionId, title],
         );
