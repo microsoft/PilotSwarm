@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { registerWorkflowTools } from "../../mcp/dist/tools/workflows.js";
+import { registerWorkflowTools } from "../../mcp/dist/src/tools/workflows.js";
 
 test("generic MCP Workflow commands cannot forward a person's consent, in either provenance mode", async () => {
     for (const originatingSessionId of [undefined, "agent-session"]) {

@@ -111,7 +111,7 @@ describe("owner-only approval transactions", () => {
             await expect(h.store.approvals.respond(h.workflowSessionId, answer(h, "a".repeat(64)), ACTOR)).rejects.toMatchObject({ code: "APPROVAL_NOT_FOUND" });
             await h.store.advanceTestClock({ workflowSessionId: h.workflowSessionId, runId: h.runId, seconds: timeoutSeconds,
                 operationId: "advance", requestSha256: "advance", projection: () => ({ eventType: "workflow.test_advanced", data: {} }) });
-            expect(await h.store.readNodeExecution(h.approvalId)).toMatchObject({ outcome: "timed_out", winner: "test" });
+            expect(await h.store.readNodeExecution(h.approvalId)).toMatchObject({ outcome: "timed_out", winner: "controller" });
             expect(await proposal(h)).toBeUndefined();
         } finally { await h.close(); }
     });

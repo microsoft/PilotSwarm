@@ -62,7 +62,10 @@ function execute({ input = INPUT, version = "1.1.0", testMode = false, next = ()
                     ? [{ nodeExecutionId: "visit", outcome: saved(), resultKind: saved() === "timed_out" ? "runtime_error" : "business" }] : [],
                     paused: paused() }; break;
                 case "elapseApproval": elapse(); result = { notDue: [] }; break;
-                case "finish": result = { runId: "run", status: "completed", outcome: "succeeded" }; break;
+                case "finish":
+                    if (task.value.failure && version !== "1.0.0") throw new Error(JSON.stringify(task.value.failure));
+                    result = { runId: "run", status: task.value.failure ? "failed" : "completed", outcome: task.value.failure ? null : "succeeded" };
+                    break;
                 default: result = null;
             }
         } else throw new Error(`Unexpected task ${task.kind}`);
@@ -123,5 +126,7 @@ test("test mode creates an approval interception and still starts no live helper
     assert.deepEqual(result.starts, []);
 });
 test("the approval path is unavailable to a controller admitted at 1.0.0", () => {
-    assert.throws(() => execute({ version: "1.0.0" }), /approval/i);
+    const result = execute({ version: "1.0.0" });
+    assert.equal(result.result.status, "failed");
+    assert.match(result.activities.find(item => item.name === "finish").input.failure.message, /approval/i);
 });
