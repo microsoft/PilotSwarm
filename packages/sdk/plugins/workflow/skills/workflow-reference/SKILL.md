@@ -291,6 +291,11 @@ receive, `parentNotification`, the request field `request` and the route
 
 ## Tools
 
+Script tool grants exclude `draw_canvas`, `update_canvas`, `show_canvas`,
+`read_canvas`, `canvas_kv`, `publish_canvas_app` and `find_canvas_app`.
+These tools need a live agent session's canvas bridge. A script does not
+have it, even with `session_id`; use an agent step or send to the parent.
+
 For every argument of the Workflow tools and the refusals you can fix, call
 `load_skill` with name `workflow-tools`. Use `read_workflow`, not
 `list_sessions`, for a Workflow's status.

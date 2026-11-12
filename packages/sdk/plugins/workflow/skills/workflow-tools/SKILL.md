@@ -39,6 +39,11 @@ revision it started with.
 
 ### Start
 
+- A script cannot use `draw_canvas`, `update_canvas`, `show_canvas`,
+  `read_canvas`, `canvas_kv`, `publish_canvas_app` or `find_canvas_app`.
+  They need a live agent session's canvas bridge, which a script's delegated
+  tool session does not have. Giving `session_id` does not supply the bridge.
+  Use an agent step, or a messaging send to the parent, for canvas work.
 - Each start makes another Workflow, and many Workflows of one definition
   may run at once. To run it again ("another one", "run it again"), call
   `start` again: a second Workflow never needs the first stopped.

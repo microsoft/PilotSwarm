@@ -224,6 +224,11 @@ Never use several Workflows for this; `workflow-patterns` has an example.
 
 ## 9. The lifecycle
 
+Canvas work belongs in an agent step or a messaging send to the parent.
+A script cannot call `draw_canvas`, `update_canvas`, `show_canvas`,
+`read_canvas`, `canvas_kv`, `publish_canvas_app` or `find_canvas_app`: their
+live-session canvas bridge is not available in a script tool session.
+
 1. `workflow_definition` `save` (`name`, `yaml`) saves revision 1; read its
    errors in the answer. Show the person the revision (`read`). Change it with
    `save`, its `definition_id` and the `expected_revision` you read: that is
