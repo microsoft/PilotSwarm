@@ -4,6 +4,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { runScriptNode } from "../../src/workflow/runner.js";
+import { WorkflowPackageToolError } from "../../src/workflow/package-pins.js";
 
 function node(id, source, timeoutSeconds = 30) {
     return { id, source, timeoutSeconds };
@@ -20,6 +21,23 @@ function run(nodeDef, extra = {}) {
 }
 
 describe("script runner", () => {
+    it("stores a host package refusal only for a failing exit, not a handled valid result", async () => {
+        const error = new WorkflowPackageToolError("fixture", {
+            packageId: "package-id", package: "fixture-tools", version: "1.0.0", revision: "a".repeat(64),
+            ownership: "owned", state: "unavailable", reason: "disabled",
+        });
+        const callTool = async () => { throw error; };
+        const failed = await run(node("n", `await callTool("fixture", {});`), { callTool });
+        expect(failed).toMatchObject({ resultSource: "exit", exitCode: 1,
+            toolFailure: { message: error.message, details: error.details } });
+        const handled = await run(node("n", `
+            try { await callTool("fixture", {}); }
+            catch { await setResult("handled", { unavailable: true }); }
+        `), { callTool });
+        expect(handled).toMatchObject({ resultSource: "reported", outcome: "handled", output: { unavailable: true } });
+        expect(handled.toolFailure).toBeUndefined();
+    });
+
     it("routes a node script's tool call to the session tool set and takes its reported result", async () => {
         const calls = [];
         const result = await run(node("n", `

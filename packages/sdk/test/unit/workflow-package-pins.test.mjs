@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { WorkflowPackageToolError } from "../../dist/workflow/package-pins.js";
+import { WorkflowPackageToolError, resolveWorkflowCapabilitySnapshot, refuseLostWorkflowTool,
+    workflowUnavailableToolMessages } from "../../dist/workflow/package-pins.js";
 import { WorkflowToolAuthorityError } from "../../dist/workflow/tool-policy.js";
 
 const pin = {
@@ -46,4 +47,131 @@ test("missing labels do not misreport an existing package as deleted", () => {
         ...pin, package: null, version: null, ownership: null, reason: "disabled",
     }), error => !(error instanceof WorkflowToolAuthorityError)
         && error.message.includes("recorded labels"));
+});
+
+function fixture(activeVersion = "1.0.0") {
+    const version = { semver: "1.0.0", sha256: pin.revision };
+    const pkg = { packageId: pin.packageId, name: pin.package, enabled: true, scope: "user",
+        owner: { provider: "test", subject: "owner" }, active: { ...version, semver: activeVersion } };
+    const detail = { ...pkg, versions: [version] };
+    const binding = {
+        policy: "node-parent-tools-v1", parentSessionId: "parent", owner: pkg.owner, config: {},
+        capabilities: { revision: 1, selections: [{ sourceId: pin.packageId, tools: ["lookup"], mcpServers: ["notes"] }] },
+        tools: [{ name: "lookup", schemaHash: "schema" },
+            { name: "notes-read_note", mcpServerName: "notes", mcpToolName: "read_note", schemaHash: "schema" }],
+        sourceRevisions: { [pin.packageId]: pin.revision }, excludedTools: [], boundAgentFingerprint: "",
+    };
+    const catalog = { listAgentPackages: async () => [pkg], getAgentPackage: async () => detail };
+    const tool = { name: "lookup", handler: async () => "captured" };
+    const source = { id: pin.packageId, packageId: pin.packageId, name: pin.package, source: "published",
+        revision: pin.revision, scope: "user", owner: pkg.owner, tools: new Map([["lookup", tool]]),
+        mcpServers: { notes: {} }, artifacts: [] };
+    return { pkg, detail, catalog, binding, source };
+}
+
+for (const [active, state] of [["1.0.0", "current"], ["1.1.0", "newer_available"],
+    ["0.9.0", "rolled_back"], ["1.0.0-beta.1", "rolled_back"], ["1.10.0", "newer_available"]]) {
+    test(`pins derive ${state} with active version ${active}, without loading code`, async () => {
+        const f = fixture(active);
+        const view = await resolveWorkflowCapabilitySnapshot(f.binding, undefined, f.catalog, []);
+        assert.deepEqual(view.pins, [{ ...pin, state, activeVersion: active }]);
+        assert.deepEqual(view.sources, []);
+        assert.deepEqual(view.labels.toolSources, { lookup: pin.packageId, "notes-read_note": pin.packageId });
+        assert.deepEqual(view.labels.packagePins[pin.packageId],
+            { package: pin.package, version: "1.0.0", ownership: "owned" });
+        assert.equal(JSON.stringify(view.labels).includes('"subject"'), false);
+        assert.equal(f.binding.packagePins, undefined, "legacy binding is not rewritten");
+    });
+}
+
+test("a cold loader receives only captured revisions and its sources stay private to the view", async () => {
+    const f = fixture("1.1.0");
+    const live = [{ ...f.source, revision: "b".repeat(64) }];
+    const calls = [];
+    const view = await resolveWorkflowCapabilitySnapshot(f.binding, undefined, f.catalog, live, async (id, revision) => {
+        calls.push({ id, revision });
+        return { ...f.source, id: `${id}@${revision}`, packageId: `${id}@${revision}` };
+    });
+    assert.deepEqual(calls, [{ id: pin.packageId, revision: pin.revision }]);
+    assert.equal(view.sources[0].id, pin.packageId);
+    assert.equal(view.sources[0].revision, pin.revision);
+    assert.equal(live.length, 1);
+    assert.equal(live[0].revision, "b".repeat(64));
+});
+
+for (const reason of ["deleted", "disabled", "private", "version_removed"]) {
+    test(`${reason} omits only that package and identifies its exact tool, including MCP names`, async () => {
+        const f = fixture();
+        const retained = { packagePins: { [pin.packageId]: {
+            package: pin.package, version: pin.version, ownership: "owned",
+        } }, toolSources: {} };
+        if (reason === "deleted") f.catalog.listAgentPackages = async () => [];
+        if (reason === "disabled") f.detail.enabled = false;
+        if (reason === "private") f.detail.owner = f.pkg.owner = { provider: "test", subject: "someone-else" };
+        if (reason === "version_removed") f.detail.versions = [];
+        const staticSource = { ...f.source, id: "static:fixture", source: "static", scope: "shared",
+            tools: new Map([["unrelated", { name: "unrelated" }]]), mcpServers: {} };
+        const view = await resolveWorkflowCapabilitySnapshot(f.binding, retained, f.catalog, [staticSource]);
+        assert.equal(view.pins[0].state, "unavailable");
+        assert.equal(view.pins[0].reason, reason);
+        assert.deepEqual(view.sources, [staticSource]);
+        assert.doesNotThrow(() => refuseLostWorkflowTool("unrelated", view));
+        assert.throws(() => refuseLostWorkflowTool("notes-read_note", view),
+            error => error instanceof WorkflowPackageToolError && error.details.reason === reason);
+        assert.equal(workflowUnavailableToolMessages(view).size, 2);
+    });
+}
+
+test("labels do not grant private access even if ownership says owned", async () => {
+    const f = fixture();
+    f.detail.owner = f.pkg.owner = { provider: "test", subject: "different-owner" };
+    f.binding.packagePins = { [pin.packageId]: { package: pin.package, version: pin.version, ownership: "owned" } };
+    const view = await resolveWorkflowCapabilitySnapshot(f.binding, undefined, f.catalog, [f.source]);
+    assert.equal(view.pins[0].reason, "private");
+    assert.equal(view.pins[0].ownership, "other_shared");
+    assert.deepEqual(view.sources, []);
+});
+
+test("a legacy package deleted before recovery has explicitly unknown labels", async () => {
+    const f = fixture();
+    f.catalog.listAgentPackages = async () => [];
+    const view = await resolveWorkflowCapabilitySnapshot(f.binding, undefined, f.catalog, []);
+    assert.deepEqual(view.pins, [{ ...pin, package: null, version: null, ownership: null,
+        state: "unavailable", reason: "deleted" }]);
+    assert.throws(() => refuseLostWorkflowTool("lookup", view),
+        error => error.message.includes("Its name and version number were not recorded."));
+});
+
+test("a shared package label survives loss but never keeps its owner's identity", async () => {
+    const f = fixture();
+    f.detail.scope = f.pkg.scope = "shared";
+    f.detail.owner = f.pkg.owner = { provider: "test", subject: "publisher" };
+    const first = await resolveWorkflowCapabilitySnapshot(f.binding, undefined, f.catalog, []);
+    f.catalog.listAgentPackages = async () => [];
+    const gone = await resolveWorkflowCapabilitySnapshot(f.binding, first.labels, f.catalog, []);
+    assert.equal(gone.pins[0].ownership, "other_shared");
+    assert.equal(gone.pins[0].package, pin.package);
+    assert.equal(JSON.stringify(gone).includes("publisher"), false);
+});
+
+test("deployment revisions are not compared, and only the called contract decides access", async () => {
+    const f = fixture();
+    const source = { ...f.source, id: "static:fixture", source: "static", revision: "changed",
+        scope: "shared" };
+    f.binding.sourceRevisions = { "static:fixture": "captured" };
+    const view = await resolveWorkflowCapabilitySnapshot(f.binding, undefined, f.catalog, [source]);
+    assert.deepEqual(view.sources, [source]);
+    assert.deepEqual(view.pins, []);
+});
+
+test("registry, identity and download faults are retries, never inferred loss", async () => {
+    for (const fault of ["list", "detail", "identity", "missing detail", "load"]) {
+        const f = fixture();
+        if (fault === "list") f.catalog.listAgentPackages = async () => { throw new Error("registry unavailable"); };
+        if (fault === "detail") f.catalog.getAgentPackage = async () => { throw new Error("registry detail unavailable"); };
+        if (fault === "identity") f.detail.packageId = "someone-elses-copy";
+        if (fault === "missing detail") f.catalog.getAgentPackage = async () => null;
+        await assert.rejects(resolveWorkflowCapabilitySnapshot(f.binding, undefined, f.catalog, [],
+            async () => { throw new Error("download unavailable"); }), error => !(error instanceof WorkflowToolAuthorityError));
+    }
 });
