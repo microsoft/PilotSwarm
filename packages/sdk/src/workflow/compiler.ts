@@ -24,7 +24,9 @@ export const WORKFLOW_KIND = "Workflow";
  */
 export const WORKFLOW_IR_VERSION = 1;
 /** A wait state's seconds: an integer in this range, literal or bound. */
-export const WAIT_MAX_SECONDS = 86_400;
+export const WAIT_MAX_SECONDS = 2_592_000;
+/** Request, receive, agent and parallel deadlines keep the one-day bound. */
+export const STATE_TIMEOUT_MAX_SECONDS = 86_400;
 /** The one business outcome of a wait state, and a receive state's outcome when its wait wins. */
 export const WAIT_ELAPSED = "elapsed";
 /** A receive state's outcome when a message wins. */
@@ -666,12 +668,14 @@ function compileScript(id: string, raw: Record<string, unknown>, nodeIds: Readon
  * state is entered: invalid_input otherwise); it elapses with the value it
  * was given as its output.
  */
-/** A wait's seconds (or a request's timeoutSeconds): an integer from 1 to WAIT_MAX_SECONDS, or one whole-string binding checked on entry. */
-function secondsField(value: unknown, path: string, diagnostics: Diagnostics, field = "seconds"): number | string | null {
-    const message = `${field} must be an integer from 1 to ${WAIT_MAX_SECONDS}, or one \${...} binding that gives one.`
-        + (field === "seconds" ? " This is 24 hours per wait, not per run. For longer observation, use bounded repeated waits; see workflow-polling." : "");
+/** Duration bounds apply to the individual field, including its value after binding at entry. */
+function secondsField(value: unknown, path: string, diagnostics: Diagnostics, field = "seconds",
+    maximum = STATE_TIMEOUT_MAX_SECONDS, guidance = ""): number | string | null {
+    const message = `${field} must be an integer from 1 to ${maximum}, or one \${...} binding that gives one.`
+        + (maximum === WAIT_MAX_SECONDS ? " This is 30 days per wait, not per run. For longer observation, use bounded repeated waits; see workflow-polling." : "")
+        + guidance;
     if (typeof value === "number") {
-        if (!Number.isInteger(value) || value < 1 || value > WAIT_MAX_SECONDS) { diagnostics.error("WORKFLOW_FIELD_INVALID", path, message); return null; }
+        if (!Number.isInteger(value) || value < 1 || value > maximum) { diagnostics.error("WORKFLOW_FIELD_INVALID", path, message); return null; }
         return value;
     }
     if (typeof value === "string") {
@@ -750,7 +754,7 @@ function compileWait(id: string, raw: Record<string, unknown>, nodeIds: Readonly
         diagnostics.error("WORKFLOW_FIELD_INVALID", path, "a wait has seconds or at, not both.");
     }
     const at = clock ? clockWaitField(raw.at, `${path}.at`, diagnostics) : null;
-    const seconds = clock ? null : secondsField(raw.seconds, `${path}.seconds`, diagnostics);
+    const seconds = clock ? null : secondsField(raw.seconds, `${path}.seconds`, diagnostics, "seconds", WAIT_MAX_SECONDS);
     const hasInput = Object.hasOwn(raw, "input");
     const input = hasInput ? bindingValue(raw.input, `${path}.input`, diagnostics) : null;
     const next = compileRoutes(raw, path, "a wait", nodeIds, diagnostics);
@@ -1064,8 +1068,11 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
         diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.outputSchema`,
             "a state that names a workflow interface declares its outputSchema: the interface's output schema, exactly.");
     }
-    const timeoutSeconds = secondsField(raw.timeoutSeconds, `${path}.timeoutSeconds`, diagnostics, "timeoutSeconds");
+    const timeoutSeconds = secondsField(raw.timeoutSeconds, `${path}.timeoutSeconds`, diagnostics, "timeoutSeconds",
+        STATE_TIMEOUT_MAX_SECONDS, " For longer work, use session: continue with short visits and a sleep outcome routed to a wait; see workflow-patterns.");
     const next = compileRoutes(raw, path, "an agent state", nodeIds, diagnostics);
+    if (next.timed_out === id) diagnostics.warning("WORKFLOW_AGENT_TIMEOUT_LOOP", `${path}.transition.next.timed_out`,
+        "This timeout starts the same agent state again, possibly while its previous turn is stopping. Use a sleep outcome and a wait between short visits; see workflow-patterns.");
     let outcomes: string[];
     if (raw.outcomes !== undefined) {
         if (!isStringList(raw.outcomes) || raw.outcomes.length === 0 || !raw.outcomes.every(item => ID_PATTERN.test(item) && !isRuntimeRoute(item))
@@ -1692,6 +1699,14 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
     checkFixedInputs(nodes, contracts, schemas.defs, diagnostics);
     if (diagnostics.failed) return result(name, version, null);
     warnInputMismatches(nodes, schemas.defs, diagnostics);
+    if (runDeadline !== null) {
+        for (const node of Object.values(nodes)) {
+            if (node.type === "wait" && typeof node.seconds === "number" && node.seconds > runDeadline.timeoutSeconds) {
+                diagnostics.warning("WORKFLOW_WAIT_EXCEEDS_RUN_TIMEOUT", `states.${node.id}.seconds`,
+                    "This wait is longer than limits.timeoutSeconds. The run deadline ends pending work even while paused; shorten the wait or change the run's intended time budget.");
+            }
+        }
+    }
     const received = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? [node.contract] : []));
     const sent = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "send" ? [node.contract] : []));
     const requested = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "request" ? [node.contract] : []));
@@ -2185,7 +2200,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 && first >= 1 && first <= WORKFLOW_PARALLEL_MAX_ITEMS);
             const timeout = node.timeoutSeconds;
             const timeoutValid = timeout === undefined || ((typeof timeout === "string"
-                || (typeof timeout === "number" && Number.isSafeInteger(timeout) && timeout >= 1 && timeout <= WAIT_MAX_SECONDS)));
+                || (typeof timeout === "number" && Number.isSafeInteger(timeout) && timeout >= 1 && timeout <= STATE_TIMEOUT_MAX_SECONDS)));
             need(Object.hasOwn(node, "forEach") && typeof node.concurrency === "number"
                 && Number.isInteger(node.concurrency) && node.concurrency >= 1 && node.concurrency <= WORKFLOW_PARALLEL_MAX_CONCURRENCY && joinValid
                 && timeoutValid && typeof node.failFast === "boolean"

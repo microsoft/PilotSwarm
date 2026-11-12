@@ -824,6 +824,18 @@ offered. It still answers a stale call for one more release; use
   visits. `session: new` gives each visit a fresh one. Give an agent state an
   `outputSchema`, a `timeoutSeconds` and, when it needs no tools, `tools:
   none`.
+- **An agent that lives long and sleeps:** keep `session: continue`, do one
+  check per visit, and return a declared `sleep` outcome to a wait state.
+  That wait routes back to the agent with its next input. Each visit is at
+  most 86,400 seconds (24 hours); keeping the session does not extend it.
+  Wait states accept 1 to 2,592,000 seconds (30 days), including a bound
+  value. Request, receive and parallel timeouts stay at most 24 hours.
+  Inside the agent, `wait`, `wait_on_worker`, `cron` and `cron_at` refuse a
+  first wake at or beyond the visit deadline. Shorten the delay or let the
+  Workflow wait between visits. Do not use a timeout self-loop as a polling
+  loop: the next visit can start while the old turn is stopping.
+  `limits.timeoutSeconds` still bounds the whole run, even while paused.
+  Load `workflow-long-agent` for a complete, bounded three-check example.
 - **Test only when asked**, or before you publish a definition in a package.
   `workflow_definition` `test` runs the revision with prepared answers
   (`fixtures`) on a hidden test bench. Scripts run for real. A test is not a

@@ -34,6 +34,7 @@ import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC, workflow
 import { sanitizeWorkflowErrorText } from "./workflow/failure.js";
 import { answerAsksParent, turnAskedForAnswer, turnScheduleEffect, workflowAgentReminderText } from "./workflow/agent-reminder.js";
 import { WORKFLOW_ASK_USER_REFUSAL, workflowDefinitionToolsRefusal } from "./workflow/input-policy.js";
+import { workflowScheduleRefusal } from "./workflow/agent-scheduling.js";
 import { interceptWorkflowTestTools } from "./workflow/test-agent-tools.js";
 
 /**
@@ -2005,6 +2006,9 @@ export class ManagedSession {
             },
             handler: async (args: { seconds: number; reason?: string; preserveWorkerAffinity?: boolean; material?: boolean }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("wait");
+                const refusal = controlBridge?.workflowScheduleDeadline
+                    ? await workflowScheduleRefusal(controlBridge.workflowScheduleDeadline, { seconds: args.seconds }) : null;
+                if (refusal) return refusal;
                 const reason = args.reason ?? "unspecified";
                 if (args.seconds <= turnState.waitThreshold) {
                     await new Promise(r => setTimeout(r, args.seconds * 1000));
@@ -2093,6 +2097,9 @@ export class ManagedSession {
             },
             handler: async (args: { seconds: number; reason?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("wait_on_worker");
+                const refusal = controlBridge?.workflowScheduleDeadline
+                    ? await workflowScheduleRefusal(controlBridge.workflowScheduleDeadline, { seconds: args.seconds }) : null;
+                if (refusal) return refusal;
                 const reason = args.reason ?? "unspecified";
                 if (args.seconds <= turnState.waitThreshold) {
                     await new Promise(r => setTimeout(r, args.seconds * 1000));
@@ -2169,6 +2176,9 @@ export class ManagedSession {
                     return "Error: cron reason is required when setting a schedule.";
                 }
 
+                const refusal = controlBridge?.workflowScheduleDeadline
+                    ? await workflowScheduleRefusal(controlBridge.workflowScheduleDeadline, { seconds: intervalSeconds }) : null;
+                if (refusal) return refusal;
                 turnState.queuedActions.push({
                     type: "cron",
                     action: "set",
@@ -2231,6 +2241,9 @@ export class ManagedSession {
                     return `Error: ${normalized.error}`;
                 }
                 const schedule = normalized.schedule;
+                const refusal = controlBridge?.workflowScheduleDeadline
+                    ? await workflowScheduleRefusal(controlBridge.workflowScheduleDeadline, { schedule }) : null;
+                if (refusal) return refusal;
                 // Precompute the nextFireAt as a best-effort answer for the LLM. The orchestration
                 // will recompute (and record) the authoritative next-fire via a durable activity.
                 let preview: { nextFireAtMs?: number; localTime?: string } = {};

@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import {
-    AGENT_REPORTED_ERROR_CODES, MESSAGE_SENT, parseDiagnostics, parseWorkflowIr, RECEIVE_RECEIVED, REQUEST_DECLINED, REQUEST_RESPONDED, WAIT_ELAPSED, WAIT_MAX_SECONDS,
+    AGENT_REPORTED_ERROR_CODES, MESSAGE_SENT, parseDiagnostics, parseWorkflowIr, RECEIVE_RECEIVED, REQUEST_DECLINED, REQUEST_RESPONDED, WAIT_ELAPSED, STATE_TIMEOUT_MAX_SECONDS,
     WORKFLOW_API_VERSION, WORKFLOW_MAX_YAML_BYTES, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR,
     type WorkflowIRClockWait, type WorkflowIRNode,
 } from "./compiler.js";
@@ -662,7 +662,7 @@ export interface SendSpecInput {
  * What a request state requests, resolved when it is entered (no
  * runtime enters one yet, design workflow-messaging-request.md 8.4): a send
  * state's spec, plus its deadline's seconds (frozen at admission, from 1 to
- * WAIT_MAX_SECONDS) and the name of the schema a response must satisfy in
+ * STATE_TIMEOUT_MAX_SECONDS) and the name of the schema a response must satisfy in
  * the run's pinned definition, which the admission checks is the one its
  * state's contract declares (WORKFLOW_STORE_CORRUPT otherwise). The
  * admission decides the responder under the session locks as a send's
@@ -3814,14 +3814,14 @@ export class WorkflowStore {
                 || (receive !== null && (receive.from === null) !== (receive.refused === null))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid messaging spec.`);
             }
-            if (request !== null && !(Number.isSafeInteger(request.timeoutSeconds) && request.timeoutSeconds >= 1 && request.timeoutSeconds <= WAIT_MAX_SECONDS)) {
+            if (request !== null && !(Number.isSafeInteger(request.timeoutSeconds) && request.timeoutSeconds >= 1 && request.timeoutSeconds <= STATE_TIMEOUT_MAX_SECONDS)) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid request deadline.`);
             }
             // An agent spec belongs to an agent state admitted without an immediate result; its deadline is a whole number
             // of seconds, and its output contract is the one its state declares in the run's pinned definition.
             const agent = input.agent ?? null;
             if ((agent !== null) !== (input.nodeType === "agent" && immediate === null && intercept === null)
-                || (agent !== null && !(Number.isSafeInteger(agent.timeoutSeconds) && agent.timeoutSeconds >= 1 && agent.timeoutSeconds <= WAIT_MAX_SECONDS))
+                || (agent !== null && !(Number.isSafeInteger(agent.timeoutSeconds) && agent.timeoutSeconds >= 1 && agent.timeoutSeconds <= STATE_TIMEOUT_MAX_SECONDS))
                 || (agent !== null && !storableId(agent.childSessionId))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid agent spec.`);
             }

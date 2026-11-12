@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "../../dist/session-manager.js";
 import { loadSkillsSync } from "../../dist/skills.js";
@@ -26,7 +27,7 @@ const testModeSkills = () => loadSkillsSync(WORKFLOW_TEST_MODE_SKILLS_DIR);
 
 test("the workflow skills load from their own plugin directory, which no worker tier loads", () => {
     assert.equal(path.resolve(WORKFLOW_SKILLS_DIR), path.join(PLUGINS, "workflow", "skills"));
-    assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-authoring", "workflow-patterns", "workflow-polling", "workflow-reference", "workflow-tools"]);
+    assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-authoring", "workflow-long-agent", "workflow-patterns", "workflow-polling", "workflow-reference", "workflow-tools"]);
     assert.equal(path.resolve(WORKFLOW_TEST_MODE_SKILLS_DIR), path.join(PLUGINS, "workflow", "test-mode-skills"));
     assert.deepEqual(testModeSkills().map(skill => skill.name), ["workflow-testing"]);
     for (const skill of [...skills(), ...testModeSkills()]) {
@@ -35,6 +36,7 @@ test("the workflow skills load from their own plugin directory, which no worker 
         assert.ok(skill.description.length >= 80 && skill.description.length <= 240, `${skill.name} description: ${skill.description.length}`);
         const budget = ["workflow-patterns", "workflow-polling"].includes(skill.name) ? 8 * 1024 : 20 * 1024;
         assert.ok(Buffer.byteLength(skill.prompt, "utf8") <= budget, `${skill.name} body: ${Buffer.byteLength(skill.prompt, "utf8")} bytes`);
+        assert.ok(readFileSync(path.join(skill.dir, "SKILL.md")).byteLength <= budget, `${skill.name} file exceeds ${budget} bytes`);
     }
     // The worker's tiers 1 to 3 load plugins/system, plugins/mgmt and plugins/default-agents only.
     for (const tier of ["system", "mgmt", "default-agents"]) {
@@ -89,7 +91,7 @@ test("every complete example in the workflow skills compiles as written, with no
         }
     }
     assert.deepEqual(examples.map(item => `${item.skill}/${item.name}`).sort(),
-        ["workflow-authoring/build-watch", "workflow-patterns/two-lane-summary", "workflow-patterns/two-views",
+        ["workflow-authoring/build-watch", "workflow-long-agent/long-agent", "workflow-patterns/two-lane-summary", "workflow-patterns/two-views",
             "workflow-polling/ci-poll", "workflow-polling/uncertain-send", "workflow-reference/change-review", "workflow-testing/release-notes"]);
     const kinds = new Set();
     for (const example of examples) {
