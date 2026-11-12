@@ -1022,7 +1022,7 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
             diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.requiredTools`, "requiredTools must list 1 to 16 distinct tool names, as the agent sees them.");
         } else {
             requiredTools = [...raw.requiredTools];
-            if (tools !== null && requiredTools.some(name => !tools.includes(name))) {
+            if (tools !== null && requiredTools.some(name => !tools.includes(name) && !tools.includes(`custom:${name}`))) {
                 diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.requiredTools`, "Every required tool must be inside this state's tools list.");
             }
         }
@@ -2199,7 +2199,8 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                     && node.requiredTools.length >= 1 && node.requiredTools.length <= 16
                     && new Set(node.requiredTools).size === node.requiredTools.length
                     && node.requiredTools.every(name => WORKFLOW_AGENT_TOOL_NAME.test(name)
-                        && (node.tools === undefined || (Array.isArray(node.tools) && node.tools.includes(name)))))),
+                        && (node.tools === undefined || (Array.isArray(node.tools)
+                            && (node.tools.includes(name) || node.tools.includes(`custom:${name}`))))))),
                 `stored IR agent state ${id} is invalid`);
             const named = isJsonObject(storedInterface) ? { name: storedInterface.name as string, version: storedInterface.version as string } : null;
             nodes[id] = {

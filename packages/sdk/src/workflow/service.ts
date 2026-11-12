@@ -800,6 +800,8 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
     // A definition published at creation pins its named agents first: one that cannot be resolved refuses the request
     // before anything is written.
     const agentPinsText = publish && compiled.valid ? await publicationAgentPins(host, compiled.ir, request.parentSessionId ?? request.workflowSessionId) : null;
+    const delegationOffers = request.start
+        ? await workflowAgentOffers(host, compiled.ir, request.binding ?? null, request.parentSessionId ?? request.workflowSessionId) : {};
     const requestSha256 = workflowCreateRequestSha256(request, compiled.yamlSha256, publish, startInputs);
     // A deleted workflow keeps its definition tombstone; its id is never reused.
     const tombstone = await host.store.readDefinition(request.workflowSessionId);
@@ -907,8 +909,7 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
     });
     if (request.start && (claim.created || request.binding?.agentStepTools === "selections")
         && await host.store.readWorkflowToolsDelegated(request.workflowSessionId) === null) {
-        const offers = await workflowAgentOffers(host, compiled.ir, request.binding ?? null, request.parentSessionId ?? request.workflowSessionId);
-        await host.store.recordWorkflowToolsDelegated(request.workflowSessionId, Object.values(offers).map(offer => offer.delegated));
+        await host.store.recordWorkflowToolsDelegated(request.workflowSessionId, Object.values(delegationOffers).map(offer => offer.delegated));
     }
     await dispatchWorkflowRun(host, stored.receipt);
     return stored;

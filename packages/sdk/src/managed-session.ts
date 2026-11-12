@@ -3813,8 +3813,9 @@ export class ManagedSession {
             await this.copilotSession.rpc.tools.initializeAndValidate();
             const metadata = await this.copilotSession.rpc.tools.getCurrentMetadata();
             const required = [...new Set([...(opts.workflowRequiredTools ?? []), ...(opts.requiredTool ? [opts.requiredTool] : [])])];
-            missingRequiredTool = required.find(name => (this.config.workflowToolLimit && !this.config.workflowToolLimit.includes(name))
-                || !metadata.tools?.some(tool => (tool.namespacedName ?? tool.name) === name));
+            missingRequiredTool = required.find(name => (this.config.workflowToolLimit
+                && !this.config.workflowToolLimit.includes(name) && !this.config.workflowToolLimit.includes(`custom:${name}`))
+                || !metadata.tools?.some(tool => tool.name === name));
         } else if (opts?.requiredTool && !allTools.some((tool: any) => tool.name === opts.requiredTool)) {
             missingRequiredTool = opts.requiredTool;
         }

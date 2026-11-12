@@ -3,7 +3,7 @@ import type { WorkflowIRAgent } from "./compiler.js";
 import type { WorkflowAgentDefinition } from "./agent-host.js";
 import type { JsonObject } from "./json.js";
 import { mcpAllowlistAdmits, type McpAllowlistAgent } from "../mcp-loader.js";
-import { isWorkflowControlTool, isWorkflowLiveSessionTool, type WorkflowToolBinding } from "./tool-policy.js";
+import { isWorkflowControlTool, isWorkflowLiveSessionTool, workflowToolAliases, type WorkflowToolBinding } from "./tool-policy.js";
 
 /** Filter per export before bindCapabilities, whose ordinary-session semantics reject a whole conflicting selection. */
 export function workflowAgentSelections(binding: WorkflowToolBinding, sources: CapabilitySource[], originalTools: readonly { name: string }[],
@@ -22,7 +22,7 @@ export function workflowAgentSelections(binding: WorkflowToolBinding, sources: C
         const selectedServers = selection.mcpServers.filter(name => {
             const config = source?.mcpServers[name];
             if (servers.has(name) || (config?.allowedAgents && !mcpAllowlistAdmits(config.allowedAgents, agent))) return false;
-            if (!binding.tools.some(grant => grant.mcpServerName === name && allowed(grant.namespacedName ?? grant.name))) return false;
+            if (!binding.tools.some(grant => grant.mcpServerName === name && workflowToolAliases(grant).some(allowed))) return false;
             servers.add(name);
             return true;
         });
@@ -34,6 +34,10 @@ export interface WorkflowAgentToolOffer {
     offered: string[];
     initialRequiredTool?: string;
     delegated: JsonObject;
+    /** The caller has no worker catalog, so an absent default cannot be treated as a positive miss. */
+    unchecked?: boolean;
+    /** Method discovery for these step-owned MCP servers happens only when the CLI opens. */
+    uncheckedMcpServers?: string[];
 }
 
 export function workflowAgentToolOffer(node: WorkflowIRAgent, binding: WorkflowToolBinding | null, sources: CapabilitySource[],
@@ -69,12 +73,14 @@ export function workflowAgentToolOffer(node: WorkflowIRAgent, binding: WorkflowT
         return [{ package: source?.name ?? selection.sourceId, ownership: source ? capabilityOwnership(source, binding!.owner) : "other_shared",
             tools: selection.tools, mcpServers: selection.mcpServers,
             mcpTools: (binding?.tools ?? []).filter(tool => tool.mcpServerName && selection.mcpServers.includes(tool.mcpServerName)
-                && allowed(tool.namespacedName ?? tool.name)).map(tool => tool.namespacedName ?? tool.name) }];
+                && workflowToolAliases(tool).some(allowed)).map(tool => tool.name) }];
     });
     return {
         offered: [...new Set([...originalTools.map(tool => tool.name), ...nativeTools, ...ownMcpTools,
             ...passed.flatMap(source => [...source.tools, ...source.mcpTools])])].filter(allowed),
         ...(agent?.initialRequiredTool ? { initialRequiredTool: agent.initialRequiredTool } : {}),
+        uncheckedMcpServers: Object.entries(originalMcp).filter(([, config]) => config && typeof config === "object"
+            && (!("tools" in config) || !Array.isArray(config.tools) || config.tools.includes("*"))).map(([name]) => name),
         delegated: { state: node.id, agent: agent ? { name: agent.name, package: agent.packageName ?? null,
             owner: agent.packageOwner ? { provider: agent.packageOwner.provider, subject: agent.packageOwner.subject } : null }
             : "inline prompt", sources: passed },

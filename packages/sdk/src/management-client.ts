@@ -2173,9 +2173,9 @@ export class PilotSwarmManagementClient {
             // OF-S2-7: an agent node's model chosen at start is checked against the owning session's catalog (its owner's).
             checkAgentModel: (choice, owner) => this._checkWorkflowAgentModel(choice, owner),
             // A person's Start has no parent grant; only the step's defaults and its agent's own declarations are available.
-            describeAgentTools: async (node, _binding, _caller, agent) => workflowAgentToolOffer(node, null, [],
+            describeAgentTools: async (node, _binding, _caller, agent) => ({ ...workflowAgentToolOffer(node, null, [],
                 [...defaults, ...(agent?.tools ?? []).map(name => ({ name }))], {}, agent,
-                COPILOT_NATIVE_TOOL_NAMES.filter(name => !NATIVE_EXCLUDED_TOOLS.includes(name) && name !== "task")),
+                COPILOT_NATIVE_TOOL_NAMES.filter(name => !NATIVE_EXCLUDED_TOOLS.includes(name) && name !== "task")), unchecked: true }),
         };
     }
 

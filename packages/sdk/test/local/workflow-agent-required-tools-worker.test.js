@@ -1,0 +1,102 @@
+import { describe, it, expect } from "vitest";
+import { randomUUID } from "node:crypto";
+import { join } from "node:path";
+import { withScriptedModel } from "../helpers/scripted-workers.js";
+import { useSuiteEnv } from "../helpers/local-env.js";
+import { capabilityRef } from "../../src/capability-catalog.ts";
+import { createWorkflow } from "../../src/workflow/service.ts";
+import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
+
+const getEnv = useSuiteEnv(import.meta.url);
+const OWNER = { provider: "test", subject: "required-tools-worker" };
+const TOOL = "fixture_required_error";
+
+describe("FB-020 required tools through the real worker and CLI", () => {
+    it("counts an errored package call and exact delegated MCP call anew on both continued visits", { timeout: 180_000 }, async () => {
+        const env = getEnv();
+        const refusals = [];
+        let visits = 0;
+        await withScriptedModel(env, {
+            worker: { logLevel: "warning" },
+            respond: (body, position) => {
+                const tools = (body.tools ?? []).map(tool => tool.function?.name);
+                if (!tools.includes("complete_workflow_node")) return { content: "ok" };
+                expect(tools).toContain(TOOL);
+                expect(tools).toContain("notes-read_note");
+                if (position.step === 0) {
+                    visits++;
+                    return { tools: [{ name: "complete_workflow_node", args: {
+                        operation_id: `early-${visits}`, outcome: "done", output: null,
+                    } }] };
+                }
+                if (position.step === 1) {
+                    refusals.push(position.toolResults.at(-1));
+                    return { tools: [{ name: TOOL, args: {} }, { name: "notes-read_note", args: {} }] };
+                }
+                if (position.step === 2) return { tools: [{ name: "complete_workflow_node", args: {
+                    operation_id: `done-${visits}`, outcome: visits === 1 ? "again" : "done", output: null,
+                } }] };
+                return { content: "VISIT_COMPLETED" };
+            },
+        }, async ({ client, worker, qualifiedModel }) => {
+            const manager = worker.sessionManager;
+            const catalog = worker._catalog;
+            const store = catalog.workflowStore();
+            const source = {
+                id: "required-worker-tools", name: "required-worker-tools", source: "published",
+                revision: "fixture-one", scope: "user", owner: OWNER, packageId: "required-worker-tools",
+                artifacts: [{ kind: "tool", name: TOOL }, { kind: "mcp", name: "notes" }],
+                tools: new Map([[TOOL, {
+                    name: TOOL, description: "Harmless required call that returns an error.",
+                    parameters: { type: "object", properties: {}, additionalProperties: false },
+                    handler: async () => { throw new Error("Expected harmless fixture failure."); },
+                }]]),
+                mcpServers: { notes: {
+                    command: process.execPath,
+                    args: [new URL("../helpers/native-task-mcp.mjs", import.meta.url).pathname, join(env.baseDir, "required-mcp-proof.txt")],
+                    tools: ["read_note"],
+                } },
+            };
+            manager.workerDefaults.getCapabilitySources = () => [source];
+            const parent = await client.createSession({ owner: OWNER, model: qualifiedModel });
+            const managedParent = await manager.getOrCreate(parent.sessionId, { model: qualifiedModel }, { turnIndex: 0 });
+            await managedParent.config.capabilityServices.use({
+                source_ref: capabilityRef(source.id, source.revision, "source"), tools: [TOOL], mcp_servers: ["notes"],
+                expected_revision: 0, request_id: "activate-required-fixture",
+            });
+            await manager.getOrCreate(parent.sessionId, { model: qualifiedModel }, { turnIndex: 1 });
+            const binding = await manager.captureWorkflowToolBinding(parent.sessionId);
+            const mcp = binding.tools.find(tool => tool.mcpServerName === "notes");
+            expect(mcp).toMatchObject({ name: "notes-read_note", namespacedName: "notes/read_note" });
+            const workflowSessionId = randomUUID();
+            const yaml = JSON.stringify({
+                apiVersion: "pilotswarm.dev/v1", kind: "Workflow", metadata: { name: "required-worker", version: "1.0.0" },
+                initial: "drain", states: {
+                    drain: { type: "agent", invoke: { prompt: "Call the harmless required tools, then finish." },
+                        requiredTools: [TOOL, "notes-read_note"], tools: [TOOL, "notes-read_note"],
+                        timeoutSeconds: 120, outcomes: ["again", "done"],
+                        transition: { next: { again: "pause", done: "done", failure: "failed" } } },
+                    pause: { type: "wait", seconds: 1, transition: { next: { elapsed: "drain" } } },
+                    done: { type: "terminal", outcome: "succeeded" }, failed: { type: "terminal", outcome: "failed" },
+                },
+            });
+            const created = await createWorkflow({ catalog, store, duroxideClient: client._getDuroxideClient() }, {
+                workflowSessionId, parentSessionId: parent.sessionId, binding, yaml, publish: true,
+                actor: { kind: "system", name: "required-worker" }, operationId: "create", notifyParent: false, start: { inputs: {} },
+            });
+            const ended = await client._getDuroxideClient().waitForOrchestration(created.receipt.run.controllerInstanceId, 120_000);
+            expect(ended.status).toBe("Completed");
+            const run = await store.readRun(created.receipt.run.runId);
+            expect(run.terminalOutcome).toBe("succeeded");
+            expect(visits).toBe(2);
+            expect(refusals).toHaveLength(2);
+            for (const refusal of refusals) expect(JSON.stringify(refusal)).toContain("REQUIRED_TOOLS_NOT_CALLED");
+            const events = await catalog.getSessionEvents(workflowSessionId, 0, 500, ["workflow.agent_tool_called"]);
+            for (const ordinal of [1, 2]) {
+                const execution = nodeExecutionIdFor(run.runId, "root", "drain", ordinal);
+                expect(events.filter(event => event.data.nodeExecutionId === execution).map(event => event.data.toolName).sort())
+                    .toEqual([TOOL, "notes-read_note"].sort());
+            }
+        });
+    });
+});

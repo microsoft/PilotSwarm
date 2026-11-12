@@ -35,6 +35,8 @@ export interface WorkflowAgentToolContext {
     nodeExecutionId: string;
 }
 
+export class WorkflowToolAuthorityError extends Error {}
+
 /**
  * The refusal when the calling session has no live tool context on this worker to hand to a workflow (no warm session, or
  * none recorded for it). spawn_workflow answers it with this code and these words, which an agent can relay as they are.

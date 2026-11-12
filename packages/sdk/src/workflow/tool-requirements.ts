@@ -30,10 +30,12 @@ export function workflowToolDiagnostics(ir: Pick<WorkflowIR, "nodes"> | null | u
             const offer = agentOffers[node.id];
             const required = [...new Set([...(node.requiredTools ?? []), ...(offer?.initialRequiredTool ? [offer.initialRequiredTool] : [])])];
             for (const tool of required) {
-                if (!grantKnown && !offer) {
+                const insideCeiling = !node.tools || node.tools.includes(tool) || node.tools.includes(`custom:${tool}`);
+                if (insideCeiling && ((!grantKnown && !offer) || (!offer?.offered.includes(tool)
+                    && (offer?.unchecked || offer?.uncheckedMcpServers?.some(server => tool.startsWith(`${server}-`)))))) {
                     diagnostics.push({ severity: "warning", code: "WORKFLOW_TOOLS_UNCHECKED", path: `states.${node.id}.requiredTools`,
                         message: `Start will check whether this step is offered required tool '${tool}'.` });
-                } else if (!offer?.offered.includes(tool) || (node.tools && !node.tools.includes(tool))) {
+                } else if (!offer?.offered.includes(tool) || !insideCeiling) {
                     diagnostics.push({ severity: "warning", code: "WORKFLOW_TOOL_NOT_GRANTED", path: `states.${node.id}.requiredTools`,
                         message: `Required tool '${tool}' is not offered to this step inside its tools ceiling. Activate its package in the session that starts the Workflow, or change the ceiling.` });
                 }

@@ -4696,11 +4696,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // Deployed check DS-3: the turn's own words (its prompt as recorded, without a trailing system context block),
             // for the Copilot runtime's session.title_changed event when the model's prompt began with runtime notes.
             const turnOwnWords = input.config?.systemContextInPrompt ? splitSystemContextBlock(input.prompt ?? "").prompt : (input.prompt ?? "");
+            let workflowRequiredToolNames = new Set<string>();
             const onEvent = catalog
                 ? (event: { eventType: string; data: unknown }) => {
                     if (event.eventType === "tool.execution_start" && workflowAgentChild && workflowAgentTools && catalog.workflowStore) {
                         const data = event.data && typeof event.data === "object" ? event.data as Record<string, unknown> : {};
-                        if (typeof data.toolName === "string") {
+                        if (typeof data.toolName === "string" && workflowRequiredToolNames.has(data.toolName)) {
                             const visit = workflowTurnVisit ? workflowTurnVisit.nodeExecutionId : workflowAgentTools.nodeExecutionId;
                             if (visit) pendingWorkflowToolCalls.push(catalog.workflowStore().recordAgentToolCall({
                                 childSessionId: input.sessionId, nodeExecutionId: visit, toolName: data.toolName,
@@ -5277,6 +5278,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 const visit = workflowTurnVisit ? workflowTurnVisit.nodeExecutionId : workflowAgentTools?.nodeExecutionId;
                 const requiredTools = visit && workflowAgentChild && catalog?.workflowStore
                     ? await catalog.workflowStore().readAgentRequiredTools(visit) : [];
+                workflowRequiredToolNames = new Set(requiredTools);
                 const missingTools = visit && requiredTools.length && catalog?.workflowStore
                     ? await catalog.workflowStore().readAgentMissingTools(visit) : [];
                 const requirements = requiredTools.length
