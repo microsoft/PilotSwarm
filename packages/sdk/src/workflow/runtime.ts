@@ -139,7 +139,12 @@ export interface WorkflowControllerFeatures {
 const NO_CONTROLLER_FEATURES: Readonly<WorkflowControllerFeatures> = Object.freeze({ carry: false, approval: false, succession: false });
 const CONTROLLER_FEATURES: Readonly<Record<WorkflowControllerVersion, Readonly<WorkflowControllerFeatures>>> = Object.freeze({
     "1.0.0": NO_CONTROLLER_FEATURES,
-    "1.1.0": Object.freeze({ carry: false, approval: false, succession: false }),
+    // One flag per line: each change turns on only its own line, so the three changes never edit the same line.
+    "1.1.0": Object.freeze({
+        carry: false,
+        approval: false,
+        succession: false,
+    }),
 });
 /** Whether this build runs controller `version`. */
 export function isWorkflowControllerVersion(version: unknown): version is WorkflowControllerVersion {
