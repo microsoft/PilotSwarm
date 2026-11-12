@@ -78,7 +78,7 @@ describe("migration 0089: the owner side's session names", () => {
             for (const table of TABLES) before[table] = await count(query, `SELECT count(*)::int AS n FROM ${s}.workflow_chat_${table}`);
             expect(Object.values(before).every(n => n > 0)).toBe(true);
 
-            await runMigrations(pool, upgraded, CMS_MIGRATIONS(upgraded), CMS_LOCK_SEED);
+            await runMigrations(pool, upgraded, CMS_MIGRATIONS(upgraded).filter(item => item.version <= "0089"), CMS_LOCK_SEED);
             expect((await query(`SELECT version FROM ${s}.schema_migrations WHERE version > '0087' ORDER BY version`)).rows.map(row => row.version))
                 .toEqual(["0088", "0089"]);
 
@@ -109,7 +109,7 @@ describe("migration 0089: the owner side's session names", () => {
             for (const table of TABLES) expect(await count(query, `SELECT count(*)::int AS n FROM ${s}.session_workflow_${table}`)).toBe(before[table]);
 
             // A fresh install has the same catalog, and no relation, constraint, function or trigger name says "chat".
-            await runMigrations(pool, fresh, CMS_MIGRATIONS(fresh), CMS_LOCK_SEED);
+            await runMigrations(pool, fresh, CMS_MIGRATIONS(fresh).filter(item => item.version <= "0089"), CMS_LOCK_SEED);
             const catalogOf = ({ data, ...catalog }) => catalog;
             expect(snapshotDifferences(catalogOf(snapshot), catalogOf(await schemaSnapshot(query, fresh)))).toEqual({});
             const named = await query(`

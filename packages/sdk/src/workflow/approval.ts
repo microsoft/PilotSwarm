@@ -118,12 +118,11 @@ export class WorkflowApprovalStore {
         if (actor.kind !== "user") throw new WorkflowStoreError("FORBIDDEN", "Only the owner can answer this approval.");
         const requestSha256 = jsonSha256({ ...command, actor });
         const accepted = await this.context.transaction(async client => {
-            const { live, run, node, approval } = await this.locked(client, workflowSessionId, command.runId, command.approvalId);
-            if (!live) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", "This Workflow is deleted or unavailable.");
+            const { rows: sessions } = await client.query(`SELECT deleted_at FROM ${this.t.sessions} WHERE session_id=$1 FOR NO KEY UPDATE`, [workflowSessionId]);
+            if (!sessions[0] || sessions[0].deleted_at !== null) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", "This Workflow is deleted or unavailable.");
             const owner = await approvalOwnerIn(client, this.context.schema, workflowSessionId);
-            if (!owner || owner.provider !== actor.provider || owner.subject !== actor.subject
-                || approval.owner_provider !== actor.provider || approval.owner_subject !== actor.subject) {
-                throw new WorkflowStoreError("FORBIDDEN", "Only the pinned owner, while still the Workflow's owner, can answer this approval.");
+            if (!owner || owner.provider !== actor.provider || owner.subject !== actor.subject) {
+                throw new WorkflowStoreError("FORBIDDEN", "Only the current Workflow owner can answer this approval.");
             }
             const { rows: receipts } = await client.query(`SELECT * FROM ${this.t.operations} WHERE workflow_session_id=$1 AND operation_id=$2 FOR UPDATE`,
                 [workflowSessionId, command.operationId]);
@@ -133,20 +132,24 @@ export class WorkflowApprovalStore {
                 }
                 return { receipt: { ...object(parseStoredJson(text(receipts[0], "receipt"), "approval receipt"), "receipt"), replayed: true } };
             }
+            const { run, node, approval } = await this.locked(client, workflowSessionId, command.runId, command.approvalId);
+            if (approval.owner_provider !== actor.provider || approval.owner_subject !== actor.subject) {
+                throw new WorkflowStoreError("FORBIDDEN", "Only the pinned owner, while still the Workflow's owner, can answer this approval.");
+            }
             if (approval.context_sha256 !== command.contextSha256) throw new WorkflowStoreError("APPROVAL_CONTEXT_CHANGED", "This answer names a different proposal. Read the approval again.");
             if (run.mode !== "live" || run.controller_version !== "1.1.0" || !["admitted", "running", "paused"].includes(text(run, "status"))
                 || run.stop_requested_at !== null || node.state !== "pending" || approval.decision !== null) {
                 throw new WorkflowStoreError("APPROVAL_CLOSED", "This approval no longer accepts a new answer.");
             }
+            const at = await this.clock(client);
             const scope = parseBranchScope(text(node, "scope_id"));
             if (scope !== null) {
-                const { rows: parents } = await client.query(`SELECT state, deadline_at IS NOT NULL AND deadline_at <= clock_timestamp() AS past
-                    FROM ${this.t.nodes} WHERE node_execution_id=$1`, [scope.parallelNodeExecutionId]);
+                const { rows: parents } = await client.query(`SELECT state, deadline_at IS NOT NULL AND deadline_at <= $2::timestamptz AS past
+                    FROM ${this.t.nodes} WHERE node_execution_id=$1`, [scope.parallelNodeExecutionId, at]);
                 if (!parents[0] || parents[0].state !== "pending" || parents[0].past === true) {
                     throw new WorkflowStoreError("APPROVAL_CLOSED", "The approval's branch no longer accepts an answer.");
                 }
             }
-            const at = await this.clock(client);
             const { rows: due } = await client.query(`SELECT deadline_at <= $2::timestamptz AS due FROM ${this.t.nodes} WHERE node_execution_id=$1`,
                 [command.approvalId, at]);
             if (due[0]?.due !== false) {

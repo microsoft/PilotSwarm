@@ -809,6 +809,7 @@ export function workflowExecutionOfRow(row) {
         enteredAt: text(row.enteredAt), endedAt: text(row.endedAt),
         predecessorId: text(row.predecessorId),
         receive: isRecord(row.receive) ? row.receive : undefined,
+        approval: isRecord(row.approval) ? row.approval : undefined,
         agent: isRecord(row.agent) && typeof row.agent.childSessionId === "string" ? row.agent : undefined,
         scopeId: text(row.scopeId), branch: isRecord(row.branch) ? row.branch : undefined,
         branches: Number.isSafeInteger(row.branches) ? row.branches : undefined };

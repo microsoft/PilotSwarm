@@ -183,7 +183,7 @@ import { resolveWorkflowTestMode } from "./workflow/test-mode-switch.js";
 import { createRegistryWorkflowAgentResolver } from "./workflow/agent-resolver.js";
 import { assertWorkflowHumanInputAllowed, workflowInputCapabilities, type WorkflowInputCapabilities } from "./workflow/input-policy.js";
 import { WorkflowStoreError, type WorkflowActor } from "./workflow/store.js";
-import type { JsonValue } from "./workflow/json.js";
+import { isJsonObject, type JsonValue } from "./workflow/json.js";
 import { workflowAdapterFailure } from "./workflow/failure.js";
 import { applyOperatorCommandToWorkflow, type WorkflowHost } from "./workflow/service.js";
 import {
@@ -2052,9 +2052,19 @@ export class PilotSwarmManagementClient {
         // A draft's current revision: its YAML is what a person who may change the draft edits.
         const definition = view.definition as { state?: unknown; currentRevision?: unknown } | null | undefined;
         const draftRevision = definition?.state === "draft" && typeof definition.currentRevision === "number" ? definition.currentRevision : null;
-        return { ...view, personCommands: await workflowCommandsForPerson(store, sessionId,
+        const personCommands = await workflowCommandsForPerson(store, sessionId,
             { runId: shown, draftRevision, published: definition?.state === "published",
-                testMode: resolveWorkflowTestMode(enabled.testMode) }) };
+                testMode: resolveWorkflowTestMode(enabled.testMode) });
+        const visibleRun = isJsonObject(view.run) ? view.run : null;
+        const approvalExecutions = visibleRun === null ? [] : [...(Array.isArray(visibleRun.nodeExecutions) ? visibleRun.nodeExecutions : []),
+            ...(Array.isArray(visibleRun.openExecutions) ? visibleRun.openExecutions : [])];
+        const approvals = new Map<string, JsonValue>();
+        for (const execution of approvalExecutions) {
+            if (!isJsonObject(execution) || !isJsonObject(execution.approval) || typeof execution.approval.approvalId !== "string") continue;
+            approvals.set(execution.approval.approvalId, { approvalId: execution.approval.approvalId, runId: shown,
+                mayAnswer: false, reason: "Answer directly as the pinned Workflow owner in the portal." });
+        }
+        return { ...view, personCommands: { ...personCommands, approvals: [...approvals.values()] } };
     }
 
     /**

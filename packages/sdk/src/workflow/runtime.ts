@@ -2461,6 +2461,10 @@ export function describeWorkflowState(node: WorkflowIRNode): { [key: string]: Js
         }
         return { id: node.id, type: "wait", seconds: workflowBindingView(node.seconds), outcomes: [WAIT_ELAPSED], next: node.next };
     }
+    if (node.type === "approval") {
+        return { id: node.id, type: "approval", question: node.question, approver: node.approver, timeoutSeconds: node.timeoutSeconds,
+            outcomes: ["approved", "rejected"], next: node.next };
+    }
     if (node.type === "messaging") {
         if (node.mode === "send") {
             return {
