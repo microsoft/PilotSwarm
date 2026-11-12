@@ -1,4 +1,4 @@
-import { capabilityOwnership, type CapabilitySelection, type CapabilitySource } from "../capability-catalog.js";
+import { capabilityOwnership, resolveCapabilitySource, visibleCapabilitySource, type CapabilitySelection, type CapabilitySource } from "../capability-catalog.js";
 import type { WorkflowIRAgent } from "./compiler.js";
 import type { WorkflowAgentDefinition } from "./agent-host.js";
 import type { JsonObject } from "./json.js";
@@ -41,9 +41,29 @@ export function workflowAgentToolOffer(node: WorkflowIRAgent, binding: WorkflowT
     nativeTools: readonly string[] = []): WorkflowAgentToolOffer {
     const identity = agent ? { name: agent.name, namespace: agent.namespace, packageId: agent.packageId,
         packageScope: agent.packageScope } : null;
-    const selections = binding?.agentStepTools === "selections"
+    const candidates = binding?.agentStepTools === "selections"
         ? workflowAgentSelections(binding, sources, originalTools, originalMcp, identity, node.tools) : [];
+    const selections = candidates.filter(selection => {
+        const source = sources.find(item => item.id === selection.sourceId);
+        if (!source || !binding || !visibleCapabilitySource(source, binding.owner)
+            || source.revision !== binding.sourceRevisions[source.id]) return false;
+        if (!selection.sourceRef) return true;
+        try {
+            const exact = resolveCapabilitySource(sources, binding.owner, selection.sourceRef);
+            return exact.ref.k === "source" && exact.source === source;
+        } catch (error) {
+            if (error instanceof Error && ["Invalid capability reference",
+                "Capability source unavailable or inaccessible; search again",
+                "Capability source changed; search again for the current revision"].includes(error.message)) return false;
+            throw error;
+        }
+    });
     const allowed = (name: string) => !node.tools || node.tools.includes(name) || node.tools.includes(`custom:${name}`);
+    const ownMcpTools = Object.entries(originalMcp).flatMap(([server, config]) => {
+        if (!config || typeof config !== "object" || !("tools" in config) || !Array.isArray(config.tools)) return [];
+        return config.tools.filter((name): name is string => typeof name === "string" && name !== "*")
+            .map(name => `${server}-${name}`);
+    });
     const passed = selections.flatMap(selection => {
         const source = sources.find(item => item.id === selection.sourceId);
         return [{ package: source?.name ?? selection.sourceId, ownership: source ? capabilityOwnership(source, binding!.owner) : "other_shared",
@@ -52,7 +72,7 @@ export function workflowAgentToolOffer(node: WorkflowIRAgent, binding: WorkflowT
                 && allowed(tool.namespacedName ?? tool.name)).map(tool => tool.namespacedName ?? tool.name) }];
     });
     return {
-        offered: [...new Set([...originalTools.map(tool => tool.name), ...nativeTools,
+        offered: [...new Set([...originalTools.map(tool => tool.name), ...nativeTools, ...ownMcpTools,
             ...passed.flatMap(source => [...source.tools, ...source.mcpTools])])].filter(allowed),
         ...(agent?.initialRequiredTool ? { initialRequiredTool: agent.initialRequiredTool } : {}),
         delegated: { state: node.id, agent: agent ? { name: agent.name, package: agent.packageName ?? null,

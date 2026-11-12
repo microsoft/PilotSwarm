@@ -145,6 +145,7 @@ route both. Only that output reaches the next state. Deadline:
 | `outcomes` | Optional list of business outcomes; default: its routes that are not runtime routes. |
 | `session` | Optional. `continue` (default) or `new`. In a parallel body (For each or branch) only `new`, its default there. (`chat` is no longer a field.) |
 | `tools` | Optional. `none` or tool names: all the agent and its sub-agents get (plus `complete_workflow_node`). |
+| `requiredTools` | Optional. 1-16 distinct offered names, inside `tools`; each called once per visit before an outcome. See workflow-tools. |
 
 Output: the agent's validated output. The agent may report `needs_input` or
 `execution_failed`. The workflow decides `timed_out`, `invalid_output` (three

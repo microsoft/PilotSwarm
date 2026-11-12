@@ -7,6 +7,7 @@ import { SessionManager } from "../../src/session-manager.ts";
 import { capabilityRef } from "../../src/capability-catalog.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { createWorkflowAgentNodeHost } from "../../src/workflow/agent-host.ts";
+import { completeWorkflowNodeFromTool } from "../../src/workflow/agent-node-service.ts";
 import { runScriptNode } from "../../src/workflow/runner.ts";
 import { workflowLiveControllerInstanceId } from "../../src/workflow/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
@@ -48,7 +49,7 @@ states:
 `;
 
 describe("FB-020: new Workflow agent steps receive captured parent selections", () => {
-    const exercise = async ({ requireParentTool = false, states = ["plain", "named"] } = {}) => {
+    const exercise = async ({ requireParentTool = false, states = ["plain", "named"], lifecycle = null } = {}) => {
         const h = await openWorkflowStore(getEnv());
         const dir = mkdtempSync(join(tmpdir(), "ps-fb020-"));
         const packageTool = {
@@ -120,6 +121,7 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
             deleteSession: async () => {},
         });
         let executor;
+        let delegatedHandler;
         try {
             const parentSessionId = randomUUID();
             await h.catalog.createSession(parentSessionId, { owner: OWNER, model: "gpt-test" });
@@ -132,6 +134,7 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
             expect(opened.get(parentSessionId).tools.map(tool => tool.name)).toContain(TOOL);
             const binding = await manager.captureWorkflowToolBinding(parentSessionId);
             if (requireParentTool) binding.agentStepTools = "selections";
+            else delete binding.agentStepTools;
             expect(binding.capabilities.selections[0]).toMatchObject({ sourceId: source.id, tools: [TOOL] });
             expect(binding.sourceRevisions).toHaveProperty(source.id, source.revision);
             expect(binding.tools.map(tool => tool.name)).toContain(TOOL);
@@ -240,9 +243,9 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                         ...(spec.toolNames ? { toolNames: spec.toolNames } : {}),
                         ...(spec.boundAgentName ? { boundAgentName: spec.boundAgentName } : {}),
                         ...(spec.boundAgentPackageId ? { boundAgentPackageId: spec.boundAgentPackageId } : {}),
-                    }, { turnIndex: 0, ...(requireParentTool ? {
-                        workflowAgentTools: { workflowSessionId: spec.parentSessionId, nodeExecutionId: spec.clientMessageId },
-                    } : {}) });
+                    }, { turnIndex: 0, workflowAgentTools: {
+                        workflowSessionId: spec.parentSessionId, nodeExecutionId: spec.clientMessageId,
+                    } });
                 },
             });
             for (const stateId of states) {
@@ -267,6 +270,7 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                 const childConfig = opened.get(childSessionId);
                 if (requireParentTool) {
                     const requested = childConfig.tools.find(tool => tool.name === TOOL);
+                    delegatedHandler = requested?.handler;
                     expect(requested, `${stateId} step cannot call its requested parent-activated tool`).toBeDefined();
                     await expect(requested.handler({}, { sessionId: childSessionId, toolCallId: `fb020-${stateId}` }))
                         .resolves.toEqual({ marker: "fb020-fixture-only" });
@@ -299,13 +303,37 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
                 await expect(managed.config.capabilityServices.use({
                     ...selection, request_id: `fb020-${stateId}-attach`,
                 })).rejects.toThrow("Package activation is available only to the parent session");
+                if (lifecycle) {
+                    const handler = managed.config.tools.find(tool => tool.name === TOOL).handler;
+                    if (lifecycle === "source republish") {
+                        source.revision = "fixture-revision-2";
+                        await expect(handler({}, {})).rejects.toThrow("A captured tool source changed or was removed.");
+                    } else if (lifecycle === "parent end") {
+                        await h.q("UPDATE SCHEMA.sessions SET state = 'completed' WHERE session_id = $1", [parentSessionId]);
+                        await expect(handler({}, {})).rejects.toThrow("Workflow parent authority is no longer available.");
+                    } else if (lifecycle === "stored binding removed") {
+                        await h.q("UPDATE SCHEMA.sessions SET creation_config = creation_config #- '{workflowToolBinding,agentStepTools}' WHERE session_id = $1",
+                            [workflowSessionId]);
+                        await expect(handler({}, {})).rejects.toThrow("Workflow agent tool delegation is no longer available.");
+                    } else {
+                        const complete = JSON.parse(await completeWorkflowNodeFromTool({ node_execution_id: nodeExecutionId,
+                            operation_id: "finish-visit", outcome: "done", output: null }, { callerSessionId: childSessionId, store: h.store }));
+                        expect(complete.ok).toBe(true);
+                        await expect(handler({}, {})).rejects.toThrow("Workflow agent visit is no longer available.");
+                    }
+                }
             }
             expect(agentTool.handler).toHaveBeenCalledTimes(1 + (states.includes("named") ? 2 : 0));
             expect((await h.catalog.getSessionCapabilities(parentSessionId)).selections[0].tools).toEqual([TOOL]);
             await first.config.capabilityServices.use({
                 ...selection, action: "remove", expected_revision: 1, request_id: "fb020-remove",
             });
-            await expect(executor.call(TOOL, {})).rejects.toThrow("A captured parent tool capability was revoked.");
+            await expect(executor.call(TOOL, {})).rejects.toThrow(lifecycle === "parent end"
+                ? "Workflow parent authority is no longer available." : "A captured parent tool capability was revoked.");
+            if (requireParentTool && !lifecycle) {
+                await expect(delegatedHandler({}, {}))
+                    .rejects.toThrow("A captured parent tool capability was revoked.");
+            }
             expect(packageTool.handler).toHaveBeenCalledTimes(1 + (requireParentTool ? states.length : 0));
         } finally {
             try {
@@ -326,4 +354,7 @@ describe("FB-020: new Workflow agent steps receive captured parent selections", 
 
     it.each(["plain", "named"])("%s agent can call its captured parent-activated tool",
         { timeout: 120_000 }, stateId => exercise({ requireParentTool: true, states: [stateId] }));
+
+    it.each(["source republish", "parent end", "stored binding removed", "visit decided"])("refuses the next delegated call after %s",
+        { timeout: 120_000 }, lifecycle => exercise({ requireParentTool: true, states: ["plain"], lifecycle }));
 });

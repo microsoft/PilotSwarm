@@ -726,6 +726,38 @@ reply does not finish the step. An output that does not fit is refused
 (`OUTPUT_INVALID`); after 3 such answers the step fails. `ask_user` does not
 work inside an agent step: complete with `needs_input` instead.
 
+An agent state may declare `requiredTools: [lookup, notes-read_note]` (1 to
+16 distinct offered tool names). Before completing with an outcome, its own
+session must call every listed tool once in that visit. A call that returns
+an error counts; a sub-agent's call does not. With `session: continue`, each
+visit needs new calls. Early completion is refused as
+`REQUIRED_TOOLS_NOT_CALLED`, using the same three-attempt correction budget
+as invalid output. Error completions are not gated.
+
+### Tools for an agent step
+
+For a newly started Workflow, plain and named agent steps receive the
+packages that the starting session activated with `use_package`. A named
+agent keeps its own tools. The state's `tools:` is a ceiling on both sets;
+`tools: none` permits no delegated tools. A step cannot activate a package:
+activate it in the starting session before Start. Its sub-agents do not
+receive those selections, and ordinary `spawn_agent` is unchanged.
+
+Save warns and Start refuses if a required tool, or the named agent's
+startup-required tool, is outside the offered set or ceiling. MCP
+requirements use the exact offered name, for example `notes-read_note`,
+not `read_note`. Start and reads include `delegated`, and the Workflow's
+log records `workflow.tools_delegated` with the source packages and owners.
+Earlier Starts keep their old binding and gain no tools.
+
+Delegated package calls recheck the stored binding and the starter's live
+authority. Removing a captured selection, changing its source, ending the
+starter, or deciding the visit refuses the next call. Handing a Workflow
+to another session requires coverage of the whole captured binding, not
+just the tools used by one step; a successor's revocation also fails the
+visit. A failed required tool can be reported with error `execution_failed`
+instead of completing with an outcome.
+
 ### What the session is told
 
 The owning session receives a message that starts with

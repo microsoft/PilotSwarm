@@ -161,15 +161,21 @@ export interface WorkflowPublicationAgent extends WorkflowAgentDefinition {
 }
 
 export async function workflowAgentOffers(host: Pick<WorkflowHost, "resolveAgent" | "describeAgentTools">,
-    ir: Pick<WorkflowIR, "nodes"> | null | undefined, binding: WorkflowToolBinding | null, callerSessionId: string)
+    ir: Pick<WorkflowIR, "nodes"> | null | undefined, binding: WorkflowToolBinding | null, callerSessionId: string, saving = false)
     : Promise<Record<string, WorkflowAgentToolOffer>> {
     const offers: Record<string, WorkflowAgentToolOffer> = {};
     for (const node of Object.values(ir?.nodes ?? {})) {
         if (node.type !== "agent") continue;
-        const agent = "agent" in node.invoke && host.resolveAgent
-            ? await host.resolveAgent(node.invoke.agent.name, callerSessionId, node.invoke.agent.package) : null;
-        offers[node.id] = host.describeAgentTools ? await host.describeAgentTools(node, binding, callerSessionId, agent)
-            : workflowAgentToolOffer(node, binding, [], (agent?.tools ?? []).map(name => ({ name })), {}, agent);
+        try {
+            const agent = "agent" in node.invoke && host.resolveAgent
+                ? await host.resolveAgent(node.invoke.agent.name, callerSessionId, node.invoke.agent.package) : null;
+            offers[node.id] = host.describeAgentTools ? await host.describeAgentTools(node, binding, callerSessionId, agent)
+                : workflowAgentToolOffer(node, binding, [], (agent?.tools ?? []).map(name => ({ name })), {}, agent);
+        } catch (error) {
+            const code = error && typeof error === "object" && "code" in error ? error.code : null;
+            if (!saving || !["AGENT_UNAVAILABLE", "PACKAGE_TOOL_REQUIRES_BOUND_AGENT", "BOUND_AGENT_PACKAGE_UNAVAILABLE"].includes(String(code))) throw error;
+            offers[node.id] = workflowAgentToolOffer(node, null, [], [], {}, null);
+        }
     }
     return offers;
 }

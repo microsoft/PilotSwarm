@@ -247,7 +247,7 @@ export async function saveSessionWorkflowDefinition(host: WorkflowHost, request:
         try { binding = await request.binding(); grantKnown = true; }
         catch { grantKnown = false; }
     }
-    const offers = await workflowAgentOffers(host, compiled.ir, binding ? { ...binding, agentStepTools: "selections" } : null, request.ownerSessionId);
+    const offers = await workflowAgentOffers(host, compiled.ir, binding ? { ...binding, agentStepTools: "selections" } : null, request.ownerSessionId, true);
     const diagnostics = workflowToolDiagnostics(compiled.ir, binding, grantKnown, offers);
     return host.store.sessionDefinitions.save({
         ownerSessionId: request.ownerSessionId, name, yaml: request.yaml,

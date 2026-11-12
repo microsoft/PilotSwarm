@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { compileWorkflow, parseWorkflowIr } from "../../src/workflow/compiler.ts";
 import { completeWorkflowNodeFromTool } from "../../src/workflow/agent-node-service.ts";
 import { workflowLiveControllerInstanceId } from "../../src/workflow/runtime.ts";
-import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
+import { WorkflowStore, nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { workflowAgentSelections } from "../../src/workflow/agent-tools.ts";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
@@ -121,6 +121,8 @@ describe("FB-020 agent required-call contract", () => {
             } });
             // Only the call's start is needed; no successful completion is recorded.
             await h.call(visit, "notes-read_note");
+            const cold = new WorkflowStore(h.pool, h.schema);
+            expect(await cold.readAgentMissingTools(visit)).toEqual([]);
             expect(await h.complete(visit, "complete")).toMatchObject({ ok: true, outcome: "done" });
             const events = await h.catalog.getSessionEvents(h.workflowSessionId);
             expect(events.filter(event => event.eventType === "workflow.agent_tool_called" && event.data.nodeExecutionId === visit)
